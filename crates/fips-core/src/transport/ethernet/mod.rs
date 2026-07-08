@@ -10,8 +10,8 @@ pub mod socket;
 pub mod stats;
 
 use super::{
-    DiscoveredPeer, PacketTx, ReceivedPacket, Transport, TransportAddr, TransportError,
-    TransportId, TransportState, TransportType,
+    DiscoveredPeer, PacketBuffer, PacketTx, ReceivedPacket, Transport, TransportAddr,
+    TransportError, TransportId, TransportState, TransportType,
 };
 use crate::config::EthernetConfig;
 use discovery::{
@@ -159,56 +159,31 @@ impl EthernetTransport {
         let socket = Arc::new(async_socket);
         self.socket = Some(socket.clone());
 
-        // Spawn receive loop
-        let transport_id = self.transport_id;
-        let packet_tx = self.packet_tx.clone();
-        let mtu = self.effective_mtu;
-        let discovery_enabled = self.config.discovery();
-        let discovery_buffer = self.discovery_buffer.clone();
-        let stats = self.stats.clone();
-        let recv_socket = socket.clone();
-        let recv_local_mac = local_mac;
-
-        let recv_task = tokio::spawn(async move {
-            ethernet_receive_loop(
-                recv_socket,
-                transport_id,
-                packet_tx,
-                mtu,
-                discovery_enabled,
-                discovery_buffer,
-                stats,
-                recv_local_mac,
-            )
-            .await;
-        });
+        let recv_task = tokio::spawn(ethernet_receive_loop(EthernetReceiveContext {
+            socket: socket.clone(),
+            transport_id: self.transport_id,
+            packet_tx: self.packet_tx.clone(),
+            mtu: self.effective_mtu,
+            discovery_enabled: self.config.discovery(),
+            discovery_buffer: self.discovery_buffer.clone(),
+            stats: self.stats.clone(),
+            local_mac,
+        }));
         self.recv_task = Some(recv_task);
 
         // Spawn beacon sender if announce is enabled
         if self.config.announce() {
             if let Some(pubkey) = self.local_pubkey {
-                let beacon_socket = socket.clone();
-                let interval_secs = self.config.beacon_interval_secs();
-                let discovery_scope = self.config.discovery_scope().map(str::to_string);
-                let beacon_stats = self.stats.clone();
-                let beacon_transport_id = self.transport_id;
-
-                let beacon_interface = self.config.interface.clone();
-                let beacon_ethertype = self.config.ethertype();
-
-                let beacon_task = tokio::spawn(async move {
-                    beacon_sender_loop(
-                        beacon_socket,
-                        pubkey,
-                        discovery_scope,
-                        interval_secs,
-                        beacon_stats,
-                        beacon_transport_id,
-                        beacon_interface,
-                        beacon_ethertype,
-                    )
-                    .await;
-                });
+                let beacon_task = tokio::spawn(beacon_sender_loop(EthernetBeaconContext {
+                    socket: socket.clone(),
+                    pubkey,
+                    discovery_scope: self.config.discovery_scope().map(str::to_string),
+                    interval_secs: self.config.beacon_interval_secs(),
+                    stats: self.stats.clone(),
+                    transport_id: self.transport_id,
+                    interface: self.config.interface.clone(),
+                    ethertype: self.config.ethertype(),
+                }));
                 self.beacon_task = Some(beacon_task);
             } else {
                 warn!(
@@ -388,9 +363,7 @@ impl Transport for EthernetTransport {
 // Receive Loop
 // ============================================================================
 
-/// Ethernet receive loop — runs as a spawned task.
-#[allow(clippy::too_many_arguments)]
-async fn ethernet_receive_loop(
+struct EthernetReceiveContext {
     socket: Arc<AsyncPacketSocket>,
     transport_id: TransportId,
     packet_tx: PacketTx,
@@ -399,7 +372,21 @@ async fn ethernet_receive_loop(
     discovery_buffer: Arc<DiscoveryBuffer>,
     stats: Arc<EthernetStats>,
     local_mac: [u8; 6],
-) {
+}
+
+/// Ethernet receive loop — runs as a spawned task.
+async fn ethernet_receive_loop(ctx: EthernetReceiveContext) {
+    let EthernetReceiveContext {
+        socket,
+        transport_id,
+        packet_tx,
+        mtu,
+        discovery_enabled,
+        discovery_buffer,
+        stats,
+        local_mac,
+    } = ctx;
+
     // Buffer with headroom: frame type prefix + MTU + some extra
     let mut buf = vec![0u8; mtu as usize + 100];
 
@@ -442,7 +429,12 @@ async fn ethernet_receive_loop(
                         }
                         let data = buf[3..3 + payload_len].to_vec();
                         let addr = TransportAddr::from_bytes(&src_mac);
-                        let packet = ReceivedPacket::new(transport_id, addr, data);
+                        let packet = ReceivedPacket::with_timestamp(
+                            transport_id,
+                            addr,
+                            PacketBuffer::new(data),
+                            crate::time::now_ms(),
+                        );
 
                         trace!(
                             transport_id = %transport_id,
@@ -506,9 +498,8 @@ async fn ethernet_receive_loop(
 /// the underlying veth interface is destroyed and recreated (e.g., during
 /// node churn in chaos tests). After `REOPEN_THRESHOLD` consecutive send
 /// failures, attempts to open a fresh socket on the same interface.
-#[allow(clippy::too_many_arguments)]
-async fn beacon_sender_loop(
-    mut socket: Arc<AsyncPacketSocket>,
+struct EthernetBeaconContext {
+    socket: Arc<AsyncPacketSocket>,
     pubkey: XOnlyPublicKey,
     discovery_scope: Option<String>,
     interval_secs: u64,
@@ -516,7 +507,20 @@ async fn beacon_sender_loop(
     transport_id: TransportId,
     interface: String,
     ethertype: u16,
-) {
+}
+
+async fn beacon_sender_loop(ctx: EthernetBeaconContext) {
+    let EthernetBeaconContext {
+        mut socket,
+        pubkey,
+        discovery_scope,
+        interval_secs,
+        stats,
+        transport_id,
+        interface,
+        ethertype,
+    } = ctx;
+
     /// Number of consecutive ENXIO errors before attempting socket reopen.
     const REOPEN_THRESHOLD: u32 = 3;
 

@@ -66,8 +66,6 @@ pub(crate) enum Lane {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OutputTarget {
-    Tun,
-    Endpoint,
     Transport,
     SessionIngress { local_addr: NodeAddr },
     SessionPayload { local_addr: NodeAddr },
@@ -85,34 +83,85 @@ pub(crate) struct FspReceiveSync {
     pub(crate) spin_bit: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DataplaneAuthenticatedFmpMmpReceive {
+    pub(crate) owner: OwnerId,
+    pub(crate) counter: u64,
+    pub(crate) timestamp_ms: u32,
+    pub(crate) packet_len: usize,
+    pub(crate) ce_flag: bool,
+    pub(crate) spin_bit: bool,
+    pub(crate) now: std::time::Instant,
+}
+
+impl DataplaneAuthenticatedFmpMmpReceive {
+    pub(crate) fn new(
+        node_addr: NodeAddr,
+        counter: u64,
+        timestamp_ms: u32,
+        packet_len: usize,
+        ce_flag: bool,
+        spin_bit: bool,
+        now: std::time::Instant,
+    ) -> Self {
+        Self {
+            owner: OwnerId::fmp_node(node_addr),
+            counter,
+            timestamp_ms,
+            packet_len,
+            ce_flag,
+            spin_bit,
+            now,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DataplaneAuthenticatedFspSession {
+    pub(crate) owner: OwnerId,
+    pub(crate) previous_hop: NodeAddr,
+    pub(crate) msg_type: u8,
+    pub(crate) body_len: usize,
+    pub(crate) sync: FspReceiveSync,
+    pub(crate) activity_tick: Option<ActivityTick>,
+    pub(crate) now: std::time::Instant,
+}
+
+impl DataplaneAuthenticatedFspSession {
+    pub(crate) fn new(
+        source_addr: NodeAddr,
+        previous_hop: NodeAddr,
+        msg_type: u8,
+        body_len: usize,
+        sync: FspReceiveSync,
+        activity_tick: Option<ActivityTick>,
+        now: std::time::Instant,
+    ) -> Self {
+        Self {
+            owner: OwnerId::fsp_node(source_addr),
+            previous_hop,
+            msg_type,
+            body_len,
+            sync,
+            activity_tick,
+            now,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum TransportPath {
-    Live {
-        transport_id: TransportId,
-        remote_addr: TransportAddr,
-    },
+pub(crate) struct TransportPath {
+    pub(crate) transport_id: TransportId,
+    pub(crate) remote_addr: TransportAddr,
 }
 
 impl TransportPath {
     pub(crate) fn live(transport_id: TransportId, remote_addr: TransportAddr) -> Self {
-        Self::Live {
+        Self {
             transport_id,
             remote_addr,
         }
     }
-
-    pub(crate) fn transport_id(&self) -> Option<TransportId> {
-        match self {
-            Self::Live { transport_id, .. } => Some(*transport_id),
-        }
-    }
-
-    pub(crate) fn remote_addr(&self) -> Option<&TransportAddr> {
-        match self {
-            Self::Live { remote_addr, .. } => Some(remote_addr),
-        }
-    }
-
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -188,7 +237,7 @@ impl OutboundPacket {
         class: PacketClass,
         receiver_idx: u32,
         flags: u8,
-        payload: impl Into<PacketBuffer>,
+        payload: PacketBuffer,
     ) -> Self {
         Self {
             owner,
@@ -204,7 +253,7 @@ impl OutboundPacket {
             fsp_auto_coords_warmup: true,
             fsp_send_receipt: None,
             activity_tick: None,
-            payload: payload.into(),
+            payload,
         }
     }
 
@@ -213,7 +262,7 @@ impl OutboundPacket {
         generation: u64,
         class: PacketClass,
         flags: u8,
-        payload: impl Into<PacketBuffer>,
+        payload: PacketBuffer,
     ) -> Self {
         Self {
             owner,
@@ -226,7 +275,7 @@ impl OutboundPacket {
             fsp_auto_coords_warmup: true,
             fsp_send_receipt: None,
             activity_tick: None,
-            payload: payload.into(),
+            payload,
         }
     }
 
@@ -359,7 +408,7 @@ impl SocketPacket {
         counter: u64,
         class: PacketClass,
         output: OutputTarget,
-        payload: impl Into<PacketBuffer>,
+        payload: PacketBuffer,
     ) -> Self {
         Self {
             owner,
@@ -373,7 +422,7 @@ impl SocketPacket {
             path_mtu: u16::MAX,
             wire_flags: 0,
             activity_tick: None,
-            payload: payload.into(),
+            payload,
         }
     }
 

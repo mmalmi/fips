@@ -4,7 +4,7 @@ use std::time::Duration;
 use tokio::net::{UdpSocket, lookup_host};
 use tracing::debug;
 
-use super::types::{BootstrapError, TraversalAddress};
+use super::types::{BootstrapError, TraversalAddress, TraversalAddressObservation};
 
 // Current STUN parsing is intentionally minimal and only supports
 // MAPPED-ADDRESS / XOR-MAPPED-ADDRESS for IPv4 and IPv6.
@@ -28,14 +28,7 @@ pub(super) async fn observe_traversal_addresses(
     stun_servers: &[String],
     share_local_candidates: bool,
     per_server_timeout: Duration,
-) -> Result<
-    (
-        Option<TraversalAddress>,
-        Vec<TraversalAddress>,
-        Option<String>,
-    ),
-    BootstrapError,
-> {
+) -> Result<TraversalAddressObservation, BootstrapError> {
     let local_port = socket.local_addr()?.port();
     let local_addresses = if share_local_candidates {
         local_addresses_from_port(local_port)
@@ -57,22 +50,26 @@ pub(super) async fn observe_traversal_addresses(
                 reflexive = ?mapped,
                 "STUN observation succeeded"
             );
-            return Ok((
-                mapped.map(|addr| TraversalAddress {
+            return Ok(TraversalAddressObservation {
+                reflexive_address: mapped.map(|addr| TraversalAddress {
                     protocol: "udp".to_string(),
                     ip: addr.ip().to_string(),
                     port: addr.port(),
                 }),
-                local_addresses.clone(),
-                Some(stun_server),
-            ));
+                local_addresses,
+                stun_server: Some(stun_server),
+            });
         }
         Err(err) => {
             debug!(error = %err, "stun observation failed, falling back to LAN-only addresses");
         }
     }
 
-    Ok((None, local_addresses, None))
+    Ok(TraversalAddressObservation {
+        reflexive_address: None,
+        local_addresses,
+        stun_server: None,
+    })
 }
 
 pub(super) async fn perform_stun_any(

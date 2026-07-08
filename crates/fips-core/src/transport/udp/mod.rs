@@ -2,8 +2,6 @@
 //!
 //! Provides UDP-based transport for FIPS peer communication.
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use super::received_timestamp_ms;
 use super::{
     DiscoveredPeer, PacketTx, ReceivedPacket, Transport, TransportAddr, TransportError,
     TransportId, TransportState, TransportType,
@@ -52,7 +50,7 @@ pub(crate) const UDP_PAYLOAD_MAX_SLICES: usize = 2;
 pub(crate) trait UdpPayloadBatch {
     fn len(&self) -> usize;
     fn payload_len(&self, index: usize) -> usize;
-    #[cfg_attr(any(target_os = "linux", target_os = "macos"), allow(dead_code))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     fn contiguous_payload(&self, index: usize) -> Option<&[u8]>;
     fn payload_slices<'a>(
         &'a self,
@@ -789,7 +787,7 @@ async fn udp_receive_loop(
             match recv_result {
                 Ok((count, kernel_drops)) => {
                     stats.set_kernel_drops(kernel_drops as u64);
-                    let timestamp_ms = received_timestamp_ms();
+                    let timestamp_ms = crate::time::now_ms();
                     let trace_enqueued_at = crate::perf_profile::stamp();
                     let mut packets = packet_tx.packet_batch(count);
                     for i in 0..count {
@@ -943,7 +941,7 @@ async fn udp_receive_loop(
             {
                 Ok((count, kernel_drops)) => {
                     stats.set_kernel_drops(kernel_drops as u64);
-                    let timestamp_ms = received_timestamp_ms();
+                    let timestamp_ms = crate::time::now_ms();
                     let trace_enqueued_at = crate::perf_profile::stamp();
                     let mut packets = packet_tx.packet_batch(count);
                     for i in 0..count {
@@ -1035,7 +1033,12 @@ async fn udp_receive_loop(
 
                     let data = buf[..len].to_vec();
                     let addr = TransportAddr::from_socket_addr(remote_addr);
-                    let packet = ReceivedPacket::new(transport_id, addr, data);
+                    let packet = ReceivedPacket::with_timestamp(
+                        transport_id,
+                        addr,
+                        super::PacketBuffer::new(data),
+                        crate::time::now_ms(),
+                    );
 
                     trace!(
                         transport_id = %transport_id,

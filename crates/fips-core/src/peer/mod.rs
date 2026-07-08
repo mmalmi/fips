@@ -10,7 +10,7 @@
 mod active;
 mod connection;
 
-pub use active::{ActivePeer, ConnectivityState};
+pub use active::{ActivePeer, ActivePeerSession, ConnectivityState};
 pub use connection::{HandshakeState, PeerConnection};
 
 use crate::NodeAddr;

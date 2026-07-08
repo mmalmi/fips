@@ -7,8 +7,8 @@
 //! forwarding code without binding OS sockets.
 
 use super::{
-    DiscoveredPeer, PacketTx, ReceivedPacket, Transport, TransportAddr, TransportError,
-    TransportId, TransportState, TransportType,
+    DiscoveredPeer, PacketBuffer, PacketTx, ReceivedPacket, Transport, TransportAddr,
+    TransportError, TransportId, TransportState, TransportType,
 };
 use crate::config::SimTransportConfig;
 use rand::rngs::StdRng;
@@ -285,10 +285,11 @@ impl SimNetwork {
                 tokio::time::sleep(decision.delay).await;
             }
             let delivered_bytes = decision.data.len() as u64;
-            let packet = ReceivedPacket::new(
+            let packet = ReceivedPacket::with_timestamp(
                 decision.endpoint.transport_id,
                 decision.source,
-                decision.data,
+                PacketBuffer::new(decision.data),
+                crate::time::now_ms(),
             );
             if decision.endpoint.packet_tx.send(packet).is_ok() {
                 let mut inner = network.inner.lock().expect("sim network lock");

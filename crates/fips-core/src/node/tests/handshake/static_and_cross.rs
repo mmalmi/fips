@@ -451,14 +451,14 @@ async fn test_late_static_outbound_resend_completes_after_opposite_direction_pro
         .await
         .expect("A should receive B msg1")
         .expect("A channel open");
-    assert!(Msg1Header::parse(&packet_at_a.data).is_some());
+    assert!(Msg1Header::parse(packet_at_a.data.as_slice()).is_some());
     node_a.handle_msg1(packet_at_a).await;
 
     let msg2_at_b = timeout(Duration::from_secs(1), packet_rx_b.recv())
         .await
         .expect("B should receive msg2 for its outbound")
         .expect("B channel open");
-    assert!(Msg2Header::parse(&msg2_at_b.data).is_some());
+    assert!(Msg2Header::parse(msg2_at_b.data.as_slice()).is_some());
     node_b.handle_msg2(msg2_at_b).await;
 
     assert_eq!(node_a.peer_count(), 1);
@@ -474,7 +474,7 @@ async fn test_late_static_outbound_resend_completes_after_opposite_direction_pro
     let resent_msg1_at_b = timeout(Duration::from_secs(1), async {
         loop {
             let packet = packet_rx_b.recv().await.expect("B channel open");
-            if Msg1Header::parse(&packet.data).is_some() {
+            if Msg1Header::parse(packet.data.as_slice()).is_some() {
                 break packet;
             }
         }
@@ -486,7 +486,7 @@ async fn test_late_static_outbound_resend_completes_after_opposite_direction_pro
     let late_msg2_at_a = timeout(Duration::from_secs(1), async {
         loop {
             let packet = packet_rx_a.recv().await.expect("A channel open");
-            if Msg2Header::parse(&packet.data).is_some() {
+            if Msg2Header::parse(packet.data.as_slice()).is_some() {
                 break packet;
             }
         }

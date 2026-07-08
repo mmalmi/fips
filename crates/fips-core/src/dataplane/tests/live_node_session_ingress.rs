@@ -1,14 +1,25 @@
-    fn assert_fmp_receipt(
-        receipt: &DataplaneFmpIngressReceipt,
+    struct ExpectedFmpReceipt<'a> {
         source_addr: NodeAddr,
         transport_id: TransportId,
-        remote_addr: &TransportAddr,
+        remote_addr: &'a TransportAddr,
         packet_timestamp_ms: u64,
         packet_len: usize,
         fmp_counter: u64,
         inner_timestamp_ms: u32,
         fmp_flags: u8,
-    ) {
+    }
+
+    fn assert_fmp_receipt(receipt: &DataplaneFmpIngressReceipt, expected: ExpectedFmpReceipt<'_>) {
+        let ExpectedFmpReceipt {
+            source_addr,
+            transport_id,
+            remote_addr,
+            packet_timestamp_ms,
+            packet_len,
+            fmp_counter,
+            inner_timestamp_ms,
+            fmp_flags,
+        } = expected;
         assert_eq!(receipt.source_addr(), &source_addr);
         assert_eq!(receipt.transport_id(), transport_id);
         assert_eq!(receipt.remote_addr(), remote_addr);
@@ -76,13 +87,17 @@
         wire: Vec<u8>,
         timestamp_ms: u64,
     ) -> DataplaneLiveNodeTurn {
-        let mut raw_source =
-            DataplaneLiveRawIngressSource::new(VecDeque::from([DataplaneLiveIngressPacket::fmp(
-                ReceivedPacket::with_timestamp(transport_id, remote_addr, wire, timestamp_ms),
-            )]));
+        let mut raw_source = VecDeque::from([
+            DataplaneRawIngress::from_live_received(PacketProtocol::Fmp, ReceivedPacket::with_timestamp(
+                transport_id,
+                remote_addr,
+                crate::transport::PacketBuffer::new(wire),
+                timestamp_ms,
+            )),
+        ]);
         let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
         let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
-        let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
+        let (_tun_tx, tun_rx) = crate::upper::tun::write_channel();
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
         let mut deferred_endpoint_data_batches = Vec::new();
@@ -91,27 +106,28 @@
 
         let turn = pump_aead_live_node_route_table_turn(
             driver,
-            &mut raw_source,
-            routes,
-            8,
-            &mut endpoint_data_rx,
-            0,
-            &mut tun_outbound_rx,
-            0,
-            &mut deferred_endpoint_data_batches,
-            &mut deferred_tun_packets,
-            &tun_tx,
-            &endpoint_io.event_tx,
-            &transports,
-            8,
+            AeadLiveRouteTableTurn {
+                raw_ingress: &mut raw_source,
+                routes,
+                raw_ingress_limit: 8,
+                endpoint_data_rx: &mut endpoint_data_rx,
+                endpoint_limit: 0,
+                tun_outbound_rx: &mut tun_outbound_rx,
+                tun_limit: 0,
+                deferred_endpoint_data_batches: &mut deferred_endpoint_data_batches,
+                deferred_tun_packets: &mut deferred_tun_packets,
+                endpoint_tx: &endpoint_io.event_tx,
+                transports: &transports,
+                crypto_limit: 8,
+            },
         )
         .await;
 
-        assert!(raw_source.source.is_empty());
+        assert!(raw_source.is_empty());
         assert!(deferred_endpoint_data_batches.is_empty());
         assert!(deferred_tun_packets.is_empty());
         assert!(tun_outbound_rx.try_recv().is_err());
-        assert!(tun_rx.try_recv().is_err());
+        assert!(tun_rx.try_recv_packet().is_err());
         assert!(endpoint_io.event_rx.try_recv().is_err());
         turn
     }
@@ -191,18 +207,22 @@
         assert_eq!(turn.summary().raw_ingress_dropped(), 0);
         assert_eq!(turn.summary().inbound_admitted(), 2);
         assert_eq!(turn.summary().outputs_dropped(), 0);
-        assert_eq!(turn.fmp_ingress_receipts().len(), 1);
+        let mut receipt_turn = turn.clone();
+        let fmp_ingress_receipts = receipt_turn.take_fmp_ingress_receipts();
+        assert_eq!(fmp_ingress_receipts.len(), 1);
         assert!(turn.fmp_link_ingress().is_empty());
         assert_fmp_receipt(
-            &turn.fmp_ingress_receipts()[0],
-            next_hop,
-            transport_id,
-            &remote_addr,
-            fmp_timestamp,
-            fmp_wire_len,
-            fmp_counter,
-            fmp_inner_timestamp,
-            fmp_flags,
+            &fmp_ingress_receipts[0],
+            ExpectedFmpReceipt {
+                source_addr: next_hop,
+                transport_id,
+                remote_addr: &remote_addr,
+                packet_timestamp_ms: fmp_timestamp,
+                packet_len: fmp_wire_len,
+                fmp_counter,
+                inner_timestamp_ms: fmp_inner_timestamp,
+                fmp_flags,
+            },
         );
         assert!(driver
             .owner_fsp_activity(fsp_owner)
@@ -210,21 +230,33 @@
             .current_epoch_confirmed());
         assert_eq!(turn.fsp_session_ingress_count(), 1);
         let session_ingress = turn
-            .fsp_session_ingress()
-            .next()
+            .fsp_authenticated_ingress
+            .sessions
+            .first()
             .expect("session ingress");
-        assert_eq!(session_ingress.source_addr(), source_addr);
-        assert_eq!(session_ingress.previous_hop_addr(), next_hop);
-        assert!(session_ingress.ce_flag());
-        assert_eq!(session_ingress.timestamp_ms(), fsp_inner_timestamp);
+        let (
+            session_source_addr,
+            _session_source_peer,
+            session_previous_hop,
+            session_ce_flag,
+            _session_activity_tick,
+            session_timestamp_ms,
+            session_msg_type,
+            session_inner_flags,
+            session_plaintext,
+        ) = session_ingress.clone().into_parts();
+        assert_eq!(session_source_addr, source_addr);
+        assert_eq!(session_previous_hop, next_hop);
+        assert!(session_ce_flag);
+        assert_eq!(session_timestamp_ms, fsp_inner_timestamp);
         assert_eq!(
-            session_ingress.msg_type(),
+            session_msg_type,
             crate::protocol::SessionMessageType::EndpointData.to_byte()
         );
-        assert_eq!(session_ingress.inner_flags(), fsp_inner_flags);
-        assert_eq!(session_ingress.plaintext(), fsp_inner.as_slice());
+        assert_eq!(session_inner_flags, fsp_inner_flags);
+        assert_eq!(session_plaintext.as_slice(), fsp_inner.as_slice());
         assert_eq!(
-            &session_ingress.plaintext()[crate::node::session_wire::FSP_INNER_HEADER_SIZE..],
+            &session_plaintext.as_slice()[crate::node::session_wire::FSP_INNER_HEADER_SIZE..],
             endpoint_payload
         );
     }
@@ -309,14 +341,6 @@
         assert_eq!(turn.summary().raw_ingress_dropped(), 0);
         assert_eq!(turn.summary().inbound_admitted(), 2);
         assert_eq!(turn.fsp_coord_warmups().len(), 1);
-        assert_eq!(
-            turn.fsp_coord_warmups()[0].source(),
-            Some((source_addr, &source_coords))
-        );
-        assert_eq!(
-            turn.fsp_coord_warmups()[0].local(),
-            Some((local_addr, &local_coords))
-        );
         let mut coord_cache = crate::cache::CoordCache::new(8, 1_000);
         turn.fsp_coord_warmups()[0]
             .clone()
@@ -392,20 +416,24 @@
         assert_eq!(turn.summary().raw_ingress_dropped(), 0);
         assert_eq!(turn.summary().inbound_admitted(), 1);
         assert_eq!(turn.summary().outputs_dropped(), 0);
-        assert_eq!(turn.fmp_ingress_receipts().len(), 1);
+        let mut receipt_turn = turn.clone();
+        let fmp_ingress_receipts = receipt_turn.take_fmp_ingress_receipts();
+        assert_eq!(fmp_ingress_receipts.len(), 1);
         assert!(turn.fmp_link_ingress().is_empty());
         assert_eq!(turn.fsp_session_ingress_count(), 0);
         assert_eq!(turn.fsp_local_session_ingress().len(), 1);
         assert_fmp_receipt(
-            &turn.fmp_ingress_receipts()[0],
-            next_hop,
-            transport_id,
-            &remote_addr,
-            fmp_timestamp,
-            fmp_wire_len,
-            fmp_counter,
-            fmp_inner_timestamp,
-            fmp_flags,
+            &fmp_ingress_receipts[0],
+            ExpectedFmpReceipt {
+                source_addr: next_hop,
+                transport_id,
+                remote_addr: &remote_addr,
+                packet_timestamp_ms: fmp_timestamp,
+                packet_len: fmp_wire_len,
+                fmp_counter,
+                inner_timestamp_ms: fmp_inner_timestamp,
+                fmp_flags,
+            },
         );
         let (local_source, local_previous_hop, local_ce, local_path_mtu, local_payload) = turn
             .fsp_local_session_ingress()[0]
@@ -415,7 +443,7 @@
         assert_eq!(local_previous_hop, next_hop);
         assert!(local_ce);
         assert_eq!(local_path_mtu, path_mtu);
-        assert_eq!(local_payload.as_ref(), fsp_handshake.as_slice());
+        assert_eq!(local_payload.as_slice(), fsp_handshake.as_slice());
         assert!(turn.raw_ingress_drops().is_empty());
         assert!(turn.output_drops().is_empty());
     }
@@ -463,7 +491,8 @@
         assert_eq!(turn.summary().inbound_admitted(), 1);
         assert_eq!(turn.summary().outputs(), 0);
         assert_eq!(turn.summary().outputs_dropped(), 0);
-        assert!(turn.fmp_ingress_receipts().is_empty());
+        let mut receipt_turn = turn.clone();
+        assert!(receipt_turn.take_fmp_ingress_receipts().is_empty());
         assert_eq!(turn.fmp_link_ingress().len(), 1);
         let ingress = &turn.fmp_link_ingress()[0];
         assert_eq!(
@@ -473,14 +502,16 @@
         assert_eq!(ingress.payload(), &[] as &[u8]);
         assert_fmp_receipt(
             ingress.receipt(),
-            next_hop,
-            transport_id,
-            &remote_addr,
-            fmp_timestamp,
-            fmp_wire_len,
-            fmp_counter,
-            fmp_inner_timestamp,
-            fmp_flags,
+            ExpectedFmpReceipt {
+                source_addr: next_hop,
+                transport_id,
+                remote_addr: &remote_addr,
+                packet_timestamp_ms: fmp_timestamp,
+                packet_len: fmp_wire_len,
+                fmp_counter,
+                inner_timestamp_ms: fmp_inner_timestamp,
+                fmp_flags,
+            },
         );
         assert!(turn.output_drops().is_empty());
     }

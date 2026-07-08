@@ -19,7 +19,7 @@ pub(crate) struct DataplaneTurnDriver {
     fmp_link_ingress: Vec<DataplaneFmpLinkIngress>,
     fsp_coord_warmups: Vec<DataplaneFspCoordWarmup>,
     fsp_local_session_ingress: Vec<DataplaneFspLocalSessionIngress>,
-    fsp_authenticated_ingress: Vec<DataplaneFspAuthenticatedIngress>,
+    fsp_authenticated_ingress: DataplaneFspAuthenticatedIngress,
 }
 
 struct DataplaneLiveAdmissionResult {
@@ -36,6 +36,67 @@ impl DataplaneLiveAdmissionResult {
             || self.tun_drained > 0
             || self.outbound_buffers.has_activity()
     }
+}
+
+struct DataplaneLiveAdmissionRequest<'a, RI> {
+    summary: DataplaneRuntimeSummary,
+    fast_ingress: Option<DataplaneFastIngressBatch>,
+    raw_ingress: &'a mut RI,
+    routes: &'a mut DataplaneLiveRouteTable,
+    raw_ingress_limit: usize,
+    endpoint_data_rx: &'a mut EndpointDataBatchRx,
+    endpoint_limit: usize,
+    tun_outbound_rx: &'a mut TunOutboundRx,
+    tun_limit: usize,
+    outbound_firsts: DataplaneLiveOutboundFirsts,
+    deferred_raw_ingress: &'a mut std::collections::VecDeque<(DataplaneRawIngress, u8)>,
+}
+
+struct DataplaneLiveOutputRequest<'a, E> {
+    summary: DataplaneRuntimeSummary,
+    routes: &'a mut DataplaneLiveRouteTable,
+    endpoint_tx: &'a EndpointEventSender,
+    transports: &'a HashMap<TransportId, TransportHandle>,
+    deferred_raw_ingress: &'a mut std::collections::VecDeque<(DataplaneRawIngress, u8)>,
+    crypto_limit: usize,
+    collect_transport_sent_receipts: bool,
+    executor: &'a mut E,
+    transport_send_batch_packets: usize,
+}
+
+struct DataplaneLiveFinishRequest<'a, E> {
+    admission: DataplaneLiveAdmissionResult,
+    routes: &'a mut DataplaneLiveRouteTable,
+    endpoint_tx: &'a EndpointEventSender,
+    transports: &'a HashMap<TransportId, TransportHandle>,
+    crypto_limit: usize,
+    collect_transport_sent_receipts: bool,
+    executor: &'a mut E,
+    transport_send_batch_packets: usize,
+    deferred_raw_ingress: &'a mut std::collections::VecDeque<(DataplaneRawIngress, u8)>,
+    deferred_endpoint_data_batches: &'a mut Vec<NodeEndpointDataBatch>,
+    deferred_tun_packets: &'a mut Vec<Vec<u8>>,
+}
+
+struct DataplaneLivePumpRequest<'a, E, RI> {
+    summary: DataplaneRuntimeSummary,
+    executor: &'a mut E,
+    fast_ingress: Option<DataplaneFastIngressBatch>,
+    raw_ingress: &'a mut RI,
+    routes: &'a mut DataplaneLiveRouteTable,
+    raw_ingress_limit: usize,
+    endpoint_data_rx: &'a mut EndpointDataBatchRx,
+    endpoint_limit: usize,
+    tun_outbound_rx: &'a mut TunOutboundRx,
+    tun_limit: usize,
+    outbound_firsts: DataplaneLiveOutboundFirsts,
+    deferred_endpoint_data_batches: &'a mut Vec<NodeEndpointDataBatch>,
+    deferred_tun_packets: &'a mut Vec<Vec<u8>>,
+    deferred_raw_ingress: &'a mut std::collections::VecDeque<(DataplaneRawIngress, u8)>,
+    endpoint_tx: &'a EndpointEventSender,
+    transports: &'a HashMap<TransportId, TransportHandle>,
+    crypto_limit: usize,
+    transport_send_batch_packets: usize,
 }
 
 impl DataplaneTurnDriver {
@@ -58,7 +119,7 @@ impl DataplaneTurnDriver {
             fmp_link_ingress: Vec::new(),
             fsp_coord_warmups: Vec::new(),
             fsp_local_session_ingress: Vec::new(),
-            fsp_authenticated_ingress: Vec::new(),
+            fsp_authenticated_ingress: DataplaneFspAuthenticatedIngress::default(),
         }
     }
 
@@ -239,23 +300,9 @@ impl DataplaneTurnDriver {
 
     pub(crate) fn record_authenticated_fsp_session(
         &mut self,
-        owner: OwnerId,
-        previous_hop: NodeAddr,
-        msg_type: u8,
-        body_len: usize,
-        sync: FspReceiveSync,
-        activity_tick: Option<ActivityTick>,
-        now: std::time::Instant,
+        session: DataplaneAuthenticatedFspSession,
     ) -> Option<bool> {
-        self.mover.record_authenticated_fsp_session(
-            owner,
-            previous_hop,
-            msg_type,
-            body_len,
-            sync,
-            activity_tick,
-            now,
-        )
+        self.mover.record_authenticated_fsp_session(session)
     }
 
     fn record_fsp_session_ingress_activity(
@@ -266,15 +313,15 @@ impl DataplaneTurnDriver {
             .receive_sync
             .plaintext_len
             .saturating_sub(FSP_INNER_HEADER_SIZE);
-        self.record_authenticated_fsp_session(
-            OwnerId::fsp_node(ingress.source_addr),
+        self.record_authenticated_fsp_session(DataplaneAuthenticatedFspSession::new(
+            ingress.source_addr,
             ingress.previous_hop_addr,
             ingress.msg_type,
             body_len,
             ingress.receive_sync,
             ingress.activity_tick,
             std::time::Instant::now(),
-        )
+        ))
         .unwrap_or(false)
     }
 
@@ -282,32 +329,24 @@ impl DataplaneTurnDriver {
         self.mover.record_fsp_decrypt_failure(owner)
     }
 
-    pub(crate) fn record_fsp_data_sent(
+    async fn finish_aead_live_node_output_turn_with_executor<E>(
         &mut self,
-        owner: OwnerId,
-        next_hop: NodeAddr,
-        bytes: usize,
-        tick: ActivityTick,
-    ) -> bool {
-        self.mover.record_fsp_data_sent(owner, next_hop, bytes, tick)
-    }
-
-    async fn finish_aead_live_node_output_turn_with_executor<Transports, E>(
-        &mut self,
-        summary: DataplaneRuntimeSummary,
-        routes: &mut DataplaneLiveRouteTable,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        transports: &Transports,
-        crypto_limit: usize,
-        collect_transport_sent_receipts: bool,
-        executor: &mut E,
-        transport_send_worker: &mut DataplaneTransportSendWorkerPool,
+        request: DataplaneLiveOutputRequest<'_, E>,
     ) -> DataplaneLiveNodeTurn
     where
-        Transports: DataplaneTransportResolver + ?Sized,
         E: DataplaneCryptoExecutor,
     {
+        let DataplaneLiveOutputRequest {
+            summary,
+            routes,
+            endpoint_tx,
+            transports,
+            deferred_raw_ingress,
+            crypto_limit,
+            collect_transport_sent_receipts,
+            executor,
+            transport_send_batch_packets,
+        } = request;
         let compact_endpoint_data = endpoint_tx.direct_sink().is_some();
         let summary = self.collect_live_session_outputs_with_executor(
             summary,
@@ -315,14 +354,12 @@ impl DataplaneTurnDriver {
             crypto_limit,
             executor,
             compact_endpoint_data,
+            deferred_raw_ingress,
         );
         let mut transport_output = std::mem::take(&mut self.transport_output);
         transport_output.clear();
         let mut report = {
-            let tun_output = DataplaneTunTxOutput::new(tun_tx);
-            let endpoint_output = DataplaneEndpointEventOutput::new(endpoint_tx);
-            let mut sink =
-                DataplaneLiveOutputSink::new(tun_output, endpoint_output, &mut transport_output);
+            let mut sink = DataplaneLiveOutputSink::new(&mut transport_output);
             let turn = self.send_collected_outputs(summary, &mut sink);
             DataplaneLiveNodeTurn::from_runtime_turn(&turn)
         };
@@ -343,11 +380,11 @@ impl DataplaneTurnDriver {
                 crate::perf_profile::Stage::DataplaneTransportSend,
             );
             let groups = transport_output.take_groups_preserving_capacity();
-            send_dataplane_transport_groups_with_worker(
+            send_dataplane_transport_groups(
                 transports,
                 groups,
                 &mut report.output_drops,
-                transport_send_worker,
+                transport_send_batch_packets,
                 transport_sent_receipts.take(),
             )
             .await
@@ -418,59 +455,55 @@ impl DataplaneTurnDriver {
         limit.saturating_mul(DATAPLANE_AEAD_WORKER_JOB_PACKETS)
     }
 
-    async fn pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts<
-        E,
-        RI,
-        Transports,
-    >(
+    async fn pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts<E, RI>(
         &mut self,
-        summary: DataplaneRuntimeSummary,
-        executor: &mut E,
-        fast_ingress: Option<DataplaneFastIngressBatch>,
-        raw_ingress: &mut RI,
-        routes: &mut DataplaneLiveRouteTable,
-        raw_ingress_limit: usize,
-        endpoint_data_rx: &mut EndpointDataBatchRx,
-        endpoint_limit: usize,
-        tun_outbound_rx: &mut TunOutboundRx,
-        tun_limit: usize,
-        outbound_firsts: DataplaneLiveOutboundFirsts,
-        deferred_endpoint_data_batches: &mut Vec<NodeEndpointDataBatch>,
-        deferred_tun_packets: &mut Vec<Vec<u8>>,
-        deferred_raw_ingress: &mut std::collections::VecDeque<(DataplaneRawIngress, u8)>,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        transports: &Transports,
-        crypto_limit: usize,
-        transport_send_worker: &mut DataplaneTransportSendWorkerPool,
+        request: DataplaneLivePumpRequest<'_, E, RI>,
     ) -> DataplaneLiveNodeTurn
     where
         E: DataplaneCryptoExecutor,
         RI: DataplaneRawIngressSource,
-        Transports: DataplaneTransportResolver + ?Sized,
     {
+        let DataplaneLivePumpRequest {
+            summary,
+            executor,
+            fast_ingress,
+            raw_ingress,
+            routes,
+            raw_ingress_limit,
+            endpoint_data_rx,
+            endpoint_limit,
+            tun_outbound_rx,
+            tun_limit,
+            outbound_firsts,
+            deferred_endpoint_data_batches,
+            deferred_tun_packets,
+            deferred_raw_ingress,
+            endpoint_tx,
+            transports,
+            crypto_limit,
+            transport_send_batch_packets,
+        } = request;
         let collect_transport_sent_receipts = outbound_firsts.collect_transport_sent_receipts;
         let mut completion_report = None;
         let mut admission_summary = summary;
+        let mut completion_deferred_raw_ingress = std::collections::VecDeque::new();
         // Ready completions are already owner-ordered work. Let their local
         // continuations consume this turn's bounded crypto budget before
         // admitting fresh raw/outbound packets.
         let mut remaining_crypto_limit = crypto_limit;
-        let completion_can_join_admission =
-            self.completion_activity_is_compact_endpoint_data_only(admission_summary);
-        if admission_summary.has_activity() && !completion_can_join_admission {
+        if admission_summary.has_activity() {
             let report = self
-                .finish_aead_live_node_output_turn_with_executor(
-                    admission_summary,
+                .finish_aead_live_node_output_turn_with_executor(DataplaneLiveOutputRequest {
+                    summary: admission_summary,
                     routes,
-                    tun_tx,
                     endpoint_tx,
                     transports,
-                    remaining_crypto_limit,
+                    deferred_raw_ingress: &mut completion_deferred_raw_ingress,
+                    crypto_limit: remaining_crypto_limit,
                     collect_transport_sent_receipts,
-                    executor,
-                    transport_send_worker,
-                )
+                    executor: &mut *executor,
+                    transport_send_batch_packets,
+                })
                 .await;
             remaining_crypto_limit =
                 remaining_crypto_limit.saturating_sub(report.summary().dispatched());
@@ -479,7 +512,73 @@ impl DataplaneTurnDriver {
             admission_summary = DataplaneRuntimeSummary::default();
         }
         let admission = self.admit_live_node_route_table_turn_with_firsts(
-            admission_summary,
+            DataplaneLiveAdmissionRequest {
+                summary: admission_summary,
+                fast_ingress,
+                raw_ingress,
+                routes,
+                raw_ingress_limit,
+                endpoint_data_rx,
+                endpoint_limit,
+                tun_outbound_rx,
+                tun_limit,
+                outbound_firsts,
+                deferred_raw_ingress,
+            },
+        );
+        deferred_raw_ingress.append(&mut completion_deferred_raw_ingress);
+        if let Some(mut completion_report) = completion_report {
+            if !admission.has_activity() {
+                return completion_report;
+            }
+            let report = self
+                .finish_live_node_turn_after_admission(
+                    DataplaneLiveFinishRequest {
+                        admission,
+                        routes,
+                        endpoint_tx,
+                        transports,
+                        crypto_limit: remaining_crypto_limit,
+                        collect_transport_sent_receipts,
+                        executor,
+                        transport_send_batch_packets,
+                        deferred_raw_ingress,
+                        deferred_endpoint_data_batches,
+                        deferred_tun_packets,
+                    },
+                )
+                .await;
+            completion_report.absorb(report);
+            completion_report
+        } else {
+            self.finish_live_node_turn_after_admission(
+                DataplaneLiveFinishRequest {
+                    admission,
+                    routes,
+                    endpoint_tx,
+                    transports,
+                    crypto_limit: remaining_crypto_limit,
+                    collect_transport_sent_receipts,
+                    executor,
+                    transport_send_batch_packets,
+                    deferred_raw_ingress,
+                    deferred_endpoint_data_batches,
+                    deferred_tun_packets,
+                },
+            )
+            .await
+        }
+    }
+
+    fn admit_live_node_route_table_turn_with_firsts<RI>(
+        &mut self,
+        request: DataplaneLiveAdmissionRequest<'_, RI>,
+    ) -> DataplaneLiveAdmissionResult
+    where
+        RI: DataplaneRawIngressSource,
+    {
+        let DataplaneLiveAdmissionRequest {
+            mut summary,
             fast_ingress,
             raw_ingress,
             routes,
@@ -490,108 +589,7 @@ impl DataplaneTurnDriver {
             tun_limit,
             outbound_firsts,
             deferred_raw_ingress,
-        );
-        if let Some(mut completion_report) = completion_report {
-            if !admission.has_activity() {
-                return completion_report;
-            }
-            let report = self
-                .finish_live_node_turn_after_admission(
-                    admission.summary,
-                    admission.outbound_buffers,
-                    admission.endpoint_drained,
-                    admission.tun_drained,
-                    routes,
-                    tun_tx,
-                    endpoint_tx,
-                    transports,
-                    remaining_crypto_limit,
-                    collect_transport_sent_receipts,
-                    executor,
-                    transport_send_worker,
-                    deferred_endpoint_data_batches,
-                    deferred_tun_packets,
-                )
-                .await;
-            completion_report.absorb(report);
-            completion_report
-        } else {
-            self.finish_live_node_turn_after_admission(
-                admission.summary,
-                admission.outbound_buffers,
-                admission.endpoint_drained,
-                admission.tun_drained,
-                routes,
-                tun_tx,
-                endpoint_tx,
-                transports,
-                remaining_crypto_limit,
-                collect_transport_sent_receipts,
-                executor,
-                transport_send_worker,
-                deferred_endpoint_data_batches,
-                deferred_tun_packets,
-            )
-            .await
-        }
-    }
-
-    fn completion_activity_is_compact_endpoint_data_only(
-        &self,
-        summary: DataplaneRuntimeSummary,
-    ) -> bool {
-        summary.completions > 0
-            && summary.raw_ingress_dropped == 0
-            && summary.inbound_admitted == 0
-            && summary.inbound_dropped == 0
-            && summary.outbound_admitted == 0
-            && summary.outbound_dropped == 0
-            && summary.dispatched == 0
-            && summary.outputs == 0
-            && summary.outputs_sent == 0
-            && summary.outputs_dropped == 0
-            && summary.drops == 0
-            && self
-                .fsp_authenticated_ingress
-                .iter()
-                .any(|item| {
-                    matches!(
-                        item,
-                        DataplaneFspAuthenticatedIngress::EndpointDataBatch(_)
-                    )
-                })
-            && self.outputs.is_empty()
-            && self.raw_ingress_drops.is_empty()
-            && self.output_drops.is_empty()
-            && self.drops.is_empty()
-            && self.fmp_ingress_receipts.is_empty()
-            && self.fmp_link_ingress.is_empty()
-            && self.fsp_coord_warmups.is_empty()
-            && self.fsp_local_session_ingress.is_empty()
-            && !self
-                .fsp_authenticated_ingress
-                .iter()
-                .any(|item| matches!(item, DataplaneFspAuthenticatedIngress::Session(_)))
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn admit_live_node_route_table_turn_with_firsts<RI>(
-        &mut self,
-        mut summary: DataplaneRuntimeSummary,
-        fast_ingress: Option<DataplaneFastIngressBatch>,
-        raw_ingress: &mut RI,
-        routes: &mut DataplaneLiveRouteTable,
-        raw_ingress_limit: usize,
-        endpoint_data_rx: &mut EndpointDataBatchRx,
-        endpoint_limit: usize,
-        tun_outbound_rx: &mut TunOutboundRx,
-        tun_limit: usize,
-        outbound_firsts: DataplaneLiveOutboundFirsts,
-        deferred_raw_ingress: &mut std::collections::VecDeque<(DataplaneRawIngress, u8)>,
-    ) -> DataplaneLiveAdmissionResult
-    where
-        RI: DataplaneRawIngressSource,
-    {
+        } = request;
         let admit_timer =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::DataplaneLiveAdmit);
         let trace_enabled = crate::perf_profile::enabled();
@@ -607,8 +605,7 @@ impl DataplaneTurnDriver {
         let mut endpoint_drained = 0usize;
         let mut tun_drained = 0usize;
         let mut outbound_drained = 0usize;
-        let mut endpoint_admitted = 0usize;
-        let mut tun_admitted = 0usize;
+        let mut outbound_admitted = DataplaneOutboundAdmissionCounts::default();
 
         if reserved_outbound_limit > 0 {
             let mut outbound_source = DataplaneRouteTableOutboundSource::new(
@@ -620,24 +617,15 @@ impl DataplaneTurnDriver {
                 &mut outbound_buffers,
             )
             .with_firsts(outbound_firsts);
-            let (drained_total, endpoint, tun) =
-                outbound_source.drain_outbound_batched(reserved_outbound_limit, |source, routed| {
-                    if trace_enabled {
-                        let admitted_before = summary.outbound_admitted;
-                        self.admit_routed_outbound(routed, &mut summary);
-                        let admitted = summary.outbound_admitted.saturating_sub(admitted_before);
-                        match source {
-                            DataplaneOutboundSource::Endpoint => {
-                                endpoint_admitted = endpoint_admitted.saturating_add(admitted);
-                            }
-                            DataplaneOutboundSource::Tun => {
-                                tun_admitted = tun_admitted.saturating_add(admitted);
-                            }
-                        }
-                    } else {
-                        self.admit_routed_outbound(routed, &mut summary);
-                    }
-                });
+            let (drained_total, endpoint, tun) = {
+                let mut admission = DataplaneOutboundAdmission {
+                    driver: self,
+                    summary: &mut summary,
+                    trace_enabled,
+                    counts: &mut outbound_admitted,
+                };
+                outbound_source.drain_outbound_batched(reserved_outbound_limit, &mut admission)
+            };
             outbound_drained = drained_total;
             endpoint_drained = endpoint_drained.saturating_add(endpoint);
             tun_drained = tun_drained.saturating_add(tun);
@@ -713,35 +701,26 @@ impl DataplaneTurnDriver {
                 &mut outbound_buffers,
             )
             .with_firsts(outbound_firsts);
-            let (_, endpoint, tun) =
-                outbound_source.drain_outbound_batched(remaining_outbound_limit, |source, routed| {
-                    if trace_enabled {
-                        let admitted_before = summary.outbound_admitted;
-                        self.admit_routed_outbound(routed, &mut summary);
-                        let admitted = summary.outbound_admitted.saturating_sub(admitted_before);
-                        match source {
-                            DataplaneOutboundSource::Endpoint => {
-                                endpoint_admitted = endpoint_admitted.saturating_add(admitted);
-                            }
-                            DataplaneOutboundSource::Tun => {
-                                tun_admitted = tun_admitted.saturating_add(admitted);
-                            }
-                        }
-                    } else {
-                        self.admit_routed_outbound(routed, &mut summary);
-                    }
-                });
+            let (_, endpoint, tun) = {
+                let mut admission = DataplaneOutboundAdmission {
+                    driver: self,
+                    summary: &mut summary,
+                    trace_enabled,
+                    counts: &mut outbound_admitted,
+                };
+                outbound_source.drain_outbound_batched(remaining_outbound_limit, &mut admission)
+            };
             endpoint_drained = endpoint_drained.saturating_add(endpoint);
             tun_drained = tun_drained.saturating_add(tun);
         }
         if trace_enabled {
             crate::perf_profile::record_event_count(
                 crate::perf_profile::Event::DataplaneLiveEndpointAdmitted,
-                endpoint_admitted as u64,
+                outbound_admitted.endpoint as u64,
             );
             crate::perf_profile::record_event_count(
                 crate::perf_profile::Event::DataplaneLiveTunAdmitted,
-                tun_admitted as u64,
+                outbound_admitted.tun as u64,
             );
         }
         drop(admit_timer);
@@ -754,40 +733,44 @@ impl DataplaneTurnDriver {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn finish_live_node_turn_after_admission<E, Transports>(
+    async fn finish_live_node_turn_after_admission<E>(
         &mut self,
-        summary: DataplaneRuntimeSummary,
-        mut outbound_buffers: DataplaneRouteTableOutboundBuffers,
-        endpoint_drained: usize,
-        tun_drained: usize,
-        routes: &mut DataplaneLiveRouteTable,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        transports: &Transports,
-        crypto_limit: usize,
-        collect_transport_sent_receipts: bool,
-        executor: &mut E,
-        transport_send_worker: &mut DataplaneTransportSendWorkerPool,
-        deferred_endpoint_data_batches: &mut Vec<NodeEndpointDataBatch>,
-        deferred_tun_packets: &mut Vec<Vec<u8>>,
+        request: DataplaneLiveFinishRequest<'_, E>,
     ) -> DataplaneLiveNodeTurn
     where
         E: DataplaneCryptoExecutor,
-        Transports: DataplaneTransportResolver + ?Sized,
     {
+        let DataplaneLiveFinishRequest {
+            admission,
+            routes,
+            endpoint_tx,
+            transports,
+            crypto_limit,
+            collect_transport_sent_receipts,
+            executor,
+            transport_send_batch_packets,
+            deferred_raw_ingress,
+            deferred_endpoint_data_batches,
+            deferred_tun_packets,
+        } = request;
+        let DataplaneLiveAdmissionResult {
+            summary,
+            mut outbound_buffers,
+            endpoint_drained,
+            tun_drained,
+        } = admission;
         let mut report = self
-            .finish_aead_live_node_output_turn_with_executor(
+            .finish_aead_live_node_output_turn_with_executor(DataplaneLiveOutputRequest {
                 summary,
                 routes,
-                tun_tx,
                 endpoint_tx,
                 transports,
+                deferred_raw_ingress,
                 crypto_limit,
                 collect_transport_sent_receipts,
                 executor,
-                transport_send_worker,
-            )
+                transport_send_batch_packets,
+            })
             .await;
         let endpoint_deferred_count = outbound_buffers.deferred_endpoint_data_batches.len();
         deferred_endpoint_data_batches.append(&mut outbound_buffers.deferred_endpoint_data_batches);
@@ -831,7 +814,7 @@ impl DataplaneTurnDriver {
         R: DataplaneIngressRouter,
     {
         let header = match packet.protocol {
-            PacketProtocol::Fmp => match FmpWireHeader::parse(&packet.payload) {
+            PacketProtocol::Fmp => match FmpWireHeader::parse(packet.payload.as_slice()) {
                 Ok(header) => DataplaneIngressHeader::Fmp(header),
                 Err(error) => {
                     summary.raw_ingress_dropped += 1;
@@ -842,7 +825,7 @@ impl DataplaneTurnDriver {
                     return None;
                 }
             },
-            PacketProtocol::Fsp => match FspWireHeader::parse(&packet.payload) {
+            PacketProtocol::Fsp => match FspWireHeader::parse(packet.payload.as_slice()) {
                 Ok(header) => DataplaneIngressHeader::Fsp(header),
                 Err(error) => {
                     summary.raw_ingress_dropped += 1;
@@ -996,19 +979,6 @@ impl DataplaneTurnDriver {
         }
     }
 
-    fn admit_routed_outbound(
-        &mut self,
-        routed: DataplaneRoutedOutbound,
-        summary: &mut DataplaneRuntimeSummary,
-    ) {
-        match routed {
-            DataplaneRoutedOutbound::Packet(packet) => self.admit_outbound_packet(packet, summary),
-            DataplaneRoutedOutbound::Batch(packets) => {
-                self.admit_outbound_packet_batch(packets, summary)
-            }
-        }
-    }
-
     fn send_collected_outputs<S>(
         &mut self,
         mut summary: DataplaneRuntimeSummary,
@@ -1043,6 +1013,7 @@ impl DataplaneTurnDriver {
         &mut self,
         router: &mut R,
         summary: &mut DataplaneRuntimeSummary,
+        deferred_raw_ingress: &mut std::collections::VecDeque<(DataplaneRawIngress, u8)>,
     ) -> usize
     where
         R: DataplaneIngressRouter,
@@ -1057,7 +1028,7 @@ impl DataplaneTurnDriver {
                 OutputTarget::SessionIngress { local_addr } => {
                     let receipt = DataplaneFmpIngressReceipt::from_output(&output);
                     match dataplane_session_ingress_from_output(output, local_addr) {
-                        Ok(DataplaneSessionIngressHandoff::Raw { raw, coord_warmup }) => {
+                        DataplaneSessionIngressHandoff::Raw { raw, coord_warmup } => {
                             if let Some(receipt) = receipt {
                                 self.fmp_ingress_receipts.push(receipt);
                             }
@@ -1069,30 +1040,33 @@ impl DataplaneTurnDriver {
                                 router,
                                 summary,
                                 &mut self.raw_ingress_drops,
-                                &mut std::collections::VecDeque::new(),
+                                deferred_raw_ingress,
                                 1,
                             ) {
                                 raw_socket_packets.push(socket_packet);
                             }
                         }
-                        Ok(DataplaneSessionIngressHandoff::Local(ingress)) => {
+                        DataplaneSessionIngressHandoff::Local(ingress) => {
                             if let Some(receipt) = receipt {
                                 self.fmp_ingress_receipts.push(receipt);
                             }
                             self.fsp_local_session_ingress.push(ingress);
                         }
-                        Err((output, DataplaneSessionHandoffError::NoRoute)) => {
-                            match DataplaneFmpLinkIngress::from_output(output) {
-                                Ok(ingress) => self.fmp_link_ingress.push(ingress),
-                                Err(output) => {
-                                    self.output_drops.push(DataplaneOutputDrop::from_output(
-                                        &output,
-                                        DataplaneOutputError::NoRoute,
-                                    ));
-                                }
+                        DataplaneSessionIngressHandoff::Rejected {
+                            output,
+                            error: DataplaneSessionHandoffError::NoRoute,
+                        } => {
+                            if let Some(fields) = DataplaneFmpLinkIngress::parse(&output) {
+                                self.fmp_link_ingress
+                                    .push(DataplaneFmpLinkIngress::from_fields(output, fields));
+                            } else {
+                                self.output_drops.push(DataplaneOutputDrop::from_output(
+                                    &output,
+                                    DataplaneOutputError::NoRoute,
+                                ));
                             }
                         }
-                        Err((output, error)) => {
+                        DataplaneSessionIngressHandoff::Rejected { output, error } => {
                             self.output_drops.push(DataplaneOutputDrop::from_output(
                                 &output,
                                 dataplane_output_error_from_session_handoff(error),
@@ -1102,12 +1076,11 @@ impl DataplaneTurnDriver {
                 }
                 OutputTarget::SessionPayload { .. } => {
                     match DataplaneFspSessionIngress::from_output(output) {
-                        Ok(ingress) => {
+                        DataplaneFspSessionIngressOutput::Ingress(ingress) => {
                             self.record_fsp_session_ingress_activity(&ingress);
-                            self.fsp_authenticated_ingress
-                                .push(DataplaneFspAuthenticatedIngress::Session(ingress));
+                            self.fsp_authenticated_ingress.push_session(ingress);
                         }
-                        Err(output) => {
+                        DataplaneFspSessionIngressOutput::Rejected(output) => {
                             self.output_drops.push(DataplaneOutputDrop::from_output(
                                 &output,
                                 DataplaneOutputError::InvalidPacket,
@@ -1153,13 +1126,14 @@ impl DataplaneTurnDriver {
         crypto_limit: usize,
         executor: &mut E,
         compact_endpoint_data: bool,
+        deferred_raw_ingress: &mut std::collections::VecDeque<(DataplaneRawIngress, u8)>,
     ) -> DataplaneRuntimeSummary
     where
         R: DataplaneIngressRouter,
         E: DataplaneCryptoExecutor,
     {
         let mut remaining = crypto_limit;
-        self.process_live_internal_outputs(router, &mut summary);
+        self.process_live_internal_outputs(router, &mut summary, deferred_raw_ingress);
         loop {
             let dispatched_before = summary.dispatched;
             summary = self.collect_aead_outputs_with_executor(
@@ -1174,11 +1148,11 @@ impl DataplaneTurnDriver {
                 break;
             }
 
-            if self.process_live_internal_outputs(router, &mut summary) == 0 {
+            if self.process_live_internal_outputs(router, &mut summary, deferred_raw_ingress) == 0 {
                 break;
             }
         }
-        self.process_live_internal_outputs(router, &mut summary);
+        self.process_live_internal_outputs(router, &mut summary, deferred_raw_ingress);
         summary
     }
 
@@ -1206,10 +1180,13 @@ impl DataplaneTurnDriver {
                 );
                 self.mover.run_aead_available_into_with_executor(
                     remaining,
-                    &mut self.prepared_work,
-                    &mut self.completion_work,
-                    &mut self.retired,
-                    &mut self.drops,
+                    DataplaneAeadRunBuffers::new(
+                        &mut self.prepared_work,
+                        &mut self.completion_work,
+                        &mut self.completion_batches,
+                        &mut self.retired,
+                        &mut self.drops,
+                    ),
                     executor,
                     compact_endpoint_data,
                 )
@@ -1238,19 +1215,42 @@ impl DataplaneTurnDriver {
         let mut outbound_packets = std::mem::take(&mut self.retired_outbound_packets);
         outbound_packets.clear();
         for batch in retired.drain(..) {
-            for item in batch.into_items() {
-                match item {
-                    RetiredOutput::Packet(RetiredPacket::Output(output)) => {
-                        self.outputs.push(output);
+            let (runs, packets, endpoint_data_batches) = batch.into_parts();
+            let mut packets = packets.into_iter();
+            let mut endpoint_data_batches = endpoint_data_batches.into_iter();
+            for run in runs {
+                match run {
+                    RetiredOutputRun::Packets { count } => {
+                        for _ in 0..count {
+                            match packets.next().expect("retired packet run has packet") {
+                                RetiredPacket::Output(output) => {
+                                    self.outputs.push(output);
+                                }
+                                RetiredPacket::Outbound(mut packet) => {
+                                    self.refresh_wrapped_fsp_outbound_context(&mut packet);
+                                    outbound_packets.push(packet);
+                                }
+                                RetiredPacket::Drop(_) => {}
+                            }
+                        }
                     }
-                    RetiredOutput::Packet(RetiredPacket::Outbound(mut packet)) => {
-                        self.refresh_wrapped_fsp_outbound_context(&mut packet);
-                        outbound_packets.push(packet);
+                    RetiredOutputRun::EndpointDataBatch => {
+                        self.push_endpoint_data_batch(
+                            endpoint_data_batches
+                                .next()
+                                .expect("retired endpoint-data run has batch"),
+                        );
                     }
-                    RetiredOutput::Packet(RetiredPacket::Drop(_)) => {}
-                    RetiredOutput::EndpointDataBatch(bulk) => self.push_endpoint_data_batch(bulk),
                 }
             }
+            debug_assert!(
+                packets.next().is_none(),
+                "retired runs consumed all packet items"
+            );
+            debug_assert!(
+                endpoint_data_batches.next().is_none(),
+                "retired runs consumed all endpoint-data batches"
+            );
         }
         self.admit_outbound_packets(&mut outbound_packets, &mut summary);
         self.retired_outbound_packets = outbound_packets;
@@ -1275,12 +1275,8 @@ impl DataplaneTurnDriver {
     }
 
     fn push_endpoint_data_batch(&mut self, bulk: DataplaneEndpointDataBatch) {
-        match self.fsp_authenticated_ingress.last_mut() {
-            Some(DataplaneFspAuthenticatedIngress::EndpointDataBatch(last)) => last.extend(bulk),
-            _ => self
-                .fsp_authenticated_ingress
-                .push(DataplaneFspAuthenticatedIngress::EndpointDataBatch(bulk)),
-        }
+        self.fsp_authenticated_ingress
+            .push_endpoint_data_batch(bulk);
     }
 
     fn deliver_direct_endpoint_packet_batches(&mut self, direct_sink: Option<&EndpointDirectSink>) {
@@ -1290,21 +1286,19 @@ impl DataplaneTurnDriver {
 
         let mut dropped = 0usize;
         let mut sink_failed = false;
-        for item in &mut self.fsp_authenticated_ingress {
-            if let DataplaneFspAuthenticatedIngress::EndpointDataBatch(bulk) = item {
-                let packet_batch = bulk.take_direct_packet_batch();
-                let count = packet_batch.len();
-                if count == 0 {
-                    continue;
-                }
-                if sink_failed {
-                    dropped = dropped.saturating_add(count);
-                    continue;
-                }
-                if direct_sink.deliver_direct_packet_batch(packet_batch).is_err() {
-                    dropped = dropped.saturating_add(count);
-                    sink_failed = true;
-                }
+        for bulk in self.fsp_authenticated_ingress.endpoint_data_batches_mut() {
+            let count = bulk.packet_count();
+            let packet_batch = bulk.take_direct_packet_batch();
+            if count == 0 {
+                continue;
+            }
+            if sink_failed {
+                dropped = dropped.saturating_add(count);
+                continue;
+            }
+            if direct_sink.deliver_direct_packet_batch(packet_batch).is_err() {
+                dropped = dropped.saturating_add(count);
+                sink_failed = true;
             }
         }
 

@@ -124,7 +124,7 @@ impl EndpointDataPayload {
     pub(crate) fn from_packet_payload(payload: Vec<u8>) -> Option<Self> {
         (payload.len() <= crate::node::session_wire::fsp_endpoint_data_max_body_len()).then_some(
             Self {
-                body: payload.into(),
+                body: crate::transport::PacketBuffer::new(payload),
             },
         )
     }

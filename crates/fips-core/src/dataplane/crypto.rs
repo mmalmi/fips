@@ -670,19 +670,6 @@ impl DataplaneCryptoExecutor for DataplaneAeadWorkerPool {
 }
 
 impl DataplaneCompletionSource for DataplaneAeadWorkerPool {
-    fn drain_completions_into(
-        &mut self,
-        limit: usize,
-        completions: &mut Vec<CryptoCompletion>,
-    ) -> usize {
-        let mut completion_batches = Vec::new();
-        let drained = self.drain_completion_batches_into(limit, &mut completion_batches);
-        for batch in completion_batches {
-            completions.extend(batch.into_completions());
-        }
-        drained
-    }
-
     fn drain_completion_batches_into(
         &mut self,
         limit: usize,
@@ -835,12 +822,30 @@ fn send_completion_batches_to_shards(
         return Err(());
     }
 
-    let mut grouped: Vec<(usize, Vec<CryptoCompletionBatch>)> = Vec::new();
+    let first_rx_idx = batches[0].owner_shard() % completion_txs.len();
     let mut completion_batch_count = 0usize;
     let mut completion_packet_count = 0usize;
-    for batch in batches {
+    let mut single_rx = true;
+    for batch in &batches {
         completion_batch_count = completion_batch_count.saturating_add(1);
         completion_packet_count = completion_packet_count.saturating_add(batch.len());
+        let rx_idx = batch.owner_shard() % completion_txs.len();
+        single_rx &= rx_idx == first_rx_idx;
+    }
+    if single_rx {
+        crate::perf_profile::record_dataplane_aead_completion_send(
+            1,
+            completion_batch_count,
+            completion_packet_count,
+        );
+        completion_txs[first_rx_idx]
+            .send(batches)
+            .map_err(|_| ())?;
+        return Ok(());
+    }
+
+    let mut grouped: Vec<(usize, Vec<CryptoCompletionBatch>)> = Vec::new();
+    for batch in batches {
         let rx_idx = batch.owner_shard() % completion_txs.len();
         if let Some((last_rx_idx, last_batches)) = grouped.last_mut()
             && *last_rx_idx == rx_idx
@@ -915,7 +920,7 @@ fn dataplane_aead_worker_priority_reserve(max_in_flight: usize) -> usize {
 }
 
 fn dataplane_aead_worker_job_packets(work_count: usize) -> usize {
-    work_count.max(1).min(DATAPLANE_AEAD_WORKER_BATCH_PACKETS)
+    work_count.clamp(1, DATAPLANE_AEAD_WORKER_BATCH_PACKETS)
 }
 
 impl Drop for DataplaneAeadWorkerPool {
@@ -994,7 +999,7 @@ impl AeadOpenWork {
     fn from_crypto_work(work: CryptoWork) -> Result<Self, WirePreflightError> {
         let (header, ciphertext_offset, counter) = match work.packet.owner.protocol {
             PacketProtocol::Fmp => {
-                let header = FmpWireHeader::parse(&work.packet.payload)?;
+                let header = FmpWireHeader::parse(work.packet.payload.as_slice())?;
                 (
                     AeadHeader::Fmp(header.header_bytes()),
                     header.ciphertext_offset(),
@@ -1002,7 +1007,7 @@ impl AeadOpenWork {
                 )
             }
             PacketProtocol::Fsp => {
-                let header = FspWireHeader::parse(&work.packet.payload)?;
+                let header = FspWireHeader::parse(work.packet.payload.as_slice())?;
                 (
                     AeadHeader::Fsp(header.header_bytes()),
                     header.ciphertext_offset(),
@@ -1026,7 +1031,13 @@ impl AeadOpenWork {
         let target = work.work.packet.output;
         let header = work.header;
         let source_wire_len = work.work.packet.payload.len();
-        let opened_len = match work.work.packet.payload.get_mut(work.ciphertext_offset..) {
+        let opened_len = match work
+            .work
+            .packet
+            .payload
+            .as_mut_slice()
+            .get_mut(work.ciphertext_offset..)
+        {
             Some(ciphertext) => {
                 let nonce = aead_nonce(reservation.counter);
                 cipher
@@ -1145,8 +1156,8 @@ impl AeadSealWork {
             payload.extend_from_slice(aad);
             payload.extend_from_slice(&coord_prefix);
             payload.extend_from_slice(&inner_prefix);
-            payload.extend_from_slice(&plaintext);
-            work.packet.payload = payload.into();
+            payload.extend_from_slice(plaintext.as_slice());
+            work.packet.payload = PacketBuffer::new(payload);
         }
 
         Ok(Self {
@@ -1168,6 +1179,7 @@ impl AeadSealWork {
                 .work
                 .packet
                 .payload
+                .as_mut_slice()
                 .split_at_mut(work.ciphertext_offset);
             let Some(aad) = prefix.get(..work.aad_len) else {
                 return CryptoCompletion {
@@ -1207,11 +1219,10 @@ impl AeadSealWork {
                     OutboundPostSeal::FmpWrap(route) => {
                         let mut packet = route
                             .into_fmp_outbound(work.work.packet.class, work.work.packet.payload)
-                            .with_fsp_send_receipt(DataplaneFspSendReceipt::new(
-                                reservation.owner,
-                                reservation.counter,
-                                reservation.fsp_timestamp_ms,
-                            ));
+                            .with_fsp_send_receipt(DataplaneFspSendReceipt {
+                                owner: reservation.owner,
+                                counter: reservation.counter,
+                            });
                         if let Some(tick) = reservation.activity_tick {
                             packet = packet.with_activity_tick(tick);
                         }

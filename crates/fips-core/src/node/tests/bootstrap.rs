@@ -219,14 +219,14 @@ async fn test_third_peer_can_handshake_via_adopted_transport_socket() {
         .await
         .expect("timeout waiting for Bob->Alice msg1")
         .expect("node_a channel closed");
-    assert_eq!(pkt_at_a.data[0] & 0x0f, PHASE_MSG1);
+    assert_eq!(pkt_at_a.data.as_slice()[0] & 0x0f, PHASE_MSG1);
     node_a.handle_msg1(pkt_at_a).await;
 
     let pkt_at_b = timeout(Duration::from_secs(1), rx_b.recv())
         .await
         .expect("timeout waiting for Alice->Bob msg2")
         .expect("node_b channel closed");
-    assert_eq!(pkt_at_b.data[0] & 0x0f, PHASE_MSG2);
+    assert_eq!(pkt_at_b.data.as_slice()[0] & 0x0f, PHASE_MSG2);
     node_b.handle_msg2(pkt_at_b).await;
 
     let node_a_addr = *PeerIdentity::from_pubkey_full(node_a.identity.pubkey_full()).node_addr();
@@ -260,7 +260,7 @@ async fn test_third_peer_can_handshake_via_adopted_transport_socket() {
             .expect("timeout waiting for Colin->Bob msg1")
             .expect("node_b channel closed");
         if pkt.remote_addr.as_str() == Some(&addr_c.to_string())
-            && pkt.data.first().map(|b| b & 0x0f) == Some(PHASE_MSG1)
+            && pkt.data.as_slice().first().map(|b| b & 0x0f) == Some(PHASE_MSG1)
         {
             break pkt;
         }
@@ -273,7 +273,7 @@ async fn test_third_peer_can_handshake_via_adopted_transport_socket() {
             .await
             .expect("timeout waiting for Bob->Colin msg2")
             .expect("node_c channel closed");
-        if pkt.data.first().map(|b| b & 0x0f) == Some(PHASE_MSG2) {
+        if pkt.data.as_slice().first().map(|b| b & 0x0f) == Some(PHASE_MSG2) {
             break pkt;
         }
     };

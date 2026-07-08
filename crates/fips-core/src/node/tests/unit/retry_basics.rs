@@ -699,13 +699,23 @@ async fn process_packet_ignores_punch_and_non_fmp_noise_for_bootstrap_cooldown()
     punch[..4].copy_from_slice(&crate::discovery::PUNCH_MAGIC.to_be_bytes());
     process_dataplane_control_packet_for_test(
         &mut node,
-        ReceivedPacket::new(transport_id, remote.clone(), punch),
+        ReceivedPacket::with_timestamp(
+            transport_id,
+            remote.clone(),
+            crate::transport::PacketBuffer::new(punch),
+            1,
+        ),
     )
     .await;
 
     process_dataplane_control_packet_for_test(
         &mut node,
-        ReceivedPacket::new(transport_id, remote.clone(), vec![0x45, 0x00, 0x00, 0x00]),
+        ReceivedPacket::with_timestamp(
+            transport_id,
+            remote.clone(),
+            crate::transport::PacketBuffer::new(vec![0x45, 0x00, 0x00, 0x00]),
+            2,
+        ),
     )
     .await;
 
@@ -716,7 +726,12 @@ async fn process_packet_ignores_punch_and_non_fmp_noise_for_bootstrap_cooldown()
 
     process_dataplane_control_packet_for_test(
         &mut node,
-        ReceivedPacket::new(transport_id, remote, vec![0x11, 0x00, 0x00, 0x00]),
+        ReceivedPacket::with_timestamp(
+            transport_id,
+            remote,
+            crate::transport::PacketBuffer::new(vec![0x11, 0x00, 0x00, 0x00]),
+            3,
+        ),
     )
     .await;
 
@@ -732,23 +747,24 @@ async fn process_dataplane_control_packet_for_test(node: &mut Node, packet: Rece
     packet_tx.send(packet).expect("packet should enqueue");
     let (_endpoint_tx, mut endpoint_rx) = crate::node::endpoint_data_batch_channel(1);
     let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
-    let (tun_tx, _tun_rx) = crate::upper::tun::write_channel();
+    let (_fast_tx, mut fast_ingress_rx) = tokio::sync::mpsc::channel(1);
     let (endpoint_tx, _endpoint_rx) = crate::node::EndpointEventSender::channel(1);
 
-    let mut turn = node
-        .drain_dataplane_turn_with_firsts(
+    let mut turn = {
+        let mut dataplane_io = crate::node::handlers::rx_loop_dataplane_io(
             &mut packet_rx,
-            crate::dataplane::DataplaneLiveTurnFirsts::default(),
-            1,
+            &mut fast_ingress_rx,
             &mut endpoint_rx,
-            0,
             &mut tun_outbound_rx,
-            0,
-            &tun_tx,
             &endpoint_tx,
-            1,
+        );
+        node.drain_dataplane_turn_with_firsts(
+            &mut dataplane_io,
+            crate::dataplane::DataplaneLiveTurnFirsts::default(),
+            crate::node::handlers::RxLoopDataplaneTurnLimits::new(1, 0, 0, 1),
         )
-        .await;
+        .await
+    };
     node.process_dataplane_control_ingress(&mut turn).await;
 }
 

@@ -41,7 +41,7 @@ pub use address::TorAddr;
 use address::{parse_tor_addr, validate_host_port};
 use control::{ControlAuth, TorControlClient, TorMonitoringInfo};
 use stats::TorStats;
-use tasks::{configure_socket, tor_accept_loop, tor_receive_loop};
+use tasks::{TorReceiveContext, configure_socket, tor_accept_loop, tor_receive_loop};
 
 use futures::FutureExt;
 use std::collections::HashMap;
@@ -74,12 +74,6 @@ struct TorConnection {
     writer: Arc<Mutex<OwnedWriteHalf>>,
     /// Receive task for this connection.
     recv_task: JoinHandle<()>,
-    /// MTU for this connection.
-    #[allow(dead_code)]
-    mtu: u16,
-    /// When the connection was established.
-    #[allow(dead_code)]
-    established_at: Instant,
     direction: Direction,
 }
 
@@ -671,13 +665,15 @@ impl TorTransport {
         let recv_task = tokio::spawn(async move {
             tor_receive_loop(
                 read_half,
-                transport_id,
-                remote_addr.clone(),
-                packet_tx,
-                pool,
-                mtu,
-                recv_stats,
-                Direction::Outbound,
+                TorReceiveContext {
+                    transport_id,
+                    remote_addr,
+                    packet_tx,
+                    pool,
+                    mtu,
+                    stats: recv_stats,
+                    direction: Direction::Outbound,
+                },
             )
             .await;
         });
@@ -685,8 +681,6 @@ impl TorTransport {
         let conn = TorConnection {
             writer: writer.clone(),
             recv_task,
-            mtu,
-            established_at: Instant::now(),
             direction: Direction::Outbound,
         };
 
@@ -895,13 +889,15 @@ impl TorTransport {
         let recv_task = tokio::spawn(async move {
             tor_receive_loop(
                 read_half,
-                transport_id,
-                remote_addr.clone(),
-                packet_tx,
-                pool,
-                mtu,
-                recv_stats,
-                Direction::Outbound,
+                TorReceiveContext {
+                    transport_id,
+                    remote_addr,
+                    packet_tx,
+                    pool,
+                    mtu,
+                    stats: recv_stats,
+                    direction: Direction::Outbound,
+                },
             )
             .await;
         });
@@ -909,8 +905,6 @@ impl TorTransport {
         let conn = TorConnection {
             writer,
             recv_task,
-            mtu,
-            established_at: Instant::now(),
             direction: Direction::Outbound,
         };
 

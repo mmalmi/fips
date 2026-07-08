@@ -1,33 +1,31 @@
-    async fn pump_live_node_outbound_firsts<Transports>(
+    async fn pump_live_node_outbound_firsts(
         live_node: &mut DataplaneLiveNode,
         outbound_firsts: DataplaneLiveOutboundFirsts,
-        tun_tx: &crate::upper::tun::TunTx,
         endpoint_tx: &EndpointEventSender,
-        transports: &Transports,
+        transports: &HashMap<TransportId, TransportHandle>,
         crypto_limit: usize,
-        transport_worker: &mut DataplaneTransportSendWorkerPool,
+        transport_send_batch_packets: usize,
     ) -> DataplaneLiveNodeTurn
-    where
-        Transports: DataplaneTransportResolver + ?Sized,
     {
-        let mut raw_source = DataplaneLiveRawIngressSource::new(VecDeque::new());
+        let mut raw_source = VecDeque::<DataplaneRawIngress>::new();
         let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
         let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
         live_node
-            .pump_turn_with_firsts_and_transport_worker(
+            .pump_turn_with_firsts_and_transport_batch(
                 None,
                 &mut raw_source,
                 0,
                 outbound_firsts,
-                &mut endpoint_data_rx,
-                0,
-                &mut tun_outbound_rx,
-                0,
-                tun_tx,
-                endpoint_tx,
-                transports,
-                crypto_limit,
-                transport_worker,
+                DataplaneLiveTurnIo {
+                    endpoint_data_rx: &mut endpoint_data_rx,
+                    endpoint_limit: 0,
+                    tun_outbound_rx: &mut tun_outbound_rx,
+                    tun_limit: 0,
+                    endpoint_tx,
+                    transports,
+                    crypto_limit,
+                    transport_send_batch_packets,
+                },
             )
             .await
     }
@@ -36,9 +34,9 @@
     async fn live_node_route_table_turn_flushes_planned_transport_output() {
         let send_transport_id = TransportId::new(76);
         let recv_transport_id = TransportId::new(77);
-        let fmp_source = NodeAddr::from_bytes([0x4c; 16]);
-        let fmp_owner = OwnerId::fmp_node(fmp_source);
-        let fmp_key = 76;
+        let fsp_dest = NodeAddr::from_bytes([0x4c; 16]);
+        let fsp_owner = OwnerId::fsp_node(fsp_dest);
+        let fsp_key = 76;
         let (recv_packet_tx, mut recv_packet_rx) = crate::transport::packet_channel(4);
         let mut recv_transport = TransportHandle::Udp(crate::transport::udp::UdpTransport::new(
             recv_transport_id,
@@ -62,53 +60,63 @@
         let mut transports = HashMap::from([(send_transport_id, send_transport)]);
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
-        let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
+        let (_tun_tx, tun_rx) = crate::upper::tun::write_channel();
         let mut live_node = DataplaneLiveNode::new(AdmissionConfig::new(4, 8));
-        let mut transport_worker = DataplaneTransportSendWorkerPool::new(8);
+        let transport_send_batch_packets = 8;
         live_node.register_owner(
-            fmp_owner,
-            OwnerConfig::new(1, 8).with_next_send_counter(760),
+            fsp_owner,
+            OwnerConfig::new(1, 8)
+                .with_next_send_counter(760)
+                .with_fsp_session_start_ms(0)
+                .with_fsp_send_headers(0, 0),
         );
-        live_node.driver.owner_mut(fmp_owner)
+        live_node.driver.owner_mut(fsp_owner)
             .unwrap()
             .set_active_path(live_path.clone());
-        live_node.driver.owner_mut(fmp_owner)
+        live_node.driver.owner_mut(fsp_owner)
             .unwrap()
-            .set_crypto_keys(OwnerCryptoKeys::new(test_key(fmp_key), test_key(fmp_key)));
-        let mut raw_source = DataplaneLiveRawIngressSource::new(VecDeque::new());
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(fsp_key), test_key(fsp_key)));
+        let mut raw_source = VecDeque::<DataplaneRawIngress>::new();
         live_node.routes.register_tun_destination(
-            fmp_source,
-            DataplaneTunDestinationRoute::new(DataplaneTunOutboundRoute::fmp(
-                fmp_owner,
+            fsp_dest,
+            DataplaneTunOutboundRoute::fsp_ipv6_shim(
+                fsp_owner,
                 1,
                 PacketClass::Bulk,
-                761,
                 0,
-            )),
+                0,
+            ),
         );
         let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
         let (tun_outbound_tx, mut tun_outbound_rx) =
             crate::upper::tun::tun_outbound_channel(1);
-        let tun_packet = tun_ipv6_packet(fmp_source, 48);
+        let tun_packet = tun_ipv6_packet(fsp_dest, 48);
+        let mut expected_payload = tun_packet.clone();
+        assert!(crate::upper::ipv6_shim::compress_ipv6_with_port_header_in_place(
+            &mut expected_payload,
+            crate::node::session_wire::FSP_PORT_IPV6_SHIM,
+            crate::node::session_wire::FSP_PORT_IPV6_SHIM,
+        ));
         tun_outbound_tx
             .try_send(tun_packet.clone())
             .expect("enqueue TUN outbound packet");
 
         let first = live_node
-            .pump_turn_with_firsts_and_transport_worker(
+            .pump_turn_with_firsts_and_transport_batch(
                 None,
                 &mut raw_source,
                 8,
                 DataplaneLiveOutboundFirsts::default(),
-                &mut endpoint_data_rx,
-                0,
-                &mut tun_outbound_rx,
-                8,
-                &tun_tx,
-                &endpoint_io.event_tx,
-                &transports,
-                8,
-                &mut transport_worker,
+                DataplaneLiveTurnIo {
+                    endpoint_data_rx: &mut endpoint_data_rx,
+                    endpoint_limit: 0,
+                    tun_outbound_rx: &mut tun_outbound_rx,
+                    tun_limit: 8,
+                    endpoint_tx: &endpoint_io.event_tx,
+                    transports: &transports,
+                    crypto_limit: 8,
+                    transport_send_batch_packets,
+                },
             )
             .await;
 
@@ -119,34 +127,31 @@
         assert_eq!(first.summary().outputs(), 0);
         assert_eq!(first.summary().outputs_sent(), 0);
         assert_eq!(first.summary().outputs_dropped(), 0);
-        assert_eq!(first.transport_planned(), 0);
         assert_eq!(first.transport_sent(), 0);
         assert_eq!(first.transport_dropped(), 0);
         assert!(first.raw_ingress_drops().is_empty());
         assert!(first.output_drops().is_empty());
         assert!(first.drops().is_empty());
-        assert!(raw_source.source.is_empty());
+        assert!(raw_source.is_empty());
         assert!(first.endpoint_data_drops().is_empty());
         assert!(first.tun_outbound_drops().is_empty());
         assert!(tun_outbound_rx.try_recv().is_err());
-        assert!(tun_rx.try_recv().is_err());
+        assert!(tun_rx.try_recv_packet().is_err());
         assert!(endpoint_io.event_rx.try_recv().is_err());
 
         wait_for_live_worker_completion(&live_node).await;
         let mut turn = pump_live_node_outbound_firsts(
             &mut live_node,
             DataplaneLiveOutboundFirsts::default(),
-            &tun_tx,
             &endpoint_io.event_tx,
             &transports,
             8,
-            &mut transport_worker,
+            transport_send_batch_packets,
         )
         .await;
         assert_eq!(turn.summary().completions(), 1);
         assert_eq!(turn.summary().outputs(), 1);
         assert_eq!(turn.summary().outputs_sent(), 1);
-        assert_eq!(turn.transport_planned(), 1);
         assert_eq!(turn.transport_sent(), 1);
         assert_eq!(turn.transport_dropped(), 0);
         assert!(turn.take_transport_sent_receipts().is_empty());
@@ -157,15 +162,19 @@
                 .expect("receive live transport output")
                 .expect("packet channel open");
         assert_eq!(received.transport_id, recv_transport_id);
-        let header = FmpWireHeader::parse(&received.data).unwrap();
-        assert_eq!(header.receiver_idx(), 761);
+        let header = FspWireHeader::parse(received.data.as_slice()).unwrap();
         assert_eq!(header.counter(), 760);
+        let plaintext = open_fsp_wire_payload(received.data.as_slice(), fsp_key);
+        let (_timestamp_ms, msg_type, inner_flags, payload) =
+            crate::node::session_wire::fsp_strip_inner_header(&plaintext).unwrap();
         assert_eq!(
-            open_fmp_wire_payload(&received.data, fmp_key),
-            tun_packet
+            msg_type,
+            crate::protocol::SessionMessageType::DataPacket.to_byte()
         );
+        assert_eq!(inner_flags, 0);
+        assert_eq!(payload, expected_payload.as_slice());
         assert_eq!(
-            live_node.driver.owner_mut(fmp_owner).unwrap().active_path(),
+            live_node.driver.owner_mut(fsp_owner).unwrap().active_path(),
             Some(live_path)
         );
 
@@ -178,22 +187,24 @@
     async fn live_completion_turn_without_completion_is_empty() {
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
-        let (tun_tx, _tun_rx) = crate::upper::tun::write_channel();
         let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
         let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
         let transports = HashMap::<TransportId, TransportHandle>::new();
         let mut live_node = DataplaneLiveNode::new(AdmissionConfig::new(4, 8));
-        let mut transport_worker = DataplaneTransportSendWorkerPool::new(8);
+        let transport_send_batch_packets = 8;
 
         let turn = live_node
-            .pump_completion_output_turn_with_transport_worker(
-                &mut endpoint_data_rx,
-                &mut tun_outbound_rx,
-                &tun_tx,
-                &endpoint_io.event_tx,
-                &transports,
-                8,
-                &mut transport_worker,
+            .pump_completion_output_turn_with_transport_batch(
+                DataplaneLiveTurnIo {
+                    endpoint_data_rx: &mut endpoint_data_rx,
+                    endpoint_limit: 0,
+                    tun_outbound_rx: &mut tun_outbound_rx,
+                    tun_limit: 0,
+                    endpoint_tx: &endpoint_io.event_tx,
+                    transports: &transports,
+                    crypto_limit: 8,
+                    transport_send_batch_packets,
+                },
             )
             .await;
 
@@ -229,11 +240,10 @@
         let mut transports = HashMap::from([(send_transport_id, send_transport)]);
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
-        let (tun_tx, _tun_rx) = crate::upper::tun::write_channel();
         let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
         let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
         let mut live_node = DataplaneLiveNode::new(AdmissionConfig::new(4, 8));
-        let mut transport_worker = DataplaneTransportSendWorkerPool::new(8);
+        let transport_send_batch_packets = 8;
         live_node.register_owner(
             owner,
             OwnerConfig::new(1, 8).with_next_send_counter(900),
@@ -258,17 +268,16 @@
                 PacketClass::Bulk,
                 901,
                 0,
-                b"ready-first".to_vec(),
+                PacketBuffer::new(b"ready-first".to_vec()),
             ))
             .unwrap();
         let first_feed = pump_live_node_outbound_firsts(
             &mut live_node,
             DataplaneLiveOutboundFirsts::default(),
-            &tun_tx,
             &endpoint_io.event_tx,
             &transports,
             8,
-            &mut transport_worker,
+            transport_send_batch_packets,
         )
         .await;
         assert_eq!(first_feed.summary().completions(), 0);
@@ -285,18 +294,21 @@
                 PacketClass::Bulk,
                 901,
                 0,
-                b"fed-after-output".to_vec(),
+                PacketBuffer::new(b"fed-after-output".to_vec()),
             ))
             .unwrap();
         let completion_turn = live_node
-            .pump_completion_output_turn_with_transport_worker(
-                &mut endpoint_data_rx,
-                &mut tun_outbound_rx,
-                &tun_tx,
-                &endpoint_io.event_tx,
-                &transports,
-                8,
-                &mut transport_worker,
+            .pump_completion_output_turn_with_transport_batch(
+                DataplaneLiveTurnIo {
+                    endpoint_data_rx: &mut endpoint_data_rx,
+                    endpoint_limit: 0,
+                    tun_outbound_rx: &mut tun_outbound_rx,
+                    tun_limit: 0,
+                    endpoint_tx: &endpoint_io.event_tx,
+                    transports: &transports,
+                    crypto_limit: 8,
+                    transport_send_batch_packets,
+                },
             )
             .await;
         assert_eq!(completion_turn.summary().completions(), 1);
@@ -310,7 +322,7 @@
                 .expect("receive first output")
                 .expect("packet channel open");
         assert_eq!(
-            open_fmp_wire_payload(&first_received.data, key),
+            open_fmp_wire_payload(first_received.data.as_slice(), key),
             b"ready-first"
         );
         assert!(
@@ -320,14 +332,17 @@
 
         wait_for_live_worker_completion(&live_node).await;
         let second_turn = live_node
-            .pump_completion_output_turn_with_transport_worker(
-                &mut endpoint_data_rx,
-                &mut tun_outbound_rx,
-                &tun_tx,
-                &endpoint_io.event_tx,
-                &transports,
-                8,
-                &mut transport_worker,
+            .pump_completion_output_turn_with_transport_batch(
+                DataplaneLiveTurnIo {
+                    endpoint_data_rx: &mut endpoint_data_rx,
+                    endpoint_limit: 0,
+                    tun_outbound_rx: &mut tun_outbound_rx,
+                    tun_limit: 0,
+                    endpoint_tx: &endpoint_io.event_tx,
+                    transports: &transports,
+                    crypto_limit: 8,
+                    transport_send_batch_packets,
+                },
             )
             .await;
         assert_eq!(second_turn.summary().completions(), 1);
@@ -340,106 +355,13 @@
                 .expect("receive second output")
                 .expect("packet channel open");
         assert_eq!(
-            open_fmp_wire_payload(&second_received.data, key),
+            open_fmp_wire_payload(second_received.data.as_slice(), key),
             b"fed-after-output"
         );
 
         send_transport = transports.remove(&send_transport_id).unwrap();
         send_transport.stop().await.expect("stop send udp");
         recv_transport.stop().await.expect("stop recv udp");
-    }
-
-    #[tokio::test]
-    async fn live_route_table_turn_flushes_completed_output_before_fresh_admission() {
-        let transport_id = TransportId::new(178);
-        let receiver_idx = 780;
-        let remote_addr = TransportAddr::from_string("198.51.100.178:9000");
-        let owner = fmp_owner(178);
-        let key = 78;
-        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
-        driver.register_owner(owner, OwnerConfig::new(1, 8));
-        driver
-            .owner_mut(owner)
-            .unwrap()
-            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
-
-        driver
-            .mover
-            .submit_socket_packet(
-                fmp_socket_packet(
-                    owner,
-                    1,
-                    OutputTarget::Tun,
-                    fmp_encrypted_wire(receiver_idx, 10, 0, b"completed", key),
-                )
-                .unwrap(),
-            )
-            .unwrap();
-        let mut work = dispatch_available(&mut driver.mover, 8);
-        assert_eq!(work.len(), 1);
-        let completion = open_aead_completion(work.pop().unwrap(), key);
-        let mut completions = VecDeque::from([completion]);
-
-        let raw = DataplaneLiveIngressPacket::fmp(
-            ReceivedPacket::with_timestamp(
-                transport_id,
-                remote_addr,
-                fmp_encrypted_wire(receiver_idx, 11, 0, b"fresh", key),
-                crate::time::now_ms(),
-            ),
-        );
-        let mut raw_source = DataplaneLiveRawIngressSource::new(VecDeque::from([raw]));
-        let mut routes = DataplaneLiveRouteTable::default();
-        routes.register_fmp(
-            transport_id,
-            receiver_idx,
-            DataplaneIngressRoute::new(owner, 1, OutputTarget::Tun),
-        );
-        let (endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
-        let (tun_outbound_tx, mut tun_outbound_rx) =
-            crate::upper::tun::tun_outbound_channel(1);
-        drop((endpoint_data_tx, tun_outbound_tx));
-        let mut node = crate::Node::new(crate::Config::new()).expect("node");
-        let mut endpoint_io = node.attach_endpoint_data_io(1).expect("endpoint io");
-        let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
-        let mut deferred_endpoint_data_batches = Vec::new();
-        let mut deferred_tun_packets = Vec::new();
-        let transports = HashMap::<TransportId, TransportHandle>::new();
-
-        let turn = pump_aead_live_node_route_table_turn_with_completions(
-            &mut driver,
-            &mut completions,
-            8,
-            &mut raw_source,
-            &mut routes,
-            1,
-            &mut endpoint_data_rx,
-            0,
-            &mut tun_outbound_rx,
-            0,
-            &mut deferred_endpoint_data_batches,
-            &mut deferred_tun_packets,
-            &tun_tx,
-            &endpoint_io.event_tx,
-            &transports,
-            8,
-        )
-        .await;
-
-        assert_eq!(turn.summary().completions(), 1);
-        assert_eq!(turn.summary().inbound_admitted(), 1);
-        assert_eq!(turn.summary().dispatched(), 1);
-        assert_eq!(turn.summary().outputs_sent(), 2);
-        assert!(turn.raw_ingress_drops().is_empty());
-        assert!(turn.output_drops().is_empty());
-        assert!(turn.drops().is_empty());
-        assert!(raw_source.source.is_empty());
-        assert!(deferred_endpoint_data_batches.is_empty());
-        assert!(deferred_tun_packets.is_empty());
-        assert!(endpoint_io.event_rx.try_recv().is_err());
-        assert_eq!(tun_rx.try_recv().unwrap(), b"completed".to_vec());
-        assert_eq!(tun_rx.try_recv().unwrap(), b"fresh".to_vec());
-        assert!(tun_rx.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -470,11 +392,11 @@
         send_transport.start().await.expect("start send udp");
         let live_path = TransportPath::live(send_transport_id, remote_addr.clone());
         let mut transports = HashMap::from([(send_transport_id, send_transport)]);
-        let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
+        let (_tun_tx, tun_rx) = crate::upper::tun::write_channel();
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
         let mut live_node = DataplaneLiveNode::new(AdmissionConfig::new(4, 8));
-        let mut transport_worker = DataplaneTransportSendWorkerPool::new(8);
+        let transport_send_batch_packets = 8;
         live_node.register_owner(
             owner,
             OwnerConfig::new(1, 8)
@@ -494,7 +416,7 @@
             PacketClass::Liveness,
             1761,
             0,
-            b"continuation".to_vec(),
+            PacketBuffer::new(b"continuation".to_vec()),
         )
         .with_activity_tick(ActivityTick::new(1_234));
         let mut first = pump_live_node_outbound_firsts(
@@ -504,11 +426,10 @@
                 collect_transport_sent_receipts: true,
                 ..Default::default()
             },
-            &tun_tx,
             &endpoint_io.event_tx,
             &transports,
             0,
-            &mut transport_worker,
+            transport_send_batch_packets,
         )
         .await;
         assert_eq!(first.summary().outbound_admitted(), 1);
@@ -522,11 +443,10 @@
                 collect_transport_sent_receipts: true,
                 ..Default::default()
             },
-            &tun_tx,
             &endpoint_io.event_tx,
             &transports,
             1,
-            &mut transport_worker,
+            transport_send_batch_packets,
         )
         .await;
         assert_eq!(second.summary().dispatched(), 1);
@@ -542,11 +462,10 @@
                 collect_transport_sent_receipts: true,
                 ..Default::default()
             },
-            &tun_tx,
             &endpoint_io.event_tx,
             &transports,
             1,
-            &mut transport_worker,
+            transport_send_batch_packets,
         )
         .await;
         assert_eq!(third.summary().completions(), 1);
@@ -559,7 +478,7 @@
         assert_eq!(sent.counter, 1760);
         assert_eq!(sent.fmp_timestamp_ms, Some(234));
         assert!(sent.payload_len > b"continuation".len());
-        assert!(tun_rx.try_recv().is_err());
+        assert!(tun_rx.try_recv_packet().is_err());
         assert!(endpoint_io.event_rx.try_recv().is_err());
 
         let received =
@@ -568,252 +487,16 @@
                 .expect("receive continuation transport output")
                 .expect("packet channel open");
         assert_eq!(received.transport_id, recv_transport_id);
-        let header = FmpWireHeader::parse(&received.data).unwrap();
+        let header = FmpWireHeader::parse(received.data.as_slice()).unwrap();
         assert_eq!(header.receiver_idx(), 1761);
         assert_eq!(header.counter(), 1760);
         let mut expected_payload = 234u32.to_le_bytes().to_vec();
         expected_payload.extend_from_slice(b"continuation");
-        assert_eq!(open_fmp_wire_payload(&received.data, key), expected_payload);
+        assert_eq!(open_fmp_wire_payload(received.data.as_slice(), key), expected_payload);
 
         send_transport = transports.remove(&send_transport_id).unwrap();
         send_transport.stop().await.expect("stop send udp");
         recv_transport.stop().await.expect("stop recv udp");
-    }
-
-    #[test]
-    fn tun_tx_output_bounds_bulk_without_blocking_liveness() {
-        let (tun_tx, tun_rx) = crate::upper::tun::write_channel_with_bulk_capacity(1);
-        let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x47; 16]));
-        let mut endpoint = LiveEndpointRecorder::default();
-        let mut transport = DataplaneTransportSendGroups::new();
-        let mut sink = DataplaneLiveOutputSink::new(
-            DataplaneTunTxOutput::new(&tun_tx),
-            &mut endpoint,
-            &mut transport,
-        );
-
-        assert_eq!(
-            send_one_output(
-                &mut sink,
-                opened_output(owner, 47, 0, OutputTarget::Tun, b"bulk-a")
-            ),
-            Ok(())
-        );
-        assert_eq!(
-            send_one_output(
-                &mut sink,
-                opened_output(owner, 48, 1, OutputTarget::Tun, b"bulk-b")
-            ),
-            Err(DataplaneOutputError::Backpressure)
-        );
-
-        let mut liveness = opened_output(owner, 49, 2, OutputTarget::Tun, b"live");
-        liveness.lane = Lane::Priority;
-        assert_eq!(send_one_output(&mut sink, liveness), Ok(()));
-
-        assert_eq!(tun_rx.try_recv().unwrap(), b"live".to_vec());
-        assert_eq!(tun_rx.try_recv().unwrap(), b"bulk-a".to_vec());
-        assert!(tun_rx.try_recv().is_err());
-        assert!(endpoint.outputs.is_empty());
-        assert!(transport.groups.is_empty());
-    }
-
-    #[test]
-    fn live_output_sink_drops_stale_bulk_without_dropping_priority_or_fresh_bulk() {
-        let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
-        let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x46; 16]));
-        let mut endpoint = LiveEndpointRecorder::default();
-        let mut transport = DataplaneTransportSendGroups::new();
-        let mut sink = DataplaneLiveOutputSink::new(
-            DataplaneTunTxOutput::new(&tun_tx),
-            &mut endpoint,
-            &mut transport,
-        );
-        sink.stale_bulk_output_drop_ms = 1;
-
-        let mut stale_bulk = opened_output(owner, 46, 0, OutputTarget::Tun, b"stale-bulk");
-        stale_bulk.activity_tick = Some(ActivityTick::new(1));
-        assert_eq!(
-            send_one_output(&mut sink, stale_bulk),
-            Err(DataplaneOutputError::StaleQueuedBulk)
-        );
-
-        let mut stale_priority = opened_output(owner, 47, 1, OutputTarget::Tun, b"priority");
-        stale_priority.lane = Lane::Priority;
-        stale_priority.activity_tick = Some(ActivityTick::new(1));
-        assert_eq!(send_one_output(&mut sink, stale_priority), Ok(()));
-
-        let fresh_bulk = opened_output(owner, 48, 2, OutputTarget::Tun, b"fresh-bulk");
-        assert_eq!(send_one_output(&mut sink, fresh_bulk), Ok(()));
-
-        let transport_id = TransportId::new(46);
-        let remote_addr = TransportAddr::from_string("198.51.100.46:9000");
-        let mut stale_transport = transport_output(
-            owner,
-            49,
-            3,
-            transport_id,
-            remote_addr.clone(),
-            b"sealed-wire".to_vec(),
-        );
-        stale_transport.activity_tick = Some(ActivityTick::new(1));
-        assert_eq!(send_one_output(&mut sink, stale_transport), Ok(()));
-
-        assert_eq!(tun_rx.try_recv().unwrap(), b"priority".to_vec());
-        assert_eq!(tun_rx.try_recv().unwrap(), b"fresh-bulk".to_vec());
-        assert!(tun_rx.try_recv().is_err());
-        assert!(endpoint.outputs.is_empty());
-        assert_eq!(transport.groups.len(), 1);
-        let group = &transport.groups[0];
-        assert_eq!(group.transport_id, transport_id);
-        assert_eq!(group.remote_addr, remote_addr);
-        assert_eq!(group.outputs.len(), 1);
-        assert_eq!(group.outputs[0].payload(), b"sealed-wire");
-    }
-
-    #[test]
-    fn endpoint_event_output_reports_unavailable_when_endpoint_channel_is_closed() {
-        let mut node = crate::Node::new(crate::Config::new()).expect("node");
-        let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
-        let endpoint_tx = endpoint_io.event_tx.clone();
-        drop(endpoint_io);
-        let source_peer = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
-        let source_addr = *source_peer.node_addr();
-        let owner = OwnerId::fsp_node(source_addr);
-        let output = opened_endpoint_output(owner, source_peer, 53, 0, b"closed-endpoint");
-        let mut tun = LiveTunRecorder::default();
-        let mut transport = DataplaneTransportSendGroups::new();
-
-        let sent = {
-            let endpoint = DataplaneEndpointEventOutput::new(&endpoint_tx);
-            let mut sink = DataplaneLiveOutputSink::new(&mut tun, endpoint, &mut transport);
-            send_one_output(&mut sink, output)
-        };
-
-        assert_eq!(sent, Err(DataplaneOutputError::Unavailable));
-        assert!(tun.outputs.is_empty());
-        assert!(transport.groups.is_empty());
-    }
-
-    #[test]
-    fn endpoint_event_output_requires_owner_matching_peer_identity() {
-        let mut node = crate::Node::new(crate::Config::new()).expect("node");
-        let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
-        let source_peer = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
-        let source_addr = *source_peer.node_addr();
-        let wrong_peer = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
-        let owner = OwnerId::fsp_node(source_addr);
-        let missing_output =
-            opened_output(owner, 51, 0, OutputTarget::Endpoint, b"missing-identity");
-        let mismatched_output = opened_endpoint_output(owner, wrong_peer, 52, 1, b"wrong-identity");
-        let mut tun = LiveTunRecorder::default();
-        let mut transport = DataplaneTransportSendGroups::new();
-
-        let missing = {
-            let endpoint = DataplaneEndpointEventOutput::new(&endpoint_io.event_tx);
-            let mut sink = DataplaneLiveOutputSink::new(&mut tun, endpoint, &mut transport);
-            send_one_output(&mut sink, missing_output)
-        };
-        assert_eq!(missing, Err(DataplaneOutputError::NoRoute));
-
-        let mismatched = {
-            let endpoint = DataplaneEndpointEventOutput::new(&endpoint_io.event_tx);
-            let mut sink = DataplaneLiveOutputSink::new(&mut tun, endpoint, &mut transport);
-            send_one_output(&mut sink, mismatched_output)
-        };
-        assert_eq!(mismatched, Err(DataplaneOutputError::NoRoute));
-        assert!(endpoint_io.event_rx.try_recv().is_err());
-        assert!(tun.outputs.is_empty());
-        assert!(transport.groups.is_empty());
-    }
-
-    #[test]
-    fn endpoint_event_output_keeps_generic_batches_on_event_queue_with_direct_sink() {
-        let direct_batches = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let captured_batches = Arc::clone(&direct_batches);
-        let mut node = crate::Node::new(crate::Config::new()).expect("node");
-        let direct_sink = crate::node::EndpointDirectSink::new(
-            move |batch: crate::FipsEndpointDirectPacketBatch| {
-                captured_batches
-                    .lock()
-                    .expect("direct batches lock")
-                    .push(batch.len());
-                Ok::<(), crate::FipsEndpointDirectDeliveryError>(())
-            },
-        );
-        let mut endpoint_io = node
-            .attach_endpoint_data_io_with_direct_sink(8, direct_sink)
-            .expect("endpoint io");
-        let source_peer = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
-        let source_addr = *source_peer.node_addr();
-        let owner = OwnerId::fsp_node(source_addr);
-        let first = opened_endpoint_output(owner, source_peer, 53, 0, b"direct-one");
-        let second = opened_endpoint_output(owner, source_peer, 54, 1, b"direct-two");
-        let mut tun = LiveTunRecorder::default();
-        let mut transport = DataplaneTransportSendGroups::new();
-        let mut drops = Vec::new();
-
-        let sent = {
-            let endpoint = DataplaneEndpointEventOutput::new(&endpoint_io.event_tx);
-            let mut sink = DataplaneLiveOutputSink::new(&mut tun, endpoint, &mut transport);
-            sink.send_batch([first, second], &mut drops)
-        };
-
-        assert_eq!(sent, 2);
-        assert!(drops.is_empty());
-        assert_eq!(endpoint_io.event_tx.queued_messages(), 2);
-        assert!(tun.outputs.is_empty());
-        assert!(transport.groups.is_empty());
-
-        let direct_batches = direct_batches.lock().expect("direct batches lock");
-        assert!(
-            direct_batches.is_empty(),
-            "generic endpoint output must not use direct packet-batch sink"
-        );
-        drop(direct_batches);
-        let event = endpoint_io.event_rx.try_recv().expect("endpoint event");
-        endpoint_io.event_rx.release_messages(event.messages.len());
-        assert_eq!(event.messages.len(), 2);
-        assert_eq!(event.messages[0].source_peer, source_peer);
-        assert_eq!(event.messages[0].payload.as_slice(), b"direct-one");
-        assert_eq!(event.messages[1].source_peer, source_peer);
-        assert_eq!(event.messages[1].payload.as_slice(), b"direct-two");
-        assert_eq!(endpoint_io.event_tx.queued_messages(), 0);
-    }
-
-    #[test]
-    fn endpoint_event_output_ignores_direct_sink_failures_for_generic_events() {
-        let mut node = crate::Node::new(crate::Config::new()).expect("node");
-        let direct_sink = crate::node::EndpointDirectSink::new(
-            |_batch: crate::FipsEndpointDirectPacketBatch| {
-                Err(crate::FipsEndpointDirectDeliveryError::Unavailable)
-            },
-        );
-        let mut endpoint_io = node
-            .attach_endpoint_data_io_with_direct_sink(8, direct_sink)
-            .expect("endpoint io");
-        let source_peer = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
-        let source_addr = *source_peer.node_addr();
-        let owner = OwnerId::fsp_node(source_addr);
-        let output = opened_endpoint_output(owner, source_peer, 55, 0, b"direct-fail");
-        let mut tun = LiveTunRecorder::default();
-        let mut transport = DataplaneTransportSendGroups::new();
-
-        let sent = {
-            let endpoint = DataplaneEndpointEventOutput::new(&endpoint_io.event_tx);
-            let mut sink = DataplaneLiveOutputSink::new(&mut tun, endpoint, &mut transport);
-            send_one_output(&mut sink, output)
-        };
-
-        assert_eq!(sent, Ok(()));
-        assert_eq!(endpoint_io.event_tx.queued_messages(), 1);
-        let event = endpoint_io.event_rx.try_recv().expect("endpoint event");
-        endpoint_io.event_rx.release_messages(event.messages.len());
-        assert_eq!(event.messages.len(), 1);
-        assert_eq!(event.messages[0].source_peer, source_peer);
-        assert_eq!(event.messages[0].payload.as_slice(), b"direct-fail");
-        assert!(tun.outputs.is_empty());
-        assert!(transport.groups.is_empty());
     }
 
     #[test]
@@ -829,18 +512,16 @@
             remote_addr.clone(),
             b"wire-packet".to_vec(),
         );
-        let mut tun = LiveTunRecorder::default();
-        let mut endpoint = LiveEndpointRecorder::default();
         let mut transport = DataplaneTransportSendGroups::new();
 
+        let mut drops = Vec::new();
         let sent = {
-            let mut sink = DataplaneLiveOutputSink::new(&mut tun, &mut endpoint, &mut transport);
-            send_one_output(&mut sink, output)
+            let mut sink = DataplaneLiveOutputSink::new(&mut transport);
+            sink.send_batch(std::iter::once(output), &mut drops)
         };
 
-        assert_eq!(sent, Ok(()));
-        assert!(tun.outputs.is_empty());
-        assert!(endpoint.outputs.is_empty());
+        assert_eq!(sent, 1);
+        assert!(drops.is_empty());
         assert_eq!(transport.groups.len(), 1);
         let group = &transport.groups[0];
         assert_eq!(group.transport_id, transport_id);
@@ -852,19 +533,18 @@
         assert_eq!(output.ingress_seq, 12);
         assert_eq!(output.payload(), b"wire-packet");
         assert_eq!(
-            output.path(),
+            output.path.clone(),
             Some(TransportPath::live(transport_id, remote_addr))
         );
     }
 
     #[tokio::test]
     async fn transport_plan_dispatch_records_send_failures_without_retry() {
-        for (id, remote, counter, ingress_seq, payload, has_transport, expected) in [
+        for (id, remote, counter, payload, has_transport, expected) in [
             (
                 55,
                 "198.51.100.55:9000",
                 550,
-                13,
                 b"missing-transport".as_slice(),
                 false,
                 DataplaneOutputError::NoRoute,
@@ -873,7 +553,6 @@
                 56,
                 "127.0.0.1:9",
                 560,
-                14,
                 b"not-started".as_slice(),
                 true,
                 DataplaneOutputError::Unavailable,
@@ -888,7 +567,7 @@
                 transport_output(
                     owner,
                     counter,
-                    ingress_seq,
+                    0,
                     transport_id,
                     remote_addr.clone(),
                     payload.to_vec(),
@@ -899,13 +578,13 @@
                 transports.insert(transport_id, unstarted_udp_transport(transport_id));
             }
             let mut drops = Vec::new();
-            let mut worker = DataplaneTransportSendWorkerPool::new(8);
+            let max_batch_packets = 8;
 
-            let sent = send_dataplane_transport_groups_with_worker(
+            let sent = send_dataplane_transport_groups(
                 &transports,
                 vec![plan],
                 &mut drops,
-                &mut worker,
+                max_batch_packets,
                 None,
             )
             .await;
@@ -913,14 +592,6 @@
             assert_eq!(sent, 0);
             assert_eq!(drops.len(), 1);
             let drop = &drops[0];
-            assert_eq!(drop.owner(), owner);
-            assert_eq!(drop.counter(), counter);
-            assert_eq!(drop.ingress_seq(), ingress_seq);
-            assert_eq!(drop.target(), OutputTarget::Transport);
-            assert_eq!(
-                drop.path(),
-                Some(TransportPath::live(transport_id, remote_addr))
-            );
             assert_eq!(drop.payload_len(), payload.len());
             assert_eq!(drop.reason(), expected);
         }
@@ -970,13 +641,13 @@
         );
         let mut transports = HashMap::from([(send_transport_id, send_transport)]);
         let mut drops = Vec::new();
-        let mut worker = DataplaneTransportSendWorkerPool::new(8);
+        let max_batch_packets = 8;
 
-        let sent = send_dataplane_transport_groups_with_worker(
+        let sent = send_dataplane_transport_groups(
             &transports,
             vec![plan],
             &mut drops,
-            &mut worker,
+            max_batch_packets,
             None,
         )
         .await;
@@ -990,7 +661,7 @@
                 .expect("packet channel open");
         assert_eq!(received.transport_id, recv_transport_id);
         assert_eq!(received.remote_addr, send_local_addr);
-        assert_eq!(received.data, b"live-transport");
+        assert_eq!(received.data.as_slice(), &b"live-transport"[..]);
 
         send_transport = transports.remove(&send_transport_id).unwrap();
         send_transport.stop().await.expect("stop send udp");
@@ -998,7 +669,7 @@
     }
 
     #[tokio::test]
-    async fn transport_plan_worker_preserves_retired_order_across_lanes() {
+    async fn transport_plan_dispatch_preserves_retired_order_across_lanes() {
         let send_transport_id = TransportId::new(62);
         let recv_transport_id = TransportId::new(63);
         let (recv_packet_tx, mut recv_packet_rx) = crate::transport::packet_channel(8);
@@ -1055,13 +726,13 @@
         ];
         let mut transports = HashMap::from([(send_transport_id, send_transport)]);
         let mut drops = Vec::new();
-        let mut worker = DataplaneTransportSendWorkerPool::new(8);
+        let max_batch_packets = 8;
 
-        let sent = send_dataplane_transport_groups_with_worker(
+        let sent = send_dataplane_transport_groups(
             &transports,
                     groups,
             &mut drops,
-            &mut worker,
+            max_batch_packets,
             None,
         )
         .await;
@@ -1092,7 +763,7 @@
     }
 
     #[tokio::test]
-    async fn transport_plan_worker_segments_direct_fsp_record_after_enqueue() {
+    async fn transport_plan_dispatch_segments_direct_fsp_record_after_enqueue() {
         let send_transport_id = TransportId::new(66);
         let recv_transport_id = TransportId::new(67);
         let (recv_packet_tx, mut recv_packet_rx) = crate::transport::packet_channel(16);
@@ -1134,14 +805,14 @@
         )];
         let mut transports = HashMap::from([(send_transport_id, send_transport)]);
         let mut drops = Vec::new();
-        let mut worker = DataplaneTransportSendWorkerPool::new(1);
+        let max_batch_packets = 1;
         let mut sent_receipts = Vec::new();
 
-        let sent = send_dataplane_transport_groups_with_worker(
+        let sent = send_dataplane_transport_groups(
             &transports,
             groups,
             &mut drops,
-            &mut worker,
+            max_batch_packets,
             Some(&mut sent_receipts),
         )
         .await;
@@ -1167,8 +838,9 @@
             assert_eq!(header.total_len, wire.len());
             assert_eq!(header.fragment_index, expected_index);
             assert_eq!(header.fragment_count, expected_fragments);
-            reassembled
-                .extend_from_slice(&received.data[DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN..]);
+            reassembled.extend_from_slice(
+                &received.data.as_slice()[DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN..],
+            );
         }
         assert_eq!(reassembled, wire);
 
@@ -1178,7 +850,7 @@
     }
 
     #[tokio::test]
-    async fn transport_plan_worker_spools_ordered_bulk_past_soft_capacity() {
+    async fn transport_plan_dispatch_spools_ordered_bulk_past_soft_capacity() {
         let send_transport_id = TransportId::new(64);
         let recv_transport_id = TransportId::new(65);
         let (recv_packet_tx, mut recv_packet_rx) = crate::transport::packet_channel(8);
@@ -1229,15 +901,15 @@
         ];
         let mut transports = HashMap::from([(send_transport_id, send_transport)]);
         let mut drops = Vec::new();
-        let mut worker = DataplaneTransportSendWorkerPool::new(1);
+        let max_batch_packets = 1;
 
         let sent = tokio::time::timeout(
             std::time::Duration::from_secs(1),
-            send_dataplane_transport_groups_with_worker(
+            send_dataplane_transport_groups(
                 &transports,
                 groups,
                 &mut drops,
-                &mut worker,
+                max_batch_packets,
                 None,
             ),
         )
@@ -1266,24 +938,6 @@
     }
 
     #[test]
-    fn transport_send_worker_live_bulk_jobs_use_coalesce_cadence() {
-        let worker = DataplaneTransportSendWorkerPool::default_live();
-
-        assert_eq!(
-            worker.max_job_records_for_lane(Lane::Bulk),
-            TRANSPORT_SEND_WORKER_COALESCE_PACKETS
-        );
-        assert_eq!(
-            worker.max_job_records_for_lane(Lane::Priority),
-            TRANSPORT_SEND_WORKER_PRIORITY_RESERVE_PACKETS
-        );
-
-        let small_worker = DataplaneTransportSendWorkerPool::new(8);
-        assert_eq!(small_worker.max_job_records_for_lane(Lane::Bulk), 8);
-        assert_eq!(small_worker.max_job_records_for_lane(Lane::Priority), 8);
-    }
-
-    #[test]
     fn live_output_sink_drops_transport_without_live_path() {
         let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x47; 16]));
         let key = 47;
@@ -1294,13 +948,11 @@
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
         let outbound =
-            OutboundPacket::fmp(owner, 1, PacketClass::Bulk, 471, 0, b"no-route".to_vec());
-        let mut tun = LiveTunRecorder::default();
-        let mut endpoint = LiveEndpointRecorder::default();
+            OutboundPacket::fmp(owner, 1, PacketClass::Bulk, 471, 0, PacketBuffer::new(b"no-route".to_vec()));
         let mut transport = DataplaneTransportSendGroups::new();
 
         let turn = {
-            let mut sink = DataplaneLiveOutputSink::new(&mut tun, &mut endpoint, &mut transport);
+            let mut sink = DataplaneLiveOutputSink::new(&mut transport);
             run_aead_classified_output_turn(&mut driver, std::iter::empty(), [outbound], &mut sink, 8)
         };
 
@@ -1313,9 +965,6 @@
             turn.output_drops()[0].reason(),
             DataplaneOutputError::NoRoute
         );
-        assert_eq!(turn.output_drops()[0].path(), None);
-        assert!(tun.outputs.is_empty());
-        assert!(endpoint.outputs.is_empty());
         assert!(transport.groups.is_empty());
     }
 
@@ -1333,14 +982,14 @@
         let received = ReceivedPacket::with_timestamp(
             TransportId::new(5),
             TransportAddr::from_string("198.51.100.9:9000"),
-            fmp_encrypted_wire(81, 1200, 0, b"raw-in", open_key),
+            PacketBuffer::new(fmp_encrypted_wire(81, 1200, 0, b"raw-in", open_key)),
             123_456,
         );
         let raw =
             DataplaneRawIngress::from_received(PacketProtocol::Fmp, path.clone(), received);
         let mut router = FixedIngressRouter {
             route: Some(
-                DataplaneIngressRoute::new(owner, 7, OutputTarget::Tun)
+                DataplaneIngressRoute::new(owner, 7, OutputTarget::Transport)
                     .with_class(PacketClass::Liveness),
             ),
         };
@@ -1352,10 +1001,10 @@
         assert_eq!(turn.summary().outputs(), 1);
         assert!(turn.raw_ingress_drops().is_empty());
         assert!(turn.drops().is_empty());
-        assert_eq!(turn.outputs()[0].target, OutputTarget::Tun);
+        assert_eq!(turn.outputs()[0].target, OutputTarget::Transport);
         assert_eq!(turn.outputs()[0].counter, 1200);
         assert_eq!(
-            &turn.outputs()[0].payload[FMP_ESTABLISHED_HEADER_SIZE..],
+            &turn.outputs()[0].payload.as_slice()[FMP_ESTABLISHED_HEADER_SIZE..],
             b"raw-in"
         );
 
@@ -1379,7 +1028,7 @@
             ReceivedPacket::with_timestamp(
                 TransportId::new(5),
                 TransportAddr::from_string("198.51.100.9:9000"),
-                vec![0],
+                PacketBuffer::new(vec![0]),
                 1,
             ),
         );
@@ -1389,7 +1038,7 @@
             ReceivedPacket::with_timestamp(
                 TransportId::new(5),
                 TransportAddr::from_string("198.51.100.9:9000"),
-                fsp_encrypted_wire(44, 0, b"unrouted", 61),
+                PacketBuffer::new(fsp_encrypted_wire(44, 0, b"unrouted", 61)),
                 2,
             ),
         );
@@ -1419,5 +1068,4 @@
             turn.raw_ingress_drops()[1].transport_id(),
             TransportId::new(5)
         );
-        assert_eq!(turn.raw_ingress_drops()[1].path(), path);
     }

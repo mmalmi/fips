@@ -173,15 +173,16 @@ async fn authenticated_fmp_heartbeat_on_observed_tuple_keeps_idle_direct_link_fr
         peer,
         LinkId::new(7),
         0,
-        session,
-        crate::utils::index::SessionIndex::new(11),
-        crate::utils::index::SessionIndex::new(12),
-        TransportId::new(1),
-        current_addr.clone(),
-        crate::transport::LinkStats::new(),
-        true,
-        &crate::mmp::MmpConfig::default(),
-        None,
+        ActivePeerSession {
+            session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id: TransportId::new(1),
+            current_addr: current_addr.clone(),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: None,
+        },
     );
     active.touch(Node::now_ms().saturating_sub(31_000));
     node.peers.insert(peer_addr, active);
@@ -192,16 +193,16 @@ async fn authenticated_fmp_heartbeat_on_observed_tuple_keeps_idle_direct_link_fr
     );
 
     node.record_authenticated_fmp_receive_facts(
-        crate::node::AuthenticatedFmpReceiveFacts::new(
-            peer,
-            TransportId::new(1),
-            &observed_addr,
-            Node::now_ms(),
-            64,
-            2,
-            1_234,
-            0,
-        ),
+        crate::node::AuthenticatedFmpReceiveFacts {
+            source_peer: peer,
+            transport_id: TransportId::new(1),
+            remote_addr: &observed_addr,
+            packet_timestamp_ms: Node::now_ms(),
+            packet_len: 64,
+            fmp_counter: 2,
+            inner_timestamp_ms: 1_234,
+            fmp_flags: 0,
+        },
         Some(&peer_addr),
     );
 
@@ -261,15 +262,16 @@ async fn quiet_recent_endpoint_path_refresh_keeps_direct_payload_without_demotin
         peer,
         LinkId::new(7),
         0,
-        session,
-        crate::utils::index::SessionIndex::new(11),
-        crate::utils::index::SessionIndex::new(12),
-        TransportId::new(1),
-        crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
-        crate::transport::LinkStats::new(),
-        true,
-        &crate::mmp::MmpConfig::default(),
-        None,
+        ActivePeerSession {
+            session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id: TransportId::new(1),
+            current_addr: crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: None,
+        },
     );
     node.peers.insert(peer_addr, active);
     super::super::seed_dataplane_fmp_rx_for_test(
@@ -346,15 +348,16 @@ async fn active_endpoint_traffic_on_quiet_traversal_path_warms_fallback() {
         peer,
         LinkId::new(7),
         0,
-        link_session,
-        crate::utils::index::SessionIndex::new(11),
-        crate::utils::index::SessionIndex::new(12),
-        TransportId::new(1),
-        crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
-        crate::transport::LinkStats::new(),
-        true,
-        &crate::mmp::MmpConfig::default(),
-        None,
+        ActivePeerSession {
+            session: link_session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id: TransportId::new(1),
+            current_addr: crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: None,
+        },
     );
     node.peers.insert(peer_addr, active);
     super::super::seed_dataplane_fmp_rx_for_test(
@@ -436,15 +439,16 @@ async fn endpoint_session_traffic_keeps_traversal_liveness_fresh() {
         peer,
         LinkId::new(7),
         0,
-        link_session,
-        crate::utils::index::SessionIndex::new(11),
-        crate::utils::index::SessionIndex::new(12),
-        TransportId::new(1),
-        crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
-        crate::transport::LinkStats::new(),
-        true,
-        &crate::mmp::MmpConfig::default(),
-        None,
+        ActivePeerSession {
+            session: link_session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id: TransportId::new(1),
+            current_addr: crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: None,
+        },
     );
     node.peers.insert(peer_addr, active);
     super::super::seed_dataplane_fmp_rx_for_test(
@@ -517,15 +521,16 @@ async fn endpoint_session_traffic_from_direct_peer_keeps_liveness_fresh_without_
         peer,
         LinkId::new(7),
         0,
-        link_session,
-        crate::utils::index::SessionIndex::new(11),
-        crate::utils::index::SessionIndex::new(12),
-        TransportId::new(1),
-        crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
-        crate::transport::LinkStats::new(),
-        true,
-        &crate::mmp::MmpConfig::default(),
-        None,
+        ActivePeerSession {
+            session: link_session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id: TransportId::new(1),
+            current_addr: crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: None,
+        },
     );
     node.peers.insert(peer_addr, active);
     super::super::seed_dataplane_fmp_rx_for_test(
@@ -595,15 +600,16 @@ async fn direct_endpoint_data_refreshes_static_peer_after_fallback_send() {
         peer,
         LinkId::new(7),
         0,
-        link_session,
-        crate::utils::index::SessionIndex::new(11),
-        crate::utils::index::SessionIndex::new(12),
-        TransportId::new(1),
-        crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
-        crate::transport::LinkStats::new(),
-        true,
-        &crate::mmp::MmpConfig::default(),
-        None,
+        ActivePeerSession {
+            session: link_session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id: TransportId::new(1),
+            current_addr: crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: None,
+        },
     );
     active.touch(Node::now_ms().saturating_sub(31_000));
     node.peers.insert(peer_addr, active);
@@ -669,15 +675,16 @@ async fn authenticated_control_return_does_not_keep_direct_payload_route_trusted
         peer,
         LinkId::new(7),
         0,
-        link_session,
-        crate::utils::index::SessionIndex::new(11),
-        crate::utils::index::SessionIndex::new(12),
-        TransportId::new(1),
-        crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
-        crate::transport::LinkStats::new(),
-        true,
-        &crate::mmp::MmpConfig::default(),
-        None,
+        ActivePeerSession {
+            session: link_session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id: TransportId::new(1),
+            current_addr: crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: None,
+        },
     );
     node.peers.insert(peer_addr, active);
     super::super::seed_dataplane_fmp_rx_for_test(
@@ -757,15 +764,16 @@ async fn fresh_control_with_unreturned_endpoint_data_warms_fallback_lookup() {
         peer,
         LinkId::new(7),
         0,
-        link_session,
-        crate::utils::index::SessionIndex::new(11),
-        crate::utils::index::SessionIndex::new(12),
-        TransportId::new(1),
-        crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
-        crate::transport::LinkStats::new(),
-        true,
-        &crate::mmp::MmpConfig::default(),
-        None,
+        ActivePeerSession {
+            session: link_session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id: TransportId::new(1),
+            current_addr: crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: None,
+        },
     );
     active.touch(Node::now_ms());
     node.peers.insert(peer_addr, active);
@@ -848,15 +856,16 @@ async fn fresh_bootstrap_path_keeps_static_direct_refresh_pending() {
         peer,
         LinkId::new(7),
         0,
-        link_session,
-        crate::utils::index::SessionIndex::new(11),
-        crate::utils::index::SessionIndex::new(12),
-        bootstrap_transport,
-        crate::transport::TransportAddr::from_string("198.51.100.9:44444"),
-        crate::transport::LinkStats::new(),
-        true,
-        &crate::mmp::MmpConfig::default(),
-        None,
+        ActivePeerSession {
+            session: link_session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id: bootstrap_transport,
+            current_addr: crate::transport::TransportAddr::from_string("198.51.100.9:44444"),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: None,
+        },
     );
     let now_ms = Node::now_ms();
     active.touch(now_ms);
@@ -913,15 +922,16 @@ async fn fresh_bootstrap_endpoint_data_clears_static_direct_refresh_pending() {
         peer,
         LinkId::new(7),
         0,
-        link_session,
-        crate::utils::index::SessionIndex::new(11),
-        crate::utils::index::SessionIndex::new(12),
-        bootstrap_transport,
-        crate::transport::TransportAddr::from_string("198.51.100.9:44444"),
-        crate::transport::LinkStats::new(),
-        true,
-        &crate::mmp::MmpConfig::default(),
-        None,
+        ActivePeerSession {
+            session: link_session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id: bootstrap_transport,
+            current_addr: crate::transport::TransportAddr::from_string("198.51.100.9:44444"),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: None,
+        },
     );
     active.touch(Node::now_ms());
     node.peers.insert(peer_addr, active);
@@ -990,15 +1000,16 @@ async fn fresh_control_with_unreturned_endpoint_data_keeps_direct_without_fallba
         peer,
         LinkId::new(7),
         0,
-        link_session,
-        crate::utils::index::SessionIndex::new(11),
-        crate::utils::index::SessionIndex::new(12),
-        TransportId::new(1),
-        crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
-        crate::transport::LinkStats::new(),
-        true,
-        &crate::mmp::MmpConfig::default(),
-        None,
+        ActivePeerSession {
+            session: link_session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id: TransportId::new(1),
+            current_addr: crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: None,
+        },
     );
     active.touch(Node::now_ms());
     node.peers.insert(peer_addr, active);
@@ -1080,15 +1091,16 @@ async fn endpoint_return_via_direct_next_hop_keeps_link_liveness_fresh() {
         peer,
         LinkId::new(7),
         0,
-        link_session,
-        crate::utils::index::SessionIndex::new(11),
-        crate::utils::index::SessionIndex::new(12),
-        TransportId::new(1),
-        crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
-        crate::transport::LinkStats::new(),
-        true,
-        &crate::mmp::MmpConfig::default(),
-        None,
+        ActivePeerSession {
+            session: link_session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id: TransportId::new(1),
+            current_addr: crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: None,
+        },
     );
     node.peers.insert(peer_addr, active);
     super::super::seed_dataplane_fmp_rx_for_test(
@@ -1158,15 +1170,16 @@ async fn authenticated_endpoint_return_clears_static_retry_on_fresh_discovered_u
         peer,
         LinkId::new(7),
         0,
-        link_session,
-        crate::utils::index::SessionIndex::new(11),
-        crate::utils::index::SessionIndex::new(12),
-        TransportId::new(1),
-        crate::transport::TransportAddr::from_string("198.51.100.20:61062"),
-        crate::transport::LinkStats::new(),
-        true,
-        &crate::mmp::MmpConfig::default(),
-        None,
+        ActivePeerSession {
+            session: link_session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id: TransportId::new(1),
+            current_addr: crate::transport::TransportAddr::from_string("198.51.100.20:61062"),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: None,
+        },
     );
     active.touch(Node::now_ms());
     node.peers.insert(peer_addr, active);
@@ -1241,15 +1254,16 @@ async fn local_route_failure_for_one_peer_does_not_fast_dead_unrelated_direct_pe
         quiet_peer,
         LinkId::new(7),
         0,
-        session,
-        crate::utils::index::SessionIndex::new(11),
-        crate::utils::index::SessionIndex::new(12),
-        TransportId::new(1),
-        crate::transport::TransportAddr::from_string("198.51.100.57:51820"),
-        crate::transport::LinkStats::new(),
-        true,
-        &crate::mmp::MmpConfig::default(),
-        None,
+        ActivePeerSession {
+            session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id: TransportId::new(1),
+            current_addr: crate::transport::TransportAddr::from_string("198.51.100.57:51820"),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: None,
+        },
     );
     node.peers.insert(quiet_addr, quiet_active);
     super::super::seed_dataplane_fmp_rx_for_test(
@@ -1512,15 +1526,16 @@ async fn quiet_recent_endpoint_path_stays_alive_within_mobile_window() {
         peer,
         LinkId::new(7),
         0,
-        session,
-        crate::utils::index::SessionIndex::new(11),
-        crate::utils::index::SessionIndex::new(12),
-        TransportId::new(1),
-        crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
-        crate::transport::LinkStats::new(),
-        true,
-        &crate::mmp::MmpConfig::default(),
-        None,
+        ActivePeerSession {
+            session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id: TransportId::new(1),
+            current_addr: crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: None,
+        },
     );
     node.peers.insert(peer_addr, active);
     super::super::seed_dataplane_fmp_rx_for_test(
@@ -1585,15 +1600,16 @@ fn degraded_recent_endpoint_path_without_fallback_queues_payload() {
         peer,
         LinkId::new(7),
         0,
-        session,
-        crate::utils::index::SessionIndex::new(11),
-        crate::utils::index::SessionIndex::new(12),
-        TransportId::new(1),
-        crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
-        crate::transport::LinkStats::new(),
-        true,
-        &crate::mmp::MmpConfig::default(),
-        None,
+        ActivePeerSession {
+            session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id: TransportId::new(1),
+            current_addr: crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: None,
+        },
     );
     active.mark_stale();
     node.peers.insert(peer_addr, active);
@@ -1641,15 +1657,16 @@ async fn local_route_payload_failure_degrades_direct_and_warms_retry() {
         peer,
         LinkId::new(7),
         0,
-        session,
-        crate::utils::index::SessionIndex::new(11),
-        crate::utils::index::SessionIndex::new(12),
-        TransportId::new(1),
-        crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
-        crate::transport::LinkStats::new(),
-        true,
-        &crate::mmp::MmpConfig::default(),
-        None,
+        ActivePeerSession {
+            session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id: TransportId::new(1),
+            current_addr: crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: None,
+        },
     );
     active.mark_stale();
     node.peers.insert(peer_addr, active);
@@ -1707,15 +1724,16 @@ async fn local_route_failure_does_not_collapse_recent_endpoint_liveness_window()
         peer,
         LinkId::new(7),
         0,
-        session,
-        crate::utils::index::SessionIndex::new(11),
-        crate::utils::index::SessionIndex::new(12),
-        TransportId::new(1),
-        crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
-        crate::transport::LinkStats::new(),
-        true,
-        &crate::mmp::MmpConfig::default(),
-        None,
+        ActivePeerSession {
+            session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id: TransportId::new(1),
+            current_addr: crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: None,
+        },
     );
     node.peers.insert(peer_addr, active);
     super::super::seed_dataplane_fmp_rx_for_test(
@@ -1767,15 +1785,16 @@ async fn recent_authenticated_fmp_receive_prevents_traversal_link_dead() {
         peer,
         LinkId::new(7),
         0,
-        session,
-        crate::utils::index::SessionIndex::new(11),
-        crate::utils::index::SessionIndex::new(12),
-        TransportId::new(1),
-        crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
-        crate::transport::LinkStats::new(),
-        true,
-        &crate::mmp::MmpConfig::default(),
-        None,
+        ActivePeerSession {
+            session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id: TransportId::new(1),
+            current_addr: crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: None,
+        },
     );
     active.touch(Node::now_ms());
     node.peers.insert(peer_addr, active);
@@ -1826,35 +1845,37 @@ async fn outbound_fmp_send_does_not_refresh_direct_path_liveness() {
         peer,
         LinkId::new(7),
         0,
-        session,
-        crate::utils::index::SessionIndex::new(11),
-        crate::utils::index::SessionIndex::new(12),
-        TransportId::new(1),
-        crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
-        crate::transport::LinkStats::new(),
-        true,
-        &crate::mmp::MmpConfig::default(),
-        None,
+        ActivePeerSession {
+            session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id: TransportId::new(1),
+            current_addr: crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: None,
+        },
     );
     node.peers.insert(peer_addr, active);
     assert!(node.sync_dataplane_fmp_owner(&peer_addr));
     assert!(
         node.dataplane
             .record_authenticated_fmp_mmp_receive(
-                &peer_addr,
-                1,
-                100,
-                64,
-                false,
-                false,
-                std::time::Instant::now() - std::time::Duration::from_secs(23),
+                crate::dataplane::DataplaneAuthenticatedFmpMmpReceive::new(
+                    peer_addr,
+                    1,
+                    100,
+                    64,
+                    false,
+                    false,
+                    std::time::Instant::now() - std::time::Duration::from_secs(23),
+                ),
             )
             .is_ok(),
         "dataplane FMP MMP receive bookkeeping recorded"
     );
     assert!(
-        node.peers
-            .record_fmp_send_bookkeeping(&peer_addr, 2, 200, 64),
+        node.peers.record_fmp_send_bookkeeping(&peer_addr, 64),
         "send bookkeeping recorded"
     );
 
@@ -1950,15 +1971,16 @@ async fn link_dead_marks_direct_path_stale_and_preserves_queued_packets() {
         peer,
         LinkId::new(7),
         0,
-        link_session,
-        crate::utils::index::SessionIndex::new(11),
-        crate::utils::index::SessionIndex::new(12),
-        TransportId::new(1),
-        crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
-        crate::transport::LinkStats::new(),
-        true,
-        &crate::mmp::MmpConfig::default(),
-        None,
+        ActivePeerSession {
+            session: link_session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id: TransportId::new(1),
+            current_addr: crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: None,
+        },
     );
     active.set_handshake_msg2(vec![0x02, 0x03, 0x04]);
     node.peers.insert(peer_addr, active);

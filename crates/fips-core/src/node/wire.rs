@@ -50,13 +50,10 @@ pub const MSG2_WIRE_SIZE: usize = COMMON_PREFIX_SIZE + 4 + 4 + HANDSHAKE_MSG2_SI
 
 // Flag bit constants (byte 1 of common prefix, meaningful only for phase 0x0).
 // Reserved for upcoming rekeying, congestion signaling, and RTT measurement.
-#[allow(dead_code)]
 /// Key epoch flag — selects active key during rekeying.
 pub const FLAG_KEY_EPOCH: u8 = 0x01;
-#[allow(dead_code)]
 /// Congestion Experienced echo flag.
 pub const FLAG_CE: u8 = 0x02;
-#[allow(dead_code)]
 /// Spin bit for RTT measurement.
 pub const FLAG_SP: u8 = 0x04;
 // ============================================================================
@@ -76,10 +73,10 @@ pub struct CommonPrefix {
     /// Session lifecycle phase (low nibble of byte 0).
     pub phase: u8,
     /// Per-packet signal flags (meaningful only for phase 0x0).
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub flags: u8,
     /// Length of payload following the phase-specific header (excludes AEAD tag).
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub payload_len: u16,
 }
 
@@ -92,13 +89,17 @@ impl CommonPrefix {
 
         let version = data[0] >> 4;
         let phase = data[0] & 0x0F;
+        #[cfg(test)]
         let flags = data[1];
+        #[cfg(test)]
         let payload_len = u16::from_le_bytes([data[2], data[3]]);
 
         Some(Self {
             version,
             phase,
+            #[cfg(test)]
             flags,
+            #[cfg(test)]
             payload_len,
         })
     }

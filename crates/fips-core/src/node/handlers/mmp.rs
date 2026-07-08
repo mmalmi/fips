@@ -124,10 +124,8 @@ impl Node {
         self.peers
             .iter()
             .filter(|(_, peer)| peer.can_send())
-            .filter_map(|(addr, _)| {
-                self.dataplane_fmp_has_srtt(addr)
-                    .then(|| (*addr, self.dataplane_fmp_link_cost(addr)))
-            })
+            .filter(|(addr, _)| self.dataplane_fmp_has_srtt(addr))
+            .map(|(addr, _)| (*addr, self.dataplane_fmp_link_cost(addr)))
             .collect()
     }
 

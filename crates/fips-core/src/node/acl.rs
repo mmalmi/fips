@@ -12,7 +12,7 @@
 use crate::config::NostrDiscoveryPolicy;
 use crate::node::{Node, NodeError};
 use crate::transport::{TransportAddr, TransportId};
-use crate::upper::hosts::{DEFAULT_HOSTS_PATH, HostMap, HostMapReloader, file_mtime};
+use crate::upper::hosts::{HostMap, HostMapReloader, file_mtime};
 use crate::{NodeAddr, PeerIdentity};
 use serde::Serialize;
 use std::collections::{BTreeSet, HashSet};
@@ -295,17 +295,6 @@ pub struct PeerAclReloader {
 }
 
 impl PeerAclReloader {
-    /// Create a reloader using the standard ACL file locations.
-    #[allow(dead_code)]
-    pub fn new() -> Self {
-        Self::with_alias_sources(
-            PathBuf::from(DEFAULT_PEERS_ALLOW_PATH),
-            PathBuf::from(DEFAULT_PEERS_DENY_PATH),
-            HostMap::new(),
-            PathBuf::from(DEFAULT_HOSTS_PATH),
-        )
-    }
-
     /// Create a reloader for explicit ACL file paths.
     #[cfg(test)]
     pub(crate) fn with_paths(allow_path: PathBuf, deny_path: PathBuf) -> Self {
@@ -313,7 +302,7 @@ impl PeerAclReloader {
             allow_path,
             deny_path,
             HostMap::new(),
-            PathBuf::from(DEFAULT_HOSTS_PATH),
+            PathBuf::from(crate::upper::hosts::DEFAULT_HOSTS_PATH),
         )
     }
 

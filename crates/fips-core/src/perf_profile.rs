@@ -32,7 +32,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 69;
-const N_EVENTS: usize = 255;
+const N_EVENTS: usize = 269;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -102,7 +102,7 @@ pub enum Stage {
     DataplaneAeadDispatch = 60,
     DataplaneOutputSink = 61,
     DataplaneTransportSend = 62,
-    DataplaneTransportSendWorker = 63,
+    DataplaneTransportSendBatch = 63,
     DataplaneOwnerDispatch = 64,
     DataplaneExecutorSubmit = 65,
     DataplaneCompletionQueue = 66,
@@ -176,7 +176,7 @@ impl Stage {
             Stage::DataplaneAeadDispatch => "dataplane_aead_dispatch",
             Stage::DataplaneOutputSink => "dataplane_output_sink",
             Stage::DataplaneTransportSend => "dataplane_transport_send",
-            Stage::DataplaneTransportSendWorker => "dataplane_transport_send_worker",
+            Stage::DataplaneTransportSendBatch => "dataplane_transport_send_batch",
             Stage::DataplaneOwnerDispatch => "dataplane_owner_dispatch",
             Stage::DataplaneExecutorSubmit => "dataplane_executor_submit",
             Stage::DataplaneCompletionQueue => "dataplane_completion_queue",
@@ -251,7 +251,7 @@ fn stage_from_index(idx: usize) -> Stage {
         60 => Stage::DataplaneAeadDispatch,
         61 => Stage::DataplaneOutputSink,
         62 => Stage::DataplaneTransportSend,
-        63 => Stage::DataplaneTransportSendWorker,
+        63 => Stage::DataplaneTransportSendBatch,
         64 => Stage::DataplaneOwnerDispatch,
         65 => Stage::DataplaneExecutorSubmit,
         66 => Stage::DataplaneCompletionQueue,
@@ -474,13 +474,13 @@ pub enum Event {
     DataplaneDispatchIngressOwnerBlocked = 207,
     DataplaneSealInPlace = 208,
     DataplaneSealAllocated = 209,
-    DataplaneTransportSendWorkerBackpressure = 210,
-    DataplaneTransportSendWorkerDropped = 211,
+    ReservedEvent210 = 210,
+    ReservedEvent211 = 211,
     DataplaneIngressOwnerRunContinue = 212,
     DataplaneOutboundOwnerRunContinue = 213,
     DataplaneOutboundBatchAdmit = 214,
     DataplaneOutboundBatchPackets = 215,
-    DataplaneTransportSendWorkerSendFailed = 216,
+    DataplaneTransportSendFailed = 216,
     DataplaneDispatchOutboundOwnerBlocked = 217,
     ReservedEvent218 = 218,
     ReservedEvent219 = 219,
@@ -519,6 +519,20 @@ pub enum Event {
     DataplaneAeadCompletionRxQueuedMessages = 252,
     DataplaneAeadCompletionPendingBatches = 253,
     DataplaneAeadCompletionPendingPackets = 254,
+    DataplaneLiveDropAdmission = 255,
+    DataplaneLiveDropUnknownOwner = 256,
+    DataplaneLiveDropReplay = 257,
+    DataplaneLiveDropOwnerInFlightFull = 258,
+    DataplaneLiveDropStaleGeneration = 259,
+    DataplaneLiveDropCounterExhausted = 260,
+    DataplaneLiveDropStaleCompletionGeneration = 261,
+    DataplaneLiveDropCryptoFailed = 262,
+    DataplaneLiveDropAdmissionPriorityFull = 263,
+    DataplaneLiveDropAdmissionBulkFull = 264,
+    DataplaneLiveDropAdmissionInboundPriorityFull = 265,
+    DataplaneLiveDropAdmissionInboundBulkFull = 266,
+    DataplaneLiveDropAdmissionOutboundPriorityFull = 267,
+    DataplaneLiveDropAdmissionOutboundBulkFull = 268,
 }
 
 impl Event {
@@ -738,17 +752,13 @@ impl Event {
             }
             Event::DataplaneSealInPlace => "dataplane_seal_in_place",
             Event::DataplaneSealAllocated => "dataplane_seal_allocated",
-            Event::DataplaneTransportSendWorkerBackpressure => {
-                "dataplane_transport_send_worker_backpressure"
-            }
-            Event::DataplaneTransportSendWorkerDropped => "dataplane_transport_send_worker_dropped",
+            Event::ReservedEvent210 => "reserved_event_210",
+            Event::ReservedEvent211 => "reserved_event_211",
             Event::DataplaneIngressOwnerRunContinue => "dataplane_ingress_owner_run_continue",
             Event::DataplaneOutboundOwnerRunContinue => "dataplane_outbound_owner_run_continue",
             Event::DataplaneOutboundBatchAdmit => "dataplane_outbound_batch_admit",
             Event::DataplaneOutboundBatchPackets => "dataplane_outbound_batch_packets",
-            Event::DataplaneTransportSendWorkerSendFailed => {
-                "dataplane_transport_send_worker_send_failed"
-            }
+            Event::DataplaneTransportSendFailed => "dataplane_transport_send_failed",
             Event::DataplaneDispatchOutboundOwnerBlocked => {
                 "dataplane_dispatch_outbound_owner_blocked"
             }
@@ -804,6 +814,32 @@ impl Event {
             }
             Event::DataplaneAeadCompletionPendingPackets => {
                 "dataplane_aead_completion_pending_packets"
+            }
+            Event::DataplaneLiveDropAdmission => "dataplane_live_drop_admission",
+            Event::DataplaneLiveDropUnknownOwner => "dataplane_live_drop_unknown_owner",
+            Event::DataplaneLiveDropReplay => "dataplane_live_drop_replay",
+            Event::DataplaneLiveDropOwnerInFlightFull => "dataplane_live_drop_owner_in_flight_full",
+            Event::DataplaneLiveDropStaleGeneration => "dataplane_live_drop_stale_generation",
+            Event::DataplaneLiveDropCounterExhausted => "dataplane_live_drop_counter_exhausted",
+            Event::DataplaneLiveDropStaleCompletionGeneration => {
+                "dataplane_live_drop_stale_completion_generation"
+            }
+            Event::DataplaneLiveDropCryptoFailed => "dataplane_live_drop_crypto_failed",
+            Event::DataplaneLiveDropAdmissionPriorityFull => {
+                "dataplane_live_drop_admission_priority_full"
+            }
+            Event::DataplaneLiveDropAdmissionBulkFull => "dataplane_live_drop_admission_bulk_full",
+            Event::DataplaneLiveDropAdmissionInboundPriorityFull => {
+                "dataplane_live_drop_admission_inbound_priority_full"
+            }
+            Event::DataplaneLiveDropAdmissionInboundBulkFull => {
+                "dataplane_live_drop_admission_inbound_bulk_full"
+            }
+            Event::DataplaneLiveDropAdmissionOutboundPriorityFull => {
+                "dataplane_live_drop_admission_outbound_priority_full"
+            }
+            Event::DataplaneLiveDropAdmissionOutboundBulkFull => {
+                "dataplane_live_drop_admission_outbound_bulk_full"
             }
         }
     }
@@ -1021,13 +1057,13 @@ fn event_from_index(idx: usize) -> Event {
         207 => Event::DataplaneDispatchIngressOwnerBlocked,
         208 => Event::DataplaneSealInPlace,
         209 => Event::DataplaneSealAllocated,
-        210 => Event::DataplaneTransportSendWorkerBackpressure,
-        211 => Event::DataplaneTransportSendWorkerDropped,
+        210 => Event::ReservedEvent210,
+        211 => Event::ReservedEvent211,
         212 => Event::DataplaneIngressOwnerRunContinue,
         213 => Event::DataplaneOutboundOwnerRunContinue,
         214 => Event::DataplaneOutboundBatchAdmit,
         215 => Event::DataplaneOutboundBatchPackets,
-        216 => Event::DataplaneTransportSendWorkerSendFailed,
+        216 => Event::DataplaneTransportSendFailed,
         217 => Event::DataplaneDispatchOutboundOwnerBlocked,
         218 => Event::ReservedEvent218,
         219 => Event::ReservedEvent219,
@@ -1066,6 +1102,20 @@ fn event_from_index(idx: usize) -> Event {
         252 => Event::DataplaneAeadCompletionRxQueuedMessages,
         253 => Event::DataplaneAeadCompletionPendingBatches,
         254 => Event::DataplaneAeadCompletionPendingPackets,
+        255 => Event::DataplaneLiveDropAdmission,
+        256 => Event::DataplaneLiveDropUnknownOwner,
+        257 => Event::DataplaneLiveDropReplay,
+        258 => Event::DataplaneLiveDropOwnerInFlightFull,
+        259 => Event::DataplaneLiveDropStaleGeneration,
+        260 => Event::DataplaneLiveDropCounterExhausted,
+        261 => Event::DataplaneLiveDropStaleCompletionGeneration,
+        262 => Event::DataplaneLiveDropCryptoFailed,
+        263 => Event::DataplaneLiveDropAdmissionPriorityFull,
+        264 => Event::DataplaneLiveDropAdmissionBulkFull,
+        265 => Event::DataplaneLiveDropAdmissionInboundPriorityFull,
+        266 => Event::DataplaneLiveDropAdmissionInboundBulkFull,
+        267 => Event::DataplaneLiveDropAdmissionOutboundPriorityFull,
+        268 => Event::DataplaneLiveDropAdmissionOutboundBulkFull,
         _ => unreachable!(),
     }
 }

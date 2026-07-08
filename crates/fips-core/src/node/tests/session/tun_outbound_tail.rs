@@ -21,7 +21,13 @@ async fn test_tun_outbound_unknown_destination() {
     send_tun_packet_via_dataplane(&mut nodes, 0, ipv6_packet).await;
 
     // Should receive ICMPv6 Destination Unreachable back on TUN
-    let delivered: Vec<Vec<u8>> = std::iter::from_fn(|| tun_rx.try_recv().ok()).collect();
+    let delivered: Vec<Vec<u8>> = std::iter::from_fn(|| {
+        tun_rx
+            .try_recv_packet()
+            .ok()
+            .map(|packet| packet.as_slice().to_vec())
+    })
+    .collect();
     assert_eq!(
         delivered.len(),
         1,
@@ -82,7 +88,13 @@ async fn test_tun_outbound_3node_forwarded() {
     );
 
     // Verify packet delivered to Node 2
-    let delivered: Vec<Vec<u8>> = std::iter::from_fn(|| tun_rx.try_recv().ok()).collect();
+    let delivered: Vec<Vec<u8>> = std::iter::from_fn(|| {
+        tun_rx
+            .try_recv_packet()
+            .ok()
+            .map(|packet| packet.as_slice().to_vec())
+    })
+    .collect();
     assert_eq!(delivered.len(), 1, "Packet should be delivered to Node 2");
     assert_eq!(delivered[0], ipv6_packet);
 
@@ -139,7 +151,13 @@ async fn test_tun_outbound_pending_queue_flush() {
     );
 
     // All 5 packets should have been delivered
-    let delivered: Vec<Vec<u8>> = std::iter::from_fn(|| tun_rx.try_recv().ok()).collect();
+    let delivered: Vec<Vec<u8>> = std::iter::from_fn(|| {
+        tun_rx
+            .try_recv_packet()
+            .ok()
+            .map(|packet| packet.as_slice().to_vec())
+    })
+    .collect();
     assert_eq!(
         delivered.len(),
         5,

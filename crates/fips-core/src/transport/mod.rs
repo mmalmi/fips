@@ -27,8 +27,6 @@ mod tests;
 
 pub use handle::TransportHandle;
 pub(crate) use packet_channel::PacketFastIngressSink;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(crate) use packet_channel::received_timestamp_ms;
 pub use packet_channel::{PacketBuffer, PacketRx, PacketTx, ReceivedPacket, packet_channel};
 
 use secp256k1::XOnlyPublicKey;

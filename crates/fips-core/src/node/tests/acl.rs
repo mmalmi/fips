@@ -202,7 +202,7 @@ async fn test_inbound_msg1_denied_by_acl() {
     let packet = ReceivedPacket::with_timestamp(
         TransportId::new(1),
         TransportAddr::from_string("127.0.0.1:5000"),
-        wire_msg1,
+        crate::transport::PacketBuffer::new(wire_msg1),
         1000,
     );
 
@@ -263,7 +263,12 @@ async fn test_outbound_msg2_denied_after_acl_reload() {
     std::fs::write(deny_path(&dir), format!("{}\n", node_b.npub())).unwrap();
     assert!(node_a.reload_peer_acl());
 
-    let packet = ReceivedPacket::with_timestamp(transport_id, remote_addr, wire_msg2, 1100);
+    let packet = ReceivedPacket::with_timestamp(
+        transport_id,
+        remote_addr,
+        crate::transport::PacketBuffer::new(wire_msg2),
+        1100,
+    );
     node_a.handle_msg2(packet).await;
 
     assert_eq!(node_a.peer_count(), 0);

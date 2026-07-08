@@ -66,7 +66,6 @@ impl Node {
                     src = %self.peer_display_name(&src_addr),
                     "Dropping established FSP payload outside dataplane receive path"
                 );
-                return;
             }
             _ => {
                 debug!(phase = prefix.phase, "Unknown FSP phase");
@@ -130,34 +129,52 @@ impl Node {
 
     pub(in crate::node) async fn process_dataplane_authenticated_ingress(
         &mut self,
-        ingress_batch: Vec<crate::dataplane::DataplaneFspAuthenticatedIngress>,
+        ingress_batch: crate::dataplane::DataplaneFspAuthenticatedIngress,
     ) -> usize {
         let mut processed = 0usize;
         let mut endpoint_batches = Vec::new();
         let mut session_ingress = Vec::new();
+        let (runs, endpoint_data_batches, sessions) = ingress_batch.into_parts();
+        let mut endpoint_data_batches = endpoint_data_batches.into_iter();
+        let mut sessions = sessions.into_iter();
 
-        for ingress in ingress_batch {
-            match ingress {
-                crate::dataplane::DataplaneFspAuthenticatedIngress::EndpointDataBatch(bulk) => {
+        for run in runs {
+            match run {
+                crate::dataplane::DataplaneFspAuthenticatedIngressRun::EndpointDataBatch => {
                     processed = processed.saturating_add(
                         self.process_dataplane_authenticated_sessions(std::mem::take(
                             &mut session_ingress,
                         ))
                         .await,
                     );
-                    endpoint_batches.push(bulk);
+                    endpoint_batches.push(
+                        endpoint_data_batches
+                            .next()
+                            .expect("endpoint-data run has a batch"),
+                    );
                 }
-                crate::dataplane::DataplaneFspAuthenticatedIngress::Session(ingress) => {
+                crate::dataplane::DataplaneFspAuthenticatedIngressRun::Sessions { count } => {
                     processed = processed.saturating_add(
                         self.process_dataplane_compact_endpoint_data(std::mem::take(
                             &mut endpoint_batches,
                         ))
                         .await,
                     );
-                    session_ingress.push(ingress);
+                    for _ in 0..count {
+                        session_ingress
+                            .push(sessions.next().expect("session run has session ingress"));
+                    }
                 }
             }
         }
+        debug_assert!(
+            endpoint_data_batches.next().is_none(),
+            "authenticated ingress runs consumed all endpoint-data batches"
+        );
+        debug_assert!(
+            sessions.next().is_none(),
+            "authenticated ingress runs consumed all session ingress"
+        );
 
         processed = processed.saturating_add(
             self.process_dataplane_compact_endpoint_data(endpoint_batches)
@@ -181,11 +198,11 @@ impl Node {
             .iter()
             .map(crate::dataplane::DataplaneEndpointDataBatch::len)
             .sum::<usize>();
-        let direct_packet_runs = endpoint_batches
+        let direct_packet_count = endpoint_batches
             .iter()
-            .map(crate::dataplane::DataplaneEndpointDataBatch::direct_packet_run_count)
+            .map(crate::dataplane::DataplaneEndpointDataBatch::packet_count)
             .sum::<usize>();
-        let direct_sink = if direct_packet_runs > 0 {
+        let direct_sink = if direct_packet_count > 0 {
             match self.dataplane_endpoint_direct_sink() {
                 Some(sink) => Some(sink),
                 None => {
@@ -227,11 +244,11 @@ impl Node {
         }
 
         let pending_flush_destinations = endpoint_commit.finish(self);
-        if direct_packet_runs > 0 {
+        if direct_packet_count > 0 {
             let direct_sink = direct_sink.expect("direct sink is required when packet runs remain");
             for batch in endpoint_batches {
+                let count = batch.packet_count();
                 let packet_batch = batch.into_direct_packet_batch();
-                let count = packet_batch.len();
                 if count > 0 && direct_sink.deliver_direct_packet_batch(packet_batch).is_err() {
                     crate::perf_profile::record_event_count(
                         crate::perf_profile::Event::EndpointEventBulkDropped,
@@ -265,14 +282,10 @@ impl Node {
         if let Some(tun_tx) = &self.tun_tx {
             if !packets.is_empty() {
                 let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::TunWrite);
-                let failures = tun_tx.send_batch_with_lanes(
-                    packets
-                        .drain(..)
-                        .map(|packet| (packet, crate::upper::tun::TunWriteLane::Priority)),
-                );
-                if !failures.is_empty() {
+                let dropped = tun_tx.send_batch(packets.drain(..));
+                if dropped != 0 {
                     debug!(
-                        dropped = failures.len(),
+                        dropped,
                         "Failed to deliver decompressed IPv6 packet batch to TUN"
                     );
                 }
@@ -298,9 +311,9 @@ impl Node {
             previous_hop_addr,
             ce_flag,
             _activity_tick,
-            timestamp_ms,
+            _timestamp_ms,
             msg_type,
-            inner_flags,
+            _inner_flags,
             plaintext,
         ) = ingress.into_parts();
         let body_len = plaintext
@@ -329,8 +342,7 @@ impl Node {
             );
         }
 
-        let message =
-            AuthenticatedSessionMessage::new(source_peer, plaintext, msg_type, inner_flags, timestamp_ms);
+        let message = AuthenticatedSessionMessage::new(source_peer, plaintext, msg_type);
         Some(AuthenticatedSessionDispatch::new(
             source_addr,
             previous_hop_addr,
@@ -376,26 +388,19 @@ impl Node {
         let _ = self.promote_dataplane_authenticated_pending_fmp_epoch(source_addr, received_k_bit);
         if liveness_bookkeeping_allowed {
             let _ = self.dataplane.record_authenticated_fmp_mmp_receive(
-                source_addr,
-                fmp.fmp_counter,
-                fmp.inner_timestamp_ms,
-                fmp.packet_len,
-                fmp.fmp_flags & FLAG_CE != 0,
-                fmp.fmp_flags & FLAG_SP != 0,
-                now,
+                crate::dataplane::DataplaneAuthenticatedFmpMmpReceive::new(
+                    *source_addr,
+                    fmp.fmp_counter,
+                    fmp.inner_timestamp_ms,
+                    fmp.packet_len,
+                    fmp.fmp_flags & FLAG_CE != 0,
+                    fmp.fmp_flags & FLAG_SP != 0,
+                    now,
+                ),
             );
         }
         let bookkeeping = self.peers.record_authenticated_fmp_receive(
-            source_addr,
-            fmp.transport_id,
-            &fmp.remote_addr,
-            fmp.packet_timestamp_ms,
-            fmp.packet_len,
-            fmp.fmp_counter,
-            fmp.inner_timestamp_ms,
-            fmp.fmp_flags & FLAG_CE != 0,
-            fmp.fmp_flags & FLAG_SP != 0,
-            now,
+            fmp,
             liveness_bookkeeping_allowed,
             path_bookkeeping_allowed,
         );

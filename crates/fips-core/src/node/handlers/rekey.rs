@@ -87,6 +87,16 @@ struct SessionRekeyTickPlan {
     initiate: Vec<NodeAddr>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SessionRekeyTickConfig {
+    now_ms: u64,
+    rekey_after_secs: u64,
+    rekey_after_messages: u64,
+    drain_ms: u64,
+    dampening_ms: u64,
+    cutover_delay_ms: u64,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct FmpRekeyTickPlan {
     cutover: Vec<NodeAddr>,
@@ -333,12 +343,7 @@ impl crate::node::SessionRegistry {
 
     fn plan_session_rekey_tick<F>(
         &self,
-        now_ms: u64,
-        rekey_after_secs: u64,
-        rekey_after_messages: u64,
-        drain_ms: u64,
-        dampening_ms: u64,
-        cutover_delay_ms: u64,
+        tick: SessionRekeyTickConfig,
         mut send_counter_for: F,
     ) -> SessionRekeyTickPlan
     where
@@ -354,29 +359,30 @@ impl crate::node::SessionRegistry {
             if entry.pending_new_session().is_some()
                 && !entry.has_rekey_in_progress()
                 && entry.is_rekey_initiator()
-                && now_ms.saturating_sub(entry.rekey_completed_ms()) >= cutover_delay_ms
+                && tick.now_ms.saturating_sub(entry.rekey_completed_ms()) >= tick.cutover_delay_ms
             {
                 plan.cutover.push(*node_addr);
                 continue;
             }
 
-            if entry.is_draining() && entry.drain_expired(now_ms, drain_ms) {
+            if entry.is_draining() && entry.drain_expired(tick.now_ms, tick.drain_ms) {
                 plan.drain.push(*node_addr);
             }
 
             if entry.has_rekey_in_progress()
                 || entry.pending_new_session().is_some()
                 || entry.rekey_msg3_payload().is_some()
-                || entry.is_rekey_dampened(now_ms, dampening_ms)
+                || entry.is_rekey_dampened(tick.now_ms, tick.dampening_ms)
             {
                 continue;
             }
 
-            let elapsed_secs = now_ms.saturating_sub(entry.session_start_ms()) / 1000;
-            let effective_after_secs =
-                rekey_after_secs.saturating_add_signed(entry.rekey_jitter_secs());
+            let elapsed_secs = tick.now_ms.saturating_sub(entry.session_start_ms()) / 1000;
+            let effective_after_secs = tick
+                .rekey_after_secs
+                .saturating_add_signed(entry.rekey_jitter_secs());
             if elapsed_secs >= effective_after_secs
-                || send_counter_for(node_addr) >= rekey_after_messages
+                || send_counter_for(node_addr) >= tick.rekey_after_messages
             {
                 plan.initiate.push(*node_addr);
             }
@@ -792,33 +798,29 @@ impl Node {
             return;
         }
 
-        let rekey_after_secs = self.config.node.rekey.after_secs;
-        let rekey_after_messages = self.config.node.rekey.after_messages;
-        let now_ms = Self::now_ms();
-        let drain_ms = FSP_DRAIN_WINDOW_SECS * 1000;
-        let dampening_ms = REKEY_DAMPENING_SECS * 1000;
+        let tick = SessionRekeyTickConfig {
+            now_ms: Self::now_ms(),
+            rekey_after_secs: self.config.node.rekey.after_secs,
+            rekey_after_messages: self.config.node.rekey.after_messages,
+            drain_ms: FSP_DRAIN_WINDOW_SECS * 1000,
+            dampening_ms: REKEY_DAMPENING_SECS * 1000,
+            cutover_delay_ms: FSP_CUTOVER_DELAY_MS,
+        };
 
         let dataplane = &self.dataplane;
-        let plan = self.sessions.plan_session_rekey_tick(
-            now_ms,
-            rekey_after_secs,
-            rekey_after_messages,
-            drain_ms,
-            dampening_ms,
-            FSP_CUTOVER_DELAY_MS,
-            |addr| {
-                dataplane
-                    .fsp_owner_activity(addr)
-                    .map_or(0, |activity| activity.send_counter())
-            },
-        );
+        let plan = self.sessions.plan_session_rekey_tick(tick, |addr| {
+            dataplane
+                .fsp_owner_activity(addr)
+                .map_or(0, |activity| activity.send_counter())
+        });
 
         // Execute cutover for initiator side
         for node_addr in plan.cutover {
-            if self
-                .sessions
-                .cutover_due_session_rekey(&node_addr, now_ms, FSP_CUTOVER_DELAY_MS)
-            {
+            if self.sessions.cutover_due_session_rekey(
+                &node_addr,
+                tick.now_ms,
+                tick.cutover_delay_ms,
+            ) {
                 debug!(
                     peer = %self.peer_display_name(&node_addr),
                     "FSP rekey cutover complete (initiator), K-bit flipped"
@@ -829,10 +831,11 @@ impl Node {
 
         // Execute drain completion
         for node_addr in plan.drain {
-            if self
-                .sessions
-                .complete_due_session_rekey_drain(&node_addr, now_ms, drain_ms)
-            {
+            if self.sessions.complete_due_session_rekey_drain(
+                &node_addr,
+                tick.now_ms,
+                tick.drain_ms,
+            ) {
                 let epoch = self
                     .sessions
                     .get(&node_addr)

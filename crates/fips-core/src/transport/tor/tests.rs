@@ -267,7 +267,7 @@ async fn test_send_recv_via_socks5() {
         .expect("timeout waiting for packet")
         .expect("channel closed");
 
-    assert_eq!(received.data, frame);
+    assert_eq!(received.data.as_slice(), frame.as_slice());
 
     // Clean up
     tor.stop_async().await.unwrap();

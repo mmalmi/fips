@@ -4,7 +4,6 @@
 //! ActivePeer holds tree state, Bloom filter, and routing information.
 
 use crate::bloom::BloomFilter;
-use crate::mmp::MmpConfig;
 use crate::node::REKEY_JITTER_SECS;
 use crate::noise::{HandshakeState as NoiseHandshakeState, NoiseError, NoiseSession};
 use crate::transport::{LinkId, LinkStats, TransportAddr, TransportId};
@@ -65,6 +64,18 @@ impl fmt::Display for ConnectivityState {
         };
         write!(f, "{}", s)
     }
+}
+
+/// Established Noise session and live path facts for an authenticated peer.
+pub struct ActivePeerSession {
+    pub session: NoiseSession,
+    pub our_index: SessionIndex,
+    pub their_index: SessionIndex,
+    pub transport_id: TransportId,
+    pub current_addr: TransportAddr,
+    pub link_stats: LinkStats,
+    pub is_initiator: bool,
+    pub remote_epoch: Option<[u8; 8]>,
 }
 
 /// A fully authenticated remote FIPS node.
@@ -276,31 +287,22 @@ impl ActivePeer {
     ///
     /// This is the primary constructor for the wire protocol path.
     /// The NoiseSession provides encryption/decryption and replay protection.
-    #[allow(clippy::too_many_arguments)]
     pub fn with_session(
         identity: PeerIdentity,
         link_id: LinkId,
         authenticated_at: u64,
-        noise_session: NoiseSession,
-        our_index: SessionIndex,
-        their_index: SessionIndex,
-        transport_id: TransportId,
-        current_addr: TransportAddr,
-        link_stats: LinkStats,
-        is_initiator: bool,
-        _mmp_config: &MmpConfig,
-        remote_epoch: Option<[u8; 8]>,
+        session: ActivePeerSession,
     ) -> Self {
         let now = Instant::now();
         Self {
             identity,
             link_id,
             connectivity: ConnectivityState::Connected,
-            noise_session: Some(noise_session),
-            our_index: Some(our_index),
-            their_index: Some(their_index),
-            transport_id: Some(transport_id),
-            current_addr: Some(current_addr),
+            noise_session: Some(session.session),
+            our_index: Some(session.our_index),
+            their_index: Some(session.their_index),
+            transport_id: Some(session.transport_id),
+            current_addr: Some(session.current_addr),
             declaration: None,
             ancestry: None,
             tree_announce_min_interval_ms: 500,
@@ -312,11 +314,11 @@ impl ActivePeer {
             pending_filter_update: true,
             session_start: now,
             session_generation: authenticated_at.max(1),
-            link_stats,
+            link_stats: session.link_stats,
             authenticated_at,
             last_seen: authenticated_at,
-            remote_epoch,
-            fmp_mmp_is_initiator: is_initiator,
+            remote_epoch: session.remote_epoch,
+            fmp_mmp_is_initiator: session.is_initiator,
             last_heartbeat_sent: None,
             handshake_msg2: None,
             replay_suppressed_count: 0,
@@ -727,7 +729,6 @@ impl ActivePeer {
         &mut self,
         declaration: ParentDeclaration,
         ancestry: TreeCoordinate,
-        _current_time_ms: u64,
     ) {
         self.declaration = Some(declaration);
         self.ancestry = Some(ancestry);

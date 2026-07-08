@@ -1,6 +1,6 @@
 use super::stream::read_fmp_packet;
 use super::*;
-use crate::transport::ReceivedPacket;
+use crate::transport::{PacketBuffer, ReceivedPacket};
 use tokio::time::timeout;
 
 // ============================================================================
@@ -19,7 +19,6 @@ pub(super) struct AcceptConfig {
 }
 
 /// TCP accept loop — runs as a spawned task when bind_addr is configured.
-#[allow(clippy::too_many_arguments)]
 pub(super) async fn accept_loop(
     listener: TcpListener,
     transport_id: TransportId,
@@ -130,8 +129,6 @@ pub(super) async fn accept_loop(
                 let conn = TcpConnection {
                     writer,
                     recv_task,
-                    mtu: conn_mtu,
-                    established_at: Instant::now(),
                     direction: Direction::Inbound,
                 };
 
@@ -235,7 +232,12 @@ pub(super) async fn tcp_receive_loop(
                     "TCP packet received"
                 );
 
-                let packet = ReceivedPacket::new(transport_id, remote_addr.clone(), data);
+                let packet = ReceivedPacket::with_timestamp(
+                    transport_id,
+                    remote_addr.clone(),
+                    PacketBuffer::new(data),
+                    crate::time::now_ms(),
+                );
 
                 if packet_tx.send(packet).is_err() {
                     debug!(

@@ -61,14 +61,30 @@
     fn flatten_retired_outputs(batches: Vec<RetiredOutputs>) -> Vec<RetiredPacket> {
         let mut retired = Vec::new();
         for batch in batches {
-            for item in batch.into_items() {
-                match item {
-                    RetiredOutput::Packet(packet) => retired.push(packet),
-                    RetiredOutput::EndpointDataBatch(_) => {
-                        panic!("test helper did not request endpoint-data batch")
+            let (runs, packets, endpoint_data_batches) = batch.into_parts();
+            let mut packets = packets.into_iter();
+            let mut endpoint_data_batches = endpoint_data_batches.into_iter();
+            for run in runs {
+                match run {
+                    RetiredOutputRun::Packets { count } => {
+                        for _ in 0..count {
+                            retired.push(packets.next().expect("retired packet run has packet"));
+                        }
+                    }
+                    RetiredOutputRun::EndpointDataBatch => {
+                        let _ = endpoint_data_batches.next();
+                        panic!("test helper did not request endpoint-data batch");
                     }
                 }
             }
+            debug_assert!(
+                packets.next().is_none(),
+                "retired runs consumed all packet items"
+            );
+            debug_assert!(
+                endpoint_data_batches.next().is_none(),
+                "retired runs consumed all endpoint-data batches"
+            );
         }
         retired
     }
@@ -104,7 +120,7 @@
         ) -> usize {
             completions.clear();
             let count = prepared.len();
-            self.prepared.extend(prepared.drain(..));
+            self.prepared.append(prepared);
             count
         }
     }
@@ -112,8 +128,8 @@
     fn dispatch_available(mover: &mut Dataplane, limit: usize) -> Vec<CryptoWork> {
         capture_prepared_work(mover, limit)
             .into_iter()
-            .filter_map(|prepared| match prepared {
-                PreparedCryptoWork::Open { work, .. } => Some(work),
+            .map(|prepared| match prepared {
+                PreparedCryptoWork::Open { work, .. } => work,
                 PreparedCryptoWork::Seal { work, .. } => {
                     panic!("unexpected outbound work while capturing inbound: {work:?}")
                 }
@@ -130,8 +146,8 @@
     ) -> Vec<OutboundCryptoWork> {
         capture_prepared_work(mover, limit)
             .into_iter()
-            .filter_map(|prepared| match prepared {
-                PreparedCryptoWork::Seal { work, .. } => Some(work),
+            .map(|prepared| match prepared {
+                PreparedCryptoWork::Seal { work, .. } => work,
                 PreparedCryptoWork::Open { work, .. } => {
                     panic!("unexpected inbound work while capturing outbound: {work:?}")
                 }
@@ -146,15 +162,19 @@
         seed_missing_test_owner_keys(mover);
         let mut prepared_work = Vec::new();
         let mut completion_work = Vec::new();
+        let mut completion_batches = Vec::new();
         let mut retired = Vec::new();
         let mut drops = Vec::new();
         let mut executor = CapturingPreparedCryptoExecutor::default();
         mover.run_aead_available_into_with_executor(
             limit,
-            &mut prepared_work,
-            &mut completion_work,
-            &mut retired,
-            &mut drops,
+            DataplaneAeadRunBuffers::new(
+                &mut prepared_work,
+                &mut completion_work,
+                &mut completion_batches,
+                &mut retired,
+                &mut drops,
+            ),
             &mut executor,
             false,
         );
@@ -178,98 +198,18 @@
         }
     }
 
-    fn drain_test_outbound_packets<F>(
-        outbound: &mut VecDeque<OutboundPacket>,
-        limit: usize,
-        mut push: F,
-    ) -> usize
-    where
-        F: FnMut(OutboundPacket),
-    {
-        let mut drained = 0;
-        while drained < limit {
-            let Some(packet) = outbound.pop_front() else {
-                break;
-            };
-            push(packet);
-            drained += 1;
-        }
-        drained
-    }
-
     impl DataplaneCompletionSource for VecDeque<CryptoCompletion> {
-        fn drain_completions_into(
+        fn drain_completion_batches_into(
             &mut self,
             limit: usize,
-            completions: &mut Vec<CryptoCompletion>,
+            completion_batches: &mut Vec<CryptoCompletionBatch>,
         ) -> usize {
             let mut drained = 0;
             while drained < limit {
                 let Some(completion) = self.pop_front() else {
                     break;
                 };
-                completions.push(completion);
-                drained += 1;
-            }
-            drained
-        }
-    }
-
-    #[derive(Clone, Debug)]
-    struct DataplaneLiveIngressPacket {
-        protocol: PacketProtocol,
-        fsp_source: Option<NodeAddr>,
-        packet: ReceivedPacket,
-    }
-
-    impl DataplaneLiveIngressPacket {
-        fn fmp(packet: ReceivedPacket) -> Self {
-            Self {
-                protocol: PacketProtocol::Fmp,
-                fsp_source: None,
-                packet,
-            }
-        }
-
-        fn fsp(packet: ReceivedPacket, source_addr: NodeAddr) -> Self {
-            Self {
-                protocol: PacketProtocol::Fsp,
-                fsp_source: Some(source_addr),
-                packet,
-            }
-        }
-
-        fn into_raw_ingress(self) -> DataplaneRawIngress {
-            let raw = DataplaneRawIngress::from_live_received(self.protocol, self.packet);
-            match self.fsp_source {
-                Some(source_addr) => raw.with_fsp_source(source_addr),
-                None => raw,
-            }
-        }
-    }
-
-    #[derive(Clone, Debug)]
-    struct DataplaneLiveRawIngressSource {
-        source: VecDeque<DataplaneLiveIngressPacket>,
-    }
-
-    impl DataplaneLiveRawIngressSource {
-        fn new(source: VecDeque<DataplaneLiveIngressPacket>) -> Self {
-            Self { source }
-        }
-    }
-
-    impl DataplaneRawIngressSource for DataplaneLiveRawIngressSource {
-        fn drain_raw_ingress<F>(&mut self, limit: usize, mut push: F) -> usize
-        where
-            F: FnMut(DataplaneRawIngress),
-        {
-            let mut drained = 0;
-            while drained < limit {
-                let Some(packet) = self.source.pop_front() else {
-                    break;
-                };
-                push(packet.into_raw_ingress());
+                CryptoCompletionBatch::push_grouped(completion, completion_batches);
                 drained += 1;
             }
             drained
@@ -279,15 +219,19 @@
     fn run_aead_available(mover: &mut Dataplane, limit: usize) -> DataplaneTurn {
         let mut prepared_work = Vec::new();
         let mut completion_work = Vec::new();
+        let mut completion_batches = Vec::new();
         let mut retired = Vec::new();
         let mut drops = Vec::new();
-        let mut executor = InlineDataplaneCryptoExecutor::default();
+        let mut executor = InlineDataplaneCryptoExecutor;
         let dispatched = mover.run_aead_available_into_with_executor(
             limit,
-            &mut prepared_work,
-            &mut completion_work,
-            &mut retired,
-            &mut drops,
+            DataplaneAeadRunBuffers::new(
+                &mut prepared_work,
+                &mut completion_work,
+                &mut completion_batches,
+                &mut retired,
+                &mut drops,
+            ),
             &mut executor,
             false,
         );
@@ -312,14 +256,19 @@
         driver.completion_work.clear();
         driver.completion_work.extend(completions);
         let queued = driver.completion_work.len();
+        driver.completion_batches.clear();
+        CryptoCompletionBatch::drain_completion_vec_into_batches(
+            &mut driver.completion_work,
+            &mut driver.completion_batches,
+        );
         let mut summary = DataplaneRuntimeSummary::default();
         summary.completions = summary.completions.saturating_add(queued);
         driver
             .mover
-            .queue_completion_batch(&mut driver.completion_work);
+            .queue_completion_batches(&mut driver.completion_batches);
         driver.retire_queued_completed_aead_outputs(queued, false);
         let summary = driver.collect_retired_outputs(summary);
-        let mut executor = InlineDataplaneCryptoExecutor::default();
+        let mut executor = InlineDataplaneCryptoExecutor;
         let summary =
             driver.collect_aead_outputs_with_executor(summary, limit, &mut executor, false);
 
@@ -433,17 +382,21 @@
         finish_aead_turn_with_inline(driver, summary, limit)
     }
 
+    struct AeadOutputCompletionTurn<'a, C, RI, R, S> {
+        completions: &'a mut C,
+        completion_limit: usize,
+        raw_ingress: &'a mut RI,
+        router: &'a mut R,
+        raw_ingress_limit: usize,
+        outbound: &'a mut VecDeque<OutboundPacket>,
+        outbound_limit: usize,
+        sink: &'a mut S,
+        crypto_limit: usize,
+    }
+
     fn pump_aead_output_completion_turn<'a, C, RI, R, S>(
         driver: &'a mut DataplaneTurnDriver,
-        completions: &mut C,
-        completion_limit: usize,
-        raw_ingress: &mut RI,
-        router: &mut R,
-        raw_ingress_limit: usize,
-        outbound: &mut VecDeque<OutboundPacket>,
-        outbound_limit: usize,
-        sink: &mut S,
-        crypto_limit: usize,
+        request: AeadOutputCompletionTurn<'_, C, RI, R, S>,
     ) -> DataplaneRuntimeTurn<'a>
     where
         C: DataplaneCompletionSource,
@@ -451,57 +404,98 @@
         R: DataplaneIngressRouter,
         S: DataplaneOutputSink,
     {
-        let mut executor = InlineDataplaneCryptoExecutor::default();
+        let AeadOutputCompletionTurn {
+            completions,
+            completion_limit,
+            raw_ingress,
+            router,
+            raw_ingress_limit,
+            outbound,
+            outbound_limit,
+            sink,
+            crypto_limit,
+        } = request;
+        let mut executor = InlineDataplaneCryptoExecutor;
         driver.reset_turn_buffers();
 
         let mut summary = DataplaneRuntimeSummary::default();
-        driver.completion_work.clear();
-        let queued =
-            completions.drain_completions_into(completion_limit, &mut driver.completion_work);
+        driver.completion_batches.clear();
+        let queued = completions
+            .drain_completion_batches_into(completion_limit, &mut driver.completion_batches);
         summary.completions = summary.completions.saturating_add(queued);
         driver
             .mover
-            .queue_completion_batch(&mut driver.completion_work);
+            .queue_completion_batches(&mut driver.completion_batches);
         driver.retire_queued_completed_aead_outputs(completion_limit, false);
         summary = driver.collect_retired_outputs(summary);
 
         raw_ingress.drain_raw_ingress(raw_ingress_limit, |packet| {
             admit_test_raw_ingress_packet(driver, packet, router, &mut summary);
         });
-        drain_test_outbound_packets(outbound, outbound_limit, |packet| {
+        let outbound_count = outbound_limit.min(outbound.len());
+        for packet in outbound.drain(..outbound_count) {
             driver.admit_outbound_packet(packet, &mut summary);
-        });
+        }
 
         summary =
             driver.collect_aead_outputs_with_executor(summary, crypto_limit, &mut executor, false);
         driver.send_collected_outputs(summary, sink)
     }
 
-    async fn pump_aead_live_node_route_table_turn<RI, Transports>(
-        driver: &mut DataplaneTurnDriver,
-        raw_ingress: &mut RI,
-        routes: &mut DataplaneLiveRouteTable,
+    struct AeadLiveRouteTableTurn<'a, RI> {
+        raw_ingress: &'a mut RI,
+        routes: &'a mut DataplaneLiveRouteTable,
         raw_ingress_limit: usize,
-        endpoint_data_rx: &mut EndpointDataBatchRx,
+        endpoint_data_rx: &'a mut EndpointDataBatchRx,
         endpoint_limit: usize,
-        tun_outbound_rx: &mut TunOutboundRx,
+        tun_outbound_rx: &'a mut TunOutboundRx,
         tun_limit: usize,
-        deferred_endpoint_data_batches: &mut Vec<NodeEndpointDataBatch>,
-        deferred_tun_packets: &mut Vec<Vec<u8>>,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        transports: &Transports,
+        deferred_endpoint_data_batches: &'a mut Vec<NodeEndpointDataBatch>,
+        deferred_tun_packets: &'a mut Vec<Vec<u8>>,
+        endpoint_tx: &'a EndpointEventSender,
+        transports: &'a HashMap<TransportId, TransportHandle>,
         crypto_limit: usize,
+    }
+
+    async fn pump_aead_live_node_route_table_turn<RI>(
+        driver: &mut DataplaneTurnDriver,
+        request: AeadLiveRouteTableTurn<'_, RI>,
     ) -> DataplaneLiveNodeTurn
     where
         RI: DataplaneRawIngressSource,
-        Transports: DataplaneTransportResolver + ?Sized,
     {
         let mut completions = VecDeque::<CryptoCompletion>::new();
         pump_aead_live_node_route_table_turn_with_completions(
             driver,
-            &mut completions,
-            0,
+            AeadLiveRouteTableCompletionTurn {
+                completions: &mut completions,
+                completion_limit: 0,
+                route: request,
+            },
+        )
+        .await
+    }
+
+    struct AeadLiveRouteTableCompletionTurn<'a, C, RI> {
+        completions: &'a mut C,
+        completion_limit: usize,
+        route: AeadLiveRouteTableTurn<'a, RI>,
+    }
+
+    async fn pump_aead_live_node_route_table_turn_with_completions<C, RI>(
+        driver: &mut DataplaneTurnDriver,
+        request: AeadLiveRouteTableCompletionTurn<'_, C, RI>,
+    ) -> DataplaneLiveNodeTurn
+    where
+        C: DataplaneCompletionSource,
+        RI: DataplaneRawIngressSource,
+    {
+        let AeadLiveRouteTableCompletionTurn {
+            completions,
+            completion_limit,
+            route,
+        } = request;
+        let AeadLiveRouteTableTurn {
             raw_ingress,
             routes,
             raw_ingress_limit,
@@ -511,39 +505,12 @@
             tun_limit,
             deferred_endpoint_data_batches,
             deferred_tun_packets,
-            tun_tx,
             endpoint_tx,
             transports,
             crypto_limit,
-        )
-        .await
-    }
-
-    async fn pump_aead_live_node_route_table_turn_with_completions<C, RI, Transports>(
-        driver: &mut DataplaneTurnDriver,
-        completions: &mut C,
-        completion_limit: usize,
-        raw_ingress: &mut RI,
-        routes: &mut DataplaneLiveRouteTable,
-        raw_ingress_limit: usize,
-        endpoint_data_rx: &mut EndpointDataBatchRx,
-        endpoint_limit: usize,
-        tun_outbound_rx: &mut TunOutboundRx,
-        tun_limit: usize,
-        deferred_endpoint_data_batches: &mut Vec<NodeEndpointDataBatch>,
-        deferred_tun_packets: &mut Vec<Vec<u8>>,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        transports: &Transports,
-        crypto_limit: usize,
-    ) -> DataplaneLiveNodeTurn
-    where
-        C: DataplaneCompletionSource,
-        RI: DataplaneRawIngressSource,
-        Transports: DataplaneTransportResolver + ?Sized,
-    {
-        let mut transport_worker = DataplaneTransportSendWorkerPool::new(8);
-        let mut executor = InlineDataplaneCryptoExecutor::default();
+        } = route;
+        let transport_send_batch_packets = 8;
+        let mut executor = InlineDataplaneCryptoExecutor;
         let mut deferred_raw_ingress = std::collections::VecDeque::new();
         let summary = driver.start_aead_completion_turn(
             completions,
@@ -552,25 +519,26 @@
         );
         driver
             .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
-                summary,
-                &mut executor,
-                None,
-                raw_ingress,
-                routes,
-                raw_ingress_limit,
-                endpoint_data_rx,
-                endpoint_limit,
-                tun_outbound_rx,
-                tun_limit,
-                DataplaneLiveOutboundFirsts::default(),
-                deferred_endpoint_data_batches,
-                deferred_tun_packets,
-                &mut deferred_raw_ingress,
-                tun_tx,
-                endpoint_tx,
-                transports,
-                crypto_limit,
-                &mut transport_worker,
+                DataplaneLivePumpRequest {
+                    summary,
+                    executor: &mut executor,
+                    fast_ingress: None,
+                    raw_ingress,
+                    routes,
+                    raw_ingress_limit,
+                    endpoint_data_rx,
+                    endpoint_limit,
+                    tun_outbound_rx,
+                    tun_limit,
+                    outbound_firsts: DataplaneLiveOutboundFirsts::default(),
+                    deferred_endpoint_data_batches,
+                    deferred_tun_packets,
+                    deferred_raw_ingress: &mut deferred_raw_ingress,
+                    endpoint_tx,
+                    transports,
+                    crypto_limit,
+                    transport_send_batch_packets,
+                },
             )
             .await
     }
@@ -580,7 +548,7 @@
         summary: DataplaneRuntimeSummary,
         limit: usize,
     ) -> DataplaneRuntimeTurn<'_> {
-        let mut executor = InlineDataplaneCryptoExecutor::default();
+        let mut executor = InlineDataplaneCryptoExecutor;
         let summary =
             driver.collect_aead_outputs_with_executor(summary, limit, &mut executor, false);
         DataplaneRuntimeTurn {
@@ -601,7 +569,7 @@
     where
         S: DataplaneOutputSink,
     {
-        let mut executor = InlineDataplaneCryptoExecutor::default();
+        let mut executor = InlineDataplaneCryptoExecutor;
         let summary =
             driver.collect_aead_outputs_with_executor(summary, limit, &mut executor, false);
         driver.send_collected_outputs(summary, sink)
@@ -632,10 +600,7 @@
     fn live_path(id: u32) -> TransportPath {
         let port = 10_000 + id % 50_000;
         let remote_addr = format!("198.51.100.1:{port}");
-        TransportPath::live(
-            TransportId::new(id),
-            TransportAddr::from_string(&remote_addr),
-        )
+        TransportPath::live(TransportId::new(id), TransportAddr::from_string(&remote_addr))
     }
 
     fn tun_ipv6_packet(dest_addr: NodeAddr, len: usize) -> Vec<u8> {
@@ -661,7 +626,7 @@
             counter,
             class,
             output,
-            vec![counter as u8],
+            PacketBuffer::new(vec![counter as u8]),
         )
     }
 
@@ -669,10 +634,10 @@
         owner: OwnerId,
         generation: u64,
         output: OutputTarget,
-        data: impl Into<PacketBuffer>,
+        payload: Vec<u8>,
     ) -> Result<SocketPacket, WirePreflightError> {
-        let payload: PacketBuffer = data.into();
-        let header = FmpWireHeader::parse(&payload)?;
+        let payload = PacketBuffer::new(payload);
+        let header = FmpWireHeader::parse(payload.as_slice())?;
         Ok(SocketPacket::new(
             owner,
             generation,
@@ -688,10 +653,10 @@
         owner: OwnerId,
         generation: u64,
         output: OutputTarget,
-        data: impl Into<PacketBuffer>,
+        payload: Vec<u8>,
     ) -> Result<SocketPacket, WirePreflightError> {
-        let payload: PacketBuffer = data.into();
-        let header = FspWireHeader::parse(&payload)?;
+        let payload = PacketBuffer::new(payload);
+        let header = FspWireHeader::parse(payload.as_slice())?;
         Ok(SocketPacket::new(
             owner,
             generation,
@@ -720,61 +685,13 @@
         data
     }
 
-    fn opened_output(
-        owner: OwnerId,
-        counter: u64,
-        ingress_seq: u64,
-        target: OutputTarget,
-        plaintext: &[u8],
-    ) -> PacketOutput {
-        let mut payload = match owner.protocol() {
-            PacketProtocol::Fmp => fmp_wire(0, counter, 0),
-            PacketProtocol::Fsp => fsp_wire(counter, 0),
-        };
-        payload.truncate(match owner.protocol() {
-            PacketProtocol::Fmp => FMP_ESTABLISHED_HEADER_SIZE,
-            PacketProtocol::Fsp => FSP_HEADER_SIZE,
-        });
-        payload.extend_from_slice(plaintext);
-        PacketOutput {
-            owner,
-            counter,
-            ingress_seq,
-            lane: Lane::Bulk,
-            target,
-            source_path: None,
-            previous_hop: None,
-            ce_flag: false,
-            path_mtu: u16::MAX,
-            source_peer: None,
-            path: None,
-            activity_tick: None,
-            source_wire_len: None,
-            fmp_timestamp_ms: None,
-            fsp_send_receipt: None,
-            payload: payload.into(),
-        }
-    }
-
-    fn opened_endpoint_output(
-        owner: OwnerId,
-        source_peer: PeerIdentity,
-        counter: u64,
-        ingress_seq: u64,
-        plaintext: &[u8],
-    ) -> PacketOutput {
-        let mut output = opened_output(owner, counter, ingress_seq, OutputTarget::Endpoint, plaintext);
-        output.source_peer = Some(source_peer);
-        output
-    }
-
     fn transport_output(
         owner: OwnerId,
         counter: u64,
         ingress_seq: u64,
         transport_id: TransportId,
         remote_addr: TransportAddr,
-        payload: impl Into<PacketBuffer>,
+        payload: Vec<u8>,
     ) -> PacketOutput {
         PacketOutput {
             owner,
@@ -792,29 +709,7 @@
             source_wire_len: None,
             fmp_timestamp_ms: None,
             fsp_send_receipt: None,
-            payload: payload.into(),
-        }
-    }
-
-    fn send_one_output<S>(
-        sink: &mut S,
-        output: PacketOutput,
-    ) -> Result<(), DataplaneOutputError>
-    where
-        S: DataplaneOutputSink,
-    {
-        let mut drops = Vec::new();
-        let sent = sink.send_batch(std::iter::once(output), &mut drops);
-        match sent {
-            1 => {
-                assert!(drops.is_empty());
-                Ok(())
-            }
-            0 => {
-                assert_eq!(drops.len(), 1);
-                Err(drops.pop().expect("one output drop").reason())
-            }
-            _ => panic!("single output batch reported {sent} sends"),
+            payload: PacketBuffer::new(payload),
         }
     }
 
@@ -910,12 +805,14 @@
             counter,
             class,
             output,
-            fmp_encrypted_wire(test_receiver_idx(owner), counter, 0, &[counter as u8], key),
+            PacketBuffer::new(fmp_encrypted_wire(
+                test_receiver_idx(owner),
+                counter,
+                0,
+                &[counter as u8],
+                key,
+            )),
         )
-    }
-
-    fn open_aead_completion(work: CryptoWork, key: u8) -> CryptoCompletion {
-        PreparedCryptoWork::open(work, test_key(key)).execute()
     }
 
     fn retire_completion(
@@ -923,7 +820,8 @@
         completion: CryptoCompletion,
     ) -> Vec<RetiredPacket> {
         let mut retired = Vec::new();
-        mover.queue_completion(completion);
+        let mut completions = vec![CryptoCompletionBatch::from_completion(completion)];
+        mover.queue_completion_batches(&mut completions);
         mover.retire_queued_completions_into(1, &mut retired, false);
         flatten_retired_outputs(retired)
     }
@@ -937,65 +835,45 @@
 
     fn open_sealed_output(output: &PacketOutput, key: u8) -> Vec<u8> {
         match output.owner.protocol {
-            PacketProtocol::Fmp => {
-                let header = FmpWireHeader::parse(&output.payload).unwrap();
-                let aad = header.header_bytes();
-                let mut ciphertext = output.payload[header.ciphertext_offset()..].to_vec();
-                let plaintext_len = test_cipher(key)
-                    .open_in_place(
-                        aead_nonce(header.counter()),
-                        Aad::from(&aad),
-                        &mut ciphertext,
-                    )
-                    .unwrap()
-                    .len();
-                ciphertext.truncate(plaintext_len);
-                ciphertext
-            }
-            PacketProtocol::Fsp => {
-                let header = FspWireHeader::parse(&output.payload).unwrap();
-                let aad = header.header_bytes();
-                let mut ciphertext = output.payload[header.ciphertext_offset()..].to_vec();
-                let plaintext_len = test_cipher(key)
-                    .open_in_place(
-                        aead_nonce(header.counter()),
-                        Aad::from(&aad),
-                        &mut ciphertext,
-                    )
-                    .unwrap()
-                    .len();
-                ciphertext.truncate(plaintext_len);
-                ciphertext
-            }
+            PacketProtocol::Fmp => open_fmp_wire_payload(output.payload.as_slice(), key),
+            PacketProtocol::Fsp => open_fsp_wire_payload(output.payload.as_slice(), key),
         }
     }
 
     fn open_fmp_wire_payload(payload: &[u8], key: u8) -> Vec<u8> {
         let header = FmpWireHeader::parse(payload).unwrap();
         let aad = header.header_bytes();
-        let mut ciphertext = payload[header.ciphertext_offset()..].to_vec();
-        let plaintext_len = test_cipher(key)
-            .open_in_place(
-                aead_nonce(header.counter()),
-                Aad::from(&aad),
-                &mut ciphertext,
-            )
-            .unwrap()
-            .len();
-        ciphertext.truncate(plaintext_len);
-        ciphertext
+        open_wire_payload(
+            payload,
+            key,
+            header.counter(),
+            &aad,
+            header.ciphertext_offset(),
+        )
     }
 
     fn open_fsp_wire_payload(payload: &[u8], key: u8) -> Vec<u8> {
         let header = FspWireHeader::parse(payload).unwrap();
         let aad = header.header_bytes();
-        let mut ciphertext = payload[header.ciphertext_offset()..].to_vec();
+        open_wire_payload(
+            payload,
+            key,
+            header.counter(),
+            &aad,
+            header.ciphertext_offset(),
+        )
+    }
+
+    fn open_wire_payload(
+        payload: &[u8],
+        key: u8,
+        counter: u64,
+        aad: &[u8],
+        ciphertext_offset: usize,
+    ) -> Vec<u8> {
+        let mut ciphertext = payload[ciphertext_offset..].to_vec();
         let plaintext_len = test_cipher(key)
-            .open_in_place(
-                aead_nonce(header.counter()),
-                Aad::from(&aad),
-                &mut ciphertext,
-            )
+            .open_in_place(aead_nonce(counter), Aad::from(aad), &mut ciphertext)
             .unwrap()
             .len();
         ciphertext.truncate(plaintext_len);
@@ -1015,10 +893,10 @@
                 class,
                 test_receiver_idx(owner),
                 0,
-                payload.to_vec(),
+                PacketBuffer::new(payload.to_vec()),
             ),
             PacketProtocol::Fsp => {
-                OutboundPacket::fsp(owner, generation, class, 0, payload.to_vec())
+                OutboundPacket::fsp(owner, generation, class, 0, PacketBuffer::new(payload.to_vec()))
             }
         }
     }
@@ -1030,17 +908,6 @@
                 RetiredPacket::Output(output) => output,
                 RetiredPacket::Outbound(packet) => panic!("unexpected outbound: {packet:?}"),
                 RetiredPacket::Drop(drop) => panic!("unexpected drop: {drop:?}"),
-            })
-            .collect()
-    }
-
-    fn drops(items: Vec<RetiredPacket>) -> Vec<PacketDrop> {
-        items
-            .into_iter()
-            .map(|item| match item {
-                RetiredPacket::Drop(drop) => drop,
-                RetiredPacket::Output(output) => panic!("unexpected output: {output:?}"),
-                RetiredPacket::Outbound(packet) => panic!("unexpected outbound: {packet:?}"),
             })
             .collect()
     }

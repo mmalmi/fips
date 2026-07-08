@@ -2,35 +2,12 @@ use tokio::sync::mpsc;
 
 #[derive(Debug, Clone)]
 pub struct TunOutboundTx {
-    bulk: mpsc::Sender<QueuedTunOutboundPacket>,
+    bulk: mpsc::Sender<Vec<u8>>,
 }
 
 #[derive(Debug)]
 pub struct TunOutboundRx {
-    bulk: mpsc::Receiver<QueuedTunOutboundPacket>,
-    bulk_closed: bool,
-}
-
-#[derive(Debug)]
-struct QueuedTunOutboundPacket {
-    packet: Vec<u8>,
-}
-
-impl QueuedTunOutboundPacket {
-    fn new(packet: Vec<u8>) -> Self {
-        Self { packet }
-    }
-
-    fn into_packet(self) -> Vec<u8> {
-        self.packet
-    }
-}
-
-#[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub(crate) enum TunOutboundAdmission {
-    Enqueued,
-    BulkDropped,
+    bulk: mpsc::Receiver<Vec<u8>>,
 }
 
 pub(crate) fn tun_outbound_channel(capacity: usize) -> (TunOutboundTx, TunOutboundRx) {
@@ -38,110 +15,50 @@ pub(crate) fn tun_outbound_channel(capacity: usize) -> (TunOutboundTx, TunOutbou
     let (bulk_tx, bulk_rx) = mpsc::channel(capacity);
     (
         TunOutboundTx { bulk: bulk_tx },
-        TunOutboundRx {
-            bulk: bulk_rx,
-            bulk_closed: false,
-        },
+        TunOutboundRx { bulk: bulk_rx },
     )
 }
 
 impl TunOutboundTx {
     pub async fn send(&self, packet: Vec<u8>) -> Result<(), mpsc::error::SendError<Vec<u8>>> {
-        self.send_queued(QueuedTunOutboundPacket::new(packet)).await
-    }
-
-    async fn send_queued(
-        &self,
-        queued: QueuedTunOutboundPacket,
-    ) -> Result<(), mpsc::error::SendError<Vec<u8>>> {
-        self.bulk
-            .send(queued)
-            .await
-            .map_err(|error| mpsc::error::SendError(error.0.into_packet()))
+        self.bulk.send(packet).await
     }
 
     pub fn blocking_send(&self, packet: Vec<u8>) -> Result<(), mpsc::error::SendError<Vec<u8>>> {
-        self.blocking_send_queued(QueuedTunOutboundPacket::new(packet))
-    }
-
-    fn blocking_send_queued(
-        &self,
-        queued: QueuedTunOutboundPacket,
-    ) -> Result<(), mpsc::error::SendError<Vec<u8>>> {
-        self.bulk
-            .blocking_send(queued)
-            .map_err(|error| mpsc::error::SendError(error.0.into_packet()))
+        self.bulk.blocking_send(packet)
     }
 
     pub fn try_send(&self, packet: Vec<u8>) -> Result<(), mpsc::error::TrySendError<Vec<u8>>> {
-        self.try_send_queued(QueuedTunOutboundPacket::new(packet))
-    }
-
-    fn try_send_queued(
-        &self,
-        queued: QueuedTunOutboundPacket,
-    ) -> Result<(), mpsc::error::TrySendError<Vec<u8>>> {
-        self.bulk
-            .try_send(queued)
-            .map_err(map_queued_try_send_error)
+        self.bulk.try_send(packet)
     }
 
     #[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
     pub(crate) fn admit_from_tun_reader(
         &self,
         packet: Vec<u8>,
-    ) -> Result<TunOutboundAdmission, mpsc::error::SendError<Vec<u8>>> {
-        let queued = QueuedTunOutboundPacket::new(packet);
-        match self.bulk.try_send(queued) {
-            Ok(()) => Ok(TunOutboundAdmission::Enqueued),
-            Err(mpsc::error::TrySendError::Full(queued)) => {
+    ) -> Result<(), mpsc::error::SendError<Vec<u8>>> {
+        match self.bulk.try_send(packet) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(packet)) => {
                 crate::perf_profile::record_tun_outbound_admission_drop();
                 tracing::debug!(
-                    len = queued.packet.len(),
+                    len = packet.len(),
                     "Dropping TUN outbound packet because admission queue is full"
                 );
-                Ok(TunOutboundAdmission::BulkDropped)
+                Ok(())
             }
-            Err(mpsc::error::TrySendError::Closed(queued)) => {
-                Err(mpsc::error::SendError(queued.into_packet()))
-            }
+            Err(mpsc::error::TrySendError::Closed(packet)) => Err(mpsc::error::SendError(packet)),
         }
     }
 }
 
 impl TunOutboundRx {
     pub(crate) async fn recv(&mut self) -> Option<Vec<u8>> {
-        match self.bulk.recv().await {
-            Some(packet) => Some(packet.into_packet()),
-            None => {
-                self.bulk_closed = true;
-                None
-            }
-        }
+        self.bulk.recv().await
     }
 
     pub(crate) fn try_recv(&mut self) -> Result<Vec<u8>, mpsc::error::TryRecvError> {
-        match self.bulk.try_recv() {
-            Ok(packet) => Ok(packet.into_packet()),
-            Err(mpsc::error::TryRecvError::Empty) => Err(mpsc::error::TryRecvError::Empty),
-            Err(mpsc::error::TryRecvError::Disconnected) => {
-                self.bulk_closed = true;
-                Err(mpsc::error::TryRecvError::Disconnected)
-            }
-        }
-    }
-}
-
-fn map_queued_try_send_error(
-    error: mpsc::error::TrySendError<QueuedTunOutboundPacket>,
-) -> mpsc::error::TrySendError<Vec<u8>> {
-    match error {
-        mpsc::error::TrySendError::Full(packet) => {
-            mpsc::error::TrySendError::Full(packet.into_packet())
-        }
-        mpsc::error::TrySendError::Closed(packet) => {
-            mpsc::error::TrySendError::Closed(packet.into_packet())
-        }
+        self.bulk.try_recv()
     }
 }
 
@@ -207,15 +124,13 @@ mod tests {
         let first_bulk = ipv4_tcp_bulk_packet();
         let icmp = ipv4_icmp_packet();
 
-        assert!(matches!(
-            tx.admit_from_tun_reader(first_bulk.clone()),
-            Ok(TunOutboundAdmission::Enqueued)
-        ));
-        assert!(matches!(
-            tx.admit_from_tun_reader(icmp),
-            Ok(TunOutboundAdmission::BulkDropped)
-        ));
+        assert!(tx.admit_from_tun_reader(first_bulk.clone()).is_ok());
+        assert!(tx.admit_from_tun_reader(icmp).is_ok());
 
         assert_eq!(rx.try_recv(), Ok(first_bulk));
+        assert!(matches!(
+            rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
     }
 }

@@ -1,7 +1,7 @@
 use super::*;
 use crate::node::session::{EndToEndState, SessionEntry};
 use crate::noise::{HandshakeState as NoiseHandshakeState, NoiseSession};
-use crate::peer::ActivePeer;
+use crate::peer::{ActivePeer, ActivePeerSession};
 use crate::transport::{LinkId, LinkStats, TransportAddr, TransportId};
 use crate::utils::index::SessionIndex;
 use crate::{Identity, NodeAddr, PeerIdentity};
@@ -103,15 +103,16 @@ fn active_fmp_peer(local: &Identity, peer: &Identity, tag: u32) -> ActivePeer {
         peer_identity,
         LinkId::new(tag.into()),
         1_000,
-        session,
-        SessionIndex::new(tag * 10 + 1),
-        SessionIndex::new(tag * 10 + 2),
-        TransportId::new(tag),
-        TransportAddr::from_string(&format!("127.0.0.1:{}", 4_000 + tag)),
-        LinkStats::new(),
-        true,
-        &crate::mmp::MmpConfig::default(),
-        Some([2u8; 8]),
+        ActivePeerSession {
+            session,
+            our_index: SessionIndex::new(tag * 10 + 1),
+            their_index: SessionIndex::new(tag * 10 + 2),
+            transport_id: TransportId::new(tag),
+            current_addr: TransportAddr::from_string(&format!("127.0.0.1:{}", 4_000 + tag)),
+            link_stats: LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: Some([2u8; 8]),
+        },
     )
 }
 
@@ -634,9 +635,15 @@ fn session_registry_owns_rekey_tick_selection() {
     let msg3_peer = Identity::generate();
 
     let now_ms = 20_000_000;
-    let rekey_after_secs = 10_000;
     let drain_ms = FSP_DRAIN_WINDOW_SECS * 1000;
-    let dampening_ms = REKEY_DAMPENING_SECS * 1000;
+    let tick = SessionRekeyTickConfig {
+        now_ms,
+        rekey_after_secs: 10_000,
+        rekey_after_messages: u64::MAX,
+        drain_ms,
+        dampening_ms: REKEY_DAMPENING_SECS * 1000,
+        cutover_delay_ms: FSP_CUTOVER_DELAY_MS,
+    };
 
     let mut cutover = established_entry(&local, &cutover_peer, 1_000);
     arm_completed_initiator_rekey(
@@ -682,15 +689,7 @@ fn session_registry_owns_rekey_tick_selection() {
     sessions.insert(*dampened_peer.node_addr(), dampened);
     sessions.insert(*msg3_peer.node_addr(), msg3);
 
-    let mut plan = sessions.plan_session_rekey_tick(
-        now_ms,
-        rekey_after_secs,
-        u64::MAX,
-        drain_ms,
-        dampening_ms,
-        FSP_CUTOVER_DELAY_MS,
-        |_| 0,
-    );
+    let mut plan = sessions.plan_session_rekey_tick(tick, |_| 0);
     plan.cutover.sort();
     plan.drain.sort();
     plan.initiate.sort();

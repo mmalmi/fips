@@ -4,8 +4,7 @@
 //! `(proto, port)` pair is accepted, filtered, unknown, or unprotected because
 //! the baseline firewall table is absent.
 
-#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
-
+#[cfg(any(test, target_os = "linux"))]
 use serde_json::Value;
 
 use crate::control::listening::Proto;
@@ -30,15 +29,18 @@ impl FilterState {
 }
 
 pub struct FilterClassifier {
+    #[cfg(any(test, target_os = "linux"))]
     rules: Option<Vec<Rule>>,
 }
 
+#[cfg(any(test, target_os = "linux"))]
 #[derive(Debug, Clone)]
 struct Rule {
     matches: Vec<MatchExpr>,
     verdict: Verdict,
 }
 
+#[cfg(any(test, target_os = "linux"))]
 #[derive(Debug, Clone)]
 enum MatchExpr {
     Iifname,
@@ -47,6 +49,7 @@ enum MatchExpr {
     Unrecognized,
 }
 
+#[cfg(any(test, target_os = "linux"))]
 #[derive(Debug, Clone)]
 enum PortMatch {
     Single(u16),
@@ -54,6 +57,7 @@ enum PortMatch {
     Range(u16, u16),
 }
 
+#[cfg(any(test, target_os = "linux"))]
 impl PortMatch {
     fn matches(&self, port: u16) -> bool {
         match self {
@@ -64,6 +68,7 @@ impl PortMatch {
     }
 }
 
+#[cfg(any(test, target_os = "linux"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Verdict {
     Accept,
@@ -73,7 +78,10 @@ enum Verdict {
 
 impl FilterClassifier {
     pub fn no_firewall() -> Self {
-        Self { rules: None }
+        Self {
+            #[cfg(any(test, target_os = "linux"))]
+            rules: None,
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -92,74 +100,91 @@ impl FilterClassifier {
     }
 
     pub fn is_active(&self) -> bool {
-        self.rules.is_some()
+        #[cfg(any(test, target_os = "linux"))]
+        {
+            self.rules.is_some()
+        }
+        #[cfg(not(any(test, target_os = "linux")))]
+        {
+            false
+        }
     }
 
     pub fn classify(&self, proto: Proto, port: u16) -> FilterState {
-        let Some(rules) = &self.rules else {
-            return FilterState::NoFirewall;
-        };
+        #[cfg(not(any(test, target_os = "linux")))]
+        {
+            let _ = (proto, port);
+            FilterState::NoFirewall
+        }
 
-        let mut saw_unknown_for_port = false;
+        #[cfg(any(test, target_os = "linux"))]
+        {
+            let Some(rules) = &self.rules else {
+                return FilterState::NoFirewall;
+            };
 
-        for rule in rules {
-            let mut references_port = false;
-            let mut canonical_for_port = true;
-            let mut has_proto_match = None;
+            let mut saw_unknown_for_port = false;
 
-            for matcher in &rule.matches {
-                match matcher {
-                    MatchExpr::Iifname => {}
-                    MatchExpr::L4Proto(p) => {
-                        has_proto_match = Some(*p);
-                        if *p != proto {
+            for rule in rules {
+                let mut references_port = false;
+                let mut canonical_for_port = true;
+                let mut has_proto_match = None;
+
+                for matcher in &rule.matches {
+                    match matcher {
+                        MatchExpr::Iifname => {}
+                        MatchExpr::L4Proto(p) => {
+                            has_proto_match = Some(*p);
+                            if *p != proto {
+                                canonical_for_port = false;
+                            }
+                        }
+                        MatchExpr::Dport(p, port_match) => {
+                            if *p == proto && port_match.matches(port) {
+                                references_port = true;
+                            } else if !port_match.matches(port) {
+                                canonical_for_port = false;
+                            }
+                        }
+                        MatchExpr::Unrecognized => {
+                            if rule_might_reference_port(rule, proto, port) {
+                                saw_unknown_for_port = true;
+                            }
                             canonical_for_port = false;
                         }
                     }
-                    MatchExpr::Dport(p, port_match) => {
-                        if *p == proto && port_match.matches(port) {
-                            references_port = true;
-                        } else if !port_match.matches(port) {
-                            canonical_for_port = false;
-                        }
-                    }
-                    MatchExpr::Unrecognized => {
-                        if rule_might_reference_port(rule, proto, port) {
-                            saw_unknown_for_port = true;
-                        }
-                        canonical_for_port = false;
-                    }
+                }
+
+                if !references_port {
+                    continue;
+                }
+                if !canonical_for_port {
+                    saw_unknown_for_port = true;
+                    continue;
+                }
+                if let Some(p) = has_proto_match
+                    && p != proto
+                {
+                    continue;
+                }
+
+                match rule.verdict {
+                    Verdict::Accept => return FilterState::Accept,
+                    Verdict::Drop => return FilterState::Drop,
+                    Verdict::Other => saw_unknown_for_port = true,
                 }
             }
 
-            if !references_port {
-                continue;
+            if saw_unknown_for_port {
+                FilterState::Unknown
+            } else {
+                FilterState::Drop
             }
-            if !canonical_for_port {
-                saw_unknown_for_port = true;
-                continue;
-            }
-            if let Some(p) = has_proto_match
-                && p != proto
-            {
-                continue;
-            }
-
-            match rule.verdict {
-                Verdict::Accept => return FilterState::Accept,
-                Verdict::Drop => return FilterState::Drop,
-                Verdict::Other => saw_unknown_for_port = true,
-            }
-        }
-
-        if saw_unknown_for_port {
-            FilterState::Unknown
-        } else {
-            FilterState::Drop
         }
     }
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn rule_might_reference_port(rule: &Rule, proto: Proto, port: u16) -> bool {
     rule.matches.iter().any(|matcher| match matcher {
         MatchExpr::Dport(p, port_match) => *p == proto && port_match.matches(port),
@@ -183,6 +208,7 @@ fn run_nft_list() -> Option<Value> {
     serde_json::from_slice::<Value>(&output.stdout).ok()
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn parse_inbound_rules(json: &Value) -> Vec<Rule> {
     let Some(entries) = json.get("nftables").and_then(|v| v.as_array()) else {
         return Vec::new();
@@ -199,6 +225,7 @@ fn parse_inbound_rules(json: &Value) -> Vec<Rule> {
         .collect()
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn parse_rule(rule: &Value) -> Rule {
     let exprs = rule
         .get("expr")
@@ -230,6 +257,7 @@ fn parse_rule(rule: &Value) -> Rule {
     Rule { matches, verdict }
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn parse_match(matcher: &Value) -> MatchExpr {
     let op = matcher
         .get("op")
@@ -284,6 +312,7 @@ fn parse_match(matcher: &Value) -> MatchExpr {
     MatchExpr::Unrecognized
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn parse_proto(value: &str) -> Option<Proto> {
     match value {
         "tcp" => Some(Proto::Tcp),

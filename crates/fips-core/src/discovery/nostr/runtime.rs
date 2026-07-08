@@ -18,9 +18,9 @@ use tracing::{debug, info, trace, warn};
 
 use super::failure_state::{FailureDecision, FailureState, NostrPeerKey};
 use super::signal::{
-    FreshnessOutcome, SignalEnvelope, build_signal_event, create_traversal_answer,
-    create_traversal_offer, estimate_clock_skew, unwrap_signal_event, validate_offer_freshness,
-    validate_traversal_answer_for_offer,
+    FreshnessOutcome, SignalEnvelope, TraversalSignalTiming, build_signal_event,
+    create_traversal_answer, create_traversal_offer, estimate_clock_skew, unwrap_signal_event,
+    validate_offer_freshness, validate_traversal_answer_for_offer,
 };
 use super::stun::{ADVERT_STUN_TIMEOUT, TRAVERSAL_STUN_TIMEOUT, observe_traversal_addresses};
 use super::traversal::{nonce, now_ms, planned_remote_endpoints, run_punch_attempt};

@@ -79,7 +79,6 @@ pub const FSP_PORT_IPV6_SHIM: u16 = 256;
 pub const FSP_FLAG_CP: u8 = 0x01;
 
 /// Key Epoch — selects active key during rekeying.
-#[allow(dead_code)]
 pub const FSP_FLAG_K: u8 = 0x02;
 
 /// Unencrypted — payload is plaintext (error signals).
@@ -89,10 +88,6 @@ pub const FSP_FLAG_U: u8 = 0x04;
 pub const FSP_FLAG_DIRECT_TRANSPORT: u8 = 0x08;
 
 // Inner flag bit constants (byte 5 of decrypted inner header).
-
-/// Spin bit for end-to-end RTT measurement (inside AEAD).
-#[allow(dead_code)]
-pub const FSP_INNER_FLAG_SP: u8 = 0x01;
 
 /// Maximum endpoint-data body bytes that fit under the FSP u16 payload length.
 pub const fn fsp_endpoint_data_max_body_len() -> usize {
@@ -112,14 +107,14 @@ pub const fn fsp_endpoint_data_max_body_len() -> usize {
 #[derive(Clone, Debug)]
 pub struct FspCommonPrefix {
     /// Protocol version (high nibble of byte 0).
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub version: u8,
     /// Session lifecycle phase (low nibble of byte 0).
     pub phase: u8,
     /// Per-message signal flags.
     pub flags: u8,
     /// Length of payload following the phase-specific header.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub payload_len: u16,
 }
 
@@ -130,15 +125,19 @@ impl FspCommonPrefix {
             return None;
         }
 
+        #[cfg(test)]
         let version = data[0] >> 4;
         let phase = data[0] & 0x0F;
         let flags = data[1];
+        #[cfg(test)]
         let payload_len = u16::from_le_bytes([data[2], data[3]]);
 
         Some(Self {
+            #[cfg(test)]
             version,
             phase,
             flags,
+            #[cfg(test)]
             payload_len,
         })
     }
@@ -154,6 +153,7 @@ impl FspCommonPrefix {
     }
 
     /// Encode the ver+phase byte.
+    #[cfg(test)]
     fn ver_phase_byte(version: u8, phase: u8) -> u8 {
         (version << 4) | (phase & 0x0F)
     }
@@ -180,7 +180,7 @@ pub fn build_fsp_header(counter: u64, flags: u8, payload_len: u16) -> [u8; FSP_H
 ///
 /// `phase` should be `FSP_PHASE_MSG1`, `FSP_PHASE_MSG2`, or `FSP_PHASE_MSG3`.
 /// Flags are zero during handshake.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub fn build_fsp_handshake_prefix(phase: u8, payload_len: u16) -> [u8; FSP_COMMON_PREFIX_SIZE] {
     let mut prefix = [0u8; FSP_COMMON_PREFIX_SIZE];
     prefix[0] = FspCommonPrefix::ver_phase_byte(FSP_VERSION, phase);
@@ -192,7 +192,7 @@ pub fn build_fsp_handshake_prefix(phase: u8, payload_len: u16) -> [u8; FSP_COMMO
 /// Build a 4-byte common prefix for a plaintext error signal.
 ///
 /// Sets phase 0x0 and U flag.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub fn build_fsp_error_prefix(payload_len: u16) -> [u8; FSP_COMMON_PREFIX_SIZE] {
     let mut prefix = [0u8; FSP_COMMON_PREFIX_SIZE];
     prefix[0] = FspCommonPrefix::ver_phase_byte(FSP_VERSION, FSP_PHASE_ESTABLISHED);

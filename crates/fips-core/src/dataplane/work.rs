@@ -180,7 +180,7 @@ impl CryptoCompletionBatch {
             && self
                 .completions
                 .last()
-                .map_or(true, |last| last.order().next() == completion.order())
+                .is_none_or(|last| last.order().next() == completion.order())
     }
 }
 
@@ -259,10 +259,6 @@ impl PacketOutput {
         self.target
     }
 
-    pub(crate) fn path(&self) -> Option<TransportPath> {
-        self.path.clone()
-    }
-
     pub(crate) fn source_path(&self) -> Option<&TransportPath> {
         self.source_path.as_ref()
     }
@@ -284,7 +280,7 @@ impl PacketOutput {
     }
 
     pub(crate) fn payload(&self) -> &[u8] {
-        &self.payload
+        self.payload.as_slice()
     }
 
     pub(crate) fn payload_len(&self) -> usize {
@@ -319,31 +315,8 @@ impl DataplaneTransportSentReceipt {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DataplaneFspSendReceipt {
-    owner: OwnerId,
-    counter: u64,
-    timestamp_ms: Option<u32>,
-}
-
-impl DataplaneFspSendReceipt {
-    pub(crate) fn new(owner: OwnerId, counter: u64, timestamp_ms: Option<u32>) -> Self {
-        Self {
-            owner,
-            counter,
-            timestamp_ms,
-        }
-    }
-
-    pub(crate) fn owner(self) -> OwnerId {
-        self.owner
-    }
-
-    pub(crate) fn counter(self) -> u64 {
-        self.counter
-    }
-
-    pub(crate) fn timestamp_ms(self) -> Option<u32> {
-        self.timestamp_ms
-    }
+    pub(crate) owner: OwnerId,
+    pub(crate) counter: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -355,28 +328,38 @@ pub(crate) enum RetiredPacket {
 
 #[derive(Clone, Debug)]
 pub(crate) struct RetiredOutputs {
-    items: Vec<RetiredOutput>,
+    runs: Vec<RetiredOutputRun>,
+    packets: Vec<RetiredPacket>,
+    endpoint_data_batches: Vec<DataplaneEndpointDataBatch>,
 }
 
-#[derive(Clone, Debug)]
-pub(crate) enum RetiredOutput {
-    Packet(RetiredPacket),
-    EndpointDataBatch(DataplaneEndpointDataBatch),
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RetiredOutputRun {
+    Packets { count: usize },
+    EndpointDataBatch,
 }
 
 impl RetiredOutputs {
     pub(crate) fn with_capacity(capacity: usize) -> Self {
         Self {
-            items: Vec::with_capacity(capacity),
+            runs: Vec::with_capacity(1),
+            packets: Vec::with_capacity(capacity),
+            endpoint_data_batches: Vec::new(),
         }
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.items.is_empty()
+        self.runs.is_empty()
     }
 
-    pub(crate) fn into_items(self) -> Vec<RetiredOutput> {
-        self.items
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        Vec<RetiredOutputRun>,
+        Vec<RetiredPacket>,
+        Vec<DataplaneEndpointDataBatch>,
+    ) {
+        (self.runs, self.packets, self.endpoint_data_batches)
     }
 
     pub(crate) fn push_output(&mut self, output: PacketOutput) {
@@ -395,24 +378,33 @@ impl RetiredOutputs {
         &mut self,
         ingress: DataplaneFspEndpointDataIngress,
     ) {
-        match self.items.last_mut() {
-            Some(RetiredOutput::EndpointDataBatch(batch)) => batch.push(ingress),
-            _ => self.items.push(RetiredOutput::EndpointDataBatch(
-                DataplaneEndpointDataBatch::from_ingress(ingress),
-            )),
+        if matches!(self.runs.last(), Some(RetiredOutputRun::EndpointDataBatch)) {
+            self.endpoint_data_batches
+                .last_mut()
+                .expect("endpoint-data run has a batch")
+                .push(ingress);
+        } else {
+            self.endpoint_data_batches
+                .push(DataplaneEndpointDataBatch::from_ingress(ingress));
+            self.runs.push(RetiredOutputRun::EndpointDataBatch);
         }
     }
 
     pub(crate) fn append_endpoint_data_batch(&mut self, batch: DataplaneEndpointDataBatch) {
-        match self.items.last_mut() {
-            Some(RetiredOutput::EndpointDataBatch(last)) => last.extend(batch),
-            _ => self.items.push(RetiredOutput::EndpointDataBatch(batch)),
+        if matches!(self.runs.last(), Some(RetiredOutputRun::EndpointDataBatch)) {
+            self.endpoint_data_batches
+                .last_mut()
+                .expect("endpoint-data run has a batch")
+                .extend(batch);
+        } else {
+            self.endpoint_data_batches.push(batch);
+            self.runs.push(RetiredOutputRun::EndpointDataBatch);
         }
     }
 
     pub(crate) fn append_drops_to(&self, drops: &mut Vec<PacketDrop>) {
-        for item in &self.items {
-            if let RetiredOutput::Packet(RetiredPacket::Drop(drop)) = item {
+        for packet in &self.packets {
+            if let RetiredPacket::Drop(drop) = packet {
                 drops.push(drop.clone());
             }
         }
@@ -423,8 +415,8 @@ impl RetiredOutputs {
         drops: &mut Vec<PacketDrop>,
         emitted_start: usize,
     ) {
-        for item in &self.items {
-            if let RetiredOutput::Packet(RetiredPacket::Drop(drop)) = item
+        for packet in &self.packets {
+            if let RetiredPacket::Drop(drop) = packet
                 && !drops[emitted_start..].iter().any(|emitted| emitted == drop)
             {
                 drops.push(drop.clone());
@@ -433,7 +425,13 @@ impl RetiredOutputs {
     }
 
     fn push_packet(&mut self, packet: RetiredPacket) {
-        self.items.push(RetiredOutput::Packet(packet));
+        self.packets.push(packet);
+        match self.runs.last_mut() {
+            Some(RetiredOutputRun::Packets { count }) => {
+                *count = count.saturating_add(1);
+            }
+            _ => self.runs.push(RetiredOutputRun::Packets { count: 1 }),
+        }
     }
 }
 

@@ -111,7 +111,7 @@ async fn established_initiator_resends_final_msg3_until_responder_establishes() 
     .await;
     let message = expect_single_endpoint_data_event(event);
     assert_eq!(*message.source_peer.node_addr(), node1_addr);
-    assert_eq!(message.payload, b"responder-proof");
+    assert_eq!(message.payload.as_slice(), &b"responder-proof"[..]);
     assert!(
         nodes[0]
             .node
@@ -253,7 +253,7 @@ async fn rekey_initiator_resends_final_msg3_until_responder_has_pending_session(
     .await;
     let message = expect_single_endpoint_data_event(event);
     assert_eq!(*message.source_peer.node_addr(), node1_addr);
-    assert_eq!(message.payload, b"old-session-proof");
+    assert_eq!(message.payload.as_slice(), &b"old-session-proof"[..]);
     assert!(
         nodes[0]
             .node
@@ -550,10 +550,10 @@ async fn session_100_nodes() {
         .iter()
         .map(|tn| (*tn.node.node_addr(), tn.node.identity().pubkey_full()))
         .collect();
-    for node_idx in 0..NUM_NODES {
+    for node in nodes.iter_mut().take(NUM_NODES) {
         for &(addr, pubkey) in &all_info {
-            if addr != *nodes[node_idx].node.node_addr() {
-                nodes[node_idx].node.register_identity(addr, pubkey);
+            if addr != *node.node.node_addr() {
+                node.node.register_identity(addr, pubkey);
             }
         }
     }
@@ -677,8 +677,8 @@ async fn session_100_nodes() {
     let mut delivered_per_node: Vec<Vec<Vec<u8>>> = Vec::with_capacity(NUM_NODES);
     for rx in tun_receivers.iter_mut() {
         let mut packets = Vec::new();
-        while let Ok(pkt) = rx.try_recv() {
-            packets.push(pkt);
+        while let Ok(pkt) = rx.try_recv_packet() {
+            packets.push(pkt.as_slice().to_vec());
         }
         delivered_per_node.push(packets);
     }

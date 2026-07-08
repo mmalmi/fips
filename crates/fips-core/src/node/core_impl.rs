@@ -85,7 +85,7 @@ impl Node {
             packet_rx: None,
             dataplane: Self::new_dataplane_node(),
             dataplane_fast_ingress_rx: None,
-            dataplane_transport_send_worker: Default::default(),
+            dataplane_transport_send_batch_packets: DATAPLANE_TRANSPORT_SEND_BATCH_PACKETS,
             peers: PeerLifecycleRegistry::default(),
             sessions: SessionRegistry::default(),
             identity_cache: IdentityCache::default(),
@@ -225,7 +225,7 @@ impl Node {
             packet_rx: None,
             dataplane: Self::new_dataplane_node(),
             dataplane_fast_ingress_rx: None,
-            dataplane_transport_send_worker: Default::default(),
+            dataplane_transport_send_batch_packets: DATAPLANE_TRANSPORT_SEND_BATCH_PACKETS,
             peers: PeerLifecycleRegistry::default(),
             sessions: SessionRegistry::default(),
             identity_cache: IdentityCache::default(),
@@ -525,49 +525,50 @@ impl Node {
     ///
     /// Finds the Ethernet transport instance bound to the named interface
     /// and parses the MAC portion into a 6-byte TransportAddr.
-    #[allow(unused_variables)]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(super) fn resolve_ethernet_addr(
         &self,
         addr_str: &str,
     ) -> Result<(TransportId, TransportAddr), NodeError> {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        {
-            let (iface, mac_str) = addr_str.split_once('/').ok_or_else(|| {
+        let (iface, mac_str) = addr_str.split_once('/').ok_or_else(|| {
+            NodeError::NoTransportForType(format!(
+                "invalid Ethernet address format '{}': expected 'interface/mac'",
+                addr_str
+            ))
+        })?;
+
+        // Find the Ethernet transport bound to this interface
+        let transport_id = self
+            .transports
+            .iter()
+            .find(|(_, handle)| {
+                handle.transport_type().name == "ethernet"
+                    && handle.is_operational()
+                    && handle.interface_name() == Some(iface)
+            })
+            .map(|(id, _)| *id)
+            .ok_or_else(|| {
                 NodeError::NoTransportForType(format!(
-                    "invalid Ethernet address format '{}': expected 'interface/mac'",
-                    addr_str
+                    "no operational Ethernet transport for interface '{}'",
+                    iface
                 ))
             })?;
 
-            // Find the Ethernet transport bound to this interface
-            let transport_id = self
-                .transports
-                .iter()
-                .find(|(_, handle)| {
-                    handle.transport_type().name == "ethernet"
-                        && handle.is_operational()
-                        && handle.interface_name() == Some(iface)
-                })
-                .map(|(id, _)| *id)
-                .ok_or_else(|| {
-                    NodeError::NoTransportForType(format!(
-                        "no operational Ethernet transport for interface '{}'",
-                        iface
-                    ))
-                })?;
+        let mac = crate::transport::ethernet::parse_mac_string(mac_str).map_err(|e| {
+            NodeError::NoTransportForType(format!("invalid MAC in '{}': {}", addr_str, e))
+        })?;
 
-            let mac = crate::transport::ethernet::parse_mac_string(mac_str).map_err(|e| {
-                NodeError::NoTransportForType(format!("invalid MAC in '{}': {}", addr_str, e))
-            })?;
+        Ok((transport_id, TransportAddr::from_bytes(&mac)))
+    }
 
-            Ok((transport_id, TransportAddr::from_bytes(&mac)))
-        }
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        {
-            Err(NodeError::NoTransportForType(
-                "Ethernet transport is not supported on this platform".to_string(),
-            ))
-        }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    pub(super) fn resolve_ethernet_addr(
+        &self,
+        _addr_str: &str,
+    ) -> Result<(TransportId, TransportAddr), NodeError> {
+        Err(NodeError::NoTransportForType(
+            "Ethernet transport is not supported on this platform".to_string(),
+        ))
     }
 
     /// Resolve a BLE address string (`"adapter/AA:BB:CC:DD:EE:FF"`) to a

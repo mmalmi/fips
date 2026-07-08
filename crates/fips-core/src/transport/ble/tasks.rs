@@ -10,7 +10,9 @@ use super::{
     stats::BleStats,
 };
 use crate::identity::NodeAddr;
-use crate::transport::{PacketTx, ReceivedPacket, TransportAddr, TransportError, TransportId};
+use crate::transport::{
+    PacketBuffer, PacketTx, ReceivedPacket, TransportAddr, TransportError, TransportId,
+};
 use secp256k1::XOnlyPublicKey;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -77,21 +79,31 @@ pub(super) async fn pubkey_exchange<S: BleStream>(
 
 /// Accept loop: accepts inbound L2CAP connections, exchanges pubkeys,
 /// and adds to pool.
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn accept_loop<A>(
-    mut acceptor: A,
-    pool: Arc<Mutex<ConnectionPool<Arc<A::Stream>>>>,
-    packet_tx: PacketTx,
-    transport_id: TransportId,
-    stats: Arc<BleStats>,
-    _max_conns: usize,
-    local_pubkey: Option<[u8; 32]>,
-    discovery_buffer: Arc<DiscoveryBuffer>,
-    local_node_addr: Option<NodeAddr>,
-) where
+pub(super) struct AcceptLoopContext<S> {
+    pub(super) pool: Arc<Mutex<ConnectionPool<Arc<S>>>>,
+    pub(super) packet_tx: PacketTx,
+    pub(super) transport_id: TransportId,
+    pub(super) stats: Arc<BleStats>,
+    pub(super) local_pubkey: Option<[u8; 32]>,
+    pub(super) discovery_buffer: Arc<DiscoveryBuffer>,
+    pub(super) local_node_addr: Option<NodeAddr>,
+}
+
+pub(super) async fn accept_loop<A>(mut acceptor: A, ctx: AcceptLoopContext<A::Stream>)
+where
     A: io::BleAcceptor,
     A::Stream: 'static,
 {
+    let AcceptLoopContext {
+        pool,
+        packet_tx,
+        transport_id,
+        stats,
+        local_pubkey,
+        discovery_buffer,
+        local_node_addr,
+    } = ctx;
+
     loop {
         match acceptor.accept().await {
             Ok(stream) => {
@@ -205,7 +217,12 @@ pub(super) async fn receive_loop<S: BleStream>(
             }
             Ok(n) => {
                 stats.record_recv(n);
-                let packet = ReceivedPacket::new(transport_id, addr.clone(), buf[..n].to_vec());
+                let packet = ReceivedPacket::with_timestamp(
+                    transport_id,
+                    addr.clone(),
+                    PacketBuffer::new(buf[..n].to_vec()),
+                    crate::time::now_ms(),
+                );
                 if packet_tx.send(packet).is_err() {
                     trace!("BLE packet_tx closed, stopping receive loop");
                     break;
@@ -236,21 +253,38 @@ pub(super) async fn receive_loop<S: BleStream>(
 /// Cooldown prevents rapid re-probing of the same address: after any probe
 /// attempt (success or failure), the address is suppressed for
 /// `cooldown_secs`. Connected peers are filtered by pool membership.
-#[allow(clippy::too_many_arguments)]
+pub(super) struct ScanProbeContext<I: io::BleIo> {
+    pub(super) io: Arc<I>,
+    pub(super) pool: Arc<Mutex<ConnectionPool<Arc<I::Stream>>>>,
+    pub(super) buffer: Arc<DiscoveryBuffer>,
+    pub(super) stats: Arc<BleStats>,
+    pub(super) local_pubkey: Option<[u8; 32]>,
+    pub(super) psm: u16,
+    pub(super) connect_timeout_ms: u64,
+    pub(super) cooldown_secs: u64,
+    pub(super) local_node_addr: Option<NodeAddr>,
+    pub(super) packet_tx: PacketTx,
+    pub(super) transport_id: TransportId,
+}
+
 pub(super) async fn scan_probe_loop<I: io::BleIo>(
     mut scanner: I::Scanner,
-    io: Arc<I>,
-    pool: Arc<Mutex<ConnectionPool<Arc<I::Stream>>>>,
-    buffer: Arc<DiscoveryBuffer>,
-    stats: Arc<BleStats>,
-    local_pubkey: Option<[u8; 32]>,
-    psm: u16,
-    connect_timeout_ms: u64,
-    cooldown_secs: u64,
-    local_node_addr: Option<NodeAddr>,
-    packet_tx: PacketTx,
-    transport_id: TransportId,
+    ctx: ScanProbeContext<I>,
 ) {
+    let ScanProbeContext {
+        io,
+        pool,
+        buffer,
+        stats,
+        local_pubkey,
+        psm,
+        connect_timeout_ms,
+        cooldown_secs,
+        local_node_addr,
+        packet_tx,
+        transport_id,
+    } = ctx;
+
     // Track last probe time per address for cooldown
     let mut last_probed: HashMap<BleAddr, tokio::time::Instant> = HashMap::new();
     // Addresses discovered but not yet connected — retried after cooldown

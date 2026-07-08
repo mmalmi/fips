@@ -11,6 +11,7 @@ const DIRECT_FSP_TRANSPORT_MAX_FRAGMENTS: usize = 128;
 enum DataplaneDirectFspTransportOutput {
     Whole(PacketOutput),
     Segments(DataplaneDirectFspTransportSegments),
+    MtuExceeded(PacketOutput),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -67,23 +68,6 @@ struct DataplaneDirectFspFragmentPayload {
     range: std::ops::Range<usize>,
 }
 
-impl DataplaneDirectFspFragmentPayload {
-    fn new(buffer: PacketBuffer, range: std::ops::Range<usize>) -> Option<Self> {
-        if range.is_empty() || range.end > buffer.len() {
-            return None;
-        }
-        Some(Self { buffer, range })
-    }
-
-    fn len(&self) -> usize {
-        self.range.len()
-    }
-
-    fn as_slice(&self) -> &[u8] {
-        &self.buffer[self.range.clone()]
-    }
-}
-
 #[derive(Debug)]
 struct DataplaneDirectFspReassembly {
     created_at_ms: u64,
@@ -115,11 +99,11 @@ impl DataplaneDirectFspReassembly {
         if slot.is_some() {
             return true;
         }
-        if payload.len() == 0 || self.received_bytes.saturating_add(payload.len()) > self.total_len
-        {
+        let payload_len = payload.range.len();
+        if self.received_bytes.saturating_add(payload_len) > self.total_len {
             return false;
         }
-        self.received_bytes = self.received_bytes.saturating_add(payload.len());
+        self.received_bytes = self.received_bytes.saturating_add(payload_len);
         self.received_count = self.received_count.saturating_add(1);
         *slot = Some(payload);
         true
@@ -135,9 +119,10 @@ impl DataplaneDirectFspReassembly {
         }
         let mut payload = Vec::with_capacity(self.total_len);
         for fragment in self.fragments {
-            payload.extend_from_slice(fragment?.as_slice());
+            let DataplaneDirectFspFragmentPayload { buffer, range } = fragment?;
+            payload.extend_from_slice(&buffer.as_slice()[range]);
         }
-        (payload.len() == self.total_len).then_some(payload.into())
+        (payload.len() == self.total_len).then_some(PacketBuffer::new(payload))
     }
 }
 
@@ -149,7 +134,6 @@ pub(crate) struct DataplaneDirectFspReassembler {
 
 #[derive(Debug)]
 enum DataplaneDirectFspReassemblyResult {
-    NotFragment(ReceivedPacket),
     Pending,
     Complete(ReceivedPacket),
     Dropped,
@@ -164,9 +148,14 @@ struct DataplaneDirectFspFragmentHeader {
 }
 
 impl DataplaneDirectFspReassembler {
-    fn ingest(&mut self, mut packet: ReceivedPacket) -> DataplaneDirectFspReassemblyResult {
-        let Some(header) = parse_direct_fsp_transport_fragment_header(packet.data.as_slice()) else {
-            return DataplaneDirectFspReassemblyResult::NotFragment(packet);
+    fn ingest_fragment(&mut self, mut packet: ReceivedPacket) -> DataplaneDirectFspReassemblyResult {
+        debug_assert!(dataplane_direct_fsp_transport_fragment_is_fragment(
+            packet.data.as_slice()
+        ));
+        let Some(header) =
+            parse_direct_fsp_transport_fragment_header_after_magic(packet.data.as_slice())
+        else {
+            return DataplaneDirectFspReassemblyResult::Dropped;
         };
         if !valid_direct_fsp_transport_fragment_header(header) {
             return DataplaneDirectFspReassemblyResult::Dropped;
@@ -183,13 +172,14 @@ impl DataplaneDirectFspReassembler {
             .data
             .len()
             .saturating_sub(DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN);
-        let fragment_payload = match DataplaneDirectFspFragmentPayload::new(
-            std::mem::take(&mut packet.data),
-            DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN
-                ..DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN + fragment_payload_len,
-        ) {
-            Some(payload) => payload,
-            None => return DataplaneDirectFspReassemblyResult::Dropped,
+        if fragment_payload_len == 0 {
+            return DataplaneDirectFspReassemblyResult::Dropped;
+        }
+        let fragment_payload_range = DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN
+            ..DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN + fragment_payload_len;
+        let fragment_payload = DataplaneDirectFspFragmentPayload {
+            buffer: std::mem::take(&mut packet.data),
+            range: fragment_payload_range,
         };
         if !self.entries.contains_key(&key) {
             self.reserve_capacity_for_new_record(packet.timestamp_ms);
@@ -292,12 +282,21 @@ fn dataplane_direct_fsp_transport_fragment_is_fragment(data: &[u8]) -> bool {
             == DIRECT_FSP_TRANSPORT_FRAGMENT_MAGIC
 }
 
+#[cfg(test)]
 fn parse_direct_fsp_transport_fragment_header(
     data: &[u8],
 ) -> Option<DataplaneDirectFspFragmentHeader> {
     if !dataplane_direct_fsp_transport_fragment_is_fragment(data)
-        || data.len() < DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN
     {
+        return None;
+    }
+    parse_direct_fsp_transport_fragment_header_after_magic(data)
+}
+
+fn parse_direct_fsp_transport_fragment_header_after_magic(
+    data: &[u8],
+) -> Option<DataplaneDirectFspFragmentHeader> {
+    if data.len() < DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN {
         return None;
     }
     let record_id = u64::from_le_bytes(data[4..12].try_into().ok()?);
@@ -325,15 +324,15 @@ fn valid_direct_fsp_transport_fragment_header(
 
 fn dataplane_direct_fsp_transport_output(
     output: PacketOutput,
-) -> Result<DataplaneDirectFspTransportOutput, PacketOutput> {
+) -> DataplaneDirectFspTransportOutput {
     let segmentation = match dataplane_direct_fsp_transport_segmentation(&output) {
         Ok(Some(segmentation)) => segmentation,
-        Ok(None) => return Ok(DataplaneDirectFspTransportOutput::Whole(output)),
-        Err(()) => return Err(output),
+        Ok(None) => return DataplaneDirectFspTransportOutput::Whole(output),
+        Err(()) => return DataplaneDirectFspTransportOutput::MtuExceeded(output),
     };
     let header = match dataplane_direct_fsp_transport_header(&output) {
         Some(header) => header,
-        None => return Ok(DataplaneDirectFspTransportOutput::Whole(output)),
+        None => return DataplaneDirectFspTransportOutput::Whole(output),
     };
 
     let mut segments = Vec::with_capacity(segmentation.fragment_count);
@@ -353,20 +352,10 @@ fn dataplane_direct_fsp_transport_output(
             payload_range: start..end,
         });
     }
-    Ok(DataplaneDirectFspTransportOutput::Segments(
-        DataplaneDirectFspTransportSegments { output, segments },
-    ))
-}
-
-fn dataplane_direct_fsp_transport_max_datagram_len(
-    output: &PacketOutput,
-) -> Result<Option<usize>, ()> {
-    let Some(segmentation) = dataplane_direct_fsp_transport_segmentation(output)? else {
-        return Ok(None);
-    };
-    Ok(Some(
-        DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN + segmentation.max_fragment_payload,
-    ))
+    DataplaneDirectFspTransportOutput::Segments(DataplaneDirectFspTransportSegments {
+        output,
+        segments,
+    })
 }
 
 fn dataplane_direct_fsp_transport_segmentation(
@@ -408,25 +397,4 @@ fn dataplane_direct_fsp_transport_header(output: &PacketOutput) -> Option<FspWir
     let header = FspWireHeader::parse(output.payload()).ok()?;
     (header.flags() & crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT != 0)
         .then_some(header)
-}
-
-fn packet_output_with_payload(template: &PacketOutput, payload: PacketBuffer) -> PacketOutput {
-    PacketOutput {
-        owner: template.owner,
-        counter: template.counter,
-        ingress_seq: template.ingress_seq,
-        lane: template.lane,
-        target: template.target,
-        source_path: template.source_path.clone(),
-        previous_hop: template.previous_hop,
-        ce_flag: template.ce_flag,
-        path_mtu: template.path_mtu,
-        source_peer: template.source_peer,
-        path: template.path.clone(),
-        activity_tick: template.activity_tick,
-        fmp_timestamp_ms: template.fmp_timestamp_ms,
-        source_wire_len: template.source_wire_len,
-        fsp_send_receipt: template.fsp_send_receipt,
-        payload,
-    }
 }

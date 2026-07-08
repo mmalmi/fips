@@ -154,9 +154,10 @@ impl Node {
             return;
         }
 
-        let candidate_is_active_path = self.peers.get(node_addr).map_or(true, |peer| {
-            !peer.can_send() || peer.current_addr() == Some(candidate_addr)
-        });
+        let candidate_is_active_path = self
+            .peers
+            .get(node_addr)
+            .is_none_or(|peer| !peer.can_send() || peer.current_addr() == Some(candidate_addr));
         if candidate_is_active_path {
             self.note_local_send_outcome(node_addr, result);
         }

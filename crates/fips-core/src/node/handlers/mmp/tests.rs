@@ -2,7 +2,7 @@ use super::*;
 
 use crate::node::PeerLifecycleRegistry;
 use crate::noise::{HandshakeState as NoiseHandshakeState, NoiseSession};
-use crate::peer::ActivePeer;
+use crate::peer::{ActivePeer, ActivePeerSession};
 use crate::transport::{LinkId, LinkStats, TransportAddr, TransportId};
 use crate::utils::index::SessionIndex;
 use crate::{Identity, PeerIdentity};
@@ -40,15 +40,16 @@ fn active_fmp_peer(local: &Identity, peer: &Identity, tag: u32) -> ActivePeer {
         peer_identity,
         LinkId::new(tag.into()),
         1_000,
-        session,
-        SessionIndex::new(tag * 10 + 1),
-        SessionIndex::new(tag * 10 + 2),
-        TransportId::new(tag),
-        TransportAddr::from_string(&format!("127.0.0.1:{}", 4_000 + tag)),
-        LinkStats::new(),
-        true,
-        &crate::mmp::MmpConfig::default(),
-        Some([2u8; 8]),
+        ActivePeerSession {
+            session,
+            our_index: SessionIndex::new(tag * 10 + 1),
+            their_index: SessionIndex::new(tag * 10 + 2),
+            transport_id: TransportId::new(tag),
+            current_addr: TransportAddr::from_string(&format!("127.0.0.1:{}", 4_000 + tag)),
+            link_stats: LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: Some([2u8; 8]),
+        },
     )
 }
 

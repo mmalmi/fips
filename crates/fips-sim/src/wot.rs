@@ -1,3 +1,4 @@
+use crate::util::recv_endpoint_batch_into;
 use fips_core::config::{NostrDiscoveryConfig, PeerConfig, SimTransportConfig, TransportInstances};
 use fips_core::discovery::nostr::{
     ADVERT_IDENTIFIER, ADVERT_KIND, ADVERT_VERSION, NostrDiscovery, OverlayAdvert,
@@ -5,8 +6,8 @@ use fips_core::discovery::nostr::{
 };
 use fips_core::peer_rating::compute_peer_rating;
 use fips_core::{
-    Config, FipsEndpoint, Identity, IdentityConfig, SimLink, SimNetwork, SimNetworkStats,
-    register_sim_network, unregister_sim_network,
+    Config, FipsEndpoint, Identity, IdentityConfig, PeerIdentity, SimLink, SimNetwork,
+    SimNetworkStats, register_sim_network, unregister_sim_network,
 };
 use nostr::nips::nip19::ToBech32;
 use nostr::prelude::{
@@ -802,12 +803,6 @@ impl WotRatingExchange {
         self.discovery.trusted_rating_author_count()
     }
 
-    #[cfg(test)]
-    async fn seed_historic(&mut self, event: WotRatingFactEvent) {
-        self.stats.historic_seed_events += 1;
-        self.ingest(event).await;
-    }
-
     async fn publish_local(&mut self, pubsub: &WotRatingPubsubConfig, event: WotRatingFactEvent) {
         self.stats.local_published_events += 1;
         let scope = event.scope().unwrap_or_else(|| DEFAULT_SCOPE.to_string());
@@ -1144,13 +1139,14 @@ struct WotProbeRuntime {
 }
 
 struct WotProbeEndpoint {
-    npub: String,
+    peer_identity: PeerIdentity,
     endpoint: FipsEndpoint,
 }
 
 #[derive(Debug, Clone)]
 struct WotProbeNodeSpec {
     npub: String,
+    peer_identity: PeerIdentity,
     secret_hex: String,
     sim_addr: String,
     alias: String,
@@ -1218,7 +1214,7 @@ impl WotProbeRuntime {
             peer_endpoints.insert(
                 peer.id.clone(),
                 WotProbeEndpoint {
-                    npub: node.npub.clone(),
+                    peer_identity: node.peer_identity,
                     endpoint,
                 },
             );
@@ -1229,7 +1225,7 @@ impl WotProbeRuntime {
             network_id,
             network,
             local: WotProbeEndpoint {
-                npub: local_node.npub,
+                peer_identity: local_node.peer_identity,
                 endpoint: local_endpoint,
             },
             peers: peer_endpoints,
@@ -1302,7 +1298,7 @@ impl WotProbeRuntime {
         if self
             .local
             .endpoint
-            .send(peer.id.clone(), expected_payload.to_vec())
+            .send_batch_to_peer(remote.peer_identity, vec![expected_payload.to_vec()])
             .await
             .is_err()
         {
@@ -1319,7 +1315,7 @@ impl WotProbeRuntime {
         };
         if remote
             .endpoint
-            .send(self.local.npub.clone(), response)
+            .send_batch_to_peer(self.local.peer_identity, vec![response])
             .await
             .is_err()
         {
@@ -1426,6 +1422,7 @@ fn wot_probe_node_for_seed(
     let (identity, secret_hex) = sim_identity(seed);
     WotProbeNodeSpec {
         npub: identity.npub(),
+        peer_identity: PeerIdentity::from_pubkey_full(identity.pubkey_full()),
         secret_hex,
         sim_addr: sim_addr.into(),
         alias: alias.into(),
@@ -1484,23 +1481,28 @@ fn profile_returns_junk(profile: WotPeerProfile, degradation_seen: bool) -> bool
 
 async fn recv_probe_exact(endpoint: &FipsEndpoint, expected: &[u8], timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
+    let mut messages = Vec::new();
     loop {
         let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
             return false;
         };
-        match tokio::time::timeout(remaining, endpoint.recv()).await {
-            Ok(Some(message)) if message.data.as_slice() == expected => return true,
-            Ok(Some(_)) => continue,
-            _ => return false,
+        let Some(received) = recv_endpoint_batch_into(endpoint, &mut messages, remaining).await
+        else {
+            return false;
+        };
+        for message in messages.iter().take(received) {
+            if message.data.as_slice() == expected {
+                return true;
+            }
         }
     }
 }
 
 async fn recv_probe_payload(endpoint: &FipsEndpoint, timeout: Duration) -> Option<Vec<u8>> {
-    tokio::time::timeout(timeout, endpoint.recv())
-        .await
-        .ok()
-        .flatten()
+    let mut messages = Vec::new();
+    recv_endpoint_batch_into(endpoint, &mut messages, timeout).await?;
+    messages
+        .first()
         .map(|message| message.data.as_slice().to_vec())
 }
 
@@ -2089,8 +2091,10 @@ mod tests {
             WotRatingEventSource::HistoricIndex,
         );
 
-        exchange.seed_historic(spam).await;
-        exchange.seed_historic(trusted).await;
+        for event in [spam, trusted] {
+            exchange.stats.historic_seed_events += 1;
+            exchange.ingest(event).await;
+        }
 
         let events = exchange.query_events(&WotNostrFilter::rating_scope("fips.peer", 64));
         assert_eq!(events.len(), 1);

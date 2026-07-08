@@ -278,8 +278,7 @@ mod bluer_impl {
 
     /// Production BLE I/O implementation via BlueZ D-Bus (bluer crate).
     pub struct BluerIo {
-        #[allow(dead_code)] // Session must be kept alive for the adapter.
-        session: bluer::Session,
+        _session: bluer::Session,
         adapter: bluer::Adapter,
         adapter_name: String,
         adv_handle: Mutex<Option<bluer::adv::AdvertisementHandle>>,
@@ -315,7 +314,7 @@ mod bluer_impl {
             debug!(adapter = %name, "BluerIo initialized");
 
             Ok(Self {
-                session,
+                _session: session,
                 adapter,
                 adapter_name: name,
                 adv_handle: Mutex::new(None),
@@ -479,11 +478,10 @@ mod bluer_impl {
     }
 
     // Compile-time assertion that BluerIo satisfies Send + Sync.
-    #[allow(dead_code)]
-    fn _assert_bluer_io_send_sync() {
+    const _: () = {
         fn require<T: Send + Sync>() {}
-        require::<BluerIo>();
-    }
+        let _ = require::<BluerIo>;
+    };
 }
 
 #[cfg(bluer_available)]

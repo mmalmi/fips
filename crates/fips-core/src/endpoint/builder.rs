@@ -123,32 +123,24 @@ impl FipsEndpointBuilder {
         self,
         direct_sink: Option<EndpointDirectSink>,
     ) -> Result<FipsEndpoint, FipsEndpointError> {
-        endpoint_debug_log("FipsEndpointBuilder::bind begin");
         let config = self.prepared_config();
-        endpoint_debug_log("FipsEndpointBuilder::bind config prepared");
 
         let mut node = Node::new(config)?;
-        endpoint_debug_log("FipsEndpointBuilder::bind node created");
         let identity = PeerIdentity::from_pubkey_full(node.identity().pubkey_full());
         let npub = identity.npub();
         let node_addr = *identity.node_addr();
         let address = *identity.address();
         let packet_io = node.attach_external_packet_io(self.packet_channel_capacity)?;
-        endpoint_debug_log("FipsEndpointBuilder::bind packet io attached");
         let endpoint_data_io = match direct_sink {
             Some(sink) => {
                 node.attach_endpoint_data_io_with_direct_sink(self.packet_channel_capacity, sink)?
             }
             None => node.attach_endpoint_data_io(self.packet_channel_capacity)?,
         };
-        endpoint_debug_log("FipsEndpointBuilder::bind endpoint data io attached");
-        endpoint_debug_log("FipsEndpointBuilder::bind node.start begin");
         node.start().await?;
-        endpoint_debug_log("FipsEndpointBuilder::bind node.start complete");
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let task = spawn_node_task(node, shutdown_rx);
-        endpoint_debug_log("FipsEndpointBuilder::bind node task spawned");
         let endpoint_control_tx = endpoint_data_io.control_tx;
         let endpoint_data_batches = endpoint_data_io.data_batch_tx;
 
@@ -166,7 +158,6 @@ impl FipsEndpointBuilder {
             inbound_endpoint_rx: Arc::new(Mutex::new(EndpointReceiveState::new(
                 endpoint_data_io.event_rx,
             ))),
-            peer_identity_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
             shutdown_tx: std::sync::Mutex::new(Some(shutdown_tx)),
             task: std::sync::Mutex::new(Some(task)),
         })

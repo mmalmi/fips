@@ -25,7 +25,10 @@ pub mod pool;
 pub mod stats;
 mod tasks;
 
-use tasks::{accept_loop, pubkey_exchange, receive_loop, scan_probe_loop};
+use tasks::{
+    AcceptLoopContext, ScanProbeContext, accept_loop, pubkey_exchange, receive_loop,
+    scan_probe_loop,
+};
 
 use super::{
     ConnectionState, DiscoveredPeer, PacketTx, Transport, TransportAddr, TransportError,
@@ -181,22 +184,17 @@ impl<I: BleIo> BleTransport<I> {
         if self.config.accept_connections() {
             match self.io.listen(psm).await {
                 Ok(acceptor) => {
-                    let pool = Arc::clone(&self.pool);
-                    let packet_tx = self.packet_tx.clone();
-                    let transport_id = self.transport_id;
-                    let stats = Arc::clone(&self.stats);
-                    let max_conns = self.config.max_connections();
-
                     self.accept_task = Some(tokio::spawn(accept_loop(
                         acceptor,
-                        pool,
-                        packet_tx,
-                        transport_id,
-                        stats,
-                        max_conns,
-                        self.local_pubkey,
-                        Arc::clone(&self.discovery_buffer),
-                        local_node_addr,
+                        AcceptLoopContext {
+                            pool: Arc::clone(&self.pool),
+                            packet_tx: self.packet_tx.clone(),
+                            transport_id: self.transport_id,
+                            stats: Arc::clone(&self.stats),
+                            local_pubkey: self.local_pubkey,
+                            discovery_buffer: Arc::clone(&self.discovery_buffer),
+                            local_node_addr,
+                        },
                     )));
                     debug!(adapter = %adapter, psm = psm, "BLE accept loop started");
                 }
@@ -224,17 +222,19 @@ impl<I: BleIo> BleTransport<I> {
                 Ok(scanner) => {
                     self.scan_probe_task = Some(tokio::spawn(scan_probe_loop::<I>(
                         scanner,
-                        Arc::clone(&self.io),
-                        Arc::clone(&self.pool),
-                        Arc::clone(&self.discovery_buffer),
-                        Arc::clone(&self.stats),
-                        self.local_pubkey,
-                        self.config.psm(),
-                        self.config.connect_timeout_ms(),
-                        self.config.probe_cooldown_secs(),
-                        local_node_addr,
-                        self.packet_tx.clone(),
-                        self.transport_id,
+                        ScanProbeContext {
+                            io: Arc::clone(&self.io),
+                            pool: Arc::clone(&self.pool),
+                            buffer: Arc::clone(&self.discovery_buffer),
+                            stats: Arc::clone(&self.stats),
+                            local_pubkey: self.local_pubkey,
+                            psm: self.config.psm(),
+                            connect_timeout_ms: self.config.connect_timeout_ms(),
+                            cooldown_secs: self.config.probe_cooldown_secs(),
+                            local_node_addr,
+                            packet_tx: self.packet_tx.clone(),
+                            transport_id: self.transport_id,
+                        },
                     )));
                     debug!(adapter = %adapter, "BLE scan+probe loop started");
                 }
@@ -333,56 +333,6 @@ impl<I: BleIo> BleTransport<I> {
                 Err(e)
             }
         }
-    }
-
-    /// Connect to a remote BLE device inline (blocking the caller).
-    ///
-    /// Not used in normal operation (send_async fails fast instead).
-    /// Retained for manual debugging / testing scenarios.
-    #[allow(dead_code)]
-    async fn connect_inline(&self, addr: &TransportAddr) -> Result<(), TransportError> {
-        let ble_addr = BleAddr::parse(
-            addr.as_str()
-                .ok_or_else(|| TransportError::InvalidAddress("not valid UTF-8".into()))?,
-        )?;
-
-        let psm = self.config.psm();
-        let timeout_ms = self.config.connect_timeout_ms();
-
-        let stream = match tokio::time::timeout(
-            std::time::Duration::from_millis(timeout_ms),
-            self.io.connect(&ble_addr, psm),
-        )
-        .await
-        {
-            Ok(Ok(stream)) => stream,
-            Ok(Err(e)) => {
-                debug!(addr = %addr, error = %e, "BLE connect-on-send failed");
-                return Err(TransportError::ConnectionRefused);
-            }
-            Err(_) => {
-                self.stats.record_connect_timeout();
-                debug!(addr = %addr, "BLE connect-on-send timeout");
-                return Err(TransportError::Timeout);
-            }
-        };
-
-        // Pre-handshake pubkey exchange (temporary, pre-XX)
-        if let Some(ref our_pubkey) = self.local_pubkey {
-            match pubkey_exchange(&stream, our_pubkey).await {
-                Ok(peer_pubkey) => {
-                    debug!(addr = %addr, "BLE outbound pubkey exchange complete");
-                    self.discovery_buffer
-                        .add_peer_with_pubkey(&ble_addr, peer_pubkey);
-                }
-                Err(e) => {
-                    warn!(addr = %addr, error = %e, "BLE outbound pubkey exchange failed");
-                    return Err(e);
-                }
-            }
-        }
-
-        self.promote_connection(addr, &ble_addr, stream).await
     }
 
     /// Promote a newly established stream into the connection pool.

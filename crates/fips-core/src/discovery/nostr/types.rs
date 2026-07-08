@@ -90,6 +90,19 @@ pub struct TraversalAddress {
     pub port: u16,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(super) struct TraversalAddressObservation {
+    pub(super) reflexive_address: Option<TraversalAddress>,
+    pub(super) local_addresses: Vec<TraversalAddress>,
+    pub(super) stun_server: Option<String>,
+}
+
+impl TraversalAddressObservation {
+    pub(super) fn has_usable_address(&self) -> bool {
+        self.reflexive_address.is_some() || !self.local_addresses.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PunchHint {
     #[serde(rename = "startAtMs")]

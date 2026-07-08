@@ -250,7 +250,13 @@ async fn test_tun_outbound_path_mtu_generates_ptb() {
     send_tun_packet_via_dataplane(&mut nodes, 0, ipv6_packet).await;
 
     // Verify ICMPv6 Packet Too Big was generated
-    let ptb_messages: Vec<Vec<u8>> = std::iter::from_fn(|| tun_rx.try_recv().ok()).collect();
+    let ptb_messages: Vec<Vec<u8>> = std::iter::from_fn(|| {
+        tun_rx
+            .try_recv_packet()
+            .ok()
+            .map(|packet| packet.as_slice().to_vec())
+    })
+    .collect();
     assert_eq!(
         ptb_messages.len(),
         1,
@@ -296,7 +302,13 @@ async fn test_tun_outbound_path_mtu_generates_ptb() {
     send_tun_packet_via_dataplane(&mut nodes, 0, fitting_packet).await;
 
     // No PTB should be generated for a fitting packet
-    let ptb_messages2: Vec<Vec<u8>> = std::iter::from_fn(|| tun_rx2.try_recv().ok()).collect();
+    let ptb_messages2: Vec<Vec<u8>> = std::iter::from_fn(|| {
+        tun_rx2
+            .try_recv_packet()
+            .ok()
+            .map(|packet| packet.as_slice().to_vec())
+    })
+    .collect();
     assert_eq!(
         ptb_messages2.len(),
         0,

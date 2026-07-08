@@ -97,7 +97,7 @@ async fn test_send_recv() {
         .expect("timeout")
         .expect("channel closed");
 
-    assert_eq!(packet.data, data);
+    assert_eq!(packet.data.as_slice(), &data[..]);
     assert_eq!(
         packet.remote_addr.as_str(),
         Some(addr1.to_string().as_str())
@@ -129,7 +129,7 @@ async fn test_bidirectional() {
         .await
         .expect("timeout")
         .expect("channel closed");
-    assert_eq!(packet.data, b"ping");
+    assert_eq!(packet.data.as_slice(), &b"ping"[..]);
 
     // Send from t2 to t1
     t2.send_async(&addr1, b"pong").await.unwrap();
@@ -139,7 +139,7 @@ async fn test_bidirectional() {
         .await
         .expect("timeout")
         .expect("channel closed");
-    assert_eq!(packet.data, b"pong");
+    assert_eq!(packet.data.as_slice(), &b"pong"[..]);
 
     t1.stop_async().await.unwrap();
     t2.stop_async().await.unwrap();
@@ -366,7 +366,7 @@ async fn test_punch_probe_dropped() {
         .await
         .expect("timeout waiting for real packet")
         .expect("channel closed");
-    assert_eq!(packet.data, real);
+    assert_eq!(packet.data.as_slice(), &real[..]);
 
     // No further packets should be queued (probe + ack dropped).
     let no_more = timeout(Duration::from_millis(200), rx_recv.recv()).await;
@@ -420,7 +420,7 @@ async fn test_send_recv_ip_string() {
         .expect("timeout")
         .expect("channel closed");
 
-    assert_eq!(packet.data, data);
+    assert_eq!(packet.data.as_slice(), &data[..]);
 
     t1.stop_async().await.unwrap();
     t2.stop_async().await.unwrap();

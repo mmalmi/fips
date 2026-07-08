@@ -169,9 +169,7 @@ impl TransportDropTracker {
         recv_drops: Option<u64>,
     ) -> Option<u64> {
         let state = self.states.entry(transport_id).or_default();
-        let Some(current) = recv_drops else {
-            return None;
-        };
+        let current = recv_drops?;
 
         let dropped = current.saturating_sub(state.prev_drops);
         let new_drops = dropped > 0;

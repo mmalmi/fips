@@ -15,3 +15,5 @@ mod timeout;
 pub(in crate::node) use mmp::traversal_path_liveness_timeout;
 #[cfg(test)]
 pub(in crate::node) use mmp::traversal_path_quiet_refresh_timeout;
+#[cfg(test)]
+pub(in crate::node) use rx_loop::{RxLoopDataplaneTurnLimits, rx_loop_dataplane_io};

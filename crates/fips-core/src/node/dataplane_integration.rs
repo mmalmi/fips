@@ -2,12 +2,10 @@ use super::endpoint_traffic::fmp_plaintext_is_bulk_session_datagram;
 use super::*;
 use crate::dataplane::{
     ActivityTick, DataplaneDirectFspSource, DataplaneEndpointDataRoute, DataplaneFspSendReceipt,
-    DataplaneFspWrapRoute, DataplaneIngressRoute, DataplaneLiveEndpointRoute,
-    DataplaneLiveFmpIngressRoute, DataplaneLiveFspIngressRoute, DataplaneLiveNodeTurn,
-    DataplaneLiveOutboundFirsts, DataplaneLiveOwnerRoutes, DataplaneLiveTunRoute,
-    DataplaneOutputDrop, DataplaneOutputError, DataplaneTunDestinationRoute,
-    DataplaneTunOutboundRoute, OutboundPacket, OutputTarget, OwnerConfig, OwnerCryptoKeys, OwnerId,
-    PacketClass, TransportPath,
+    DataplaneFspWrapRoute, DataplaneIngressRoute, DataplaneLiveNodeTurn,
+    DataplaneLiveOutboundFirsts, DataplaneLiveOwnerRoutes, DataplaneLiveTurnIo,
+    DataplaneOutputDrop, DataplaneOutputError, DataplaneTunOutboundRoute, OutboundPacket,
+    OutputTarget, OwnerConfig, OwnerCryptoKeys, OwnerId, PacketClass, TransportPath,
 };
 use crate::node::session_wire::{FSP_PHASE_MSG2, FSP_PHASE_MSG3, FspCommonPrefix};
 use crate::protocol::SessionMessageType;
@@ -52,16 +50,6 @@ struct DataplaneFspOwnerRouteUpdate {
     path: Option<TransportPath>,
     direct_path_mtu: Option<u16>,
     next_hop: Option<NodeAddr>,
-}
-
-impl DataplaneFspOwnerRouteUpdate {
-    fn route_ready(&self) -> bool {
-        self.wrap.is_some() || self.path.is_some()
-    }
-
-    fn next_hop(&self) -> Option<NodeAddr> {
-        self.next_hop
-    }
 }
 
 enum DataplanePendingOutboundFailure {
@@ -130,7 +118,7 @@ impl Node {
             dataplane_fmp_link_class(plaintext),
             send_context.receiver_idx(),
             flags,
-            plaintext.to_vec(),
+            crate::transport::PacketBuffer::new(plaintext.to_vec()),
         )
         .with_activity_tick(ActivityTick::new(Self::now_ms()));
         let firsts = DataplaneLiveOutboundFirsts {
@@ -212,12 +200,9 @@ impl Node {
             timestamp_ms,
             bytes_sent,
         );
-        let _ = self.peers.record_fmp_send_bookkeeping(
-            node_addr,
-            receipt.counter,
-            timestamp_ms,
-            bytes_sent,
-        );
+        let _ = self
+            .peers
+            .record_fmp_send_bookkeeping(node_addr, bytes_sent);
         let send_result: Result<usize, TransportError> = Ok(bytes_sent);
         self.note_local_send_outcome(node_addr, &send_result);
         Ok(())
@@ -291,7 +276,6 @@ impl Node {
         &mut self,
         dest_addr: &NodeAddr,
         payloads: Vec<EndpointDataPayload>,
-        _pending_enqueued_at_ms: u64,
     ) -> Result<(), NodeError> {
         if payloads.is_empty() {
             return Ok(());
@@ -334,14 +318,12 @@ impl Node {
         msg_type: u8,
         payload: &[u8],
     ) -> Result<(), NodeError> {
-        let now_ms = Self::now_ms();
         self.send_dataplane_fsp_control_outbound(
             dest_addr,
             msg_type,
             None,
             payload,
             None,
-            now_ms,
             "FSP control message",
         )
         .await
@@ -351,7 +333,6 @@ impl Node {
         &mut self,
         dest_addr: &NodeAddr,
     ) -> Result<(), NodeError> {
-        let now_ms = Self::now_ms();
         let coords_prefix = self.dataplane_fsp_coords_prefix_for_dest(dest_addr);
         self.send_dataplane_fsp_control_outbound(
             dest_addr,
@@ -359,7 +340,6 @@ impl Node {
             Some(crate::node::session_wire::FSP_FLAG_CP),
             &[],
             Some(coords_prefix),
-            now_ms,
             "FSP coords warmup",
         )
         .await
@@ -372,11 +352,6 @@ impl Node {
         tun_limit: usize,
         crypto_limit: usize,
     ) -> DataplaneLiveNodeTurn {
-        let tun_tx = self.tun_tx.clone().unwrap_or_else(|| {
-            let (tx, rx) = crate::upper::tun::write_channel();
-            drop(rx);
-            tx
-        });
         let endpoint_tx = self.endpoint_events.sender().unwrap_or_else(|| {
             let (tx, rx) = EndpointEventSender::channel(1);
             drop(rx);
@@ -387,27 +362,27 @@ impl Node {
         let (_, mut empty_tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
         let turn = self
             .dataplane
-            .pump_turn_with_firsts_and_transport_worker(
+            .pump_turn_with_firsts_and_transport_batch(
                 None,
                 &mut empty_raw_ingress,
                 0,
                 firsts,
-                &mut empty_endpoint_data_rx,
-                endpoint_limit,
-                &mut empty_tun_outbound_rx,
-                tun_limit,
-                &tun_tx,
-                &endpoint_tx,
-                &self.transports,
-                crypto_limit,
-                &mut self.dataplane_transport_send_worker,
+                DataplaneLiveTurnIo {
+                    endpoint_data_rx: &mut empty_endpoint_data_rx,
+                    endpoint_limit,
+                    tun_outbound_rx: &mut empty_tun_outbound_rx,
+                    tun_limit,
+                    endpoint_tx: &endpoint_tx,
+                    transports: &self.transports,
+                    crypto_limit,
+                    transport_send_batch_packets: self.dataplane_transport_send_batch_packets,
+                },
             )
             .await;
         Self::observe_dataplane_turn(&turn);
         turn
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn send_dataplane_fsp_control_outbound(
         &mut self,
         dest_addr: &NodeAddr,
@@ -415,7 +390,6 @@ impl Node {
         fsp_flags_override: Option<u8>,
         payload: &[u8],
         coords_prefix: Option<Vec<u8>>,
-        now_ms: u64,
         label: &str,
     ) -> Result<(), NodeError> {
         if !self.dataplane_has_fsp_owner(dest_addr) {
@@ -439,16 +413,17 @@ impl Node {
         let coords_prefix_len = coords_prefix.as_ref().map_or(0, Vec::len);
         let fsp_flags = fsp_flags_override.unwrap_or_else(|| send_context.fsp_flags());
         let inner_flags = send_context.inner_flags();
+        let activity_tick = ActivityTick::new(Self::now_ms());
 
         let mut outbound = OutboundPacket::fsp(
             OwnerId::fsp_node(*dest_addr),
             send_context.generation(),
             dataplane_fsp_control_class(msg_type),
             fsp_flags,
-            payload.to_vec(),
+            crate::transport::PacketBuffer::new(payload.to_vec()),
         )
         .with_fsp_inner_header(msg_type, inner_flags)
-        .with_activity_tick(ActivityTick::new(now_ms));
+        .with_activity_tick(activity_tick);
         if let Some(prefix) = coords_prefix {
             outbound = outbound.with_fsp_cleartext_prefix(prefix);
         } else {
@@ -591,7 +566,7 @@ impl Node {
         let mut sent_receipt = None;
         for transport_receipt in turn.take_transport_sent_receipts() {
             if let Some(receipt) = transport_receipt.fsp_send_receipt
-                && receipt.owner() == owner
+                && receipt.owner == owner
             {
                 sent_receipt = Some(receipt);
             }
@@ -721,10 +696,10 @@ impl Node {
             send_context.fsp_flags(),
             send_context.inner_flags(),
         );
-        let route_ready = update.route_ready();
+        let route_ready = update.wrap.is_some() || update.path.is_some();
         let next_hop_ready = update.path.is_some()
             || update
-                .next_hop()
+                .next_hop
                 .is_some_and(|next_hop| self.dataplane_has_fmp_owner(&next_hop));
         let direct_path_mtu = update.direct_path_mtu;
         let refreshed = self
@@ -1051,7 +1026,7 @@ impl Node {
         let counter_authority = session.send_counter_authority();
         let mut routes = DataplaneLiveOwnerRoutes::new();
         for receiver_idx in receive_indices {
-            routes.push_fmp_ingress(DataplaneLiveFmpIngressRoute::new(
+            routes.push_fmp_ingress(
                 transport_id,
                 receiver_idx,
                 DataplaneIngressRoute::new(
@@ -1062,7 +1037,7 @@ impl Node {
                     },
                 )
                 .with_class(PacketClass::Bulk),
-            ));
+            );
         }
         let mut config = self
             .dataplane_owner_config(generation)
@@ -1113,8 +1088,7 @@ impl Node {
         if snapshot.current_k_bit {
             fsp_flags |= crate::node::session_wire::FSP_FLAG_K;
         }
-        let generation =
-            Self::dataplane_generation_from_session_start_ms(snapshot.session_start_ms);
+        let generation = snapshot.session_start_ms.max(1);
         let inner_flags = crate::protocol::FspInnerFlags { spin_bit: false }.to_byte();
         let coords_prefix = self.dataplane_fsp_coords_prefix(node_addr, coords_warmup_remaining);
         let route_update =
@@ -1203,7 +1177,7 @@ impl Node {
             };
         };
         let mut routes = DataplaneLiveOwnerRoutes::new();
-        routes.push_fsp_ingress(DataplaneLiveFspIngressRoute::new(
+        routes.push_fsp_ingress(
             *node_addr,
             DataplaneIngressRoute::new(
                 owner,
@@ -1213,26 +1187,23 @@ impl Node {
                 },
             )
             .with_class(PacketClass::Bulk),
-        ));
+        );
         let tun = DataplaneTunOutboundRoute::fsp_ipv6_shim(
             owner,
             generation,
             PacketClass::Bulk,
             fsp_flags,
             inner_flags,
-        );
-        routes.push_tun_destination(DataplaneLiveTunRoute::new(
-            *node_addr,
-            DataplaneTunDestinationRoute::new(tun)
-                .with_max_packet_len(self.dataplane_tun_max_packet_len(node_addr)),
-        ));
+        )
+        .with_max_packet_len(self.dataplane_tun_max_packet_len(node_addr));
+        routes.push_tun_destination(*node_addr, tun);
 
         let mut endpoint =
             DataplaneEndpointDataRoute::fsp(owner, generation, fsp_flags, inner_flags);
         if direct_path_mtu.is_some() {
             endpoint = endpoint.with_direct_transport();
         }
-        routes.push_endpoint_destination(DataplaneLiveEndpointRoute::new(*node_addr, endpoint));
+        routes.push_endpoint_destination(*node_addr, endpoint);
 
         DataplaneFspOwnerRouteUpdate {
             routes,
@@ -1265,8 +1236,8 @@ impl Node {
             .dataplane
             .owner_active_path(OwnerId::fmp_node(next_hop))
             .ok()??;
-        let transport_id = active_path.transport_id()?;
-        let remote_addr = active_path.remote_addr()?.clone();
+        let transport_id = active_path.transport_id;
+        let remote_addr = active_path.remote_addr.clone();
         let fmp_flags = send_context.flags();
         let path_mtu = self
             .transports
@@ -1297,17 +1268,9 @@ impl Node {
             .unwrap_or(effective_mtu)
     }
 
-    fn dataplane_owner_in_flight_limit(&self) -> usize {
-        self.config.node.limits.max_pending_inbound.max(1)
-    }
-
     fn dataplane_owner_config(&self, generation: u64) -> OwnerConfig {
-        let in_flight_limit = self.dataplane_owner_in_flight_limit();
+        let in_flight_limit = self.config.node.limits.max_pending_inbound.max(1);
         OwnerConfig::new(generation, in_flight_limit)
-    }
-
-    fn dataplane_generation_from_session_start_ms(session_start_ms: u64) -> u64 {
-        session_start_ms.max(1)
     }
 
     fn dataplane_fmp_output_drop_error(
@@ -1316,10 +1279,10 @@ impl Node {
         drop: &DataplaneOutputDrop,
     ) -> NodeError {
         match drop.reason() {
-            DataplaneOutputError::MtuExceeded => NodeError::MtuExceeded {
+            DataplaneOutputError::MtuExceeded { mtu } => NodeError::MtuExceeded {
                 node_addr,
                 packet_size: drop.payload_len(),
-                mtu: self.dataplane_drop_path_mtu(drop),
+                mtu,
             },
             DataplaneOutputError::NoRoute => {
                 NodeError::LocalRouteUnavailable("dataplane transport route unavailable".into())
@@ -1329,20 +1292,6 @@ impl Node {
                 reason: format!("dataplane transport output failed: {:?}", reason),
             },
         }
-    }
-
-    fn dataplane_drop_path_mtu(&self, drop: &DataplaneOutputDrop) -> u16 {
-        let Some(TransportPath::Live {
-            transport_id,
-            remote_addr,
-        }) = drop.path()
-        else {
-            return self.transport_mtu();
-        };
-        self.transports
-            .get(&transport_id)
-            .map(|transport| transport.link_mtu(&remote_addr))
-            .unwrap_or_else(|| self.transport_mtu())
     }
 }
 
@@ -1402,7 +1351,7 @@ mod tests {
         DataplaneLiveOutboundFirsts, DataplaneRawIngress, DataplaneRawIngressDropReason,
         PacketProtocol,
     };
-    use crate::peer::ActivePeer;
+    use crate::peer::{ActivePeer, ActivePeerSession};
     use crate::transport::{LinkStats, ReceivedPacket};
     use crate::utils::index::SessionIndex;
     use std::collections::VecDeque;
@@ -1499,15 +1448,16 @@ mod tests {
             peer_identity,
             LinkId::new(77),
             1_000,
-            current_session,
-            previous_index,
-            SessionIndex::new(20),
-            transport_id,
-            remote_addr.clone(),
-            LinkStats::new(),
-            true,
-            &node.config.node.mmp,
-            Some([0x02; 8]),
+            ActivePeerSession {
+                session: current_session,
+                our_index: previous_index,
+                their_index: SessionIndex::new(20),
+                transport_id,
+                current_addr: remote_addr.clone(),
+                link_stats: LinkStats::new(),
+                is_initiator: true,
+                remote_epoch: Some([0x02; 8]),
+            },
         );
         let first_pending =
             test_fmp_session(&node.identity, &peer_identity_full, [0x03; 8], [0x04; 8]);
@@ -1527,53 +1477,59 @@ mod tests {
             DataplaneRawIngress::from_received(
                 PacketProtocol::Fmp,
                 TransportPath::live(transport_id, remote_addr.clone()),
-                ReceivedPacket::new(
+                ReceivedPacket::with_timestamp(
                     transport_id,
                     remote_addr.clone(),
-                    invalid_fmp_frame(current_index, 1, crate::node::wire::FLAG_KEY_EPOCH),
+                    crate::transport::PacketBuffer::new(invalid_fmp_frame(
+                        current_index,
+                        1,
+                        crate::node::wire::FLAG_KEY_EPOCH,
+                    )),
+                    1,
                 ),
             ),
             DataplaneRawIngress::from_received(
                 PacketProtocol::Fmp,
                 TransportPath::live(transport_id, remote_addr.clone()),
-                ReceivedPacket::new(
+                ReceivedPacket::with_timestamp(
                     transport_id,
                     remote_addr.clone(),
-                    invalid_fmp_frame(previous_index, 2, 0),
+                    crate::transport::PacketBuffer::new(invalid_fmp_frame(previous_index, 2, 0)),
+                    2,
                 ),
             ),
             DataplaneRawIngress::from_received(
                 PacketProtocol::Fmp,
                 TransportPath::live(transport_id, remote_addr.clone()),
-                ReceivedPacket::new(
+                ReceivedPacket::with_timestamp(
                     transport_id,
                     remote_addr,
-                    invalid_fmp_frame(pending_index, 3, 0),
+                    crate::transport::PacketBuffer::new(invalid_fmp_frame(pending_index, 3, 0)),
+                    3,
                 ),
             ),
         ]);
-        let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
-        drop(tun_rx);
         let (endpoint_tx, endpoint_rx) = EndpointEventSender::channel(1);
         drop(endpoint_rx);
         let (_, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
         let (_, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
         let turn = node
             .dataplane
-            .pump_turn_with_firsts_and_transport_worker(
+            .pump_turn_with_firsts_and_transport_batch(
                 None,
                 &mut raw,
                 3,
                 DataplaneLiveOutboundFirsts::default(),
-                &mut endpoint_data_rx,
-                0,
-                &mut tun_outbound_rx,
-                0,
-                &tun_tx,
-                &endpoint_tx,
-                &node.transports,
-                3,
-                &mut node.dataplane_transport_send_worker,
+                DataplaneLiveTurnIo {
+                    endpoint_data_rx: &mut endpoint_data_rx,
+                    endpoint_limit: 0,
+                    tun_outbound_rx: &mut tun_outbound_rx,
+                    tun_limit: 0,
+                    endpoint_tx: &endpoint_tx,
+                    transports: &node.transports,
+                    crypto_limit: 3,
+                    transport_send_batch_packets: node.dataplane_transport_send_batch_packets,
+                },
             )
             .await;
 

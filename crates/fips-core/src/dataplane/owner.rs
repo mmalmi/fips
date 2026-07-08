@@ -307,6 +307,7 @@ impl OwnerConfig {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn with_next_send_counter(mut self, next_send_counter: u64) -> Self {
         self.next_send_counter = next_send_counter;
         self
@@ -780,6 +781,7 @@ impl OwnerState {
         self.previous_fsp_replay_window = None;
     }
 
+    #[cfg(test)]
     pub(crate) fn set_crypto_keys(&mut self, keys: OwnerCryptoKeys) {
         self.crypto_keys = Some(keys);
     }
@@ -1152,10 +1154,12 @@ impl OwnerState {
             .max(1)
     }
 
+    #[cfg(test)]
     pub(crate) fn last_rx_activity(&self) -> Option<ActivityTick> {
         self.last_rx_activity
     }
 
+    #[cfg(test)]
     pub(crate) fn last_tx_activity(&self) -> Option<ActivityTick> {
         self.last_tx_activity
     }
@@ -1453,17 +1457,21 @@ impl OwnerState {
 
     pub(crate) fn record_authenticated_fsp_session(
         &mut self,
-        previous_hop: NodeAddr,
-        msg_type: u8,
-        body_len: usize,
-        sync: FspReceiveSync,
-        activity_tick: Option<ActivityTick>,
-        now: std::time::Instant,
+        session: DataplaneAuthenticatedFspSession,
     ) -> Option<bool> {
         if self.owner.protocol() != PacketProtocol::Fsp {
             return None;
         }
         self.consecutive_decrypt_failures = 0;
+        let DataplaneAuthenticatedFspSession {
+            previous_hop,
+            msg_type,
+            body_len,
+            sync,
+            activity_tick,
+            now,
+            ..
+        } = session;
         if let Some(mmp) = &mut self.fsp_mmp {
             mmp.receiver.record_recv(
                 sync.counter,
@@ -1502,12 +1510,7 @@ impl OwnerState {
 
     pub(crate) fn record_authenticated_fmp_receive(
         &mut self,
-        counter: u64,
-        timestamp_ms: u32,
-        packet_len: usize,
-        ce_flag: bool,
-        spin_bit: bool,
-        now: std::time::Instant,
+        receive: DataplaneAuthenticatedFmpMmpReceive,
     ) -> Result<Option<std::time::Duration>, DataplaneFmpMmpSkip> {
         if self.owner.protocol() != PacketProtocol::Fmp {
             return Err(DataplaneFmpMmpSkip::UnknownOwner);
@@ -1515,9 +1518,16 @@ impl OwnerState {
         let Some(mmp) = &mut self.fmp_mmp else {
             return Err(DataplaneFmpMmpSkip::MmpDisabled);
         };
-        mmp.receiver
-            .record_recv(counter, timestamp_ms, packet_len, ce_flag, now);
-        Ok(mmp.spin_bit.rx_observe(spin_bit, counter, now))
+        mmp.receiver.record_recv(
+            receive.counter,
+            receive.timestamp_ms,
+            receive.packet_len,
+            receive.ce_flag,
+            receive.now,
+        );
+        Ok(mmp
+            .spin_bit
+            .rx_observe(receive.spin_bit, receive.counter, receive.now))
     }
 
     pub(crate) fn record_fmp_send_result(
@@ -1570,6 +1580,7 @@ impl OwnerState {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn record_fsp_data_sent(
         &mut self,
         next_hop: NodeAddr,
@@ -1823,7 +1834,7 @@ impl OwnerState {
         Ok(DataplaneFspReceiverReportResult {
             sample,
             used_direct_next_hop: last_outbound_next_hop
-                .map_or(true, |next_hop| next_hop == self.owner.node_addr()),
+                .is_none_or(|next_hop| next_hop == self.owner.node_addr()),
             srtt_ms,
             mode: mmp.mode(),
         })
@@ -2044,7 +2055,7 @@ impl OwnerState {
                 .max(completion.reservation.counter);
             let output = if compact_endpoint_data {
                 match DataplaneFspEndpointDataIngress::from_output(output) {
-                    Ok(ingress) => {
+                    DataplaneFspEndpointDataIngressOutput::Ingress(ingress) => {
                         self.record_retired_endpoint_data_ingress(&ingress);
                         endpoint_packets = endpoint_packets.saturating_add(ingress.len());
                         match &mut endpoint_data_batch {
@@ -2056,7 +2067,7 @@ impl OwnerState {
                         }
                         continue;
                     }
-                    Err(output) => output,
+                    DataplaneFspEndpointDataIngressOutput::Rejected(output) => output,
                 }
             } else {
                 output
@@ -2121,11 +2132,13 @@ impl OwnerState {
     ) {
         if compact_endpoint_data && matches!(output.target(), OutputTarget::SessionPayload { .. }) {
             match DataplaneFspEndpointDataIngress::from_output(output) {
-                Ok(ingress) => {
+                DataplaneFspEndpointDataIngressOutput::Ingress(ingress) => {
                     self.record_retired_endpoint_data_ingress(&ingress);
                     retired.push_endpoint_data_batch(ingress);
                 }
-                Err(output) => retired.push_output(output),
+                DataplaneFspEndpointDataIngressOutput::Rejected(output) => {
+                    retired.push_output(output);
+                }
             }
             return;
         }
@@ -2141,14 +2154,15 @@ impl OwnerState {
         if self.owner != OwnerId::fsp_node(commit.source_addr()) {
             return;
         }
-        let _ = self.record_authenticated_fsp_session(
+        let _ = self.record_authenticated_fsp_session(DataplaneAuthenticatedFspSession::new(
+            commit.source_addr(),
             commit.previous_hop_addr(),
             ingress.msg_type,
             ingress.body_len,
             ingress.receive_sync,
             ingress.activity_tick,
             std::time::Instant::now(),
-        );
+        ));
     }
 
     fn reserve_class(&mut self, class: PacketClass) {

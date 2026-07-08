@@ -30,7 +30,7 @@ async fn process_dataplane_turn(
     let (_packet_tx, mut empty_packet_rx) = crate::transport::packet_channel(1);
     let (_endpoint_tx, mut dummy_endpoint_rx) = crate::node::endpoint_data_batch_channel(1);
     let (_tun_outbound_tx, mut dummy_tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
-    let (dummy_tun_tx, _dummy_tun_rx) = crate::upper::tun::write_channel();
+    let (_fast_tx, mut dummy_fast_ingress_rx) = tokio::sync::mpsc::channel(1);
     let (dummy_endpoint_tx, _dummy_endpoint_rx) = crate::node::EndpointEventSender::channel(1);
 
     let mut endpoint_rx_slot = node.node.endpoint_data_rx.take();
@@ -44,31 +44,31 @@ async fn process_dataplane_turn(
         Some(rx) => rx,
         None => &mut dummy_tun_outbound_rx,
     };
-    let tun_tx = node.node.tun_tx.clone().unwrap_or(dummy_tun_tx);
     let endpoint_tx = node
         .node
         .endpoint_events
         .sender()
         .unwrap_or(dummy_endpoint_tx);
 
-    let mut turn = node
-        .node
-        .drain_dataplane_turn_with_firsts(
+    let mut turn = {
+        let mut dataplane_io = crate::node::handlers::rx_loop_dataplane_io(
             &mut empty_packet_rx,
-            crate::dataplane::DataplaneLiveTurnFirsts {
-                raw_packet: first_packet,
-                ..Default::default()
-            },
-            packet_limit,
+            &mut dummy_fast_ingress_rx,
             endpoint_rx,
-            64,
             tun_outbound_rx,
-            64,
-            &tun_tx,
             &endpoint_tx,
-            64,
-        )
-        .await;
+        );
+        node.node
+            .drain_dataplane_turn_with_firsts(
+                &mut dataplane_io,
+                crate::dataplane::DataplaneLiveTurnFirsts {
+                    raw_packet: first_packet,
+                    ..Default::default()
+                },
+                crate::node::handlers::RxLoopDataplaneTurnLimits::new(packet_limit, 64, 64, 64),
+            )
+            .await
+    };
     let mut active_turns = 0usize;
     let had_activity = turn.has_activity();
     let mut dispatched = turn.summary().dispatched();
@@ -84,21 +84,22 @@ async fn process_dataplane_turn(
         let notify = node.node.dataplane.completion_notify();
         let _ = tokio::time::timeout(std::time::Duration::from_secs(1), notify.notified()).await;
 
-        let mut completion_turn = node
-            .node
-            .drain_dataplane_turn_with_firsts(
+        let mut completion_turn = {
+            let mut dataplane_io = crate::node::handlers::rx_loop_dataplane_io(
                 &mut empty_packet_rx,
-                crate::dataplane::DataplaneLiveTurnFirsts::default(),
-                0,
+                &mut dummy_fast_ingress_rx,
                 endpoint_rx,
-                64,
                 tun_outbound_rx,
-                64,
-                &tun_tx,
                 &endpoint_tx,
-                64,
-            )
-            .await;
+            );
+            node.node
+                .drain_dataplane_turn_with_firsts(
+                    &mut dataplane_io,
+                    crate::dataplane::DataplaneLiveTurnFirsts::default(),
+                    crate::node::handlers::RxLoopDataplaneTurnLimits::new(0, 64, 64, 64),
+                )
+                .await
+        };
         let completion_had_activity = completion_turn.has_activity();
         dispatched = completion_turn.summary().dispatched();
         let completion_processed = node

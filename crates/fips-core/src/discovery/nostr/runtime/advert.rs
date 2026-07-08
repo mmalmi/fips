@@ -175,16 +175,17 @@ impl NostrDiscovery {
         )
         .await
         {
-            Ok((reflexive, _local, stun_server)) => {
+            Ok(observation) => {
                 debug!(
-                    stun = %stun_server.as_deref().unwrap_or("-"),
-                    reflexive = %reflexive
+                    stun = %observation.stun_server.as_deref().unwrap_or("-"),
+                    reflexive = %observation
+                        .reflexive_address
                         .as_ref()
                         .map(|a| format!("{}:{}", a.ip, a.port))
                         .unwrap_or_else(|| "-".into()),
                     "public-udp-addr: STUN observation"
                 );
-                reflexive
+                observation.reflexive_address
             }
             Err(err) => {
                 debug!(error = %err, "public-udp-addr: STUN failed");

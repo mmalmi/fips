@@ -77,15 +77,16 @@ async fn fresh_handshake_replaces_reconnecting_peer_even_if_tie_breaker_would_lo
         peer_identity,
         old_link_id,
         1_000,
-        old_session,
-        old_our_index,
-        old_their_index,
-        old_transport_id,
-        old_addr.clone(),
-        crate::transport::LinkStats::new(),
-        true,
-        &node.config.node.mmp,
-        Some([0x11; 8]),
+        ActivePeerSession {
+            session: old_session,
+            our_index: old_our_index,
+            their_index: old_their_index,
+            transport_id: old_transport_id,
+            current_addr: old_addr.clone(),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: Some([0x11; 8]),
+        },
     );
     old_peer.mark_reconnecting();
     node.peers.insert(peer_node_addr, old_peer);
@@ -153,15 +154,16 @@ async fn equal_priority_outbound_alternate_path_does_not_replace_healthy_peer() 
         peer_identity,
         old_link_id,
         1_000,
-        old_session,
-        old_our_index,
-        old_their_index,
-        old_transport_id,
-        old_addr.clone(),
-        crate::transport::LinkStats::new(),
-        true,
-        &node.config.node.mmp,
-        Some([0x11; 8]),
+        ActivePeerSession {
+            session: old_session,
+            our_index: old_our_index,
+            their_index: old_their_index,
+            transport_id: old_transport_id,
+            current_addr: old_addr.clone(),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: Some([0x11; 8]),
+        },
     );
     assert!(old_peer.can_send());
     node.peers.insert(peer_node_addr, old_peer);
@@ -229,15 +231,16 @@ async fn handle_msg2_keeps_healthy_peer_over_equal_priority_outbound_alternate_p
         peer_identity,
         old_link_id,
         1_000,
-        old_session,
-        old_our_index,
-        old_their_index,
-        old_transport_id,
-        old_addr.clone(),
-        crate::transport::LinkStats::new(),
-        true,
-        &node.config.node.mmp,
-        Some([0x11; 8]),
+        ActivePeerSession {
+            session: old_session,
+            our_index: old_our_index,
+            their_index: old_their_index,
+            transport_id: old_transport_id,
+            current_addr: old_addr.clone(),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: Some([0x11; 8]),
+        },
     );
     assert!(old_peer.can_send());
     node.peers.insert(peer_node_addr, old_peer);
@@ -289,8 +292,12 @@ async fn handle_msg2_keeps_healthy_peer_over_equal_priority_outbound_alternate_p
         .unwrap();
     let their_index = SessionIndex::new(77);
     let wire_msg2 = build_msg2(their_index, our_index, &noise_msg2);
-    let packet =
-        ReceivedPacket::with_timestamp(new_transport_id, new_addr.clone(), wire_msg2, 2_100);
+    let packet = ReceivedPacket::with_timestamp(
+        new_transport_id,
+        new_addr.clone(),
+        crate::transport::PacketBuffer::new(wire_msg2),
+        2_100,
+    );
 
     node.handle_msg2(packet).await;
 
@@ -378,15 +385,16 @@ async fn handle_msg2_does_not_demote_healthy_static_path_to_lower_priority_alter
         peer_identity,
         old_link_id,
         1_000,
-        old_session,
-        old_our_index,
-        old_their_index,
-        transport_id,
-        static_addr.clone(),
-        crate::transport::LinkStats::new(),
-        true,
-        &node.config.node.mmp,
-        Some([0x11; 8]),
+        ActivePeerSession {
+            session: old_session,
+            our_index: old_our_index,
+            their_index: old_their_index,
+            transport_id,
+            current_addr: static_addr.clone(),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: Some([0x11; 8]),
+        },
     );
     assert!(old_peer.can_send());
     node.peers.insert(peer_node_addr, old_peer);
@@ -436,8 +444,12 @@ async fn handle_msg2_does_not_demote_healthy_static_path_to_lower_priority_alter
         .unwrap();
     let their_index = SessionIndex::new(77);
     let wire_msg2 = build_msg2(their_index, our_index, &noise_msg2);
-    let packet =
-        ReceivedPacket::with_timestamp(transport_id, lower_priority_addr.clone(), wire_msg2, 2_100);
+    let packet = ReceivedPacket::with_timestamp(
+        transport_id,
+        lower_priority_addr.clone(),
+        crate::transport::PacketBuffer::new(wire_msg2),
+        2_100,
+    );
 
     node.handle_msg2(packet).await;
 
@@ -524,15 +536,16 @@ async fn handle_msg2_replaces_quiet_static_path_with_authenticated_alternate() {
         peer_identity,
         old_link_id,
         1_000,
-        old_session,
-        old_our_index,
-        old_their_index,
-        transport_id,
-        static_addr.clone(),
-        crate::transport::LinkStats::new(),
-        true,
-        &node.config.node.mmp,
-        Some([0x11; 8]),
+        ActivePeerSession {
+            session: old_session,
+            our_index: old_our_index,
+            their_index: old_their_index,
+            transport_id,
+            current_addr: static_addr.clone(),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: Some([0x11; 8]),
+        },
     );
     assert!(old_peer.can_send());
     node.peers.insert(peer_node_addr, old_peer);
@@ -606,7 +619,7 @@ async fn handle_msg2_replaces_quiet_static_path_with_authenticated_alternate() {
     let packet = ReceivedPacket::with_timestamp(
         transport_id,
         lower_priority_addr.clone(),
-        wire_msg2,
+        crate::transport::PacketBuffer::new(wire_msg2),
         now_ms,
     );
 
@@ -677,30 +690,32 @@ async fn authenticated_packet_rotates_configured_static_path_to_observed_source(
         peer_identity,
         LinkId::new(10),
         1_000,
-        session,
-        crate::utils::index::SessionIndex::new(11),
-        crate::utils::index::SessionIndex::new(12),
-        transport_id,
-        static_addr.clone(),
-        crate::transport::LinkStats::new(),
-        true,
-        &node.config.node.mmp,
-        Some([2; 8]),
+        ActivePeerSession {
+            session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id,
+            current_addr: static_addr.clone(),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: Some([2; 8]),
+        },
     );
     assert!(active.can_send());
     node.peers.insert(peer_node_addr, active);
+    let public_fmp_receive = |packet_timestamp_ms, fmp_counter| AuthenticatedFmpReceiveFacts {
+        source_peer: peer_identity,
+        transport_id,
+        remote_addr: &public_addr,
+        packet_timestamp_ms,
+        packet_len: 64,
+        fmp_counter,
+        inner_timestamp_ms: 0,
+        fmp_flags: 0,
+    };
 
     node.record_authenticated_fmp_receive_facts(
-        AuthenticatedFmpReceiveFacts::new(
-            peer_identity,
-            transport_id,
-            &public_addr,
-            2_000,
-            64,
-            1,
-            0,
-            0,
-        ),
+        public_fmp_receive(2_000, 1),
         Some(&peer_node_addr),
     );
 
@@ -718,16 +733,7 @@ async fn authenticated_packet_rotates_configured_static_path_to_observed_source(
 
     node.mark_session_direct_path_degraded(peer_node_addr, 3_000);
     node.record_authenticated_fmp_receive_facts(
-        AuthenticatedFmpReceiveFacts::new(
-            peer_identity,
-            transport_id,
-            &public_addr,
-            3_100,
-            64,
-            2,
-            0,
-            0,
-        ),
+        public_fmp_receive(3_100, 2),
         Some(&peer_node_addr),
     );
 
@@ -741,16 +747,7 @@ async fn authenticated_packet_rotates_configured_static_path_to_observed_source(
 
     node.config.peers[0].addresses[0].seen_at_ms = Some(2_000);
     node.record_authenticated_fmp_receive_facts(
-        AuthenticatedFmpReceiveFacts::new(
-            peer_identity,
-            transport_id,
-            &public_addr,
-            3_200,
-            64,
-            3,
-            0,
-            0,
-        ),
+        public_fmp_receive(3_200, 3),
         Some(&peer_node_addr),
     );
 
@@ -790,15 +787,16 @@ async fn handle_msg2_matches_pending_outbound_by_index_when_reply_transport_id_c
         peer_identity,
         old_link_id,
         1_000,
-        old_session,
-        old_our_index,
-        old_their_index,
-        old_transport_id,
-        old_addr.clone(),
-        crate::transport::LinkStats::new(),
-        true,
-        &node.config.node.mmp,
-        Some([0x11; 8]),
+        ActivePeerSession {
+            session: old_session,
+            our_index: old_our_index,
+            their_index: old_their_index,
+            transport_id: old_transport_id,
+            current_addr: old_addr.clone(),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: Some([0x11; 8]),
+        },
     );
     node.peers.insert(peer_node_addr, old_peer);
     node.peers
@@ -850,8 +848,12 @@ async fn handle_msg2_matches_pending_outbound_by_index_when_reply_transport_id_c
         .unwrap();
     let their_index = SessionIndex::new(77);
     let wire_msg2 = build_msg2(their_index, our_index, &noise_msg2);
-    let packet =
-        ReceivedPacket::with_timestamp(recv_transport_id, gateway_addr.clone(), wire_msg2, 2_100);
+    let packet = ReceivedPacket::with_timestamp(
+        recv_transport_id,
+        gateway_addr.clone(),
+        crate::transport::PacketBuffer::new(wire_msg2),
+        2_100,
+    );
 
     node.handle_msg2(packet).await;
 
@@ -914,8 +916,12 @@ async fn handle_msg2_uses_authenticated_reply_source_when_static_destination_dif
         .unwrap();
     let their_index = SessionIndex::new(77);
     let wire_msg2 = build_msg2(their_index, our_index, &noise_msg2);
-    let packet =
-        ReceivedPacket::with_timestamp(transport_id, observed_reply_addr.clone(), wire_msg2, 2_100);
+    let packet = ReceivedPacket::with_timestamp(
+        transport_id,
+        observed_reply_addr.clone(),
+        crate::transport::PacketBuffer::new(wire_msg2),
+        2_100,
+    );
 
     node.handle_msg2(packet).await;
 

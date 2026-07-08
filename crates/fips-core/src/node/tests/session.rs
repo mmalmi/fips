@@ -26,37 +26,6 @@ mod route_metrics;
 mod tun_outbound_core;
 mod tun_outbound_tail;
 
-/// Populate all nodes' coordinate caches with each other's coords.
-///
-/// This enables routing between non-adjacent nodes (bloom filter + tree
-/// routing both require cached destination coordinates).
-fn populate_all_coord_caches(nodes: &mut [TestNode]) {
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
-
-    let all_coords: Vec<(NodeAddr, crate::tree::TreeCoordinate)> = nodes
-        .iter()
-        .map(|tn| {
-            (
-                *tn.node.node_addr(),
-                tn.node.tree_state().my_coords().clone(),
-            )
-        })
-        .collect();
-
-    for tn in nodes.iter_mut() {
-        for (addr, coords) in &all_coords {
-            if addr != tn.node.node_addr() {
-                tn.node
-                    .coord_cache_mut()
-                    .insert(*addr, coords.clone(), now_ms);
-            }
-        }
-    }
-}
-
 // ============================================================================
 // Unit tests: SessionEntry data structure
 // ============================================================================
@@ -123,61 +92,6 @@ where
     if let Err(panic) = handle.join() {
         std::panic::resume_unwind(panic);
     }
-}
-
-fn ensure_dataplane_fsp_owner_for_test(node: &mut Node, dest_addr: NodeAddr) {
-    node.dataplane.register_owner_if_missing(
-        crate::dataplane::OwnerId::fsp_node(dest_addr),
-        crate::dataplane::OwnerConfig::new(1, 8)
-            .with_fsp_session_start_ms(1_000)
-            .with_fsp_mmp(node.config.node.session_mmp.clone(), true),
-    );
-}
-
-fn seed_dataplane_fsp_data_sent_for_test(
-    node: &mut Node,
-    dest_addr: NodeAddr,
-    next_hop: NodeAddr,
-    now_ms: u64,
-) {
-    ensure_dataplane_fsp_owner_for_test(node, dest_addr);
-    assert!(node.dataplane.record_fsp_data_sent(
-        dest_addr,
-        next_hop,
-        512,
-        crate::dataplane::ActivityTick::new(now_ms),
-    ));
-}
-
-fn seed_dataplane_fsp_data_rx_for_test(
-    node: &mut Node,
-    source_addr: NodeAddr,
-    previous_hop: NodeAddr,
-    now_ms: u64,
-) {
-    ensure_dataplane_fsp_owner_for_test(node, source_addr);
-    let body_len = 512;
-    assert!(
-        node.dataplane
-            .record_authenticated_fsp_session(
-                source_addr,
-                previous_hop,
-                crate::protocol::SessionMessageType::EndpointData.to_byte(),
-                body_len,
-                crate::dataplane::FspReceiveSync {
-                    counter: 1,
-                    received_k_bit: false,
-                    timestamp: 0,
-                    plaintext_len: crate::node::session_wire::FSP_INNER_HEADER_SIZE + body_len,
-                    ce_flag: false,
-                    path_mtu: u16::MAX,
-                    spin_bit: false,
-                },
-                Some(crate::dataplane::ActivityTick::new(now_ms)),
-                std::time::Instant::now(),
-            )
-            .is_some()
-    );
 }
 
 async fn recv_endpoint_event_while_draining(
@@ -263,8 +177,8 @@ async fn recv_tun_packet_while_draining(
 ) -> Vec<u8> {
     tokio::time::timeout(timeout, async {
         loop {
-            match rx.try_recv() {
-                Ok(packet) => return packet,
+            match rx.try_recv_packet() {
+                Ok(packet) => return packet.as_slice().to_vec(),
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     panic!("{context}: TUN receiver disconnected");
                 }

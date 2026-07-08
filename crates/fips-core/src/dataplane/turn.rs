@@ -123,6 +123,7 @@ impl DataplaneRuntimeTurn<'_> {
         self.output_drops
     }
 
+    #[cfg(test)]
     pub(crate) fn outputs(&self) -> &[PacketOutput] {
         self.outputs
     }
@@ -168,13 +169,9 @@ impl DataplaneFmpIngressReceipt {
         if source_peer.node_addr() != &source_addr {
             return None;
         }
-        let Some(TransportPath::Live {
-            transport_id,
-            remote_addr,
-        }) = output.source_path()
-        else {
-            return None;
-        };
+        let source_path = output.source_path()?;
+        let transport_id = source_path.transport_id;
+        let remote_addr = source_path.remote_addr.clone();
         let packet_timestamp_ms = output.activity_tick?.get();
         let packet_len = output.source_wire_len()?;
         let header = FmpWireHeader::parse(output.payload()).ok()?;
@@ -187,8 +184,8 @@ impl DataplaneFmpIngressReceipt {
         Some(Self {
             source_addr,
             source_peer,
-            transport_id: *transport_id,
-            remote_addr: remote_addr.clone(),
+            transport_id,
+            remote_addr,
             packet_timestamp_ms,
             packet_len,
             fmp_counter: header.counter(),
@@ -241,20 +238,26 @@ pub(crate) struct DataplaneFmpLinkIngress {
     msg_type: Option<u8>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DataplaneFmpLinkIngressFields {
+    receipt: DataplaneFmpIngressReceipt,
+    msg_type: Option<u8>,
+}
+
 impl DataplaneFmpLinkIngress {
-    fn from_output(output: PacketOutput) -> Result<Self, PacketOutput> {
-        let Some(plaintext) = output.opened_payload() else {
-            return Err(output);
-        };
-        let Some(receipt) = DataplaneFmpIngressReceipt::from_output(&output) else {
-            return Err(output);
-        };
+    fn parse(output: &PacketOutput) -> Option<DataplaneFmpLinkIngressFields> {
+        let plaintext = output.opened_payload()?;
+        let receipt = DataplaneFmpIngressReceipt::from_output(output)?;
         let msg_type = plaintext.get(4).copied();
-        Ok(Self {
-            receipt,
+        Some(DataplaneFmpLinkIngressFields { receipt, msg_type })
+    }
+
+    fn from_fields(output: PacketOutput, fields: DataplaneFmpLinkIngressFields) -> Self {
+        Self {
+            receipt: fields.receipt,
             output,
-            msg_type,
-        })
+            msg_type: fields.msg_type,
+        }
     }
 
     pub(crate) fn receipt(&self) -> &DataplaneFmpIngressReceipt {
@@ -278,7 +281,7 @@ impl DataplaneFmpLinkIngress {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct DataplaneFspCoordWarmup {
     source: Option<(NodeAddr, crate::tree::TreeCoordinate)>,
     local: Option<(NodeAddr, crate::tree::TreeCoordinate)>,
@@ -301,29 +304,12 @@ impl DataplaneFspCoordWarmup {
         self.source.is_none() && self.local.is_none()
     }
 
-    pub(crate) fn source(&self) -> Option<(NodeAddr, &crate::tree::TreeCoordinate)> {
-        self.source.as_ref().map(|(addr, coords)| (*addr, coords))
-    }
-
-    pub(crate) fn local(&self) -> Option<(NodeAddr, &crate::tree::TreeCoordinate)> {
-        self.local.as_ref().map(|(addr, coords)| (*addr, coords))
-    }
-
     pub(crate) fn apply_to(self, coord_cache: &mut crate::cache::CoordCache, now_ms: u64) {
         if let Some((addr, coords)) = self.source {
             coord_cache.insert(addr, coords, now_ms);
         }
         if let Some((addr, coords)) = self.local {
             coord_cache.insert(addr, coords, now_ms);
-        }
-    }
-}
-
-impl Default for DataplaneFspCoordWarmup {
-    fn default() -> Self {
-        Self {
-            source: None,
-            local: None,
         }
     }
 }
@@ -379,31 +365,36 @@ pub(crate) struct DataplaneFspSessionIngress {
     plaintext: PacketBuffer,
 }
 
+enum DataplaneFspSessionIngressOutput {
+    Ingress(DataplaneFspSessionIngress),
+    Rejected(PacketOutput),
+}
+
 impl DataplaneFspSessionIngress {
-    fn from_output(output: PacketOutput) -> Result<Self, PacketOutput> {
+    fn from_output(output: PacketOutput) -> DataplaneFspSessionIngressOutput {
         let source_addr = output.owner().node_addr();
         let Some(source_peer) = output.source_peer() else {
-            return Err(output);
+            return DataplaneFspSessionIngressOutput::Rejected(output);
         };
         if source_peer.node_addr() != &source_addr {
-            return Err(output);
+            return DataplaneFspSessionIngressOutput::Rejected(output);
         }
         let previous_hop_addr = output.previous_hop().unwrap_or(source_addr);
         let ce_flag = output.ce_flag();
         let header = match FspWireHeader::parse(output.payload()) {
             Ok(header) => header,
-            Err(_) => return Err(output),
+            Err(_) => return DataplaneFspSessionIngressOutput::Rejected(output),
         };
         let path_mtu = output.path_mtu();
         let activity_tick = output.activity_tick;
         let (timestamp_ms, msg_type, inner_flags, plaintext_len) = {
             let Some(plaintext) = output.opened_payload() else {
-                return Err(output);
+                return DataplaneFspSessionIngressOutput::Rejected(output);
             };
             let Some((timestamp_ms, msg_type, inner_flags, _body)) =
                 crate::node::session_wire::fsp_strip_inner_header(plaintext)
             else {
-                return Err(output);
+                return DataplaneFspSessionIngressOutput::Rejected(output);
             };
             (timestamp_ms, msg_type, inner_flags, plaintext.len())
         };
@@ -416,11 +407,11 @@ impl DataplaneFspSessionIngress {
             path_mtu,
             spin_bit: inner_flags & 0x01 != 0,
         };
-        let plaintext = match output.into_opened_payload() {
-            Ok(plaintext) => plaintext,
-            Err(output) => return Err(output),
+        let mut output = output;
+        let Some(plaintext) = output.take_opened_payload() else {
+            return DataplaneFspSessionIngressOutput::Rejected(output);
         };
-        Ok(Self {
+        DataplaneFspSessionIngressOutput::Ingress(Self {
             source_addr,
             source_peer,
             previous_hop_addr,
@@ -434,40 +425,8 @@ impl DataplaneFspSessionIngress {
         })
     }
 
-    pub(crate) fn source_addr(&self) -> NodeAddr {
-        self.source_addr
-    }
-
-    pub(crate) fn previous_hop_addr(&self) -> NodeAddr {
-        self.previous_hop_addr
-    }
-
-    pub(crate) fn ce_flag(&self) -> bool {
-        self.ce_flag
-    }
-
     pub(crate) fn received_k_bit(&self) -> bool {
         self.receive_sync.received_k_bit
-    }
-
-    pub(crate) fn timestamp_ms(&self) -> u32 {
-        self.timestamp_ms
-    }
-
-    pub(crate) fn activity_tick(&self) -> Option<ActivityTick> {
-        self.activity_tick
-    }
-
-    pub(crate) fn msg_type(&self) -> u8 {
-        self.msg_type
-    }
-
-    pub(crate) fn inner_flags(&self) -> u8 {
-        self.inner_flags
-    }
-
-    pub(crate) fn plaintext(&self) -> &[u8] {
-        &self.plaintext
     }
 
     pub(crate) fn into_parts(
@@ -561,35 +520,40 @@ pub(crate) struct DataplaneFspEndpointDataIngress {
     packet_run: FipsEndpointDirectPacketRun,
 }
 
+enum DataplaneFspEndpointDataIngressOutput {
+    Ingress(DataplaneFspEndpointDataIngress),
+    Rejected(PacketOutput),
+}
+
 impl DataplaneFspEndpointDataIngress {
-    fn from_output(output: PacketOutput) -> Result<Self, PacketOutput> {
+    fn from_output(output: PacketOutput) -> DataplaneFspEndpointDataIngressOutput {
         let source_addr = output.owner().node_addr();
         let Some(source_peer) = output.source_peer() else {
-            return Err(output);
+            return DataplaneFspEndpointDataIngressOutput::Rejected(output);
         };
         if source_peer.node_addr() != &source_addr {
-            return Err(output);
+            return DataplaneFspEndpointDataIngressOutput::Rejected(output);
         }
 
         let previous_hop_addr = output.previous_hop().unwrap_or(source_addr);
         let ce_flag = output.ce_flag();
         let header = match FspWireHeader::parse(output.payload()) {
             Ok(header) => header,
-            Err(_) => return Err(output),
+            Err(_) => return DataplaneFspEndpointDataIngressOutput::Rejected(output),
         };
         let path_mtu = output.path_mtu();
         let activity_tick = output.activity_tick;
         let (timestamp_ms, inner_flags, plaintext_len, body_len) = {
             let Some(plaintext) = output.opened_payload() else {
-                return Err(output);
+                return DataplaneFspEndpointDataIngressOutput::Rejected(output);
             };
             let Some((timestamp_ms, msg_type, inner_flags, body)) =
                 crate::node::session_wire::fsp_strip_inner_header(plaintext)
             else {
-                return Err(output);
+                return DataplaneFspEndpointDataIngressOutput::Rejected(output);
             };
             if msg_type != crate::protocol::SessionMessageType::EndpointData.to_byte() {
-                return Err(output);
+                return DataplaneFspEndpointDataIngressOutput::Rejected(output);
             };
             (timestamp_ms, inner_flags, plaintext.len(), body.len())
         };
@@ -602,7 +566,10 @@ impl DataplaneFspEndpointDataIngress {
             path_mtu,
             spin_bit: inner_flags & 0x01 != 0,
         };
-        let mut payload = output.into_opened_payload()?;
+        let mut output = output;
+        let Some(mut payload) = output.take_opened_payload() else {
+            return DataplaneFspEndpointDataIngressOutput::Rejected(output);
+        };
         assert!(payload.trim_front(FSP_INNER_HEADER_SIZE));
         payload.truncate(body_len);
         let ranges = std::iter::once(0..body_len).collect();
@@ -618,7 +585,7 @@ impl DataplaneFspEndpointDataIngress {
             ranges,
         );
 
-        Ok(Self {
+        DataplaneFspEndpointDataIngressOutput::Ingress(Self {
             commit: DataplaneFspEndpointDataCommit {
                 source_addr,
                 previous_hop_addr,
@@ -703,8 +670,11 @@ impl DataplaneEndpointDataBatch {
         &self.commit_runs
     }
 
-    pub(crate) fn direct_packet_run_count(&self) -> usize {
-        self.packet_runs.len()
+    pub(crate) fn packet_count(&self) -> usize {
+        self.packet_runs
+            .iter()
+            .map(FipsEndpointDirectPacketRun::len)
+            .sum()
     }
 
     pub(crate) fn into_direct_packet_batch(self) -> FipsEndpointDirectPacketBatch {
@@ -717,9 +687,10 @@ impl DataplaneEndpointDataBatch {
 
     fn push_direct_packet_run(&mut self, run: FipsEndpointDirectPacketRun) {
         if let Some(last) = self.packet_runs.last_mut() {
-            match last.try_append_run(run) {
-                Ok(()) => return,
-                Err(run) => self.packet_runs.push(run),
+            if last.matches_append_meta(&run) {
+                last.append_run(run);
+            } else {
+                self.packet_runs.push(run);
             }
         } else {
             self.packet_runs.push(run);
@@ -727,26 +698,94 @@ impl DataplaneEndpointDataBatch {
     }
 }
 
-#[derive(Clone, Debug)]
-pub(crate) enum DataplaneFspAuthenticatedIngress {
-    EndpointDataBatch(DataplaneEndpointDataBatch),
-    Session(DataplaneFspSessionIngress),
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DataplaneFspAuthenticatedIngressRun {
+    EndpointDataBatch,
+    Sessions { count: usize },
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DataplaneFspAuthenticatedIngress {
+    runs: Vec<DataplaneFspAuthenticatedIngressRun>,
+    endpoint_data_batches: Vec<DataplaneEndpointDataBatch>,
+    sessions: Vec<DataplaneFspSessionIngress>,
 }
 
 impl DataplaneFspAuthenticatedIngress {
-    pub(crate) fn endpoint_data_len(&self) -> usize {
-        match self {
-            Self::EndpointDataBatch(bulk) => bulk.len(),
-            Self::Session(_) => 0,
+    pub(crate) fn is_empty(&self) -> bool {
+        self.runs.is_empty()
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.runs.clear();
+        self.endpoint_data_batches.clear();
+        self.sessions.clear();
+    }
+
+    pub(crate) fn append(&mut self, other: &mut Self) {
+        self.runs.append(&mut other.runs);
+        self.endpoint_data_batches
+            .append(&mut other.endpoint_data_batches);
+        self.sessions.append(&mut other.sessions);
+    }
+
+    pub(crate) fn push_endpoint_data_batch(&mut self, bulk: DataplaneEndpointDataBatch) {
+        if matches!(
+            self.runs.last(),
+            Some(DataplaneFspAuthenticatedIngressRun::EndpointDataBatch)
+        ) {
+            self.endpoint_data_batches
+                .last_mut()
+                .expect("endpoint-data run has a batch")
+                .extend(bulk);
+        } else {
+            self.endpoint_data_batches.push(bulk);
+            self.runs
+                .push(DataplaneFspAuthenticatedIngressRun::EndpointDataBatch);
         }
     }
 
-    pub(crate) fn is_endpoint_data_batch(&self) -> bool {
-        matches!(self, Self::EndpointDataBatch(_))
+    pub(crate) fn push_session(&mut self, ingress: DataplaneFspSessionIngress) {
+        self.sessions.push(ingress);
+        match self.runs.last_mut() {
+            Some(DataplaneFspAuthenticatedIngressRun::Sessions { count }) => {
+                *count = count.saturating_add(1);
+            }
+            _ => self
+                .runs
+                .push(DataplaneFspAuthenticatedIngressRun::Sessions { count: 1 }),
+        }
     }
 
-    pub(crate) fn is_fsp_session(&self) -> bool {
-        matches!(self, Self::Session(_))
+    pub(crate) fn endpoint_data_batches_mut(
+        &mut self,
+    ) -> impl Iterator<Item = &mut DataplaneEndpointDataBatch> {
+        self.endpoint_data_batches.iter_mut()
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        Vec<DataplaneFspAuthenticatedIngressRun>,
+        Vec<DataplaneEndpointDataBatch>,
+        Vec<DataplaneFspSessionIngress>,
+    ) {
+        (self.runs, self.endpoint_data_batches, self.sessions)
+    }
+
+    pub(crate) fn endpoint_data_packet_count(&self) -> usize {
+        self.endpoint_data_batches
+            .iter()
+            .map(DataplaneEndpointDataBatch::len)
+            .sum()
+    }
+
+    pub(crate) fn endpoint_data_batch_count(&self) -> usize {
+        self.endpoint_data_batches.len()
+    }
+
+    pub(crate) fn fsp_session_ingress_count(&self) -> usize {
+        self.sessions.len()
     }
 }
 
@@ -758,7 +797,7 @@ pub(crate) struct DataplaneLiveNodeTurn {
     fmp_link_ingress: Vec<DataplaneFmpLinkIngress>,
     fsp_coord_warmups: Vec<DataplaneFspCoordWarmup>,
     fsp_local_session_ingress: Vec<DataplaneFspLocalSessionIngress>,
-    fsp_authenticated_ingress: Vec<DataplaneFspAuthenticatedIngress>,
+    fsp_authenticated_ingress: DataplaneFspAuthenticatedIngress,
     raw_ingress_drops: Vec<DataplaneRawIngressDrop>,
     tun_outbound_drops: Vec<DataplaneTunOutboundDrop>,
     endpoint_data_drops: Vec<DataplaneEndpointDataDrop>,
@@ -801,10 +840,6 @@ impl DataplaneLiveNodeTurn {
         std::mem::take(&mut self.fmp_control_ingress)
     }
 
-    pub(crate) fn fmp_ingress_receipts(&self) -> &[DataplaneFmpIngressReceipt] {
-        &self.fmp_ingress_receipts
-    }
-
     pub(crate) fn take_fmp_ingress_receipts(&mut self) -> Vec<DataplaneFmpIngressReceipt> {
         std::mem::take(&mut self.fmp_ingress_receipts)
     }
@@ -837,41 +872,20 @@ impl DataplaneLiveNodeTurn {
 
     pub(crate) fn take_fsp_authenticated_ingress(
         &mut self,
-    ) -> Vec<DataplaneFspAuthenticatedIngress> {
+    ) -> DataplaneFspAuthenticatedIngress {
         std::mem::take(&mut self.fsp_authenticated_ingress)
     }
 
-    pub(crate) fn endpoint_data_batch_count(&self) -> usize {
-        self.fsp_authenticated_ingress
-            .iter()
-            .map(DataplaneFspAuthenticatedIngress::endpoint_data_len)
-            .sum()
+    pub(crate) fn endpoint_data_packet_count(&self) -> usize {
+        self.fsp_authenticated_ingress.endpoint_data_packet_count()
     }
 
-    pub(crate) fn endpoint_data_batch_batch_count(&self) -> usize {
-        self.fsp_authenticated_ingress
-            .iter()
-            .filter(|item| item.is_endpoint_data_batch())
-            .count()
+    pub(crate) fn endpoint_data_batch_count(&self) -> usize {
+        self.fsp_authenticated_ingress.endpoint_data_batch_count()
     }
 
     pub(crate) fn fsp_session_ingress_count(&self) -> usize {
-        self.fsp_authenticated_ingress
-            .iter()
-            .filter(|item| item.is_fsp_session())
-            .count()
-    }
-
-    pub(crate) fn fsp_session_ingress(
-        &self,
-    ) -> impl Iterator<Item = &DataplaneFspSessionIngress> {
-        self.fsp_authenticated_ingress.iter().filter_map(|item| {
-            if let DataplaneFspAuthenticatedIngress::Session(ingress) = item {
-                Some(ingress)
-            } else {
-                None
-            }
-        })
+        self.fsp_authenticated_ingress.fsp_session_ingress_count()
     }
 
     pub(crate) fn tun_outbound_drops(&self) -> &[DataplaneTunOutboundDrop] {
@@ -904,10 +918,6 @@ impl DataplaneLiveNodeTurn {
 
     pub(crate) fn drops(&self) -> &[PacketDrop] {
         &self.drops
-    }
-
-    pub(crate) fn transport_planned(&self) -> usize {
-        self.transport_planned
     }
 
     pub(crate) fn transport_sent(&self) -> usize {

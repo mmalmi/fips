@@ -1,42 +1,4 @@
-const TRANSPORT_SEND_BATCH_PACKETS: usize = 64;
-#[cfg(test)]
-const TRANSPORT_SEND_WORKER_COALESCE_PACKETS: usize = TRANSPORT_SEND_BATCH_PACKETS;
-#[cfg(test)]
-const TRANSPORT_SEND_WORKER_PRIORITY_RESERVE_PACKETS: usize = TRANSPORT_SEND_BATCH_PACKETS;
-
-#[derive(Debug)]
-pub(crate) struct DataplaneTransportSendWorkerPool {
-    max_batch_packets: usize,
-}
-
-impl DataplaneTransportSendWorkerPool {
-    pub(crate) fn new(max_batch_packets: usize) -> Self {
-        Self {
-            max_batch_packets: max_batch_packets
-                .max(1)
-                .min(TRANSPORT_SEND_BATCH_PACKETS),
-        }
-    }
-
-    pub(crate) fn default_live() -> Self {
-        Self::new(TRANSPORT_SEND_BATCH_PACKETS)
-    }
-
-    #[cfg(test)]
-    fn max_job_records_for_lane(&self, _lane: Lane) -> usize {
-        self.max_batch_packets()
-    }
-
-    fn max_batch_packets(&self) -> usize {
-        self.max_batch_packets.max(1)
-    }
-}
-
-impl Default for DataplaneTransportSendWorkerPool {
-    fn default() -> Self {
-        Self::default_live()
-    }
-}
+pub(crate) const DATAPLANE_TRANSPORT_SEND_BATCH_PACKETS: usize = 64;
 
 #[derive(Debug)]
 enum DataplaneTransportPayloadRecord {
@@ -128,6 +90,7 @@ impl crate::transport::udp::UdpPayloadBatch for DataplaneTransportPayloadBatch {
         }
     }
 
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     fn contiguous_payload(&self, index: usize) -> Option<&[u8]> {
         match self.items[index] {
             DataplaneTransportPayloadItem::Whole { record_index } => match &self.records[record_index] {
@@ -165,46 +128,10 @@ impl crate::transport::udp::UdpPayloadBatch for DataplaneTransportPayloadBatch {
     }
 }
 
-fn push_dataplane_udp_whole_datagram(
-    snapshot: &crate::transport::udp::UdpSendSnapshot,
-    remote_addr: std::net::SocketAddr,
-    output: PacketOutput,
-    packets: &mut DataplaneTransportPayloadBatch,
-) -> bool {
-    if snapshot
-        .validate_packet(output.payload_len(), remote_addr)
-        .is_err()
-    {
-        record_dataplane_udp_send_failed(1);
-        return false;
-    }
-    packets.push_whole(output);
-    true
-}
-
-fn push_dataplane_udp_direct_fsp_segments(
-    snapshot: &crate::transport::udp::UdpSendSnapshot,
-    remote_addr: std::net::SocketAddr,
-    segments: DataplaneDirectFspTransportSegments,
-    packets: &mut DataplaneTransportPayloadBatch,
-) -> bool {
-    for index in 0..segments.len() {
-        if snapshot
-            .validate_packet(segments.payload_len(index), remote_addr)
-            .is_err()
-        {
-            record_dataplane_udp_send_failed(1);
-            return false;
-        }
-    }
-    packets.push_direct_fsp_segments(segments);
-    true
-}
-
 fn record_dataplane_udp_send_failed(count: usize) {
     if count > 0 {
         crate::perf_profile::record_event_count(
-            crate::perf_profile::Event::DataplaneTransportSendWorkerSendFailed,
+            crate::perf_profile::Event::DataplaneTransportSendFailed,
             count as u64,
         );
     }
@@ -242,9 +169,6 @@ impl DataplaneTransportPlanGroup {
         self.outputs.push(output);
     }
 
-    fn len(&self) -> usize {
-        self.outputs.len()
-    }
 }
 
 #[derive(Debug, Default)]
@@ -262,7 +186,7 @@ impl DataplaneTransportSendGroups {
     }
 
     fn planned_packets(&self) -> usize {
-        self.groups.iter().map(DataplaneTransportPlanGroup::len).sum()
+        self.groups.iter().map(|group| group.outputs.len()).sum()
     }
 
     fn take_groups_preserving_capacity(&mut self) -> Vec<DataplaneTransportPlanGroup> {
@@ -270,59 +194,31 @@ impl DataplaneTransportSendGroups {
         std::mem::replace(&mut self.groups, Vec::with_capacity(capacity))
     }
 
-    fn send_transport(
+    fn push_transport(
         &mut self,
         transport_id: TransportId,
         remote_addr: TransportAddr,
         output: PacketOutput,
-    ) -> Result<(), DataplaneOutputError> {
+    ) {
         let lane = output.lane();
         if let Some(group) = self.groups.last_mut()
             && group.matches(lane, transport_id, &remote_addr)
         {
             group.push(output);
-            return Ok(());
+            return;
         }
         self.groups
             .push(DataplaneTransportPlanGroup::new(transport_id, remote_addr, output));
-        Ok(())
     }
 }
 
-pub(crate) trait DataplaneTransportResolver {
-    fn resolve_dataplane_transport(
-        &self,
-        transport_id: TransportId,
-    ) -> Option<&TransportHandle>;
-}
-
-impl DataplaneTransportResolver for HashMap<TransportId, TransportHandle> {
-    fn resolve_dataplane_transport(
-        &self,
-        transport_id: TransportId,
-    ) -> Option<&TransportHandle> {
-        self.get(&transport_id)
-    }
-}
-
-impl<T: DataplaneTransportResolver + ?Sized> DataplaneTransportResolver for &T {
-    fn resolve_dataplane_transport(
-        &self,
-        transport_id: TransportId,
-    ) -> Option<&TransportHandle> {
-        (**self).resolve_dataplane_transport(transport_id)
-    }
-}
-
-async fn send_dataplane_transport_groups_with_worker<R>(
-    transports: &R,
+async fn send_dataplane_transport_groups(
+    transports: &HashMap<TransportId, TransportHandle>,
     groups: Vec<DataplaneTransportPlanGroup>,
     drops: &mut Vec<DataplaneOutputDrop>,
-    worker: &mut DataplaneTransportSendWorkerPool,
+    max_batch_packets: usize,
     mut sent_receipts: Option<&mut Vec<DataplaneTransportSentReceipt>>,
 ) -> usize
-where
-    R: DataplaneTransportResolver + ?Sized,
 {
     if groups.is_empty() {
         return 0;
@@ -330,8 +226,7 @@ where
 
     let mut sent = 0usize;
     for group in groups {
-        let Some(transport) = transports.resolve_dataplane_transport(group.transport_id)
-        else {
+        let Some(transport) = transports.get(&group.transport_id) else {
             drop_transport_plan_group(group, drops, DataplaneOutputError::NoRoute);
             continue;
         };
@@ -352,7 +247,7 @@ where
             udp,
             group,
             drops,
-            worker,
+            max_batch_packets,
             &mut sent_receipts,
             &mut sent,
         )
@@ -368,38 +263,24 @@ async fn send_non_udp_transport_plan_group(
     sent_receipts: &mut Option<&mut Vec<DataplaneTransportSentReceipt>>,
     sent: &mut usize,
 ) {
-    for output in group.outputs {
-        send_non_udp_transport_output(
-            transport,
-            &group.remote_addr,
-            output,
-            drops,
-            sent_receipts,
-            sent,
-        )
-        .await;
-    }
-}
-
-async fn send_non_udp_transport_output(
-    transport: &TransportHandle,
-    remote_addr: &TransportAddr,
-    output: PacketOutput,
-    drops: &mut Vec<DataplaneOutputDrop>,
-    sent_receipts: &mut Option<&mut Vec<DataplaneTransportSentReceipt>>,
-    sent: &mut usize,
-) {
-    match transport.send(remote_addr, output.payload()).await {
-        Ok(_) => {
-            *sent += 1;
-            if let Some(sent_receipts) = sent_receipts.as_deref_mut() {
-                sent_receipts.push(DataplaneTransportSentReceipt::from_output(&output));
+    let DataplaneTransportPlanGroup {
+        remote_addr,
+        outputs,
+        ..
+    } = group;
+    for output in outputs {
+        match transport.send(&remote_addr, output.payload()).await {
+            Ok(_) => {
+                *sent += 1;
+                if let Some(sent_receipts) = sent_receipts.as_deref_mut() {
+                    sent_receipts.push(DataplaneTransportSentReceipt::from_output(&output));
+                }
             }
+            Err(error) => drops.push(DataplaneOutputDrop::from_output(
+                &output,
+                dataplane_output_error_for_transport(&error),
+            )),
         }
-        Err(error) => drops.push(DataplaneOutputDrop::from_output(
-            &output,
-            dataplane_output_error_for_transport(&error),
-        )),
     }
 }
 
@@ -407,7 +288,7 @@ async fn send_udp_transport_plan_group(
     udp: &crate::transport::udp::UdpTransport,
     group: DataplaneTransportPlanGroup,
     drops: &mut Vec<DataplaneOutputDrop>,
-    worker: &mut DataplaneTransportSendWorkerPool,
+    max_batch_packets: usize,
     sent_receipts: &mut Option<&mut Vec<DataplaneTransportSentReceipt>>,
     sent: &mut usize,
 ) {
@@ -434,102 +315,125 @@ async fn send_udp_transport_plan_group(
         }
     };
 
-    let max_batch_packets = worker.max_batch_packets();
+    let max_batch_packets = max_batch_packets.clamp(1, DATAPLANE_TRANSPORT_SEND_BATCH_PACKETS);
     let total_outputs = group.outputs.len();
-    let mut packets =
-        DataplaneTransportPayloadBatch::with_capacity(total_outputs.min(max_batch_packets));
+    let mut packets = DataplaneUdpTransportSendBatch::new(
+        &snapshot,
+        socket_addr,
+        total_outputs.min(max_batch_packets),
+        max_batch_packets,
+    );
     for output in group.outputs {
-        push_dataplane_udp_record(
-            &snapshot,
-            socket_addr,
-            output,
-            &mut packets,
-            max_batch_packets,
-            drops,
-            sent_receipts,
-            sent,
-        )
-        .await;
+        packets
+            .push_record(output, drops, sent_receipts, sent)
+            .await;
     }
-    flush_dataplane_udp_send_batch(&snapshot, socket_addr, &mut packets).await;
+    packets.flush().await;
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn push_dataplane_udp_record(
-    snapshot: &crate::transport::udp::UdpSendSnapshot,
+struct DataplaneUdpTransportSendBatch<'a> {
+    snapshot: &'a crate::transport::udp::UdpSendSnapshot,
     socket_addr: std::net::SocketAddr,
-    output: PacketOutput,
-    packets: &mut DataplaneTransportPayloadBatch,
+    packets: DataplaneTransportPayloadBatch,
     max_batch_packets: usize,
-    drops: &mut Vec<DataplaneOutputDrop>,
-    sent_receipts: &mut Option<&mut Vec<DataplaneTransportSentReceipt>>,
-    sent: &mut usize,
-) {
-    if let Err(reason) = validate_dataplane_udp_record(snapshot, socket_addr, &output) {
-        drops.push(DataplaneOutputDrop::from_output(&output, reason));
-        return;
+}
+
+impl<'a> DataplaneUdpTransportSendBatch<'a> {
+    fn new(
+        snapshot: &'a crate::transport::udp::UdpSendSnapshot,
+        socket_addr: std::net::SocketAddr,
+        record_capacity: usize,
+        max_batch_packets: usize,
+    ) -> Self {
+        Self {
+            snapshot,
+            socket_addr,
+            packets: DataplaneTransportPayloadBatch::with_capacity(record_capacity),
+            max_batch_packets,
+        }
     }
 
-    let receipt = sent_receipts
-        .as_ref()
-        .map(|_| DataplaneTransportSentReceipt::from_output(&output));
-    let accepted = match dataplane_direct_fsp_transport_output(output) {
-        Ok(DataplaneDirectFspTransportOutput::Whole(output)) => {
-            push_dataplane_udp_whole_datagram(snapshot, socket_addr, output, packets)
+    async fn push_record(
+        &mut self,
+        output: PacketOutput,
+        drops: &mut Vec<DataplaneOutputDrop>,
+        sent_receipts: &mut Option<&mut Vec<DataplaneTransportSentReceipt>>,
+        sent: &mut usize,
+    ) {
+        let receipt = match dataplane_direct_fsp_transport_output(output) {
+            DataplaneDirectFspTransportOutput::Whole(output) => {
+                if let Err(reason) =
+                    validate_dataplane_udp_payload(self.snapshot, self.socket_addr, output.payload_len())
+                {
+                    drops.push(DataplaneOutputDrop::from_output(&output, reason));
+                    return;
+                }
+                let receipt = sent_receipts
+                    .as_ref()
+                    .map(|_| DataplaneTransportSentReceipt::from_output(&output));
+                self.packets.push_whole(output);
+                receipt
+            }
+            DataplaneDirectFspTransportOutput::Segments(segments) => {
+                for index in 0..segments.len() {
+                    if let Err(reason) = validate_dataplane_udp_payload(
+                        self.snapshot,
+                        self.socket_addr,
+                        segments.payload_len(index),
+                    ) {
+                        drops.push(DataplaneOutputDrop::from_output(&segments.output, reason));
+                        return;
+                    }
+                }
+                let receipt = sent_receipts
+                    .as_ref()
+                    .map(|_| DataplaneTransportSentReceipt::from_output(&segments.output));
+                self.packets.push_direct_fsp_segments(segments);
+                receipt
+            }
+            DataplaneDirectFspTransportOutput::MtuExceeded(output) => {
+                let mtu = output.path_mtu();
+                drops.push(DataplaneOutputDrop::from_output(
+                    &output,
+                    DataplaneOutputError::MtuExceeded { mtu },
+                ));
+                return;
+            }
+        };
+
+        *sent += 1;
+        if let (Some(sent_receipts), Some(receipt)) = (sent_receipts.as_deref_mut(), receipt) {
+            sent_receipts.push(receipt);
         }
-        Ok(DataplaneDirectFspTransportOutput::Segments(segments)) => {
-            push_dataplane_udp_direct_fsp_segments(snapshot, socket_addr, segments, packets)
+        if self.packets.len() >= self.max_batch_packets {
+            self.flush().await;
         }
-        Err(output) => {
-            drops.push(DataplaneOutputDrop::from_output(
-                &output,
-                DataplaneOutputError::MtuExceeded,
-            ));
-            false
-        }
-    };
-    if !accepted {
-        return;
     }
 
-    *sent += 1;
-    if let (Some(sent_receipts), Some(receipt)) = (sent_receipts.as_deref_mut(), receipt) {
-        sent_receipts.push(receipt);
-    }
-    if packets.len() >= max_batch_packets {
-        flush_dataplane_udp_send_batch(snapshot, socket_addr, packets).await;
+    async fn flush(&mut self) {
+        if self.packets.is_empty() {
+            return;
+        }
+        let _timer = crate::perf_profile::Timer::start(
+            crate::perf_profile::Stage::DataplaneTransportSendBatch,
+        );
+        let failed = self
+            .snapshot
+            .send_payload_batch_to(&self.packets, self.socket_addr)
+            .await;
+        record_dataplane_udp_send_failed(failed);
+        self.packets.clear();
     }
 }
 
-fn validate_dataplane_udp_record(
+fn validate_dataplane_udp_payload(
     snapshot: &crate::transport::udp::UdpSendSnapshot,
     socket_addr: std::net::SocketAddr,
-    output: &PacketOutput,
+    data_len: usize,
 ) -> Result<(), DataplaneOutputError> {
-    let data_len = match dataplane_direct_fsp_transport_max_datagram_len(output) {
-        Ok(Some(data_len)) => data_len,
-        Ok(None) => output.payload_len(),
-        Err(()) => return Err(DataplaneOutputError::MtuExceeded),
-    };
     snapshot
         .validate_packet(data_len, socket_addr)
         .map_err(|error| dataplane_output_error_for_transport(&error))
-}
-
-async fn flush_dataplane_udp_send_batch(
-    snapshot: &crate::transport::udp::UdpSendSnapshot,
-    socket_addr: std::net::SocketAddr,
-    packets: &mut DataplaneTransportPayloadBatch,
-) {
-    if packets.is_empty() {
-        return;
-    }
-    let _timer = crate::perf_profile::Timer::start(
-        crate::perf_profile::Stage::DataplaneTransportSendWorker,
-    );
-    let failed = snapshot.send_payload_batch_to(packets, socket_addr).await;
-    record_dataplane_udp_send_failed(failed);
-    packets.clear();
 }
 
 fn drop_transport_plan_group(
@@ -544,7 +448,7 @@ fn drop_transport_plan_group(
 
 fn dataplane_output_error_for_transport(error: &TransportError) -> DataplaneOutputError {
     match error {
-        TransportError::MtuExceeded { .. } => DataplaneOutputError::MtuExceeded,
+        TransportError::MtuExceeded { mtu, .. } => DataplaneOutputError::MtuExceeded { mtu: *mtu },
         error if error.is_local_route_unavailable() => DataplaneOutputError::NoRoute,
         TransportError::NotStarted | TransportError::NotSupported(_) => {
             DataplaneOutputError::Unavailable

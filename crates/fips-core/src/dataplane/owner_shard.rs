@@ -544,24 +544,10 @@ impl DataplaneOwnerShard {
 
     fn record_authenticated_fsp_session(
         &mut self,
-        owner: OwnerId,
-        previous_hop: NodeAddr,
-        msg_type: u8,
-        body_len: usize,
-        sync: FspReceiveSync,
-        activity_tick: Option<ActivityTick>,
-        now: std::time::Instant,
+        session: DataplaneAuthenticatedFspSession,
     ) -> Option<bool> {
-        self.owner_mut(owner).and_then(|owner| {
-            owner.record_authenticated_fsp_session(
-                previous_hop,
-                msg_type,
-                body_len,
-                sync,
-                activity_tick,
-                now,
-            )
-        })
+        self.owner_mut(session.owner)
+            .and_then(|owner| owner.record_authenticated_fsp_session(session))
     }
 
     fn record_fsp_decrypt_failure(&mut self, owner: OwnerId) -> Option<u32> {
@@ -569,14 +555,4 @@ impl DataplaneOwnerShard {
             .and_then(OwnerState::record_fsp_decrypt_failure)
     }
 
-    fn record_fsp_data_sent(
-        &mut self,
-        owner: OwnerId,
-        next_hop: NodeAddr,
-        bytes: usize,
-        tick: ActivityTick,
-    ) -> bool {
-        self.owner_mut(owner)
-            .is_some_and(|owner| owner.record_fsp_data_sent(next_hop, bytes, tick))
-    }
 }

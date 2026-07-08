@@ -317,23 +317,6 @@ fn discovery_scope_preserves_explicit_connectivity_config() {
 }
 
 #[tokio::test]
-async fn invalid_remote_npub_is_rejected() {
-    let endpoint = FipsEndpoint::builder()
-        .without_system_tun()
-        .bind()
-        .await
-        .expect("endpoint should bind");
-
-    let error = endpoint
-        .send("not-an-npub", b"hello".to_vec())
-        .await
-        .expect_err("invalid npub should fail");
-    assert!(matches!(error, FipsEndpointError::InvalidRemoteNpub { .. }));
-
-    endpoint.shutdown().await.expect("shutdown should succeed");
-}
-
-#[tokio::test]
 async fn endpoint_peer_snapshot_starts_empty() {
     let endpoint = FipsEndpoint::builder()
         .without_system_tun()

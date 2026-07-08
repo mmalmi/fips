@@ -59,25 +59,8 @@ impl TunWriter {
 }
 
 /// No-op reader placeholder for platforms where apps own packet I/O.
-#[allow(clippy::too_many_arguments)]
-pub fn run_tun_reader(
-    device: TunDevice,
-    mtu: u16,
-    our_addr: FipsAddress,
-    tun_tx: TunTx,
-    outbound_tx: TunOutboundTx,
-    transport_mtu: u16,
-    path_mtu_lookup: PathMtuLookup,
-) {
-    let _ = (
-        device,
-        mtu,
-        our_addr,
-        tun_tx,
-        outbound_tx,
-        transport_mtu,
-        path_mtu_lookup,
-    );
+pub(crate) fn run_tun_reader(runtime: super::TunReaderRuntime) {
+    let _ = runtime;
 }
 
 /// No-op shutdown for platforms without a FIPS-created system TUN.

@@ -18,14 +18,19 @@ pub(super) async fn recv_exact(
     timeout: Duration,
 ) -> bool {
     let deadline = Instant::now() + timeout;
+    let mut messages = Vec::new();
     loop {
         let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
             return false;
         };
-        match tokio::time::timeout(remaining, endpoint.recv()).await {
-            Ok(Some(message)) if message.data == expected => return true,
-            Ok(Some(_)) => continue,
-            _ => return false,
+        let Some(received) = recv_endpoint_batch_into(endpoint, &mut messages, remaining).await
+        else {
+            return false;
+        };
+        for message in messages.iter().take(received) {
+            if message.data.as_slice() == expected {
+                return true;
+            }
         }
     }
 }
@@ -38,20 +43,22 @@ pub(super) async fn recv_payload_set(
     let deadline = Instant::now() + timeout;
     let mut delivered = 0usize;
     let mut delivered_bytes = 0usize;
+    let mut messages = Vec::new();
     while !expected.is_empty() {
         let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
             break;
         };
-        match tokio::time::timeout(remaining, endpoint.recv()).await {
-            Ok(Some(message)) => {
-                let data = message.data.as_slice();
-                let len = data.len();
-                if expected.remove(data) {
-                    delivered += 1;
-                    delivered_bytes += len;
-                }
+        let Some(received) = recv_endpoint_batch_into(endpoint, &mut messages, remaining).await
+        else {
+            break;
+        };
+        for message in messages.iter().take(received) {
+            let data = message.data.as_slice();
+            let len = data.len();
+            if expected.remove(data) {
+                delivered += 1;
+                delivered_bytes += len;
             }
-            _ => break,
         }
     }
     (delivered, delivered_bytes)

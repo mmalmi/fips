@@ -45,7 +45,6 @@ pub(crate) struct DataplaneEndpointDataRoute {
     generation: u64,
     flags: u8,
     inner_flags: u8,
-    fsp_cleartext_prefix: Vec<u8>,
     fsp_auto_coords_warmup: bool,
 }
 
@@ -56,14 +55,8 @@ impl DataplaneEndpointDataRoute {
             generation,
             flags,
             inner_flags,
-            fsp_cleartext_prefix: Vec::new(),
             fsp_auto_coords_warmup: true,
         }
-    }
-
-    pub(crate) fn with_fsp_cleartext_prefix(mut self, prefix: Vec<u8>) -> Self {
-        self.fsp_cleartext_prefix = prefix;
-        self
     }
 
     pub(crate) fn with_direct_transport(mut self) -> Self {
@@ -105,8 +98,7 @@ impl DataplaneEndpointDataRoute {
             self.flags,
             payload,
         )
-        .with_fsp_inner_header(msg_type, self.inner_flags)
-        .with_fsp_cleartext_prefix(self.fsp_cleartext_prefix.clone());
+        .with_fsp_inner_header(msg_type, self.inner_flags);
         if !self.fsp_auto_coords_warmup {
             packet = packet.without_fsp_auto_coords_warmup();
         }
@@ -116,7 +108,6 @@ impl DataplaneEndpointDataRoute {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DataplaneEndpointDataDropReason {
-    NoRoute,
     StaleQueuedBatch,
 }
 
@@ -128,18 +119,6 @@ pub(crate) struct DataplaneEndpointDataDrop {
 }
 
 impl DataplaneEndpointDataDrop {
-    fn new(
-        dest_addr: NodeAddr,
-        payload_len: usize,
-        reason: DataplaneEndpointDataDropReason,
-    ) -> Self {
-        Self {
-            dest_addr,
-            payload_len,
-            reason,
-        }
-    }
-
     pub(crate) fn dest_addr(&self) -> NodeAddr {
         self.dest_addr
     }
@@ -153,41 +132,31 @@ impl DataplaneEndpointDataDrop {
     }
 }
 
-pub(crate) trait DataplaneEndpointDataRouter {
-    fn route_endpoint_data_batch(
-        &mut self,
-        remote: PeerIdentity,
-        payloads: Vec<EndpointDataPayload>,
-        activity_tick: ActivityTick,
-    ) -> DataplaneEndpointDataBatchRoute;
-}
-
 fn push_endpoint_data_drop(
     remote: PeerIdentity,
     payload_len: usize,
     reason: DataplaneEndpointDataDropReason,
     drops: &mut Vec<DataplaneEndpointDataDrop>,
 ) {
-    drops.push(DataplaneEndpointDataDrop::new(
-        *remote.node_addr(),
+    drops.push(DataplaneEndpointDataDrop {
+        dest_addr: *remote.node_addr(),
         payload_len,
         reason,
-    ));
+    });
 }
 
-fn route_endpoint_data_batch_with_router<R, F>(
+fn route_endpoint_data_batch_with_route_table<F>(
     batch: NodeEndpointDataBatch,
-    router: &mut R,
+    routes: &DataplaneLiveRouteTable,
     drops: &mut Vec<DataplaneEndpointDataDrop>,
     deferred_batches: &mut Vec<NodeEndpointDataBatch>,
     activity_tick: ActivityTick,
     mut push: F,
 ) where
-    R: DataplaneEndpointDataRouter,
     F: FnMut(Vec<OutboundPacket>),
 {
     let (remote, payloads, queued_at, enqueued_at_ms) = batch.into_parts();
-    let route = router.route_endpoint_data_batch(remote, payloads, activity_tick);
+    let route = routes.route_endpoint_data_batch(remote, payloads, activity_tick);
     let deferred_payloads = route.finish_batch(remote, drops, &mut push);
     if let Some(payloads) = deferred_payloads {
         let batch = NodeEndpointDataBatch::from_payloads_with_enqueued_at_ms(

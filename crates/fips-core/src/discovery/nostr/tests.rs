@@ -2,8 +2,8 @@ use nostr::prelude::{EventBuilder, JsonUtil, Kind, Tag, TagKind, Timestamp};
 
 use super::runtime::{NostrDiscovery, VerifiedEvent, suppress_responder_for_own_initiator};
 use super::signal::{
-    FreshnessOutcome, build_signal_event, create_traversal_answer, create_traversal_offer,
-    estimate_clock_skew, unwrap_signal_event, validate_offer_freshness,
+    FreshnessOutcome, TraversalSignalTiming, build_signal_event, create_traversal_answer,
+    create_traversal_offer, estimate_clock_skew, unwrap_signal_event, validate_offer_freshness,
     validate_traversal_answer_for_offer,
 };
 use super::stun::{
@@ -13,6 +13,7 @@ use super::traversal::{
     PunchStrategy, build_punch_packet, parse_punch_packet, plan_punch_targets,
     planned_remote_endpoints, session_hash,
 };
+use super::types::TraversalAddressObservation;
 use super::{
     ADVERT_IDENTIFIER, ADVERT_KIND, ADVERT_VERSION, OverlayAdvert, OverlayEndpointAdvert,
     OverlayTransportKind, PunchHint, PunchPacketKind, TraversalAddress,
@@ -31,6 +32,18 @@ fn addr(ip: &str, port: u16) -> TraversalAddress {
         protocol: "udp".to_string(),
         ip: ip.to_string(),
         port,
+    }
+}
+
+fn observed(
+    reflexive_address: Option<TraversalAddress>,
+    local_addresses: Vec<TraversalAddress>,
+    stun_server: Option<&str>,
+) -> TraversalAddressObservation {
+    TraversalAddressObservation {
+        reflexive_address,
+        local_addresses,
+        stun_server: stun_server.map(str::to_string),
     }
 }
 
@@ -460,33 +473,31 @@ fn stun_targets_keep_socket_family_when_dns_returns_ipv6_first() {
 fn validates_offer_answer_pair() {
     let offer = create_traversal_offer(
         "sess-1".to_string(),
-        1_700_000_000_000,
-        60_000,
+        TraversalSignalTiming::new(1_700_000_000_000, 60_000),
         "offer-1".to_string(),
         "npub1client".to_string(),
         "npub1server".to_string(),
-        Some(addr("203.0.113.10", 62000)),
-        vec![addr("192.168.1.10", 62000)],
-        Some("stun:example.org:3478".to_string()),
+        observed(
+            Some(addr("203.0.113.10", 62000)),
+            vec![addr("192.168.1.10", 62000)],
+            Some("stun:example.org:3478"),
+        ),
     );
     let answer = create_traversal_answer(
-        "sess-1".to_string(),
-        1_700_000_000_500,
-        60_000,
+        &offer,
+        TraversalSignalTiming::new(1_700_000_000_500, 60_000),
         "answer-1".to_string(),
         "npub1server".to_string(),
-        "npub1client".to_string(),
-        "offer-1".to_string(),
-        true,
-        Some(addr("198.51.100.20", 63000)),
-        vec![addr("192.168.1.20", 63000)],
-        Some("stun:example.org:3478".to_string()),
+        observed(
+            Some(addr("198.51.100.20", 63000)),
+            vec![addr("192.168.1.20", 63000)],
+            Some("stun:example.org:3478"),
+        ),
         Some(PunchHint {
             start_at_ms: 1_700_000_002_000,
             interval_ms: 200,
             duration_ms: 10_000,
         }),
-        None,
         Some(1_700_000_000_400),
     );
 
@@ -507,14 +518,11 @@ fn validates_offer_answer_pair() {
 fn rejects_offer_with_mismatched_actual_sender() {
     let offer = create_traversal_offer(
         "sess-1".to_string(),
-        1_700_000_000_000,
-        60_000,
+        TraversalSignalTiming::new(1_700_000_000_000, 60_000),
         "offer-1".to_string(),
         "npub1claimed".to_string(),
         "npub1server".to_string(),
-        None,
-        vec![addr("192.168.1.10", 62000)],
-        None,
+        observed(None, vec![addr("192.168.1.10", 62000)], None),
     );
 
     let result = validate_offer_freshness(
@@ -532,33 +540,31 @@ fn rejects_offer_with_mismatched_actual_sender() {
 fn rejects_answer_with_mismatched_actual_sender() {
     let offer = create_traversal_offer(
         "sess-1".to_string(),
-        1_700_000_000_000,
-        60_000,
+        TraversalSignalTiming::new(1_700_000_000_000, 60_000),
         "offer-1".to_string(),
         "npub1client".to_string(),
         "npub1server".to_string(),
-        Some(addr("203.0.113.10", 62000)),
-        vec![addr("192.168.1.10", 62000)],
-        Some("stun:example.org:3478".to_string()),
+        observed(
+            Some(addr("203.0.113.10", 62000)),
+            vec![addr("192.168.1.10", 62000)],
+            Some("stun:example.org:3478"),
+        ),
     );
     let answer = create_traversal_answer(
-        "sess-1".to_string(),
-        1_700_000_000_500,
-        60_000,
+        &offer,
+        TraversalSignalTiming::new(1_700_000_000_500, 60_000),
         "answer-1".to_string(),
         "npub1server".to_string(),
-        "npub1client".to_string(),
-        "offer-1".to_string(),
-        true,
-        Some(addr("198.51.100.20", 63000)),
-        vec![addr("192.168.1.20", 63000)],
-        Some("stun:example.org:3478".to_string()),
+        observed(
+            Some(addr("198.51.100.20", 63000)),
+            vec![addr("192.168.1.20", 63000)],
+            Some("stun:example.org:3478"),
+        ),
         Some(PunchHint {
             start_at_ms: 1_700_000_002_000,
             interval_ms: 200,
             duration_ms: 10_000,
         }),
-        None,
         Some(1_700_000_000_400),
     );
 
@@ -733,14 +739,15 @@ fn planned_remote_endpoints_keep_same_lan_private_remote() {
 fn freshness_strict_returns_fresh_outcome() {
     let offer = create_traversal_offer(
         "sess-1".to_string(),
-        1_700_000_000_000,
-        60_000,
+        TraversalSignalTiming::new(1_700_000_000_000, 60_000),
         "offer-1".to_string(),
         "npub1client".to_string(),
         "npub1server".to_string(),
-        Some(addr("203.0.113.10", 62000)),
-        vec![addr("192.168.1.10", 62000)],
-        Some("stun:example.org:3478".to_string()),
+        observed(
+            Some(addr("203.0.113.10", 62000)),
+            vec![addr("192.168.1.10", 62000)],
+            Some("stun:example.org:3478"),
+        ),
     );
 
     let result = validate_offer_freshness(
@@ -761,14 +768,15 @@ fn freshness_strict_returns_fresh_outcome() {
 fn freshness_responder_clock_ahead_within_tolerance_is_tolerated() {
     let offer = create_traversal_offer(
         "sess-1".to_string(),
-        1_700_000_000_000,
-        60_000, // expires_at = 1_700_000_060_000
+        TraversalSignalTiming::new(1_700_000_000_000, 60_000), // expires_at = 1_700_000_060_000
         "offer-1".to_string(),
         "npub1client".to_string(),
         "npub1server".to_string(),
-        Some(addr("203.0.113.10", 62000)),
-        vec![addr("192.168.1.10", 62000)],
-        None,
+        observed(
+            Some(addr("203.0.113.10", 62000)),
+            vec![addr("192.168.1.10", 62000)],
+            None,
+        ),
     );
 
     // now 90s past issued_at — 30s past strict expiry, but inside the 60s
@@ -789,14 +797,15 @@ fn freshness_responder_clock_ahead_within_tolerance_is_tolerated() {
 fn freshness_responder_clock_far_ahead_is_rejected() {
     let offer = create_traversal_offer(
         "sess-1".to_string(),
-        1_700_000_000_000,
-        60_000,
+        TraversalSignalTiming::new(1_700_000_000_000, 60_000),
         "offer-1".to_string(),
         "npub1client".to_string(),
         "npub1server".to_string(),
-        Some(addr("203.0.113.10", 62000)),
-        vec![addr("192.168.1.10", 62000)],
-        None,
+        observed(
+            Some(addr("203.0.113.10", 62000)),
+            vec![addr("192.168.1.10", 62000)],
+            None,
+        ),
     );
 
     // 130s past issued_at: 70s past strict expiry, 10s past tolerated expiry.
@@ -819,14 +828,11 @@ fn estimate_clock_skew_matches_responder_offset() {
     // T1 (initiator sent)
     let offer = create_traversal_offer(
         "sess-1".to_string(),
-        1_700_000_000_000,
-        60_000,
+        TraversalSignalTiming::new(1_700_000_000_000, 60_000),
         "offer-1".to_string(),
         "npub1client".to_string(),
         "npub1server".to_string(),
-        None,
-        vec![addr("192.168.1.10", 62000)],
-        None,
+        observed(None, vec![addr("192.168.1.10", 62000)], None),
     );
     // Wire takes 50ms, responder clock is +500ms ahead, so:
     //   T2 = 1_700_000_000_000 + 50 + 500 = 1_700_000_000_550
@@ -835,18 +841,11 @@ fn estimate_clock_skew_matches_responder_offset() {
     //      For simplicity: T4 = T1 + 100ms wire + 0 responder processing
     //                       = 1_700_000_000_100 (initiator wall clock)
     let answer = create_traversal_answer(
-        "sess-1".to_string(),
-        1_700_000_000_550, // T3
-        60_000,
+        &offer,
+        TraversalSignalTiming::new(1_700_000_000_550, 60_000), // T3
         "answer-1".to_string(),
         "npub1server".to_string(),
-        "npub1client".to_string(),
-        "offer-1".to_string(),
-        true,
-        Some(addr("198.51.100.20", 63000)),
-        vec![],
-        None,
-        None,
+        observed(Some(addr("198.51.100.20", 63000)), vec![], None),
         None,
         Some(1_700_000_000_550), // T2
     );
@@ -865,28 +864,18 @@ fn estimate_clock_skew_matches_responder_offset() {
 fn estimate_clock_skew_returns_none_without_responder_timestamp() {
     let offer = create_traversal_offer(
         "sess-1".to_string(),
-        1_700_000_000_000,
-        60_000,
+        TraversalSignalTiming::new(1_700_000_000_000, 60_000),
         "offer-1".to_string(),
         "npub1client".to_string(),
         "npub1server".to_string(),
-        None,
-        vec![],
-        None,
+        observed(None, vec![], None),
     );
     let answer = create_traversal_answer(
-        "sess-1".to_string(),
-        1_700_000_000_500,
-        60_000,
+        &offer,
+        TraversalSignalTiming::new(1_700_000_000_500, 60_000),
         "answer-1".to_string(),
         "npub1server".to_string(),
-        "npub1client".to_string(),
-        "offer-1".to_string(),
-        true,
-        Some(addr("198.51.100.20", 63000)),
-        vec![],
-        None,
-        None,
+        observed(Some(addr("198.51.100.20", 63000)), vec![], None),
         None,
         None, // older responder
     );

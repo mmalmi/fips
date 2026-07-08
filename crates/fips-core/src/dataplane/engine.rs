@@ -13,6 +13,32 @@ pub(crate) struct Dataplane {
     completion_ready_shards: ReadyShardQueue,
 }
 
+pub(crate) struct DataplaneAeadRunBuffers<'a> {
+    prepared_work: &'a mut Vec<PreparedCryptoWork>,
+    completion_work: &'a mut Vec<CryptoCompletion>,
+    completion_batches: &'a mut Vec<CryptoCompletionBatch>,
+    retired: &'a mut Vec<RetiredOutputs>,
+    drops: &'a mut Vec<PacketDrop>,
+}
+
+impl<'a> DataplaneAeadRunBuffers<'a> {
+    pub(crate) fn new(
+        prepared_work: &'a mut Vec<PreparedCryptoWork>,
+        completion_work: &'a mut Vec<CryptoCompletion>,
+        completion_batches: &'a mut Vec<CryptoCompletionBatch>,
+        retired: &'a mut Vec<RetiredOutputs>,
+        drops: &'a mut Vec<PacketDrop>,
+    ) -> Self {
+        Self {
+            prepared_work,
+            completion_work,
+            completion_batches,
+            retired,
+            drops,
+        }
+    }
+}
+
 impl Dataplane {
     pub(crate) fn new(config: AdmissionConfig) -> Self {
         let shard_count = dataplane_owner_shard_count(config);
@@ -238,39 +264,15 @@ impl Dataplane {
 
     pub(crate) fn record_authenticated_fsp_session(
         &mut self,
-        owner: OwnerId,
-        previous_hop: NodeAddr,
-        msg_type: u8,
-        body_len: usize,
-        sync: FspReceiveSync,
-        activity_tick: Option<ActivityTick>,
-        now: std::time::Instant,
+        session: DataplaneAuthenticatedFspSession,
     ) -> Option<bool> {
-        self.owner_shard_mut(owner).record_authenticated_fsp_session(
-            owner,
-            previous_hop,
-            msg_type,
-            body_len,
-            sync,
-            activity_tick,
-            now,
-        )
+        self.owner_shard_mut(session.owner)
+            .record_authenticated_fsp_session(session)
     }
 
     pub(crate) fn record_fsp_decrypt_failure(&mut self, owner: OwnerId) -> Option<u32> {
         self.owner_shard_mut(owner)
             .record_fsp_decrypt_failure(owner)
-    }
-
-    pub(crate) fn record_fsp_data_sent(
-        &mut self,
-        owner: OwnerId,
-        next_hop: NodeAddr,
-        bytes: usize,
-        tick: ActivityTick,
-    ) -> bool {
-        self.owner_shard_mut(owner)
-            .record_fsp_data_sent(owner, next_hop, bytes, tick)
     }
 
     pub(crate) fn submit_socket_packet(
@@ -468,18 +470,6 @@ impl Dataplane {
         (admitted, dropped)
     }
 
-    fn queue_completion(&mut self, completion: CryptoCompletion) {
-        self.queue_completion_run(CryptoCompletionBatch::from_completion(completion));
-    }
-
-    fn queue_completion_batch(&mut self, completions: &mut Vec<CryptoCompletion>) -> usize {
-        let mut batches = Vec::new();
-        let count =
-            CryptoCompletionBatch::drain_completion_vec_into_batches(completions, &mut batches);
-        self.queue_completion_batches(&mut batches);
-        count
-    }
-
     fn queue_completion_batches(&mut self, batches: &mut Vec<CryptoCompletionBatch>) -> usize {
         let mut count = 0usize;
         for batch in batches.drain(..) {
@@ -580,19 +570,24 @@ impl Dataplane {
     fn run_aead_available_into_with_executor<E>(
         &mut self,
         limit: usize,
-        prepared_work: &mut Vec<PreparedCryptoWork>,
-        completion_work: &mut Vec<CryptoCompletion>,
-        retired: &mut Vec<RetiredOutputs>,
-        drops: &mut Vec<PacketDrop>,
+        buffers: DataplaneAeadRunBuffers<'_>,
         executor: &mut E,
         compact_endpoint_data: bool,
     ) -> usize
     where
         E: DataplaneCryptoExecutor,
     {
+        let DataplaneAeadRunBuffers {
+            prepared_work,
+            completion_work,
+            completion_batches,
+            retired,
+            drops,
+        } = buffers;
         retired.clear();
         prepared_work.clear();
         completion_work.clear();
+        completion_batches.clear();
         let mut dispatched_total = 0usize;
         let mut fsp_path_open = 0u64;
         let mut fsp_path_open_bulk = 0u64;
@@ -712,7 +707,11 @@ impl Dataplane {
             let _completion_queue_timer = crate::perf_profile::Timer::start(
                 crate::perf_profile::Stage::DataplaneCompletionQueue,
             );
-            self.queue_completion_batch(completion_work);
+            CryptoCompletionBatch::drain_completion_vec_into_batches(
+                completion_work,
+                completion_batches,
+            );
+            self.queue_completion_batches(completion_batches);
             self.retire_queued_completions_into(limit, retired, compact_endpoint_data);
         }
 
@@ -898,10 +897,6 @@ impl LaneLens {
             priority: lens.0,
             bulk: lens.1,
         }
-    }
-
-    fn as_tuple(self) -> (usize, usize) {
-        (self.priority, self.bulk)
     }
 
     fn lane(self, lane: Lane) -> usize {

@@ -349,10 +349,7 @@ impl Node {
             .await;
     }
 
-    pub(in crate::node) fn queue_active_fallback_direct_retries(
-        &mut self,
-        _bootstrap: &std::sync::Arc<NostrDiscovery>,
-    ) {
+    pub(in crate::node) fn queue_active_fallback_direct_retries(&mut self) {
         let now_ms = Self::now_ms();
         let peer_configs = self
             .configured_peer_send_weights

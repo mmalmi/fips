@@ -2,12 +2,10 @@
 
 use super::{TransportAddr, TransportId};
 use std::mem;
-use std::ops::{Deref, DerefMut, Index};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering::Relaxed},
 };
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::{
     Sender, UnboundedReceiver, UnboundedSender,
     error::{TryRecvError, TrySendError},
@@ -39,26 +37,11 @@ pub struct ReceivedPacket {
 }
 
 impl ReceivedPacket {
-    /// Create a new received packet with current timestamp.
-    pub fn new(
-        transport_id: TransportId,
-        remote_addr: TransportAddr,
-        data: impl Into<PacketBuffer>,
-    ) -> Self {
-        Self::with_trace_timestamp(
-            transport_id,
-            remote_addr,
-            data,
-            received_timestamp_ms(),
-            crate::perf_profile::stamp(),
-        )
-    }
-
     /// Create a received packet with explicit timestamp.
     pub fn with_timestamp(
         transport_id: TransportId,
         remote_addr: TransportAddr,
-        data: impl Into<PacketBuffer>,
+        data: PacketBuffer,
         timestamp_ms: u64,
     ) -> Self {
         Self::with_trace_timestamp(
@@ -79,14 +62,14 @@ impl ReceivedPacket {
     pub(crate) fn with_trace_timestamp(
         transport_id: TransportId,
         remote_addr: TransportAddr,
-        data: impl Into<PacketBuffer>,
+        data: PacketBuffer,
         timestamp_ms: u64,
         trace_enqueued_at: Option<crate::perf_profile::TraceStamp>,
     ) -> Self {
         Self {
             transport_id,
             remote_addr,
-            data: data.into(),
+            data,
             timestamp_ms,
             trace_enqueued_at,
             trace_rx_loop_owned_at: None,
@@ -94,7 +77,7 @@ impl ReceivedPacket {
     }
 
     pub(crate) fn is_transport_priority(&self) -> bool {
-        is_transport_priority_packet(&self.data)
+        is_transport_priority_packet(self.data.as_slice())
     }
 }
 
@@ -110,6 +93,7 @@ pub struct PacketBuffer {
 }
 
 impl PacketBuffer {
+    #[cfg(any(test, target_os = "linux", target_os = "macos"))]
     fn pooled(data: Vec<u8>, pool: PacketBufferPool) -> Self {
         Self {
             data,
@@ -269,49 +253,17 @@ impl Clone for PacketBuffer {
     }
 }
 
-impl Drop for PacketBuffer {
-    fn drop(&mut self) {
-        if let Some(pool) = self.pool.take() {
-            pool.put(mem::take(&mut self.data));
-        }
-    }
-}
-
-impl From<Vec<u8>> for PacketBuffer {
-    fn from(data: Vec<u8>) -> Self {
-        Self::new(data)
-    }
-}
-
-impl From<PacketBuffer> for Vec<u8> {
-    fn from(buffer: PacketBuffer) -> Self {
-        buffer.into_vec()
-    }
-}
-
-impl Deref for PacketBuffer {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        self.as_slice()
-    }
-}
-
-impl DerefMut for PacketBuffer {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.as_mut_slice()
-    }
-}
-
 impl AsRef<[u8]> for PacketBuffer {
     fn as_ref(&self) -> &[u8] {
         self.as_slice()
     }
 }
 
-impl AsMut<[u8]> for PacketBuffer {
-    fn as_mut(&mut self) -> &mut [u8] {
-        self.as_mut_slice()
+impl Drop for PacketBuffer {
+    fn drop(&mut self) {
+        if let Some(pool) = self.pool.take() {
+            pool.put(mem::take(&mut self.data));
+        }
     }
 }
 
@@ -322,43 +274,6 @@ impl PartialEq for PacketBuffer {
 }
 
 impl Eq for PacketBuffer {}
-
-impl PartialEq<Vec<u8>> for PacketBuffer {
-    fn eq(&self, other: &Vec<u8>) -> bool {
-        self.as_slice() == other.as_slice()
-    }
-}
-
-impl PartialEq<PacketBuffer> for Vec<u8> {
-    fn eq(&self, other: &PacketBuffer) -> bool {
-        self.as_slice() == other.as_slice()
-    }
-}
-
-impl PartialEq<&[u8]> for PacketBuffer {
-    fn eq(&self, other: &&[u8]) -> bool {
-        self.as_slice() == *other
-    }
-}
-
-impl<const N: usize> PartialEq<[u8; N]> for PacketBuffer {
-    fn eq(&self, other: &[u8; N]) -> bool {
-        self.as_slice() == other
-    }
-}
-
-impl<const N: usize> PartialEq<&[u8; N]> for PacketBuffer {
-    fn eq(&self, other: &&[u8; N]) -> bool {
-        self.as_slice() == *other
-    }
-}
-
-pub(crate) fn received_timestamp_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
 
 /// FMP packet shape that is visible before dataplane authenticates established data.
 ///
@@ -448,6 +363,7 @@ pub struct PacketTx {
     bulk: Sender<PacketQueueItem>,
     fast_ingress: Option<Arc<dyn PacketFastIngressSink>>,
     batch_pool: PacketBatchPool,
+    #[cfg(any(test, target_os = "linux", target_os = "macos"))]
     buffer_pool: PacketBufferPool,
     /// Packet-count ready hint for priority lane probes. Bulk batch tails check
     /// this instead of touching an empty priority mpsc once per data packet.
@@ -492,7 +408,6 @@ pub(crate) struct PacketBatch {
 #[derive(Debug)]
 enum PacketQueueItem {
     One(ReceivedPacket),
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Batch(PacketBatch),
 }
 
@@ -550,7 +465,7 @@ impl PacketQueueItem {
     fn packet_count(&self) -> usize {
         match self {
             PacketQueueItem::One(_) => 1,
-            PacketQueueItem::Batch(packets) => packets.len(),
+            PacketQueueItem::Batch(packets) => packets.packets.len(),
         }
     }
 
@@ -573,9 +488,10 @@ impl PacketQueueItem {
     fn queued_at(&self) -> Option<crate::perf_profile::TraceStamp> {
         match self {
             PacketQueueItem::One(packet) => packet.trace_enqueued_at,
-            PacketQueueItem::Batch(packets) => {
-                packets.first().and_then(|packet| packet.trace_enqueued_at)
-            }
+            PacketQueueItem::Batch(packets) => packets
+                .packets
+                .first()
+                .and_then(|packet| packet.trace_enqueued_at),
         }
     }
 
@@ -636,17 +552,10 @@ impl PacketBatchPool {
             crate::perf_profile::record_event(crate::perf_profile::Event::PacketBatchPoolDiscard);
         }
     }
-
-    #[cfg(test)]
-    fn cached_len(&self) -> usize {
-        self.inner
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .len()
-    }
 }
 
 impl PacketBufferPool {
+    #[cfg(any(test, target_os = "linux", target_os = "macos"))]
     fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(Vec::new())),
@@ -654,6 +563,7 @@ impl PacketBufferPool {
         }
     }
 
+    #[cfg(any(test, target_os = "linux", target_os = "macos"))]
     fn take(&self, capacity: usize) -> Vec<u8> {
         if self.available.load(Relaxed) > 0 {
             let buffer = {
@@ -690,11 +600,6 @@ impl PacketBufferPool {
             crate::perf_profile::record_event(crate::perf_profile::Event::PacketBufferPoolDiscard);
         }
     }
-
-    #[cfg(test)]
-    fn cached_len(&self) -> usize {
-        self.available.load(Relaxed)
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -702,7 +607,7 @@ fn fresh_recv_buffer(size: usize) -> Vec<u8> {
     vec![0u8; size]
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(any(test, target_os = "linux"), not(target_os = "macos")))]
 fn fresh_recv_buffer(size: usize) -> Vec<u8> {
     Vec::with_capacity(size)
 }
@@ -712,7 +617,7 @@ fn prepare_recv_buffer(buffer: &mut Vec<u8>, size: usize) {
     buffer.resize(size, 0);
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(any(test, target_os = "linux"), not(target_os = "macos")))]
 fn prepare_recv_buffer(buffer: &mut Vec<u8>, size: usize) {
     buffer.clear();
     if buffer.capacity() < size {
@@ -721,13 +626,6 @@ fn prepare_recv_buffer(buffer: &mut Vec<u8>, size: usize) {
 }
 
 impl PacketBatch {
-    fn from_vec(packets: Vec<ReceivedPacket>) -> Self {
-        Self {
-            packets,
-            pool: None,
-        }
-    }
-
     fn pooled(packets: Vec<ReceivedPacket>, pool: PacketBatchPool) -> Self {
         Self {
             packets,
@@ -741,48 +639,6 @@ impl PacketBatch {
 
     pub(crate) fn is_empty(&self) -> bool {
         self.packets.is_empty()
-    }
-
-    fn len(&self) -> usize {
-        self.packets.len()
-    }
-
-    fn first(&self) -> Option<&ReceivedPacket> {
-        self.packets.first()
-    }
-
-    fn iter(&self) -> impl Iterator<Item = &ReceivedPacket> {
-        self.packets.iter()
-    }
-
-    fn drain(&mut self) -> impl Iterator<Item = ReceivedPacket> + '_ {
-        self.packets.drain(..)
-    }
-
-    fn pop(&mut self) -> Option<ReceivedPacket> {
-        self.packets.pop()
-    }
-
-    fn reverse(&mut self) {
-        self.packets.reverse();
-    }
-
-    fn is_pooled(&self) -> bool {
-        self.pool.is_some()
-    }
-}
-
-impl From<Vec<ReceivedPacket>> for PacketBatch {
-    fn from(packets: Vec<ReceivedPacket>) -> Self {
-        Self::from_vec(packets)
-    }
-}
-
-impl Index<usize> for PacketBatch {
-    type Output = ReceivedPacket;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.packets[index]
     }
 }
 
@@ -800,7 +656,7 @@ impl PendingPackets {
         mut batch: PacketBatch,
         rx_loop_owned_at: Option<crate::perf_profile::TraceStamp>,
     ) -> Self {
-        batch.reverse();
+        batch.packets.reverse();
         Self {
             batch,
             rx_loop_owned_at,
@@ -808,15 +664,11 @@ impl PendingPackets {
     }
 
     fn next(&mut self) -> Option<ReceivedPacket> {
-        let mut packet = self.batch.pop()?;
+        let mut packet = self.batch.packets.pop()?;
         if let Some(rx_loop_owned_at) = self.rx_loop_owned_at {
             packet.trace_rx_loop_owned_at = Some(rx_loop_owned_at);
         }
         Some(packet)
-    }
-
-    fn len(&self) -> usize {
-        self.batch.len()
     }
 }
 
@@ -825,7 +677,6 @@ impl PacketTx {
         self.fast_ingress = Some(sink);
     }
 
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) fn try_fast_ingress_packet_batch(&self, batch: &mut PacketBatch) -> usize {
         let Some(sink) = &self.fast_ingress else {
             return 0;
@@ -833,17 +684,16 @@ impl PacketTx {
         sink.try_ingest_batch(&mut batch.packets)
     }
 
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) fn packet_batch(&self, capacity: usize) -> PacketBatch {
         self.batch_pool.take(capacity)
     }
 
-    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+    #[cfg(any(test, target_os = "linux", target_os = "macos"))]
     pub(crate) fn recv_buffer(&self, capacity: usize) -> Vec<u8> {
         self.buffer_pool.take(capacity)
     }
 
-    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+    #[cfg(any(test, target_os = "linux", target_os = "macos"))]
     pub(crate) fn packet_buffer(&self, data: Vec<u8>) -> PacketBuffer {
         PacketBuffer::pooled(data, self.buffer_pool.clone())
     }
@@ -866,19 +716,14 @@ impl PacketTx {
             })
     }
 
-    #[cfg(test)]
-    pub(crate) fn send_batch(&self, packets: Vec<ReceivedPacket>) -> Result<(), ()> {
-        self.send_packet_batch(PacketBatch::from_vec(packets))
-    }
-
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) fn send_packet_batch(&self, mut batch: PacketBatch) -> Result<(), ()> {
         if batch.is_empty() {
             return Ok(());
         }
 
-        let packet_count = batch.len();
+        let packet_count = batch.packets.len();
         let priority_count = batch
+            .packets
             .iter()
             .filter(|packet| packet.is_transport_priority())
             .count();
@@ -893,7 +738,7 @@ impl PacketTx {
 
         let mut priority_packets = self.packet_batch(priority_count);
         let mut bulk_packets = self.packet_batch(packet_count - priority_count);
-        for packet in batch.drain() {
+        for packet in batch.packets.drain(..) {
             if packet.is_transport_priority() {
                 priority_packets.push(packet);
             } else {
@@ -906,25 +751,20 @@ impl PacketTx {
         Ok(())
     }
 
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    fn send_packet_items(&self, tx: PacketQueueTx, mut packets: PacketBatch) -> Result<(), ()> {
+    fn send_packet_items(&self, tx: PacketQueueTx, packets: PacketBatch) -> Result<(), ()> {
         if matches!(tx, PacketQueueTx::Bulk) {
             return self.send_bulk_packet_items(packets);
         }
 
-        let item = match packets.len() {
+        let item = match packets.packets.len() {
             0 => return Ok(()),
-            1 if !packets.is_pooled() => {
-                PacketQueueItem::One(packets.pop().expect("one packet should be present"))
-            }
             _ => PacketQueueItem::Batch(packets),
         };
         self.send_item(tx, item).map_err(|_| ())
     }
 
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn send_bulk_packet_items(&self, mut packets: PacketBatch) -> Result<(), ()> {
-        let packet_count = packets.len();
+        let packet_count = packets.packets.len();
         if packet_count == 0 {
             return Ok(());
         }
@@ -947,11 +787,8 @@ impl PacketTx {
             );
         }
 
-        let item = match packets.len() {
+        let item = match packets.packets.len() {
             0 => return Ok(()),
-            1 if !packets.is_pooled() => {
-                PacketQueueItem::One(packets.pop().expect("one packet should be present"))
-            }
             _ => PacketQueueItem::Batch(packets),
         };
         self.send_reserved_item(PacketQueueTx::Bulk, item, Some(granted))
@@ -1056,7 +893,6 @@ impl PacketTx {
             .is_ok()
     }
 
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn try_reserve_bulk_packet_prefix(&self, requested: usize) -> usize {
         if requested == 0 {
             return 0;
@@ -1084,21 +920,6 @@ impl PacketTx {
     fn release_bulk_packets(&self, count: usize) {
         release_reserved_bulk_packets(&self.bulk_queued_packets, count);
     }
-
-    #[cfg(test)]
-    pub(crate) fn queued_packets(&self) -> usize {
-        self.queued_packets.load(Relaxed)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn priority_queued_packets(&self) -> usize {
-        self.priority_queued_packets.load(Relaxed)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn bulk_queued_packets(&self) -> usize {
-        self.bulk_queued_packets.load(Relaxed)
-    }
 }
 
 impl PacketRx {
@@ -1109,7 +930,7 @@ impl PacketRx {
     pub(crate) fn priority_ready_packets(&self) -> usize {
         self.pending_priority
             .as_ref()
-            .map_or(0, PendingPackets::len)
+            .map_or(0, |packets| packets.batch.packets.len())
             .saturating_add(self.priority_queued_packets())
     }
 
@@ -1277,7 +1098,7 @@ impl PacketRx {
             PacketQueueItem::Batch(packets) => {
                 let mut pending = PendingPackets::new(packets, rx_loop_owned_at);
                 let packet = pending.next()?;
-                if pending.len() > 0 {
+                if !pending.batch.packets.is_empty() {
                     match lane {
                         PacketLane::Priority => self.pending_priority = Some(pending),
                         PacketLane::Bulk => self.pending_bulk = Some(pending),
@@ -1360,7 +1181,7 @@ impl PacketRx {
     fn take_pending(pending: &mut Option<PendingPackets>) -> Option<ReceivedPacket> {
         let packets = pending.as_mut()?;
         let packet = packets.next();
-        if packets.len() == 0 {
+        if packets.batch.packets.is_empty() {
             *pending = None;
         }
         packet
@@ -1414,6 +1235,7 @@ pub fn packet_channel(buffer: usize) -> (PacketTx, PacketRx) {
             bulk: bulk_tx,
             fast_ingress: None,
             batch_pool: PacketBatchPool::new(),
+            #[cfg(any(test, target_os = "linux", target_os = "macos"))]
             buffer_pool: PacketBufferPool::new(),
             priority_queued_packets: Arc::clone(&priority_queued_packets),
             queued_packets: Arc::clone(&queued_packets),

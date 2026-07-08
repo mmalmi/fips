@@ -11,17 +11,27 @@ enum DataplaneSessionIngressHandoff {
         coord_warmup: DataplaneFspCoordWarmup,
     },
     Local(DataplaneFspLocalSessionIngress),
+    Rejected {
+        output: PacketOutput,
+        error: DataplaneSessionHandoffError,
+    },
 }
 
-type DataplaneSessionHandoffResult =
-    Result<DataplaneSessionIngressHandoff, (PacketOutput, DataplaneSessionHandoffError)>;
+impl DataplaneSessionIngressHandoff {
+    fn rejected(output: PacketOutput, error: DataplaneSessionHandoffError) -> Self {
+        Self::Rejected { output, error }
+    }
+}
 
 fn dataplane_session_ingress_from_output(
     output: PacketOutput,
     local_addr: NodeAddr,
-) -> DataplaneSessionHandoffResult {
+) -> DataplaneSessionIngressHandoff {
     if output.owner.protocol() != PacketProtocol::Fmp {
-        return Err((output, DataplaneSessionHandoffError::InvalidPacket));
+        return DataplaneSessionIngressHandoff::rejected(
+            output,
+            DataplaneSessionHandoffError::InvalidPacket,
+        );
     }
 
     const FMP_LINK_TIMESTAMP_LEN: usize = 4;
@@ -33,42 +43,71 @@ fn dataplane_session_ingress_from_output(
     let previous_hop = output.owner.node_addr();
     let fmp_header = match FmpWireHeader::parse(output.payload()) {
         Ok(header) => header,
-        Err(_) => return Err((output, DataplaneSessionHandoffError::InvalidPacket)),
+        Err(_) => {
+            return DataplaneSessionIngressHandoff::rejected(
+                output,
+                DataplaneSessionHandoffError::InvalidPacket,
+            );
+        }
     };
 
-    let (transport_id, remote_addr) = match output.source_path() {
-        Some(TransportPath::Live {
-            transport_id,
-            remote_addr,
-        }) => (*transport_id, remote_addr.clone()),
-        _ => return Err((output, DataplaneSessionHandoffError::NoRoute)),
+    let Some(source_path) = output.source_path() else {
+        return DataplaneSessionIngressHandoff::rejected(
+            output,
+            DataplaneSessionHandoffError::NoRoute,
+        );
     };
+    let transport_id = source_path.transport_id;
+    let remote_addr = source_path.remote_addr.clone();
 
     let handoff_facts = {
         let Some(link_payload) = output.opened_payload() else {
-            return Err((output, DataplaneSessionHandoffError::InvalidPacket));
+            return DataplaneSessionIngressHandoff::rejected(
+                output,
+                DataplaneSessionHandoffError::InvalidPacket,
+            );
         };
         if link_payload.len() < FMP_LINK_TIMESTAMP_LEN {
-            return Err((output, DataplaneSessionHandoffError::InvalidPacket));
+            return DataplaneSessionIngressHandoff::rejected(
+                output,
+                DataplaneSessionHandoffError::InvalidPacket,
+            );
         }
         let link_payload = &link_payload[FMP_LINK_TIMESTAMP_LEN..];
         let Some((&msg_type, datagram_payload)) = link_payload.split_first() else {
-            return Err((output, DataplaneSessionHandoffError::InvalidPacket));
+            return DataplaneSessionIngressHandoff::rejected(
+                output,
+                DataplaneSessionHandoffError::InvalidPacket,
+            );
         };
         if msg_type != crate::protocol::LinkMessageType::SessionDatagram.to_byte() {
-            return Err((output, DataplaneSessionHandoffError::NoRoute));
+            return DataplaneSessionIngressHandoff::rejected(
+                output,
+                DataplaneSessionHandoffError::NoRoute,
+            );
         }
 
         let datagram = match crate::protocol::SessionDatagramRef::decode(datagram_payload) {
             Ok(datagram) => datagram,
-            Err(_) => return Err((output, DataplaneSessionHandoffError::InvalidPacket)),
+            Err(_) => {
+                return DataplaneSessionIngressHandoff::rejected(
+                    output,
+                    DataplaneSessionHandoffError::InvalidPacket,
+                );
+            }
         };
         if datagram.ttl == 0 || datagram.dest_addr != local_addr {
-            return Err((output, DataplaneSessionHandoffError::NoRoute));
+            return DataplaneSessionIngressHandoff::rejected(
+                output,
+                DataplaneSessionHandoffError::NoRoute,
+            );
         }
         let Some(prefix) = crate::node::session_wire::FspCommonPrefix::parse(datagram.payload)
         else {
-            return Err((output, DataplaneSessionHandoffError::InvalidPacket));
+            return DataplaneSessionIngressHandoff::rejected(
+                output,
+                DataplaneSessionHandoffError::InvalidPacket,
+            );
         };
         let coord_warmup = dataplane_fsp_coord_warmup(
             datagram.src_addr,
@@ -87,24 +126,25 @@ fn dataplane_session_ingress_from_output(
     };
     let (source_addr, path_mtu, local_delivery, coord_warmup) = match handoff_facts {
         Ok(facts) => facts,
-        Err(error) => return Err((output, error)),
+        Err(error) => return DataplaneSessionIngressHandoff::rejected(output, error),
     };
 
     let ce_flag = fmp_header.flags() & crate::node::wire::FLAG_CE != 0;
     let activity_tick = output.activity_tick;
-    let mut payload = output
-        .into_opened_payload()
-        .map_err(|output| (output, DataplaneSessionHandoffError::InvalidPacket))?;
+    let mut output = output;
+    let Some(mut payload) = output.take_opened_payload() else {
+        return DataplaneSessionIngressHandoff::rejected(
+            output,
+            DataplaneSessionHandoffError::InvalidPacket,
+        );
+    };
     debug_assert!(payload.len() >= FMP_SESSION_PAYLOAD_OFFSET);
     assert!(payload.trim_front(FMP_SESSION_PAYLOAD_OFFSET));
 
-    let path = TransportPath::Live {
-        transport_id,
-        remote_addr: remote_addr.clone(),
-    };
+    let path = TransportPath::live(transport_id, remote_addr.clone());
 
     if local_delivery {
-        return Ok(DataplaneSessionIngressHandoff::Local(
+        return DataplaneSessionIngressHandoff::Local(
             DataplaneFspLocalSessionIngress::new(
                 source_addr,
                 previous_hop,
@@ -112,10 +152,10 @@ fn dataplane_session_ingress_from_output(
                 path_mtu,
                 payload,
             ),
-        ));
+        );
     }
 
-    Ok(DataplaneSessionIngressHandoff::Raw {
+    DataplaneSessionIngressHandoff::Raw {
         raw: DataplaneRawIngress {
             protocol: PacketProtocol::Fsp,
             transport_id,
@@ -129,7 +169,7 @@ fn dataplane_session_ingress_from_output(
             payload,
         },
         coord_warmup,
-    })
+    }
 }
 
 fn dataplane_fsp_coord_warmup(

@@ -6,8 +6,8 @@
 //! zero-retransmit by default so it behaves like a datagram-ish transport.
 
 use super::{
-    ConnectionState, DiscoveredPeer, PacketTx, ReceivedPacket, Transport, TransportAddr,
-    TransportError, TransportId, TransportState, TransportType,
+    ConnectionState, DiscoveredPeer, PacketBuffer, PacketTx, ReceivedPacket, Transport,
+    TransportAddr, TransportError, TransportId, TransportState, TransportType,
 };
 use crate::config::{NostrDiscoveryConfig, WebRtcConfig};
 use ::webrtc::api::APIBuilder;
@@ -393,15 +393,10 @@ impl WebRtcRuntime {
             .map_err(|e| TransportError::StartFailed(e.to_string()))?;
 
         wire_data_channel(
-            self.transport_id,
+            self,
             remote_addr.clone(),
             Arc::clone(&pc),
             Arc::clone(&data_channel),
-            self.packet_tx.clone(),
-            Arc::clone(&self.pool),
-            Arc::clone(&self.pending),
-            Arc::clone(&self.failed),
-            Arc::clone(&self.ready),
         );
 
         self.pending.lock().await.insert(
@@ -508,17 +503,7 @@ impl WebRtcRuntime {
             let remote_addr = remote_addr.clone();
             let pc = Arc::clone(&pc_for_data_channel);
             Box::pin(async move {
-                wire_data_channel(
-                    runtime.transport_id,
-                    remote_addr,
-                    pc,
-                    data_channel,
-                    runtime.packet_tx.clone(),
-                    Arc::clone(&runtime.pool),
-                    Arc::clone(&runtime.pending),
-                    Arc::clone(&runtime.failed),
-                    Arc::clone(&runtime.ready),
-                );
+                wire_data_channel(&runtime, remote_addr, pc, data_channel);
             })
         }));
 
@@ -748,21 +733,16 @@ fn wire_peer_connection_state(
     }));
 }
 
-#[allow(clippy::too_many_arguments)]
 fn wire_data_channel(
-    transport_id: TransportId,
+    runtime: &WebRtcRuntime,
     remote_addr: TransportAddr,
     pc: Arc<RTCPeerConnection>,
     data_channel: Arc<RTCDataChannel>,
-    packet_tx: PacketTx,
-    pool: ConnectionPool,
-    pending: PendingPool,
-    failed: FailedPool,
-    ready: ReadyPool,
 ) {
+    let transport_id = runtime.transport_id;
     let recv_addr = remote_addr.clone();
-    let recv_tx = packet_tx.clone();
-    let recv_ready = Arc::clone(&ready);
+    let recv_tx = runtime.packet_tx.clone();
+    let recv_ready = Arc::clone(&runtime.ready);
     data_channel.on_message(Box::new(move |msg: DataChannelMessage| {
         let recv_addr = recv_addr.clone();
         let recv_tx = recv_tx.clone();
@@ -801,7 +781,12 @@ fn wire_data_channel(
                     );
                 }
             }
-            if let Err(err) = recv_tx.send(ReceivedPacket::new(transport_id, recv_addr, data)) {
+            if let Err(err) = recv_tx.send(ReceivedPacket::with_timestamp(
+                transport_id,
+                recv_addr,
+                PacketBuffer::new(data),
+                crate::time::now_ms(),
+            )) {
                 warn!(
                     transport_id = %transport_id,
                     error = %err,
@@ -814,10 +799,10 @@ fn wire_data_channel(
     let open_addr = remote_addr.clone();
     let open_pc = Arc::clone(&pc);
     let open_dc = Arc::clone(&data_channel);
-    let open_pool = Arc::clone(&pool);
-    let open_pending = Arc::clone(&pending);
-    let open_failed = Arc::clone(&failed);
-    let open_ready = Arc::clone(&ready);
+    let open_pool = Arc::clone(&runtime.pool);
+    let open_pending = Arc::clone(&runtime.pending);
+    let open_failed = Arc::clone(&runtime.failed);
+    let open_ready = Arc::clone(&runtime.ready);
     data_channel.on_open(Box::new(move || {
         let open_addr = open_addr.clone();
         let open_pc = Arc::clone(&open_pc);
@@ -859,9 +844,9 @@ fn wire_data_channel(
     }));
 
     let close_addr = remote_addr;
-    let close_pool = pool;
-    let close_pending = pending;
-    let close_ready = ready;
+    let close_pool = Arc::clone(&runtime.pool);
+    let close_pending = Arc::clone(&runtime.pending);
+    let close_ready = Arc::clone(&runtime.ready);
     data_channel.on_close(Box::new(move || {
         let close_addr = close_addr.clone();
         let close_pool = Arc::clone(&close_pool);

@@ -5,7 +5,7 @@
         use crate::PeerIdentity;
         use crate::config::{ConnectPolicy, PeerAddress, PeerConfig};
         use crate::node::retry::RetryState;
-        use crate::peer::ActivePeer;
+        use crate::peer::{ActivePeer, ActivePeerSession};
         use crate::transport::{LinkId, LinkStats, TransportAddr, TransportId};
         use crate::utils::index::SessionIndex;
 
@@ -34,15 +34,16 @@
             previous_hop_identity,
             LinkId::new(9),
             1_000,
-            make_xk_session(&node.identity, &previous_hop),
-            SessionIndex::new(0x1010),
-            SessionIndex::new(0x2020),
-            TransportId::new(0x55),
-            TransportAddr::from_string("203.0.113.9:2121"),
-            LinkStats::new(),
-            true,
-            &node.config.node.mmp,
-            None,
+            ActivePeerSession {
+                session: make_xk_session(&node.identity, &previous_hop),
+                our_index: SessionIndex::new(0x1010),
+                their_index: SessionIndex::new(0x2020),
+                transport_id: TransportId::new(0x55),
+                current_addr: TransportAddr::from_string("203.0.113.9:2121"),
+                link_stats: LinkStats::new(),
+                is_initiator: true,
+                remote_epoch: None,
+            },
         );
         active_peer.touch(stale_seen_ms);
         node.peers
@@ -91,7 +92,7 @@
         use crate::PeerIdentity;
         use crate::config::{ConnectPolicy, PeerAddress, PeerConfig};
         use crate::node::retry::RetryState;
-        use crate::peer::ActivePeer;
+        use crate::peer::{ActivePeer, ActivePeerSession};
         use crate::transport::{LinkId, LinkStats, TransportAddr, TransportId};
         use crate::utils::index::SessionIndex;
 
@@ -119,15 +120,16 @@
             peer_identity,
             LinkId::new(9),
             1_000,
-            make_xk_session(&node.identity, &peer),
-            SessionIndex::new(0x1011),
-            SessionIndex::new(0x2021),
-            transport_id,
-            transport_addr.clone(),
-            LinkStats::new(),
-            true,
-            &node.config.node.mmp,
-            None,
+            ActivePeerSession {
+                session: make_xk_session(&node.identity, &peer),
+                our_index: SessionIndex::new(0x1011),
+                their_index: SessionIndex::new(0x2021),
+                transport_id,
+                current_addr: transport_addr.clone(),
+                link_stats: LinkStats::new(),
+                is_initiator: true,
+                remote_epoch: None,
+            },
         );
         active_peer.touch(Node::now_ms().saturating_sub(11_000));
         node.peers
@@ -138,16 +140,16 @@
         node.retry_pending.insert(peer_addr, retry);
 
         node.record_authenticated_fmp_receive_facts(
-            crate::node::AuthenticatedFmpReceiveFacts::new(
-                peer_identity,
+            crate::node::AuthenticatedFmpReceiveFacts {
+                source_peer: peer_identity,
                 transport_id,
-                &transport_addr,
-                Node::now_ms(),
-                256,
-                11,
-                22,
-                0,
-            ),
+                remote_addr: &transport_addr,
+                packet_timestamp_ms: Node::now_ms(),
+                packet_len: 256,
+                fmp_counter: 11,
+                inner_timestamp_ms: 22,
+                fmp_flags: 0,
+            },
             Some(&peer_addr),
         );
 
@@ -162,7 +164,7 @@
         use crate::PeerIdentity;
         use crate::config::{ConnectPolicy, PeerAddress, PeerConfig};
         use crate::node::retry::RetryState;
-        use crate::peer::ActivePeer;
+        use crate::peer::{ActivePeer, ActivePeerSession};
         use crate::transport::{LinkId, LinkStats, TransportAddr, TransportId};
         use crate::utils::index::SessionIndex;
 
@@ -192,15 +194,16 @@
             peer_identity,
             LinkId::new(9),
             1_000,
-            make_xk_session(&node.identity, &peer),
-            SessionIndex::new(0x1012),
-            SessionIndex::new(0x2022),
-            transport_id,
-            transport_addr.clone(),
-            LinkStats::new(),
-            true,
-            &node.config.node.mmp,
-            None,
+            ActivePeerSession {
+                session: make_xk_session(&node.identity, &peer),
+                our_index: SessionIndex::new(0x1012),
+                their_index: SessionIndex::new(0x2022),
+                transport_id,
+                current_addr: transport_addr.clone(),
+                link_stats: LinkStats::new(),
+                is_initiator: true,
+                remote_epoch: None,
+            },
         );
         active_peer.touch(Node::now_ms().saturating_sub(11_000));
         node.peers
@@ -211,16 +214,16 @@
         node.retry_pending.insert(peer_addr, retry);
 
         node.record_authenticated_fmp_receive_facts(
-            crate::node::AuthenticatedFmpReceiveFacts::new(
-                peer_identity,
+            crate::node::AuthenticatedFmpReceiveFacts {
+                source_peer: peer_identity,
                 transport_id,
-                &transport_addr,
-                Node::now_ms(),
-                256,
-                11,
-                22,
-                0,
-            ),
+                remote_addr: &transport_addr,
+                packet_timestamp_ms: Node::now_ms(),
+                packet_len: 256,
+                fmp_counter: 11,
+                inner_timestamp_ms: 22,
+                fmp_flags: 0,
+            },
             Some(&relay_addr),
         );
 
@@ -244,10 +247,8 @@
 
         let message = AuthenticatedSessionMessage::new(
             source_peer,
-            plaintext,
+            crate::transport::PacketBuffer::new(plaintext),
             SessionMessageType::EndpointData.to_byte(),
-            0,
-            0x0102_0304,
         );
 
         assert_eq!(message.body(), endpoint_payload);
@@ -255,7 +256,7 @@
         assert_eq!(deliveries.len(), 1);
         let delivery = &deliveries[0];
         assert_eq!(delivery.source_peer, source_peer);
-        assert_eq!(delivery.payload, endpoint_payload);
+        assert_eq!(delivery.payload.as_slice(), endpoint_payload.as_slice());
     }
 
     #[test]
@@ -277,10 +278,8 @@
             true,
             AuthenticatedSessionMessage::new(
                 source_peer,
-                plaintext,
+                crate::transport::PacketBuffer::new(plaintext),
                 SessionMessageType::EndpointData.to_byte(),
-                0,
-                0x0102_0304,
             ),
         );
 
@@ -304,7 +303,7 @@
         assert_eq!(deliveries.len(), 1);
         let delivery = &deliveries[0];
         assert_eq!(delivery.source_peer, source_peer);
-        assert_eq!(delivery.payload, endpoint_payload);
+        assert_eq!(delivery.payload.as_slice(), endpoint_payload.as_slice());
 
         let report_plaintext = fsp_prepend_inner_header(
             0x0102_0304,
@@ -318,10 +317,8 @@
             false,
             AuthenticatedSessionMessage::new(
                 source_peer,
-                report_plaintext,
+                crate::transport::PacketBuffer::new(report_plaintext),
                 SessionMessageType::SenderReport.to_byte(),
-                0,
-                0x0102_0304,
             ),
         );
         assert_eq!(
@@ -351,10 +348,8 @@
             false,
             AuthenticatedSessionMessage::new(
                 source_peer,
-                plaintext,
+                crate::transport::PacketBuffer::new(plaintext),
                 SessionMessageType::EndpointData.to_byte(),
-                0,
-                0x0102_0304,
             ),
         );
 
@@ -370,13 +365,11 @@
         let pending_flush = commit.finish(&mut node);
         node.deliver_endpoint_data_batch(deliveries);
         assert!(pending_flush.is_empty());
-        match endpoint_io.event_rx.try_recv().expect("endpoint event") {
-            crate::node::NodeEndpointEvent { messages, .. } => {
-                assert_eq!(messages.len(), 1);
-                assert_eq!(messages[0].source_peer, source_peer);
-                assert_eq!(messages[0].payload, endpoint_payload);
-            }
-        }
+        let crate::node::NodeEndpointEvent { messages, .. } =
+            endpoint_io.event_rx.try_recv().expect("endpoint event");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].source_peer, source_peer);
+        assert_eq!(messages[0].payload.as_slice(), endpoint_payload.as_slice());
         assert!(node.sessions.get(&source_addr).is_some());
         assert!(
             !node.pending_session_traffic.has_traffic_for(&source_addr),
@@ -404,10 +397,8 @@
             false,
             AuthenticatedSessionMessage::new(
                 source_peer,
-                plaintext,
+                crate::transport::PacketBuffer::new(plaintext),
                 SessionMessageType::EndpointData.to_byte(),
-                0,
-                0x0102_0304,
             ),
         );
 
@@ -495,10 +486,8 @@
             false,
             AuthenticatedSessionMessage::new(
                 source_peer,
-                plaintext,
+                crate::transport::PacketBuffer::new(plaintext),
                 SessionMessageType::DataPacket.to_byte(),
-                0,
-                0x0102_0304,
             ),
         );
 

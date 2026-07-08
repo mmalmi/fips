@@ -100,9 +100,11 @@ impl HostFirewallConfig {
 /// the host's main firewall ruleset.
 #[derive(Debug)]
 pub struct HostFirewallGuard {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     backend: HostFirewallBackend,
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[derive(Debug)]
 enum HostFirewallBackend {
     #[cfg(target_os = "linux")]
@@ -112,9 +114,6 @@ enum HostFirewallBackend {
         anchor_name: String,
         enable_token: Option<String>,
     },
-    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    Unsupported,
 }
 
 impl HostFirewallGuard {
@@ -175,21 +174,21 @@ impl HostFirewallGuard {
 
 impl Drop for HostFirewallGuard {
     fn drop(&mut self) {
-        match &self.backend {
-            #[cfg(target_os = "linux")]
-            HostFirewallBackend::Linux { table_name } => remove_nft_table(table_name),
-            #[cfg(target_os = "macos")]
-            HostFirewallBackend::Macos {
+        #[cfg(target_os = "linux")]
+        {
+            let HostFirewallBackend::Linux { table_name } = &self.backend;
+            remove_nft_table(table_name);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let HostFirewallBackend::Macos {
                 anchor_name,
                 enable_token,
-            } => {
-                flush_pf_anchor(anchor_name);
-                if let Some(token) = enable_token {
-                    release_pf_enable_token(token);
-                }
+            } = &self.backend;
+            flush_pf_anchor(anchor_name);
+            if let Some(token) = enable_token {
+                release_pf_enable_token(token);
             }
-            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-            HostFirewallBackend::Unsupported => {}
         }
     }
 }

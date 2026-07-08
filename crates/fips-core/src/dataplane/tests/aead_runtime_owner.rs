@@ -27,7 +27,7 @@
                     fmp_socket_packet(
                         owner,
                         1,
-                        OutputTarget::Tun,
+                        OutputTarget::Transport,
                         fmp_encrypted_wire(receiver_idx, counter, 0, payload, open_key),
                     )
                     .unwrap(),
@@ -36,16 +36,26 @@
         }
     }
 
-    fn submit_endpoint_data_payload(
-        mover: &mut Dataplane,
+    struct EndpointDataSubmit<'a> {
         owner: OwnerId,
         counter: u64,
         timestamp: u32,
         key: u8,
         previous_hop: NodeAddr,
         local_addr: NodeAddr,
-        payload: &[u8],
-    ) {
+        payload: &'a [u8],
+    }
+
+    fn submit_endpoint_data_payload(mover: &mut Dataplane, request: EndpointDataSubmit<'_>) {
+        let EndpointDataSubmit {
+            owner,
+            counter,
+            timestamp,
+            key,
+            previous_hop,
+            local_addr,
+            payload,
+        } = request;
         let fsp_inner = crate::node::session_wire::fsp_prepend_inner_header(
             timestamp,
             crate::protocol::SessionMessageType::EndpointData.to_byte(),
@@ -60,7 +70,7 @@
                     counter,
                     PacketClass::Bulk,
                     OutputTarget::SessionPayload { local_addr },
-                    fsp_encrypted_wire(counter, 0, &fsp_inner, key),
+                    PacketBuffer::new(fsp_encrypted_wire(counter, 0, &fsp_inner, key)),
                 )
                 .with_previous_hop(previous_hop)
                 .with_activity_tick(ActivityTick::new(timestamp as u64)),
@@ -88,14 +98,18 @@
     {
         let mut prepared_work = Vec::new();
         let mut completion_work = Vec::new();
+        let mut completion_batches = Vec::new();
         let mut retired = Vec::new();
         let mut drops = Vec::new();
         let dispatched = mover.run_aead_available_into_with_executor(
             limit,
-            &mut prepared_work,
-            &mut completion_work,
-            &mut retired,
-            &mut drops,
+            DataplaneAeadRunBuffers::new(
+                &mut prepared_work,
+                &mut completion_work,
+                &mut completion_batches,
+                &mut retired,
+                &mut drops,
+            ),
             executor,
             false,
         );
@@ -107,30 +121,15 @@
     ) -> Vec<&DataplaneEndpointDataBatch> {
         driver
             .fsp_authenticated_ingress
+            .endpoint_data_batches
             .iter()
-            .filter_map(|ingress| {
-                if let DataplaneFspAuthenticatedIngress::EndpointDataBatch(bulk) = ingress {
-                    Some(bulk)
-                } else {
-                    None
-                }
-            })
             .collect()
     }
 
     fn take_driver_endpoint_batches(
         driver: &mut DataplaneTurnDriver,
     ) -> Vec<DataplaneEndpointDataBatch> {
-        std::mem::take(&mut driver.fsp_authenticated_ingress)
-            .into_iter()
-            .filter_map(|ingress| {
-                if let DataplaneFspAuthenticatedIngress::EndpointDataBatch(bulk) = ingress {
-                    Some(bulk)
-                } else {
-                    None
-                }
-            })
-            .collect()
+        std::mem::take(&mut driver.fsp_authenticated_ingress).endpoint_data_batches
     }
 
     fn drain_worker_pool_completions(
@@ -138,8 +137,15 @@
         expected: usize,
     ) -> Vec<CryptoCompletion> {
         let mut completions = Vec::new();
+        let mut batches = Vec::new();
         for _ in 0..100 {
-            pool.drain_completions_into(expected.saturating_sub(completions.len()), &mut completions);
+            pool.drain_completion_batches_into(
+                expected.saturating_sub(completions.len()),
+                &mut batches,
+            );
+            for batch in batches.drain(..) {
+                completions.extend(batch.into_completions());
+            }
             if completions.len() >= expected {
                 break;
             }
@@ -227,7 +233,7 @@
                     PacketClass::Bulk,
                     710,
                     0,
-                    format!("outbound-{idx}").into_bytes(),
+                    PacketBuffer::new(format!("outbound-{idx}").into_bytes()),
                 ))
                 .unwrap();
         }
@@ -319,7 +325,7 @@
                     1,
                     counter,
                     PacketClass::Bulk,
-                    OutputTarget::Tun,
+                    OutputTarget::Transport,
                     open_key,
                 ))
                 .unwrap();
@@ -345,7 +351,7 @@
                 1,
                 1_000,
                 PacketClass::Liveness,
-                OutputTarget::Tun,
+                OutputTarget::Transport,
                 open_key,
             ))
             .unwrap();
@@ -459,7 +465,7 @@
             1,
             PacketClass::Liveness,
             0x03,
-            b"session-body".to_vec(),
+            PacketBuffer::new(b"session-body".to_vec()),
         )
         .with_fsp_cleartext_prefix(empty_fsp_coords_prefix())
         .with_activity_tick(ActivityTick::new(1_234));
@@ -469,7 +475,7 @@
             PacketClass::Bulk,
             4243,
             0,
-            b"queued-bulk".to_vec(),
+            PacketBuffer::new(b"queued-bulk".to_vec()),
         );
 
         let first =
@@ -493,11 +499,10 @@
         assert_eq!(output.owner(), fmp_owner);
         assert_eq!(output.counter(), 70);
         assert_eq!(output.target(), OutputTarget::Transport);
-        assert_eq!(output.path(), Some(fmp_path));
+        assert_eq!(output.path.clone(), Some(fmp_path));
         let receipt = output.fsp_send_receipt.expect("wrapped FSP receipt");
-        assert_eq!(receipt.owner(), fsp_owner);
-        assert_eq!(receipt.counter(), 50);
-        assert_eq!(receipt.timestamp_ms(), Some(234));
+        assert_eq!(receipt.owner, fsp_owner);
+        assert_eq!(receipt.counter, 50);
 
         let fmp_plaintext = open_sealed_output(output, fmp_key);
         assert_eq!(
@@ -585,7 +590,7 @@
             assert_eq!(output.owner(), owner);
             assert_eq!(output.counter(), 90 + idx as u64);
             assert_eq!(output.target(), OutputTarget::Transport);
-            assert_eq!(output.path(), Some(path.clone()));
+            assert_eq!(output.path.clone(), Some(path.clone()));
             assert!(output.fsp_send_receipt.is_none());
 
             let header = FspWireHeader::parse(output.payload()).unwrap();
@@ -644,7 +649,7 @@
             1,
             PacketClass::Liveness,
             0x03,
-            b"session-priority".to_vec(),
+            PacketBuffer::new(b"session-priority".to_vec()),
         )
         .with_fsp_cleartext_prefix(empty_fsp_coords_prefix());
 
@@ -658,7 +663,7 @@
         assert_eq!(output.owner(), fmp_owner);
         assert_eq!(output.counter(), 100);
         assert_eq!(output.target(), OutputTarget::Transport);
-        assert_eq!(output.path(), Some(fmp_path));
+        assert_eq!(output.path.clone(), Some(fmp_path));
         let fmp_plaintext = open_sealed_output(output, fmp_key);
         let datagram = crate::protocol::SessionDatagramRef::decode(&fmp_plaintext[1..])
             .expect("wrapped session datagram");
@@ -716,7 +721,7 @@
                 1,
                 PacketClass::Bulk,
                 crate::node::session_wire::FSP_FLAG_CP,
-                format!("session-{idx}").into_bytes(),
+                PacketBuffer::new(format!("session-{idx}").into_bytes()),
             )
             .with_fsp_cleartext_prefix(empty_fsp_coords_prefix())
         });
@@ -731,7 +736,7 @@
             assert_eq!(output.owner(), fmp_owner);
             assert_eq!(output.counter(), 20 + idx as u64);
             assert_eq!(output.target(), OutputTarget::Transport);
-            assert_eq!(output.path(), Some(fmp_path.clone()));
+            assert_eq!(output.path.clone(), Some(fmp_path.clone()));
             let fmp_plaintext = open_sealed_output(output, fmp_key);
             let datagram = crate::protocol::SessionDatagramRef::decode(&fmp_plaintext[1..])
                 .expect("wrapped session datagram");
@@ -765,7 +770,7 @@
                     fmp_socket_packet(
                         owner,
                         1,
-                        OutputTarget::Tun,
+                        OutputTarget::Transport,
                         fmp_encrypted_wire(70, counter, 0, b"inbound-bulk", open_key),
                     )
                     .unwrap(),
@@ -779,7 +784,7 @@
                 PacketClass::Liveness,
                 701,
                 0,
-                b"outbound-liveness".to_vec(),
+                PacketBuffer::new(b"outbound-liveness".to_vec()),
             ))
             .unwrap();
 
@@ -788,11 +793,11 @@
         assert_eq!(turn.dispatched(), 2);
         let outputs = turn.outputs();
         assert_eq!(outputs.len(), 2);
-        assert_eq!(outputs[0].target, OutputTarget::Tun);
+        assert_eq!(outputs[0].target, OutputTarget::Transport);
         assert_eq!(outputs[0].counter, 100);
         assert_eq!(outputs[1].target, OutputTarget::Transport);
         assert_eq!(outputs[1].counter, 900);
-        assert_eq!(outputs[1].path(), Some(path));
+        assert_eq!(outputs[1].path.clone(), Some(path));
         assert_eq!(
             open_sealed_output(outputs[1], seal_key),
             b"outbound-liveness"
@@ -810,7 +815,7 @@
                 1,
                 PacketClass::Bulk,
                 0,
-                b"needs key".to_vec(),
+                PacketBuffer::new(b"needs key".to_vec()),
             ))
             .unwrap();
 
@@ -847,7 +852,7 @@
                 PacketClass::Bulk,
                 720,
                 0,
-                b"after rekey".to_vec(),
+                PacketBuffer::new(b"after rekey".to_vec()),
             ))
             .unwrap();
 
@@ -883,7 +888,7 @@
         let inbound_a = fmp_socket_packet(
             owner,
             1,
-            OutputTarget::Tun,
+            OutputTarget::Transport,
             fmp_encrypted_wire(73, 1000, 0, b"in-a", open_key),
         )
         .unwrap()
@@ -891,7 +896,7 @@
         mover.submit_socket_packet(inbound_a).unwrap();
         let turn = run_aead_available(&mut mover, 8);
         assert!(turn.drops().is_empty());
-        assert_eq!(turn.outputs()[0].path(), None);
+        assert_eq!(turn.outputs()[0].path.clone(), None);
         assert_eq!(
             mover.owner_mut(owner).unwrap().active_path(),
             Some(path_a.clone())
@@ -904,20 +909,20 @@
                 PacketClass::Bulk,
                 730,
                 0,
-                b"out-a".to_vec(),
+                PacketBuffer::new(b"out-a".to_vec()),
             ))
             .unwrap();
         let turn = run_aead_available(&mut mover, 8);
         let output = turn.outputs()[0];
         assert_eq!(output.counter, 500);
         assert_eq!(output.target, OutputTarget::Transport);
-        assert_eq!(output.path(), Some(path_a));
+        assert_eq!(output.path.clone(), Some(path_a));
         assert_eq!(open_sealed_output(output, seal_key), b"out-a");
 
         let inbound_b = fmp_socket_packet(
             owner,
             1,
-            OutputTarget::Tun,
+            OutputTarget::Transport,
             fmp_encrypted_wire(73, 1001, 0, b"in-b", open_key),
         )
         .unwrap()
@@ -925,7 +930,7 @@
         mover.submit_socket_packet(inbound_b).unwrap();
         let turn = run_aead_available(&mut mover, 8);
         assert!(turn.drops().is_empty());
-        assert_eq!(turn.outputs()[0].path(), None);
+        assert_eq!(turn.outputs()[0].path.clone(), None);
         assert_eq!(
             mover.owner_mut(owner).unwrap().active_path(),
             Some(path_b.clone())
@@ -938,13 +943,13 @@
                 PacketClass::Bulk,
                 730,
                 0,
-                b"out-b".to_vec(),
+                PacketBuffer::new(b"out-b".to_vec()),
             ))
             .unwrap();
         let turn = run_aead_available(&mut mover, 8);
         let output = turn.outputs()[0];
         assert_eq!(output.counter, 501);
-        assert_eq!(output.path(), Some(path_b));
+        assert_eq!(output.path.clone(), Some(path_b));
         assert_eq!(open_sealed_output(output, seal_key), b"out-b");
     }
 
@@ -966,8 +971,8 @@
                     1,
                     5,
                     PacketClass::Bulk,
-                    OutputTarget::Tun,
-                    b"stale".to_vec(),
+                    OutputTarget::Transport,
+                    PacketBuffer::new(b"stale".to_vec()),
                 )
                 .with_source_path(stale_path),
             )
@@ -992,7 +997,7 @@
 
         mover
             .submit_socket_packet(
-                packet(owner, 1, 1, PacketClass::Bulk, OutputTarget::Tun)
+                packet(owner, 1, 1, PacketClass::Bulk, OutputTarget::Transport)
                     .with_activity_tick(ActivityTick::new(10)),
             )
             .unwrap();
@@ -1004,7 +1009,7 @@
 
         mover
             .submit_socket_packet(
-                packet(owner, 1, 1, PacketClass::Bulk, OutputTarget::Tun)
+                packet(owner, 1, 1, PacketClass::Bulk, OutputTarget::Transport)
                     .with_activity_tick(ActivityTick::new(20)),
             )
             .unwrap();
@@ -1016,7 +1021,7 @@
 
         mover
             .submit_socket_packet(
-                packet(owner, 0, 2, PacketClass::Bulk, OutputTarget::Tun)
+                packet(owner, 0, 2, PacketClass::Bulk, OutputTarget::Transport)
                     .with_activity_tick(ActivityTick::new(30)),
             )
             .unwrap();
@@ -1106,7 +1111,7 @@
             .unwrap()
             .set_fsp_wrap_route(Some(wrap));
 
-        let outbound = OutboundPacket::fsp(owner, 1, PacketClass::Bulk, 0, b"payload".to_vec())
+        let outbound = OutboundPacket::fsp(owner, 1, PacketClass::Bulk, 0, PacketBuffer::new(b"payload".to_vec()))
             .with_fsp_inner_header(crate::protocol::SessionMessageType::EndpointData.to_byte(), 0)
             .with_activity_tick(ActivityTick::new(100));
         mover.submit_outbound_packet(outbound).unwrap();
@@ -1130,13 +1135,15 @@
 
         assert!(mover
             .record_authenticated_fsp_session(
-                owner,
+                DataplaneAuthenticatedFspSession::new(
+                owner.node_addr(),
                 owner.node_addr(),
                 crate::protocol::SessionMessageType::EndpointData.to_byte(),
                 11,
                 sync(1, 11),
                 Some(ActivityTick::new(110)),
                 std::time::Instant::now(),
+                ),
             )
             .is_some());
         let activity = mover.owner_fsp_activity(owner).unwrap();
@@ -1146,13 +1153,15 @@
 
         assert!(mover
             .record_authenticated_fsp_session(
-                owner,
+                DataplaneAuthenticatedFspSession::new(
+                owner.node_addr(),
                 next_hop.node_addr(),
                 crate::protocol::SessionMessageType::EndpointData.to_byte(),
                 13,
                 sync(2, 13),
                 Some(ActivityTick::new(120)),
                 std::time::Instant::now(),
+                ),
             )
             .is_some());
         let activity = mover.owner_fsp_activity(owner).unwrap();
@@ -1172,13 +1181,15 @@
         let other_previous_hop = test_node_addr(179);
         assert!(mover
             .record_authenticated_fsp_session(
-                owner,
+                DataplaneAuthenticatedFspSession::new(
+                owner.node_addr(),
                 other_previous_hop,
                 crate::protocol::SessionMessageType::SenderReport.to_byte(),
                 17,
                 sync(3, 17),
                 Some(ActivityTick::new(130)),
                 std::time::Instant::now(),
+                ),
             )
             .is_some());
         let activity = mover.owner_fsp_activity(owner).unwrap();
@@ -1213,7 +1224,7 @@
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(80), test_key(81)));
 
-        let outbound = OutboundPacket::fsp(owner, 1, PacketClass::Mmp, 0, b"sender".to_vec())
+        let outbound = OutboundPacket::fsp(owner, 1, PacketClass::Mmp, 0, PacketBuffer::new(b"sender".to_vec()))
             .with_fsp_inner_header(crate::protocol::SessionMessageType::SenderReport.to_byte(), 0)
             .with_activity_tick(ActivityTick::new(1_020));
         mover.submit_outbound_packet(outbound).unwrap();
@@ -1230,13 +1241,15 @@
         };
         assert_eq!(
             mover.record_authenticated_fsp_session(
-                owner,
+                DataplaneAuthenticatedFspSession::new(
+                owner.node_addr(),
                 owner.node_addr(),
                 crate::protocol::SessionMessageType::EndpointData.to_byte(),
                 5,
                 sync,
                 Some(ActivityTick::new(1_030)),
                 std::time::Instant::now(),
+                ),
             ),
             Some(true)
         );
@@ -1295,25 +1308,29 @@
 
         assert_eq!(
             mover.record_authenticated_fsp_session(
-                owner,
+                DataplaneAuthenticatedFspSession::new(
+                owner.node_addr(),
                 owner.node_addr(),
                 crate::protocol::SessionMessageType::EndpointData.to_byte(),
                 0,
                 sync,
                 Some(ActivityTick::new(1_010)),
                 std::time::Instant::now(),
+                ),
             ),
             Some(true)
         );
         assert_eq!(
             mover.record_authenticated_fsp_session(
-                owner,
+                DataplaneAuthenticatedFspSession::new(
+                owner.node_addr(),
                 owner.node_addr(),
                 crate::protocol::SessionMessageType::EndpointData.to_byte(),
                 0,
                 FspReceiveSync { counter: 2, ..sync },
                 Some(ActivityTick::new(1_020)),
                 std::time::Instant::now(),
+                ),
             ),
             Some(false)
         );
@@ -1321,13 +1338,15 @@
         mover.owner_mut(owner).unwrap().rekey(2);
         assert_eq!(
             mover.record_authenticated_fsp_session(
-                owner,
+                DataplaneAuthenticatedFspSession::new(
+                owner.node_addr(),
                 owner.node_addr(),
                 crate::protocol::SessionMessageType::EndpointData.to_byte(),
                 0,
                 FspReceiveSync { counter: 3, ..sync },
                 Some(ActivityTick::new(1_030)),
                 std::time::Instant::now(),
+                ),
             ),
             Some(true)
         );
@@ -1357,13 +1376,16 @@
                 1,
                 10,
                 PacketClass::Bulk,
-                OutputTarget::Tun,
-                fsp_encrypted_wire(10, 0, b"old-before", old_key),
+                OutputTarget::Transport,
+                PacketBuffer::new(fsp_encrypted_wire(10, 0, b"old-before", old_key)),
             ))
             .unwrap();
         let turn = run_aead_available(&mut mover, 8);
         assert!(turn.drops().is_empty());
-        assert_eq!(&turn.outputs()[0].payload[FSP_HEADER_SIZE..], b"old-before");
+        assert_eq!(
+            &turn.outputs()[0].payload.as_slice()[FSP_HEADER_SIZE..],
+            b"old-before"
+        );
 
         assert!(mover.owner_mut(owner).unwrap().install_fsp_session(
             OwnerConfig::new(2, 8)
@@ -1379,8 +1401,8 @@
                 2,
                 11,
                 PacketClass::Bulk,
-                OutputTarget::Tun,
-                fsp_encrypted_wire(11, 0, b"old-after", old_key),
+                OutputTarget::Transport,
+                PacketBuffer::new(fsp_encrypted_wire(11, 0, b"old-after", old_key)),
             ))
             .unwrap();
         let current_epoch_packet = SocketPacket::new(
@@ -1388,13 +1410,13 @@
             2,
             1,
             PacketClass::Bulk,
-            OutputTarget::Tun,
-            fsp_encrypted_wire(
+            OutputTarget::Transport,
+            PacketBuffer::new(fsp_encrypted_wire(
                 1,
                 crate::node::session_wire::FSP_FLAG_K,
                 b"new-after",
                 new_key,
-            ),
+            )),
         )
         .with_wire_flags(crate::node::session_wire::FSP_FLAG_K);
         mover
@@ -1405,8 +1427,8 @@
         assert!(turn.drops().is_empty(), "{:?}", turn.drops());
         let outputs = turn.outputs();
         assert_eq!(outputs.len(), 2);
-        assert_eq!(&outputs[0].payload[FSP_HEADER_SIZE..], b"old-after");
-        assert_eq!(&outputs[1].payload[FSP_HEADER_SIZE..], b"new-after");
+        assert_eq!(&outputs[0].payload.as_slice()[FSP_HEADER_SIZE..], b"old-after");
+        assert_eq!(&outputs[1].payload.as_slice()[FSP_HEADER_SIZE..], b"new-after");
     }
 
     #[test]
@@ -1438,20 +1460,23 @@
                     1,
                     1,
                     PacketClass::Bulk,
-                    OutputTarget::Tun,
-                    fsp_encrypted_wire(
+                    OutputTarget::Transport,
+                    PacketBuffer::new(fsp_encrypted_wire(
                         1,
                         crate::node::session_wire::FSP_FLAG_K,
                         b"pending-new",
                         new_key,
-                    ),
+                    )),
                 )
                 .with_wire_flags(crate::node::session_wire::FSP_FLAG_K),
             )
             .unwrap();
         let turn = run_aead_available(&mut mover, 8);
         assert!(turn.drops().is_empty(), "{:?}", turn.drops());
-        assert_eq!(&turn.outputs()[0].payload[FSP_HEADER_SIZE..], b"pending-new");
+        assert_eq!(
+            &turn.outputs()[0].payload.as_slice()[FSP_HEADER_SIZE..],
+            b"pending-new"
+        );
 
         assert!(mover.owner_mut(owner).unwrap().install_fsp_session(
             OwnerConfig::new(2, 8)
@@ -1467,13 +1492,13 @@
                     2,
                     1,
                     PacketClass::Bulk,
-                    OutputTarget::Tun,
-                    fsp_encrypted_wire(
+                    OutputTarget::Transport,
+                    PacketBuffer::new(fsp_encrypted_wire(
                         1,
                         crate::node::session_wire::FSP_FLAG_K,
                         b"replay",
                         new_key,
-                    ),
+                    )),
                 )
                 .with_wire_flags(crate::node::session_wire::FSP_FLAG_K),
             )
@@ -1514,7 +1539,7 @@
                 fmp_socket_packet(
                     owner,
                     1,
-                    OutputTarget::Tun,
+                    OutputTarget::Transport,
                     fmp_encrypted_wire(
                         receiver_idx,
                         1,
@@ -1529,7 +1554,7 @@
         let turn = run_aead_available(&mut mover, 8);
         assert!(turn.drops().is_empty(), "{:?}", turn.drops());
         assert_eq!(
-            &turn.outputs()[0].payload[FMP_ESTABLISHED_HEADER_SIZE..],
+            &turn.outputs()[0].payload.as_slice()[FMP_ESTABLISHED_HEADER_SIZE..],
             b"pending-new"
         );
 
@@ -1545,7 +1570,7 @@
                 fmp_socket_packet(
                     owner,
                     2,
-                    OutputTarget::Tun,
+                    OutputTarget::Transport,
                     fmp_encrypted_wire(receiver_idx, 1, pending_flags, b"replay", new_key),
                 )
                 .unwrap(),
@@ -1581,13 +1606,15 @@
         };
         assert_eq!(
             mover.record_authenticated_fsp_session(
-                owner,
+                DataplaneAuthenticatedFspSession::new(
+                owner.node_addr(),
                 owner.node_addr(),
                 crate::protocol::SessionMessageType::EndpointData.to_byte(),
                 1200,
                 sync,
                 Some(ActivityTick::new(1_040)),
                 std::time::Instant::now(),
+                ),
             ),
             Some(true)
         );
@@ -1661,7 +1688,7 @@
         let inbound = fmp_socket_packet(
             owner,
             1,
-            OutputTarget::Tun,
+            OutputTarget::Transport,
             fmp_encrypted_wire(78, 100, 0, b"inbound", open_key),
         )
         .unwrap()
@@ -1673,7 +1700,7 @@
             PacketClass::Liveness,
             780,
             0,
-            b"outbound".to_vec(),
+            PacketBuffer::new(b"outbound".to_vec()),
         )
         .with_activity_tick(ActivityTick::new(11));
 
@@ -1697,17 +1724,17 @@
         assert!(turn.drops().is_empty());
 
         let outputs = turn.outputs();
-        assert_eq!(outputs[0].target, OutputTarget::Tun);
+        assert_eq!(outputs[0].target, OutputTarget::Transport);
         assert_eq!(outputs[0].counter, 100);
         assert_eq!(
-            &outputs[0].payload[FMP_ESTABLISHED_HEADER_SIZE..],
+            &outputs[0].payload.as_slice()[FMP_ESTABLISHED_HEADER_SIZE..],
             b"inbound"
         );
-        assert_eq!(outputs[0].path(), None);
+        assert_eq!(outputs[0].path.clone(), None);
 
         assert_eq!(outputs[1].target, OutputTarget::Transport);
         assert_eq!(outputs[1].counter, 300);
-        assert_eq!(outputs[1].path(), Some(path.clone()));
+        assert_eq!(outputs[1].path.clone(), Some(path.clone()));
         assert_eq!(open_sealed_output(&outputs[1], seal_key), b"outbound");
 
         let owner_state = driver.owner_mut(owner).unwrap();
@@ -1729,7 +1756,7 @@
                 fmp_socket_packet(
                     owner,
                     1,
-                    OutputTarget::Tun,
+                    OutputTarget::Transport,
                     fmp_encrypted_wire(80, 100, 0, b"completion-only", open_key),
                 )
                 .unwrap(),
@@ -1765,7 +1792,7 @@
             assert_eq!(turn.outputs().len(), 1);
             assert_eq!(turn.outputs()[0].owner(), owner);
             assert_eq!(turn.outputs()[0].counter(), 100);
-            assert_eq!(turn.outputs()[0].target(), OutputTarget::Tun);
+            assert_eq!(turn.outputs()[0].target(), OutputTarget::Transport);
             assert_eq!(
                 &turn.outputs()[0].payload()[FMP_ESTABLISHED_HEADER_SIZE..],
                 b"completion-only"
@@ -1790,7 +1817,7 @@
                     fmp_socket_packet(
                         owner,
                         1,
-                        OutputTarget::Tun,
+                        OutputTarget::Transport,
                         fmp_encrypted_wire(84, counter, 0, payload, open_key),
                     )
                     .unwrap(),
@@ -1815,16 +1842,19 @@
         let mut completion_source = VecDeque::from([third]);
 
         {
-            let turn = pump_aead_output_completion_turn(&mut driver,
-                &mut completion_source,
-                8,
-                &mut raw_ingress,
-                &mut NullIngressRouter,
-                0,
-                &mut outbound,
-                0,
-                &mut sink,
-                8,
+            let turn = pump_aead_output_completion_turn(
+                &mut driver,
+                AeadOutputCompletionTurn {
+                    completions: &mut completion_source,
+                    completion_limit: 8,
+                    raw_ingress: &mut raw_ingress,
+                    router: &mut NullIngressRouter,
+                    raw_ingress_limit: 0,
+                    outbound: &mut outbound,
+                    outbound_limit: 0,
+                    sink: &mut sink,
+                    crypto_limit: 8,
+                },
             );
             assert_eq!(turn.summary().completions(), 1);
             assert_eq!(turn.summary().dispatched(), 0);
@@ -1839,16 +1869,19 @@
 
         completion_source.extend([first, second]);
         {
-            let turn = pump_aead_output_completion_turn(&mut driver,
-                &mut completion_source,
-                8,
-                &mut raw_ingress,
-                &mut NullIngressRouter,
-                0,
-                &mut outbound,
-                0,
-                &mut sink,
-                8,
+            let turn = pump_aead_output_completion_turn(
+                &mut driver,
+                AeadOutputCompletionTurn {
+                    completions: &mut completion_source,
+                    completion_limit: 8,
+                    raw_ingress: &mut raw_ingress,
+                    router: &mut NullIngressRouter,
+                    raw_ingress_limit: 0,
+                    outbound: &mut outbound,
+                    outbound_limit: 0,
+                    sink: &mut sink,
+                    crypto_limit: 8,
+                },
             );
             assert_eq!(turn.summary().completions(), 2);
             assert_eq!(turn.summary().outputs(), 3);
@@ -2003,7 +2036,12 @@
                         917 + idx as u64,
                         PacketClass::Bulk,
                         OutputTarget::SessionPayload { local_addr },
-                        fsp_encrypted_wire(917 + idx as u64, 0, inner.as_slice(), key),
+                        PacketBuffer::new(fsp_encrypted_wire(
+                            917 + idx as u64,
+                            0,
+                            inner.as_slice(),
+                            key,
+                        )),
                     )
                     .with_previous_hop(previous_hop)
                     .with_activity_tick(ActivityTick::new(917_010 + idx as u64)),
@@ -2013,28 +2051,24 @@
 
         let mut executor = InlineDataplaneCryptoExecutor;
         let mut router = NullIngressRouter;
+        let mut deferred_raw_ingress = std::collections::VecDeque::new();
         let summary = driver.collect_live_session_outputs_with_executor(
             DataplaneRuntimeSummary::default(),
             &mut router,
             8,
             &mut executor,
             true,
+            &mut deferred_raw_ingress,
         );
 
         assert_eq!(summary.outputs(), 0);
-        assert_eq!(driver.fsp_authenticated_ingress.len(), 3);
-        assert!(matches!(
-            driver.fsp_authenticated_ingress[0],
-            DataplaneFspAuthenticatedIngress::EndpointDataBatch(_)
-        ));
-        assert!(matches!(
-            driver.fsp_authenticated_ingress[1],
-            DataplaneFspAuthenticatedIngress::Session(_)
-        ));
-        assert!(matches!(
-            driver.fsp_authenticated_ingress[2],
-            DataplaneFspAuthenticatedIngress::Session(_)
-        ));
+        assert_eq!(
+            driver.fsp_authenticated_ingress.runs,
+            vec![
+                DataplaneFspAuthenticatedIngressRun::EndpointDataBatch,
+                DataplaneFspAuthenticatedIngressRun::Sessions { count: 2 }
+            ]
+        );
     }
 
     #[test]
@@ -2064,13 +2098,15 @@
         for (offset, payload) in endpoint_payloads.into_iter().enumerate() {
             submit_endpoint_data_payload(
                 &mut driver.mover,
-                owner,
-                915 + offset as u64,
-                915_001 + offset as u32,
-                key,
-                previous_hop,
-                local_addr,
-                payload,
+                EndpointDataSubmit {
+                    owner,
+                    counter: 915 + offset as u64,
+                    timestamp: 915_001 + offset as u32,
+                    key,
+                    previous_hop,
+                    local_addr,
+                    payload,
+                },
             );
         }
 
@@ -2080,9 +2116,8 @@
             .drain(..)
             .map(PreparedCryptoWork::execute)
             .collect::<VecDeque<_>>();
-        let summary = driver.start_aead_completion_turn(&mut completions, 8, true);
+        let _summary = driver.start_aead_completion_turn(&mut completions, 8, true);
 
-        assert!(driver.completion_activity_is_compact_endpoint_data_only(summary));
         let endpoint_batches = driver_endpoint_batches(&driver);
         assert_eq!(endpoint_batches.len(), 1);
         assert_eq!(
@@ -2099,12 +2134,11 @@
             .map(DataplaneEndpointDataBatch::into_direct_packet_batch)
             .collect::<Vec<_>>();
         assert_eq!(batches.len(), 1);
-        assert_eq!(batches[0].len(), 3);
-        let runs = batches[0].packet_runs();
+        let batch = batches.pop().expect("direct packet batch");
+        let mut runs = batch.into_packet_runs();
         assert_eq!(runs.len(), 1);
+        assert_eq!(runs.iter().map(|run| run.len()).sum::<usize>(), 3);
         assert_eq!(runs[0].source_peer(), &source_peer);
-        assert_eq!(runs[0].previous_hop_node_addr(), &previous_hop);
-        assert!(!runs[0].is_direct_path());
         assert_eq!(runs[0].len(), 3);
         assert_eq!(
             runs[0].packet_bytes(),
@@ -2126,16 +2160,13 @@
                 b"compact-three".to_vec()
             ]
         );
-        let runs_mut = batches[0].packet_runs_mut();
-        runs_mut[0].packet_slice_mut(1).unwrap()[0] = b'C';
-        assert_eq!(runs_mut[0].packet_slice(1), Some(b"Compact-two".as_slice()));
-        runs_mut[0].retain_packets(|index, _packet| index != 1);
-        assert_eq!(runs_mut[0].len(), 2);
+        runs[0].retain_packets(|index, _packet| index != 1);
+        assert_eq!(runs[0].len(), 2);
         assert_eq!(
-            runs_mut[0].packet_bytes(),
+            runs[0].packet_bytes(),
             b"compact-one".len() + b"compact-three".len()
         );
-        let retained = runs_mut[0]
+        let retained = runs[0]
             .packet_slices()
             .map(<[u8]>::to_vec)
             .collect::<Vec<_>>();
@@ -2144,6 +2175,76 @@
             vec![b"compact-one".to_vec(), b"compact-three".to_vec()]
         );
         assert!(driver.outputs.is_empty());
+    }
+
+    #[test]
+    fn session_ingress_raw_handoff_defers_unrouted_fsp() {
+        let source_addr = test_node_addr(918);
+        let local_addr = test_node_addr(919);
+        let previous_hop = test_node_addr(920);
+        let fmp_owner = OwnerId::fmp_node(previous_hop);
+        let fsp_wire = fsp_encrypted_wire(919, 0, b"defer-until-route", 0x94);
+        let datagram = crate::protocol::SessionDatagram::new(
+            source_addr,
+            local_addr,
+            fsp_wire.clone(),
+        )
+        .with_ttl(8)
+        .with_path_mtu(1280)
+        .encode();
+        let mut fmp_plaintext = 919_001_u32.to_le_bytes().to_vec();
+        fmp_plaintext.extend_from_slice(&datagram);
+        let mut payload = fmp_wire(920, 921, crate::node::wire::FLAG_CE);
+        payload.truncate(FMP_ESTABLISHED_HEADER_SIZE);
+        payload.extend_from_slice(&fmp_plaintext);
+
+        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
+        driver.outputs.push(PacketOutput {
+            owner: fmp_owner,
+            counter: 921,
+            ingress_seq: 0,
+            lane: Lane::Bulk,
+            target: OutputTarget::SessionIngress { local_addr },
+            source_path: Some(live_path(9200)),
+            previous_hop: None,
+            ce_flag: false,
+            path_mtu: u16::MAX,
+            source_peer: None,
+            path: None,
+            activity_tick: Some(ActivityTick::new(919_002)),
+            fmp_timestamp_ms: Some(919_001),
+            source_wire_len: Some(payload.len()),
+            fsp_send_receipt: None,
+            payload: PacketBuffer::new(payload),
+        });
+
+        let mut routes = DataplaneLiveRouteTable::default();
+        let mut executor = InlineDataplaneCryptoExecutor;
+        let mut deferred_raw_ingress = std::collections::VecDeque::new();
+        let summary = driver.collect_live_session_outputs_with_executor(
+            DataplaneRuntimeSummary::default(),
+            &mut routes,
+            0,
+            &mut executor,
+            false,
+            &mut deferred_raw_ingress,
+        );
+
+        assert_eq!(summary.raw_ingress_dropped(), 0);
+        assert_eq!(summary.inbound_admitted(), 0);
+        assert!(driver.raw_ingress_drops.is_empty());
+        let (raw, retry_count) = deferred_raw_ingress
+            .pop_front()
+            .expect("unrouted sourced FSP packet should defer");
+        assert!(deferred_raw_ingress.is_empty());
+        assert_eq!(retry_count, 2);
+        assert_eq!(raw.protocol, PacketProtocol::Fsp);
+        assert_eq!(raw.fsp_source, Some(source_addr));
+        assert_eq!(raw.previous_hop, Some(previous_hop));
+        assert!(raw.ce_flag);
+        assert_eq!(raw.path_mtu, 1280);
+        assert_eq!(raw.activity_tick, Some(ActivityTick::new(919_002)));
+        assert_eq!(raw.payload.as_slice(), fsp_wire.as_slice());
     }
 
     #[test]
@@ -2171,13 +2272,15 @@
         {
             submit_endpoint_data_payload(
                 &mut driver.mover,
-                owner,
-                916 + offset as u64,
-                916_001 + offset as u32,
-                key,
-                previous_hop,
-                local_addr,
-                payload,
+                EndpointDataSubmit {
+                    owner,
+                    counter: 916 + offset as u64,
+                    timestamp: 916_001 + offset as u32,
+                    key,
+                    previous_hop,
+                    local_addr,
+                    payload,
+                },
             );
         }
 
@@ -2187,21 +2290,20 @@
             .drain(..)
             .map(PreparedCryptoWork::execute)
             .collect::<VecDeque<_>>();
-        let summary = driver.start_aead_completion_turn(&mut completions, 8, true);
+        let _summary = driver.start_aead_completion_turn(&mut completions, 8, true);
 
-        assert!(driver.completion_activity_is_compact_endpoint_data_only(summary));
         let endpoint_batches = driver_endpoint_batches(&driver);
         assert_eq!(endpoint_batches.len(), 1);
         assert_eq!(endpoint_batches[0].len(), 2);
-        assert_eq!(endpoint_batches[0].direct_packet_run_count(), 1);
+        assert_eq!(endpoint_batches[0].packet_count(), 2);
 
         let delivered = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let captured = std::sync::Arc::clone(&delivered);
         let direct_sink = EndpointDirectSink::new(move |batch: crate::FipsEndpointDirectPacketBatch| {
             let packets = batch
-                .packet_runs()
-                .iter()
-                .flat_map(|run| run.packet_slices().map(<[u8]>::to_vec))
+                .into_packet_runs()
+                .into_iter()
+                .flat_map(|run| run.packet_slices().map(<[u8]>::to_vec).collect::<Vec<_>>())
                 .collect::<Vec<_>>();
             captured.lock().expect("direct batches lock").push(packets);
             Ok::<(), crate::FipsEndpointDirectDeliveryError>(())
@@ -2218,12 +2320,13 @@
         assert_eq!(endpoint_batches[0].len(), 2);
         assert_eq!(endpoint_batches[0].commit_runs().len(), 1);
         assert_eq!(endpoint_batches[0].commit_runs()[0].len(), 2);
-        assert_eq!(endpoint_batches[0].direct_packet_run_count(), 0);
+        assert_eq!(endpoint_batches[0].packet_count(), 0);
         assert_eq!(
             take_driver_endpoint_batches(&mut driver)
                 .pop()
                 .expect("commit batch")
                 .into_direct_packet_batch()
+                .into_packet_runs()
                 .len(),
             0
         );
@@ -2258,13 +2361,15 @@
         for (counter, payload) in endpoint_payloads.into_iter().enumerate() {
             submit_endpoint_data_payload(
                 &mut driver.mover,
-                owner,
-                counter as u64,
-                917_001 + counter as u32,
-                key,
-                previous_hop,
-                local_addr,
-                payload,
+                EndpointDataSubmit {
+                    owner,
+                    counter: counter as u64,
+                    timestamp: 917_001 + counter as u32,
+                    key,
+                    previous_hop,
+                    local_addr,
+                    payload,
+                },
             );
         }
 
@@ -2276,7 +2381,6 @@
             .collect::<VecDeque<_>>();
         let summary = driver.start_aead_completion_turn(&mut completions, 8, true);
 
-        assert!(driver.completion_activity_is_compact_endpoint_data_only(summary));
         assert_eq!(summary.completions(), 5);
         assert_eq!(summary.outputs(), 0);
         let endpoint_batches = driver_endpoint_batches(&driver);
@@ -2284,7 +2388,7 @@
         assert_eq!(endpoint_batches[0].len(), 5);
         assert_eq!(endpoint_batches[0].commit_runs().len(), 1);
         assert_eq!(endpoint_batches[0].commit_runs()[0].len(), 5);
-        assert_eq!(endpoint_batches[0].direct_packet_run_count(), 1);
+        assert_eq!(endpoint_batches[0].packet_count(), 5);
         assert!(driver.outputs.is_empty());
 
         let mut batches = take_driver_endpoint_batches(&mut driver)
@@ -2292,11 +2396,11 @@
             .map(DataplaneEndpointDataBatch::into_direct_packet_batch)
             .collect::<Vec<_>>();
         assert_eq!(batches.len(), 1);
-        assert_eq!(batches[0].len(), 5);
-        assert_eq!(batches[0].run_count(), 1);
-        let runs = batches[0].packet_runs();
+        let batch = batches.pop().expect("direct packet batch");
+        let mut runs = batch.into_packet_runs();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs.iter().map(|run| run.len()).sum::<usize>(), 5);
         assert_eq!(runs[0].source_peer(), &source_peer);
-        assert_eq!(runs[0].previous_hop_node_addr(), &previous_hop);
         assert_eq!(runs[0].len(), 5);
         let packets = runs[0]
             .packet_slices()
@@ -2312,16 +2416,13 @@
                 b"run-two-c".to_vec(),
             ]
         );
-        let runs_mut = batches[0].packet_runs_mut();
-        runs_mut[0].packet_slice_mut(3).unwrap()[0] = b'R';
-        assert_eq!(runs_mut[0].packet_slice(3), Some(b"Run-two-b".as_slice()));
-        runs_mut[0].retain_packets(|index, _packet| index >= 2);
-        assert_eq!(runs_mut[0].len(), 3);
+        runs[0].retain_packets(|index, _packet| index >= 2);
+        assert_eq!(runs[0].len(), 3);
         assert_eq!(
-            runs_mut[0].packet_bytes(),
-            b"run-two-a".len() + b"Run-two-b".len() + b"run-two-c".len()
+            runs[0].packet_bytes(),
+            b"run-two-a".len() + b"run-two-b".len() + b"run-two-c".len()
         );
-        let retained = runs_mut[0]
+        let retained = runs[0]
             .packet_slices()
             .map(<[u8]>::to_vec)
             .collect::<Vec<_>>();
@@ -2329,7 +2430,7 @@
             retained,
             vec![
                 b"run-two-a".to_vec(),
-                b"Run-two-b".to_vec(),
+                b"run-two-b".to_vec(),
                 b"run-two-c".to_vec()
             ]
         );
@@ -2350,7 +2451,7 @@
                     fmp_socket_packet(
                         owner,
                         1,
-                        OutputTarget::Tun,
+                        OutputTarget::Transport,
                         fmp_encrypted_wire(81, counter, 0, payload, open_key),
                     )
                     .unwrap(),
@@ -2605,7 +2706,7 @@
                 fmp_socket_packet(
                     owner,
                     1,
-                    OutputTarget::Tun,
+                    OutputTarget::Transport,
                     fmp_encrypted_wire(82, 100, 0, b"stale", open_key),
                 )
                 .unwrap(),
@@ -2621,7 +2722,7 @@
                 fmp_socket_packet(
                     owner,
                     2,
-                    OutputTarget::Tun,
+                    OutputTarget::Transport,
                     fmp_encrypted_wire(82, 101, 0, b"new", open_key),
                 )
                 .unwrap(),
@@ -2693,7 +2794,7 @@
                 PacketClass::Bulk,
                 830,
                 0,
-                b"bulk-1".to_vec(),
+                PacketBuffer::new(b"bulk-1".to_vec()),
             ))
             .unwrap();
         let mut seal_work = dispatch_outbound_available(&mut driver.mover, 1);
@@ -2708,7 +2809,7 @@
                 PacketClass::Bulk,
                 830,
                 0,
-                b"bulk-2".to_vec(),
+                PacketBuffer::new(b"bulk-2".to_vec()),
             ))
             .unwrap();
         driver
@@ -2719,7 +2820,7 @@
                 PacketClass::Liveness,
                 830,
                 0,
-                b"priority".to_vec(),
+                PacketBuffer::new(b"priority".to_vec()),
             ))
             .unwrap();
 
@@ -2733,11 +2834,11 @@
             assert!(turn.drops().is_empty());
             assert_eq!(turn.outputs()[0].counter(), 10);
             assert_eq!(turn.outputs()[0].target(), OutputTarget::Transport);
-            assert_eq!(turn.outputs()[0].path(), Some(path.clone()));
+            assert_eq!(turn.outputs()[0].path.clone(), Some(path.clone()));
             assert_eq!(open_sealed_output(&turn.outputs()[0], seal_key), b"bulk-1");
             assert_eq!(turn.outputs()[1].counter(), 11);
             assert_eq!(turn.outputs()[1].target(), OutputTarget::Transport);
-            assert_eq!(turn.outputs()[1].path(), Some(path));
+            assert_eq!(turn.outputs()[1].path.clone(), Some(path));
             assert_eq!(
                 open_sealed_output(&turn.outputs()[1], seal_key),
                 b"priority"
@@ -2785,7 +2886,7 @@
             1,
             PacketClass::Liveness,
             0x03,
-            b"wake-wrap".to_vec(),
+            PacketBuffer::new(b"wake-wrap".to_vec()),
         )
         .with_fsp_cleartext_prefix(empty_fsp_coords_prefix());
 
@@ -2808,7 +2909,7 @@
             assert_eq!(output.owner(), fmp_owner);
             assert_eq!(output.counter(), 70);
             assert_eq!(output.target(), OutputTarget::Transport);
-            assert_eq!(output.path(), Some(fmp_path));
+            assert_eq!(output.path.clone(), Some(fmp_path));
 
             let fmp_plaintext = open_sealed_output(output, fmp_key);
             assert_eq!(
@@ -2878,7 +2979,7 @@
             1,
             PacketClass::Liveness,
             0x03,
-            b"wake-wrap".to_vec(),
+            PacketBuffer::new(b"wake-wrap".to_vec()),
         )
         .with_fsp_cleartext_prefix(empty_fsp_coords_prefix());
 
@@ -2909,7 +3010,7 @@
         let output = &turn.outputs()[0];
         assert_eq!(output.owner(), fmp_owner);
         assert_eq!(output.counter(), 0);
-        assert_eq!(output.path(), Some(fmp_path));
+        assert_eq!(output.path.clone(), Some(fmp_path));
         let header = FmpWireHeader::parse(output.payload()).unwrap();
         assert_eq!(header.receiver_idx(), 9292);
         assert_eq!(header.flags(), crate::node::wire::FLAG_KEY_EPOCH);
@@ -2957,7 +3058,7 @@
             1,
             PacketClass::Bulk,
             0x03,
-            b"failed-wrap".to_vec(),
+            PacketBuffer::new(b"failed-wrap".to_vec()),
         )
         .with_fsp_cleartext_prefix(empty_fsp_coords_prefix());
 
@@ -2990,14 +3091,14 @@
         let first = fsp_socket_packet(
             owner,
             1,
-            OutputTarget::Tun,
+            OutputTarget::Transport,
             fsp_encrypted_wire(10, 0, b"first", 40),
         )
         .unwrap();
         let second = fsp_socket_packet(
             owner,
             1,
-            OutputTarget::Tun,
+            OutputTarget::Transport,
             fsp_encrypted_wire(11, 0, b"second", 40),
         )
         .unwrap();
@@ -3041,18 +3142,18 @@
             packet: &DataplaneRawIngress,
             header: DataplaneIngressHeader,
         ) -> Option<DataplaneIngressRoute> {
-            assert_eq!(packet.transport_id(), TransportId::new(5));
+            assert_eq!(packet.transport_id, TransportId::new(5));
             assert_eq!(
-                packet.remote_addr(),
-                &TransportAddr::from_string("198.51.100.9:9000")
+                packet.remote_addr,
+                TransportAddr::from_string("198.51.100.9:9000")
             );
-            assert_eq!(packet.path(), live_path(9005));
-            assert_eq!(packet.activity_tick(), Some(ActivityTick::new(123_456)));
+            assert_eq!(packet.path, live_path(9005));
+            assert_eq!(packet.activity_tick, Some(ActivityTick::new(123_456)));
             assert_eq!(
-                packet.payload_len(),
+                packet.payload.len(),
                 FMP_ESTABLISHED_HEADER_SIZE + b"raw-in".len() + AEAD_TAG_SIZE
             );
-            assert_eq!(packet.protocol(), PacketProtocol::Fmp);
+            assert_eq!(packet.protocol, PacketProtocol::Fmp);
             assert!(matches!(header, DataplaneIngressHeader::Fmp(_)));
             assert_eq!(header.counter(), 1200);
             self.route
@@ -3092,61 +3193,6 @@
             }
             assert_eq!(drops.len(), drops_before);
             sent
-        }
-    }
-
-    #[derive(Clone, Debug, Eq, PartialEq)]
-    struct LiveOutputRecord {
-        owner: OwnerId,
-        counter: u64,
-        ingress_seq: u64,
-        payload: Vec<u8>,
-    }
-
-    impl LiveOutputRecord {
-        fn from_opened(output: &PacketOutput, payload: &[u8]) -> Self {
-            Self {
-                owner: output.owner(),
-                counter: output.counter(),
-                ingress_seq: output.ingress_seq,
-                payload: payload.to_vec(),
-            }
-        }
-    }
-
-    #[derive(Default)]
-    struct LiveTunRecorder {
-        outputs: Vec<LiveOutputRecord>,
-    }
-
-    impl DataplaneTunOutput for LiveTunRecorder {
-        fn send_tun(
-            &mut self,
-            output: &PacketOutput,
-            payload: PacketBuffer,
-        ) -> Result<(), DataplaneOutputError> {
-            let payload = payload.into_vec();
-            self.outputs
-                .push(LiveOutputRecord::from_opened(output, &payload));
-            Ok(())
-        }
-    }
-
-    #[derive(Default)]
-    struct LiveEndpointRecorder {
-        outputs: Vec<LiveOutputRecord>,
-    }
-
-    impl DataplaneEndpointOutput for LiveEndpointRecorder {
-        fn send_endpoint(
-            &mut self,
-            output: &PacketOutput,
-            payload: PacketBuffer,
-        ) -> Result<(), DataplaneOutputError> {
-            let payload = payload.into_vec();
-            self.outputs
-                .push(LiveOutputRecord::from_opened(output, &payload));
-            Ok(())
         }
     }
 

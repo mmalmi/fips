@@ -159,7 +159,7 @@ async fn test_send_recv() {
         .expect("timeout")
         .expect("channel closed");
 
-    assert_eq!(packet.data, frame);
+    assert_eq!(packet.data.as_slice(), frame.as_slice());
 
     t1.stop_async().await.unwrap();
     t2.stop_async().await.unwrap();
@@ -243,7 +243,7 @@ async fn outbound_pool_entry_does_not_consume_inbound_budget() {
         .await
         .expect("inbound frame should be admitted despite outbound pool entry")
         .expect("subject packet channel should stay open");
-    assert_eq!(packet.data, inbound_frame);
+    assert_eq!(packet.data.as_slice(), inbound_frame.as_slice());
 
     subject.stop_async().await.unwrap();
     dest.stop_async().await.unwrap();
@@ -278,7 +278,7 @@ async fn test_bidirectional() {
         .await
         .expect("timeout")
         .expect("channel closed");
-    assert_eq!(packet.data, msg1_frame);
+    assert_eq!(packet.data.as_slice(), msg1_frame.as_slice());
 
     // Build valid FMP msg2 frame (69 bytes)
     let mut msg2_frame = vec![0xBB; 69];
@@ -295,7 +295,7 @@ async fn test_bidirectional() {
         .await
         .expect("timeout")
         .expect("channel closed");
-    assert_eq!(packet.data, msg2_frame);
+    assert_eq!(packet.data.as_slice(), msg2_frame.as_slice());
 
     t1.stop_async().await.unwrap();
     t2.stop_async().await.unwrap();
@@ -460,7 +460,7 @@ async fn test_connection_drop_and_reconnect() {
         .await
         .expect("timeout")
         .expect("channel closed");
-    assert_eq!(packet.data, msg1);
+    assert_eq!(packet.data.as_slice(), msg1.as_slice());
 
     t1.stop_async().await.unwrap();
     t2.stop_async().await.unwrap();
@@ -609,7 +609,7 @@ async fn test_connect_async_then_send_recv() {
         .await
         .expect("timeout")
         .expect("channel closed");
-    assert_eq!(packet.data, msg1);
+    assert_eq!(packet.data.as_slice(), msg1.as_slice());
 
     t1.stop_async().await.unwrap();
     t2.stop_async().await.unwrap();
@@ -659,7 +659,7 @@ async fn test_connect_ip_string() {
         .expect("timeout")
         .expect("channel closed");
 
-    assert_eq!(packet.data, frame);
+    assert_eq!(packet.data.as_slice(), frame.as_slice());
 
     t1.stop_async().await.unwrap();
     t2.stop_async().await.unwrap();

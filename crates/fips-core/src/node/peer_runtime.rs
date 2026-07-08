@@ -62,6 +62,18 @@ pub(in crate::node) struct ReplacedActivePeerCurrentSession {
     pub(in crate::node) replay_suppressed_count: u32,
 }
 
+pub(in crate::node) struct ActivePeerCurrentSessionReplacement<'a> {
+    pub(in crate::node) session: crate::noise::NoiseSession,
+    pub(in crate::node) our_index: SessionIndex,
+    pub(in crate::node) their_index: SessionIndex,
+    pub(in crate::node) link_id: LinkId,
+    pub(in crate::node) transport_id: TransportId,
+    pub(in crate::node) addr: &'a TransportAddr,
+    pub(in crate::node) is_initiator: bool,
+    pub(in crate::node) remote_epoch_update: Option<[u8; 8]>,
+    pub(in crate::node) connected_at_ms: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::node) struct AuthenticatedFmpReceiveBookkeeping {
     pub(in crate::node) address_changed: bool,
@@ -100,26 +112,18 @@ pub(in crate::node) struct LocalSessionPayload<'a> {
 }
 
 impl<'a> AuthenticatedFmpReceiveFacts<'a> {
-    #[allow(clippy::too_many_arguments)]
-    pub(in crate::node) fn new(
-        source_peer: PeerIdentity,
-        transport_id: TransportId,
-        remote_addr: &'a TransportAddr,
-        packet_timestamp_ms: u64,
-        packet_len: usize,
-        fmp_counter: u64,
-        inner_timestamp_ms: u32,
-        fmp_flags: u8,
+    pub(in crate::node) fn from_dataplane_receipt(
+        receipt: &'a crate::dataplane::DataplaneFmpIngressReceipt,
     ) -> Self {
         Self {
-            source_peer,
-            transport_id,
-            remote_addr,
-            packet_timestamp_ms,
-            packet_len,
-            fmp_counter,
-            inner_timestamp_ms,
-            fmp_flags,
+            source_peer: receipt.source_peer(),
+            transport_id: receipt.transport_id(),
+            remote_addr: receipt.remote_addr(),
+            packet_timestamp_ms: receipt.packet_timestamp_ms(),
+            packet_len: receipt.packet_len(),
+            fmp_counter: receipt.fmp_counter(),
+            inner_timestamp_ms: receipt.inner_timestamp_ms(),
+            fmp_flags: receipt.fmp_flags(),
         }
     }
 

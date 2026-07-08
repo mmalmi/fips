@@ -18,7 +18,7 @@ fn runtime_pump_output_turn_drains_bounded_sources_without_vec_staging() {
             ReceivedPacket::with_timestamp(
                 TransportId::new(6),
                 TransportAddr::from_string("198.51.100.10:9000"),
-                fmp_encrypted_wire(86, 1300, 0, b"raw-a", open_key),
+                PacketBuffer::new(fmp_encrypted_wire(86, 1300, 0, b"raw-a", open_key)),
                 1,
             ),
         ),
@@ -28,37 +28,39 @@ fn runtime_pump_output_turn_drains_bounded_sources_without_vec_staging() {
             ReceivedPacket::with_timestamp(
                 TransportId::new(6),
                 TransportAddr::from_string("198.51.100.10:9000"),
-                fmp_encrypted_wire(86, 1301, 0, b"raw-b", open_key),
+                PacketBuffer::new(fmp_encrypted_wire(86, 1301, 0, b"raw-b", open_key)),
                 2,
             ),
         ),
     ]);
 
     let mut outbound_source = VecDeque::from([
-        OutboundPacket::fmp(owner, 3, PacketClass::Bulk, 860, 0, b"out-a".to_vec()),
-        OutboundPacket::fmp(owner, 3, PacketClass::Bulk, 860, 0, b"out-b".to_vec()),
+        OutboundPacket::fmp(owner, 3, PacketClass::Bulk, 860, 0, PacketBuffer::new(b"out-a".to_vec())),
+        OutboundPacket::fmp(owner, 3, PacketClass::Bulk, 860, 0, PacketBuffer::new(b"out-b".to_vec())),
     ]);
 
     let mut router = SimpleIngressRouter {
         owner,
         generation: 3,
         class: PacketClass::Liveness,
-        output: OutputTarget::Tun,
+        output: OutputTarget::Transport,
     };
     let mut sink = BatchRecordingOutputSink::default();
     let mut completions = VecDeque::<CryptoCompletion>::new();
 
     let first = pump_aead_output_completion_turn(
         &mut driver,
-        &mut completions,
-        0,
-        &mut raw_source,
-        &mut router,
-        1,
-        &mut outbound_source,
-        1,
-        &mut sink,
-        8,
+        AeadOutputCompletionTurn {
+            completions: &mut completions,
+            completion_limit: 0,
+            raw_ingress: &mut raw_source,
+            router: &mut router,
+            raw_ingress_limit: 1,
+            outbound: &mut outbound_source,
+            outbound_limit: 1,
+            sink: &mut sink,
+            crypto_limit: 8,
+        },
     );
     assert_eq!(first.summary().raw_ingress_dropped(), 0);
     assert_eq!(first.summary().inbound_admitted(), 1);
@@ -74,15 +76,17 @@ fn runtime_pump_output_turn_drains_bounded_sources_without_vec_staging() {
 
     let second = pump_aead_output_completion_turn(
         &mut driver,
-        &mut completions,
-        0,
-        &mut raw_source,
-        &mut router,
-        1,
-        &mut outbound_source,
-        1,
-        &mut sink,
-        8,
+        AeadOutputCompletionTurn {
+            completions: &mut completions,
+            completion_limit: 0,
+            raw_ingress: &mut raw_source,
+            router: &mut router,
+            raw_ingress_limit: 1,
+            outbound: &mut outbound_source,
+            outbound_limit: 1,
+            sink: &mut sink,
+            crypto_limit: 8,
+        },
     );
     assert_eq!(second.summary().inbound_admitted(), 1);
     assert_eq!(second.summary().outbound_admitted(), 1);
@@ -105,16 +109,16 @@ fn runtime_pump_output_turn_drains_bounded_sources_without_vec_staging() {
             .map(PacketOutput::target)
             .collect::<Vec<_>>(),
         vec![
-            OutputTarget::Tun,
             OutputTarget::Transport,
-            OutputTarget::Tun,
+            OutputTarget::Transport,
+            OutputTarget::Transport,
             OutputTarget::Transport,
         ]
     );
     assert_eq!(
         sink.outputs
             .iter()
-            .map(PacketOutput::path)
+            .map(|output| output.path.clone())
             .collect::<Vec<_>>(),
         vec![None, Some(path.clone()), None, Some(path)]
     );

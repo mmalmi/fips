@@ -1,4 +1,5 @@
 use super::*;
+use crate::node::ActivePeerCurrentSessionReplacement;
 
 impl Node {
     /// Handle handshake message 2 (phase 0x2).
@@ -6,7 +7,7 @@ impl Node {
     /// This completes an outbound handshake we initiated.
     pub(in crate::node) async fn handle_msg2(&mut self, packet: ReceivedPacket) {
         // Parse header
-        let header = match Msg2Header::parse(&packet.data) {
+        let header = match Msg2Header::parse(packet.data.as_slice()) {
             Some(h) => h,
             None => {
                 debug!("Invalid msg2 header");
@@ -52,7 +53,7 @@ impl Node {
         // will not have it in the connection phase.
         // Look for a peer with matching rekey_our_index.
         if !self.peers.contains_connection(&link_id) {
-            let noise_msg2 = &packet.data[header.noise_msg2_offset..];
+            let noise_msg2 = &packet.data.as_slice()[header.noise_msg2_offset..];
 
             // Find peer with rekey in progress for this index
             let peer_addr = self.peers.iter().find_map(|(addr, peer)| {
@@ -192,7 +193,7 @@ impl Node {
         let (peer_identity, our_index) = {
             let conn = self.peers.get_connection_mut(&link_id).unwrap();
 
-            let noise_msg2 = &packet.data[header.noise_msg2_offset..];
+            let noise_msg2 = &packet.data.as_slice()[header.noise_msg2_offset..];
             if let Err(e) = conn.complete_handshake(noise_msg2, packet.timestamp_ms) {
                 warn!(
                     link_id = %link_id,
@@ -358,15 +359,17 @@ impl Node {
                 let display_name = self.peer_display_name(&peer_node_addr);
                 let replacement = match self.peers.replace_current_session_and_path(
                     &peer_node_addr,
-                    outbound_session,
-                    outbound_our_index,
-                    header.sender_idx,
-                    link_id,
-                    outbound_transport_id,
-                    &outbound_addr,
-                    true,
-                    outbound_remote_epoch,
-                    packet.timestamp_ms,
+                    ActivePeerCurrentSessionReplacement {
+                        session: outbound_session,
+                        our_index: outbound_our_index,
+                        their_index: header.sender_idx,
+                        link_id,
+                        transport_id: outbound_transport_id,
+                        addr: &outbound_addr,
+                        is_initiator: true,
+                        remote_epoch_update: outbound_remote_epoch,
+                        connected_at_ms: packet.timestamp_ms,
+                    },
                 ) {
                     Some(replacement) => replacement,
                     None => {
@@ -472,15 +475,17 @@ impl Node {
 
                 let replacement = match self.peers.replace_current_session_and_path(
                     &peer_node_addr,
-                    outbound_session,
-                    outbound_our_index,
-                    header.sender_idx,
-                    link_id,
-                    outbound_transport_id,
-                    &outbound_addr,
-                    true,
-                    None,
-                    packet.timestamp_ms,
+                    ActivePeerCurrentSessionReplacement {
+                        session: outbound_session,
+                        our_index: outbound_our_index,
+                        their_index: header.sender_idx,
+                        link_id,
+                        transport_id: outbound_transport_id,
+                        addr: &outbound_addr,
+                        is_initiator: true,
+                        remote_epoch_update: None,
+                        connected_at_ms: packet.timestamp_ms,
+                    },
                 ) {
                     Some(replacement) => replacement,
                     None => {

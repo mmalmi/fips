@@ -1,14 +1,31 @@
 use super::*;
 use std::time::Duration;
 
-fn one_message_endpoint_event(
-    source: PeerIdentity,
-    payload: impl Into<crate::transport::PacketBuffer>,
-) -> NodeEndpointEvent {
+fn endpoint_delivery(source: PeerIdentity, payload: Vec<u8>) -> EndpointDataDelivery {
+    EndpointDataDelivery::new(source, crate::transport::PacketBuffer::new(payload))
+}
+
+fn one_message_endpoint_event(source: PeerIdentity, payload: Vec<u8>) -> NodeEndpointEvent {
     NodeEndpointEvent {
-        messages: vec![EndpointDataDelivery::new(source, payload)],
+        messages: vec![endpoint_delivery(source, payload)],
         queued_at: crate::perf_profile::stamp(),
     }
+}
+
+async fn recv_endpoint_batch(
+    endpoint: &FipsEndpoint,
+    max: usize,
+    expected: &str,
+) -> Vec<FipsEndpointMessage> {
+    let mut messages = Vec::with_capacity(max);
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        endpoint.recv_batch_into(&mut messages, max),
+    )
+    .await
+    .expect("recv batch should not time out")
+    .unwrap_or_else(|| panic!("{expected}"));
+    messages
 }
 
 #[tokio::test]
@@ -21,54 +38,6 @@ async fn endpoint_starts_without_system_tun() {
 
     assert!(!endpoint.npub().is_empty());
     assert!(endpoint.discovery_scope().is_none());
-    endpoint.shutdown().await.expect("shutdown should succeed");
-}
-
-#[tokio::test]
-async fn loopback_endpoint_data_roundtrips() {
-    let endpoint = FipsEndpoint::builder()
-        .without_system_tun()
-        .bind()
-        .await
-        .expect("endpoint should bind");
-
-    endpoint
-        .send(endpoint.npub().to_string(), b"ping".to_vec())
-        .await
-        .expect("loopback send should succeed");
-    let message = tokio::time::timeout(Duration::from_secs(1), endpoint.recv())
-        .await
-        .expect("recv should not time out")
-        .expect("message should arrive");
-    assert_eq!(*message.source_node_addr(), *endpoint.node_addr());
-    assert_eq!(message.source_npub(), endpoint.npub());
-    assert_eq!(message.data, b"ping");
-    assert!(endpoint.discovery_scope().is_none());
-
-    endpoint.shutdown().await.expect("shutdown should succeed");
-}
-
-#[tokio::test]
-async fn send_to_peer_loopback_endpoint_data_roundtrips() {
-    let endpoint = FipsEndpoint::builder()
-        .without_system_tun()
-        .bind()
-        .await
-        .expect("endpoint should bind");
-
-    let local = PeerIdentity::from_npub(endpoint.npub()).expect("local peer identity");
-    endpoint
-        .send_to_peer(local, b"ping".to_vec())
-        .await
-        .expect("loopback send should succeed");
-    let message = tokio::time::timeout(Duration::from_secs(1), endpoint.recv())
-        .await
-        .expect("recv should not time out")
-        .expect("message should arrive");
-    assert_eq!(*message.source_node_addr(), *endpoint.node_addr());
-    assert_eq!(message.source_npub(), endpoint.npub());
-    assert_eq!(message.data, b"ping");
-
     endpoint.shutdown().await.expect("shutdown should succeed");
 }
 
@@ -86,20 +55,16 @@ async fn send_batch_to_peer_loopback_endpoint_data_roundtrips() {
         .await
         .expect("loopback batch send should succeed");
 
-    let first = tokio::time::timeout(Duration::from_secs(1), endpoint.recv())
-        .await
-        .expect("first recv should not time out")
-        .expect("first message should arrive");
-    let second = tokio::time::timeout(Duration::from_secs(1), endpoint.recv())
-        .await
-        .expect("second recv should not time out")
-        .expect("second message should arrive");
-    assert_eq!(*first.source_node_addr(), *endpoint.node_addr());
-    assert_eq!(first.source_npub(), endpoint.npub());
-    assert_eq!(first.data, b"ping");
-    assert_eq!(*second.source_node_addr(), *endpoint.node_addr());
-    assert_eq!(second.source_npub(), endpoint.npub());
-    assert_eq!(second.data, b"pong");
+    let messages = recv_endpoint_batch(&endpoint, 2, "messages should arrive").await;
+    assert_eq!(messages.len(), 2);
+    let first = &messages[0];
+    let second = &messages[1];
+    assert_eq!(first.source_peer.node_addr(), endpoint.node_addr());
+    assert_eq!(first.source_peer.npub(), endpoint.npub());
+    assert_eq!(first.data.as_slice(), &b"ping"[..]);
+    assert_eq!(second.source_peer.node_addr(), endpoint.node_addr());
+    assert_eq!(second.source_peer.npub(), endpoint.npub());
+    assert_eq!(second.data.as_slice(), &b"pong"[..]);
 
     endpoint.shutdown().await.expect("shutdown should succeed");
 }
@@ -144,24 +109,27 @@ async fn recv_batch_drains_ready_loopback_endpoint_data() {
         .await
         .expect("loopback batch send should succeed");
 
-    let messages = tokio::time::timeout(Duration::from_secs(1), endpoint.recv_batch(2))
-        .await
-        .expect("recv batch should not time out")
-        .expect("messages should arrive");
+    let mut messages = Vec::new();
+    let received = tokio::time::timeout(
+        Duration::from_secs(1),
+        endpoint.recv_batch_into(&mut messages, 2),
+    )
+    .await
+    .expect("recv batch should not time out")
+    .expect("messages should arrive");
+    assert_eq!(received, 2);
     assert_eq!(messages.len(), 2);
     assert!(
         messages
             .iter()
-            .all(|message| *message.source_node_addr() == *endpoint.node_addr())
+            .all(|message| message.source_peer.node_addr() == endpoint.node_addr())
     );
-    assert_eq!(messages[0].data, b"first");
-    assert_eq!(messages[1].data, b"second");
+    assert_eq!(messages[0].data.as_slice(), &b"first"[..]);
+    assert_eq!(messages[1].data.as_slice(), &b"second"[..]);
 
-    let message = tokio::time::timeout(Duration::from_secs(1), endpoint.recv())
-        .await
-        .expect("recv should not time out")
-        .expect("message should arrive");
-    assert_eq!(message.data, b"third");
+    let messages = recv_endpoint_batch(&endpoint, 8, "message should arrive").await;
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].data.as_slice(), &b"third"[..]);
 
     endpoint.shutdown().await.expect("shutdown should succeed");
 }
@@ -194,8 +162,8 @@ async fn recv_batch_into_reuses_caller_buffer_and_respects_limit() {
     .expect("messages should arrive");
     assert_eq!(received, 2);
     assert_eq!(messages.capacity(), capacity);
-    assert_eq!(messages[0].data, b"first");
-    assert_eq!(messages[1].data, b"second");
+    assert_eq!(messages[0].data.as_slice(), &b"first"[..]);
+    assert_eq!(messages[1].data.as_slice(), &b"second"[..]);
 
     let received = tokio::time::timeout(
         Duration::from_secs(1),
@@ -206,7 +174,7 @@ async fn recv_batch_into_reuses_caller_buffer_and_respects_limit() {
     .expect("message should arrive");
     assert_eq!(received, 1);
     assert_eq!(messages.capacity(), capacity);
-    assert_eq!(messages[0].data, b"third");
+    assert_eq!(messages[0].data.as_slice(), &b"third"[..]);
 
     endpoint.shutdown().await.expect("shutdown should succeed");
 }
@@ -224,9 +192,9 @@ async fn recv_batch_into_splits_internal_endpoint_batches_without_reordering() {
         .inbound_endpoint_tx
         .send(NodeEndpointEvent {
             messages: vec![
-                EndpointDataDelivery::new(local, b"first".to_vec()),
-                EndpointDataDelivery::new(local, b"second".to_vec()),
-                EndpointDataDelivery::new(local, b"third".to_vec()),
+                endpoint_delivery(local, b"first".to_vec()),
+                endpoint_delivery(local, b"second".to_vec()),
+                endpoint_delivery(local, b"third".to_vec()),
             ],
             queued_at: crate::perf_profile::stamp(),
         })
@@ -245,8 +213,8 @@ async fn recv_batch_into_splits_internal_endpoint_batches_without_reordering() {
     .expect("recv batch should not time out")
     .expect("messages should arrive");
     assert_eq!(received, 2);
-    assert_eq!(messages[0].data, b"first");
-    assert_eq!(messages[1].data, b"second");
+    assert_eq!(messages[0].data.as_slice(), &b"first"[..]);
+    assert_eq!(messages[1].data.as_slice(), &b"second"[..]);
 
     let received = tokio::time::timeout(
         Duration::from_secs(1),
@@ -256,8 +224,8 @@ async fn recv_batch_into_splits_internal_endpoint_batches_without_reordering() {
     .expect("recv batch should not time out")
     .expect("messages should arrive");
     assert_eq!(received, 2);
-    assert_eq!(messages[0].data, b"third");
-    assert_eq!(messages[1].data, b"fourth");
+    assert_eq!(messages[0].data.as_slice(), &b"third"[..]);
+    assert_eq!(messages[1].data.as_slice(), &b"fourth"[..]);
 
     endpoint.shutdown().await.expect("shutdown should succeed");
 }
@@ -275,8 +243,8 @@ async fn recv_batch_into_preserves_pending_batch_tail_fifo() {
         .inbound_endpoint_tx
         .send(NodeEndpointEvent {
             messages: vec![
-                EndpointDataDelivery::new(local, vec![0xaa; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 1]),
-                EndpointDataDelivery::new(local, vec![0xbb; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 2]),
+                endpoint_delivery(local, vec![0xaa; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 1]),
+                endpoint_delivery(local, vec![0xbb; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 2]),
             ],
             queued_at: crate::perf_profile::stamp(),
         })
@@ -291,7 +259,7 @@ async fn recv_batch_into_preserves_pending_batch_tail_fifo() {
     .expect("recv batch should not time out")
     .expect("message should arrive");
     assert_eq!(received, 1);
-    assert_eq!(messages[0].data[0], 0xaa);
+    assert_eq!(messages[0].data.as_slice()[0], 0xaa);
 
     endpoint
         .inbound_endpoint_tx
@@ -306,8 +274,8 @@ async fn recv_batch_into_preserves_pending_batch_tail_fifo() {
     .expect("recv batch should not time out")
     .expect("messages should arrive");
     assert_eq!(received, 2);
-    assert_eq!(messages[0].data[0], 0xbb);
-    assert_eq!(messages[1].data[0], 0x11);
+    assert_eq!(messages[0].data.as_slice()[0], 0xbb);
+    assert_eq!(messages[1].data.as_slice()[0], 0x11);
 
     endpoint.shutdown().await.expect("shutdown should succeed");
 }
@@ -325,9 +293,9 @@ async fn recv_batch_into_releases_endpoint_event_credit_per_public_message() {
         .inbound_endpoint_tx
         .send(NodeEndpointEvent {
             messages: vec![
-                EndpointDataDelivery::new(local, b"first".to_vec()),
-                EndpointDataDelivery::new(local, b"second".to_vec()),
-                EndpointDataDelivery::new(local, b"third".to_vec()),
+                endpoint_delivery(local, b"first".to_vec()),
+                endpoint_delivery(local, b"second".to_vec()),
+                endpoint_delivery(local, b"third".to_vec()),
             ],
             queued_at: crate::perf_profile::stamp(),
         })
@@ -343,79 +311,20 @@ async fn recv_batch_into_releases_endpoint_event_credit_per_public_message() {
     .expect("recv batch should not time out")
     .expect("message should arrive");
     assert_eq!(received, 1);
-    assert_eq!(messages[0].data, b"first");
+    assert_eq!(messages[0].data.as_slice(), &b"first"[..]);
     assert_eq!(endpoint.inbound_endpoint_tx.queued_messages(), 2);
 
-    let message = endpoint.try_recv().expect("pending message");
-    assert_eq!(message.data, b"second");
-    assert_eq!(endpoint.inbound_endpoint_tx.queued_messages(), 1);
-
-    let message = endpoint.try_recv().expect("last pending message");
-    assert_eq!(message.data, b"third");
-    assert_eq!(endpoint.inbound_endpoint_tx.queued_messages(), 0);
-
-    endpoint.shutdown().await.expect("shutdown should succeed");
-}
-
-#[tokio::test]
-async fn try_recv_drains_pending_internal_endpoint_batch_tail() {
-    let endpoint = FipsEndpoint::builder()
-        .without_system_tun()
-        .bind()
-        .await
-        .expect("endpoint should bind");
-    let local = PeerIdentity::from_npub(endpoint.npub()).expect("local peer identity");
-
-    endpoint
-        .inbound_endpoint_tx
-        .send(NodeEndpointEvent {
-            messages: vec![
-                EndpointDataDelivery::new(local, b"first".to_vec()),
-                EndpointDataDelivery::new(local, b"second".to_vec()),
-            ],
-            queued_at: crate::perf_profile::stamp(),
-        })
-        .expect("inject internal batch");
-
-    assert_eq!(endpoint.try_recv().expect("first message").data, b"first");
-    assert_eq!(
-        endpoint.try_recv().expect("pending message").data,
-        b"second"
-    );
-    assert!(endpoint.try_recv().is_none());
-
-    endpoint.shutdown().await.expect("shutdown should succeed");
-}
-
-#[tokio::test]
-async fn blocking_recv_drains_pending_internal_endpoint_batch_tail() {
-    let endpoint = FipsEndpoint::builder()
-        .without_system_tun()
-        .bind()
-        .await
-        .expect("endpoint should bind");
-    let local = PeerIdentity::from_npub(endpoint.npub()).expect("local peer identity");
-
-    endpoint
-        .inbound_endpoint_tx
-        .send(NodeEndpointEvent {
-            messages: vec![
-                EndpointDataDelivery::new(local, b"first".to_vec()),
-                EndpointDataDelivery::new(local, b"second".to_vec()),
-            ],
-            queued_at: crate::perf_profile::stamp(),
-        })
-        .expect("inject internal batch");
-
-    let endpoint = tokio::task::spawn_blocking(move || {
-        let first = endpoint.blocking_recv().expect("first message");
-        let second = endpoint.blocking_recv().expect("pending message");
-        assert_eq!(first.data, b"first");
-        assert_eq!(second.data, b"second");
-        endpoint
-    })
+    let received = tokio::time::timeout(
+        Duration::from_secs(1),
+        endpoint.recv_batch_into(&mut messages, 8),
+    )
     .await
-    .expect("blocking receiver should join");
+    .expect("recv batch should not time out")
+    .expect("pending messages should arrive");
+    assert_eq!(received, 2);
+    assert_eq!(messages[0].data.as_slice(), &b"second"[..]);
+    assert_eq!(messages[1].data.as_slice(), &b"third"[..]);
+    assert_eq!(endpoint.inbound_endpoint_tx.queued_messages(), 0);
 
     endpoint.shutdown().await.expect("shutdown should succeed");
 }
@@ -433,8 +342,8 @@ async fn blocking_recv_batch_into_preserves_pending_batch_tail_fifo() {
         .inbound_endpoint_tx
         .send(NodeEndpointEvent {
             messages: vec![
-                EndpointDataDelivery::new(local, vec![0xaa; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 1]),
-                EndpointDataDelivery::new(local, vec![0xbb; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 2]),
+                endpoint_delivery(local, vec![0xaa; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 1]),
+                endpoint_delivery(local, vec![0xbb; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 2]),
             ],
             queued_at: crate::perf_profile::stamp(),
         })
@@ -447,7 +356,7 @@ async fn blocking_recv_batch_into_preserves_pending_batch_tail_fifo() {
             .blocking_recv_batch_into(&mut messages, 1)
             .expect("message should arrive");
         assert_eq!(received, 1);
-        assert_eq!(messages[0].data[0], 0xaa);
+        assert_eq!(messages[0].data.as_slice()[0], 0xaa);
 
         event_tx
             .send(one_message_endpoint_event(local, vec![0x11; 32]))
@@ -457,8 +366,8 @@ async fn blocking_recv_batch_into_preserves_pending_batch_tail_fifo() {
             .blocking_recv_batch_into(&mut messages, 8)
             .expect("messages should arrive");
         assert_eq!(received, 2);
-        assert_eq!(messages[0].data[0], 0xbb);
-        assert_eq!(messages[1].data[0], 0x11);
+        assert_eq!(messages[0].data.as_slice()[0], 0xbb);
+        assert_eq!(messages[1].data.as_slice()[0], 0x11);
         endpoint
     })
     .await
@@ -492,119 +401,21 @@ async fn blocking_recv_batch_into_reuses_caller_buffer_and_respects_limit() {
             .expect("messages should arrive");
         assert_eq!(received, 2);
         assert_eq!(messages.capacity(), capacity);
-        assert_eq!(messages[0].data, b"first");
-        assert_eq!(messages[1].data, b"second");
+        assert_eq!(messages[0].data.as_slice(), &b"first"[..]);
+        assert_eq!(messages[1].data.as_slice(), &b"second"[..]);
 
         let received = endpoint
             .blocking_recv_batch_into(&mut messages, 8)
             .expect("message should arrive");
         assert_eq!(received, 1);
         assert_eq!(messages.capacity(), capacity);
-        assert_eq!(messages[0].data, b"third");
+        assert_eq!(messages[0].data.as_slice(), &b"third"[..]);
 
         (endpoint, capacity)
     })
     .await
     .expect("blocking receiver should join");
     assert_eq!(capacity, 8);
-
-    endpoint.shutdown().await.expect("shutdown should succeed");
-}
-
-#[tokio::test]
-async fn blocking_recv_batch_for_each_respects_limit_without_message_vec_staging() {
-    let endpoint = FipsEndpoint::builder()
-        .without_system_tun()
-        .bind()
-        .await
-        .expect("endpoint should bind");
-
-    let local = PeerIdentity::from_npub(endpoint.npub()).expect("local peer identity");
-    endpoint
-        .send_batch_to_peer(
-            local,
-            vec![b"first".to_vec(), b"second".to_vec(), b"third".to_vec()],
-        )
-        .await
-        .expect("loopback batch send should succeed");
-
-    let endpoint = tokio::task::spawn_blocking(move || {
-        let mut messages = Vec::with_capacity(3);
-        let received = endpoint
-            .blocking_recv_batch_for_each(2, |message| {
-                messages.push(message.data);
-                true
-            })
-            .expect("messages should arrive");
-        assert_eq!(received, 2);
-        assert_eq!(messages, vec![b"first".to_vec(), b"second".to_vec()]);
-
-        let received = endpoint
-            .blocking_recv_batch_for_each(8, |message| {
-                messages.push(message.data);
-                true
-            })
-            .expect("message should arrive");
-        assert_eq!(received, 1);
-        assert_eq!(
-            messages,
-            vec![b"first".to_vec(), b"second".to_vec(), b"third".to_vec()]
-        );
-        endpoint
-    })
-    .await
-    .expect("blocking receiver should join");
-
-    endpoint.shutdown().await.expect("shutdown should succeed");
-}
-
-#[tokio::test]
-async fn blocking_recv_batch_for_each_preserves_unhandled_internal_batch_tail() {
-    let endpoint = FipsEndpoint::builder()
-        .without_system_tun()
-        .bind()
-        .await
-        .expect("endpoint should bind");
-    let local = PeerIdentity::from_npub(endpoint.npub()).expect("local peer identity");
-
-    endpoint
-        .inbound_endpoint_tx
-        .send(NodeEndpointEvent {
-            messages: vec![
-                EndpointDataDelivery::new(local, b"first".to_vec()),
-                EndpointDataDelivery::new(local, b"second".to_vec()),
-                EndpointDataDelivery::new(local, b"third".to_vec()),
-            ],
-            queued_at: crate::perf_profile::stamp(),
-        })
-        .expect("inject internal batch");
-
-    let endpoint = tokio::task::spawn_blocking(move || {
-        let mut messages = Vec::with_capacity(3);
-        let received = endpoint
-            .blocking_recv_batch_for_each(8, |message| {
-                messages.push(message.data);
-                false
-            })
-            .expect("message should arrive");
-        assert_eq!(received, 1);
-        assert_eq!(messages, vec![b"first".to_vec()]);
-
-        let received = endpoint
-            .blocking_recv_batch_for_each(8, |message| {
-                messages.push(message.data);
-                true
-            })
-            .expect("pending messages should arrive");
-        assert_eq!(received, 2);
-        assert_eq!(
-            messages,
-            vec![b"first".to_vec(), b"second".to_vec(), b"third".to_vec()]
-        );
-        endpoint
-    })
-    .await
-    .expect("blocking receiver should join");
 
     endpoint.shutdown().await.expect("shutdown should succeed");
 }
@@ -622,9 +433,9 @@ async fn blocking_recv_batch_into_splits_internal_endpoint_batches_without_reord
         .inbound_endpoint_tx
         .send(NodeEndpointEvent {
             messages: vec![
-                EndpointDataDelivery::new(local, b"first".to_vec()),
-                EndpointDataDelivery::new(local, b"second".to_vec()),
-                EndpointDataDelivery::new(local, b"third".to_vec()),
+                endpoint_delivery(local, b"first".to_vec()),
+                endpoint_delivery(local, b"second".to_vec()),
+                endpoint_delivery(local, b"third".to_vec()),
             ],
             queued_at: crate::perf_profile::stamp(),
         })
@@ -640,15 +451,15 @@ async fn blocking_recv_batch_into_splits_internal_endpoint_batches_without_reord
             .blocking_recv_batch_into(&mut messages, 2)
             .expect("messages should arrive");
         assert_eq!(received, 2);
-        assert_eq!(messages[0].data, b"first");
-        assert_eq!(messages[1].data, b"second");
+        assert_eq!(messages[0].data.as_slice(), &b"first"[..]);
+        assert_eq!(messages[1].data.as_slice(), &b"second"[..]);
 
         let received = endpoint
             .blocking_recv_batch_into(&mut messages, 8)
             .expect("messages should arrive");
         assert_eq!(received, 2);
-        assert_eq!(messages[0].data, b"third");
-        assert_eq!(messages[1].data, b"fourth");
+        assert_eq!(messages[0].data.as_slice(), &b"third"[..]);
+        assert_eq!(messages[1].data.as_slice(), &b"fourth"[..]);
 
         endpoint
     })
@@ -659,7 +470,7 @@ async fn blocking_recv_batch_into_splits_internal_endpoint_batches_without_reord
 }
 
 #[tokio::test]
-async fn blocking_send_to_peer_loopback_endpoint_data_roundtrips() {
+async fn blocking_send_batch_to_peer_loopback_endpoint_data_roundtrips() {
     let endpoint = FipsEndpoint::builder()
         .without_system_tun()
         .bind()
@@ -668,15 +479,12 @@ async fn blocking_send_to_peer_loopback_endpoint_data_roundtrips() {
 
     let local = PeerIdentity::from_npub(endpoint.npub()).expect("local peer identity");
     endpoint
-        .blocking_send_to_peer(local, b"ping".to_vec())
+        .blocking_send_batch_to_peer(local, vec![b"ping".to_vec()])
         .expect("loopback send should succeed");
-    let message = tokio::time::timeout(Duration::from_secs(1), endpoint.recv())
-        .await
-        .expect("recv should not time out")
-        .expect("message should arrive");
-    assert_eq!(*message.source_node_addr(), *endpoint.node_addr());
-    assert_eq!(message.source_npub(), endpoint.npub());
-    assert_eq!(message.data, b"ping");
+    let messages = recv_endpoint_batch(&endpoint, 1, "message should arrive").await;
+    assert_eq!(messages[0].source_peer.node_addr(), endpoint.node_addr());
+    assert_eq!(messages[0].source_peer.npub(), endpoint.npub());
+    assert_eq!(messages[0].data.as_slice(), &b"ping"[..]);
 
     endpoint.shutdown().await.expect("shutdown should succeed");
 }

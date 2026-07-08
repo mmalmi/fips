@@ -33,9 +33,9 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_current_dataplane_and_queue_events() {
-    assert_eq!(N_EVENTS, 255);
+    assert_eq!(N_EVENTS, 269);
     assert!(
-        (Event::DataplaneAeadCompletionPendingPackets as usize) < N_EVENTS,
+        (Event::DataplaneLiveDropAdmissionOutboundBulkFull as usize) < N_EVENTS,
         "last event must fit in the EVENTS table"
     );
 
@@ -219,17 +219,11 @@ fn event_table_exposes_current_dataplane_and_queue_events() {
             Event::DataplaneDispatchOutboundOwnerBlocked,
             "dataplane_dispatch_outbound_owner_blocked",
         ),
+        (Event::ReservedEvent210, "reserved_event_210"),
+        (Event::ReservedEvent211, "reserved_event_211"),
         (
-            Event::DataplaneTransportSendWorkerBackpressure,
-            "dataplane_transport_send_worker_backpressure",
-        ),
-        (
-            Event::DataplaneTransportSendWorkerDropped,
-            "dataplane_transport_send_worker_dropped",
-        ),
-        (
-            Event::DataplaneTransportSendWorkerSendFailed,
-            "dataplane_transport_send_worker_send_failed",
+            Event::DataplaneTransportSendFailed,
+            "dataplane_transport_send_failed",
         ),
         (
             Event::DataplaneLiveRawAdmitted,
@@ -367,6 +361,59 @@ fn event_table_exposes_current_dataplane_and_queue_events() {
             Event::DataplaneAeadCompletionPendingPackets,
             "dataplane_aead_completion_pending_packets",
         ),
+        (
+            Event::DataplaneLiveDropAdmission,
+            "dataplane_live_drop_admission",
+        ),
+        (
+            Event::DataplaneLiveDropUnknownOwner,
+            "dataplane_live_drop_unknown_owner",
+        ),
+        (Event::DataplaneLiveDropReplay, "dataplane_live_drop_replay"),
+        (
+            Event::DataplaneLiveDropOwnerInFlightFull,
+            "dataplane_live_drop_owner_in_flight_full",
+        ),
+        (
+            Event::DataplaneLiveDropStaleGeneration,
+            "dataplane_live_drop_stale_generation",
+        ),
+        (
+            Event::DataplaneLiveDropCounterExhausted,
+            "dataplane_live_drop_counter_exhausted",
+        ),
+        (
+            Event::DataplaneLiveDropStaleCompletionGeneration,
+            "dataplane_live_drop_stale_completion_generation",
+        ),
+        (
+            Event::DataplaneLiveDropCryptoFailed,
+            "dataplane_live_drop_crypto_failed",
+        ),
+        (
+            Event::DataplaneLiveDropAdmissionPriorityFull,
+            "dataplane_live_drop_admission_priority_full",
+        ),
+        (
+            Event::DataplaneLiveDropAdmissionBulkFull,
+            "dataplane_live_drop_admission_bulk_full",
+        ),
+        (
+            Event::DataplaneLiveDropAdmissionInboundPriorityFull,
+            "dataplane_live_drop_admission_inbound_priority_full",
+        ),
+        (
+            Event::DataplaneLiveDropAdmissionInboundBulkFull,
+            "dataplane_live_drop_admission_inbound_bulk_full",
+        ),
+        (
+            Event::DataplaneLiveDropAdmissionOutboundPriorityFull,
+            "dataplane_live_drop_admission_outbound_priority_full",
+        ),
+        (
+            Event::DataplaneLiveDropAdmissionOutboundBulkFull,
+            "dataplane_live_drop_admission_outbound_bulk_full",
+        ),
     ];
     for (event, name) in live_events {
         assert_eq!(event_from_index(event as usize).name(), name);
@@ -469,8 +516,8 @@ fn stage_table_exposes_current_dataplane_transport_and_output_stages() {
         (Stage::DataplaneOutputSink, "dataplane_output_sink"),
         (Stage::DataplaneTransportSend, "dataplane_transport_send"),
         (
-            Stage::DataplaneTransportSendWorker,
-            "dataplane_transport_send_worker",
+            Stage::DataplaneTransportSendBatch,
+            "dataplane_transport_send_batch",
         ),
         (Stage::DataplaneOwnerDispatch, "dataplane_owner_dispatch"),
         (Stage::DataplaneExecutorSubmit, "dataplane_executor_submit"),
@@ -548,9 +595,9 @@ fn live_event_counters_increment() {
         (Event::UdpNamespaceRcvbufErrors, 83),
         (Event::TunWriteBulkDropped, 89),
         (Event::TunWriteBulkBacklogHigh, 97),
-        (Event::DataplaneTransportSendWorkerBackpressure, 101),
-        (Event::DataplaneTransportSendWorkerDropped, 103),
-        (Event::DataplaneTransportSendWorkerSendFailed, 107),
+        (Event::ReservedEvent210, 101),
+        (Event::ReservedEvent211, 103),
+        (Event::DataplaneTransportSendFailed, 107),
     ];
 
     for (event, count) in samples {

@@ -9,7 +9,9 @@
             for slice in slices.iter().take(slice_count).flatten() {
                 payload.extend_from_slice(slice);
             }
-            outputs.push(packet_output_with_payload(&segments.output, payload.into()));
+            let mut output = segments.output.clone();
+            output.payload = PacketBuffer::new(payload);
+            outputs.push(output);
         }
         outputs
     }
@@ -22,9 +24,9 @@
         let source_b = NodeAddr::from_bytes([0x41; 16]);
         let owner_a = OwnerId::fmp_node(source_a);
         let owner_b = OwnerId::fmp_node(source_b);
-        let route_a = DataplaneIngressRoute::new(owner_a, 7, OutputTarget::Endpoint)
+        let route_a = DataplaneIngressRoute::new(owner_a, 7, OutputTarget::Transport)
             .with_class(PacketClass::Liveness);
-        let route_b = DataplaneIngressRoute::new(owner_b, 8, OutputTarget::Endpoint)
+        let route_b = DataplaneIngressRoute::new(owner_b, 8, OutputTarget::Transport)
             .with_class(PacketClass::Mmp);
         let mut routes = DataplaneLiveRouteTable::default();
         routes.register_fmp(transport_id, 404, route_a);
@@ -34,14 +36,14 @@
             ReceivedPacket::with_timestamp(
                 transport_id,
                 remote_addr.clone(),
-                fmp_wire(404, 9, 0),
+                PacketBuffer::new(fmp_wire(404, 9, 0)),
                 9_000,
             ),
         );
-        let header = DataplaneIngressHeader::Fmp(FmpWireHeader::parse(&raw.payload).unwrap());
-        assert_eq!(raw.path().transport_id(), Some(transport_id));
-        assert_eq!(raw.path().remote_addr(), Some(&remote_addr));
-        assert_eq!(raw.activity_tick(), Some(ActivityTick::new(9_000)));
+        let header = DataplaneIngressHeader::Fmp(FmpWireHeader::parse(raw.payload.as_slice()).unwrap());
+        assert_eq!(raw.path.transport_id, transport_id);
+        assert_eq!(raw.path.remote_addr, remote_addr);
+        assert_eq!(raw.activity_tick, Some(ActivityTick::new(9_000)));
         assert_eq!(routes.route(&raw, header), Some(route_a));
 
         let wrong_transport = DataplaneRawIngress::from_live_received(
@@ -49,19 +51,21 @@
             ReceivedPacket::with_timestamp(
                 TransportId::new(41),
                 remote_addr.clone(),
-                fmp_wire(404, 10, 0),
+                PacketBuffer::new(fmp_wire(404, 10, 0)),
                 9_001,
             ),
         );
         let header =
-            DataplaneIngressHeader::Fmp(FmpWireHeader::parse(&wrong_transport.payload).unwrap());
+            DataplaneIngressHeader::Fmp(
+                FmpWireHeader::parse(wrong_transport.payload.as_slice()).unwrap(),
+            );
         assert_eq!(routes.route(&wrong_transport, header), None);
 
         routes.register_fmp(transport_id, 404, route_b);
-        let header = DataplaneIngressHeader::Fmp(FmpWireHeader::parse(&raw.payload).unwrap());
+        let header = DataplaneIngressHeader::Fmp(FmpWireHeader::parse(raw.payload.as_slice()).unwrap());
         assert_eq!(routes.route(&raw, header), Some(route_b));
         assert_eq!(routes.unregister_owner(owner_b), 1);
-        let header = DataplaneIngressHeader::Fmp(FmpWireHeader::parse(&raw.payload).unwrap());
+        let header = DataplaneIngressHeader::Fmp(FmpWireHeader::parse(raw.payload.as_slice()).unwrap());
         assert_eq!(routes.route(&raw, header), None);
     }
 
@@ -70,9 +74,9 @@
         let source = NodeAddr::from_bytes([0x42; 16]);
         let owner = OwnerId::fsp_node(source);
         let mut routes = DataplaneLiveRouteTable::default();
-        let old_route = DataplaneIngressRoute::new(owner, 3, OutputTarget::Tun)
+        let old_route = DataplaneIngressRoute::new(owner, 3, OutputTarget::Transport)
             .with_class(PacketClass::Bulk);
-        let new_route = DataplaneIngressRoute::new(owner, 4, OutputTarget::Endpoint)
+        let new_route = DataplaneIngressRoute::new(owner, 4, OutputTarget::Transport)
             .with_class(PacketClass::Mmp);
         routes.register_fsp(source, old_route);
 
@@ -81,19 +85,21 @@
             ReceivedPacket::with_timestamp(
                 TransportId::new(42),
                 TransportAddr::from_string("198.51.100.42:9000"),
-                fsp_wire(77, 0),
+                PacketBuffer::new(fsp_wire(77, 0)),
                 1,
             ),
         );
         let header =
-            DataplaneIngressHeader::Fsp(FspWireHeader::parse(&bare_raw.payload).unwrap());
-        assert_eq!(bare_raw.fsp_source(), None);
+            DataplaneIngressHeader::Fsp(FspWireHeader::parse(bare_raw.payload.as_slice()).unwrap());
+        assert_eq!(bare_raw.fsp_source, None);
         assert_eq!(routes.route(&bare_raw, header), None);
 
         let sourced_raw = bare_raw.clone().with_fsp_source(source);
         let header =
-            DataplaneIngressHeader::Fsp(FspWireHeader::parse(&sourced_raw.payload).unwrap());
-        assert_eq!(sourced_raw.fsp_source(), Some(source));
+            DataplaneIngressHeader::Fsp(
+                FspWireHeader::parse(sourced_raw.payload.as_slice()).unwrap(),
+            );
+        assert_eq!(sourced_raw.fsp_source, Some(source));
         let routed = routes.route(&sourced_raw, header).expect("sourced FSP route");
         assert_eq!(routed.owner, old_route.owner);
         assert_eq!(routed.generation, old_route.generation);
@@ -102,11 +108,15 @@
 
         routes.register_fsp(source, new_route);
         let header =
-            DataplaneIngressHeader::Fsp(FspWireHeader::parse(&sourced_raw.payload).unwrap());
+            DataplaneIngressHeader::Fsp(
+                FspWireHeader::parse(sourced_raw.payload.as_slice()).unwrap(),
+            );
         assert_eq!(routes.route(&sourced_raw, header), Some(new_route));
         assert_eq!(routes.unregister_owner(owner), 1);
         let header =
-            DataplaneIngressHeader::Fsp(FspWireHeader::parse(&sourced_raw.payload).unwrap());
+            DataplaneIngressHeader::Fsp(
+                FspWireHeader::parse(sourced_raw.payload.as_slice()).unwrap(),
+            );
         assert_eq!(routes.route(&sourced_raw, header), None);
     }
 
@@ -127,17 +137,18 @@
         let first = ReceivedPacket::with_timestamp(
             transport_id,
             remote_addr.clone(),
-            fsp_wire(
+            PacketBuffer::new(fsp_wire(
                 88,
                 crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT,
-            ),
+            )),
             44_000,
         );
         let mut source_rx =
-            DataplaneFmpPacketRxSource::with_first_and_direct_fsp_sources(
+            DataplaneFmpPacketRxSource::with_first_direct_fsp_sources_and_reassembler(
                 &mut rx,
                 Some(first),
-                direct_sources,
+                std::sync::Arc::new(direct_sources),
+                None,
             );
         let mut packets = Vec::new();
         assert_eq!(
@@ -147,13 +158,13 @@
         assert!(source_rx.take_control_ingress().is_empty());
         assert_eq!(packets.len(), 1);
         let packet = &packets[0];
-        assert_eq!(packet.protocol(), PacketProtocol::Fsp);
-        assert_eq!(packet.fsp_source(), Some(source));
-        assert_eq!(packet.previous_hop(), Some(source));
-        assert_eq!(packet.path_mtu(), 1400);
-        assert_eq!(packet.path().transport_id(), Some(transport_id));
-        assert_eq!(packet.path().remote_addr(), Some(&remote_addr));
-        assert_eq!(packet.activity_tick(), Some(ActivityTick::new(44_000)));
+        assert_eq!(packet.protocol, PacketProtocol::Fsp);
+        assert_eq!(packet.fsp_source, Some(source));
+        assert_eq!(packet.previous_hop, Some(source));
+        assert_eq!(packet.path_mtu, 1400);
+        assert_eq!(packet.path.transport_id, transport_id);
+        assert_eq!(packet.path.remote_addr, remote_addr);
+        assert_eq!(packet.activity_tick, Some(ActivityTick::new(44_000)));
     }
 
     #[test]
@@ -170,6 +181,7 @@
                 path_mtu: 220,
             },
         );
+        let direct_sources = std::sync::Arc::new(direct_sources);
 
         let mut wire = fsp_wire(
             4242,
@@ -180,11 +192,12 @@
             transport_output(owner, 4242, 9, transport_id, remote_addr.clone(), wire.clone());
         output.path_mtu = 220;
 
-        let segments = match dataplane_direct_fsp_transport_output(output).unwrap() {
+        let segments = match dataplane_direct_fsp_transport_output(output) {
             DataplaneDirectFspTransportOutput::Segments(segments) => {
                 materialize_direct_fsp_segments(&segments)
             }
             DataplaneDirectFspTransportOutput::Whole(_) => panic!("expected segmented output"),
+            DataplaneDirectFspTransportOutput::MtuExceeded(_) => panic!("expected segmented output"),
         };
         assert!(segments.len() > 1);
         assert!(segments.iter().all(|segment| segment.payload_len() <= 220));
@@ -218,9 +231,9 @@
 
         assert_eq!(packets.len(), 1);
         let packet = &packets[0];
-        assert_eq!(packet.protocol(), PacketProtocol::Fsp);
-        assert_eq!(packet.fsp_source(), Some(source));
-        assert_eq!(packet.path_mtu(), 220);
+        assert_eq!(packet.protocol, PacketProtocol::Fsp);
+        assert_eq!(packet.fsp_source, Some(source));
+        assert_eq!(packet.path_mtu, 220);
         assert_eq!(packet.payload.as_slice(), wire.as_slice());
     }
 
@@ -245,11 +258,12 @@
                 wire.clone(),
             );
             output.path_mtu = 220;
-            let segments = match dataplane_direct_fsp_transport_output(output).unwrap() {
+            let segments = match dataplane_direct_fsp_transport_output(output) {
                 DataplaneDirectFspTransportOutput::Segments(segments) => {
                     materialize_direct_fsp_segments(&segments)
                 }
                 DataplaneDirectFspTransportOutput::Whole(_) => panic!("expected segmented output"),
+            DataplaneDirectFspTransportOutput::MtuExceeded(_) => panic!("expected segmented output"),
             };
             assert!(segments.len() > 1);
             (wire, segments)
@@ -258,7 +272,7 @@
         let (target_wire, target_segments) = make_segments(49_000, 0);
         let mut reassembler = DataplaneDirectFspReassembler::default();
         assert!(matches!(
-            reassembler.ingest(ReceivedPacket::with_timestamp(
+            reassembler.ingest_fragment(ReceivedPacket::with_timestamp(
                 transport_id,
                 remote_addr.clone(),
                 target_segments[0].payload.clone(),
@@ -270,7 +284,7 @@
         for idx in 0..DIRECT_FSP_TRANSPORT_MAX_REASSEMBLY_RECORDS - 1 {
             let (_wire, segments) = make_segments(50_000 + idx as u64, idx as u64 + 1);
             assert!(matches!(
-                reassembler.ingest(ReceivedPacket::with_timestamp(
+                reassembler.ingest_fragment(ReceivedPacket::with_timestamp(
                     transport_id,
                     remote_addr.clone(),
                     segments[0].payload.clone(),
@@ -286,7 +300,7 @@
 
         let mut complete = None;
         for (idx, segment) in target_segments.iter().enumerate().skip(1) {
-            match reassembler.ingest(ReceivedPacket::with_timestamp(
+            match reassembler.ingest_fragment(ReceivedPacket::with_timestamp(
                 transport_id,
                 remote_addr.clone(),
                 segment.payload.clone(),
@@ -309,7 +323,7 @@
         let owner = OwnerId::fsp_node(source);
         let transport_id = TransportId::new(46);
         let remote_addr = TransportAddr::from_string("198.51.100.46:9000");
-        let route = DataplaneIngressRoute::new(owner, 10, OutputTarget::Endpoint)
+        let route = DataplaneIngressRoute::new(owner, 10, OutputTarget::Transport)
             .with_class(PacketClass::Bulk);
         let mut routes = DataplaneLiveRouteTable::default();
         routes.register_fsp(source, route);
@@ -321,7 +335,7 @@
                 path_mtu: 240,
             },
         );
-        routes.set_established_fast_ingress_direct_fsp_sources(direct_sources);
+        routes.set_established_fast_ingress_direct_fsp_sources(std::sync::Arc::new(direct_sources));
 
         let mut wire = fsp_wire(
             4646,
@@ -332,11 +346,12 @@
             transport_output(owner, 4646, 10, transport_id, remote_addr.clone(), wire.clone());
         output.path_mtu = 240;
 
-        let segments = match dataplane_direct_fsp_transport_output(output).unwrap() {
+        let segments = match dataplane_direct_fsp_transport_output(output) {
             DataplaneDirectFspTransportOutput::Segments(segments) => {
                 materialize_direct_fsp_segments(&segments)
             }
             DataplaneDirectFspTransportOutput::Whole(_) => panic!("expected segmented output"),
+            DataplaneDirectFspTransportOutput::MtuExceeded(_) => panic!("expected segmented output"),
         };
         assert!(segments.len() > 1);
 
@@ -381,15 +396,18 @@
         assert!(second_half.is_empty());
         let batch = fast_rx.try_recv().expect("direct FSP fast batch");
         assert_eq!(batch.len(), 1);
-        let packet = batch
-            .into_packets()
-            .pop()
-            .expect("direct FSP socket packet");
+        let mut runs = batch.into_runs();
+        assert_eq!(runs.len(), 1);
+        let (run_owner, run_lane, mut packets) = runs.pop().unwrap().into_parts();
+        assert_eq!(run_owner, owner);
+        assert_eq!(run_lane, PacketClass::Bulk.lane());
+        let packet = packets.pop().expect("direct FSP socket packet");
+        assert!(packets.is_empty());
         assert_eq!(packet.owner, owner);
         assert_eq!(packet.generation, 10);
         assert_eq!(packet.counter, 4646);
         assert_eq!(packet.class, PacketClass::Bulk);
-        assert_eq!(packet.output, OutputTarget::Endpoint);
+        assert_eq!(packet.output, OutputTarget::Transport);
         assert_eq!(
             packet.source_path,
             Some(TransportPath::live(transport_id, remote_addr))
@@ -409,7 +427,7 @@
         let owner = OwnerId::fsp_node(source);
         let transport_id = TransportId::new(48);
         let remote_addr = TransportAddr::from_string("198.51.100.48:9000");
-        let route = DataplaneIngressRoute::new(owner, 12, OutputTarget::Endpoint)
+        let route = DataplaneIngressRoute::new(owner, 12, OutputTarget::Transport)
             .with_class(PacketClass::Bulk);
         let mut routes = DataplaneLiveRouteTable::default();
         routes.register_fsp(source, route);
@@ -421,7 +439,7 @@
                 path_mtu: 240,
             },
         );
-        routes.set_established_fast_ingress_direct_fsp_sources(direct_sources);
+        routes.set_established_fast_ingress_direct_fsp_sources(std::sync::Arc::new(direct_sources));
 
         let (sink, fast_rx) =
             DataplaneEstablishedFastIngressSink::channel(
@@ -431,10 +449,10 @@
         let mut fill_queue = vec![ReceivedPacket::with_timestamp(
             transport_id,
             remote_addr.clone(),
-            fsp_wire(
+            PacketBuffer::new(fsp_wire(
                 4800,
                 crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT,
-            ),
+            )),
             48_000,
         )];
         assert_eq!(sink.try_ingest_batch(&mut fill_queue), 1);
@@ -449,11 +467,12 @@
         let mut output =
             transport_output(owner, 4848, 12, transport_id, remote_addr.clone(), wire.clone());
         output.path_mtu = 240;
-        let segments = match dataplane_direct_fsp_transport_output(output).unwrap() {
+        let segments = match dataplane_direct_fsp_transport_output(output) {
             DataplaneDirectFspTransportOutput::Segments(segments) => {
                 materialize_direct_fsp_segments(&segments)
             }
             DataplaneDirectFspTransportOutput::Whole(_) => panic!("expected segmented output"),
+            DataplaneDirectFspTransportOutput::MtuExceeded(_) => panic!("expected segmented output"),
         };
         assert!(segments.len() > 2);
 
@@ -516,7 +535,7 @@
                 path_mtu: 240,
             },
         );
-        routes.set_established_fast_ingress_direct_fsp_sources(direct_sources);
+        routes.set_established_fast_ingress_direct_fsp_sources(std::sync::Arc::new(direct_sources));
 
         let mut wire = fsp_wire(
             4747,
@@ -526,11 +545,12 @@
         let mut output =
             transport_output(owner, 4747, 10, transport_id, remote_addr.clone(), wire);
         output.path_mtu = 240;
-        let segments = match dataplane_direct_fsp_transport_output(output).unwrap() {
+        let segments = match dataplane_direct_fsp_transport_output(output) {
             DataplaneDirectFspTransportOutput::Segments(segments) => {
                 materialize_direct_fsp_segments(&segments)
             }
             DataplaneDirectFspTransportOutput::Whole(_) => panic!("expected segmented output"),
+            DataplaneDirectFspTransportOutput::MtuExceeded(_) => panic!("expected segmented output"),
         };
         let fragment = segments.into_iter().next().expect("fragment").payload;
         let original = fragment.clone();
@@ -579,153 +599,18 @@
         );
         let large_raw = DataplaneRawIngress::from_live_received(
             PacketProtocol::Fsp,
-            ReceivedPacket::with_timestamp(transport_id, remote_addr, large_wire, 43_001),
+            ReceivedPacket::with_timestamp(
+                transport_id,
+                remote_addr,
+                PacketBuffer::new(large_wire),
+                43_001,
+            ),
         )
         .with_fsp_source(source);
         let header =
-            DataplaneIngressHeader::Fsp(FspWireHeader::parse(&large_raw.payload).unwrap());
+            DataplaneIngressHeader::Fsp(FspWireHeader::parse(large_raw.payload.as_slice()).unwrap());
         assert_eq!(
             routes.route(&large_raw, header).expect("large FSP route").class,
             PacketClass::Bulk
-        );
-    }
-
-    #[tokio::test]
-    async fn live_node_turn_sends_node_outputs_and_attributes_transport_drop() {
-        let fmp_source = NodeAddr::from_bytes([0x4a; 16]);
-        let source_peer = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
-        let fsp_source = *source_peer.node_addr();
-        let fmp_owner = OwnerId::fmp_node(fmp_source);
-        let fsp_owner = OwnerId::fsp_node(fsp_source);
-        let fmp_key = 74;
-        let fsp_key = 75;
-        let transport_id = TransportId::new(74);
-        let remote_addr = TransportAddr::from_string("198.51.100.74:9000");
-        let live_path = TransportPath::live(transport_id, remote_addr.clone());
-
-        let mut node = crate::Node::new(crate::Config::new()).expect("node");
-        let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
-        let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
-        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
-        driver.register_owner(
-            fmp_owner,
-            OwnerConfig::new(1, 8).with_next_send_counter(740),
-        );
-        driver.register_owner(
-            fsp_owner,
-            OwnerConfig::new(1, 8).with_source_peer(source_peer),
-        );
-        driver
-            .owner_mut(fmp_owner)
-            .unwrap()
-            .set_crypto_keys(OwnerCryptoKeys::new(test_key(fmp_key), test_key(fmp_key)));
-        driver
-            .owner_mut(fsp_owner)
-            .unwrap()
-            .set_crypto_keys(OwnerCryptoKeys::new(test_key(fsp_key), test_key(fsp_key)));
-
-        let mut routes = DataplaneLiveRouteTable::default();
-        routes.register_fmp(
-            transport_id,
-            740,
-            DataplaneIngressRoute::new(fmp_owner, 1, OutputTarget::Tun)
-                .with_class(PacketClass::Liveness),
-        );
-        routes.register_fsp(
-            fsp_source,
-            DataplaneIngressRoute::new(fsp_owner, 1, OutputTarget::Endpoint)
-                .with_class(PacketClass::Mmp),
-        );
-        routes.register_tun_destination(
-            fmp_source,
-            DataplaneTunDestinationRoute::new(DataplaneTunOutboundRoute::fmp(
-                fmp_owner,
-                1,
-                PacketClass::Bulk,
-                741,
-                0,
-            )),
-        );
-        let mut raw_source = DataplaneLiveRawIngressSource::new(VecDeque::from([
-            DataplaneLiveIngressPacket::fmp(ReceivedPacket::with_timestamp(
-                transport_id,
-                remote_addr.clone(),
-                fmp_encrypted_wire(740, 1, 0, b"tun-live-node", fmp_key),
-                740_001,
-            )),
-            DataplaneLiveIngressPacket::fsp(
-                ReceivedPacket::with_timestamp(
-                    transport_id,
-                    remote_addr.clone(),
-                    fsp_encrypted_wire(2, 0, b"endpoint-live-node", fsp_key),
-                    740_002,
-                ),
-                fsp_source,
-            ),
-        ]));
-        let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
-        let (tun_outbound_tx, mut tun_outbound_rx) =
-            crate::upper::tun::tun_outbound_channel(1);
-        tun_outbound_tx
-            .try_send(tun_ipv6_packet(fmp_source, 48))
-            .expect("enqueue TUN outbound packet");
-        let mut deferred_endpoint_data_batches = Vec::new();
-        let mut deferred_tun_packets = Vec::new();
-        let transports = HashMap::<TransportId, TransportHandle>::new();
-
-        let turn = pump_aead_live_node_route_table_turn(&mut driver,
-                &mut raw_source,
-                &mut routes,
-                8,
-                &mut endpoint_data_rx,
-                0,
-                &mut tun_outbound_rx,
-                8,
-                &mut deferred_endpoint_data_batches,
-                &mut deferred_tun_packets,
-                &tun_tx,
-                &endpoint_io.event_tx,
-                &transports,
-                8,
-            )
-            .await;
-
-        assert_eq!(turn.summary().raw_ingress_dropped(), 0);
-        assert_eq!(turn.summary().inbound_admitted(), 2);
-        assert_eq!(turn.summary().outbound_admitted(), 1);
-        assert_eq!(turn.summary().outputs(), 3);
-        assert_eq!(turn.summary().outputs_sent(), 2);
-        assert_eq!(turn.summary().outputs_dropped(), 1);
-        assert!(deferred_tun_packets.is_empty());
-        assert_eq!(turn.transport_planned(), 1);
-        assert_eq!(turn.transport_sent(), 0);
-        assert_eq!(turn.transport_dropped(), 1);
-        assert!(turn.raw_ingress_drops().is_empty());
-        assert!(turn.drops().is_empty());
-        assert_eq!(turn.output_drops().len(), 1);
-        assert_eq!(turn.output_drops()[0].owner(), fmp_owner);
-        assert_eq!(turn.output_drops()[0].counter(), 740);
-        assert_eq!(turn.output_drops()[0].target(), OutputTarget::Transport);
-        assert_eq!(turn.output_drops()[0].path(), Some(live_path.clone()));
-        assert_eq!(
-            turn.output_drops()[0].reason(),
-            DataplaneOutputError::NoRoute
-        );
-        assert!(turn.endpoint_data_drops().is_empty());
-        assert!(turn.tun_outbound_drops().is_empty());
-        assert!(raw_source.source.is_empty());
-        assert!(tun_outbound_rx.try_recv().is_err());
-
-        assert_eq!(tun_rx.try_recv().unwrap(), b"tun-live-node".to_vec());
-        match endpoint_io.event_rx.try_recv().expect("endpoint event") {
-            NodeEndpointEvent { messages, .. } => {
-                assert_eq!(messages.len(), 1);
-                assert_eq!(messages[0].source_peer, source_peer);
-                assert_eq!(messages[0].payload, b"endpoint-live-node");
-            }
-        }
-        assert_eq!(
-            driver.owner_mut(fmp_owner).unwrap().active_path(),
-            Some(live_path)
         );
     }

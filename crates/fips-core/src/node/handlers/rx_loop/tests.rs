@@ -26,10 +26,12 @@ fn tun_outbound_gets_dataplane_sized_turns() {
     );
     assert_eq!(tun_drain_budget(PACKET_DRAIN_BUDGET), TUN_DRAIN_BUDGET);
     assert_eq!(TUN_DRAIN_BUDGET, LATENCY_PACKET_DRAIN_BUDGET);
-    assert!(
-        TUN_DRAIN_BUDGET > ENDPOINT_DRAIN_BUDGET,
-        "canonical TUN packet ingress must not inherit the endpoint/control slice"
-    );
+    const {
+        assert!(
+            TUN_DRAIN_BUDGET > ENDPOINT_DRAIN_BUDGET,
+            "canonical TUN packet ingress must not inherit the endpoint/control slice"
+        );
+    }
 }
 
 #[test]
@@ -109,25 +111,27 @@ async fn dataplane_turn_uses_rx_loop_owned_channels() {
     let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
     let (_endpoint_tx, mut endpoint_rx) = crate::node::endpoint_data_batch_channel(1);
     let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
-    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
+    let (_fast_tx, mut fast_ingress_rx) = tokio::sync::mpsc::channel(1);
+    let (_tun_tx, tun_rx) = crate::upper::tun::write_channel();
     let mut endpoint_io = node
         .attach_endpoint_data_io(1)
         .expect("endpoint io should attach before start");
 
-    let turn = node
-        .drain_dataplane_turn_with_firsts(
+    let turn = {
+        let mut dataplane_io = super::rx_loop_dataplane_io(
             &mut packet_rx,
-            crate::dataplane::DataplaneLiveTurnFirsts::default(),
-            4,
+            &mut fast_ingress_rx,
             &mut endpoint_rx,
-            4,
             &mut tun_outbound_rx,
-            4,
-            &tun_tx,
             &endpoint_io.event_tx,
-            4,
+        );
+        node.drain_dataplane_turn_with_firsts(
+            &mut dataplane_io,
+            crate::dataplane::DataplaneLiveTurnFirsts::default(),
+            super::RxLoopDataplaneTurnLimits::new(4, 4, 4, 4),
         )
-        .await;
+        .await
+    };
 
     assert_eq!(
         turn.summary(),
@@ -140,7 +144,7 @@ async fn dataplane_turn_uses_rx_loop_owned_channels() {
     assert!(turn.drops().is_empty());
     assert!(turn.endpoint_data_drops().is_empty());
     assert!(turn.tun_outbound_drops().is_empty());
-    assert!(tun_rx.try_recv().is_err());
+    assert!(tun_rx.try_recv_packet().is_err());
     assert!(endpoint_io.event_rx.try_recv().is_err());
 }
 
@@ -151,7 +155,8 @@ async fn dataplane_turn_reports_raw_ingress_failures() {
     let (packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
     let (_endpoint_tx, mut endpoint_rx) = crate::node::endpoint_data_batch_channel(1);
     let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
-    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
+    let (_fast_tx, mut fast_ingress_rx) = tokio::sync::mpsc::channel(1);
+    let (_tun_tx, tun_rx) = crate::upper::tun::write_channel();
     let mut endpoint_io = node
         .attach_endpoint_data_io(1)
         .expect("endpoint io should attach before start");
@@ -160,25 +165,26 @@ async fn dataplane_turn_reports_raw_ingress_failures() {
         .send(crate::transport::ReceivedPacket::with_timestamp(
             crate::transport::TransportId::new(7),
             crate::transport::TransportAddr::from_string("198.51.100.7:9000"),
-            vec![0],
+            crate::transport::PacketBuffer::new(vec![0]),
             123_456,
         ))
         .expect("malformed packet queued");
 
-    let turn = node
-        .drain_dataplane_turn_with_firsts(
+    let turn = {
+        let mut dataplane_io = super::rx_loop_dataplane_io(
             &mut packet_rx,
-            crate::dataplane::DataplaneLiveTurnFirsts::default(),
-            4,
+            &mut fast_ingress_rx,
             &mut endpoint_rx,
-            4,
             &mut tun_outbound_rx,
-            4,
-            &tun_tx,
             &endpoint_io.event_tx,
-            4,
+        );
+        node.drain_dataplane_turn_with_firsts(
+            &mut dataplane_io,
+            crate::dataplane::DataplaneLiveTurnFirsts::default(),
+            super::RxLoopDataplaneTurnLimits::new(4, 4, 4, 4),
         )
-        .await;
+        .await
+    };
 
     assert!(turn.has_activity());
     assert!(turn.has_failures());
@@ -199,7 +205,7 @@ async fn dataplane_turn_reports_raw_ingress_failures() {
     assert!(turn.endpoint_data_drops().is_empty());
     assert!(turn.tun_outbound_drops().is_empty());
     assert!(packet_rx.try_recv().is_err());
-    assert!(tun_rx.try_recv().is_err());
+    assert!(tun_rx.try_recv_packet().is_err());
     assert!(endpoint_io.event_rx.try_recv().is_err());
 }
 
@@ -212,9 +218,9 @@ fn rx_loop_maintenance_state_owns_activity_window_and_timeout_skip() {
     let mut state = RxLoopMaintenanceState::default();
 
     assert!(!state.data_pressure(empty, start, window));
-    assert!(!state.skip_slow_maintenance(empty, false));
+    assert!(!state.skip_slow_maintenance(false));
     assert!(
-        !state.skip_slow_maintenance(drained, true),
+        !state.skip_slow_maintenance(true),
         "queued dataplane work should timebox slow maintenance instead of starving it"
     );
 
@@ -224,17 +230,17 @@ fn rx_loop_maintenance_state_owns_activity_window_and_timeout_skip() {
     assert!(state.data_pressure(drained, start + Duration::from_secs(3), window));
 
     state.record_maintenance_result(true, true);
-    assert!(state.skip_slow_maintenance(empty, true));
-    assert!(!state.skip_slow_maintenance(empty, false));
+    assert!(state.skip_slow_maintenance(true));
+    assert!(!state.skip_slow_maintenance(false));
 
     state.record_maintenance_result(true, false);
     assert!(
-        !state.skip_slow_maintenance(empty, true),
+        !state.skip_slow_maintenance(true),
         "one skipped or successful busy tick should clear the timeout latch"
     );
 
     state.record_maintenance_result(false, true);
-    assert!(!state.skip_slow_maintenance(empty, true));
+    assert!(!state.skip_slow_maintenance(true));
 }
 
 #[test]

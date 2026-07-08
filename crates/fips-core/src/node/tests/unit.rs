@@ -1,7 +1,7 @@
 use super::*;
 use crate::discovery::nostr::{BootstrapEvent, NostrDiscovery};
 use crate::node::wire::{Msg1Header, build_msg2};
-use crate::peer::{ActivePeer, PromotionResult};
+use crate::peer::{ActivePeer, ActivePeerSession, PromotionResult};
 use crate::transport::ReceivedPacket;
 use crate::transport::udp::UdpTransport;
 use crate::transport::{TransportHandle, packet_channel};
@@ -56,11 +56,9 @@ fn make_test_fmp_session_pair(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn make_active_test_peer(
     node: &Node,
     peer_full: &Identity,
-    peer_identity: PeerIdentity,
     transport_id: TransportId,
     link_id: LinkId,
     remote_addr: TransportAddr,
@@ -68,19 +66,21 @@ fn make_active_test_peer(
     their_index: SessionIndex,
 ) -> ActivePeer {
     let session = make_test_fmp_session(&node.identity, peer_full, [0x01; 8], [0x02; 8]);
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
     ActivePeer::with_session(
         peer_identity,
         link_id,
         1_000,
-        session,
-        our_index,
-        their_index,
-        transport_id,
-        remote_addr,
-        crate::transport::LinkStats::new(),
-        true,
-        &node.config.node.mmp,
-        Some([0x02; 8]),
+        ActivePeerSession {
+            session,
+            our_index,
+            their_index,
+            transport_id,
+            current_addr: remote_addr,
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: Some([0x02; 8]),
+        },
     )
 }
 
@@ -134,30 +134,6 @@ fn peer_identity_for_outbound_refresh_loser(node: &Node) -> (Identity, PeerIdent
     }
 }
 
-fn ensure_dataplane_fsp_owner_for_test(node: &mut Node, dest_addr: NodeAddr) {
-    node.dataplane.register_owner_if_missing(
-        crate::dataplane::OwnerId::fsp_node(dest_addr),
-        crate::dataplane::OwnerConfig::new(1, 8)
-            .with_fsp_session_start_ms(1_000)
-            .with_fsp_mmp(node.config.node.session_mmp.clone(), true),
-    );
-}
-
-fn seed_dataplane_fsp_data_sent_for_test(
-    node: &mut Node,
-    dest_addr: NodeAddr,
-    next_hop: NodeAddr,
-    now_ms: u64,
-) {
-    ensure_dataplane_fsp_owner_for_test(node, dest_addr);
-    assert!(node.dataplane.record_fsp_data_sent(
-        dest_addr,
-        next_hop,
-        512,
-        crate::dataplane::ActivityTick::new(now_ms),
-    ));
-}
-
 fn seed_dataplane_fsp_control_rx_for_test(
     node: &mut Node,
     source_addr: NodeAddr,
@@ -168,52 +144,23 @@ fn seed_dataplane_fsp_control_rx_for_test(
     assert!(
         node.dataplane
             .record_authenticated_fsp_session(
-                source_addr,
-                previous_hop,
-                crate::protocol::SessionMessageType::SenderReport.to_byte(),
-                0,
-                crate::dataplane::FspReceiveSync {
-                    counter: 1,
-                    received_k_bit: false,
-                    timestamp: 0,
-                    plaintext_len: crate::node::session_wire::FSP_INNER_HEADER_SIZE,
-                    ce_flag: false,
-                    path_mtu: u16::MAX,
-                    spin_bit: false,
-                },
-                Some(crate::dataplane::ActivityTick::new(now_ms)),
-                std::time::Instant::now(),
-            )
-            .is_some()
-    );
-}
-
-fn seed_dataplane_fsp_data_rx_for_test(
-    node: &mut Node,
-    source_addr: NodeAddr,
-    previous_hop: NodeAddr,
-    now_ms: u64,
-) {
-    ensure_dataplane_fsp_owner_for_test(node, source_addr);
-    let body_len = 512;
-    assert!(
-        node.dataplane
-            .record_authenticated_fsp_session(
-                source_addr,
-                previous_hop,
-                crate::protocol::SessionMessageType::EndpointData.to_byte(),
-                body_len,
-                crate::dataplane::FspReceiveSync {
-                    counter: 2,
-                    received_k_bit: false,
-                    timestamp: 0,
-                    plaintext_len: crate::node::session_wire::FSP_INNER_HEADER_SIZE + body_len,
-                    ce_flag: false,
-                    path_mtu: u16::MAX,
-                    spin_bit: false,
-                },
-                Some(crate::dataplane::ActivityTick::new(now_ms)),
-                std::time::Instant::now(),
+                crate::dataplane::DataplaneAuthenticatedFspSession::new(
+                    source_addr,
+                    previous_hop,
+                    crate::protocol::SessionMessageType::SenderReport.to_byte(),
+                    0,
+                    crate::dataplane::FspReceiveSync {
+                        counter: 1,
+                        received_k_bit: false,
+                        timestamp: 0,
+                        plaintext_len: crate::node::session_wire::FSP_INNER_HEADER_SIZE,
+                        ce_flag: false,
+                        path_mtu: u16::MAX,
+                        spin_bit: false,
+                    },
+                    Some(crate::dataplane::ActivityTick::new(now_ms)),
+                    std::time::Instant::now(),
+                ),
             )
             .is_some()
     );

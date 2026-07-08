@@ -74,7 +74,7 @@ impl DataplaneFspWrapRoute {
             Vec::with_capacity(crate::protocol::SESSION_DATAGRAM_HEADER_SIZE + fsp_wire.len());
         payload.extend_from_slice(&header);
         payload.extend_from_slice(&fsp_wire);
-        payload.into()
+        PacketBuffer::new(payload)
     }
 
     fn into_fmp_outbound(self, class: PacketClass, fsp_wire: PacketBuffer) -> OutboundPacket {

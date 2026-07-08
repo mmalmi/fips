@@ -187,7 +187,7 @@ async fn test_check_pending_lookups_default_sequence_unreachable() {
     // --- t = 15100ms: final deadline (cumulative 1+2+4+8 = 15s) ---
     // Drain any TUN frames that may have leaked from earlier steps so the
     // post-final-timeout drain observes only the unreachable-emission output.
-    while tun_rx.try_recv().is_ok() {}
+    while tun_rx.try_recv_packet().is_ok() {}
 
     node.check_pending_lookups(15_100).await;
 
@@ -218,7 +218,8 @@ async fn test_check_pending_lookups_default_sequence_unreachable() {
 
     // ICMPv6 Destination Unreachable was emitted to the TUN sender.
     let icmp_frame = tun_rx
-        .try_recv()
+        .try_recv_packet()
+        .map(|packet| packet.as_slice().to_vec())
         .expect("ICMPv6 Destination Unreachable must be emitted on final timeout");
     assert!(
         icmp_frame.len() >= 48,

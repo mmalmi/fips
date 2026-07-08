@@ -198,7 +198,7 @@ impl TunWriter {
 
         debug!(name = %self.name, max_mss = self.max_mss, "TUN writer starting");
 
-        for mut packet in self.rx {
+        while let Some(mut packet) = self.rx.recv() {
             // Per-destination clamp (peer source IPv6 = bytes 8..24)
             let effective_max_mss = if packet.len() >= 24 {
                 per_flow_max_mss(
@@ -251,15 +251,16 @@ impl TunWriter {
 ///
 /// This is designed to run in a dedicated thread since wintun reads are blocking.
 /// The loop exits when the session is closed or an unrecoverable error occurs.
-pub fn run_tun_reader(
-    mut device: TunDevice,
-    mtu: u16,
-    our_addr: FipsAddress,
-    tun_tx: TunTx,
-    outbound_tx: TunOutboundTx,
-    transport_mtu: u16,
-    path_mtu_lookup: PathMtuLookup,
-) {
+pub(crate) fn run_tun_reader(runtime: super::TunReaderRuntime) {
+    let super::TunReaderRuntime {
+        mut device,
+        mtu,
+        our_addr,
+        tun_tx,
+        outbound_tx,
+        transport_mtu,
+        path_mtu_lookup,
+    } = runtime;
     let (name, mut buf, max_mss) = super::tun_reader_setup(device.name(), mtu, transport_mtu);
 
     loop {

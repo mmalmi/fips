@@ -108,7 +108,7 @@ impl NostrDiscovery {
 
         let base_socket = bind_traversal_udp_socket()?;
 
-        let (reflexive_address, local_addresses, stun_server) = observe_traversal_addresses(
+        let observation = observe_traversal_addresses(
             &base_socket,
             &self.config.stun_servers,
             self.config.share_local_candidates,
@@ -117,22 +117,19 @@ impl NostrDiscovery {
         .await?;
         debug!(
             peer = %peer_short,
-            reflexive = %reflexive_address.as_ref().map(|a| format!("{}:{}", a.ip, a.port)).unwrap_or_else(|| "-".into()),
-            local = local_addresses.len(),
-            stun = %stun_server.as_deref().unwrap_or("-"),
+            reflexive = %observation.reflexive_address.as_ref().map(|a| format!("{}:{}", a.ip, a.port)).unwrap_or_else(|| "-".into()),
+            local = observation.local_addresses.len(),
+            stun = %observation.stun_server.as_deref().unwrap_or("-"),
             "traversal: initiator STUN observed"
         );
         let session_id = nonce();
         let offer = create_traversal_offer(
             session_id.clone(),
-            now_ms(),
-            self.config.signal_ttl_secs * 1000,
+            TraversalSignalTiming::new(now_ms(), self.config.signal_ttl_secs * 1000),
             session_id.clone(),
             self.npub.clone(),
             peer_config.npub.clone(),
-            reflexive_address,
-            local_addresses,
-            stun_server,
+            observation,
         );
 
         let (tx, rx) = oneshot::channel();
@@ -421,36 +418,29 @@ impl NostrDiscovery {
             .await?;
 
         let base_socket = bind_traversal_udp_socket()?;
-        let (reflexive_address, local_addresses, stun_server) = observe_traversal_addresses(
+        let observation = observe_traversal_addresses(
             &base_socket,
             &self.config.stun_servers,
             self.config.share_local_candidates,
             TRAVERSAL_STUN_TIMEOUT,
         )
         .await?;
-        let accepted = reflexive_address.is_some() || !local_addresses.is_empty();
+        let accepted = observation.has_usable_address();
         debug!(
             peer = %peer_short,
             session = %short_id(&offer.session_id),
             accepted = accepted,
-            reflexive = %reflexive_address.as_ref().map(|a| format!("{}:{}", a.ip, a.port)).unwrap_or_else(|| "-".into()),
-            local = local_addresses.len(),
+            reflexive = %observation.reflexive_address.as_ref().map(|a| format!("{}:{}", a.ip, a.port)).unwrap_or_else(|| "-".into()),
+            local = observation.local_addresses.len(),
             "traversal: mesh responder STUN observed"
         );
         let answer = create_traversal_answer(
-            offer.session_id.clone(),
-            now_ms(),
-            self.config.signal_ttl_secs * 1000,
+            &offer,
+            TraversalSignalTiming::new(now_ms(), self.config.signal_ttl_secs * 1000),
             nonce(),
             self.npub.clone(),
-            offer.sender_npub.clone(),
-            offer.nonce.clone(),
-            accepted,
-            reflexive_address,
-            local_addresses,
-            stun_server,
+            observation,
             accepted.then(|| self.punch_hint()),
-            (!accepted).then_some("no-usable-addresses".to_string()),
             Some(offer_received_at),
         );
         if !self
@@ -646,36 +636,29 @@ impl NostrDiscovery {
             .await?;
 
         let base_socket = bind_traversal_udp_socket()?;
-        let (reflexive_address, local_addresses, stun_server) = observe_traversal_addresses(
+        let observation = observe_traversal_addresses(
             &base_socket,
             &self.config.stun_servers,
             self.config.share_local_candidates,
             TRAVERSAL_STUN_TIMEOUT,
         )
         .await?;
-        let accepted = reflexive_address.is_some() || !local_addresses.is_empty();
+        let accepted = observation.has_usable_address();
         debug!(
             peer = %peer_short,
             session = %short_id(&offer.session_id),
             accepted = accepted,
-            reflexive = %reflexive_address.as_ref().map(|a| format!("{}:{}", a.ip, a.port)).unwrap_or_else(|| "-".into()),
-            local = local_addresses.len(),
+            reflexive = %observation.reflexive_address.as_ref().map(|a| format!("{}:{}", a.ip, a.port)).unwrap_or_else(|| "-".into()),
+            local = observation.local_addresses.len(),
             "traversal: responder STUN observed"
         );
         let answer = create_traversal_answer(
-            offer.session_id.clone(),
-            now_ms(),
-            self.config.signal_ttl_secs * 1000,
+            &offer,
+            TraversalSignalTiming::new(now_ms(), self.config.signal_ttl_secs * 1000),
             nonce(),
             self.npub.clone(),
-            offer.sender_npub.clone(),
-            offer.nonce.clone(),
-            accepted,
-            reflexive_address,
-            local_addresses,
-            stun_server,
+            observation,
             accepted.then(|| self.punch_hint()),
-            (!accepted).then_some("no-usable-addresses".to_string()),
             Some(offer_received_at),
         );
         let relays = self.preferred_signal_relays(sender, None).await?;

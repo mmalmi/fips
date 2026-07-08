@@ -319,7 +319,7 @@ impl Node {
         self.maybe_run_startup_open_discovery_sweep(&bootstrap)
             .await;
         self.queue_open_discovery_retries(&bootstrap).await;
-        self.queue_active_fallback_direct_retries(&bootstrap);
+        self.queue_active_fallback_direct_retries();
 
         // Advert refresh can touch STUN/public-endpoint discovery on some
         // configs. Drain traversal events and queue direct retries first so a

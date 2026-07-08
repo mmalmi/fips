@@ -178,15 +178,9 @@ impl Node {
             return;
         }
 
-        let now_ms = Self::now_ms();
-
         // Update peer's tree state in ActivePeer
         if let Some(peer) = self.peers.get_mut(from) {
-            peer.update_tree_position(
-                announce.declaration.clone(),
-                announce.ancestry.clone(),
-                now_ms,
-            );
+            peer.update_tree_position(announce.declaration.clone(), announce.ancestry.clone());
         }
 
         // Update in TreeState

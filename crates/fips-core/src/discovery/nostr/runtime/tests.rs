@@ -419,7 +419,7 @@ fn signed_rating_fact_event_with_rater(
         rating_fact_tag(["type", "rating"]),
         rating_fact_tag(["schema", "1"]),
         rating_fact_tag(["created_at", &created_at_string]),
-        rating_fact_tag(["rater", &rater_npub]),
+        rating_fact_tag(["rater", rater_npub]),
         rating_fact_tag(["subject", subject_npub]),
         rating_fact_tag(["scope", scope]),
         rating_fact_tag(["rating", &rating_string]),

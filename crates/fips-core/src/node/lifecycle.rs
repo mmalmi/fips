@@ -12,7 +12,9 @@ use crate::node::wire::build_msg1;
 use crate::peer::PeerConnection;
 use crate::protocol::{Disconnect, DisconnectReason, SessionMessageType};
 use crate::transport::{Link, LinkDirection, LinkId, TransportAddr, TransportId, packet_channel};
-use crate::upper::tun::{TunDevice, TunState, run_tun_reader, shutdown_tun_interface};
+use crate::upper::tun::{
+    TunDevice, TunReaderRuntime, TunState, run_tun_reader, shutdown_tun_interface,
+};
 use crate::{NodeAddr, PeerIdentity};
 use secp256k1::PublicKey;
 use std::collections::{HashMap, HashSet};
@@ -27,27 +29,6 @@ enum MeshSignalSessionAction {
     Defer,
     Drop,
 }
-
-#[cfg(debug_assertions)]
-fn node_start_debug_log(message: impl AsRef<str>) {
-    use std::io::Write as _;
-
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(std::env::temp_dir().join("nvpn-fips-endpoint-debug.log"))
-    {
-        let _ = writeln!(
-            file,
-            "{:?} {}",
-            std::time::SystemTime::now(),
-            message.as_ref()
-        );
-    }
-}
-
-#[cfg(not(debug_assertions))]
-fn node_start_debug_log(_message: impl AsRef<str>) {}
 
 /// True if `ip` is not a viable canonical advert endpoint for peers off
 /// the publisher's own LAN. Covers RFC1918, loopback, link-local, IPv4

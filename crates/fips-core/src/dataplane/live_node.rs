@@ -1,71 +1,47 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct DataplaneLiveFmpIngressRoute {
+struct DataplaneLiveFmpIngressRoute {
     transport_id: TransportId,
     receiver_idx: u32,
     route: DataplaneIngressRoute,
 }
 
 impl DataplaneLiveFmpIngressRoute {
-    pub(crate) fn new(
-        transport_id: TransportId,
-        receiver_idx: u32,
-        route: DataplaneIngressRoute,
-    ) -> Self {
-        Self {
-            transport_id,
-            receiver_idx,
-            route,
-        }
-    }
-
     fn owner(&self) -> OwnerId {
         self.route.owner
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct DataplaneLiveFspIngressRoute {
+struct DataplaneLiveFspIngressRoute {
     source_addr: NodeAddr,
     route: DataplaneIngressRoute,
 }
 
 impl DataplaneLiveFspIngressRoute {
-    pub(crate) fn new(source_addr: NodeAddr, route: DataplaneIngressRoute) -> Self {
-        Self { source_addr, route }
-    }
-
     fn owner(&self) -> OwnerId {
         self.route.owner
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct DataplaneLiveTunRoute {
+struct DataplaneLiveTunRoute {
     dest_addr: NodeAddr,
-    route: DataplaneTunDestinationRoute,
+    route: DataplaneTunOutboundRoute,
 }
 
 impl DataplaneLiveTunRoute {
-    pub(crate) fn new(dest_addr: NodeAddr, route: DataplaneTunDestinationRoute) -> Self {
-        Self { dest_addr, route }
-    }
-
     fn owner(&self) -> OwnerId {
         self.route.owner()
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct DataplaneLiveEndpointRoute {
+struct DataplaneLiveEndpointRoute {
     dest_addr: NodeAddr,
     route: DataplaneEndpointDataRoute,
 }
 
 impl DataplaneLiveEndpointRoute {
-    pub(crate) fn new(dest_addr: NodeAddr, route: DataplaneEndpointDataRoute) -> Self {
-        Self { dest_addr, route }
-    }
-
     fn owner(&self) -> OwnerId {
         self.route.owner()
     }
@@ -84,20 +60,40 @@ impl DataplaneLiveOwnerRoutes {
         Self::default()
     }
 
-    pub(crate) fn push_fmp_ingress(&mut self, route: DataplaneLiveFmpIngressRoute) {
-        self.fmp_ingress.push(route);
+    pub(crate) fn push_fmp_ingress(
+        &mut self,
+        transport_id: TransportId,
+        receiver_idx: u32,
+        route: DataplaneIngressRoute,
+    ) {
+        self.fmp_ingress.push(DataplaneLiveFmpIngressRoute {
+            transport_id,
+            receiver_idx,
+            route,
+        });
     }
 
-    pub(crate) fn push_fsp_ingress(&mut self, route: DataplaneLiveFspIngressRoute) {
-        self.fsp_ingress.push(route);
+    pub(crate) fn push_fsp_ingress(&mut self, source_addr: NodeAddr, route: DataplaneIngressRoute) {
+        self.fsp_ingress
+            .push(DataplaneLiveFspIngressRoute { source_addr, route });
     }
 
-    pub(crate) fn push_tun_destination(&mut self, route: DataplaneLiveTunRoute) {
-        self.tun_destinations.push(route);
+    pub(crate) fn push_tun_destination(
+        &mut self,
+        dest_addr: NodeAddr,
+        route: DataplaneTunOutboundRoute,
+    ) {
+        self.tun_destinations
+            .push(DataplaneLiveTunRoute { dest_addr, route });
     }
 
-    pub(crate) fn push_endpoint_destination(&mut self, route: DataplaneLiveEndpointRoute) {
-        self.endpoint_destinations.push(route);
+    pub(crate) fn push_endpoint_destination(
+        &mut self,
+        dest_addr: NodeAddr,
+        route: DataplaneEndpointDataRoute,
+    ) {
+        self.endpoint_destinations
+            .push(DataplaneLiveEndpointRoute { dest_addr, route });
     }
 
     fn has_owner_mismatch(&self, owner: OwnerId) -> bool {
@@ -157,6 +153,17 @@ pub(crate) struct DataplaneLiveNode {
     direct_fsp_reassembler: DataplaneDirectFspReassembler,
 }
 
+pub(crate) struct DataplaneLiveTurnIo<'a> {
+    pub(crate) endpoint_data_rx: &'a mut EndpointDataBatchRx,
+    pub(crate) endpoint_limit: usize,
+    pub(crate) tun_outbound_rx: &'a mut TunOutboundRx,
+    pub(crate) tun_limit: usize,
+    pub(crate) endpoint_tx: &'a EndpointEventSender,
+    pub(crate) transports: &'a HashMap<TransportId, TransportHandle>,
+    pub(crate) crypto_limit: usize,
+    pub(crate) transport_send_batch_packets: usize,
+}
+
 impl DataplaneLiveNode {
     pub(crate) fn new(config: AdmissionConfig) -> Self {
         let worker_capacity = config.total_capacity().max(1);
@@ -196,17 +203,15 @@ impl DataplaneLiveNode {
         rx
     }
 
-    pub(crate) fn set_established_fast_ingress_direct_fsp_sources<DirectSources>(
+    pub(crate) fn set_established_fast_ingress_direct_fsp_sources(
         &self,
-        sources: DirectSources,
-    ) where
-        DirectSources:
-            Into<Arc<HashMap<(TransportId, TransportAddr), DataplaneDirectFspSource>>>,
-    {
+        sources: DataplaneDirectFspSources,
+    ) {
         self.routes
             .set_established_fast_ingress_direct_fsp_sources(sources);
     }
 
+    #[cfg(test)]
     pub(crate) fn register_owner(&mut self, owner: OwnerId, config: OwnerConfig) {
         self.driver.register_owner(owner, config);
     }
@@ -229,18 +234,6 @@ impl DataplaneLiveNode {
 
     pub(crate) fn fsp_owner_destinations(&self) -> Vec<NodeAddr> {
         self.driver.fsp_owner_destinations()
-    }
-
-    pub(crate) fn set_owner_crypto_keys(
-        &mut self,
-        owner: OwnerId,
-        keys: OwnerCryptoKeys,
-    ) -> Result<(), DataplaneLiveOwnerError> {
-        let Some(owner_state) = self.driver.owner_mut(owner) else {
-            return Err(DataplaneLiveOwnerError::UnknownOwner);
-        };
-        owner_state.set_crypto_keys(keys);
-        Ok(())
     }
 
     pub(crate) fn install_owner_fmp_session_routes(
@@ -292,18 +285,6 @@ impl DataplaneLiveNode {
         }
 
         self.replace_registered_owner_routes(owner, routes);
-        Ok(())
-    }
-
-    pub(crate) fn apply_owner_live_config(
-        &mut self,
-        owner: OwnerId,
-        config: OwnerConfig,
-    ) -> Result<(), DataplaneLiveOwnerError> {
-        let Some(owner_state) = self.driver.owner_mut(owner) else {
-            return Err(DataplaneLiveOwnerError::UnknownOwner);
-        };
-        owner_state.apply_live_config(config);
         Ok(())
     }
 
@@ -364,18 +345,6 @@ impl DataplaneLiveNode {
         if !owner_state.install_fsp_pending_receive_epoch(pending_k_bit, open) {
             return Err(DataplaneLiveOwnerError::OwnerMismatch);
         }
-        Ok(())
-    }
-
-    pub(crate) fn set_owner_active_path(
-        &mut self,
-        owner: OwnerId,
-        path: TransportPath,
-    ) -> Result<(), DataplaneLiveOwnerError> {
-        let Some(owner_state) = self.driver.owner_mut(owner) else {
-            return Err(DataplaneLiveOwnerError::UnknownOwner);
-        };
-        owner_state.set_active_path(path);
         Ok(())
     }
 
@@ -469,26 +438,12 @@ impl DataplaneLiveNode {
 
     pub(crate) fn record_authenticated_fmp_mmp_receive(
         &mut self,
-        node_addr: &NodeAddr,
-        counter: u64,
-        timestamp_ms: u32,
-        packet_len: usize,
-        ce_flag: bool,
-        spin_bit: bool,
-        now: std::time::Instant,
+        receive: DataplaneAuthenticatedFmpMmpReceive,
     ) -> Result<Option<std::time::Duration>, DataplaneFmpMmpSkip> {
-        let owner = OwnerId::fmp_node(*node_addr);
-        let Some(owner_state) = self.driver.owner_mut(owner) else {
+        let Some(owner_state) = self.driver.owner_mut(receive.owner) else {
             return Err(DataplaneFmpMmpSkip::UnknownOwner);
         };
-        owner_state.record_authenticated_fmp_receive(
-            counter,
-            timestamp_ms,
-            packet_len,
-            ce_flag,
-            spin_bit,
-            now,
-        )
+        owner_state.record_authenticated_fmp_receive(receive)
     }
 
     pub(crate) fn record_fmp_mmp_send_result(
@@ -607,25 +562,12 @@ impl DataplaneLiveNode {
             .any_fsp_recent_outbound_without_inbound_for_next_hop(next_hop, now_ms, timeout_ms)
     }
 
+    #[cfg(test)]
     pub(crate) fn record_authenticated_fsp_session(
         &mut self,
-        source_addr: NodeAddr,
-        previous_hop: NodeAddr,
-        msg_type: u8,
-        body_len: usize,
-        sync: FspReceiveSync,
-        activity_tick: Option<ActivityTick>,
-        now: std::time::Instant,
+        session: DataplaneAuthenticatedFspSession,
     ) -> Option<bool> {
-        self.driver.record_authenticated_fsp_session(
-            OwnerId::fsp_node(source_addr),
-            previous_hop,
-            msg_type,
-            body_len,
-            sync,
-            activity_tick,
-            now,
-        )
+        self.driver.record_authenticated_fsp_session(session)
     }
 
     pub(crate) fn record_fsp_decrypt_failure(&mut self, source_addr: NodeAddr) -> Option<u32> {
@@ -633,6 +575,7 @@ impl DataplaneLiveNode {
             .record_fsp_decrypt_failure(OwnerId::fsp_node(source_addr))
     }
 
+    #[cfg(test)]
     pub(crate) fn record_fsp_data_sent(
         &mut self,
         dest_addr: NodeAddr,
@@ -641,7 +584,8 @@ impl DataplaneLiveNode {
         tick: ActivityTick,
     ) -> bool {
         self.driver
-            .record_fsp_data_sent(OwnerId::fsp_node(dest_addr), next_hop, bytes, tick)
+            .owner_mut(OwnerId::fsp_node(dest_addr))
+            .is_some_and(|owner| owner.record_fsp_data_sent(next_hop, bytes, tick))
     }
 
     pub(crate) fn unregister_owner(&mut self, owner: OwnerId) {
@@ -656,22 +600,6 @@ impl DataplaneLiveNode {
     ) {
         self.routes.unregister_owner(owner);
         routes.apply_to(&mut self.routes);
-    }
-
-    pub(crate) fn replace_owner_routes(
-        &mut self,
-        owner: OwnerId,
-        routes: DataplaneLiveOwnerRoutes,
-    ) -> Result<(), DataplaneLiveOwnerError> {
-        if !self.driver.has_owner(owner) {
-            return Err(DataplaneLiveOwnerError::UnknownOwner);
-        }
-        if routes.has_owner_mismatch(owner) {
-            return Err(DataplaneLiveOwnerError::OwnerMismatch);
-        }
-
-        self.replace_registered_owner_routes(owner, routes);
-        Ok(())
     }
 
     pub(crate) fn replace_owner_fsp_routes(
@@ -709,27 +637,27 @@ impl DataplaneLiveNode {
         std::mem::take(&mut self.deferred_tun_packets)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn pump_turn_with_firsts_and_transport_worker<RI, Transports>(
+    pub(crate) async fn pump_turn_with_firsts_and_transport_batch<RI>(
         &mut self,
         fast_ingress: Option<DataplaneFastIngressBatch>,
         raw_ingress: &mut RI,
         raw_ingress_limit: usize,
         outbound_firsts: DataplaneLiveOutboundFirsts,
-        endpoint_data_rx: &mut EndpointDataBatchRx,
-        endpoint_limit: usize,
-        tun_outbound_rx: &mut TunOutboundRx,
-        tun_limit: usize,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        transports: &Transports,
-        crypto_limit: usize,
-        transport_send_worker: &mut DataplaneTransportSendWorkerPool,
+        io: DataplaneLiveTurnIo<'_>,
     ) -> DataplaneLiveNodeTurn
     where
         RI: DataplaneRawIngressSource,
-        Transports: DataplaneTransportResolver + ?Sized,
     {
+        let DataplaneLiveTurnIo {
+            endpoint_data_rx,
+            endpoint_limit,
+            tun_outbound_rx,
+            tun_limit,
+            endpoint_tx,
+            transports,
+            crypto_limit,
+            transport_send_batch_packets,
+        } = io;
         let _turn_timer =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::DataplaneLiveTurn);
         self.crypto_worker.record_perf_depths();
@@ -743,25 +671,26 @@ impl DataplaneLiveNode {
             );
         let turn = self.driver
             .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
-                summary,
-                &mut self.crypto_worker,
-                fast_ingress,
-                raw_ingress,
-                &mut self.routes,
-                raw_ingress_limit,
-                endpoint_data_rx,
-                endpoint_limit,
-                tun_outbound_rx,
-                tun_limit,
-                outbound_firsts,
-                &mut self.deferred_endpoint_data_batches,
-                &mut self.deferred_tun_packets,
-                &mut self.deferred_raw_ingress,
-                tun_tx,
-                endpoint_tx,
-                transports,
-                crypto_limit,
-                transport_send_worker,
+                DataplaneLivePumpRequest {
+                    summary,
+                    executor: &mut self.crypto_worker,
+                    fast_ingress,
+                    raw_ingress,
+                    routes: &mut self.routes,
+                    raw_ingress_limit,
+                    endpoint_data_rx,
+                    endpoint_limit,
+                    tun_outbound_rx,
+                    tun_limit,
+                    outbound_firsts,
+                    deferred_endpoint_data_batches: &mut self.deferred_endpoint_data_batches,
+                    deferred_tun_packets: &mut self.deferred_tun_packets,
+                    deferred_raw_ingress: &mut self.deferred_raw_ingress,
+                    endpoint_tx,
+                    transports,
+                    crypto_limit,
+                    transport_send_batch_packets,
+                },
             )
             .await;
         if !self.deferred_raw_ingress.is_empty() && !turn.fsp_local_session_ingress().is_empty() {
@@ -771,19 +700,11 @@ impl DataplaneLiveNode {
         turn
     }
 
-    pub(crate) async fn pump_completion_output_turn_with_transport_worker<Transports>(
+    pub(crate) async fn pump_completion_output_turn_with_transport_batch(
         &mut self,
-        endpoint_data_rx: &mut EndpointDataBatchRx,
-        tun_outbound_rx: &mut TunOutboundRx,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        transports: &Transports,
-        crypto_limit: usize,
-        transport_send_worker: &mut DataplaneTransportSendWorkerPool,
-    ) -> DataplaneLiveNodeTurn
-    where
-        Transports: DataplaneTransportResolver + ?Sized,
-    {
+        io: DataplaneLiveTurnIo<'_>,
+    ) -> DataplaneLiveNodeTurn {
+        let crypto_limit = io.crypto_limit;
         let mut empty_raw_ingress = std::mem::take(&mut self.empty_raw_ingress);
         empty_raw_ingress.clear();
         let raw_ingress_limit = if self.deferred_raw_ingress.is_empty() {
@@ -792,87 +713,30 @@ impl DataplaneLiveNode {
             crypto_limit.max(1)
         };
         let turn = self
-            .pump_turn_with_firsts_and_transport_worker(
+            .pump_turn_with_firsts_and_transport_batch(
                 None,
                 &mut empty_raw_ingress,
                 raw_ingress_limit,
                 DataplaneLiveOutboundFirsts::default(),
-                endpoint_data_rx,
-                0,
-                tun_outbound_rx,
-                0,
-                tun_tx,
-                endpoint_tx,
-                transports,
-                crypto_limit,
-                transport_send_worker,
+                DataplaneLiveTurnIo {
+                    endpoint_limit: 0,
+                    tun_limit: 0,
+                    ..io
+                },
             )
             .await;
         self.empty_raw_ingress = empty_raw_ingress;
         turn
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn pump_packet_rx_turn_with_firsts_and_transport_worker<Transports>(
+    pub(crate) async fn pump_packet_rx_turn_with_firsts_direct_fsp_sources_and_transport_batch(
         &mut self,
         packet_rx: &mut PacketRx,
         firsts: DataplaneLiveTurnFirsts,
         packet_limit: usize,
-        endpoint_data_rx: &mut EndpointDataBatchRx,
-        endpoint_limit: usize,
-        tun_outbound_rx: &mut TunOutboundRx,
-        tun_limit: usize,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        transports: &Transports,
-        crypto_limit: usize,
-        transport_send_worker: &mut DataplaneTransportSendWorkerPool,
-    ) -> DataplaneLiveNodeTurn
-    where
-        Transports: DataplaneTransportResolver + ?Sized,
-    {
-        self.pump_packet_rx_turn_with_firsts_direct_fsp_sources_and_transport_worker(
-            packet_rx,
-            firsts,
-            packet_limit,
-            DataplaneNoDirectFspSources,
-            endpoint_data_rx,
-            endpoint_limit,
-            tun_outbound_rx,
-            tun_limit,
-            tun_tx,
-            endpoint_tx,
-            transports,
-            crypto_limit,
-            transport_send_worker,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn pump_packet_rx_turn_with_firsts_direct_fsp_sources_and_transport_worker<
-        C,
-        Transports,
-    >(
-        &mut self,
-        packet_rx: &mut PacketRx,
-        firsts: DataplaneLiveTurnFirsts,
-        packet_limit: usize,
-        direct_fsp_sources: C,
-        endpoint_data_rx: &mut EndpointDataBatchRx,
-        endpoint_limit: usize,
-        tun_outbound_rx: &mut TunOutboundRx,
-        tun_limit: usize,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        transports: &Transports,
-        crypto_limit: usize,
-        transport_send_worker: &mut DataplaneTransportSendWorkerPool,
-    ) -> DataplaneLiveNodeTurn
-    where
-        C: DataplaneFspSourceClassifier,
-        Transports: DataplaneTransportResolver + ?Sized,
-    {
+        direct_fsp_sources: DataplaneDirectFspSources,
+        io: DataplaneLiveTurnIo<'_>,
+    ) -> DataplaneLiveNodeTurn {
         let DataplaneLiveTurnFirsts {
             raw_packet,
             fast_ingress,
@@ -900,20 +764,12 @@ impl DataplaneLiveNode {
                 prefetched.push_back(packet);
             });
             let mut turn = self
-                .pump_turn_with_firsts_and_transport_worker(
+                .pump_turn_with_firsts_and_transport_batch(
                     fast_ingress,
                     &mut prefetched,
                     packet_limit,
                     outbound_firsts,
-                    endpoint_data_rx,
-                    endpoint_limit,
-                    tun_outbound_rx,
-                    tun_limit,
-                    tun_tx,
-                    endpoint_tx,
-                    transports,
-                    crypto_limit,
-                    transport_send_worker,
+                    io,
                 )
                 .await;
             let control_ingress = raw_ingress.take_control_ingress();
@@ -924,20 +780,12 @@ impl DataplaneLiveNode {
             return turn;
         }
         let mut turn = self
-            .pump_turn_with_firsts_and_transport_worker(
+            .pump_turn_with_firsts_and_transport_batch(
                 fast_ingress,
                 &mut raw_ingress,
                 packet_limit,
                 outbound_firsts,
-                endpoint_data_rx,
-                endpoint_limit,
-                tun_outbound_rx,
-                tun_limit,
-                tun_tx,
-                endpoint_tx,
-                transports,
-                crypto_limit,
-                transport_send_worker,
+                io,
             )
             .await;
         let control_ingress = raw_ingress.take_control_ingress();
@@ -976,8 +824,67 @@ fn record_dataplane_live_turn_perf(turn: &DataplaneLiveNodeTurn) {
         crate::perf_profile::Event::DataplaneLiveRetiredDrops,
         summary.drops() as u64,
     );
+    for drop in turn.drops() {
+        let event = match drop.reason() {
+            PacketDropReason::Admission(reason) => {
+                let reason_event = match reason {
+                    AdmissionDropReason::PriorityFull => {
+                        crate::perf_profile::Event::DataplaneLiveDropAdmissionPriorityFull
+                    }
+                    AdmissionDropReason::BulkFull => {
+                        crate::perf_profile::Event::DataplaneLiveDropAdmissionBulkFull
+                    }
+                };
+                crate::perf_profile::record_event(reason_event);
+                crate::perf_profile::record_event(dataplane_live_admission_source_event(
+                    drop, reason,
+                ));
+                crate::perf_profile::Event::DataplaneLiveDropAdmission
+            }
+            PacketDropReason::UnknownOwner => {
+                crate::perf_profile::Event::DataplaneLiveDropUnknownOwner
+            }
+            PacketDropReason::Replay => crate::perf_profile::Event::DataplaneLiveDropReplay,
+            PacketDropReason::OwnerInFlightFull => {
+                crate::perf_profile::Event::DataplaneLiveDropOwnerInFlightFull
+            }
+            PacketDropReason::StaleGeneration => {
+                crate::perf_profile::Event::DataplaneLiveDropStaleGeneration
+            }
+            PacketDropReason::CounterExhausted => {
+                crate::perf_profile::Event::DataplaneLiveDropCounterExhausted
+            }
+            PacketDropReason::StaleCompletionGeneration => {
+                crate::perf_profile::Event::DataplaneLiveDropStaleCompletionGeneration
+            }
+            PacketDropReason::CryptoFailed => {
+                crate::perf_profile::Event::DataplaneLiveDropCryptoFailed
+            }
+        };
+        crate::perf_profile::record_event(event);
+    }
     crate::perf_profile::record_event_count(
         crate::perf_profile::Event::DataplaneLiveOutputDrops,
         summary.outputs_dropped() as u64,
     );
+}
+
+fn dataplane_live_admission_source_event(
+    drop: &PacketDrop,
+    reason: AdmissionDropReason,
+) -> crate::perf_profile::Event {
+    match (drop.counter().is_some(), reason) {
+        (true, AdmissionDropReason::PriorityFull) => {
+            crate::perf_profile::Event::DataplaneLiveDropAdmissionInboundPriorityFull
+        }
+        (true, AdmissionDropReason::BulkFull) => {
+            crate::perf_profile::Event::DataplaneLiveDropAdmissionInboundBulkFull
+        }
+        (false, AdmissionDropReason::PriorityFull) => {
+            crate::perf_profile::Event::DataplaneLiveDropAdmissionOutboundPriorityFull
+        }
+        (false, AdmissionDropReason::BulkFull) => {
+            crate::perf_profile::Event::DataplaneLiveDropAdmissionOutboundBulkFull
+        }
+    }
 }

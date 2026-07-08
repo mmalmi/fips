@@ -40,16 +40,12 @@ use tun::Layer;
 #[cfg(target_os = "linux")]
 use self::linux_vnet::{LinuxVnetTun, linux_vnet_tun_enabled};
 
-#[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
-pub(crate) use super::tun_outbound::TunOutboundAdmission;
 pub(crate) use super::tun_outbound::tun_outbound_channel;
 pub use super::tun_outbound::{TunOutboundRx, TunOutboundTx};
 #[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
 pub(crate) use super::tun_write::TunRx;
 pub use super::tun_write::TunTx;
-#[cfg(test)]
-pub(crate) use super::tun_write::write_channel_with_bulk_capacity;
-pub(crate) use super::tun_write::{TunWriteErrorKind, TunWriteLane, write_channel};
+pub(crate) use super::tun_write::write_channel;
 
 /// Read-only handle to the per-destination path MTU map. Populated by
 /// the discovery handler on `LookupResponse`; read by the TUN reader
@@ -313,8 +309,7 @@ impl TunDevice {
                 (LinuxTunDevice::Vnet(device), actual_name)
             } else {
                 let mut tun_config = tun::Configuration::default();
-                #[allow(deprecated)]
-                tun_config.name(name).layer(Layer::L3).mtu(mtu);
+                tun_config.tun_name(name).layer(Layer::L3).mtu(mtu);
                 let device = tun::create(&tun_config)?;
                 let actual_name = {
                     use tun::AbstractDevice;
@@ -331,7 +326,6 @@ impl TunDevice {
             // On macOS, utun devices get kernel-assigned names (utun0, utun1, ...),
             // so we skip setting the name and read it back after creation.
             let mut tun_config = tun::Configuration::default();
-            #[allow(deprecated)]
             tun_config.layer(Layer::L3).mtu(mtu);
             let device = tun::create(&tun_config)?;
             let actual_name = {
@@ -614,60 +608,61 @@ impl TunWriter {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    fn write_packet(&self, packet: &super::tun_write::TunWritePacket) -> std::io::Result<()> {
+        use std::os::unix::io::AsRawFd;
+
+        let af_header = utun_af_inet6_header();
+        let iov = [
+            libc::iovec {
+                iov_base: af_header.as_ptr() as *mut libc::c_void,
+                iov_len: 4,
+            },
+            libc::iovec {
+                iov_base: packet.as_slice().as_ptr() as *mut libc::c_void,
+                iov_len: packet.len(),
+            },
+        ];
+        let ret = unsafe { libc::writev(self.file.as_raw_fd(), iov.as_ptr(), 2) };
+        if ret < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let expected = 4 + packet.len();
+        if (ret as usize) < expected {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                format!("short writev: {} of {} bytes", ret, expected),
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn write_packet(&mut self, packet: &super::tun_write::TunWritePacket) -> std::io::Result<()> {
+        self.file.write_all(packet.as_slice())
+    }
+
     /// Run the writer loop.
     ///
     /// Blocks forever, reading packets from the channel and writing them
     /// to the TUN device. Returns when the channel is closed (all senders dropped).
-    #[cfg_attr(target_os = "macos", allow(unused_mut))]
-    pub fn run(mut self) {
-        debug!(name = %self.name, max_mss = self.max_mss, "TUN writer starting");
+    pub fn run(self) {
+        #[cfg(target_os = "linux")]
+        let mut writer = self;
+        #[cfg(target_os = "macos")]
+        let writer = self;
+
+        debug!(name = %writer.name, max_mss = writer.max_mss, "TUN writer starting");
 
         #[cfg(target_os = "linux")]
-        if self.vnet_hdr {
-            self.run_linux_vnet();
+        if writer.vnet_hdr {
+            writer.run_linux_vnet();
             return;
         }
 
-        while let Some(mut packet) = self.rx.recv() {
-            self.clamp_inbound_packet(&mut packet);
-
-            // On macOS, utun devices require a 4-byte packet information header
-            // prepended to each packet. The tun crate handles this for its own
-            // Read/Write impl, but we use a dup'd fd directly. We use writev
-            // to avoid allocating a buffer on every packet.
-            #[cfg(target_os = "macos")]
-            let write_result = {
-                use std::os::unix::io::AsRawFd;
-                let af_header = utun_af_inet6_header();
-                let iov = [
-                    libc::iovec {
-                        iov_base: af_header.as_ptr() as *mut libc::c_void,
-                        iov_len: 4,
-                    },
-                    libc::iovec {
-                        iov_base: packet.as_slice().as_ptr() as *mut libc::c_void,
-                        iov_len: packet.len(),
-                    },
-                ];
-                let ret = unsafe { libc::writev(self.file.as_raw_fd(), iov.as_ptr(), 2) };
-                if ret < 0 {
-                    Err(std::io::Error::last_os_error())
-                } else {
-                    let expected = 4 + packet.len();
-                    if (ret as usize) < expected {
-                        Err(std::io::Error::new(
-                            std::io::ErrorKind::WriteZero,
-                            format!("short writev: {} of {} bytes", ret, expected),
-                        ))
-                    } else {
-                        Ok(())
-                    }
-                }
-            };
-            #[cfg(target_os = "linux")]
-            let write_result = self.file.write_all(packet.as_slice());
-            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-            let write_result = self.file.write_all(packet.as_slice());
+        while let Some(mut packet) = writer.rx.recv() {
+            writer.clamp_inbound_packet(&mut packet);
+            let write_result = writer.write_packet(&packet);
 
             if let Err(e) = write_result {
                 // "Bad address" is expected during shutdown when interface is deleted
@@ -675,10 +670,10 @@ impl TunWriter {
                 if err_str.contains("Bad address") {
                     break;
                 }
-                error!(name = %self.name, error = %e, "TUN write error");
+                error!(name = %writer.name, error = %e, "TUN write error");
             } else {
                 crate::perf_profile::record_tun_write_packet(packet.len());
-                trace!(name = %self.name, len = packet.len(), "TUN packet written");
+                trace!(name = %writer.name, len = packet.len(), "TUN packet written");
             }
         }
     }
@@ -698,29 +693,22 @@ impl TunWriter {
 /// error occurs.
 #[cfg(not(target_os = "macos"))]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub fn run_tun_reader(
-    mut device: TunDevice,
-    mtu: u16,
-    our_addr: FipsAddress,
-    tun_tx: TunTx,
-    outbound_tx: TunOutboundTx,
-    transport_mtu: u16,
-    path_mtu_lookup: PathMtuLookup,
-) {
+pub(crate) fn run_tun_reader(runtime: TunReaderRuntime) {
     #[cfg(target_os = "linux")]
-    if device.vnet_hdr() {
-        run_linux_vnet_tun_reader(
-            device,
-            mtu,
-            our_addr,
-            tun_tx,
-            outbound_tx,
-            transport_mtu,
-            path_mtu_lookup,
-        );
+    if runtime.device.vnet_hdr() {
+        run_linux_vnet_tun_reader(runtime);
         return;
     }
 
+    let TunReaderRuntime {
+        mut device,
+        mtu,
+        our_addr,
+        tun_tx,
+        outbound_tx,
+        transport_mtu,
+        path_mtu_lookup,
+    } = runtime;
     let read_buffer_len = device.read_buffer_len(mtu);
     let (name, mut buf, max_mss) =
         tun_reader_setup_with_buffer_len(device.name(), mtu, transport_mtu, read_buffer_len);
@@ -754,15 +742,16 @@ pub fn run_tun_reader(
 }
 
 #[cfg(target_os = "linux")]
-fn run_linux_vnet_tun_reader(
-    mut device: TunDevice,
-    mtu: u16,
-    our_addr: FipsAddress,
-    tun_tx: TunTx,
-    outbound_tx: TunOutboundTx,
-    transport_mtu: u16,
-    path_mtu_lookup: PathMtuLookup,
-) {
+fn run_linux_vnet_tun_reader(runtime: TunReaderRuntime) {
+    let TunReaderRuntime {
+        mut device,
+        mtu,
+        our_addr,
+        tun_tx,
+        outbound_tx,
+        transport_mtu,
+        path_mtu_lookup,
+    } = runtime;
     let read_buffer_len = device.read_buffer_len(mtu);
     let (name, mut buf, max_mss) =
         tun_reader_setup_with_buffer_len(device.name(), mtu, transport_mtu, read_buffer_len);
@@ -821,17 +810,16 @@ impl Drop for ShutdownFd {
 /// avoiding the need to close the TUN fd externally (which would cause a
 /// double-close when `TunDevice` drops).
 #[cfg(target_os = "macos")]
-#[allow(clippy::too_many_arguments)]
-pub fn run_tun_reader(
-    mut device: TunDevice,
-    mtu: u16,
-    our_addr: FipsAddress,
-    tun_tx: TunTx,
-    outbound_tx: TunOutboundTx,
-    transport_mtu: u16,
-    path_mtu_lookup: PathMtuLookup,
-    shutdown_fd: std::os::unix::io::RawFd,
-) {
+pub(crate) fn run_tun_reader(runtime: TunReaderRuntime, shutdown_fd: std::os::unix::io::RawFd) {
+    let TunReaderRuntime {
+        mut device,
+        mtu,
+        our_addr,
+        tun_tx,
+        outbound_tx,
+        transport_mtu,
+        path_mtu_lookup,
+    } = runtime;
     let _shutdown_fd = ShutdownFd(shutdown_fd);
     let tun_fd = device.device().as_raw_fd();
     let (name, mut buf, max_mss) = tun_reader_setup(device.name(), mtu, transport_mtu);
@@ -972,9 +960,11 @@ fn handle_tun_packet(
 ) -> bool {
     match prepare_tun_packet(packet, max_mss, name, our_addr, path_mtu_lookup) {
         TunPacketAction::Forward => {
-            match outbound_tx.admit_from_tun_reader(tun_outbound_packet(packet)) {
-                Ok(TunOutboundAdmission::Enqueued | TunOutboundAdmission::BulkDropped) => {}
-                Err(_) => return false, // Channel closed, shutdown
+            if outbound_tx
+                .admit_from_tun_reader(tun_outbound_packet(packet))
+                .is_err()
+            {
+                return false; // Channel closed, shutdown
             }
         }
         TunPacketAction::Icmp(response) => {
@@ -999,9 +989,11 @@ fn handle_tun_packet_owned(
 ) -> bool {
     match prepare_tun_packet(&mut packet, max_mss, name, our_addr, path_mtu_lookup) {
         TunPacketAction::Forward => {
-            match outbound_tx.admit_from_tun_reader(tun_outbound_packet_owned(packet)) {
-                Ok(TunOutboundAdmission::Enqueued | TunOutboundAdmission::BulkDropped) => {}
-                Err(_) => return false,
+            if outbound_tx
+                .admit_from_tun_reader(tun_outbound_packet_owned(packet))
+                .is_err()
+            {
+                return false;
             }
         }
         TunPacketAction::Icmp(response) => {
@@ -1144,12 +1136,26 @@ pub async fn shutdown_tun_interface(name: &str) -> Result<(), TunError> {
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::{TunDevice, TunWriter, run_tun_reader, shutdown_tun_interface};
+pub(crate) use windows::run_tun_reader;
+#[cfg(windows)]
+pub use windows::{TunDevice, TunWriter, shutdown_tun_interface};
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 mod unsupported;
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-pub use unsupported::{TunDevice, TunWriter, run_tun_reader, shutdown_tun_interface};
+pub(crate) use unsupported::run_tun_reader;
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+pub use unsupported::{TunDevice, TunWriter, shutdown_tun_interface};
+
+pub(crate) struct TunReaderRuntime {
+    pub(crate) device: TunDevice,
+    pub(crate) mtu: u16,
+    pub(crate) our_addr: FipsAddress,
+    pub(crate) tun_tx: TunTx,
+    pub(crate) outbound_tx: TunOutboundTx,
+    pub(crate) transport_mtu: u16,
+    pub(crate) path_mtu_lookup: PathMtuLookup,
+}
 
 #[cfg(target_os = "linux")]
 mod linux_vnet;

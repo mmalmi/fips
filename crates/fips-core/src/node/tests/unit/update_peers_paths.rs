@@ -778,8 +778,12 @@ async fn outbound_refresh_promotion_moves_active_peer_to_new_transport_tuple() {
         .unwrap();
     let their_index = SessionIndex::new(77);
     let wire_msg2 = build_msg2(their_index, our_index, &noise_msg2);
-    let packet =
-        ReceivedPacket::with_timestamp(new_transport_id, new_addr.clone(), wire_msg2, 2_100);
+    let packet = ReceivedPacket::with_timestamp(
+        new_transport_id,
+        new_addr.clone(),
+        crate::transport::PacketBuffer::new(wire_msg2),
+        2_100,
+    );
 
     node.handle_msg2(packet).await;
 

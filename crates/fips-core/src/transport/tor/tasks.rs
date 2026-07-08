@@ -1,7 +1,9 @@
 use super::{ConnectionPool, Direction, TorConnection};
 use crate::config::TorConfig;
 use crate::transport::tcp::stream::read_fmp_packet;
-use crate::transport::{PacketTx, ReceivedPacket, TransportAddr, TransportError, TransportId};
+use crate::transport::{
+    PacketBuffer, PacketTx, ReceivedPacket, TransportAddr, TransportError, TransportId,
+};
 
 use super::stats::TorStats;
 use socket2::TcpKeepalive;
@@ -9,7 +11,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
-use tokio::time::Instant;
 use tracing::{debug, trace, warn};
 
 // ============================================================================
@@ -21,17 +22,30 @@ use tracing::{debug, trace, warn};
 /// Reads complete FMP packets using the stream reader, delivers them to
 /// the node via the packet channel. On error or EOF, removes the
 /// connection from the pool and exits.
-#[allow(clippy::too_many_arguments)]
+pub(super) struct TorReceiveContext {
+    pub(super) transport_id: TransportId,
+    pub(super) remote_addr: TransportAddr,
+    pub(super) packet_tx: PacketTx,
+    pub(super) pool: ConnectionPool,
+    pub(super) mtu: u16,
+    pub(super) stats: Arc<TorStats>,
+    pub(super) direction: Direction,
+}
+
 pub(super) async fn tor_receive_loop(
     mut reader: tokio::net::tcp::OwnedReadHalf,
-    transport_id: TransportId,
-    remote_addr: TransportAddr,
-    packet_tx: PacketTx,
-    pool: ConnectionPool,
-    mtu: u16,
-    stats: Arc<TorStats>,
-    direction: Direction,
+    ctx: TorReceiveContext,
 ) {
+    let TorReceiveContext {
+        transport_id,
+        remote_addr,
+        packet_tx,
+        pool,
+        mtu,
+        stats,
+        direction,
+    } = ctx;
+
     debug!(
         transport_id = %transport_id,
         remote_addr = %remote_addr,
@@ -50,7 +64,12 @@ pub(super) async fn tor_receive_loop(
                     "Tor packet received"
                 );
 
-                let packet = ReceivedPacket::new(transport_id, remote_addr.clone(), data);
+                let packet = ReceivedPacket::with_timestamp(
+                    transport_id,
+                    remote_addr.clone(),
+                    PacketBuffer::new(data),
+                    crate::time::now_ms(),
+                );
 
                 if packet_tx.send(packet).is_err() {
                     debug!(
@@ -218,13 +237,15 @@ pub(super) async fn tor_accept_loop(
         let recv_task = tokio::spawn(async move {
             tor_receive_loop(
                 read_half,
-                transport_id,
-                recv_addr,
-                recv_tx,
-                recv_pool,
-                mtu,
-                recv_stats,
-                Direction::Inbound,
+                TorReceiveContext {
+                    transport_id,
+                    remote_addr: recv_addr,
+                    packet_tx: recv_tx,
+                    pool: recv_pool,
+                    mtu,
+                    stats: recv_stats,
+                    direction: Direction::Inbound,
+                },
             )
             .await;
         });
@@ -232,8 +253,6 @@ pub(super) async fn tor_accept_loop(
         let conn = TorConnection {
             writer,
             recv_task,
-            mtu,
-            established_at: Instant::now(),
             direction: Direction::Inbound,
         };
 

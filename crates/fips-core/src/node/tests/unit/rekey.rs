@@ -20,15 +20,16 @@ async fn fmp_rekey_responder_pending_session_does_not_time_cutover() {
         peer_identity,
         link_id,
         1_000,
-        current_session,
-        old_our_index,
-        old_their_index,
-        transport_id,
-        remote_addr,
-        crate::transport::LinkStats::new(),
-        true,
-        &node.config.node.mmp,
-        Some([0x02; 8]),
+        ActivePeerSession {
+            session: current_session,
+            our_index: old_our_index,
+            their_index: old_their_index,
+            transport_id,
+            current_addr: remote_addr,
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: Some([0x02; 8]),
+        },
     );
     active_peer.set_pending_session(
         pending_session,
@@ -73,7 +74,6 @@ async fn fmp_rekey_msg1_resend_budget_zero_abandons_immediately() {
     let mut active_peer = make_active_test_peer(
         &node,
         &peer_full,
-        peer_identity,
         transport_id,
         link_id,
         remote_addr,
@@ -133,7 +133,6 @@ async fn fmp_rekey_msg1_resend_records_count_and_backoff() {
     let mut active_peer = make_active_test_peer(
         &node,
         &peer_full,
-        peer_identity,
         transport_id,
         link_id,
         remote_addr,
@@ -173,7 +172,6 @@ async fn link_dead_heartbeat_suppressed_while_fmp_rekey_has_budget() {
     let mut active_peer = make_active_test_peer(
         &node,
         &peer_full,
-        peer_identity,
         transport_id,
         link_id,
         remote_addr,

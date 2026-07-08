@@ -24,9 +24,9 @@
 #[cfg(test)]
 use crate::node::endpoint_data_batch_channel;
 use crate::node::{
-    EndpointDataBatchRx, EndpointDataDelivery, EndpointDataPayload, EndpointDirectSink,
-    EndpointEventSender, FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun,
-    FipsEndpointDirectPacketRunMeta, NodeEndpointDataBatch, NodeEndpointEvent,
+    EndpointDataBatchRx, EndpointDataPayload, EndpointDirectSink, EndpointEventSender,
+    FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun, FipsEndpointDirectPacketRunMeta,
+    NodeEndpointDataBatch,
 };
 use crate::transport::{
     PacketBuffer, PacketFastIngressSink, PacketRx, PacketTx, ReceivedPacket, TransportAddr,

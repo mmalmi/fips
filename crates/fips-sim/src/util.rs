@@ -1,5 +1,21 @@
 use super::*;
 
+const SIM_RECV_BATCH_MAX: usize = 128;
+
+pub(super) async fn recv_endpoint_batch_into(
+    endpoint: &FipsEndpoint,
+    messages: &mut Vec<FipsEndpointMessage>,
+    timeout: Duration,
+) -> Option<usize> {
+    let received = tokio::time::timeout(
+        timeout,
+        endpoint.recv_batch_into(messages, SIM_RECV_BATCH_MAX),
+    )
+    .await
+    .ok()??;
+    if received == 0 { None } else { Some(received) }
+}
+
 pub(super) fn pick_pair(indices: &[usize], rng: &mut StdRng) -> (usize, usize) {
     let src_pos = rng.random_range(0..indices.len());
     let mut dst_pos = rng.random_range(0..indices.len() - 1);

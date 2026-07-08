@@ -99,8 +99,12 @@ async fn fmp_recovery_rekey_epoch_change_clears_stale_fsp_session() {
     let new_msg2 = new_responder.write_message_2().unwrap();
     let their_index = SessionIndex::new(77);
     let wire_msg2 = build_msg2(their_index, header.sender_idx, &new_msg2);
-    let packet =
-        ReceivedPacket::with_timestamp(transport_id, remote_addr.clone(), wire_msg2, 2_100);
+    let packet = ReceivedPacket::with_timestamp(
+        transport_id,
+        remote_addr.clone(),
+        crate::transport::PacketBuffer::new(wire_msg2),
+        2_100,
+    );
 
     node.handle_msg2(packet).await;
 

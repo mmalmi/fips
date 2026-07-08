@@ -81,8 +81,13 @@ fn test_multihop_learned_path_mtu_generates_ptb_heterogeneous_mtu() {
             let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
             nodes[0].node.tun_tx = Some(tun_tx);
             send_tun_packet_via_dataplane(&mut nodes, 0, ipv6_packet).await;
-            let ptb_messages: Vec<Vec<u8>> =
-                std::iter::from_fn(|| tun_rx.try_recv().ok()).collect();
+            let ptb_messages: Vec<Vec<u8>> = std::iter::from_fn(|| {
+                tun_rx
+                    .try_recv_packet()
+                    .ok()
+                    .map(|packet| packet.as_slice().to_vec())
+            })
+            .collect();
             assert_eq!(
                 ptb_messages.len(),
                 1,

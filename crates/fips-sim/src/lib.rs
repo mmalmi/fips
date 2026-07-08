@@ -10,8 +10,9 @@ pub use fips_core::config::RoutingMode;
 
 use fips_core::config::{PeerConfig, SimTransportConfig, TransportInstances};
 use fips_core::{
-    Config, FipsEndpoint, FipsEndpointError, Identity, IdentityConfig, SimLink, SimNetwork,
-    SimNetworkStats, SimNodeBehavior, register_sim_network, unregister_sim_network,
+    Config, FipsEndpoint, FipsEndpointError, FipsEndpointMessage, Identity, IdentityConfig,
+    PeerIdentity, SimLink, SimNetwork, SimNetworkStats, SimNodeBehavior, register_sim_network,
+    unregister_sim_network,
 };
 use rand::rngs::StdRng;
 use rand::{Rng, RngExt, SeedableRng};
@@ -249,6 +250,7 @@ struct NodeSpec {
     index: usize,
     secret_hex: String,
     npub: String,
+    peer_identity: PeerIdentity,
     node_addr: fips_core::NodeAddr,
     sim_addr: String,
     role: NodeRole,
@@ -294,6 +296,7 @@ impl Simulation {
                 index,
                 secret_hex,
                 npub: identity.npub(),
+                peer_identity: PeerIdentity::from_pubkey_full(identity.pubkey_full()),
                 node_addr: *identity.node_addr(),
                 sim_addr: format!("node-{index}"),
                 role,
@@ -527,7 +530,7 @@ impl Simulation {
             );
             let start = Instant::now();
             match endpoints[src]
-                .send(self.nodes[dst].npub.clone(), request.clone())
+                .send_batch_to_peer(self.nodes[dst].peer_identity, vec![request.clone()])
                 .await
             {
                 Ok(()) => {
@@ -539,7 +542,7 @@ impl Simulation {
                     }
 
                     if endpoints[dst]
-                        .send(self.nodes[src].npub.clone(), reply.clone())
+                        .send_batch_to_peer(self.nodes[src].peer_identity, vec![reply.clone()])
                         .await
                         .is_err()
                     {
@@ -617,7 +620,7 @@ impl Simulation {
             );
 
             if endpoints[src]
-                .send(self.nodes[dst].npub.clone(), warmup.clone())
+                .send_batch_to_peer(self.nodes[dst].peer_identity, vec![warmup.clone()])
                 .await
                 .is_err()
             {
@@ -641,7 +644,7 @@ impl Simulation {
             let mut expected = HashSet::new();
             for chunk in &chunks {
                 match endpoints[dst]
-                    .send(self.nodes[src].npub.clone(), chunk.clone())
+                    .send_batch_to_peer(self.nodes[src].peer_identity, vec![chunk.clone()])
                     .await
                 {
                     Ok(()) => {
@@ -721,7 +724,7 @@ impl Simulation {
             );
 
             match endpoints[src]
-                .send(self.nodes[dst].npub.clone(), payload)
+                .send_batch_to_peer(self.nodes[dst].peer_identity, vec![payload])
                 .await
             {
                 Ok(()) => {

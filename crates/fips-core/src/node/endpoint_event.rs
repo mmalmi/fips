@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 /// Authenticated source/session facts for a direct endpoint packet run.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FipsEndpointDirectPacketRunMeta {
+pub(crate) struct FipsEndpointDirectPacketRunMeta {
     source_peer: PeerIdentity,
     previous_hop_addr: NodeAddr,
     received_k_bit: bool,
@@ -28,108 +28,6 @@ impl FipsEndpointDirectPacketRunMeta {
             direct_path,
             enqueued_at_ms,
         }
-    }
-
-    /// Authenticated FIPS peer that originated every packet in this run.
-    pub fn source_peer(&self) -> &PeerIdentity {
-        &self.source_peer
-    }
-
-    /// FIPS node address that originated every packet in this run.
-    pub fn source_node_addr(&self) -> &NodeAddr {
-        self.source_peer.node_addr()
-    }
-
-    /// Source Nostr public key as human-facing bech32 text.
-    pub fn source_npub(&self) -> String {
-        self.source_peer.npub()
-    }
-
-    /// Authenticated previous hop for this established FSP receive run.
-    pub fn previous_hop_node_addr(&self) -> &NodeAddr {
-        &self.previous_hop_addr
-    }
-
-    /// Whether FIPS received the run directly from the source node.
-    pub fn is_direct_path(&self) -> bool {
-        self.direct_path
-    }
-
-    /// Whether the established FSP packet carried the key-epoch bit.
-    pub fn received_k_bit(&self) -> bool {
-        self.received_k_bit
-    }
-
-    /// Unix-millisecond time when FIPS handed this run to the direct sink.
-    pub fn enqueued_at_ms(&self) -> u64 {
-        self.enqueued_at_ms
-    }
-}
-
-/// Consecutive direct endpoint packets from one authenticated FIPS source.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FipsEndpointDirectSourceRun {
-    source_peer: PeerIdentity,
-    packets: Vec<PacketBuffer>,
-    enqueued_at_ms: u64,
-}
-
-impl FipsEndpointDirectSourceRun {
-    pub(crate) fn from_source_packets(
-        source_peer: PeerIdentity,
-        packets: Vec<PacketBuffer>,
-        enqueued_at_ms: u64,
-    ) -> Self {
-        Self {
-            source_peer,
-            packets,
-            enqueued_at_ms,
-        }
-    }
-
-    /// Authenticated FIPS peer that originated every packet in this run.
-    pub fn source_peer(&self) -> &PeerIdentity {
-        &self.source_peer
-    }
-
-    /// FIPS node address that originated every packet in this run.
-    pub fn source_node_addr(&self) -> &NodeAddr {
-        self.source_peer.node_addr()
-    }
-
-    /// Source Nostr public key as human-facing bech32 text.
-    pub fn source_npub(&self) -> String {
-        self.source_peer.npub()
-    }
-
-    /// Unix-millisecond time when FIPS handed this run to the direct sink.
-    pub fn enqueued_at_ms(&self) -> u64 {
-        self.enqueued_at_ms
-    }
-
-    /// Packets delivered for this source run.
-    pub fn packets(&self) -> &[PacketBuffer] {
-        &self.packets
-    }
-
-    /// Take ownership of the run source and packets.
-    pub fn into_parts(self) -> (PeerIdentity, Vec<PacketBuffer>) {
-        (self.source_peer, self.packets)
-    }
-
-    /// Take ownership of the delivered packets.
-    pub fn into_packets(self) -> Vec<PacketBuffer> {
-        self.packets
-    }
-
-    /// Number of endpoint packets in the run.
-    pub fn len(&self) -> usize {
-        self.packets.len()
-    }
-
-    /// Whether the run contains no packets.
-    pub fn is_empty(&self) -> bool {
-        self.packets.is_empty()
     }
 }
 
@@ -180,26 +78,6 @@ impl FipsEndpointDirectPacketSegment {
         ))
     }
 
-    fn push_range_from_shared_buffer(
-        &mut self,
-        buffer: &Arc<PacketBuffer>,
-        range: Range<usize>,
-    ) -> bool {
-        if !Arc::ptr_eq(&self.buffer, buffer) {
-            return false;
-        }
-        if self
-            .ranges
-            .last()
-            .is_some_and(|previous| previous.end > range.start)
-        {
-            return false;
-        }
-        self.packet_bytes = self.packet_bytes.saturating_add(range.len());
-        self.ranges.push(range);
-        true
-    }
-
     fn retain_ranges<F>(&mut self, next_index: &mut usize, keep: &mut F) -> bool
     where
         F: FnMut(usize, &[u8]) -> bool,
@@ -230,34 +108,6 @@ impl FipsEndpointDirectPacketSegment {
         }
         self.packet_bytes = packet_bytes;
         changed
-    }
-}
-
-#[derive(Debug)]
-struct FipsEndpointDirectPacketSplitGroup {
-    lane: usize,
-    segments: Vec<FipsEndpointDirectPacketSegment>,
-}
-
-impl FipsEndpointDirectPacketSplitGroup {
-    fn new(lane: usize) -> Self {
-        Self {
-            lane,
-            segments: Vec::new(),
-        }
-    }
-
-    fn push(&mut self, buffer: Arc<PacketBuffer>, range: Range<usize>) {
-        if let Some(last) = self.segments.last_mut()
-            && last.push_range_from_shared_buffer(&buffer, range.clone())
-        {
-            return;
-        }
-        self.segments
-            .push(FipsEndpointDirectPacketSegment::from_shared_buffer(
-                buffer,
-                vec![range],
-            ));
     }
 }
 
@@ -404,11 +254,11 @@ impl FipsEndpointDirectPacketStorage {
 
 /// Consecutive direct endpoint packets from one authenticated FIPS source.
 ///
-/// Unlike [`FipsEndpointDirectSourceRun`], this can chain opened EndpointData
-/// buffers and expose packet slices by range. That is the canonical direct
-/// dataplane endpoint payload contract for high-throughput embedders: FIPS owns
-/// authentication and ordering, while the embedder can still apply live routing
-/// policy before borrowing packet bytes for TUN writes.
+/// This can chain opened EndpointData buffers and expose packet slices by range.
+/// That is the canonical direct dataplane endpoint payload contract for
+/// high-throughput embedders: FIPS owns authentication and ordering, while the
+/// embedder can still apply live routing policy before borrowing packet bytes
+/// for TUN writes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FipsEndpointDirectPacketRun {
     meta: FipsEndpointDirectPacketRunMeta,
@@ -438,44 +288,14 @@ impl FipsEndpointDirectPacketRun {
         }
     }
 
-    /// Authenticated source/session facts for this packet run.
-    pub fn meta(&self) -> &FipsEndpointDirectPacketRunMeta {
-        &self.meta
-    }
-
     /// Authenticated FIPS peer that originated every packet in this run.
     pub fn source_peer(&self) -> &PeerIdentity {
-        self.meta.source_peer()
-    }
-
-    /// FIPS node address that originated every packet in this run.
-    pub fn source_node_addr(&self) -> &NodeAddr {
-        self.meta.source_node_addr()
-    }
-
-    /// Source Nostr public key as human-facing bech32 text.
-    pub fn source_npub(&self) -> String {
-        self.meta.source_npub()
-    }
-
-    /// Authenticated previous hop for this established FSP receive run.
-    pub fn previous_hop_node_addr(&self) -> &NodeAddr {
-        self.meta.previous_hop_node_addr()
-    }
-
-    /// Whether FIPS received the run directly from the source node.
-    pub fn is_direct_path(&self) -> bool {
-        self.meta.is_direct_path()
-    }
-
-    /// Whether the established FSP packet carried the key-epoch bit.
-    pub fn received_k_bit(&self) -> bool {
-        self.meta.received_k_bit()
+        &self.meta.source_peer
     }
 
     /// Unix-millisecond time when FIPS handed this run to the direct sink.
     pub fn enqueued_at_ms(&self) -> u64 {
-        self.meta.enqueued_at_ms()
+        self.meta.enqueued_at_ms
     }
 
     /// Number of endpoint packets in the run.
@@ -523,47 +343,16 @@ impl FipsEndpointDirectPacketRun {
         }
     }
 
-    /// Mutably borrow one packet by index.
-    pub fn packet_slice_mut(&mut self, index: usize) -> Option<&mut [u8]> {
-        match &mut self.storage {
-            FipsEndpointDirectPacketStorage::Segmented(segment) => {
-                let range = segment.ranges.get(index)?.clone();
-                Some(&mut Arc::make_mut(&mut segment.buffer).as_mut_slice()[range])
-            }
-            FipsEndpointDirectPacketStorage::Chained {
-                segments,
-                packet_ends,
-                ..
-            } => {
-                let segment_index = packet_ends.partition_point(|end| *end <= index);
-                let previous_end = segment_index
-                    .checked_sub(1)
-                    .and_then(|previous| packet_ends.get(previous).copied())
-                    .unwrap_or(0);
-                let segment = segments.get_mut(segment_index)?;
-                let range = segment.ranges.get(index - previous_end)?.clone();
-                Some(&mut Arc::make_mut(&mut segment.buffer).as_mut_slice()[range])
-            }
-        }
-    }
-
-    pub(crate) fn try_append_run(
-        &mut self,
-        other: FipsEndpointDirectPacketRun,
-    ) -> Result<(), FipsEndpointDirectPacketRun> {
-        if !self.matches_append_meta(&other) {
-            return Err(other);
-        }
-
+    pub(crate) fn append_run(&mut self, other: FipsEndpointDirectPacketRun) {
+        debug_assert!(self.matches_append_meta(&other));
         self.storage.append_storage(other.storage);
-        Ok(())
     }
 
-    fn matches_append_meta(&self, other: &Self) -> bool {
-        self.source_peer() == other.source_peer()
-            && self.previous_hop_node_addr() == other.previous_hop_node_addr()
-            && self.received_k_bit() == other.received_k_bit()
-            && self.is_direct_path() == other.is_direct_path()
+    pub(crate) fn matches_append_meta(&self, other: &Self) -> bool {
+        self.meta.source_peer == other.meta.source_peer
+            && self.meta.previous_hop_addr == other.meta.previous_hop_addr
+            && self.meta.received_k_bit == other.meta.received_k_bit
+            && self.meta.direct_path == other.meta.direct_path
     }
 
     /// Borrow packet bytes without materializing per-packet buffers.
@@ -575,54 +364,6 @@ impl FipsEndpointDirectPacketRun {
             segment_packet_index: 0,
             remaining: self.len(),
         }
-    }
-
-    /// Partition this run into packet-lane groups without copying packet bytes.
-    ///
-    /// The caller chooses a lane from immutable endpoint packet bytes. FIPS keeps
-    /// authentication/session metadata on every child run and shares the opened
-    /// endpoint payload buffer across lane runs.
-    pub fn partition_by_packet_lane<F>(
-        self,
-        lane_count: usize,
-        mut lane_for_packet: F,
-    ) -> Vec<(usize, Self)>
-    where
-        F: FnMut(&[u8]) -> usize,
-    {
-        let meta = self.meta;
-        let mut groups: Vec<FipsEndpointDirectPacketSplitGroup> = Vec::new();
-        for segment in self.storage.into_segments() {
-            let buffer = segment.buffer;
-            let bytes = buffer.as_slice();
-            for range in segment.ranges {
-                let lane = if lane_count == 0 {
-                    0
-                } else {
-                    lane_for_packet(&bytes[range.clone()]) % lane_count
-                };
-                let group_index = groups.iter().position(|group| group.lane == lane);
-                let group = match group_index {
-                    Some(index) => &mut groups[index],
-                    None => {
-                        groups.push(FipsEndpointDirectPacketSplitGroup::new(lane));
-                        groups.last_mut().expect("group was just pushed")
-                    }
-                };
-                group.push(Arc::clone(&buffer), range);
-            }
-        }
-
-        groups
-            .into_iter()
-            .map(|group| {
-                let run = Self {
-                    meta: meta.clone(),
-                    storage: FipsEndpointDirectPacketStorage::build_chained(group.segments),
-                };
-                (group.lane, run)
-            })
-            .collect()
     }
 
     /// Keep only packets accepted by the caller while preserving backing storage.
@@ -675,70 +416,6 @@ impl FipsEndpointDirectPacketRun {
             meta: self.meta.clone(),
             storage,
         })
-    }
-
-    /// Visit each packet as mutable bytes while the run owner is borrowed.
-    pub fn for_each_packet_mut<F>(&mut self, mut visit: F)
-    where
-        F: FnMut(&mut [u8]),
-    {
-        match &mut self.storage {
-            FipsEndpointDirectPacketStorage::Segmented(segment) => {
-                let bytes = Arc::make_mut(&mut segment.buffer).as_mut_slice();
-                for range in &segment.ranges {
-                    visit(&mut bytes[range.clone()]);
-                }
-            }
-            FipsEndpointDirectPacketStorage::Chained { segments, .. } => {
-                for segment in segments {
-                    let bytes = Arc::make_mut(&mut segment.buffer).as_mut_slice();
-                    for range in &segment.ranges {
-                        visit(&mut bytes[range.clone()]);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Materialize this run into the older owned-packet source-run contract.
-    pub fn into_source_run(self) -> FipsEndpointDirectSourceRun {
-        match self.storage {
-            FipsEndpointDirectPacketStorage::Segmented(segment) => {
-                let body = segment.buffer.as_slice();
-                let packets = segment
-                    .ranges
-                    .into_iter()
-                    .map(|range| body[range].to_vec().into())
-                    .collect();
-                FipsEndpointDirectSourceRun::from_source_packets(
-                    self.meta.source_peer,
-                    packets,
-                    self.meta.enqueued_at_ms,
-                )
-            }
-            FipsEndpointDirectPacketStorage::Chained { segments, .. } => {
-                let mut packets = Vec::new();
-                for segment in segments {
-                    let body = segment.buffer.as_slice();
-                    packets.extend(
-                        segment
-                            .ranges
-                            .into_iter()
-                            .map(|range| body[range].to_vec().into()),
-                    );
-                }
-                FipsEndpointDirectSourceRun::from_source_packets(
-                    self.meta.source_peer,
-                    packets,
-                    self.meta.enqueued_at_ms,
-                )
-            }
-        }
-    }
-
-    /// Materialize this run into owned packet buffers.
-    pub fn into_packets(self) -> Vec<PacketBuffer> {
-        self.into_source_run().into_packets()
     }
 }
 
@@ -799,52 +476,9 @@ impl FipsEndpointDirectPacketBatch {
         Self { packet_runs }
     }
 
-    /// Packet runs in this direct delivery batch.
-    pub fn packet_runs(&self) -> &[FipsEndpointDirectPacketRun] {
-        &self.packet_runs
-    }
-
-    /// Mutably borrow packet runs so the embedder can apply live policy.
-    pub fn packet_runs_mut(&mut self) -> &mut [FipsEndpointDirectPacketRun] {
-        &mut self.packet_runs
-    }
-
     /// Take ownership of the delivered packet runs.
     pub fn into_packet_runs(self) -> Vec<FipsEndpointDirectPacketRun> {
         self.packet_runs
-    }
-
-    /// Whether every run in this batch came from the same FIPS node.
-    pub fn is_single_source(&self) -> bool {
-        self.packet_runs
-            .windows(2)
-            .all(|pair| pair[0].source_node_addr() == pair[1].source_node_addr())
-    }
-
-    /// Number of endpoint messages in the batch.
-    pub fn len(&self) -> usize {
-        self.packet_runs
-            .iter()
-            .map(FipsEndpointDirectPacketRun::len)
-            .sum()
-    }
-
-    /// Sum of endpoint packet bytes in the batch.
-    pub fn packet_bytes(&self) -> usize {
-        self.packet_runs
-            .iter()
-            .map(FipsEndpointDirectPacketRun::packet_bytes)
-            .sum()
-    }
-
-    /// Number of packet-run records in the batch.
-    pub fn run_count(&self) -> usize {
-        self.packet_runs.len()
-    }
-
-    /// Whether the batch contains no packet runs.
-    pub fn is_empty(&self) -> bool {
-        self.packet_runs.is_empty()
     }
 }
 
@@ -941,11 +575,9 @@ pub(crate) struct EndpointDataIo {
     /// `endpoint_event_wait` latency and `endpoint_event_backlog_high` when the
     /// consumer falls materially behind.
     pub(crate) event_rx: EndpointEventReceiver,
-    /// Clone of the event_tx exposed for in-process loopback (e.g.
-    /// `FipsEndpoint::send` to self_npub). Lets the endpoint inject an
-    /// event into the same queue without going through the encrypt /
-    /// decrypt path, while keeping every consumer reading from a single
-    /// channel.
+    /// Clone of the event_tx exposed for in-process loopback. Lets the endpoint
+    /// inject an event into the same queue without going through the encrypt /
+    /// decrypt path, while keeping every consumer reading from a single channel.
     pub(crate) event_tx: EndpointEventSender,
 }
 
@@ -957,6 +589,12 @@ pub(crate) struct EndpointEventSender {
     queued_messages: Arc<AtomicUsize>,
     ready: Arc<EndpointEventReady>,
     message_cap: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum EndpointEventSendError {
+    #[error("endpoint event channel closed")]
+    Closed,
 }
 
 #[derive(Debug)]
@@ -1064,11 +702,7 @@ impl EndpointEventSender {
         self.direct_sink.as_ref()
     }
 
-    #[allow(clippy::result_large_err)]
-    pub(crate) fn send(
-        &self,
-        event: NodeEndpointEvent,
-    ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
+    pub(crate) fn send(&self, event: NodeEndpointEvent) -> Result<(), EndpointEventSendError> {
         if event.messages.is_empty() {
             return Ok(());
         }
@@ -1076,12 +710,11 @@ impl EndpointEventSender {
         self.send_event(event, true)
     }
 
-    #[allow(clippy::result_large_err)]
     fn send_event(
         &self,
         event: NodeEndpointEvent,
         split_on_pressure: bool,
-    ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
+    ) -> Result<(), EndpointEventSendError> {
         let count = event.message_count();
         let Some(previous) =
             try_reserve_endpoint_event_messages(&self.queued_messages, self.message_cap, count)
@@ -1112,16 +745,13 @@ impl EndpointEventSender {
             }
             Err(tokio::sync::mpsc::error::TrySendError::Closed(event)) => {
                 self.note_send_rejected(count);
-                Err(tokio::sync::mpsc::error::SendError(event))
+                drop(event);
+                Err(EndpointEventSendError::Closed)
             }
         }
     }
 
-    #[allow(clippy::result_large_err)]
-    fn split_and_send_event(
-        &self,
-        event: NodeEndpointEvent,
-    ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
+    fn split_and_send_event(&self, event: NodeEndpointEvent) -> Result<(), EndpointEventSendError> {
         let mut messages = event.messages;
         let queued_at = event.queued_at;
         if messages.len() <= 1 {
@@ -1202,11 +832,10 @@ impl EndpointEventRuntime {
         self.sender.clone()
     }
 
-    #[allow(clippy::result_large_err)]
     pub(in crate::node) fn deliver_endpoint_data_batch(
         &mut self,
         messages: Vec<EndpointDataDelivery>,
-    ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
+    ) -> Result<(), EndpointEventSendError> {
         if messages.is_empty() {
             return Ok(());
         }
@@ -1308,10 +937,10 @@ pub(crate) struct EndpointDataDelivery {
 }
 
 impl EndpointDataDelivery {
-    pub(crate) fn new(source_peer: PeerIdentity, payload: impl Into<PacketBuffer>) -> Self {
+    pub(crate) fn new(source_peer: PeerIdentity, payload: PacketBuffer) -> Self {
         Self {
             source_peer,
-            payload: payload.into(),
+            payload,
             enqueued_at_ms: crate::time::now_ms(),
         }
     }
@@ -1329,12 +958,8 @@ impl NodeEndpointEvent {
         self.messages.len()
     }
 
-    fn queued_at(&self) -> Option<crate::perf_profile::TraceStamp> {
-        self.queued_at
-    }
-
     fn record_dequeue_wait(&self) {
-        let queued_at = self.queued_at();
+        let queued_at = self.queued_at;
         if queued_at.is_none() {
             return;
         }

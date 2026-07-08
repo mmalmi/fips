@@ -28,10 +28,6 @@ impl crate::transport::udp::UdpPayloadBatch for TestPayloadBatch {
         self.payloads[index].iter().map(Vec::len).sum()
     }
 
-    fn contiguous_payload(&self, index: usize) -> Option<&[u8]> {
-        (self.payloads[index].len() == 1).then_some(self.payloads[index][0].as_slice())
-    }
-
     fn payload_slices<'a>(
         &'a self,
         index: usize,
@@ -43,6 +39,51 @@ impl crate::transport::udp::UdpPayloadBatch for TestPayloadBatch {
         }
         self.payloads[index].len()
     }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+async fn recv_datagrams(
+    socket: &AsyncUdpSocket,
+    expected_count: usize,
+    capacity: usize,
+) -> Vec<(Vec<u8>, SocketAddr, usize)> {
+    let mut received = Vec::with_capacity(expected_count);
+    while received.len() < expected_count {
+        let mut bufs: Vec<Vec<u8>> = (0..RECV_BATCH_SIZE)
+            .map(|_| Vec::with_capacity(capacity))
+            .collect();
+        let mut addrs: [Option<SocketAddr>; RECV_BATCH_SIZE] = std::array::from_fn(|_| None);
+        let mut gro_segment_sizes = [usize::MAX; RECV_BATCH_SIZE];
+
+        let (count, _drops) = socket
+            .recv_batch(&mut bufs, &mut addrs, &mut gro_segment_sizes)
+            .await
+            .expect("recv batch");
+        for index in 0..count {
+            received.push((
+                std::mem::take(&mut bufs[index]),
+                addrs[index].expect("source address"),
+                gro_segment_sizes[index],
+            ));
+        }
+    }
+    received
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+async fn recv_datagrams(
+    socket: &AsyncUdpSocket,
+    expected_count: usize,
+    capacity: usize,
+) -> Vec<(Vec<u8>, SocketAddr, usize)> {
+    let mut received = Vec::with_capacity(expected_count);
+    while received.len() < expected_count {
+        let mut buf = vec![0u8; capacity];
+        let (len, src, _drops, gro_segment_size) = socket.recv_from(&mut buf).await.expect("recv");
+        buf.truncate(len);
+        received.push((buf, src, gro_segment_size));
+    }
+    received
 }
 
 #[test]
@@ -67,7 +108,6 @@ fn udp_gso_prefix_accepts_vectored_equal_len_payloads() {
         vec![b"DFP1".as_slice(), b"cccccccc".as_slice()],
     ]);
 
-    assert_eq!(payloads.contiguous_payload(0), None);
     assert_eq!(super::platform::udp_gso_prefix_len(&payloads, 0, 64), 3);
 }
 
@@ -123,13 +163,11 @@ async fn test_async_udp_socket_send_recv() {
     let sent = async1.send_to(payload, &addr2).await.expect("send_to");
     assert_eq!(sent, payload.len());
 
-    // Receive on socket 2
-    let mut buf = [0u8; 1024];
-    let (n, src, _drops, gro_segment_size) = async2.recv_from(&mut buf).await.expect("recv_from");
-    assert_eq!(n, payload.len());
-    assert_eq!(&buf[..n], payload);
-    assert_eq!(src, addr1);
-    assert_eq!(gro_segment_size, 0);
+    let received = recv_datagrams(&async2, 1, 1024).await;
+    let (data, src, gro_segment_size) = &received[0];
+    assert_eq!(data.as_slice(), payload);
+    assert_eq!(*src, addr1);
+    assert_eq!(*gro_segment_size, 0);
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -159,17 +197,15 @@ async fn send_batch_to_sends_vectored_payloads() {
         .expect("send batch");
     assert_eq!(sent, payloads.len());
 
-    for expected in [
+    let received = recv_datagrams(&async2, payloads.len(), 1024).await;
+    for ((data, src, gro_segment_size), expected) in received.iter().zip([
         b"DFP1first".as_slice(),
         b"second".as_slice(),
         b"DFP1third".as_slice(),
-    ] {
-        let mut buf = [0u8; 1024];
-        let (n, src, _drops, gro_segment_size) =
-            async2.recv_from(&mut buf).await.expect("recv batch packet");
-        assert_eq!(src, addr1);
-        assert_eq!(&buf[..n], expected);
-        assert_eq!(gro_segment_size, 0);
+    ]) {
+        assert_eq!(*src, addr1);
+        assert_eq!(data.as_slice(), expected);
+        assert_eq!(*gro_segment_size, 0);
     }
 }
 

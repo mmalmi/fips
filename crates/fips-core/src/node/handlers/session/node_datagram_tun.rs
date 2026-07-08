@@ -402,11 +402,7 @@ impl Node {
                     }
 
                     if let Err(e) = self
-                        .send_dataplane_cached_endpoint_payloads(
-                            dest_addr,
-                            batch.clone(),
-                            enqueued_at_ms,
-                        )
+                        .send_dataplane_cached_endpoint_payloads(dest_addr, batch.clone())
                         .await
                     {
                         debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued endpoint data");

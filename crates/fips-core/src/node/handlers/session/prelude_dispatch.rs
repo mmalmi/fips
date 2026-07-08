@@ -74,21 +74,14 @@ pub(in crate::node) struct AuthenticatedSessionMessage {
     plaintext_offset: usize,
     plaintext_len: usize,
     msg_type: u8,
-    #[allow(dead_code)]
-    inner_flags_byte: u8,
-    #[allow(dead_code)]
-    timestamp: u32,
 }
 
 impl AuthenticatedSessionMessage {
     pub(in crate::node) fn new(
         source_peer: PeerIdentity,
-        plaintext: impl Into<PacketBuffer>,
+        plaintext: PacketBuffer,
         msg_type: u8,
-        inner_flags_byte: u8,
-        timestamp: u32,
     ) -> Self {
-        let plaintext = plaintext.into();
         debug_assert!(plaintext.len() >= FSP_INNER_HEADER_SIZE);
         let plaintext_len = plaintext.len();
         Self {
@@ -97,8 +90,6 @@ impl AuthenticatedSessionMessage {
             plaintext_offset: 0,
             plaintext_len,
             msg_type,
-            inner_flags_byte,
-            timestamp,
         }
     }
 
@@ -109,7 +100,7 @@ impl AuthenticatedSessionMessage {
     pub(in crate::node) fn body(&self) -> &[u8] {
         let body_offset = self.plaintext_offset + FSP_INNER_HEADER_SIZE;
         let body_len = self.body_len();
-        &self.buffer[body_offset..body_offset + body_len]
+        &self.buffer.as_slice()[body_offset..body_offset + body_len]
     }
 
     pub(in crate::node) fn body_len(&self) -> usize {
@@ -399,11 +390,10 @@ impl AuthenticatedSessionDispatch {
                                     let _t = crate::perf_profile::Timer::start(
                                         crate::perf_profile::Stage::TunWrite,
                                     );
-                                    if let Err(e) = tun_tx.send_with_lane(
-                                        packet,
-                                        crate::upper::tun::TunWriteLane::Priority,
-                                    ) {
-                                        debug!(error = %e, "Failed to deliver decompressed IPv6 packet to TUN");
+                                    if tun_tx.send_batch(std::iter::once(packet)) != 0 {
+                                        debug!(
+                                            "Failed to deliver decompressed IPv6 packet to TUN"
+                                        );
                                     }
                                 } else {
                                     trace!(

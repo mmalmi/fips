@@ -4,7 +4,9 @@ use crate::PeerIdentity;
 use crate::node::acl::PeerAclContext;
 use crate::node::wire::{Msg1Header, Msg2Header, build_msg2};
 use crate::node::{Node, NodeError};
-use crate::peer::{ActivePeer, PeerConnection, PromotionResult, cross_connection_winner};
+use crate::peer::{
+    ActivePeer, ActivePeerSession, PeerConnection, PromotionResult, cross_connection_winner,
+};
 use crate::transport::{Link, LinkDirection, LinkId, ReceivedPacket};
 use std::time::Duration;
 use tracing::{debug, info, warn};
@@ -94,7 +96,7 @@ impl Node {
         }
 
         // Parse header
-        let header = match Msg1Header::parse(&packet.data) {
+        let header = match Msg1Header::parse(packet.data.as_slice()) {
             Some(h) => h,
             None => {
                 self.msg1_rate_limiter.complete_handshake();
@@ -183,7 +185,7 @@ impl Node {
         );
 
         let our_keypair = self.identity.keypair();
-        let noise_msg1 = &packet.data[header.noise_msg1_offset..];
+        let noise_msg1 = &packet.data.as_slice()[header.noise_msg1_offset..];
         let msg2_response = match conn.receive_handshake_init(
             our_keypair,
             self.startup_epoch,

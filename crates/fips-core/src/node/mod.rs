@@ -52,12 +52,12 @@ pub(crate) use endpoint_channels::{
 pub(in crate::node) use endpoint_event::EndpointEventRuntime;
 pub(crate) use endpoint_event::{
     EndpointDataDelivery, EndpointDataIo, EndpointDirectSink, EndpointEventReceiver,
-    EndpointEventSender, NodeEndpointEvent, NodeEndpointPeer, NodeEndpointRelayStatus,
-    UpdatePeersOutcome,
+    EndpointEventSender, FipsEndpointDirectPacketRunMeta, NodeEndpointEvent, NodeEndpointPeer,
+    NodeEndpointRelayStatus, UpdatePeersOutcome,
 };
 pub use endpoint_event::{
     FipsEndpointDirectDeliveryError, FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun,
-    FipsEndpointDirectPacketRunMeta, FipsEndpointDirectSink, FipsEndpointDirectSourceRun,
+    FipsEndpointDirectSink,
 };
 pub(crate) use endpoint_traffic::{PendingEndpointData, PendingSessionTrafficQueues};
 pub(in crate::node) use identity_cache::IdentityCache;
@@ -79,7 +79,8 @@ use crate::bloom::{BloomFilter, BloomState};
 use crate::cache::CoordCache;
 use crate::config::{NostrDiscoveryPolicy, PeerConfig, RoutingMode};
 use crate::dataplane::{
-    AdmissionConfig, DataplaneFastIngressRx, DataplaneLiveNode, DataplaneTransportSendWorkerPool,
+    AdmissionConfig, DATAPLANE_TRANSPORT_SEND_BATCH_PACKETS, DataplaneFastIngressRx,
+    DataplaneLiveNode,
 };
 use crate::node::session::SessionEntry;
 use crate::node::session_wire::{FSP_PHASE_ESTABLISHED, FspCommonPrefix};
@@ -218,12 +219,11 @@ pub struct Node {
 
     // === Dataplane ===
     /// Canonical dataplane state owned by the node.
-    #[allow(dead_code)]
     dataplane: DataplaneNode,
     /// Pre-routed established FMP packets accepted directly from UDP receive.
     dataplane_fast_ingress_rx: Option<DataplaneFastIngressRx>,
-    /// Bounded dataplane bulk UDP send executor used by the live daemon path.
-    dataplane_transport_send_worker: DataplaneTransportSendWorkerPool,
+    /// Maximum same-destination UDP payloads sent in one dataplane batch.
+    dataplane_transport_send_batch_packets: usize,
 
     // === Peer Lifecycle ===
     /// Pending handshake connections plus authenticated peers.

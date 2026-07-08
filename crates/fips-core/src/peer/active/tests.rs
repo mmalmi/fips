@@ -86,7 +86,7 @@ fn test_tree_position() {
     let decl = ParentDeclaration::new(node, parent, 1, 1000);
     let coords = make_coords(&[1, 2, 0]);
 
-    peer.update_tree_position(decl, coords, 2000);
+    peer.update_tree_position(decl, coords);
 
     assert!(peer.has_tree_position());
     assert!(peer.coords().is_some());

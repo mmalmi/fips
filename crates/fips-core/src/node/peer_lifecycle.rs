@@ -281,41 +281,42 @@ impl PeerLifecycleRegistry {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(in crate::node) fn replace_current_session_and_path(
         &mut self,
         node_addr: &NodeAddr,
-        new_session: crate::noise::NoiseSession,
-        new_our_index: SessionIndex,
-        new_their_index: SessionIndex,
-        new_link_id: LinkId,
-        new_transport_id: TransportId,
-        new_addr: &TransportAddr,
-        new_is_initiator: bool,
-        new_remote_epoch: Option<[u8; 8]>,
-        connected_at_ms: u64,
+        replacement: ActivePeerCurrentSessionReplacement<'_>,
     ) -> Option<ReplacedActivePeerCurrentSession> {
+        let ActivePeerCurrentSessionReplacement {
+            session,
+            our_index,
+            their_index,
+            link_id,
+            transport_id,
+            addr,
+            is_initiator,
+            remote_epoch_update,
+            connected_at_ms,
+        } = replacement;
         let new_session_index = PeerSessionIndex {
             kind: PeerSessionIndexKind::Current,
-            key: (new_transport_id, new_our_index.as_u32()),
-            index: new_our_index,
+            key: (transport_id, our_index.as_u32()),
+            index: our_index,
         };
         let (old_link_id, old_session_index, replay_suppressed_count) = {
             let peer = self.active.get_mut(node_addr)?;
             let previous_current_index = Self::active_peer_current_session_index(peer);
             let old_link_id = peer.link_id();
             let replay_suppressed_count = peer.replay_suppressed_count();
-            let replaced_our_index =
-                peer.replace_session(new_session, new_our_index, new_their_index);
+            let replaced_our_index = peer.replace_session(session, our_index, their_index);
             debug_assert_eq!(
                 previous_current_index.map(|old| old.index),
                 replaced_our_index
             );
-            peer.set_link_id(new_link_id);
-            peer.set_current_addr(new_transport_id, new_addr);
-            peer.set_fmp_mmp_is_initiator(new_is_initiator);
-            if new_remote_epoch.is_some() {
-                peer.set_remote_epoch(new_remote_epoch);
+            peer.set_link_id(link_id);
+            peer.set_current_addr(transport_id, addr);
+            peer.set_fmp_mmp_is_initiator(is_initiator);
+            if remote_epoch_update.is_some() {
+                peer.set_remote_epoch(remote_epoch_update);
             }
             peer.mark_connected(connected_at_ms);
             (
@@ -380,22 +381,13 @@ impl PeerLifecycleRegistry {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(in crate::node) fn record_authenticated_fmp_receive(
         &mut self,
-        node_addr: &NodeAddr,
-        transport_id: TransportId,
-        remote_addr: &TransportAddr,
-        packet_timestamp_ms: u64,
-        packet_len: usize,
-        _fmp_counter: u64,
-        _inner_timestamp_ms: u32,
-        _ce_flag: bool,
-        _sp_flag: bool,
-        _now: std::time::Instant,
+        fmp: AuthenticatedFmpReceiveFacts<'_>,
         liveness_bookkeeping_allowed: bool,
         path_bookkeeping_allowed: bool,
     ) -> Option<AuthenticatedFmpReceiveBookkeeping> {
+        let node_addr = fmp.source_node_addr();
         let peer = self.active.get_mut(node_addr)?;
         peer.reset_decrypt_failures();
 
@@ -405,14 +397,14 @@ impl PeerLifecycleRegistry {
             liveness_bookkeeping_recorded: false,
         };
         if path_bookkeeping_allowed {
-            result.address_changed = peer.set_current_addr(transport_id, remote_addr);
+            result.address_changed = peer.set_current_addr(fmp.transport_id, fmp.remote_addr);
             result.path_bookkeeping_recorded = true;
         }
         if liveness_bookkeeping_allowed {
             result.liveness_bookkeeping_recorded = true;
             peer.link_stats_mut()
-                .record_recv(packet_len, packet_timestamp_ms);
-            peer.touch(packet_timestamp_ms);
+                .record_recv(fmp.packet_len, fmp.packet_timestamp_ms);
+            peer.touch(fmp.packet_timestamp_ms);
         }
 
         Some(result)
@@ -421,8 +413,6 @@ impl PeerLifecycleRegistry {
     pub(in crate::node) fn record_fmp_send_bookkeeping(
         &mut self,
         node_addr: &NodeAddr,
-        _fmp_counter: u64,
-        _timestamp_ms: u32,
         bytes_sent: usize,
     ) -> bool {
         let Some(peer) = self.active.get_mut(node_addr) else {

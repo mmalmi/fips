@@ -15,7 +15,6 @@ pub mod host_firewall;
 pub mod identity {
     pub use fips_identity::*;
 }
-#[allow(dead_code)]
 pub(crate) mod dataplane;
 pub mod mmp;
 pub mod node;
@@ -84,7 +83,7 @@ pub use peer::{
 // Re-export node types
 pub use endpoint::{
     FipsEndpoint, FipsEndpointBuilder, FipsEndpointDirectDeliveryError,
-    FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun, FipsEndpointDirectPacketRunMeta,
-    FipsEndpointDirectSink, FipsEndpointDirectSourceRun, FipsEndpointError, FipsEndpointMessage,
+    FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun, FipsEndpointDirectSink,
+    FipsEndpointError, FipsEndpointMessage,
 };
 pub use node::{ExternalPacketIo, Node, NodeDeliveredPacket, NodeError, NodeState};

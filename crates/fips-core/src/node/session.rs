@@ -59,9 +59,6 @@ impl EndToEndState {
 /// handshake state during transitions without placeholder values.
 /// The state is `None` only transiently during handler processing.
 pub(crate) struct SessionEntry {
-    /// Remote node's address (session table key).
-    #[allow(dead_code)]
-    remote_addr: NodeAddr,
     /// Remote node's authenticated identity, once the handshake has revealed it.
     remote_identity: Option<PeerIdentity>,
     /// Remote node's static public key.
@@ -124,7 +121,6 @@ impl SessionEntry {
         let remote_identity =
             (*remote_identity.node_addr() == remote_addr).then_some(remote_identity);
         Self {
-            remote_addr,
             remote_identity,
             remote_pubkey,
             state: Some(state),
@@ -223,7 +219,6 @@ impl SessionEntry {
     }
 
     /// Whether this node initiated the Noise handshake.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn is_initiator(&self) -> bool {
         self.is_initiator
     }

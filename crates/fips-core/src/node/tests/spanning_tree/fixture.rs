@@ -141,7 +141,7 @@ pub(in crate::node::tests) async fn complete_direct_handshake(
         .handle_msg1(ReceivedPacket::with_timestamp(
             responder_transport_id,
             initiator_addr,
-            wire_msg1,
+            crate::transport::PacketBuffer::new(wire_msg1),
             now_ms,
         ))
         .await;
@@ -161,7 +161,7 @@ pub(in crate::node::tests) async fn complete_direct_handshake(
         .handle_msg2(ReceivedPacket::with_timestamp(
             initiator_transport_id,
             responder_addr,
-            wire_msg2,
+            crate::transport::PacketBuffer::new(wire_msg2),
             Node::now_ms(),
         ))
         .await;

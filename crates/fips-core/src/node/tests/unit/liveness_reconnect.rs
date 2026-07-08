@@ -30,15 +30,16 @@ async fn link_dead_after_recent_rx_loop_timeout_defers_peer_removal() {
         peer,
         LinkId::new(7),
         0,
-        session,
-        crate::utils::index::SessionIndex::new(11),
-        crate::utils::index::SessionIndex::new(12),
-        TransportId::new(1),
-        crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
-        crate::transport::LinkStats::new(),
-        true,
-        &crate::mmp::MmpConfig::default(),
-        None,
+        ActivePeerSession {
+            session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id: TransportId::new(1),
+            current_addr: crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: None,
+        },
     );
     node.peers.insert(peer_addr, active);
     super::super::seed_dataplane_fmp_rx_for_test(
@@ -90,15 +91,16 @@ async fn failed_heartbeat_send_does_not_suppress_next_probe() {
         peer,
         LinkId::new(7),
         0,
-        session,
-        crate::utils::index::SessionIndex::new(11),
-        crate::utils::index::SessionIndex::new(12),
-        TransportId::new(1),
-        crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
-        crate::transport::LinkStats::new(),
-        true,
-        &crate::mmp::MmpConfig::default(),
-        None,
+        ActivePeerSession {
+            session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id: TransportId::new(1),
+            current_addr: crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: None,
+        },
     );
     node.peers.insert(peer_addr, active);
 
@@ -136,8 +138,7 @@ fn queue_active_fallback_direct_retries_seeds_configured_relayed_peer() {
     active.mark_stale();
     node.peers.insert(peer_addr, active);
 
-    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
-    node.queue_active_fallback_direct_retries(&bootstrap);
+    node.queue_active_fallback_direct_retries();
 
     let state = node
         .retry_pending
@@ -169,8 +170,7 @@ fn queue_active_fallback_direct_retries_skips_non_reconnect_transit_peer() {
     node.peers
         .insert(peer_addr, ActivePeer::new(peer, LinkId::new(7), 0));
 
-    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
-    node.queue_active_fallback_direct_retries(&bootstrap);
+    node.queue_active_fallback_direct_retries();
 
     assert!(
         !node.retry_pending.contains_key(&peer_addr),
@@ -589,15 +589,16 @@ async fn endpoint_peer_snapshot_does_not_treat_stale_historical_rx_as_connected(
         peer,
         LinkId::new(7),
         1,
-        session,
-        crate::utils::index::SessionIndex::new(11),
-        crate::utils::index::SessionIndex::new(12),
-        TransportId::new(1),
-        crate::transport::TransportAddr::from_string("203.0.113.24:51820"),
-        stats,
-        true,
-        &node.config.node.mmp,
-        Some([2; 8]),
+        ActivePeerSession {
+            session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id: TransportId::new(1),
+            current_addr: crate::transport::TransportAddr::from_string("203.0.113.24:51820"),
+            link_stats: stats,
+            is_initiator: true,
+            remote_epoch: Some([2; 8]),
+        },
     );
     node.peers.insert(peer_addr, active);
 
@@ -608,8 +609,8 @@ async fn endpoint_peer_snapshot_does_not_treat_stale_historical_rx_as_connected(
     .await;
     let peers = response_rx.await.expect("peer snapshot response");
     let peer = peers.first().expect("one peer");
-    assert_eq!(
-        peer.connected, false,
+    assert!(
+        !peer.connected,
         "stale historical receive counters must not keep status/GUI online"
     );
 }
@@ -630,15 +631,16 @@ async fn endpoint_peer_snapshot_treats_fresh_rx_as_connected() {
         peer,
         LinkId::new(7),
         Node::now_ms(),
-        session,
-        crate::utils::index::SessionIndex::new(11),
-        crate::utils::index::SessionIndex::new(12),
-        TransportId::new(1),
-        crate::transport::TransportAddr::from_string("203.0.113.24:51820"),
-        stats,
-        true,
-        &node.config.node.mmp,
-        Some([2; 8]),
+        ActivePeerSession {
+            session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id: TransportId::new(1),
+            current_addr: crate::transport::TransportAddr::from_string("203.0.113.24:51820"),
+            link_stats: stats,
+            is_initiator: true,
+            remote_epoch: Some([2; 8]),
+        },
     );
     node.peers.insert(peer_addr, active);
 
@@ -649,8 +651,8 @@ async fn endpoint_peer_snapshot_treats_fresh_rx_as_connected() {
     .await;
     let peers = response_rx.await.expect("peer snapshot response");
     let peer = peers.first().expect("one peer");
-    assert_eq!(
-        peer.connected, true,
+    assert!(
+        peer.connected,
         "fresh receive evidence should keep status/GUI online"
     );
 }
@@ -859,15 +861,16 @@ async fn poll_nostr_discovery_established_fresh_bootstrap_data_skips_redundant_t
         peer,
         LinkId::new(7),
         Node::now_ms(),
-        link_session,
-        crate::utils::index::SessionIndex::new(11),
-        crate::utils::index::SessionIndex::new(12),
-        bootstrap_transport,
-        crate::transport::TransportAddr::from_string("198.51.100.9:44444"),
-        crate::transport::LinkStats::new(),
-        true,
-        &crate::mmp::MmpConfig::default(),
-        None,
+        ActivePeerSession {
+            session: link_session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id: bootstrap_transport,
+            current_addr: crate::transport::TransportAddr::from_string("198.51.100.9:44444"),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: None,
+        },
     );
     node.peers.insert(peer_addr, active);
     node.bootstrap_transports.mark(bootstrap_transport);
@@ -1141,15 +1144,16 @@ async fn handle_msg1_treats_same_epoch_stale_peer_as_recovery() {
         peer_identity,
         old_link_id,
         1_000,
-        session,
-        crate::utils::index::SessionIndex::new(11),
-        crate::utils::index::SessionIndex::new(12),
-        transport_id,
-        old_addr.clone(),
-        crate::transport::LinkStats::new(),
-        true,
-        &node.config.node.mmp,
-        Some(remote_epoch),
+        ActivePeerSession {
+            session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id,
+            current_addr: old_addr.clone(),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: Some(remote_epoch),
+        },
     );
     active.set_handshake_msg2(vec![0x02, 0x03, 0x04]);
     active.mark_stale();
@@ -1177,7 +1181,12 @@ async fn handle_msg1_treats_same_epoch_stale_peer_as_recovery() {
         .expect("msg1");
     let wire_msg1 =
         crate::node::wire::build_msg1(crate::utils::index::SessionIndex::new(0x5151), &noise_msg1);
-    let packet = ReceivedPacket::with_timestamp(transport_id, new_addr.clone(), wire_msg1, 2_000);
+    let packet = ReceivedPacket::with_timestamp(
+        transport_id,
+        new_addr.clone(),
+        crate::transport::PacketBuffer::new(wire_msg1),
+        2_000,
+    );
 
     node.handle_msg1(packet).await;
 

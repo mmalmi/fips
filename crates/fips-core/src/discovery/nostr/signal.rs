@@ -4,7 +4,10 @@ use nostr::prelude::{
     Event, EventBuilder, JsonUtil, Kind, NostrSigner, PublicKey, Tag, Timestamp, UnsignedEvent,
 };
 
-use super::types::{BootstrapError, PunchHint, SIGNAL_KIND, TraversalAnswer, TraversalOffer};
+use super::types::{
+    BootstrapError, PunchHint, SIGNAL_KIND, TraversalAddressObservation, TraversalAnswer,
+    TraversalOffer,
+};
 
 /// Wall-clock skew tolerance applied to offer/answer freshness checks, in
 /// milliseconds. Constant rather than configurable because loosening this
@@ -92,6 +95,22 @@ pub(super) enum FreshnessOutcome {
     FreshWithinSkewTolerance,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct TraversalSignalTiming {
+    issued_at: u64,
+    ttl_ms: u64,
+}
+
+impl TraversalSignalTiming {
+    pub(super) fn new(issued_at: u64, ttl_ms: u64) -> Self {
+        Self { issued_at, ttl_ms }
+    }
+
+    fn expires_at(self) -> u64 {
+        self.issued_at + self.ttl_ms
+    }
+}
+
 pub(super) fn validate_offer_freshness(
     offer: &TraversalOffer,
     now: u64,
@@ -112,23 +131,24 @@ pub(super) fn validate_offer_freshness(
     Ok(outcome)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn create_traversal_offer(
     session_id: String,
-    issued_at: u64,
-    ttl_ms: u64,
+    timing: TraversalSignalTiming,
     nonce: String,
     sender_npub: String,
     recipient_npub: String,
-    reflexive_address: Option<super::TraversalAddress>,
-    local_addresses: Vec<super::TraversalAddress>,
-    stun_server: Option<String>,
+    observation: TraversalAddressObservation,
 ) -> TraversalOffer {
+    let TraversalAddressObservation {
+        reflexive_address,
+        local_addresses,
+        stun_server,
+    } = observation;
     TraversalOffer {
         message_type: "offer".to_string(),
         session_id,
-        issued_at,
-        expires_at: issued_at + ttl_ms,
+        issued_at: timing.issued_at,
+        expires_at: timing.expires_at(),
         nonce,
         sender_npub,
         recipient_npub,
@@ -138,38 +158,36 @@ pub(super) fn create_traversal_offer(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn create_traversal_answer(
-    session_id: String,
-    issued_at: u64,
-    ttl_ms: u64,
+    offer: &TraversalOffer,
+    timing: TraversalSignalTiming,
     nonce: String,
     sender_npub: String,
-    recipient_npub: String,
-    in_reply_to: String,
-    accepted: bool,
-    reflexive_address: Option<super::TraversalAddress>,
-    local_addresses: Vec<super::TraversalAddress>,
-    stun_server: Option<String>,
+    observation: TraversalAddressObservation,
     punch: Option<PunchHint>,
-    reason: Option<String>,
     offer_received_at: Option<u64>,
 ) -> TraversalAnswer {
+    let accepted = observation.has_usable_address();
+    let TraversalAddressObservation {
+        reflexive_address,
+        local_addresses,
+        stun_server,
+    } = observation;
     TraversalAnswer {
         message_type: "answer".to_string(),
-        session_id,
-        issued_at,
-        expires_at: issued_at + ttl_ms,
+        session_id: offer.session_id.clone(),
+        issued_at: timing.issued_at,
+        expires_at: timing.expires_at(),
         nonce,
         sender_npub,
-        recipient_npub,
-        in_reply_to,
+        recipient_npub: offer.sender_npub.clone(),
+        in_reply_to: offer.nonce.clone(),
         accepted,
         reflexive_address,
         local_addresses,
         stun_server,
-        punch,
-        reason,
+        punch: if accepted { punch } else { None },
+        reason: (!accepted).then_some("no-usable-addresses".to_string()),
         offer_received_at,
     }
 }

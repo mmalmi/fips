@@ -47,7 +47,6 @@ use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tokio::time::Instant;
 use tracing::{debug, info, trace, warn};
 
 // ============================================================================
@@ -66,12 +65,6 @@ struct TcpConnection {
     writer: Arc<Mutex<OwnedWriteHalf>>,
     /// Receive task for this connection.
     recv_task: JoinHandle<()>,
-    /// MSS-derived MTU for this connection (used for dynamic MTU re-reading).
-    #[allow(dead_code)]
-    mtu: u16,
-    /// When the connection was established.
-    #[allow(dead_code)]
-    established_at: Instant,
     direction: Direction,
 }
 
@@ -419,8 +412,6 @@ impl TcpTransport {
         let conn = TcpConnection {
             writer: writer.clone(),
             recv_task,
-            mtu: mss_mtu,
-            established_at: Instant::now(),
             direction: Direction::Outbound,
         };
 
@@ -641,8 +632,6 @@ impl TcpTransport {
         let conn = TcpConnection {
             writer,
             recv_task,
-            mtu: mss_mtu,
-            established_at: Instant::now(),
             direction: Direction::Outbound,
         };
 

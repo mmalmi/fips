@@ -79,9 +79,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::io::stdout().flush()?;
 
     while let Some(message) = endpoint.recv().await {
-        let source_npub = message.source_npub();
+        let source_npub = message.source_peer.npub();
         let len = message.data.len();
-        endpoint.send(source_npub, message.data).await?;
+        endpoint.send(source_npub, message.data.into_vec()).await?;
         println!("{}", json!({ "type": "echo", "bytes": len }));
         std::io::stdout().flush()?;
     }

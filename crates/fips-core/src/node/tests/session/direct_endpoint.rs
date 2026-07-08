@@ -108,7 +108,7 @@ fn test_endpoint_data_flushes_after_session_establishment() {
         let message = expect_single_endpoint_data_event(event);
         assert_eq!(*message.source_peer.node_addr(), node0_addr);
         assert_eq!(message.source_peer.npub(), nodes[0].node.npub());
-        assert_eq!(message.payload, b"ping");
+        assert_eq!(message.payload.as_slice(), &b"ping"[..]);
 
         send_endpoint_data_via_dataplane(&mut nodes[1].node, node0_identity, b"pong".to_vec())
             .await
@@ -124,7 +124,7 @@ fn test_endpoint_data_flushes_after_session_establishment() {
         let message = expect_single_endpoint_data_event(event);
         assert_eq!(*message.source_peer.node_addr(), node1_addr);
         assert_eq!(message.source_peer.npub(), nodes[1].node.npub());
-        assert_eq!(message.payload, b"pong");
+        assert_eq!(message.payload.as_slice(), &b"pong"[..]);
 
         cleanup_nodes(&mut nodes).await;
     });
@@ -173,14 +173,11 @@ fn test_endpoint_data_batch_flushes_after_session_establishment() {
                 "node 1 endpoint data batch",
             )
             .await;
-            match event {
-                NodeEndpointEvent { messages, .. } => {
-                    for message in messages {
-                        assert_eq!(*message.source_peer.node_addr(), node0_addr);
-                        assert_eq!(message.source_peer.npub(), nodes[0].node.npub());
-                        observed.push(message.payload.as_slice().to_vec());
-                    }
-                }
+            let NodeEndpointEvent { messages, .. } = event;
+            for message in messages {
+                assert_eq!(*message.source_peer.node_addr(), node0_addr);
+                assert_eq!(message.source_peer.npub(), nodes[0].node.npub());
+                observed.push(message.payload.as_slice().to_vec());
             }
         }
         assert_eq!(observed, vec![b"ping-1".to_vec(), b"ping-2".to_vec()]);
@@ -235,7 +232,7 @@ fn test_endpoint_data_routes_through_non_endpoint_transit_node() {
         let message = expect_single_endpoint_data_event(event);
         assert_eq!(*message.source_peer.node_addr(), alice_addr);
         assert_eq!(message.source_peer.npub(), nodes[0].node.npub());
-        assert_eq!(message.payload, b"alice-to-bob");
+        assert_eq!(message.payload.as_slice(), &b"alice-to-bob"[..]);
 
         assert!(
             nodes[1].node.get_session(&alice_addr).is_none(),
@@ -268,7 +265,7 @@ fn test_endpoint_data_routes_through_non_endpoint_transit_node() {
         let message = expect_single_endpoint_data_event(event);
         assert_eq!(*message.source_peer.node_addr(), bob_addr);
         assert_eq!(message.source_peer.npub(), nodes[2].node.npub());
-        assert_eq!(message.payload, b"bob-to-alice");
+        assert_eq!(message.payload.as_slice(), &b"bob-to-alice"[..]);
         assert!(
             transit_endpoint.event_rx.try_recv().is_err(),
             "transit node must stay outside the app endpoint flow"
@@ -318,7 +315,7 @@ fn test_endpoint_data_reply_learned_first_contact_routes_via_intermediary() {
                 let message = expect_single_endpoint_data_event(event);
                 assert_eq!(*message.source_peer.node_addr(), alice_addr);
                 assert_eq!(message.source_peer.npub(), nodes[0].node.npub());
-                assert_eq!(message.payload, b"first-contact");
+                assert_eq!(message.payload.as_slice(), &b"first-contact"[..]);
                 assert!(
                     nodes[1].node.get_session(&alice_addr).is_none(),
                     "transit node must not create an app endpoint session for Alice"

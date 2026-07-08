@@ -32,7 +32,7 @@ mod tests;
 
 pub use crate::node::{
     FipsEndpointDirectDeliveryError, FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun,
-    FipsEndpointDirectPacketRunMeta, FipsEndpointDirectSink, FipsEndpointDirectSourceRun,
+    FipsEndpointDirectSink,
 };
 pub use builder::FipsEndpointBuilder;
 use receive::EndpointReceiveState;
@@ -43,27 +43,6 @@ pub use status::{FipsEndpointPeer, FipsEndpointRelayStatus};
 /// This is the same pooled packet owner used by the transport/dataplane, so
 /// embedders can forward endpoint data without forcing another hot-path copy.
 pub type FipsEndpointData = crate::transport::PacketBuffer;
-
-#[cfg(debug_assertions)]
-fn endpoint_debug_log(message: impl AsRef<str>) {
-    use std::io::Write as _;
-
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(std::env::temp_dir().join("nvpn-fips-endpoint-debug.log"))
-    {
-        let _ = writeln!(
-            file,
-            "{:?} {}",
-            std::time::SystemTime::now(),
-            message.as_ref()
-        );
-    }
-}
-
-#[cfg(not(debug_assertions))]
-fn endpoint_debug_log(_message: impl AsRef<str>) {}
 
 /// Errors returned by the endpoint API.
 #[derive(Debug, Error)]
@@ -76,9 +55,6 @@ pub enum FipsEndpointError {
 
     #[error("endpoint is closed")]
     Closed,
-
-    #[error("invalid remote npub '{npub}': {reason}")]
-    InvalidRemoteNpub { npub: String, reason: String },
 
     #[error("endpoint data payload is too large: {len} bytes exceeds max {max} bytes")]
     EndpointDataTooLarge { len: usize, max: usize },
@@ -93,18 +69,6 @@ pub struct FipsEndpointMessage {
     pub data: FipsEndpointData,
     /// Unix-millisecond time when FIPS queued this message for the embedder.
     pub enqueued_at_ms: u64,
-}
-
-impl FipsEndpointMessage {
-    /// FIPS node address that originated the endpoint data.
-    pub fn source_node_addr(&self) -> &NodeAddr {
-        self.source_peer.node_addr()
-    }
-
-    /// Source Nostr public key as human-facing bech32 text.
-    pub fn source_npub(&self) -> String {
-        self.source_peer.npub()
-    }
 }
 
 /// Reports what changed in response to [`FipsEndpoint::update_peers`].
@@ -267,11 +231,11 @@ pub struct FipsEndpoint {
     delivered_packets: Arc<Mutex<mpsc::Receiver<NodeDeliveredPacket>>>,
     endpoint_control_tx: mpsc::Sender<NodeEndpointControlCommand>,
     endpoint_data_batches: EndpointDataBatchTx,
-    /// In-process loopback sender — `send()` to our own npub injects an
-    /// event into the same queue without going through the wire/encrypt
-    /// path. The node's rx_loop also sends into this channel directly
-    /// (it holds a clone of this sender) so there is no per-packet relay
-    /// task between the node task and `recv()`.
+    /// In-process loopback sender for local peer sends. It injects an event into
+    /// the same queue without going through the wire/encrypt path. The node's
+    /// rx_loop also sends into this channel directly (it holds a clone of this
+    /// sender) so there is no per-packet relay task between the node task and
+    /// `recv_batch_into()`.
     inbound_endpoint_tx: EndpointEventSender,
     /// Unbounded receiver plus pending tail from an internal batch. This was
     /// previously fed by a per-packet relay task
@@ -280,11 +244,6 @@ pub struct FipsEndpoint {
     /// -- the translation happens inline in `recv()` and the second hop
     /// (with its scheduler wake per packet) is gone.
     inbound_endpoint_rx: Arc<Mutex<EndpointReceiveState>>,
-    /// Cache of resolved PeerIdentity by npub string. Avoids the per-packet
-    /// secp256k1 EC point parse that `PeerIdentity::from_npub` performs;
-    /// without this cache the bulk-data send hot path spends ~10–30% of CPU
-    /// re-validating identity bytes the application has already configured.
-    peer_identity_cache: std::sync::Mutex<std::collections::HashMap<String, PeerIdentity>>,
     shutdown_tx: StdMutex<Option<oneshot::Sender<()>>>,
     task: StdMutex<Option<JoinHandle<Result<(), NodeError>>>>,
 }
@@ -315,45 +274,13 @@ impl FipsEndpoint {
         self.discovery_scope.as_deref()
     }
 
-    /// Send application-owned endpoint data to a remote npub.
+    /// Send application-owned endpoint payloads to one resolved peer.
     ///
-    /// Fire-and-forget: enqueues endpoint data on the dataplane bulk lane. TCP and
-    /// the upper protocol handle loss recovery, and the per-packet oneshot
-    /// round-trip the previous design used for error reporting added avoidable
-    /// scheduler work to the hot endpoint-data path.
-    ///
-    /// PeerIdentity for `remote_npub` is cached after first resolution to
-    /// avoid the secp256k1 EC point parse on every packet.
-    pub async fn send(
-        &self,
-        remote_npub: impl Into<String>,
-        data: impl Into<Vec<u8>>,
-    ) -> Result<(), FipsEndpointError> {
-        let remote_npub = remote_npub.into();
-        let data = data.into();
-        let remote = if remote_npub == self.npub {
-            self.identity
-        } else {
-            self.resolve_peer_identity(&remote_npub)?
-        };
-        self.send_payloads_to_peer(remote, vec![data])
-    }
-
-    /// Send application-owned endpoint data to a resolved remote identity.
-    ///
-    /// This is the fast path for applications that already validate and cache
-    /// peer identities in their own routing table. It avoids per-packet npub
-    /// allocation, endpoint cache lookup, and `PeerIdentity::from_npub` parsing
-    /// while preserving the same owned-payload semantics as [`Self::send`].
-    pub async fn send_to_peer(
-        &self,
-        remote: PeerIdentity,
-        data: impl Into<Vec<u8>>,
-    ) -> Result<(), FipsEndpointError> {
-        self.send_payloads_to_peer(remote, vec![data.into()])
-    }
-
-    /// Send a burst of application-owned endpoint payloads to one resolved peer.
+    /// This is the canonical endpoint-data send path for applications that
+    /// already validate and cache peer identities in their own routing table.
+    /// It avoids per-packet npub allocation, endpoint cache lookup, and
+    /// `PeerIdentity::from_npub` parsing while preserving owned-payload
+    /// semantics.
     pub async fn send_batch_to_peer(
         &self,
         remote: PeerIdentity,
@@ -424,28 +351,6 @@ impl FipsEndpoint {
         Ok(())
     }
 
-    fn resolve_peer_identity(&self, remote_npub: &str) -> Result<PeerIdentity, FipsEndpointError> {
-        // Fast path: cached identity (PeerIdentity is Copy after eager
-        // pubkey_full precompute landed in b1e92af, so dereference is free).
-        if let Ok(cache) = self.peer_identity_cache.lock()
-            && let Some(remote) = cache.get(remote_npub)
-        {
-            return Ok(*remote);
-        }
-
-        let remote = PeerIdentity::from_npub(remote_npub).map_err(|error| {
-            FipsEndpointError::InvalidRemoteNpub {
-                npub: remote_npub.to_string(),
-                reason: error.to_string(),
-            }
-        })?;
-
-        if let Ok(mut cache) = self.peer_identity_cache.lock() {
-            cache.entry(remote_npub.to_string()).or_insert(remote);
-        }
-        Ok(remote)
-    }
-
     fn send_loopback(&self, payload: EndpointDataPayload) -> Result<(), FipsEndpointError> {
         self.inbound_endpoint_tx
             .send(NodeEndpointEvent {
@@ -458,39 +363,12 @@ impl FipsEndpoint {
             .map_err(|_| FipsEndpointError::Closed)
     }
 
-    /// Receive the next source-attributed endpoint data message.
-    ///
-    /// Translation from the internal endpoint event batch to
-    /// the public `FipsEndpointMessage` shape happens inline here -- the
-    /// rx_loop pushes directly onto this channel, no relay task in
-    /// between, no extra cross-task hop per packet.
-    pub async fn recv(&self) -> Option<FipsEndpointMessage> {
-        let mut state = self.inbound_endpoint_rx.lock().await;
-        if let Some(message) = state.pop_pending() {
-            return Some(message);
-        }
-        let event = state.rx.recv().await?;
-        state.first_from_event(event)
-    }
-
-    /// Receive one endpoint message, then drain currently queued follow-ons.
+    /// Receive one endpoint message, then drain ready follow-ons into a caller-owned buffer.
     ///
     /// This is the receive-side counterpart to [`Self::send_batch_to_peer`]:
     /// callers still get individual source-attributed messages, but a hot
-    /// dataplane consumer can amortize the endpoint receiver lock and task wake
-    /// across a bounded burst.
-    pub async fn recv_batch(&self, max: usize) -> Option<Vec<FipsEndpointMessage>> {
-        let max = max.clamp(1, ENDPOINT_RECV_BATCH_MAX);
-        let mut messages = Vec::with_capacity(max);
-        self.recv_batch_into(&mut messages, max).await?;
-        Some(messages)
-    }
-
-    /// Receive one endpoint message, then drain ready follow-ons into a caller-owned buffer.
-    ///
-    /// This is the allocation-conscious form of [`Self::recv_batch`] for hot
-    /// dataplane consumers. The provided buffer is cleared before use and keeps
-    /// its allocation across calls.
+    /// dataplane consumer can amortize the endpoint receiver lock, task wake,
+    /// and message buffer allocation across a bounded burst.
     pub async fn recv_batch_into(
         &self,
         messages: &mut Vec<FipsEndpointMessage>,
@@ -517,42 +395,6 @@ impl FipsEndpoint {
         Some(messages.len())
     }
 
-    /// Synchronous blocking send — parks the calling **OS thread** on
-    /// the FIPS endpoint data batch channel until the runtime accepts
-    /// the send. MUST be called only from a thread spawned via
-    /// `std::thread::spawn`, not from inside a tokio runtime.
-    ///
-    /// Companion to [`Self::blocking_recv`] for control-frame replies
-    /// (e.g. responding to a Ping with a Pong) issued from the
-    /// dedicated TUN-write thread. Failures are returned via
-    /// `FipsEndpointError::Closed` if the runtime has stopped.
-    pub fn blocking_send(
-        &self,
-        remote_npub: impl Into<String>,
-        data: impl Into<Vec<u8>>,
-    ) -> Result<(), FipsEndpointError> {
-        let remote_npub = remote_npub.into();
-        let data = data.into();
-        let remote = if remote_npub == self.npub {
-            self.identity
-        } else {
-            self.resolve_peer_identity(&remote_npub)?
-        };
-        self.send_payloads_to_peer(remote, vec![data])
-    }
-
-    /// Synchronous blocking send to a resolved remote identity.
-    ///
-    /// This mirrors [`Self::send_to_peer`] for callers that already own a
-    /// `PeerIdentity` but need to use the blocking endpoint data path.
-    pub fn blocking_send_to_peer(
-        &self,
-        remote: PeerIdentity,
-        data: impl Into<Vec<u8>>,
-    ) -> Result<(), FipsEndpointError> {
-        self.send_payloads_to_peer(remote, vec![data.into()])
-    }
-
     /// Synchronous blocking batch send to one resolved remote identity.
     ///
     /// This is the blocking-thread counterpart to [`Self::send_batch_to_peer`].
@@ -564,30 +406,6 @@ impl FipsEndpoint {
         payloads: Vec<Vec<u8>>,
     ) -> Result<(), FipsEndpointError> {
         self.send_payloads_to_peer(remote, payloads)
-    }
-
-    /// Synchronous blocking receive — parks the calling **OS thread**
-    /// on the channel until an event arrives or the channel closes.
-    ///
-    /// MUST NOT be called from inside a tokio runtime; use this only
-    /// from a thread spawned via `std::thread::spawn` so the tokio
-    /// scheduler doesn't deadlock.
-    ///
-    /// The motivation is the bench's CLI receive task: when run as a
-    /// regular tokio task each `recv().await` is a full task-wake on
-    /// the runtime (~1–3 µs scheduler bookkeeping), and at 113 kpps
-    /// that's ~10–30% of one core spent in plumbing the wake-up
-    /// rather than writing the packet to TUN. A dedicated OS thread
-    /// blocked on the channel via `blocking_recv` parks on a futex
-    /// directly — the wake is a single futex_wake() with no scheduler
-    /// involvement, an order of magnitude cheaper.
-    pub fn blocking_recv(&self) -> Option<FipsEndpointMessage> {
-        let mut state = self.inbound_endpoint_rx.blocking_lock();
-        if let Some(message) = state.pop_pending() {
-            return Some(message);
-        }
-        let event = state.rx.blocking_recv()?;
-        state.first_from_event(event)
     }
 
     /// Synchronous blocking batch receive into a caller-owned buffer.
@@ -621,73 +439,6 @@ impl FipsEndpoint {
         }
 
         Some(messages.len())
-    }
-
-    /// Synchronous blocking batch receive that invokes a callback for each
-    /// delivered endpoint message without staging them in a caller-owned
-    /// `Vec`.
-    ///
-    /// This is for dedicated dataplane threads that immediately forward
-    /// messages onward. It preserves internal batch-tail handling and the receive limit as
-    /// [`Self::blocking_recv_batch_into`]. Returning `false` from the callback
-    /// stops the current drain after that message; any unconsumed messages from
-    /// the current internal batch are retained for the next receive.
-    pub fn blocking_recv_batch_for_each(
-        &self,
-        max: usize,
-        mut handle_message: impl FnMut(FipsEndpointMessage) -> bool,
-    ) -> Option<usize> {
-        let max = max.clamp(1, ENDPOINT_RECV_BATCH_MAX);
-        let mut drained = 0usize;
-
-        let mut state = self.inbound_endpoint_rx.blocking_lock();
-        if !state.drain_pending_for_each(&mut drained, max, &mut handle_message) {
-            return Some(drained);
-        }
-
-        while drained < max {
-            let event = if drained == 0 {
-                state.rx.blocking_recv()?
-            } else {
-                match state.rx.try_recv() {
-                    Ok(event) => event,
-                    Err(_) => break,
-                }
-            };
-            if !state.push_event_for_each(event, &mut drained, max, &mut handle_message) {
-                return Some(drained);
-            }
-        }
-
-        Some(drained)
-    }
-
-    /// Non-blocking receive — returns the next ready endpoint message
-    /// if one is queued, otherwise `None`. Pair with `recv()` to drain
-    /// follow-on packets without paying a scheduler wake per packet:
-    ///
-    /// ```ignore
-    /// // wake on the first packet, then drain everything ready
-    /// while let Some(msg) = endpoint.recv().await { process(msg); }
-    /// while let Some(msg) = endpoint.try_recv() { process(msg); }
-    /// ```
-    ///
-    /// On the bench's FIPS-tunnel receive path the kernel UDP socket
-    /// delivers packets in `recvmmsg`-sized bursts, so after a `.recv()`
-    /// await there are typically 5–30 packets queued waiting. Draining
-    /// them inline with `try_recv` saves N-1 scheduler hops per burst
-    /// at line rate, freeing the consumer task to spend its time on
-    /// the TUN write syscall instead of cross-task plumbing.
-    ///
-    /// Returns `None` if the channel is empty, closed, or briefly
-    /// contested by another consumer.
-    pub fn try_recv(&self) -> Option<FipsEndpointMessage> {
-        let mut state = self.inbound_endpoint_rx.try_lock().ok()?;
-        if let Some(message) = state.pop_pending() {
-            return Some(message);
-        }
-        let event = state.rx.try_recv().ok()?;
-        state.first_from_event(event)
     }
 
     /// Replace the runtime peer list. Newly added auto-connect peers get

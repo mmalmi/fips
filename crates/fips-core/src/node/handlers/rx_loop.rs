@@ -2,6 +2,7 @@
 
 use crate::control::queries;
 use crate::control::{ControlMessage, ControlSenders, ControlSocket, commands};
+use crate::dataplane::DataplaneFastIngressRx;
 use crate::node::{
     EndpointDataBatchRx, EndpointEventSender, Node, NodeError, endpoint_data_batch_channel,
 };
@@ -20,6 +21,70 @@ mod tests;
 
 use budget::*;
 use drain::*;
+
+pub(in crate::node) struct RxLoopDataplaneIo<'a> {
+    packet_rx: &'a mut PacketRx,
+    dataplane_fast_ingress_rx: &'a mut DataplaneFastIngressRx,
+    endpoint_data_rx: &'a mut EndpointDataBatchRx,
+    tun_outbound_rx: &'a mut TunOutboundRx,
+    endpoint_tx: &'a EndpointEventSender,
+}
+
+struct RxLoopDataplaneRuntime {
+    packet_rx: PacketRx,
+    dataplane_fast_ingress_rx: DataplaneFastIngressRx,
+    endpoint_data_rx: EndpointDataBatchRx,
+    tun_outbound_rx: TunOutboundRx,
+    endpoint_tx: EndpointEventSender,
+}
+
+impl RxLoopDataplaneRuntime {
+    fn io(&mut self) -> RxLoopDataplaneIo<'_> {
+        RxLoopDataplaneIo {
+            packet_rx: &mut self.packet_rx,
+            dataplane_fast_ingress_rx: &mut self.dataplane_fast_ingress_rx,
+            endpoint_data_rx: &mut self.endpoint_data_rx,
+            tun_outbound_rx: &mut self.tun_outbound_rx,
+            endpoint_tx: &self.endpoint_tx,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::node) struct RxLoopDataplaneTurnLimits {
+    packet: usize,
+    endpoint: usize,
+    tun: usize,
+    crypto: usize,
+}
+
+impl RxLoopDataplaneTurnLimits {
+    pub(in crate::node) fn new(packet: usize, endpoint: usize, tun: usize, crypto: usize) -> Self {
+        Self {
+            packet,
+            endpoint,
+            tun,
+            crypto,
+        }
+    }
+}
+
+#[cfg(test)]
+pub(in crate::node) fn rx_loop_dataplane_io<'a>(
+    packet_rx: &'a mut PacketRx,
+    dataplane_fast_ingress_rx: &'a mut DataplaneFastIngressRx,
+    endpoint_data_rx: &'a mut EndpointDataBatchRx,
+    tun_outbound_rx: &'a mut TunOutboundRx,
+    endpoint_tx: &'a EndpointEventSender,
+) -> RxLoopDataplaneIo<'a> {
+    RxLoopDataplaneIo {
+        packet_rx,
+        dataplane_fast_ingress_rx,
+        endpoint_data_rx,
+        tun_outbound_rx,
+        endpoint_tx,
+    }
+}
 
 impl Node {
     /// Run the receive event loop.
@@ -42,12 +107,12 @@ impl Node {
     /// This method takes ownership of the packet_rx channel and runs
     /// until the channel is closed (typically when stop() is called).
     pub async fn run_rx_loop(&mut self) -> Result<(), NodeError> {
-        let mut packet_rx = self.packet_rx.take().ok_or(NodeError::NotStarted)?;
+        let packet_rx = self.packet_rx.take().ok_or(NodeError::NotStarted)?;
 
         // Take the TUN outbound receiver, or create a dummy channel that never
         // produces messages (when TUN is disabled). Holding the sender prevents
         // the channel from closing.
-        let (mut tun_outbound_rx, _tun_guard) = match self.tun_outbound_rx.take() {
+        let (tun_outbound_rx, _tun_guard) = match self.tun_outbound_rx.take() {
             Some(rx) => (rx, None),
             None => {
                 let (tx, rx) = crate::upper::tun::tun_outbound_channel(1);
@@ -75,14 +140,14 @@ impl Node {
                     (rx, Some(tx))
                 }
             };
-        let (mut endpoint_data_rx, _endpoint_data_guard) = match self.endpoint_data_rx.take() {
+        let (endpoint_data_rx, _endpoint_data_guard) = match self.endpoint_data_rx.take() {
             Some(rx) => (rx, None),
             None => {
                 let (tx, rx) = endpoint_data_batch_channel(1);
                 (rx, Some(tx))
             }
         };
-        let (mut dataplane_fast_ingress_rx, _dataplane_fast_ingress_guard) =
+        let (dataplane_fast_ingress_rx, _dataplane_fast_ingress_guard) =
             match self.dataplane_fast_ingress_rx.take() {
                 Some(rx) => (rx, None),
                 None => {
@@ -122,17 +187,19 @@ impl Node {
         drop(control_query_tx);
         drop(control_command_tx);
 
-        let dataplane_tun_tx = self.tun_tx.clone().unwrap_or_else(|| {
-            let (tx, rx) = crate::upper::tun::write_channel();
-            drop(rx);
-            tx
-        });
         let dataplane_endpoint_tx = self.endpoint_events.sender().unwrap_or_else(|| {
             let (tx, rx) = EndpointEventSender::channel(1);
             drop(rx);
             tx
         });
         let dataplane_completion_notify = self.dataplane.completion_notify();
+        let mut dataplane_runtime = RxLoopDataplaneRuntime {
+            packet_rx,
+            dataplane_fast_ingress_rx,
+            endpoint_data_rx,
+            tun_outbound_rx,
+            endpoint_tx: dataplane_endpoint_tx,
+        };
 
         info!("RX event loop started");
         // Optional perf profiler (FIPS_PERF=1). No-op otherwise.
@@ -151,15 +218,13 @@ impl Node {
                 // cannot indefinitely postpone heartbeat, rekey, MMP, route
                 // aging, or path maintenance.
                 _ = tick.tick() => {
-                    let drained = self.drain_rx_loop_data_queues(
-                        &mut packet_rx,
-                        &mut dataplane_fast_ingress_rx,
-                        &mut tun_outbound_rx,
-                        &mut endpoint_data_rx,
-                        &dataplane_tun_tx,
-                        &dataplane_endpoint_tx,
-                        ENDPOINT_DRAIN_BUDGET,
-                    ).await;
+                    let drained = {
+                        let mut dataplane_io = dataplane_runtime.io();
+                        self.drain_rx_loop_data_queues(
+                            &mut dataplane_io,
+                            ENDPOINT_DRAIN_BUDGET,
+                        ).await
+                    };
                     if drained.has_drained() {
                         maintenance_state.record_data_activity(Instant::now());
                         debug!(
@@ -186,15 +251,13 @@ impl Node {
                         slow_timed_out,
                     );
 
-                    let post_drained = self.drain_rx_loop_data_queues(
-                        &mut packet_rx,
-                        &mut dataplane_fast_ingress_rx,
-                        &mut tun_outbound_rx,
-                        &mut endpoint_data_rx,
-                        &dataplane_tun_tx,
-                        &dataplane_endpoint_tx,
-                        PACKET_DRAIN_BUDGET,
-                    ).await;
+                    let post_drained = {
+                        let mut dataplane_io = dataplane_runtime.io();
+                        self.drain_rx_loop_data_queues(
+                            &mut dataplane_io,
+                            PACKET_DRAIN_BUDGET,
+                        ).await
+                    };
                     if post_drained.has_drained() {
                         maintenance_state.record_data_activity(Instant::now());
                         debug!(
@@ -220,7 +283,7 @@ impl Node {
                 Some(command) = endpoint_control_rx.recv() => {
                     self.handle_endpoint_control(command).await;
                 }
-                packet = packet_rx.recv() => {
+                packet = dataplane_runtime.packet_rx.recv() => {
                     match packet {
                         Some(p) => {
                             let latency_packet = p.is_transport_priority();
@@ -228,11 +291,11 @@ impl Node {
                                 raw_packet: Some(p),
                                 ..Default::default()
                             };
-                            if let Ok(packet) = tun_outbound_rx.try_recv() {
+                            if let Ok(packet) = dataplane_runtime.tun_outbound_rx.try_recv() {
                                 firsts.tun_packet = Some(packet);
                             }
                             let latency_work_ready = latency_packet
-                                || packet_rx.priority_ready_packets() > 0;
+                                || dataplane_runtime.packet_rx.priority_ready_packets() > 0;
                             if latency_work_ready {
                                 let packet_budget = packet_drain_budget(true);
                                 let endpoint_budget = endpoint_drain_budget(packet_budget);
@@ -242,18 +305,19 @@ impl Node {
                                     endpoint_budget,
                                     tun_budget,
                                 );
-                                let mut turn = self.drain_dataplane_turn_with_firsts(
-                                    &mut packet_rx,
-                                    firsts,
-                                    packet_budget,
-                                    &mut endpoint_data_rx,
-                                    endpoint_budget,
-                                    &mut tun_outbound_rx,
-                                    tun_budget,
-                                    &dataplane_tun_tx,
-                                    &dataplane_endpoint_tx,
-                                    crypto_budget,
-                                ).await;
+                                let mut turn = {
+                                    let mut dataplane_io = dataplane_runtime.io();
+                                    self.drain_dataplane_turn_with_firsts(
+                                        &mut dataplane_io,
+                                        firsts,
+                                        RxLoopDataplaneTurnLimits::new(
+                                            packet_budget,
+                                            endpoint_budget,
+                                            tun_budget,
+                                            crypto_budget,
+                                        ),
+                                    ).await
+                                };
                                 self.finish_dataplane_turn(
                                     &mut turn,
                                     &mut maintenance_state,
@@ -262,14 +326,10 @@ impl Node {
                                 ).await;
                             } else {
                                 firsts.raw_ingress_prefetch = true;
+                                let mut dataplane_io = dataplane_runtime.io();
                                 self.service_dataplane_bulk_turns(
-                                    &mut packet_rx,
-                                    &mut dataplane_fast_ingress_rx,
+                                    &mut dataplane_io,
                                     firsts,
-                                    &mut endpoint_data_rx,
-                                    &mut tun_outbound_rx,
-                                    &dataplane_tun_tx,
-                                    &dataplane_endpoint_tx,
                                     &mut maintenance_state,
                                     &mut control_query_rx,
                                 ).await;
@@ -278,30 +338,26 @@ impl Node {
                         None => break, // channel closed
                     }
                 }
-                Some(fast_ingress) = dataplane_fast_ingress_rx.recv() => {
+                Some(fast_ingress) = dataplane_runtime.dataplane_fast_ingress_rx.recv() => {
+                    let mut dataplane_io = dataplane_runtime.io();
                     self.service_dataplane_bulk_turns(
-                        &mut packet_rx,
-                        &mut dataplane_fast_ingress_rx,
+                        &mut dataplane_io,
                         crate::dataplane::DataplaneLiveTurnFirsts {
                             fast_ingress: Some(fast_ingress),
                             ..Default::default()
                         },
-                        &mut endpoint_data_rx,
-                        &mut tun_outbound_rx,
-                        &dataplane_tun_tx,
-                        &dataplane_endpoint_tx,
                         &mut maintenance_state,
                         &mut control_query_rx,
                     ).await;
                 }
                 _ = dataplane_completion_notify.notified() => {
-                    let mut turn = self.drain_dataplane_completion_turn(
-                        &mut endpoint_data_rx,
-                        &mut tun_outbound_rx,
-                        &dataplane_tun_tx,
-                        &dataplane_endpoint_tx,
-                        LATENCY_PACKET_DRAIN_BUDGET,
-                    ).await;
+                    let mut turn = {
+                        let mut dataplane_io = dataplane_runtime.io();
+                        self.drain_dataplane_completion_turn(
+                            &mut dataplane_io,
+                            LATENCY_PACKET_DRAIN_BUDGET,
+                        ).await
+                    };
                     self.finish_dataplane_turn(
                         &mut turn,
                         &mut maintenance_state,
@@ -309,23 +365,19 @@ impl Node {
                         0,
                     ).await;
                 }
-                Some(ipv6_packet) = tun_outbound_rx.recv() => {
+                Some(ipv6_packet) = dataplane_runtime.tun_outbound_rx.recv() => {
                     let tun_budget = tun_drain_budget(LATENCY_PACKET_DRAIN_BUDGET);
-                    let mut turn = self.drain_dataplane_turn_with_firsts(
-                        &mut packet_rx,
-                        crate::dataplane::DataplaneLiveTurnFirsts {
-                            tun_packet: Some(ipv6_packet),
-                            ..Default::default()
-                        },
-                        0,
-                        &mut endpoint_data_rx,
-                        0,
-                        &mut tun_outbound_rx,
-                        tun_budget,
-                        &dataplane_tun_tx,
-                        &dataplane_endpoint_tx,
-                        tun_budget,
-                    ).await;
+                    let mut turn = {
+                        let mut dataplane_io = dataplane_runtime.io();
+                        self.drain_dataplane_turn_with_firsts(
+                            &mut dataplane_io,
+                            crate::dataplane::DataplaneLiveTurnFirsts {
+                                tun_packet: Some(ipv6_packet),
+                                ..Default::default()
+                            },
+                            RxLoopDataplaneTurnLimits::new(0, 0, tun_budget, tun_budget),
+                        ).await
+                    };
                     self.finish_dataplane_turn(
                         &mut turn,
                         &mut maintenance_state,
@@ -340,22 +392,23 @@ impl Node {
                     );
                     self.register_identity(identity.node_addr, identity.pubkey);
                 }
-                Some(batch) = endpoint_data_rx.recv() => {
-                    let mut turn = self.drain_dataplane_turn_with_firsts(
-                        &mut packet_rx,
-                        crate::dataplane::DataplaneLiveTurnFirsts {
-                            endpoint_data_batch: Some(batch),
-                            ..Default::default()
-                        },
-                        0,
-                        &mut endpoint_data_rx,
-                        ENDPOINT_DRAIN_BUDGET,
-                        &mut tun_outbound_rx,
-                        0,
-                        &dataplane_tun_tx,
-                        &dataplane_endpoint_tx,
-                        PACKET_DRAIN_BUDGET,
-                    ).await;
+                Some(batch) = dataplane_runtime.endpoint_data_rx.recv() => {
+                    let mut turn = {
+                        let mut dataplane_io = dataplane_runtime.io();
+                        self.drain_dataplane_turn_with_firsts(
+                            &mut dataplane_io,
+                            crate::dataplane::DataplaneLiveTurnFirsts {
+                                endpoint_data_batch: Some(batch),
+                                ..Default::default()
+                            },
+                            RxLoopDataplaneTurnLimits::new(
+                                0,
+                                ENDPOINT_DRAIN_BUDGET,
+                                0,
+                                PACKET_DRAIN_BUDGET,
+                            ),
+                        ).await
+                    };
                     self.finish_dataplane_turn(
                         &mut turn,
                         &mut maintenance_state,
@@ -380,16 +433,11 @@ impl Node {
 
     async fn drain_rx_loop_data_queues(
         &mut self,
-        packet_rx: &mut PacketRx,
-        dataplane_fast_ingress_rx: &mut crate::dataplane::DataplaneFastIngressRx,
-        tun_outbound_rx: &mut TunOutboundRx,
-        endpoint_data_rx: &mut EndpointDataBatchRx,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
+        io: &mut RxLoopDataplaneIo<'_>,
         budget: usize,
     ) -> RxLoopDataDrainStats {
         let fast_ingress =
-            Self::take_dataplane_fast_ingress_batch(dataplane_fast_ingress_rx, budget);
+            Self::take_dataplane_fast_ingress_batch(io.dataplane_fast_ingress_rx, budget);
         let packet_budget = budget.max(
             fast_ingress
                 .as_ref()
@@ -401,19 +449,17 @@ impl Node {
             mixed_dataplane_crypto_budget(packet_budget, endpoint_budget, tun_budget);
         let mut turn = self
             .drain_dataplane_turn_with_firsts(
-                packet_rx,
+                io,
                 crate::dataplane::DataplaneLiveTurnFirsts {
                     fast_ingress,
                     ..Default::default()
                 },
-                packet_budget,
-                endpoint_data_rx,
-                endpoint_budget,
-                tun_outbound_rx,
-                tun_budget,
-                tun_tx,
-                endpoint_tx,
-                crypto_budget,
+                RxLoopDataplaneTurnLimits::new(
+                    packet_budget,
+                    endpoint_budget,
+                    tun_budget,
+                    crypto_budget,
+                ),
             )
             .await;
         let drained_packets = Self::dataplane_packet_activity(&turn);
@@ -452,16 +498,10 @@ impl Node {
         fast_ingress
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn service_dataplane_bulk_turns(
         &mut self,
-        packet_rx: &mut PacketRx,
-        dataplane_fast_ingress_rx: &mut crate::dataplane::DataplaneFastIngressRx,
+        io: &mut RxLoopDataplaneIo<'_>,
         firsts: crate::dataplane::DataplaneLiveTurnFirsts,
-        endpoint_data_rx: &mut EndpointDataBatchRx,
-        tun_outbound_rx: &mut TunOutboundRx,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
         maintenance_state: &mut RxLoopMaintenanceState,
         control_query_rx: &mut Receiver<ControlMessage>,
     ) {
@@ -470,13 +510,12 @@ impl Node {
         let mut turns = 0usize;
 
         loop {
-            if turns > 0 {
-                if turns >= RX_LOOP_BULK_SERVICE_MAX_TURNS
+            if turns > 0
+                && (turns >= RX_LOOP_BULK_SERVICE_MAX_TURNS
                     || started.elapsed() >= RX_LOOP_BULK_SERVICE_MAX_ELAPSED
-                    || packet_rx.priority_ready_packets() > 0
-                {
-                    break;
-                }
+                    || io.packet_rx.priority_ready_packets() > 0)
+            {
+                break;
             }
 
             let packet_budget = PACKET_DRAIN_BUDGET;
@@ -485,11 +524,11 @@ impl Node {
             turn_firsts.fast_ingress = match turn_firsts.fast_ingress.take() {
                 Some(fast_ingress) => Some(Self::coalesce_dataplane_fast_ingress(
                     fast_ingress,
-                    dataplane_fast_ingress_rx,
+                    io.dataplane_fast_ingress_rx,
                     packet_budget,
                 )),
                 None => Self::take_dataplane_fast_ingress_batch(
-                    dataplane_fast_ingress_rx,
+                    io.dataplane_fast_ingress_rx,
                     packet_budget,
                 ),
             };
@@ -506,25 +545,26 @@ impl Node {
 
             let mut turn = self
                 .drain_dataplane_turn_with_firsts(
-                    packet_rx,
+                    io,
                     turn_firsts,
-                    packet_budget,
-                    endpoint_data_rx,
-                    endpoint_budget,
-                    tun_outbound_rx,
-                    tun_budget,
-                    tun_tx,
-                    endpoint_tx,
-                    crypto_budget,
+                    RxLoopDataplaneTurnLimits::new(
+                        packet_budget,
+                        endpoint_budget,
+                        tun_budget,
+                        crypto_budget,
+                    ),
                 )
                 .await;
             let raw_drained = Self::dataplane_raw_ingress_activity(&turn);
             let control_activity = Self::dataplane_control_activity(&turn);
             let completions_drained = turn.summary().completions();
-            let keep_servicing = raw_drained >= packet_budget
-                || completions_drained >= crypto_budget
-                || turn.tun_source_drained() >= tun_budget
-                || turn.endpoint_source_drained() >= endpoint_budget;
+            let admission_dropped =
+                turn.summary().inbound_dropped() > 0 || turn.summary().outbound_dropped() > 0;
+            let keep_servicing = !admission_dropped
+                && (raw_drained >= packet_budget
+                    || completions_drained >= crypto_budget
+                    || turn.tun_source_drained() >= tun_budget
+                    || turn.endpoint_source_drained() >= endpoint_budget);
             let control_drained = self
                 .finish_dataplane_turn(
                     &mut turn,

@@ -1,4 +1,5 @@
 use super::*;
+use crate::peer::ActivePeerSession;
 
 #[tokio::test]
 async fn test_link_dead_fallback_warms_session_over_existing_graph() {
@@ -87,15 +88,16 @@ async fn test_link_dead_preserves_session_and_sends_over_existing_graph() {
         direct_identity,
         LinkId::new(77),
         crate::time::now_ms(),
-        direct_session,
-        crate::utils::index::SessionIndex::new(21),
-        crate::utils::index::SessionIndex::new(22),
-        nodes[0].transport_id,
-        nodes[2].addr.clone(),
-        crate::transport::LinkStats::new(),
-        true,
-        &nodes[0].node.config.node.mmp,
-        None,
+        ActivePeerSession {
+            session: direct_session,
+            our_index: crate::utils::index::SessionIndex::new(21),
+            their_index: crate::utils::index::SessionIndex::new(22),
+            transport_id: nodes[0].transport_id,
+            current_addr: nodes[2].addr.clone(),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: None,
+        },
     );
     nodes[0].node.peers.insert(dest_addr, direct_peer);
 
@@ -144,7 +146,13 @@ async fn test_link_dead_preserves_session_and_sends_over_existing_graph() {
     send_tun_packet_via_dataplane(&mut nodes, 0, ipv6_packet.clone()).await;
     drain_to_quiescence(&mut nodes).await;
 
-    let delivered: Vec<Vec<u8>> = std::iter::from_fn(|| tun_rx.try_recv().ok()).collect();
+    let delivered: Vec<Vec<u8>> = std::iter::from_fn(|| {
+        tun_rx
+            .try_recv_packet()
+            .ok()
+            .map(|packet| packet.as_slice().to_vec())
+    })
+    .collect();
     assert_eq!(
         delivered,
         vec![ipv6_packet],
@@ -202,7 +210,7 @@ async fn direct_established_endpoint_data_falls_back_after_link_dead() {
     .await;
     let message = expect_single_endpoint_data_event(event);
     assert_eq!(*message.source_peer.node_addr(), alice_addr);
-    assert_eq!(message.payload, b"direct-first");
+    assert_eq!(message.payload.as_slice(), &b"direct-first"[..]);
 
     assert!(
         nodes[0]
@@ -256,7 +264,7 @@ async fn direct_established_endpoint_data_falls_back_after_link_dead() {
     .await;
     let message = expect_single_endpoint_data_event(event);
     assert_eq!(*message.source_peer.node_addr(), alice_addr);
-    assert_eq!(message.payload, b"alice-fallback");
+    assert_eq!(message.payload.as_slice(), &b"alice-fallback"[..]);
 
     let event = recv_endpoint_event_while_draining(
         &mut nodes,
@@ -267,7 +275,7 @@ async fn direct_established_endpoint_data_falls_back_after_link_dead() {
     .await;
     let message = expect_single_endpoint_data_event(event);
     assert_eq!(*message.source_peer.node_addr(), bob_addr);
-    assert_eq!(message.payload, b"bob-fallback");
+    assert_eq!(message.payload.as_slice(), &b"bob-fallback"[..]);
 
     cleanup_nodes(&mut nodes).await;
 }

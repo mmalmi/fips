@@ -8,12 +8,10 @@ impl Node {
     /// Initializes the TUN interface (if configured), spawns I/O threads,
     /// and transitions to the Running state.
     pub async fn start(&mut self) -> Result<(), NodeError> {
-        node_start_debug_log("Node::start begin");
         if !self.state.can_start() {
             return Err(NodeError::AlreadyStarted);
         }
         self.state = NodeState::Starting;
-        node_start_debug_log("Node::start state set to starting");
 
         // Create packet channel for transport -> Node communication
         let packet_buffer_size = self.config.node.buffers.packet_channel;
@@ -24,39 +22,21 @@ impl Node {
         );
         self.packet_tx = Some(packet_tx.clone());
         self.packet_rx = Some(packet_rx);
-        node_start_debug_log("Node::start packet channel created");
 
         // Initialize transports first (before TUN, before Nostr discovery).
-        node_start_debug_log("Node::start create transports begin");
         let transport_handles = self.create_transports(&packet_tx).await;
-        node_start_debug_log(format!(
-            "Node::start create transports complete count={}",
-            transport_handles.len()
-        ));
 
         for mut handle in transport_handles {
             let transport_id = handle.transport_id();
             let transport_type = handle.transport_type().name;
             let name = handle.name().map(|s| s.to_string());
 
-            node_start_debug_log(format!(
-                "Node::start transport start begin id={} type={} name={:?}",
-                transport_id, transport_type, name
-            ));
             match handle.start().await {
                 Ok(()) => {
-                    node_start_debug_log(format!(
-                        "Node::start transport start ok id={} type={}",
-                        transport_id, transport_type
-                    ));
                     self.udp_transport_resolution_cache.clear();
                     self.transports.insert(transport_id, handle);
                 }
                 Err(e) => {
-                    node_start_debug_log(format!(
-                        "Node::start transport start error id={} type={} error={}",
-                        transport_id, transport_type, e
-                    ));
                     if let Some(ref n) = name {
                         warn!(transport_type, name = %n, error = %e, "Transport failed to start");
                     } else {
@@ -71,25 +51,18 @@ impl Node {
         }
 
         if self.config.node.discovery.nostr.enabled {
-            node_start_debug_log("Node::start nostr discovery start begin");
             match NostrDiscovery::start(&self.identity, self.config.node.discovery.nostr.clone())
                 .await
             {
                 Ok(runtime) => {
-                    node_start_debug_log("Node::start nostr discovery runtime created");
                     if let Err(err) = self.refresh_overlay_advert(&runtime).await {
                         warn!(error = %err, "Failed to publish initial Nostr overlay advert");
                     }
-                    node_start_debug_log("Node::start nostr overlay advert refreshed");
                     self.nostr_discovery = Some(runtime);
                     self.nostr_discovery_started_at_ms = Some(Self::now_ms());
                     info!("Nostr overlay discovery enabled");
                 }
                 Err(err) => {
-                    node_start_debug_log(format!(
-                        "Node::start nostr discovery start error error={}",
-                        err
-                    ));
                     warn!(error = %err, "Failed to start Nostr overlay discovery");
                 }
             }
@@ -99,7 +72,6 @@ impl Node {
         // when Nostr is disabled, since it gives us sub-second pairing
         // on the same link without any relay or NAT-traversal roundtrip.
         if self.config.node.discovery.lan.enabled {
-            node_start_debug_log("Node::start lan discovery start begin");
             let advertised_udp_port = self
                 .transports
                 .values()
@@ -117,15 +89,10 @@ impl Node {
             .await
             {
                 Ok(runtime) => {
-                    node_start_debug_log("Node::start lan discovery start ok");
                     self.lan_discovery = Some(runtime);
                     info!("LAN mDNS discovery enabled");
                 }
                 Err(err) => {
-                    node_start_debug_log(format!(
-                        "Node::start lan discovery start error error={}",
-                        err
-                    ));
                     debug!(error = %err, "LAN mDNS discovery not started");
                 }
             }
@@ -136,13 +103,10 @@ impl Node {
 
         // Connect to static peers before TUN is active
         // This allows handshake messages to be sent before we start accepting packets
-        node_start_debug_log("Node::start initiate peer connections begin");
         self.initiate_peer_connections().await;
-        node_start_debug_log("Node::start initiate peer connections complete");
 
         // Initialize TUN interface last, after transports and peers are ready
         if self.config.tun.enabled {
-            node_start_debug_log("Node::start tun init begin");
             let address = *self.identity.address();
             let mut tun_config = self.config.tun.clone();
             if tun_config.mtu.is_none() {
@@ -202,30 +166,22 @@ impl Node {
                     // Spawn reader thread
                     let transport_mtu = self.transport_mtu();
                     let path_mtu_lookup = self.path_mtu_lookup.clone();
+                    let reader_runtime = TunReaderRuntime {
+                        device,
+                        mtu,
+                        our_addr,
+                        tun_tx: reader_tun_tx,
+                        outbound_tx,
+                        transport_mtu,
+                        path_mtu_lookup,
+                    };
                     #[cfg(target_os = "macos")]
                     let reader_handle = thread::spawn(move || {
-                        run_tun_reader(
-                            device,
-                            mtu,
-                            our_addr,
-                            reader_tun_tx,
-                            outbound_tx,
-                            transport_mtu,
-                            path_mtu_lookup,
-                            shutdown_read_fd,
-                        );
+                        run_tun_reader(reader_runtime, shutdown_read_fd);
                     });
                     #[cfg(not(target_os = "macos"))]
                     let reader_handle = thread::spawn(move || {
-                        run_tun_reader(
-                            device,
-                            mtu,
-                            our_addr,
-                            reader_tun_tx,
-                            outbound_tx,
-                            transport_mtu,
-                            path_mtu_lookup,
-                        );
+                        run_tun_reader(reader_runtime);
                     });
 
                     self.tun_state = TunState::Active;
@@ -244,7 +200,6 @@ impl Node {
                     warn!(error = %e, "Failed to initialize TUN, continuing without it");
                 }
             }
-            node_start_debug_log("Node::start tun init complete");
         }
 
         // Initialize DNS responder (independent of TUN).
@@ -264,7 +219,6 @@ impl Node {
         // 127.0.0.1 still reach us regardless of kernel sysctl
         // defaults — but only when bind is on a wildcard / IPv6 path.
         if self.config.dns.enabled {
-            node_start_debug_log("Node::start dns init begin");
             let addr_str = self.config.dns.bind_addr();
             match addr_str.parse::<std::net::IpAddr>() {
                 Ok(ip) => {
@@ -319,11 +273,9 @@ impl Node {
                     warn!(addr = %addr_str, error = %e, "Invalid dns.bind_addr; DNS responder not started");
                 }
             }
-            node_start_debug_log("Node::start dns init complete");
         }
 
         self.state = NodeState::Running;
-        node_start_debug_log("Node::start running");
         info!("Node started:");
         info!("       state: {}", self.state);
         info!("  transports: {}", self.transports.len());

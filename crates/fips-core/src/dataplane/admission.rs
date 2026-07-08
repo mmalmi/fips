@@ -34,7 +34,6 @@ pub(crate) enum AdmissionDropReason {
 pub(crate) struct AdmissionDrop {
     owner: OwnerId,
     counter: Option<u64>,
-    lane: Lane,
     reason: AdmissionDropReason,
 }
 
@@ -43,7 +42,6 @@ impl AdmissionDrop {
         Self {
             owner: packet.owner,
             counter: Some(packet.counter),
-            lane: packet.lane(),
             reason: admission_drop_reason(packet.lane()),
         }
     }
@@ -52,7 +50,6 @@ impl AdmissionDrop {
         Self {
             owner: packet.owner,
             counter: None,
-            lane: packet.lane(),
             reason: admission_drop_reason(packet.lane()),
         }
     }
@@ -129,13 +126,6 @@ impl<T> Default for OwnerLaneQueues<T> {
 }
 
 impl<T> OwnerLaneQueues<T> {
-    fn lane(&self, lane: Lane) -> &VecDeque<T> {
-        match lane {
-            Lane::Priority => &self.priority,
-            Lane::Bulk => &self.bulk,
-        }
-    }
-
     fn lane_mut(&mut self, lane: Lane) -> &mut VecDeque<T> {
         match lane {
             Lane::Priority => &mut self.priority,
@@ -278,11 +268,8 @@ where
         if !cursor.owner_has_more {
             return None;
         }
-        let Some((item, owner_has_more, owner_empty)) =
-            self.pop_owner_lane(cursor.owner, cursor.lane)
-        else {
-            return None;
-        };
+        let (item, owner_has_more, owner_empty) =
+            self.pop_owner_lane(cursor.owner, cursor.lane)?;
         self.decrement_lane_len(cursor.lane);
         if owner_empty {
             self.owners.remove(&cursor.owner);
@@ -320,8 +307,9 @@ where
 
     fn pop_owner_lane(&mut self, owner: OwnerId, lane: Lane) -> Option<(T, bool, bool)> {
         let queues = self.owners.get_mut(&owner)?;
-        let item = queues.lane_mut(lane).pop_front()?;
-        let owner_has_more = !queues.lane(lane).is_empty();
+        let queue = queues.lane_mut(lane);
+        let item = queue.pop_front()?;
+        let owner_has_more = !queue.is_empty();
         let owner_empty = queues.is_empty();
         Some((item, owner_has_more, owner_empty))
     }

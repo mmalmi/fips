@@ -1,49 +1,44 @@
+use crate::dataplane::DataplaneLiveTurnIo;
 use crate::discovery::is_punch_packet;
 use crate::node::wire::{
     COMMON_PREFIX_SIZE, CommonPrefix, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1, PHASE_MSG2,
 };
 use crate::node::{
-    AuthenticatedFmpReceiveFacts, AuthenticatedLinkMessage, EndpointDataBatchRx,
-    EndpointEventSender, FLAG_CE, LocalSessionPayload, Node,
+    AuthenticatedFmpReceiveFacts, AuthenticatedLinkMessage, FLAG_CE, LocalSessionPayload, Node,
 };
-use crate::transport::{PacketRx, ReceivedPacket};
-use crate::upper::tun::TunOutboundRx;
+use crate::transport::ReceivedPacket;
 use crate::{NodeAddr, PeerIdentity};
 use tracing::{debug, trace, warn};
+
+use super::{RxLoopDataplaneIo, RxLoopDataplaneTurnLimits};
 
 impl Node {
     pub(in crate::node) async fn drain_dataplane_turn_with_firsts(
         &mut self,
-        packet_rx: &mut PacketRx,
+        io: &mut RxLoopDataplaneIo<'_>,
         firsts: crate::dataplane::DataplaneLiveTurnFirsts,
-        packet_limit: usize,
-        endpoint_data_rx: &mut EndpointDataBatchRx,
-        endpoint_limit: usize,
-        tun_outbound_rx: &mut TunOutboundRx,
-        tun_limit: usize,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        crypto_limit: usize,
+        limits: RxLoopDataplaneTurnLimits,
     ) -> crate::dataplane::DataplaneLiveNodeTurn {
         let direct_fsp_sources = std::sync::Arc::new(self.dataplane_direct_fsp_sources());
         self.dataplane
             .set_established_fast_ingress_direct_fsp_sources(direct_fsp_sources.clone());
         let turn = self
             .dataplane
-            .pump_packet_rx_turn_with_firsts_direct_fsp_sources_and_transport_worker(
-                packet_rx,
+            .pump_packet_rx_turn_with_firsts_direct_fsp_sources_and_transport_batch(
+                &mut *io.packet_rx,
                 firsts,
-                packet_limit,
+                limits.packet,
                 direct_fsp_sources,
-                endpoint_data_rx,
-                endpoint_limit,
-                tun_outbound_rx,
-                tun_limit,
-                tun_tx,
-                endpoint_tx,
-                &self.transports,
-                crypto_limit,
-                &mut self.dataplane_transport_send_worker,
+                DataplaneLiveTurnIo {
+                    endpoint_data_rx: &mut *io.endpoint_data_rx,
+                    endpoint_limit: limits.endpoint,
+                    tun_outbound_rx: &mut *io.tun_outbound_rx,
+                    tun_limit: limits.tun,
+                    endpoint_tx: io.endpoint_tx,
+                    transports: &self.transports,
+                    crypto_limit: limits.crypto,
+                    transport_send_batch_packets: self.dataplane_transport_send_batch_packets,
+                },
             )
             .await;
         Self::observe_dataplane_turn(&turn);
@@ -52,23 +47,21 @@ impl Node {
 
     pub(in crate::node) async fn drain_dataplane_completion_turn(
         &mut self,
-        endpoint_data_rx: &mut EndpointDataBatchRx,
-        tun_outbound_rx: &mut TunOutboundRx,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
+        io: &mut RxLoopDataplaneIo<'_>,
         crypto_limit: usize,
     ) -> crate::dataplane::DataplaneLiveNodeTurn {
         let turn = self
             .dataplane
-            .pump_completion_output_turn_with_transport_worker(
-                endpoint_data_rx,
-                tun_outbound_rx,
-                tun_tx,
-                endpoint_tx,
-                &self.transports,
+            .pump_completion_output_turn_with_transport_batch(DataplaneLiveTurnIo {
+                endpoint_data_rx: &mut *io.endpoint_data_rx,
+                endpoint_limit: 0,
+                tun_outbound_rx: &mut *io.tun_outbound_rx,
+                tun_limit: 0,
+                endpoint_tx: io.endpoint_tx,
+                transports: &self.transports,
                 crypto_limit,
-                &mut self.dataplane_transport_send_worker,
-            )
+                transport_send_batch_packets: self.dataplane_transport_send_batch_packets,
+            })
             .await;
         Self::observe_dataplane_turn(&turn);
         turn
@@ -185,7 +178,7 @@ impl Node {
         ingress: crate::dataplane::DataplaneFspLocalSessionIngress,
     ) -> bool {
         let (source_addr, _previous_hop_addr, _ce_flag, _path_mtu, payload) = ingress.into_parts();
-        let delivery = LocalSessionPayload::new(source_addr, &payload);
+        let delivery = LocalSessionPayload::new(source_addr, payload.as_slice());
         self.handle_session_payload(delivery).await;
         true
     }
@@ -195,7 +188,7 @@ impl Node {
         control: crate::dataplane::DataplaneFmpControlIngress,
     ) -> bool {
         let packet = control.into_packet();
-        if is_punch_packet(&packet.data) {
+        if is_punch_packet(packet.data.as_slice()) {
             trace!(
                 transport_id = %packet.transport_id,
                 remote_addr = %packet.remote_addr,
@@ -208,7 +201,7 @@ impl Node {
             return false;
         }
 
-        let Some(prefix) = CommonPrefix::parse(&packet.data) else {
+        let Some(prefix) = CommonPrefix::parse(packet.data.as_slice()) else {
             return false;
         };
         if prefix.version != FMP_VERSION {
@@ -273,17 +266,7 @@ impl Node {
         &mut self,
         receipt: &crate::dataplane::DataplaneFmpIngressReceipt,
     ) -> bool {
-        let source_peer = receipt.source_peer();
-        let fmp = AuthenticatedFmpReceiveFacts::new(
-            source_peer,
-            receipt.transport_id(),
-            receipt.remote_addr(),
-            receipt.packet_timestamp_ms(),
-            receipt.packet_len(),
-            receipt.fmp_counter(),
-            receipt.inner_timestamp_ms(),
-            receipt.fmp_flags(),
-        );
+        let fmp = AuthenticatedFmpReceiveFacts::from_dataplane_receipt(receipt);
         self.record_authenticated_fmp_receive_facts(fmp, Some(receipt.source_addr()));
         true
     }
@@ -313,26 +296,16 @@ impl Node {
         ingress: crate::dataplane::DataplaneFmpLinkIngress,
     ) -> bool {
         let receipt = ingress.receipt();
-        let source_peer = receipt.source_peer();
-        let fmp = AuthenticatedFmpReceiveFacts::new(
-            source_peer,
-            receipt.transport_id(),
-            receipt.remote_addr(),
-            receipt.packet_timestamp_ms(),
-            receipt.packet_len(),
-            receipt.fmp_counter(),
-            receipt.inner_timestamp_ms(),
-            receipt.fmp_flags(),
-        );
+        let fmp = AuthenticatedFmpReceiveFacts::from_dataplane_receipt(receipt);
         self.record_authenticated_fmp_receive_facts(fmp, Some(receipt.source_addr()));
         let Some(msg_type) = ingress.msg_type() else {
             return true;
         };
         self.dispatch_link_message(AuthenticatedLinkMessage::new(
-            source_peer,
+            fmp.source_peer,
             msg_type,
             ingress.payload(),
-            receipt.fmp_flags() & FLAG_CE != 0,
+            fmp.fmp_flags & FLAG_CE != 0,
         ))
         .await;
         true
@@ -368,7 +341,7 @@ impl Node {
             .saturating_add(turn.fmp_link_ingress().len())
             .saturating_add(turn.fsp_coord_warmups().len())
             .saturating_add(turn.fsp_local_session_ingress().len())
-            .saturating_add(turn.endpoint_data_batch_count())
+            .saturating_add(turn.endpoint_data_packet_count())
             .saturating_add(turn.fsp_session_ingress_count())
             .saturating_add(turn.deferred_endpoint_data_batches_count())
             .saturating_add(turn.tun_deferred_packets())
@@ -410,8 +383,8 @@ impl Node {
                 fmp_control_ingress = turn.fmp_control_ingress().len(),
                 fsp_coord_warmups = turn.fsp_coord_warmups().len(),
                 fsp_local_session_ingress = turn.fsp_local_session_ingress().len(),
-                endpoint_data_batch = turn.endpoint_data_batch_count(),
-                endpoint_data_batch_batches = turn.endpoint_data_batch_batch_count(),
+                endpoint_data_packets = turn.endpoint_data_packet_count(),
+                endpoint_data_batches = turn.endpoint_data_batch_count(),
                 fsp_session_ingress = turn.fsp_session_ingress_count(),
                 raw_ingress_drops = turn.raw_ingress_drops().len(),
                 tun_outbound_drops = turn.tun_outbound_drops().len(),
@@ -453,8 +426,8 @@ impl Node {
             fmp_link_ingress = turn.fmp_link_ingress().len(),
             fsp_coord_warmups = turn.fsp_coord_warmups().len(),
             fsp_local_session_ingress = turn.fsp_local_session_ingress().len(),
-            endpoint_data_batch = turn.endpoint_data_batch_count(),
-            endpoint_data_batch_batches = turn.endpoint_data_batch_batch_count(),
+            endpoint_data_packets = turn.endpoint_data_packet_count(),
+            endpoint_data_batches = turn.endpoint_data_batch_count(),
             fsp_session_ingress = turn.fsp_session_ingress_count(),
             "dataplane turn completed"
         );

@@ -397,7 +397,6 @@ fn peer_lifecycle_registry_owns_active_peer_insert_and_current_session_index() {
     let active_peer = make_active_test_peer(
         &node,
         &peer_full,
-        peer_identity,
         transport_id,
         link_id,
         remote_addr,
@@ -457,7 +456,6 @@ fn peer_lifecycle_registry_owns_current_session_index_repair() {
     let active_peer = make_active_test_peer(
         &node,
         &peer_full,
-        peer_identity,
         transport_id,
         link_id,
         remote_addr,
@@ -560,7 +558,6 @@ fn peer_lifecycle_registry_owns_current_session_replacement_and_index_handoff() 
     let active_peer = make_active_test_peer(
         &node,
         &peer_full,
-        peer_identity,
         old_transport_id,
         old_link_id,
         old_addr,
@@ -582,15 +579,17 @@ fn peer_lifecycle_registry_owns_current_session_replacement_and_index_handoff() 
     let replaced = registry
         .replace_current_session_and_path(
             &peer_addr,
-            new_session,
-            new_our_index,
-            new_their_index,
-            new_link_id,
-            new_transport_id,
-            &new_addr,
-            true,
-            Some([0x04; 8]),
-            2_000,
+            ActivePeerCurrentSessionReplacement {
+                session: new_session,
+                our_index: new_our_index,
+                their_index: new_their_index,
+                link_id: new_link_id,
+                transport_id: new_transport_id,
+                addr: &new_addr,
+                is_initiator: true,
+                remote_epoch_update: Some([0x04; 8]),
+                connected_at_ms: 2_000,
+            },
         )
         .expect("active peer replacement should be owned by the lifecycle registry");
 
@@ -665,7 +664,6 @@ fn peer_lifecycle_registry_owns_pending_rekey_session_and_index_registration() {
     let active_peer = make_active_test_peer(
         &node,
         &peer_full,
-        peer_identity,
         transport_id,
         link_id,
         current_addr,
@@ -739,7 +737,6 @@ fn peer_lifecycle_registry_owns_authenticated_fmp_receive_path_bookkeeping() {
     let mut active_peer = make_active_test_peer(
         &node,
         &peer_full,
-        peer_identity,
         old_transport_id,
         link_id,
         old_addr,
@@ -750,19 +747,28 @@ fn peer_lifecycle_registry_owns_authenticated_fmp_receive_path_bookkeeping() {
     active_peer.mark_stale();
     registry.insert_with_current_session_index(peer_addr, active_peer);
 
-    let now = std::time::Instant::now();
+    fn authenticated_fmp_receive<'a>(
+        peer_identity: PeerIdentity,
+        transport_id: TransportId,
+        remote_addr: &'a TransportAddr,
+        packet_timestamp_ms: u64,
+        packet_len: usize,
+    ) -> AuthenticatedFmpReceiveFacts<'a> {
+        AuthenticatedFmpReceiveFacts {
+            source_peer: peer_identity,
+            transport_id,
+            remote_addr,
+            packet_timestamp_ms,
+            packet_len,
+            fmp_counter: 0,
+            inner_timestamp_ms: 0,
+            fmp_flags: 0,
+        }
+    }
+
     let update = registry
         .record_authenticated_fmp_receive(
-            &peer_addr,
-            new_transport_id,
-            &new_addr,
-            2_000,
-            128,
-            7,
-            1_234,
-            true,
-            false,
-            now,
+            authenticated_fmp_receive(peer_identity, new_transport_id, &new_addr, 2_000, 128),
             true,
             true,
         )
@@ -790,16 +796,7 @@ fn peer_lifecycle_registry_owns_authenticated_fmp_receive_path_bookkeeping() {
         .increment_decrypt_failures();
     let skipped = registry
         .record_authenticated_fmp_receive(
-            &peer_addr,
-            new_transport_id,
-            &ignored_addr,
-            3_000,
-            64,
-            8,
-            1_999,
-            false,
-            true,
-            now,
+            authenticated_fmp_receive(peer_identity, new_transport_id, &ignored_addr, 3_000, 64),
             false,
             false,
         )
@@ -823,16 +820,7 @@ fn peer_lifecycle_registry_owns_authenticated_fmp_receive_path_bookkeeping() {
         .increment_decrypt_failures();
     let liveness_only = registry
         .record_authenticated_fmp_receive(
-            &peer_addr,
-            new_transport_id,
-            &ignored_addr,
-            4_000,
-            64,
-            9,
-            2_999,
-            false,
-            true,
-            now,
+            authenticated_fmp_receive(peer_identity, new_transport_id, &ignored_addr, 4_000, 64),
             true,
             false,
         )
@@ -868,20 +856,21 @@ fn peer_lifecycle_registry_owns_fmp_send_link_stats_bookkeeping() {
         peer_identity,
         link_id,
         1_000,
-        sender,
-        SessionIndex::new(19),
-        SessionIndex::new(20),
-        transport_id,
-        remote_addr,
-        crate::transport::LinkStats::new(),
-        true,
-        &node.config.node.mmp,
-        Some([0x06; 8]),
+        ActivePeerSession {
+            session: sender,
+            our_index: SessionIndex::new(19),
+            their_index: SessionIndex::new(20),
+            transport_id,
+            current_addr: remote_addr,
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: Some([0x06; 8]),
+        },
     );
     registry.insert_with_current_session_index(peer_addr, active_peer);
 
     assert!(
-        registry.record_fmp_send_bookkeeping(&peer_addr, 7, 2_000, 64),
+        registry.record_fmp_send_bookkeeping(&peer_addr, 64),
         "FMP send bookkeeping should find active peer"
     );
 
@@ -892,7 +881,7 @@ fn peer_lifecycle_registry_owns_fmp_send_link_stats_bookkeeping() {
     assert_eq!(peer.link_stats().bytes_sent, 64);
 
     assert!(
-        !registry.record_fmp_send_bookkeeping(&make_node_addr(99), 9, 2_200, 256),
+        !registry.record_fmp_send_bookkeeping(&make_node_addr(99), 256),
         "missing peers should not record FMP send bookkeeping"
     );
 }

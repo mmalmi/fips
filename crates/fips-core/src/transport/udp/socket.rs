@@ -176,12 +176,143 @@ mod platform {
         parsed
     }
 
+    fn configure_socket_buffer_sizes(
+        sock: &Socket,
+        recv_buf_size: usize,
+        send_buf_size: usize,
+    ) -> Result<(), TransportError> {
+        sock.set_recv_buffer_size(recv_buf_size)
+            .map_err(|e| TransportError::StartFailed(format!("set recv buffer: {}", e)))?;
+        sock.set_send_buffer_size(send_buf_size)
+            .map_err(|e| TransportError::StartFailed(format!("set send buffer: {}", e)))?;
+
+        let actual_recv = sock
+            .recv_buffer_size()
+            .map_err(|e| TransportError::StartFailed(format!("get recv buffer: {}", e)))?;
+        let actual_send = sock
+            .send_buffer_size()
+            .map_err(|e| TransportError::StartFailed(format!("get send buffer: {}", e)))?;
+
+        #[cfg(target_os = "linux")]
+        let (actual_recv, actual_send) = force_linux_socket_buffer_sizes(
+            sock,
+            recv_buf_size,
+            send_buf_size,
+            actual_recv,
+            actual_send,
+        );
+
+        warn_if_socket_buffer_clamped("recv", recv_buf_size, actual_recv);
+        warn_if_socket_buffer_clamped("send", send_buf_size, actual_send);
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn force_linux_socket_buffer_sizes(
+        sock: &Socket,
+        recv_buf_size: usize,
+        send_buf_size: usize,
+        mut actual_recv: usize,
+        mut actual_send: usize,
+    ) -> (usize, usize) {
+        if actual_recv < recv_buf_size {
+            let val: libc::c_int = recv_buf_size as libc::c_int;
+            let ret = unsafe {
+                libc::setsockopt(
+                    sock.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_RCVBUFFORCE,
+                    &val as *const _ as *const libc::c_void,
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                )
+            };
+            if ret == 0
+                && let Ok(after) = sock.recv_buffer_size()
+            {
+                actual_recv = after;
+            }
+        }
+        if actual_send < send_buf_size {
+            let val: libc::c_int = send_buf_size as libc::c_int;
+            let ret = unsafe {
+                libc::setsockopt(
+                    sock.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_SNDBUFFORCE,
+                    &val as *const _ as *const libc::c_void,
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                )
+            };
+            if ret == 0
+                && let Ok(after) = sock.send_buffer_size()
+            {
+                actual_send = after;
+            }
+        }
+        (actual_recv, actual_send)
+    }
+
+    fn warn_if_socket_buffer_clamped(kind: &'static str, requested: usize, actual: usize) {
+        if actual >= requested {
+            return;
+        }
+        #[cfg(target_os = "linux")]
+        warn!(
+            requested,
+            actual,
+            "UDP {kind} buffer clamped by kernel even with SO_{kind_upper}BUFFORCE \
+             (increase net.core.{sysctl}_max or grant CAP_NET_ADMIN)",
+            kind_upper = if kind == "recv" { "RCV" } else { "SND" },
+            sysctl = if kind == "recv" { "rmem" } else { "wmem" },
+        );
+        #[cfg(not(target_os = "linux"))]
+        warn!(requested, actual, "UDP {kind} buffer clamped by kernel");
+    }
+
+    fn configure_socket_nonblocking(sock: &Socket) -> Result<(), TransportError> {
+        sock.set_nonblocking(true)
+            .map_err(|e| TransportError::StartFailed(format!("set nonblocking failed: {}", e)))
+    }
+
+    fn configure_socket_reuse(sock: &Socket) {
+        let _ = sock.set_reuse_port(true);
+        let _ = sock.set_reuse_address(true);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn apply_darwin_udp_tuning(sock: &Socket, label: &'static str) {
+        crate::transport::udp::darwin_sockopts::apply_udp_socket_tuning(sock.as_raw_fd(), label);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn apply_darwin_udp_tuning(_sock: &Socket, _label: &'static str) {}
+
+    fn socket_local_addr(sock: &Socket) -> Result<SocketAddr, TransportError> {
+        sock.local_addr()
+            .map_err(|e| TransportError::StartFailed(format!("get local addr: {}", e)))?
+            .as_socket()
+            .ok_or_else(|| TransportError::StartFailed("local address is not an IP socket".into()))
+    }
+
+    fn finish_configured_socket(sock: Socket) -> Result<UdpRawSocket, TransportError> {
+        #[cfg(target_os = "linux")]
+        let udp_gro_enabled = configure_linux_recv_sockopts(sock.as_raw_fd());
+        let local_addr = socket_local_addr(&sock)?;
+
+        Ok(UdpRawSocket {
+            inner: sock,
+            local_addr,
+            #[cfg(target_os = "linux")]
+            udp_gro_enabled,
+        })
+    }
+
     impl UdpRawSocket {
         /// Create, bind, and configure a UDP socket.
         ///
         /// Enables `SO_RXQ_OVFL` for kernel drop counting (non-fatal if
         /// unsupported). Sets non-blocking mode for async integration.
-        #[cfg_attr(target_os = "macos", allow(dead_code))]
         pub fn open(
             bind_addr: SocketAddr,
             recv_buf_size: usize,
@@ -203,28 +334,12 @@ mod platform {
             let sock = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))
                 .map_err(|e| TransportError::StartFailed(format!("socket create failed: {}", e)))?;
 
-            sock.set_nonblocking(true).map_err(|e| {
-                TransportError::StartFailed(format!("set nonblocking failed: {}", e))
-            })?;
+            configure_socket_nonblocking(&sock)?;
 
             // SO_REUSEPORT/SO_REUSEADDR keeps restart/adopt behavior friendly
             // on platforms that support it.
-            #[cfg(not(target_os = "macos"))]
-            {
-                let _ = sock.set_reuse_port(true);
-                let _ = sock.set_reuse_address(true);
-            }
-            #[cfg(target_os = "macos")]
-            {
-                let _ = sock.set_reuse_port(true);
-                let _ = sock.set_reuse_address(true);
-            }
-
-            #[cfg(target_os = "macos")]
-            crate::transport::udp::darwin_sockopts::apply_udp_socket_tuning(
-                sock.as_raw_fd(),
-                "udp-listen",
-            );
+            configure_socket_reuse(&sock);
+            apply_darwin_udp_tuning(&sock, "udp-listen");
 
             sock.bind(&bind_addr.into())
                 .map_err(|e| TransportError::StartFailed(format!("bind failed: {}", e)))?;
@@ -237,100 +352,14 @@ mod platform {
             // rate. If clamped and we hold CAP_NET_ADMIN, the
             // SO_RCVBUFFORCE / SO_SNDBUFFORCE variants bypass the
             // sysctl ceiling entirely.
-            sock.set_recv_buffer_size(recv_buf_size)
-                .map_err(|e| TransportError::StartFailed(format!("set recv buffer: {}", e)))?;
-            sock.set_send_buffer_size(send_buf_size)
-                .map_err(|e| TransportError::StartFailed(format!("set send buffer: {}", e)))?;
+            configure_socket_buffer_sizes(&sock, recv_buf_size, send_buf_size)?;
 
-            // The SO_RCVBUFFORCE / SO_SNDBUFFORCE fallback below is
-            // Linux-only and may reassign these; non-Linux builds
-            // leave them at the initial reading.
-            #[allow(unused_mut)]
-            let mut actual_recv = sock
-                .recv_buffer_size()
-                .map_err(|e| TransportError::StartFailed(format!("get recv buffer: {}", e)))?;
-            #[allow(unused_mut)]
-            let mut actual_send = sock
-                .send_buffer_size()
-                .map_err(|e| TransportError::StartFailed(format!("get send buffer: {}", e)))?;
-
-            #[cfg(target_os = "linux")]
-            if actual_recv < recv_buf_size {
-                let val: libc::c_int = recv_buf_size as libc::c_int;
-                let ret = unsafe {
-                    libc::setsockopt(
-                        sock.as_raw_fd(),
-                        libc::SOL_SOCKET,
-                        libc::SO_RCVBUFFORCE,
-                        &val as *const _ as *const libc::c_void,
-                        std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-                    )
-                };
-                if ret == 0
-                    && let Ok(after) = sock.recv_buffer_size()
-                {
-                    actual_recv = after;
-                }
-            }
-            #[cfg(target_os = "linux")]
-            if actual_send < send_buf_size {
-                let val: libc::c_int = send_buf_size as libc::c_int;
-                let ret = unsafe {
-                    libc::setsockopt(
-                        sock.as_raw_fd(),
-                        libc::SOL_SOCKET,
-                        libc::SO_SNDBUFFORCE,
-                        &val as *const _ as *const libc::c_void,
-                        std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-                    )
-                };
-                if ret == 0
-                    && let Ok(after) = sock.send_buffer_size()
-                {
-                    actual_send = after;
-                }
-            }
-
-            if actual_recv < recv_buf_size {
-                warn!(
-                    requested = recv_buf_size,
-                    actual = actual_recv,
-                    "UDP recv buffer clamped by kernel even with SO_RCVBUFFORCE \
-                     (increase net.core.rmem_max or grant CAP_NET_ADMIN)"
-                );
-            }
-            if actual_send < send_buf_size {
-                warn!(
-                    requested = send_buf_size,
-                    actual = actual_send,
-                    "UDP send buffer clamped by kernel even with SO_SNDBUFFORCE \
-                     (increase net.core.wmem_max or grant CAP_NET_ADMIN)"
-                );
-            }
-
-            #[cfg(target_os = "linux")]
-            let udp_gro_enabled = configure_linux_recv_sockopts(sock.as_raw_fd());
-
-            let local_addr = sock
-                .local_addr()
-                .map_err(|e| TransportError::StartFailed(format!("get local addr: {}", e)))?
-                .as_socket()
-                .ok_or_else(|| {
-                    TransportError::StartFailed("local address is not an IP socket".into())
-                })?;
-
-            Ok(Self {
-                inner: sock,
-                local_addr,
-                #[cfg(target_os = "linux")]
-                udp_gro_enabled,
-            })
+            finish_configured_socket(sock)
         }
 
         /// Adopt an existing bound UDP socket.
         ///
         /// This preserves socket identity/NAT mapping created by bootstrap code.
-        #[cfg_attr(target_os = "macos", allow(dead_code))]
         pub fn adopt(
             socket: std::net::UdpSocket,
             recv_buf_size: usize,
@@ -346,119 +375,16 @@ mod platform {
         ) -> Result<Self, TransportError> {
             let sock = Socket::from(socket);
 
-            sock.set_nonblocking(true).map_err(|e| {
-                TransportError::StartFailed(format!("set nonblocking failed: {}", e))
-            })?;
+            configure_socket_nonblocking(&sock)?;
 
             // Adopted NAT-traversal sockets become normal FIPS UDP transports.
             // Keep their reuse flags aligned with `open()`.
-            #[cfg(not(target_os = "macos"))]
-            {
-                let _ = sock.set_reuse_port(true);
-                let _ = sock.set_reuse_address(true);
-            }
-            #[cfg(target_os = "macos")]
-            {
-                let _ = sock.set_reuse_port(true);
-                let _ = sock.set_reuse_address(true);
-            }
+            configure_socket_reuse(&sock);
+            apply_darwin_udp_tuning(&sock, "udp-adopted");
 
-            #[cfg(target_os = "macos")]
-            crate::transport::udp::darwin_sockopts::apply_udp_socket_tuning(
-                sock.as_raw_fd(),
-                "udp-adopted",
-            );
+            configure_socket_buffer_sizes(&sock, recv_buf_size, send_buf_size)?;
 
-            sock.set_recv_buffer_size(recv_buf_size)
-                .map_err(|e| TransportError::StartFailed(format!("set recv buffer: {}", e)))?;
-            sock.set_send_buffer_size(send_buf_size)
-                .map_err(|e| TransportError::StartFailed(format!("set send buffer: {}", e)))?;
-
-            // The SO_RCVBUFFORCE / SO_SNDBUFFORCE fallback below is
-            // Linux-only and may reassign these; non-Linux builds
-            // leave them at the initial reading.
-            #[allow(unused_mut)]
-            let mut actual_recv = sock
-                .recv_buffer_size()
-                .map_err(|e| TransportError::StartFailed(format!("get recv buffer: {}", e)))?;
-            #[allow(unused_mut)]
-            let mut actual_send = sock
-                .send_buffer_size()
-                .map_err(|e| TransportError::StartFailed(format!("get send buffer: {}", e)))?;
-
-            // CAP_NET_ADMIN holders can bypass rmem_max via
-            // SO_RCVBUFFORCE; see `open()` for the rationale.
-            #[cfg(target_os = "linux")]
-            if actual_recv < recv_buf_size {
-                let val: libc::c_int = recv_buf_size as libc::c_int;
-                let ret = unsafe {
-                    libc::setsockopt(
-                        sock.as_raw_fd(),
-                        libc::SOL_SOCKET,
-                        libc::SO_RCVBUFFORCE,
-                        &val as *const _ as *const libc::c_void,
-                        std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-                    )
-                };
-                if ret == 0
-                    && let Ok(after) = sock.recv_buffer_size()
-                {
-                    actual_recv = after;
-                }
-            }
-            #[cfg(target_os = "linux")]
-            if actual_send < send_buf_size {
-                let val: libc::c_int = send_buf_size as libc::c_int;
-                let ret = unsafe {
-                    libc::setsockopt(
-                        sock.as_raw_fd(),
-                        libc::SOL_SOCKET,
-                        libc::SO_SNDBUFFORCE,
-                        &val as *const _ as *const libc::c_void,
-                        std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-                    )
-                };
-                if ret == 0
-                    && let Ok(after) = sock.send_buffer_size()
-                {
-                    actual_send = after;
-                }
-            }
-
-            if actual_recv < recv_buf_size {
-                warn!(
-                    requested = recv_buf_size,
-                    actual = actual_recv,
-                    "UDP recv buffer clamped by kernel even with SO_RCVBUFFORCE \
-                     (increase net.core.rmem_max or grant CAP_NET_ADMIN)"
-                );
-            }
-            if actual_send < send_buf_size {
-                warn!(
-                    requested = send_buf_size,
-                    actual = actual_send,
-                    "UDP send buffer clamped by kernel even with SO_SNDBUFFORCE \
-                     (increase net.core.wmem_max or grant CAP_NET_ADMIN)"
-                );
-            }
-
-            #[cfg(target_os = "linux")]
-            let udp_gro_enabled = configure_linux_recv_sockopts(sock.as_raw_fd());
-
-            let local_addr = sock
-                .local_addr()
-                .map_err(|e| TransportError::StartFailed(format!("get local addr: {}", e)))?
-                .as_socket()
-                .ok_or_else(|| {
-                    TransportError::StartFailed("local address is not an IP socket".into())
-                })?;
-
-            Ok(Self {
-                inner: sock,
-                local_addr,
-                #[cfg(target_os = "linux")]
-                udp_gro_enabled,
-            })
+            finish_configured_socket(sock)
         }
 
         /// Get the local bound address.
@@ -487,7 +413,6 @@ mod platform {
         /// On Linux the production send path uses `send_batch` (sendmmsg);
         /// this single-packet variant remains for non-Linux unix targets
         /// and for the local `tests` module.
-        #[cfg_attr(target_os = "linux", allow(dead_code))]
         pub fn send_to(&self, data: &[u8], dest: &SocketAddr) -> std::io::Result<usize> {
             let dest: socket2::SockAddr = (*dest).into();
             self.inner.send_to(data, &dest)
@@ -501,10 +426,9 @@ mod platform {
         /// `gro_segment_size` is 0 unless Linux `UDP_GRO` reported the
         /// original UDP payload size for a coalesced receive.
         ///
-        /// On Linux the production receive path uses `recv_batch` (recvmmsg);
-        /// this single-packet variant remains for non-Linux unix targets and
-        /// for the local `tests` module.
-        #[cfg_attr(any(target_os = "linux", target_os = "macos"), allow(dead_code))]
+        /// Linux/macOS use `recv_batch` (recvmmsg/recvmsg_x); this
+        /// single-packet variant remains for other unix targets.
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         pub fn recv_from(
             &self,
             buf: &mut [u8],
@@ -1126,10 +1050,9 @@ mod platform {
         /// Linux UDP_GRO segment size.
         ///
         /// Returns `(bytes_read, source_addr, kernel_drops, gro_segment_size)`.
-        /// On Linux the production receive path uses `recv_batch`; this
-        /// single-packet variant remains for non-Linux unix targets and for
-        /// the local `tests` module.
-        #[cfg_attr(any(target_os = "linux", target_os = "macos"), allow(dead_code))]
+        /// Linux/macOS use `recv_batch`; this single-packet variant remains
+        /// for other unix targets.
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         pub async fn recv_from(
             &self,
             buf: &mut [u8],
