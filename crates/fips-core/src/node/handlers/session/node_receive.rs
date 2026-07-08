@@ -198,24 +198,6 @@ impl Node {
             .iter()
             .map(crate::dataplane::DataplaneEndpointDataBatch::len)
             .sum::<usize>();
-        let direct_packet_count = endpoint_batches
-            .iter()
-            .map(crate::dataplane::DataplaneEndpointDataBatch::packet_count)
-            .sum::<usize>();
-        let direct_sink = if direct_packet_count > 0 {
-            match self.dataplane_endpoint_direct_sink() {
-                Some(sink) => Some(sink),
-                None => {
-                    debug!(
-                        messages = message_count,
-                        "Dropping dataplane endpoint-data batch without direct sink"
-                    );
-                    return 0;
-                }
-            }
-        } else {
-            None
-        };
 
         let mut endpoint_commit = SessionReceiveBatchCommit::default();
         for batch in &endpoint_batches {
@@ -244,30 +226,10 @@ impl Node {
         }
 
         let pending_flush_destinations = endpoint_commit.finish(self);
-        if direct_packet_count > 0 {
-            let direct_sink = direct_sink.expect("direct sink is required when packet runs remain");
-            for batch in endpoint_batches {
-                let count = batch.packet_count();
-                let packet_batch = batch.into_direct_packet_batch();
-                if count > 0 && direct_sink.deliver_direct_packet_batch(packet_batch).is_err() {
-                    crate::perf_profile::record_event_count(
-                        crate::perf_profile::Event::EndpointEventBulkDropped,
-                        count as u64,
-                    );
-                    break;
-                }
-            }
-        }
         for dest_addr in pending_flush_destinations {
             self.flush_pending_packets(&dest_addr).await;
         }
         message_count
-    }
-
-    fn dataplane_endpoint_direct_sink(&self) -> Option<crate::node::EndpointDirectSink> {
-        self.endpoint_events
-            .sender()
-            .and_then(|sender| sender.direct_sink().cloned())
     }
 
     async fn flush_dataplane_tun_session_batch(

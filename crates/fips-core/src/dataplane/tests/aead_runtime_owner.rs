@@ -2129,12 +2129,12 @@
         );
         assert_eq!(endpoint_batches[0].commit_runs().len(), 1);
         assert_eq!(endpoint_batches[0].commit_runs()[0].len(), 3);
-        let mut batches = take_driver_endpoint_batches(&mut driver)
-            .into_iter()
-            .map(DataplaneEndpointDataBatch::into_direct_packet_batch)
-            .collect::<Vec<_>>();
+        let mut batches = take_driver_endpoint_batches(&mut driver);
         assert_eq!(batches.len(), 1);
-        let batch = batches.pop().expect("direct packet batch");
+        let batch = batches
+            .last_mut()
+            .expect("direct packet batch")
+            .take_direct_packet_batch();
         let mut runs = batch.into_packet_runs();
         assert_eq!(runs.len(), 1);
         assert_eq!(runs.iter().map(|run| run.len()).sum::<usize>(), 3);
@@ -2321,15 +2321,13 @@
         assert_eq!(endpoint_batches[0].commit_runs().len(), 1);
         assert_eq!(endpoint_batches[0].commit_runs()[0].len(), 2);
         assert_eq!(endpoint_batches[0].packet_count(), 0);
-        assert_eq!(
-            take_driver_endpoint_batches(&mut driver)
-                .pop()
-                .expect("commit batch")
-                .into_direct_packet_batch()
-                .into_packet_runs()
-                .len(),
-            0
-        );
+        let mut batches = take_driver_endpoint_batches(&mut driver);
+        let direct_runs = batches
+            .last_mut()
+            .expect("commit batch")
+            .take_direct_packet_batch()
+            .into_packet_runs();
+        assert_eq!(direct_runs.len(), 0);
     }
 
     #[test]
@@ -2391,12 +2389,12 @@
         assert_eq!(endpoint_batches[0].packet_count(), 5);
         assert!(driver.outputs.is_empty());
 
-        let mut batches = take_driver_endpoint_batches(&mut driver)
-            .into_iter()
-            .map(DataplaneEndpointDataBatch::into_direct_packet_batch)
-            .collect::<Vec<_>>();
+        let mut batches = take_driver_endpoint_batches(&mut driver);
         assert_eq!(batches.len(), 1);
-        let batch = batches.pop().expect("direct packet batch");
+        let batch = batches
+            .last_mut()
+            .expect("direct packet batch")
+            .take_direct_packet_batch();
         let mut runs = batch.into_packet_runs();
         assert_eq!(runs.len(), 1);
         assert_eq!(runs.iter().map(|run| run.len()).sum::<usize>(), 5);

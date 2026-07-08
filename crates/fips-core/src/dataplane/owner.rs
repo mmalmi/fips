@@ -2028,6 +2028,7 @@ impl OwnerState {
 
         let mut endpoint_data_batch = None;
         let mut endpoint_packets = 0usize;
+        let mut direct_enqueued_at_ms = None;
         for completion in batch.into_completions() {
             debug_assert_eq!(completion.order(), OrderToken(self.next_retire));
             self.next_retire = self.next_retire.wrapping_add(1);
@@ -2053,7 +2054,9 @@ impl OwnerState {
                 .authenticated_counter_highest
                 .max(completion.reservation.counter);
             let output = if compact_endpoint_data {
-                match DataplaneFspEndpointDataIngress::from_output(output) {
+                let enqueued_at_ms =
+                    *direct_enqueued_at_ms.get_or_insert_with(crate::time::now_ms);
+                match DataplaneFspEndpointDataIngress::from_output(output, enqueued_at_ms) {
                     DataplaneFspEndpointDataIngressOutput::Ingress(ingress) => {
                         self.record_retired_endpoint_data_ingress(&ingress);
                         endpoint_packets = endpoint_packets.saturating_add(ingress.len());
@@ -2130,7 +2133,7 @@ impl OwnerState {
         compact_endpoint_data: bool,
     ) {
         if compact_endpoint_data && matches!(output.target(), OutputTarget::SessionPayload { .. }) {
-            match DataplaneFspEndpointDataIngress::from_output(output) {
+            match DataplaneFspEndpointDataIngress::from_output(output, crate::time::now_ms()) {
                 DataplaneFspEndpointDataIngressOutput::Ingress(ingress) => {
                     self.record_retired_endpoint_data_ingress(&ingress);
                     retired.push_endpoint_data_batch(ingress);

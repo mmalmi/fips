@@ -526,7 +526,10 @@ enum DataplaneFspEndpointDataIngressOutput {
 }
 
 impl DataplaneFspEndpointDataIngress {
-    fn from_output(output: PacketOutput) -> DataplaneFspEndpointDataIngressOutput {
+    fn from_output(
+        output: PacketOutput,
+        enqueued_at_ms: u64,
+    ) -> DataplaneFspEndpointDataIngressOutput {
         let source_addr = output.owner().node_addr();
         let Some(source_peer) = output.source_peer() else {
             return DataplaneFspEndpointDataIngressOutput::Rejected(output);
@@ -579,7 +582,7 @@ impl DataplaneFspEndpointDataIngress {
                 previous_hop_addr,
                 receive_sync.received_k_bit,
                 previous_hop_addr == source_addr,
-                crate::time::now_ms(),
+                enqueued_at_ms,
             ),
             payload,
             ranges,
@@ -675,10 +678,6 @@ impl DataplaneEndpointDataBatch {
             .iter()
             .map(FipsEndpointDirectPacketRun::len)
             .sum()
-    }
-
-    pub(crate) fn into_direct_packet_batch(self) -> FipsEndpointDirectPacketBatch {
-        FipsEndpointDirectPacketBatch::from_packet_runs(self.packet_runs)
     }
 
     pub(crate) fn take_direct_packet_batch(&mut self) -> FipsEndpointDirectPacketBatch {
