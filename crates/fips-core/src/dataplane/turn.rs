@@ -513,50 +513,34 @@ impl DataplaneFspEndpointDataCommitRun {
 #[derive(Clone, Debug)]
 pub(crate) struct DataplaneFspEndpointDataIngress {
     commit: DataplaneFspEndpointDataCommit,
-    msg_type: u8,
     body_len: usize,
     receive_sync: FspReceiveSync,
     activity_tick: Option<ActivityTick>,
     packet_run: FipsEndpointDirectPacketRun,
 }
 
-enum DataplaneFspEndpointDataIngressOutput {
-    Ingress(DataplaneFspEndpointDataIngress),
-    Rejected(PacketOutput),
-}
-
 impl DataplaneFspEndpointDataIngress {
-    fn from_output(
-        output: PacketOutput,
-        enqueued_at_ms: u64,
-    ) -> DataplaneFspEndpointDataIngressOutput {
+    fn take_from_output(output: &mut PacketOutput, enqueued_at_ms: u64) -> Option<Self> {
         let source_addr = output.owner().node_addr();
-        let Some(source_peer) = output.source_peer() else {
-            return DataplaneFspEndpointDataIngressOutput::Rejected(output);
-        };
+        let source_peer = output.source_peer()?;
         if source_peer.node_addr() != &source_addr {
-            return DataplaneFspEndpointDataIngressOutput::Rejected(output);
+            return None;
         }
 
         let previous_hop_addr = output.previous_hop().unwrap_or(source_addr);
         let ce_flag = output.ce_flag();
         let header = match FspWireHeader::parse(output.payload()) {
             Ok(header) => header,
-            Err(_) => return DataplaneFspEndpointDataIngressOutput::Rejected(output),
+            Err(_) => return None,
         };
         let path_mtu = output.path_mtu();
         let activity_tick = output.activity_tick;
         let (timestamp_ms, inner_flags, plaintext_len, body_len) = {
-            let Some(plaintext) = output.opened_payload() else {
-                return DataplaneFspEndpointDataIngressOutput::Rejected(output);
-            };
-            let Some((timestamp_ms, msg_type, inner_flags, body)) =
-                crate::node::session_wire::fsp_strip_inner_header(plaintext)
-            else {
-                return DataplaneFspEndpointDataIngressOutput::Rejected(output);
-            };
+            let plaintext = output.opened_payload()?;
+            let (timestamp_ms, msg_type, inner_flags, body) =
+                crate::node::session_wire::fsp_strip_inner_header(plaintext)?;
             if msg_type != crate::protocol::SessionMessageType::EndpointData.to_byte() {
-                return DataplaneFspEndpointDataIngressOutput::Rejected(output);
+                return None;
             };
             (timestamp_ms, inner_flags, plaintext.len(), body.len())
         };
@@ -569,10 +553,7 @@ impl DataplaneFspEndpointDataIngress {
             path_mtu,
             spin_bit: inner_flags & 0x01 != 0,
         };
-        let mut output = output;
-        let Some(mut payload) = output.take_opened_payload() else {
-            return DataplaneFspEndpointDataIngressOutput::Rejected(output);
-        };
+        let mut payload = output.take_opened_payload()?;
         assert!(payload.trim_front(FSP_INNER_HEADER_SIZE));
         payload.truncate(body_len);
         let ranges = std::iter::once(0..body_len).collect();
@@ -588,14 +569,13 @@ impl DataplaneFspEndpointDataIngress {
             ranges,
         );
 
-        DataplaneFspEndpointDataIngressOutput::Ingress(Self {
+        Some(Self {
             commit: DataplaneFspEndpointDataCommit {
                 source_addr,
                 previous_hop_addr,
                 received_k_bit: receive_sync.received_k_bit,
                 direct_path: previous_hop_addr == source_addr,
             },
-            msg_type: crate::protocol::SessionMessageType::EndpointData.to_byte(),
             body_len,
             receive_sync,
             activity_tick,

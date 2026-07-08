@@ -2055,27 +2055,25 @@ impl OwnerState {
             self.authenticated_counter_highest = self
                 .authenticated_counter_highest
                 .max(completion.reservation.counter);
-            let output = if compact_endpoint_data {
+            let mut output = output;
+            if compact_endpoint_data {
                 let enqueued_at_ms =
                     *direct_enqueued_at_ms.get_or_insert_with(crate::time::now_ms);
-                match DataplaneFspEndpointDataIngress::from_output(output, enqueued_at_ms) {
-                    DataplaneFspEndpointDataIngressOutput::Ingress(ingress) => {
-                        self.record_retired_endpoint_data_ingress(&ingress);
-                        endpoint_packets = endpoint_packets.saturating_add(ingress.len());
-                        match &mut endpoint_data_batch {
-                            Some(batch) => batch.push(ingress),
-                            None => {
-                                endpoint_data_batch =
-                                    Some(DataplaneEndpointDataBatch::from_ingress(ingress));
-                            }
+                if let Some(ingress) =
+                    DataplaneFspEndpointDataIngress::take_from_output(&mut output, enqueued_at_ms)
+                {
+                    self.record_retired_endpoint_data_ingress(&ingress);
+                    endpoint_packets = endpoint_packets.saturating_add(ingress.len());
+                    match &mut endpoint_data_batch {
+                        Some(batch) => batch.push(ingress),
+                        None => {
+                            endpoint_data_batch =
+                                Some(DataplaneEndpointDataBatch::from_ingress(ingress));
                         }
-                        continue;
                     }
-                    DataplaneFspEndpointDataIngressOutput::Rejected(output) => output,
+                    continue;
                 }
-            } else {
-                output
-            };
+            }
 
             flush_retired_endpoint_data_batch(retired, &mut endpoint_data_batch);
             retired.push_output(output);
@@ -2136,14 +2134,14 @@ impl OwnerState {
         compact_endpoint_data: bool,
     ) {
         if compact_endpoint_data && matches!(output.target(), OutputTarget::SessionPayload { .. }) {
-            match DataplaneFspEndpointDataIngress::from_output(output, crate::time::now_ms()) {
-                DataplaneFspEndpointDataIngressOutput::Ingress(ingress) => {
-                    self.record_retired_endpoint_data_ingress(&ingress);
-                    retired.push_endpoint_data_batch(ingress);
-                }
-                DataplaneFspEndpointDataIngressOutput::Rejected(output) => {
-                    retired.push_output(output);
-                }
+            let mut output = output;
+            if let Some(ingress) =
+                DataplaneFspEndpointDataIngress::take_from_output(&mut output, crate::time::now_ms())
+            {
+                self.record_retired_endpoint_data_ingress(&ingress);
+                retired.push_endpoint_data_batch(ingress);
+            } else {
+                retired.push_output(output);
             }
             return;
         }
@@ -2162,7 +2160,7 @@ impl OwnerState {
         let _ = self.record_authenticated_fsp_session(DataplaneAuthenticatedFspSession::new(
             commit.source_addr(),
             commit.previous_hop_addr(),
-            ingress.msg_type,
+            crate::protocol::SessionMessageType::EndpointData.to_byte(),
             ingress.body_len,
             ingress.receive_sync,
             ingress.activity_tick,
