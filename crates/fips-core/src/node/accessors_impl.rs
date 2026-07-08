@@ -754,12 +754,19 @@ impl Node {
 
     /// Get a mutable peer by NodeAddr.
     pub fn get_peer_mut(&mut self, node_addr: &NodeAddr) -> Option<&mut ActivePeer> {
+        if self.peers.contains_key(node_addr) {
+            self.mark_dataplane_direct_fsp_sources_dirty();
+        }
         self.peers.get_mut(node_addr)
     }
 
     /// Remove a peer.
     pub fn remove_peer(&mut self, node_addr: &NodeAddr) -> Option<ActivePeer> {
-        self.peers.remove(node_addr)
+        let peer = self.peers.remove(node_addr);
+        if peer.is_some() {
+            self.mark_dataplane_direct_fsp_sources_dirty();
+        }
+        peer
     }
 
     /// Iterate over all peers.

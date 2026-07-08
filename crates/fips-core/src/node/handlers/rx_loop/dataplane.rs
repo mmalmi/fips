@@ -19,9 +19,7 @@ impl Node {
         firsts: crate::dataplane::DataplaneLiveTurnFirsts,
         limits: RxLoopDataplaneTurnLimits,
     ) -> crate::dataplane::DataplaneLiveNodeTurn {
-        let direct_fsp_sources = std::sync::Arc::new(self.dataplane_direct_fsp_sources());
-        self.dataplane
-            .set_established_fast_ingress_direct_fsp_sources(direct_fsp_sources.clone());
+        let direct_fsp_sources = self.dataplane_direct_fsp_sources_for_rx_turn();
         let turn = self
             .dataplane
             .pump_packet_rx_turn_with_firsts_direct_fsp_sources_and_transport_batch(

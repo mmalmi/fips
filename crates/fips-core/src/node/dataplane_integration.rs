@@ -742,6 +742,7 @@ impl Node {
 
     pub(in crate::node) fn sync_dataplane_fmp_owner(&mut self, node_addr: &NodeAddr) -> bool {
         let Some(seed) = self.dataplane_fmp_owner_seed(node_addr) else {
+            self.mark_dataplane_direct_fsp_sources_dirty();
             self.remove_dataplane_fmp_owner(node_addr);
             self.refresh_dataplane_fsp_owner_routes_after_fmp_owner_update(node_addr);
             return false;
@@ -760,6 +761,7 @@ impl Node {
             )
             .is_ok();
         if synced {
+            self.mark_dataplane_direct_fsp_sources_dirty();
             self.refresh_dataplane_fsp_owner_routes_after_fmp_owner_update(node_addr);
         }
         synced
@@ -980,6 +982,23 @@ impl Node {
 
     pub(in crate::node) fn dataplane_has_fsp_owner(&self, node_addr: &NodeAddr) -> bool {
         self.dataplane.has_owner(OwnerId::fsp_node(*node_addr))
+    }
+
+    pub(in crate::node) fn mark_dataplane_direct_fsp_sources_dirty(&mut self) {
+        self.dataplane_direct_fsp_sources_dirty = true;
+    }
+
+    pub(in crate::node) fn dataplane_direct_fsp_sources_for_rx_turn(
+        &mut self,
+    ) -> crate::dataplane::DataplaneDirectFspSources {
+        if self.dataplane_direct_fsp_sources_dirty {
+            let sources = Arc::new(self.dataplane_direct_fsp_sources());
+            self.dataplane
+                .set_established_fast_ingress_direct_fsp_sources(sources.clone());
+            self.dataplane_direct_fsp_sources = sources;
+            self.dataplane_direct_fsp_sources_dirty = false;
+        }
+        self.dataplane_direct_fsp_sources.clone()
     }
 
     pub(in crate::node) fn dataplane_direct_fsp_sources(

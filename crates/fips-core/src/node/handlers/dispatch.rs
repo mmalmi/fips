@@ -149,6 +149,7 @@ impl Node {
                 return;
             }
         };
+        self.mark_dataplane_direct_fsp_sources_dirty();
         let peer = removed_peer.peer;
         let link_mmp = self
             .dataplane

@@ -79,8 +79,8 @@ use crate::bloom::{BloomFilter, BloomState};
 use crate::cache::CoordCache;
 use crate::config::{NostrDiscoveryPolicy, PeerConfig, RoutingMode};
 use crate::dataplane::{
-    AdmissionConfig, DATAPLANE_TRANSPORT_SEND_BATCH_PACKETS, DataplaneFastIngressRx,
-    DataplaneLiveNode, DataplaneLiveNodeTurn,
+    AdmissionConfig, DATAPLANE_TRANSPORT_SEND_BATCH_PACKETS, DataplaneDirectFspSources,
+    DataplaneFastIngressRx, DataplaneLiveNode, DataplaneLiveNodeTurn,
 };
 use crate::node::session::SessionEntry;
 use crate::node::session_wire::{FSP_PHASE_ESTABLISHED, FspCommonPrefix};
@@ -224,6 +224,10 @@ pub struct Node {
     deferred_dataplane_control_turns: VecDeque<DataplaneLiveNodeTurn>,
     /// Pre-routed established FMP packets accepted directly from UDP receive.
     dataplane_fast_ingress_rx: Option<DataplaneFastIngressRx>,
+    /// Direct-FSP transport-address classifier published to packet ingress.
+    dataplane_direct_fsp_sources: DataplaneDirectFspSources,
+    /// True when peer path state changed since the classifier was built.
+    dataplane_direct_fsp_sources_dirty: bool,
     /// Maximum same-destination UDP payloads sent in one dataplane batch.
     dataplane_transport_send_batch_packets: usize,
 
