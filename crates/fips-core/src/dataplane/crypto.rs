@@ -341,10 +341,9 @@ enum DataplaneAeadDirection {
 pub(crate) struct DataplaneAeadWorkerPool {
     open_tx: Option<crossbeam_channel::Sender<PreparedCryptoJob>>,
     seal_tx: Option<crossbeam_channel::Sender<PreparedCryptoJob>>,
-    completion_rxs: Vec<crossbeam_channel::Receiver<Vec<CryptoCompletionBatch>>>,
+    completion_rx: Option<crossbeam_channel::Receiver<Vec<CryptoCompletionBatch>>>,
     completion_notify: Arc<tokio::sync::Notify>,
     pending_completion_batches: VecDeque<CryptoCompletionBatch>,
-    completion_rx_cursor: usize,
     open_in_flight: Arc<std::sync::atomic::AtomicUsize>,
     seal_in_flight: Arc<std::sync::atomic::AtomicUsize>,
     open_bulk_in_flight: Arc<std::sync::atomic::AtomicUsize>,
@@ -358,16 +357,10 @@ impl DataplaneAeadWorkerPool {
     pub(crate) fn new(worker_count: usize, max_in_flight: usize) -> Self {
         let worker_count = worker_count.max(1);
         let max_in_flight = max_in_flight.max(1);
-        let mut completion_txs = Vec::with_capacity(worker_count);
-        let mut completion_rxs = Vec::with_capacity(worker_count);
-        for _ in 0..worker_count {
-            let (completion_tx, completion_rx): (
-                crossbeam_channel::Sender<Vec<CryptoCompletionBatch>>,
-                crossbeam_channel::Receiver<Vec<CryptoCompletionBatch>>,
-            ) = crossbeam_channel::bounded(max_in_flight);
-            completion_txs.push(completion_tx);
-            completion_rxs.push(completion_rx);
-        }
+        let (completion_tx, completion_rx): (
+            crossbeam_channel::Sender<Vec<CryptoCompletionBatch>>,
+            crossbeam_channel::Receiver<Vec<CryptoCompletionBatch>>,
+        ) = crossbeam_channel::bounded(max_in_flight.saturating_mul(worker_count));
         let completion_notify = Arc::new(tokio::sync::Notify::new());
         let open_in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let seal_in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -377,7 +370,7 @@ impl DataplaneAeadWorkerPool {
             DataplaneAeadDirection::Open,
             worker_count,
             max_in_flight,
-            completion_txs.clone(),
+            completion_tx.clone(),
             Arc::clone(&completion_notify),
             Arc::clone(&open_in_flight),
             Arc::clone(&open_bulk_in_flight),
@@ -386,7 +379,7 @@ impl DataplaneAeadWorkerPool {
             DataplaneAeadDirection::Seal,
             worker_count,
             max_in_flight,
-            completion_txs,
+            completion_tx,
             Arc::clone(&completion_notify),
             Arc::clone(&seal_in_flight),
             Arc::clone(&seal_bulk_in_flight),
@@ -395,10 +388,9 @@ impl DataplaneAeadWorkerPool {
         Self {
             open_tx: Some(open_tx),
             seal_tx: Some(seal_tx),
-            completion_rxs,
+            completion_rx: Some(completion_rx),
             completion_notify,
             pending_completion_batches: VecDeque::new(),
-            completion_rx_cursor: 0,
             open_in_flight,
             seal_in_flight,
             open_bulk_in_flight,
@@ -433,7 +425,7 @@ impl DataplaneAeadWorkerPool {
             .map(CryptoCompletionBatch::len)
             .sum::<usize>();
         let pending_completion_batches = self.pending_completion_batches.len();
-        let rx_queued_messages = self.completion_rxs.iter().map(|rx| rx.len()).sum::<usize>();
+        let rx_queued_messages = self.completion_rx.as_ref().map_or(0, |rx| rx.len());
         let completion_depth = pending_completion_depth.saturating_add(rx_queued_messages);
         crate::perf_profile::record_event_count(
             crate::perf_profile::Event::DataplaneAeadCompletionQueueDepth,
@@ -514,49 +506,37 @@ impl DataplaneAeadWorkerPool {
                 continue;
             }
 
-            if self.completion_rxs.is_empty() {
+            let Some(completion_rx) = self.completion_rx.as_ref() else {
                 break;
-            }
-
-            let mut made_progress = false;
-            for _ in 0..self.completion_rxs.len() {
-                if drained >= limit {
-                    break;
-                }
-                let rx_idx = self.completion_rx_cursor % self.completion_rxs.len();
-                self.completion_rx_cursor = (rx_idx + 1) % self.completion_rxs.len();
-                let received = self.completion_rxs[rx_idx].try_recv();
-                match received {
-                    Ok(mut batches) => {
-                        made_progress = true;
-                        let mut batches = batches.drain(..);
-                        while let Some(batch) = batches.next() {
-                            if drained >= limit {
-                                self.pending_completion_batches.push_back(batch);
-                                self.pending_completion_batches.extend(batches);
-                                break;
-                            }
-                            let (got, pending) = self.drain_completion_batch(
-                                batch,
-                                limit.saturating_sub(drained),
-                                &mut push_batch,
-                            );
-                            drained = drained.saturating_add(got);
-                            if let Some(pending) = pending {
-                                self.pending_completion_batches.push_back(pending);
-                                self.pending_completion_batches.extend(batches);
-                                break;
-                            }
+            };
+            let received = completion_rx.try_recv();
+            match received {
+                Ok(mut batches) => {
+                    let mut batches = batches.drain(..);
+                    while let Some(batch) = batches.next() {
+                        if drained >= limit {
+                            self.pending_completion_batches.push_back(batch);
+                            self.pending_completion_batches.extend(batches);
+                            break;
+                        }
+                        let (got, pending) = self.drain_completion_batch(
+                            batch,
+                            limit.saturating_sub(drained),
+                            &mut push_batch,
+                        );
+                        drained = drained.saturating_add(got);
+                        if let Some(pending) = pending {
+                            self.pending_completion_batches.push_back(pending);
+                            self.pending_completion_batches.extend(batches);
+                            break;
                         }
                     }
-                    Err(crossbeam_channel::TryRecvError::Empty) => {
-                        empty_polls = empty_polls.saturating_add(1);
-                    }
-                    Err(crossbeam_channel::TryRecvError::Disconnected) => {}
                 }
-            }
-            if !made_progress {
-                break;
+                Err(crossbeam_channel::TryRecvError::Empty) => {
+                    empty_polls = empty_polls.saturating_add(1);
+                    break;
+                }
+                Err(crossbeam_channel::TryRecvError::Disconnected) => break,
             }
         }
         crate::perf_profile::record_dataplane_aead_completion_empty_polls(empty_polls);
@@ -759,7 +739,7 @@ fn spawn_dataplane_aead_workers(
     direction: DataplaneAeadDirection,
     worker_count: usize,
     max_in_flight: usize,
-    completion_txs: Vec<crossbeam_channel::Sender<Vec<CryptoCompletionBatch>>>,
+    completion_tx: crossbeam_channel::Sender<Vec<CryptoCompletionBatch>>,
     completion_notify: Arc<tokio::sync::Notify>,
     in_flight: Arc<std::sync::atomic::AtomicUsize>,
     bulk_in_flight: Arc<std::sync::atomic::AtomicUsize>,
@@ -778,7 +758,7 @@ fn spawn_dataplane_aead_workers(
             direction,
             worker_idx,
             work_rx,
-            completion_txs.clone(),
+            completion_tx.clone(),
             Arc::clone(&completion_notify),
             Arc::clone(&in_flight),
             Arc::clone(&bulk_in_flight),
@@ -791,7 +771,7 @@ fn spawn_dataplane_aead_worker_thread(
     direction: DataplaneAeadDirection,
     worker_idx: usize,
     work_rx: crossbeam_channel::Receiver<PreparedCryptoJob>,
-    completion_txs: Vec<crossbeam_channel::Sender<Vec<CryptoCompletionBatch>>>,
+    completion_tx: crossbeam_channel::Sender<Vec<CryptoCompletionBatch>>,
     completion_notify: Arc<tokio::sync::Notify>,
     in_flight: Arc<std::sync::atomic::AtomicUsize>,
     bulk_in_flight: Arc<std::sync::atomic::AtomicUsize>,
@@ -813,7 +793,7 @@ fn spawn_dataplane_aead_worker_thread(
                 let count = job.len();
                 let bulk_count = job.bulk_count();
                 let completions = job.execute_completion_batches();
-                if send_completion_batches_to_shards(completions, &completion_txs).is_err() {
+                if send_completion_batches(completions, &completion_tx).is_err() {
                     in_flight.fetch_sub(count, std::sync::atomic::Ordering::AcqRel);
                     bulk_in_flight.fetch_sub(bulk_count, std::sync::atomic::Ordering::AcqRel);
                     break;
@@ -824,65 +804,25 @@ fn spawn_dataplane_aead_worker_thread(
         .expect("spawn dataplane AEAD worker")
 }
 
-fn send_completion_batches_to_shards(
+fn send_completion_batches(
     batches: Vec<CryptoCompletionBatch>,
-    completion_txs: &[crossbeam_channel::Sender<Vec<CryptoCompletionBatch>>],
+    completion_tx: &crossbeam_channel::Sender<Vec<CryptoCompletionBatch>>,
 ) -> Result<(), ()> {
     if batches.is_empty() {
         return Ok(());
     }
-    if completion_txs.is_empty() {
-        return Err(());
-    }
 
-    let first_rx_idx = batches[0].owner_shard() % completion_txs.len();
-    let mut completion_batch_count = 0usize;
+    let completion_batch_count = batches.len();
     let mut completion_packet_count = 0usize;
-    let mut single_rx = true;
     for batch in &batches {
-        completion_batch_count = completion_batch_count.saturating_add(1);
         completion_packet_count = completion_packet_count.saturating_add(batch.len());
-        let rx_idx = batch.owner_shard() % completion_txs.len();
-        single_rx &= rx_idx == first_rx_idx;
     }
-    if single_rx {
-        crate::perf_profile::record_dataplane_aead_completion_send(
-            1,
-            completion_batch_count,
-            completion_packet_count,
-        );
-        completion_txs[first_rx_idx]
-            .send(batches)
-            .map_err(|_| ())?;
-        return Ok(());
-    }
-
-    let mut send_count = 0usize;
-    let mut group_rx_idx = first_rx_idx;
-    let mut group_batches = Vec::new();
-    for batch in batches {
-        let rx_idx = batch.owner_shard() % completion_txs.len();
-        if !group_batches.is_empty() && rx_idx != group_rx_idx {
-            completion_txs[group_rx_idx]
-                .send(std::mem::take(&mut group_batches))
-                .map_err(|_| ())?;
-            send_count = send_count.saturating_add(1);
-        }
-        group_rx_idx = rx_idx;
-        group_batches.push(batch);
-    }
-    if !group_batches.is_empty() {
-        completion_txs[group_rx_idx]
-            .send(group_batches)
-            .map_err(|_| ())?;
-        send_count = send_count.saturating_add(1);
-    }
-
     crate::perf_profile::record_dataplane_aead_completion_send(
-        send_count,
+        1,
         completion_batch_count,
         completion_packet_count,
     );
+    completion_tx.send(batches).map_err(|_| ())?;
     Ok(())
 }
 
@@ -946,7 +886,7 @@ impl Drop for DataplaneAeadWorkerPool {
     fn drop(&mut self) {
         self.open_tx.take();
         self.seal_tx.take();
-        self.completion_rxs.clear();
+        self.completion_rx.take();
         for worker in self.open_workers.drain(..) {
             let _ = worker.join();
         }
