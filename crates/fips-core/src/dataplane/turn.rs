@@ -238,25 +238,15 @@ pub(crate) struct DataplaneFmpLinkIngress {
     msg_type: Option<u8>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct DataplaneFmpLinkIngressFields {
-    receipt: DataplaneFmpIngressReceipt,
-    msg_type: Option<u8>,
-}
-
 impl DataplaneFmpLinkIngress {
-    fn parse(output: &PacketOutput) -> Option<DataplaneFmpLinkIngressFields> {
-        let plaintext = output.opened_payload()?;
-        let receipt = DataplaneFmpIngressReceipt::from_output(output)?;
-        let msg_type = plaintext.get(4).copied();
-        Some(DataplaneFmpLinkIngressFields { receipt, msg_type })
-    }
-
-    fn from_fields(output: PacketOutput, fields: DataplaneFmpLinkIngressFields) -> Self {
+    fn from_output(output: PacketOutput, receipt: DataplaneFmpIngressReceipt) -> Self {
+        let msg_type = output
+            .opened_payload()
+            .and_then(|plaintext| plaintext.get(4).copied());
         Self {
-            receipt: fields.receipt,
+            receipt,
             output,
-            msg_type: fields.msg_type,
+            msg_type,
         }
     }
 

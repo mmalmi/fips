@@ -1053,9 +1053,9 @@ impl DataplaneTurnDriver {
                             output,
                             error: DataplaneSessionHandoffError::NoRoute,
                         } => {
-                            if let Some(fields) = DataplaneFmpLinkIngress::parse(&output) {
+                            if let Some(receipt) = receipt {
                                 self.fmp_link_ingress
-                                    .push(DataplaneFmpLinkIngress::from_fields(output, fields));
+                                    .push(DataplaneFmpLinkIngress::from_output(output, receipt));
                             } else {
                                 self.output_drops.push(DataplaneOutputDrop::from_output(
                                     &output,
