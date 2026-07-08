@@ -16,6 +16,7 @@ enum DataplaneDirectFspTransportOutput {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct DataplaneDirectFspTransportSegmentation {
+    header: FspWireHeader,
     max_fragment_payload: usize,
     fragment_count: usize,
 }
@@ -330,11 +331,6 @@ fn dataplane_direct_fsp_transport_output(
         Ok(None) => return DataplaneDirectFspTransportOutput::Whole(output),
         Err(()) => return DataplaneDirectFspTransportOutput::MtuExceeded(output),
     };
-    let header = match dataplane_direct_fsp_transport_header(&output) {
-        Some(header) => header,
-        None => return DataplaneDirectFspTransportOutput::Whole(output),
-    };
-
     let mut segments = Vec::with_capacity(segmentation.fragment_count);
     for fragment_index in 0..segmentation.fragment_count {
         let start = fragment_index * segmentation.max_fragment_payload;
@@ -343,7 +339,7 @@ fn dataplane_direct_fsp_transport_output(
             .min(output.payload_len());
         let mut segment_header = [0u8; DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN];
         segment_header[..4].copy_from_slice(&DIRECT_FSP_TRANSPORT_FRAGMENT_MAGIC);
-        segment_header[4..12].copy_from_slice(&header.counter().to_le_bytes());
+        segment_header[4..12].copy_from_slice(&segmentation.header.counter().to_le_bytes());
         segment_header[12..16].copy_from_slice(&(output.payload_len() as u32).to_le_bytes());
         segment_header[16..18].copy_from_slice(&(fragment_index as u16).to_le_bytes());
         segment_header[18..20].copy_from_slice(&(segmentation.fragment_count as u16).to_le_bytes());
@@ -361,9 +357,9 @@ fn dataplane_direct_fsp_transport_output(
 fn dataplane_direct_fsp_transport_segmentation(
     output: &PacketOutput,
 ) -> Result<Option<DataplaneDirectFspTransportSegmentation>, ()> {
-    if dataplane_direct_fsp_transport_header(output).is_none() {
+    let Some(header) = dataplane_direct_fsp_transport_header(output) else {
         return Ok(None);
-    }
+    };
     let path_mtu = output.path_mtu() as usize;
     if output.payload_len() <= path_mtu {
         return Ok(None);
@@ -383,6 +379,7 @@ fn dataplane_direct_fsp_transport_segmentation(
         return Err(());
     }
     Ok(Some(DataplaneDirectFspTransportSegmentation {
+        header,
         max_fragment_payload,
         fragment_count,
     }))
