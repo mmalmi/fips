@@ -15,17 +15,13 @@ impl PreparedSealWork {
         execute_seal_crypto_work(self.work, self.cipher)
     }
 
-    fn failed_completion(self) -> CryptoCompletion {
-        failed_crypto_completion(self.work.reservation, CryptoFailureKind::Seal)
-    }
-
     fn lane(&self) -> Lane {
         self.work.reservation.lane
     }
 }
 
 const DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS: usize = 8;
-const DATAPLANE_AEAD_WORKER_BATCH_PACKETS: usize = 128;
+const DATAPLANE_AEAD_JOB_PACKETS: usize = 128;
 
 impl PreparedCryptoWork {
     pub(crate) fn open(work: CryptoWork, cipher: AeadKey) -> Self {
@@ -96,13 +92,6 @@ impl PreparedCryptoJob {
         }
     }
 
-    fn push_executor_failed_completions(self, completions: &mut Vec<CryptoCompletion>) {
-        match self {
-            Self::OpenRun { work, .. } => push_failed_open_work(work, completions),
-            Self::Seal { work, .. } => push_failed_seal_work(work, completions),
-        }
-    }
-
     fn execute_completion_batches(self) -> Vec<CryptoCompletionBatch> {
         match self {
             Self::OpenRun { work, cipher, .. } => execute_open_run_job(work, cipher),
@@ -116,53 +105,29 @@ struct PreparedOpenRunJobBuilder {
     work: Vec<CryptoWork>,
     cipher: Option<AeadKey>,
     next_order: Option<OrderToken>,
-    closed: bool,
 }
 
 impl PreparedOpenRunJobBuilder {
     fn new() -> Self {
         Self {
-            job_packets: DATAPLANE_AEAD_WORKER_BATCH_PACKETS,
+            job_packets: DATAPLANE_AEAD_JOB_PACKETS,
             work: Vec::new(),
             cipher: None,
             next_order: None,
-            closed: false,
         }
     }
 
     fn push(
         &mut self,
-        pool: &DataplaneAeadWorkerPool,
+        pool: &mut DataplaneAeadWorkerPool,
         work: CryptoWork,
         cipher: AeadKey,
-        completions: &mut Vec<CryptoCompletion>,
     ) {
-        if self.closed {
-            completions.push(failed_crypto_completion(
-                work.reservation,
-                CryptoFailureKind::Open,
-            ));
-            return;
-        }
         if !self.matches_run(&work, &cipher) {
-            self.flush(pool, completions);
-            if self.closed {
-                completions.push(failed_crypto_completion(
-                    work.reservation,
-                    CryptoFailureKind::Open,
-                ));
-                return;
-            }
+            self.flush(pool);
         }
         if self.work.len() >= self.job_packets {
-            self.flush(pool, completions);
-            if self.closed {
-                completions.push(failed_crypto_completion(
-                    work.reservation,
-                    CryptoFailureKind::Open,
-                ));
-                return;
-            }
+            self.flush(pool);
         }
         self.next_order = Some(work.reservation.order.next());
         self.work.push(work);
@@ -171,12 +136,8 @@ impl PreparedOpenRunJobBuilder {
         }
     }
 
-    fn flush(
-        &mut self,
-        pool: &DataplaneAeadWorkerPool,
-        completions: &mut Vec<CryptoCompletion>,
-    ) {
-        if self.work.is_empty() || self.closed {
+    fn flush(&mut self, pool: &mut DataplaneAeadWorkerPool) {
+        if self.work.is_empty() {
             return;
         }
         let next = Vec::with_capacity(self.job_packets);
@@ -186,9 +147,7 @@ impl PreparedOpenRunJobBuilder {
             .take()
             .expect("open run cipher exists when work is non-empty");
         self.next_order = None;
-        if !pool.submit_open_run_job(work, cipher, completions) {
-            self.closed = true;
-        }
+        pool.submit_open_run_job(work, cipher);
     }
 
     fn matches_run(&self, work: &CryptoWork, cipher: &AeadKey) -> bool {
@@ -212,29 +171,22 @@ struct PreparedSealJobBuilder {
     job_packets: usize,
     work: Vec<PreparedSealWork>,
     bulk_count: usize,
-    closed: bool,
 }
 
 impl PreparedSealJobBuilder {
     fn new() -> Self {
         Self {
-            job_packets: DATAPLANE_AEAD_WORKER_BATCH_PACKETS,
+            job_packets: DATAPLANE_AEAD_JOB_PACKETS,
             work: Vec::new(),
             bulk_count: 0,
-            closed: false,
         }
     }
 
     fn push(
         &mut self,
-        pool: &DataplaneAeadWorkerPool,
+        pool: &mut DataplaneAeadWorkerPool,
         work: PreparedSealWork,
-        completions: &mut Vec<CryptoCompletion>,
     ) {
-        if self.closed {
-            completions.push(work.failed_completion());
-            return;
-        }
         if work.lane() == Lane::Bulk {
             self.bulk_count = self.bulk_count.saturating_add(1);
         }
@@ -243,24 +195,18 @@ impl PreparedSealJobBuilder {
         }
         self.work.push(work);
         if self.work.len() >= self.job_packets {
-            self.flush(pool, completions);
+            self.flush(pool);
         }
     }
 
-    fn flush(
-        &mut self,
-        pool: &DataplaneAeadWorkerPool,
-        completions: &mut Vec<CryptoCompletion>,
-    ) {
-        if self.work.is_empty() || self.closed {
+    fn flush(&mut self, pool: &mut DataplaneAeadWorkerPool) {
+        if self.work.is_empty() {
             return;
         }
         let next = Vec::with_capacity(self.job_packets);
         let work = std::mem::replace(&mut self.work, next);
         let bulk_count = std::mem::take(&mut self.bulk_count);
-        if !pool.submit_seal_job(work, bulk_count, completions) {
-            self.closed = true;
-        }
+        pool.submit_seal_job(work, bulk_count);
     }
 }
 
@@ -295,41 +241,30 @@ impl DataplaneAeadWorkerCounters {
 
 #[derive(Debug)]
 pub(crate) struct DataplaneAeadWorkerPool {
-    work_tx: Option<crossbeam_channel::Sender<PreparedCryptoJob>>,
-    completion_rx: Option<crossbeam_channel::Receiver<Vec<CryptoCompletionBatch>>>,
+    completion_tx: tokio::sync::mpsc::Sender<Vec<CryptoCompletionBatch>>,
+    completion_rx: tokio::sync::mpsc::Receiver<Vec<CryptoCompletionBatch>>,
     completion_notify: Arc<tokio::sync::Notify>,
     pending_completion_batches: VecDeque<CryptoCompletionBatch>,
     counters: DataplaneAeadWorkerCounters,
     max_in_flight: usize,
-    workers: Vec<std::thread::JoinHandle<()>>,
+    runtime: Option<tokio::runtime::Handle>,
+    tasks: tokio::task::JoinSet<()>,
 }
 
 impl DataplaneAeadWorkerPool {
-    pub(crate) fn new(worker_count: usize, max_in_flight: usize) -> Self {
-        let worker_count = worker_count.max(1);
+    pub(crate) fn new(max_in_flight: usize) -> Self {
         let max_in_flight = max_in_flight.max(1);
-        let (completion_tx, completion_rx): (
-            crossbeam_channel::Sender<Vec<CryptoCompletionBatch>>,
-            crossbeam_channel::Receiver<Vec<CryptoCompletionBatch>>,
-        ) = crossbeam_channel::bounded(max_in_flight);
-        let completion_notify = Arc::new(tokio::sync::Notify::new());
-        let counters = DataplaneAeadWorkerCounters::new();
-        let (work_tx, workers) = spawn_dataplane_aead_workers(
-            worker_count,
-            max_in_flight,
-            completion_tx,
-            Arc::clone(&completion_notify),
-            counters.clone(),
-        );
+        let (completion_tx, completion_rx) = tokio::sync::mpsc::channel(max_in_flight);
 
         Self {
-            work_tx: Some(work_tx),
-            completion_rx: Some(completion_rx),
-            completion_notify,
+            completion_tx,
+            completion_rx,
+            completion_notify: Arc::new(tokio::sync::Notify::new()),
             pending_completion_batches: VecDeque::new(),
-            counters,
+            counters: DataplaneAeadWorkerCounters::new(),
             max_in_flight,
-            workers,
+            runtime: tokio::runtime::Handle::try_current().ok(),
+            tasks: tokio::task::JoinSet::new(),
         }
     }
 
@@ -339,10 +274,7 @@ impl DataplaneAeadWorkerPool {
 
     pub(crate) fn has_ready_completions(&self) -> bool {
         !self.pending_completion_batches.is_empty()
-            || self
-                .completion_rx
-                .as_ref()
-                .is_some_and(|completion_rx| !completion_rx.is_empty())
+            || !self.completion_rx.is_empty()
     }
 
     pub(crate) fn drain_completion_batches_into_sink<S>(
@@ -372,7 +304,7 @@ impl DataplaneAeadWorkerPool {
             .map(CryptoCompletionBatch::len)
             .sum::<usize>();
         let pending_completion_batches = self.pending_completion_batches.len();
-        let rx_queued_messages = self.completion_rx.as_ref().map_or(0, |rx| rx.len());
+        let rx_queued_messages = self.completion_rx.len();
         let completion_depth = pending_completion_depth.saturating_add(rx_queued_messages);
         crate::perf_profile::record_event_count(
             crate::perf_profile::Event::DataplaneAeadCompletionQueueDepth,
@@ -382,11 +314,6 @@ impl DataplaneAeadWorkerPool {
             rx_queued_messages,
             pending_completion_batches,
             pending_completion_depth,
-        );
-        let work_queue_depth = self.work_tx.as_ref().map_or(0, |tx| tx.len()) as u64;
-        crate::perf_profile::record_event_count(
-            crate::perf_profile::Event::DataplaneAeadWorkQueueDepth,
-            work_queue_depth,
         );
     }
 
@@ -423,6 +350,7 @@ impl DataplaneAeadWorkerPool {
         limit: usize,
         mut push_batch: impl FnMut(CryptoCompletionBatch),
     ) -> usize {
+        self.reap_finished_tasks();
         let mut drained = 0usize;
         while drained < limit {
             if let Some(batch) = self.pending_completion_batches.pop_front() {
@@ -439,10 +367,7 @@ impl DataplaneAeadWorkerPool {
                 continue;
             }
 
-            let Some(completion_rx) = self.completion_rx.as_ref() else {
-                break;
-            };
-            let received = completion_rx.try_recv();
+            let received = self.completion_rx.try_recv();
             match received {
                 Ok(mut batches) => {
                     let mut batches = batches.drain(..);
@@ -465,17 +390,15 @@ impl DataplaneAeadWorkerPool {
                         }
                     }
                 }
-                Err(crossbeam_channel::TryRecvError::Empty) => break,
-                Err(crossbeam_channel::TryRecvError::Disconnected) => break,
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
             }
         }
+        self.reap_finished_tasks();
         drained
     }
 
     fn available_capacity(&self) -> usize {
-        if self.work_tx.is_none() {
-            return 0;
-        }
         self.max_in_flight.saturating_sub(
             self.counters.in_flight.load(Relaxed),
         )
@@ -499,54 +422,65 @@ impl DataplaneAeadWorkerPool {
     }
 
     fn submit_seal_job(
-        &self,
+        &mut self,
         work: Vec<PreparedSealWork>,
         bulk_count: usize,
-        completions: &mut Vec<CryptoCompletion>,
-    ) -> bool {
+    ) {
         if work.is_empty() {
-            return true;
+            return;
         }
         let job = PreparedCryptoJob::seal(work, bulk_count);
-        self.submit_job(job, completions)
+        self.submit_job(job);
     }
 
     fn submit_open_run_job(
-        &self,
+        &mut self,
         work: Vec<CryptoWork>,
         cipher: AeadKey,
-        completions: &mut Vec<CryptoCompletion>,
-    ) -> bool {
+    ) {
         if work.is_empty() {
-            return true;
+            return;
         }
         let job = PreparedCryptoJob::open_run(work, cipher);
-        self.submit_job(job, completions)
+        self.submit_job(job);
     }
 
-    fn submit_job(
-        &self,
-        job: PreparedCryptoJob,
-        completions: &mut Vec<CryptoCompletion>,
-    ) -> bool {
-        let Some(work_tx) = self.work_tx.as_ref() else {
-            job.push_executor_failed_completions(completions);
-            return false;
-        };
+    fn submit_job(&mut self, job: PreparedCryptoJob) {
+        self.reap_finished_tasks();
         let chunk_len = job.len();
         let bulk_count = job.bulk_count();
         self.counters.add(chunk_len, bulk_count);
-        match work_tx.try_send(job) {
-            Ok(()) => {
-                crate::perf_profile::record_dataplane_aead_prepared_job(chunk_len);
-                true
-            }
-            Err(crossbeam_channel::TrySendError::Full(job))
-            | Err(crossbeam_channel::TrySendError::Disconnected(job)) => {
-                self.counters.finish(chunk_len, bulk_count);
-                job.push_executor_failed_completions(completions);
-                false
-            }
+        let completion_tx = self.completion_tx.clone();
+        let completion_notify = Arc::clone(&self.completion_notify);
+        let counters = self.counters.clone();
+        let runtime = self
+            .runtime
+            .get_or_insert_with(tokio::runtime::Handle::current)
+            .clone();
+        self.tasks.spawn_on(
+            async move {
+                crate::perf_profile::record_since(
+                    crate::perf_profile::Stage::DataplaneAeadWorkerQueueWait,
+                    job.queued_at(),
+                );
+                let completions = job.execute_completion_batches();
+                if send_completion_batches(completions, &completion_tx)
+                    .await
+                    .is_err()
+                {
+                    counters.finish(chunk_len, bulk_count);
+                    return;
+                }
+                completion_notify.notify_one();
+            },
+            &runtime,
+        );
+        crate::perf_profile::record_dataplane_aead_prepared_job(chunk_len);
+    }
+
+    fn reap_finished_tasks(&mut self) {
+        while let Some(result) = self.tasks.try_join_next() {
+            result.expect("dataplane AEAD task failed");
         }
     }
 
@@ -565,77 +499,21 @@ impl DataplaneAeadWorkerPool {
         for work in prepared.drain(..) {
             match work {
                 PreparedCryptoWork::Open { work, cipher } => {
-                    open_jobs.push(self, work, cipher, completions);
+                    open_jobs.push(self, work, cipher);
                 }
                 PreparedCryptoWork::Seal { work, cipher } => {
-                    seal_jobs.push(self, PreparedSealWork { work, cipher }, completions);
+                    seal_jobs.push(self, PreparedSealWork { work, cipher });
                 }
             }
         }
-        open_jobs.flush(self, completions);
-        seal_jobs.flush(self, completions);
+        open_jobs.flush(self);
+        seal_jobs.flush(self);
     }
 }
 
-fn spawn_dataplane_aead_workers(
-    worker_count: usize,
-    max_in_flight: usize,
-    completion_tx: crossbeam_channel::Sender<Vec<CryptoCompletionBatch>>,
-    completion_notify: Arc<tokio::sync::Notify>,
-    counters: DataplaneAeadWorkerCounters,
-) -> (
-    crossbeam_channel::Sender<PreparedCryptoJob>,
-    Vec<std::thread::JoinHandle<()>>,
-) {
-    let (work_tx, work_rx): (
-        crossbeam_channel::Sender<PreparedCryptoJob>,
-        crossbeam_channel::Receiver<PreparedCryptoJob>,
-    ) = crossbeam_channel::bounded(max_in_flight);
-    let mut workers = Vec::with_capacity(worker_count);
-    for worker_idx in 0..worker_count {
-        let work_rx = work_rx.clone();
-        workers.push(spawn_dataplane_aead_worker_thread(
-            worker_idx,
-            work_rx,
-            completion_tx.clone(),
-            Arc::clone(&completion_notify),
-            counters.clone(),
-        ));
-    }
-    (work_tx, workers)
-}
-
-fn spawn_dataplane_aead_worker_thread(
-    worker_idx: usize,
-    work_rx: crossbeam_channel::Receiver<PreparedCryptoJob>,
-    completion_tx: crossbeam_channel::Sender<Vec<CryptoCompletionBatch>>,
-    completion_notify: Arc<tokio::sync::Notify>,
-    counters: DataplaneAeadWorkerCounters,
-) -> std::thread::JoinHandle<()> {
-    std::thread::Builder::new()
-        .name(format!("dataplane-aead-{worker_idx}"))
-        .spawn(move || {
-            while let Ok(job) = work_rx.recv() {
-                crate::perf_profile::record_since(
-                    crate::perf_profile::Stage::DataplaneAeadWorkerQueueWait,
-                    job.queued_at(),
-                );
-                let count = job.len();
-                let bulk_count = job.bulk_count();
-                let completions = job.execute_completion_batches();
-                if send_completion_batches(completions, &completion_tx).is_err() {
-                    counters.finish(count, bulk_count);
-                    break;
-                }
-                completion_notify.notify_one();
-            }
-        })
-        .expect("spawn dataplane AEAD worker")
-}
-
-fn send_completion_batches(
+async fn send_completion_batches(
     batches: Vec<CryptoCompletionBatch>,
-    completion_tx: &crossbeam_channel::Sender<Vec<CryptoCompletionBatch>>,
+    completion_tx: &tokio::sync::mpsc::Sender<Vec<CryptoCompletionBatch>>,
 ) -> Result<(), ()> {
     if batches.is_empty() {
         return Ok(());
@@ -653,23 +531,8 @@ fn send_completion_batches(
             completion_packet_count,
         );
     }
-    completion_tx.send(batches).map_err(|_| ())?;
+    completion_tx.send(batches).await.map_err(|_| ())?;
     Ok(())
-}
-
-fn push_failed_seal_work(work: Vec<PreparedSealWork>, completions: &mut Vec<CryptoCompletion>) {
-    for work in work {
-        completions.push(work.failed_completion());
-    }
-}
-
-fn push_failed_open_work(work: Vec<CryptoWork>, completions: &mut Vec<CryptoCompletion>) {
-    for work in work {
-        completions.push(failed_crypto_completion(
-            work.reservation,
-            CryptoFailureKind::Open,
-        ));
-    }
 }
 
 fn execute_open_run_job(work: Vec<CryptoWork>, cipher: AeadKey) -> Vec<CryptoCompletionBatch> {
@@ -709,16 +572,6 @@ fn dataplane_aead_worker_priority_reserve(max_in_flight: usize) -> usize {
     max_in_flight
         .saturating_sub(DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS)
         .min(DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS)
-}
-
-impl Drop for DataplaneAeadWorkerPool {
-    fn drop(&mut self) {
-        self.work_tx.take();
-        self.completion_rx.take();
-        for worker in self.workers.drain(..) {
-            let _ = worker.join();
-        }
-    }
 }
 
 impl std::fmt::Debug for PreparedCryptoWork {

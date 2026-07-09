@@ -7,6 +7,19 @@
         Dataplane::new(AdmissionConfig::new(4, 8))
     }
 
+    fn test_aead_worker_pool(max_in_flight: usize) -> DataplaneAeadWorkerPool {
+        static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+        let runtime = RUNTIME.get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .expect("test AEAD runtime")
+        });
+        let _guard = runtime.enter();
+        DataplaneAeadWorkerPool::new(max_in_flight)
+    }
+
     fn endpoint_payloads(payloads: Vec<Vec<u8>>) -> Vec<EndpointDataPayload> {
         payloads
             .into_iter()
@@ -53,7 +66,7 @@
     }
 
     fn execute_test_prepared_crypto_work(work: PreparedCryptoWork) -> CryptoCompletion {
-        let mut pool = DataplaneAeadWorkerPool::new(1, 1);
+        let mut pool = test_aead_worker_pool(1);
         let mut prepared = vec![work];
         let mut failed = Vec::new();
         pool.submit_prepared_chunk(&mut prepared, &mut failed);
@@ -102,8 +115,7 @@
         seed_missing_test_owner_keys(mover);
         let mut prepared_work = Vec::new();
         let mut completion_batches = Vec::new();
-        let pool = DataplaneAeadWorkerPool::new(
-            1,
+        let pool = test_aead_worker_pool(
             limit
                 .saturating_add(DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS)
                 .max(1),
@@ -178,8 +190,7 @@
         let mut outbound_packets = Vec::new();
         let mut fsp_authenticated_ingress = DataplaneFspAuthenticatedIngress::default();
         let mut drops = Vec::new();
-        let mut pool = DataplaneAeadWorkerPool::new(
-            1,
+        let mut pool = test_aead_worker_pool(
             limit
                 .saturating_add(DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS)
                 .max(1),
@@ -262,8 +273,7 @@
         limit: usize,
         compact_endpoint_data: bool,
     ) -> DataplaneRuntimeSummary {
-        let mut pool = DataplaneAeadWorkerPool::new(
-            1,
+        let mut pool = test_aead_worker_pool(
             limit
                 .saturating_add(DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS)
                 .max(1),
@@ -308,8 +318,7 @@
     where
         R: DataplaneIngressRouter,
     {
-        let mut pool = DataplaneAeadWorkerPool::new(
-            1,
+        let mut pool = test_aead_worker_pool(
             limit
                 .saturating_add(DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS)
                 .max(1),
@@ -601,8 +610,7 @@
             crypto_limit,
         } = route;
         let transport_send_batch_packets = 8;
-        let mut pool = DataplaneAeadWorkerPool::new(
-            1,
+        let mut pool = test_aead_worker_pool(
             crypto_limit
                 .saturating_add(DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS)
                 .max(1),

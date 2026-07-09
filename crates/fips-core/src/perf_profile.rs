@@ -483,7 +483,7 @@ pub enum Event {
     DataplaneTransportSendFailed = 216,
     DataplaneDispatchOutboundOwnerBlocked = 217,
     DataplaneAeadInFlight = 218,
-    DataplaneAeadWorkQueueDepth = 219,
+    ReservedEvent219 = 219,
     ReservedEvent220 = 220,
     DataplaneLiveRawAdmitted = 221,
     DataplaneLiveEndpointAdmitted = 222,
@@ -763,7 +763,7 @@ impl Event {
                 "dataplane_dispatch_outbound_owner_blocked"
             }
             Event::DataplaneAeadInFlight => "dataplane_aead_in_flight",
-            Event::DataplaneAeadWorkQueueDepth => "dataplane_aead_work_queue_depth",
+            Event::ReservedEvent219 => "reserved_event_219",
             Event::ReservedEvent220 => "reserved_event_220",
             Event::DataplaneLiveRawAdmitted => "dataplane_live_raw_admitted",
             Event::DataplaneLiveEndpointAdmitted => "dataplane_live_endpoint_admitted",
@@ -1066,7 +1066,7 @@ fn event_from_index(idx: usize) -> Event {
         216 => Event::DataplaneTransportSendFailed,
         217 => Event::DataplaneDispatchOutboundOwnerBlocked,
         218 => Event::DataplaneAeadInFlight,
-        219 => Event::DataplaneAeadWorkQueueDepth,
+        219 => Event::ReservedEvent219,
         220 => Event::ReservedEvent220,
         221 => Event::DataplaneLiveRawAdmitted,
         222 => Event::DataplaneLiveEndpointAdmitted,

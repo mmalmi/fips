@@ -150,7 +150,7 @@
         register_owner_with_test_keys(&mut mover, owner, open_key, open_key);
         submit_fmp_inbound_range(&mut mover, owner, 706, open_key, 100..104, b"worker");
 
-        let mut pool = DataplaneAeadWorkerPool::new(2, 8);
+        let mut pool = test_aead_worker_pool(8);
         let (dispatched, retired, drops) = run_with_worker_pool(&mut mover, &mut pool);
 
         assert_eq!(dispatched, 4);
@@ -208,7 +208,7 @@
                 .unwrap();
         }
 
-        let mut pool = DataplaneAeadWorkerPool::new(1, 2);
+        let mut pool = test_aead_worker_pool(2);
         let (dispatched, retired, drops) = run_with_worker_pool_limit(&mut mover, &mut pool, 4);
 
         assert_eq!(dispatched, 2);
@@ -230,10 +230,7 @@
             .owner_mut(owner)
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(open_key)));
-        let mut pool = DataplaneAeadWorkerPool::new(
-            1,
-            DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS * 2,
-        );
+        let mut pool = test_aead_worker_pool(DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS * 2);
 
         for counter in 0..(DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS * 2) as u64 {
             mover
@@ -290,7 +287,7 @@
         register_owner_with_test_keys(&mut mover, owner, open_key, open_key);
         submit_fmp_inbound_range(&mut mover, owner, 707, open_key, 100..104, b"worker-cap");
 
-        let mut pool = DataplaneAeadWorkerPool::new(1, 2);
+        let mut pool = test_aead_worker_pool(2);
         let (dispatched, retired, drops) = run_with_worker_pool(&mut mover, &mut pool);
         assert_eq!(dispatched, 2);
         assert!(retired.is_empty());
