@@ -32,23 +32,15 @@ impl FipsEndpointDirectPacketRunMeta {
 }
 
 /// Consecutive direct endpoint packets from one authenticated FIPS source.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 struct FipsEndpointDirectPacketSegment {
-    buffer: Arc<PacketBuffer>,
+    buffer: PacketBuffer,
     ranges: Vec<Range<usize>>,
     packet_bytes: usize,
 }
 
 impl FipsEndpointDirectPacketSegment {
-    fn empty() -> Self {
-        Self::new(PacketBuffer::new(Vec::new()), Vec::new())
-    }
-
     fn new(buffer: PacketBuffer, ranges: Vec<Range<usize>>) -> Self {
-        Self::from_shared_buffer(Arc::new(buffer), ranges)
-    }
-
-    fn from_shared_buffer(buffer: Arc<PacketBuffer>, ranges: Vec<Range<usize>>) -> Self {
         debug_assert!(ranges.windows(2).all(|pair| pair[0].end <= pair[1].start));
         let packet_bytes = ranges.iter().map(|range| range.len()).sum();
         Self {
@@ -65,57 +57,10 @@ impl FipsEndpointDirectPacketSegment {
     fn is_empty(&self) -> bool {
         self.ranges.is_empty()
     }
-
-    fn split_off(&mut self, at: usize) -> Option<Self> {
-        if at >= self.ranges.len() {
-            return None;
-        }
-        let original_packet_bytes = self.packet_bytes;
-        let tail_ranges = self.ranges.split_off(at);
-        self.packet_bytes = self.ranges.iter().map(|range| range.len()).sum();
-        let tail_packet_bytes = original_packet_bytes.saturating_sub(self.packet_bytes);
-        Some(Self {
-            buffer: Arc::clone(&self.buffer),
-            ranges: tail_ranges,
-            packet_bytes: tail_packet_bytes,
-        })
-    }
-
-    fn retain_ranges<F>(&mut self, next_index: &mut usize, keep: &mut F) -> bool
-    where
-        F: FnMut(usize, &[u8]) -> bool,
-    {
-        let bytes = self.buffer.as_slice();
-        let original_len = self.ranges.len();
-        let mut write = 0usize;
-        let mut packet_bytes = 0usize;
-
-        for read in 0..original_len {
-            let range = self.ranges[read].clone();
-            let current_index = *next_index;
-            *next_index = next_index.saturating_add(1);
-            if !keep(current_index, &bytes[range.clone()]) {
-                continue;
-            }
-
-            packet_bytes = packet_bytes.saturating_add(range.len());
-            if write != read {
-                self.ranges[write] = range;
-            }
-            write = write.saturating_add(1);
-        }
-
-        let changed = write != original_len;
-        if changed {
-            self.ranges.truncate(write);
-        }
-        self.packet_bytes = packet_bytes;
-        changed
-    }
 }
 
 /// Consecutive direct endpoint packets from one authenticated FIPS source.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 enum FipsEndpointDirectPacketStorage {
     Segmented(FipsEndpointDirectPacketSegment),
     Chained {
@@ -126,27 +71,38 @@ enum FipsEndpointDirectPacketStorage {
 }
 
 impl FipsEndpointDirectPacketStorage {
-    fn empty_segmented() -> Self {
-        Self::Segmented(FipsEndpointDirectPacketSegment::empty())
+    fn new(segment: FipsEndpointDirectPacketSegment) -> Self {
+        Self::Segmented(segment)
+    }
+
+    fn append(&mut self, other: Self) {
+        match other {
+            Self::Segmented(segment) => self.push_segment(segment),
+            Self::Chained { segments, .. } => {
+                for segment in segments {
+                    self.push_segment(segment);
+                }
+            }
+        }
     }
 
     fn push_segment(&mut self, segment: FipsEndpointDirectPacketSegment) {
         if segment.is_empty() {
             return;
         }
-
         match self {
-            Self::Segmented(current) if current.is_empty() => {
-                *current = segment;
-            }
+            Self::Segmented(current) if current.is_empty() => *current = segment,
             Self::Segmented(current) => {
-                let first = std::mem::replace(current, FipsEndpointDirectPacketSegment::empty());
+                let first = std::mem::replace(
+                    current,
+                    FipsEndpointDirectPacketSegment::new(PacketBuffer::new(Vec::new()), Vec::new()),
+                );
                 let first_count = first.len();
-                let second_count = first_count.saturating_add(segment.len());
+                let packet_count = first_count.saturating_add(segment.len());
                 let packet_bytes = first.packet_bytes.saturating_add(segment.packet_bytes);
                 *self = Self::Chained {
                     segments: vec![first, segment],
-                    packet_ends: vec![first_count, second_count],
+                    packet_ends: vec![first_count, packet_count],
                     packet_bytes,
                 };
             }
@@ -161,20 +117,75 @@ impl FipsEndpointDirectPacketStorage {
                     .unwrap_or(0)
                     .saturating_add(segment.len());
                 *packet_bytes = packet_bytes.saturating_add(segment.packet_bytes);
-                packet_ends.push(packet_count);
                 segments.push(segment);
+                packet_ends.push(packet_count);
             }
         }
     }
 
-    fn append_storage(&mut self, other: Self) {
-        match other {
-            Self::Segmented(segment) => self.push_segment(segment),
-            Self::Chained { segments, .. } => {
-                for segment in segments {
-                    self.push_segment(segment);
-                }
+    fn packet_slice(&self, index: usize) -> Option<&[u8]> {
+        match self {
+            Self::Segmented(segment) => segment
+                .ranges
+                .get(index)
+                .map(|range| &segment.buffer.as_slice()[range.clone()]),
+            Self::Chained {
+                segments,
+                packet_ends,
+                ..
+            } => {
+                let segment_index = packet_ends.partition_point(|end| *end <= index);
+                let previous_end = segment_index
+                    .checked_sub(1)
+                    .and_then(|previous| packet_ends.get(previous).copied())
+                    .unwrap_or(0);
+                segments.get(segment_index).and_then(|segment| {
+                    segment
+                        .ranges
+                        .get(index.saturating_sub(previous_end))
+                        .map(|range| &segment.buffer.as_slice()[range.clone()])
+                })
             }
+        }
+    }
+
+    fn segment_index_for_packet(&self, index: usize) -> usize {
+        match self {
+            Self::Segmented(_) => 0,
+            Self::Chained { packet_ends, .. } => packet_ends.partition_point(|end| *end <= index),
+        }
+    }
+
+    fn packet_slice_from_segment(&self, segment_index: usize, index: usize) -> Option<&[u8]> {
+        match self {
+            Self::Segmented(segment) if segment_index == 0 => segment
+                .ranges
+                .get(index)
+                .map(|range| &segment.buffer.as_slice()[range.clone()]),
+            Self::Segmented(_) => None,
+            Self::Chained {
+                segments,
+                packet_ends,
+                ..
+            } => {
+                let previous_end = segment_index
+                    .checked_sub(1)
+                    .and_then(|previous| packet_ends.get(previous).copied())
+                    .unwrap_or(0);
+                segments.get(segment_index).and_then(|segment| {
+                    segment
+                        .ranges
+                        .get(index.saturating_sub(previous_end))
+                        .map(|range| &segment.buffer.as_slice()[range.clone()])
+                })
+            }
+        }
+    }
+
+    fn segment_packet_end(&self, segment_index: usize) -> Option<usize> {
+        match self {
+            Self::Segmented(segment) => (segment_index == 0).then(|| segment.len()),
+            Self::Chained { packet_ends, .. } => packet_ends.get(segment_index).copied(),
         }
     }
 
@@ -185,79 +196,47 @@ impl FipsEndpointDirectPacketStorage {
         }
     }
 
-    fn split_off_packets(&mut self, at: usize) -> Option<Self> {
-        if at >= self.packet_count() {
-            return None;
-        }
-        if at == 0 {
-            return Some(std::mem::replace(self, Self::empty_segmented()));
-        }
-
+    fn packet_bytes(&self) -> usize {
         match self {
-            Self::Segmented(segment) => segment.split_off(at).map(Self::Segmented),
-            Self::Chained {
-                segments,
-                packet_ends,
-                packet_bytes,
-            } => {
-                let original_packet_bytes = *packet_bytes;
-                let segment_index = packet_ends.partition_point(|end| *end <= at);
-                let previous_end = segment_index
-                    .checked_sub(1)
-                    .and_then(|index| packet_ends.get(index).copied())
-                    .unwrap_or(0);
-                let split_in_segment = at - previous_end;
-                let mut tail_segments;
-                let mut tail_packet_ends;
+            Self::Segmented(segment) => segment.packet_bytes,
+            Self::Chained { packet_bytes, .. } => *packet_bytes,
+        }
+    }
+}
 
-                if split_in_segment == 0 {
-                    tail_segments = segments.split_off(segment_index);
-                    tail_packet_ends = packet_ends.split_off(segment_index);
-                    for end in &mut tail_packet_ends {
-                        *end = end.saturating_sub(at);
-                    }
-                } else {
-                    let original_segment_end = packet_ends[segment_index];
-                    tail_segments = segments.split_off(segment_index + 1);
-                    let tail_segment = segments[segment_index]
-                        .split_off(split_in_segment)
-                        .expect("split point inside segment must produce a tail");
-                    tail_segments.insert(0, tail_segment);
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FipsEndpointDirectPacketSelection {
+    Window(Range<usize>),
+    Sparse(Vec<usize>),
+}
 
-                    tail_packet_ends = packet_ends.split_off(segment_index + 1);
-                    if let Some(head_end) = packet_ends.last_mut() {
-                        *head_end = at;
-                    }
-                    for end in &mut tail_packet_ends {
-                        *end = end.saturating_sub(at);
-                    }
-                    tail_packet_ends.insert(0, original_segment_end - at);
-                }
-
-                *packet_bytes = segments.iter().map(|segment| segment.packet_bytes).sum();
-                let tail_packet_bytes = original_packet_bytes.saturating_sub(*packet_bytes);
-                Some(Self::build_chained_from_parts(
-                    tail_segments,
-                    tail_packet_ends,
-                    tail_packet_bytes,
-                ))
-            }
+impl FipsEndpointDirectPacketSelection {
+    fn len(&self) -> usize {
+        match self {
+            Self::Window(range) => range.len(),
+            Self::Sparse(indexes) => indexes.len(),
         }
     }
 
-    fn build_chained_from_parts(
-        mut segments: Vec<FipsEndpointDirectPacketSegment>,
-        packet_ends: Vec<usize>,
-        packet_bytes: usize,
-    ) -> Self {
-        match segments.len() {
-            0 => Self::empty_segmented(),
-            1 => Self::Segmented(segments.pop().expect("one segment must exist")),
-            _ => Self::Chained {
-                segments,
-                packet_ends,
-                packet_bytes,
-            },
+    fn packet_index(&self, index: usize) -> Option<usize> {
+        match self {
+            Self::Window(range) => (index < range.len()).then(|| range.start + index),
+            Self::Sparse(indexes) => indexes.get(index).copied(),
+        }
+    }
+
+    fn split_off(&mut self, at: usize) -> Option<Self> {
+        if at >= self.len() {
+            return None;
+        }
+        match self {
+            Self::Window(range) => {
+                let split = range.start + at;
+                let tail = split..range.end;
+                range.end = split;
+                Some(Self::Window(tail))
+            }
+            Self::Sparse(indexes) => Some(Self::Sparse(indexes.split_off(at))),
         }
     }
 }
@@ -272,16 +251,17 @@ impl FipsEndpointDirectPacketStorage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FipsEndpointDirectPacketRun {
     meta: FipsEndpointDirectPacketRunMeta,
-    storage: FipsEndpointDirectPacketStorage,
+    storage: Arc<FipsEndpointDirectPacketStorage>,
+    selection: FipsEndpointDirectPacketSelection,
+    packet_bytes: usize,
 }
 
 /// Borrowed packet slices from a direct endpoint packet run.
 pub struct FipsEndpointDirectPacketSlices<'a> {
     storage: &'a FipsEndpointDirectPacketStorage,
+    selection: &'a FipsEndpointDirectPacketSelection,
     index: usize,
     segment_index: usize,
-    segment_packet_index: usize,
-    remaining: usize,
 }
 
 impl FipsEndpointDirectPacketRun {
@@ -290,11 +270,16 @@ impl FipsEndpointDirectPacketRun {
         buffer: PacketBuffer,
         ranges: Vec<Range<usize>>,
     ) -> Self {
+        let storage = FipsEndpointDirectPacketStorage::new(FipsEndpointDirectPacketSegment::new(
+            buffer, ranges,
+        ));
+        let packet_count = storage.packet_count();
+        let packet_bytes = storage.packet_bytes();
         Self {
             meta,
-            storage: FipsEndpointDirectPacketStorage::Segmented(
-                FipsEndpointDirectPacketSegment::new(buffer, ranges),
-            ),
+            storage: Arc::new(storage),
+            selection: FipsEndpointDirectPacketSelection::Window(0..packet_count),
+            packet_bytes,
         }
     }
 
@@ -310,7 +295,7 @@ impl FipsEndpointDirectPacketRun {
 
     /// Number of endpoint packets in the run.
     pub fn len(&self) -> usize {
-        self.storage.packet_count()
+        self.selection.len()
     }
 
     /// Whether the run contains no packets.
@@ -320,42 +305,28 @@ impl FipsEndpointDirectPacketRun {
 
     /// Sum of endpoint packet bytes, excluding bulk length metadata.
     pub fn packet_bytes(&self) -> usize {
-        match &self.storage {
-            FipsEndpointDirectPacketStorage::Segmented(segment) => segment.packet_bytes,
-            FipsEndpointDirectPacketStorage::Chained { packet_bytes, .. } => *packet_bytes,
-        }
+        self.packet_bytes
     }
 
     /// Borrow one packet by index.
     pub fn packet_slice(&self, index: usize) -> Option<&[u8]> {
-        match &self.storage {
-            FipsEndpointDirectPacketStorage::Segmented(segment) => segment
-                .ranges
-                .get(index)
-                .map(|range| &segment.buffer.as_slice()[range.clone()]),
-            FipsEndpointDirectPacketStorage::Chained {
-                segments,
-                packet_ends,
-                ..
-            } => {
-                let segment_index = packet_ends.partition_point(|end| *end <= index);
-                let previous_end = segment_index
-                    .checked_sub(1)
-                    .and_then(|previous| packet_ends.get(previous).copied())
-                    .unwrap_or(0);
-                segments.get(segment_index).and_then(|segment| {
-                    segment
-                        .ranges
-                        .get(index - previous_end)
-                        .map(|range| &segment.buffer.as_slice()[range.clone()])
-                })
-            }
-        }
+        self.selection
+            .packet_index(index)
+            .and_then(|index| self.storage.packet_slice(index))
     }
 
     pub(crate) fn append_run(&mut self, other: FipsEndpointDirectPacketRun) {
         debug_assert!(self.matches_append_meta(&other));
-        self.storage.append_storage(other.storage);
+        debug_assert_eq!(self.len(), self.storage.packet_count());
+        debug_assert_eq!(other.len(), other.storage.packet_count());
+        let other_packet_bytes = other.packet_bytes;
+        let other_storage = Arc::try_unwrap(other.storage)
+            .expect("direct packet run must be uniquely owned before append");
+        let storage = Arc::get_mut(&mut self.storage)
+            .expect("direct packet run must be uniquely owned before append");
+        storage.append(other_storage);
+        self.selection = FipsEndpointDirectPacketSelection::Window(0..storage.packet_count());
+        self.packet_bytes = self.packet_bytes.saturating_add(other_packet_bytes);
     }
 
     pub(crate) fn matches_append_meta(&self, other: &Self) -> bool {
@@ -367,12 +338,12 @@ impl FipsEndpointDirectPacketRun {
 
     /// Borrow packet bytes without materializing per-packet buffers.
     pub fn packet_slices(&self) -> FipsEndpointDirectPacketSlices<'_> {
+        let first_packet = self.selection.packet_index(0).unwrap_or(0);
         FipsEndpointDirectPacketSlices {
             storage: &self.storage,
+            selection: &self.selection,
             index: 0,
-            segment_index: 0,
-            segment_packet_index: 0,
-            remaining: self.len(),
+            segment_index: self.storage.segment_index_for_packet(first_packet),
         }
     }
 
@@ -385,35 +356,33 @@ impl FipsEndpointDirectPacketRun {
     where
         F: FnMut(usize, &[u8]) -> bool,
     {
-        match &mut self.storage {
-            FipsEndpointDirectPacketStorage::Segmented(segment) => {
-                let mut index = 0usize;
-                segment.retain_ranges(&mut index, &mut keep);
-            }
-            FipsEndpointDirectPacketStorage::Chained {
-                segments,
-                packet_ends,
-                packet_bytes,
-            } => {
-                let mut index = 0usize;
-                let mut retained_bytes = 0usize;
-                let mut changed = false;
-                for segment in segments.iter_mut() {
-                    changed |= segment.retain_ranges(&mut index, &mut keep);
-                    retained_bytes = retained_bytes.saturating_add(segment.packet_bytes);
+        let original_len = self.len();
+        let mut retained: Option<Vec<usize>> = None;
+        let mut packet_bytes = 0usize;
+        for index in 0..original_len {
+            let packet_index = self
+                .selection
+                .packet_index(index)
+                .expect("packet selection must contain every logical index");
+            let packet = self
+                .storage
+                .packet_slice(packet_index)
+                .expect("packet selection must reference backing storage");
+            if keep(index, packet) {
+                packet_bytes = packet_bytes.saturating_add(packet.len());
+                if let Some(indexes) = retained.as_mut() {
+                    indexes.push(packet_index);
                 }
-                if changed {
-                    segments.retain(|segment| !segment.is_empty());
-                    packet_ends.clear();
-                    let mut packet_count = 0usize;
-                    for segment in segments.iter() {
-                        packet_count = packet_count.saturating_add(segment.len());
-                        packet_ends.push(packet_count);
-                    }
-                    *packet_bytes = retained_bytes;
-                }
+            } else if retained.is_none() {
+                let mut indexes = Vec::with_capacity(original_len.saturating_sub(1));
+                indexes.extend((0..index).filter_map(|kept| self.selection.packet_index(kept)));
+                retained = Some(indexes);
             }
         }
+        if let Some(indexes) = retained {
+            self.selection = FipsEndpointDirectPacketSelection::Sparse(indexes);
+        }
+        self.packet_bytes = packet_bytes;
     }
 
     /// Split this run at a packet index without copying packet bytes.
@@ -421,10 +390,18 @@ impl FipsEndpointDirectPacketRun {
     /// The original run keeps packets before `at`; the returned run contains
     /// packets from `at` onward with the same authenticated source metadata.
     pub fn split_off_packets(&mut self, at: usize) -> Option<Self> {
-        let storage = self.storage.split_off_packets(at)?;
+        if at >= self.len() {
+            return None;
+        }
+        let head_packet_bytes = self.packet_slices().take(at).map(<[u8]>::len).sum();
+        let tail_packet_bytes = self.packet_bytes.saturating_sub(head_packet_bytes);
+        let selection = self.selection.split_off(at)?;
+        self.packet_bytes = head_packet_bytes;
         Some(Self {
             meta: self.meta.clone(),
-            storage,
+            storage: Arc::clone(&self.storage),
+            selection,
+            packet_bytes: tail_packet_bytes,
         })
     }
 }
@@ -433,43 +410,24 @@ impl<'a> Iterator for FipsEndpointDirectPacketSlices<'a> {
     type Item = &'a [u8];
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.remaining == 0 {
-            return None;
+        let packet_index = self.selection.packet_index(self.index)?;
+        while self
+            .storage
+            .segment_packet_end(self.segment_index)
+            .is_some_and(|end| end <= packet_index)
+        {
+            self.segment_index = self.segment_index.saturating_add(1);
         }
-        let packet = match self.storage {
-            FipsEndpointDirectPacketStorage::Segmented(segment) => segment
-                .ranges
-                .get(self.index)
-                .map(|range| &segment.buffer.as_slice()[range.clone()]),
-            FipsEndpointDirectPacketStorage::Chained { segments, .. } => loop {
-                let Some(segment) = segments.get(self.segment_index) else {
-                    break None;
-                };
-                if self.segment_packet_index < segment.len() {
-                    let packet = segment
-                        .ranges
-                        .get(self.segment_packet_index)
-                        .map(|range| &segment.buffer.as_slice()[range.clone()]);
-                    self.segment_packet_index = self.segment_packet_index.saturating_add(1);
-                    if self.segment_packet_index >= segment.len() {
-                        self.segment_index = self.segment_index.saturating_add(1);
-                        self.segment_packet_index = 0;
-                    }
-                    break packet;
-                }
-                self.segment_index = self.segment_index.saturating_add(1);
-                self.segment_packet_index = 0;
-            },
-        };
-        if packet.is_some() {
-            self.index = self.index.saturating_add(1);
-            self.remaining = self.remaining.saturating_sub(1);
-        }
+        let packet = self
+            .storage
+            .packet_slice_from_segment(self.segment_index, packet_index);
+        self.index = self.index.saturating_add(1);
         packet
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.remaining, Some(self.remaining))
+        let remaining = self.selection.len().saturating_sub(self.index);
+        (remaining, Some(remaining))
     }
 }
 
