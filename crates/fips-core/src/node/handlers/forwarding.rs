@@ -10,7 +10,7 @@ use crate::node::session_wire::{
     FSP_COMMON_PREFIX_SIZE, FSP_HEADER_SIZE, FSP_PHASE_ESTABLISHED, FSP_PHASE_MSG1, FSP_PHASE_MSG2,
     FspCommonPrefix, parse_encrypted_coords,
 };
-use crate::node::{AuthenticatedSessionDatagram, Node, NodeError};
+use crate::node::{AuthenticatedSessionDatagram, LocalSessionPayload, Node, NodeError};
 use crate::protocol::{
     CoordsRequired, LinkMessageType, MtuExceeded, PathBroken, SessionAck, SessionDatagram,
     SessionDatagramRef, SessionSetup,
@@ -33,9 +33,12 @@ impl Node {
         &mut self,
         datagram: AuthenticatedSessionDatagram<'_>,
     ) {
-        let previous_hop = *datagram.previous_hop_addr();
-        let payload = datagram.payload();
-        let incoming_ce = datagram.ce_flag();
+        let AuthenticatedSessionDatagram {
+            previous_hop_peer,
+            payload,
+            ce_flag: incoming_ce,
+        } = datagram;
+        let previous_hop = *previous_hop_peer.node_addr();
 
         self.stats_mut().forwarding.record_received(payload.len());
 
@@ -73,9 +76,10 @@ impl Node {
         // no copy — `handle_session_payload` takes `payload` by borrow.
         if datagram_ref.dest_addr == *self.node_addr() {
             self.stats_mut().forwarding.record_delivered(payload.len());
-            self.handle_session_payload(
-                datagram.local_session_payload(datagram_ref.src_addr, datagram_ref.payload),
-            )
+            self.handle_session_payload(LocalSessionPayload::new(
+                datagram_ref.src_addr,
+                datagram_ref.payload,
+            ))
             .await;
             return;
         }

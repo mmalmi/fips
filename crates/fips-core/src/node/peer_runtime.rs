@@ -94,16 +94,16 @@ pub(in crate::node) struct AuthenticatedFmpReceiveFacts<'a> {
 }
 
 pub(in crate::node) struct AuthenticatedLinkMessage<'a> {
-    source_peer: PeerIdentity,
-    msg_type: u8,
-    payload: &'a [u8],
-    ce_flag: bool,
+    pub(in crate::node) source_peer: PeerIdentity,
+    pub(in crate::node) msg_type: u8,
+    pub(in crate::node) payload: &'a [u8],
+    pub(in crate::node) ce_flag: bool,
 }
 
 pub(in crate::node) struct AuthenticatedSessionDatagram<'a> {
-    previous_hop_peer: PeerIdentity,
-    payload: &'a [u8],
-    ce_flag: bool,
+    pub(in crate::node) previous_hop_peer: PeerIdentity,
+    pub(in crate::node) payload: &'a [u8],
+    pub(in crate::node) ce_flag: bool,
 }
 
 pub(in crate::node) struct LocalSessionPayload<'a> {
@@ -146,23 +146,6 @@ impl<'a> AuthenticatedLinkMessage<'a> {
             ce_flag,
         }
     }
-
-    pub(in crate::node) fn source_node_addr(&self) -> &NodeAddr {
-        self.source_peer.node_addr()
-    }
-
-    pub(in crate::node) fn msg_type(&self) -> u8 {
-        self.msg_type
-    }
-
-    pub(in crate::node) fn payload(&self) -> &'a [u8] {
-        self.payload
-    }
-
-    pub(in crate::node) fn into_session_datagram(self) -> AuthenticatedSessionDatagram<'a> {
-        debug_assert_eq!(self.msg_type, LinkMessageType::SessionDatagram.to_byte());
-        AuthenticatedSessionDatagram::new(self.source_peer, self.payload, self.ce_flag)
-    }
 }
 
 impl<'a> AuthenticatedSessionDatagram<'a> {
@@ -176,26 +159,6 @@ impl<'a> AuthenticatedSessionDatagram<'a> {
             payload,
             ce_flag,
         }
-    }
-
-    pub(in crate::node) fn previous_hop_addr(&self) -> &NodeAddr {
-        self.previous_hop_peer.node_addr()
-    }
-
-    pub(in crate::node) fn payload(&self) -> &'a [u8] {
-        self.payload
-    }
-
-    pub(in crate::node) fn ce_flag(&self) -> bool {
-        self.ce_flag
-    }
-
-    pub(in crate::node) fn local_session_payload(
-        &self,
-        source_addr: NodeAddr,
-        payload: &'a [u8],
-    ) -> LocalSessionPayload<'a> {
-        LocalSessionPayload::new(source_addr, payload)
     }
 }
 

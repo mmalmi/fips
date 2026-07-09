@@ -1,7 +1,9 @@
 //! Link message dispatch and peer removal.
 
 use crate::NodeAddr;
-use crate::node::{AuthenticatedLinkMessage, Node, PeerSessionIndexKind};
+use crate::node::{
+    AuthenticatedLinkMessage, AuthenticatedSessionDatagram, Node, PeerSessionIndexKind,
+};
 use tracing::{debug, info, trace};
 
 impl Node {
@@ -12,50 +14,55 @@ impl Node {
         &mut self,
         message: AuthenticatedLinkMessage<'_>,
     ) {
-        let msg_type = message.msg_type();
+        let AuthenticatedLinkMessage {
+            source_peer,
+            msg_type,
+            payload,
+            ce_flag,
+        } = message;
+        let source_addr = *source_peer.node_addr();
 
         match msg_type {
             0x00 => {
                 // SessionDatagram
-                self.handle_session_datagram(message.into_session_datagram())
-                    .await;
+                self.handle_session_datagram(AuthenticatedSessionDatagram::new(
+                    source_peer,
+                    payload,
+                    ce_flag,
+                ))
+                .await;
             }
             0x01 => {
                 // SenderReport
-                self.handle_sender_report(message.source_node_addr(), message.payload());
+                self.handle_sender_report(&source_addr, payload);
             }
             0x02 => {
                 // ReceiverReport
-                self.handle_receiver_report(message.source_node_addr(), message.payload())
-                    .await;
+                self.handle_receiver_report(&source_addr, payload).await;
             }
             0x10 => {
                 // TreeAnnounce
-                self.handle_tree_announce(message.source_node_addr(), message.payload())
-                    .await;
+                self.handle_tree_announce(&source_addr, payload).await;
             }
             0x20 => {
                 // FilterAnnounce
-                self.handle_filter_announce(message.source_node_addr(), message.payload())
-                    .await;
+                self.handle_filter_announce(&source_addr, payload).await;
             }
             0x30 => {
                 // LookupRequest
-                self.handle_lookup_request(message.source_node_addr(), message.payload())
-                    .await;
+                self.handle_lookup_request(&source_addr, payload).await;
             }
             0x31 => {
                 // LookupResponse
-                self.handle_lookup_response(message.source_node_addr(), message.payload())
-                    .await;
+                self.handle_lookup_response(&source_addr, payload).await;
             }
             0x50 => {
                 // Disconnect
-                self.handle_disconnect(message.source_node_addr(), message.payload());
+                self.handle_disconnect(&source_addr, payload);
             }
             0x51 => {
                 // Heartbeat — no-op, last_recv_time already updated by record_recv()
-                trace!(peer = %self.peer_display_name(message.source_node_addr()), "Received heartbeat");
+                trace!(peer = %self.peer_display_name(&source_addr), "Received heartbeat");
             }
             _ => {
                 debug!(msg_type = msg_type, "Unknown link message type");
