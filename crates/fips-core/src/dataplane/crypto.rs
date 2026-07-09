@@ -138,9 +138,9 @@ struct PreparedOpenRunJobBuilder {
 }
 
 impl PreparedOpenRunJobBuilder {
-    fn new(job_packets: usize) -> Self {
+    fn new() -> Self {
         Self {
-            job_packets: job_packets.max(1),
+            job_packets: DATAPLANE_AEAD_WORKER_BATCH_PACKETS,
             work: Vec::new(),
             cipher: None,
             next_order: None,
@@ -234,11 +234,10 @@ struct PreparedSealJobBuilder {
 }
 
 impl PreparedSealJobBuilder {
-    fn new(job_packets: usize) -> Self {
-        let job_packets = job_packets.max(1);
+    fn new() -> Self {
         Self {
-            job_packets,
-            work: Vec::with_capacity(job_packets),
+            job_packets: DATAPLANE_AEAD_WORKER_BATCH_PACKETS,
+            work: Vec::new(),
             bulk_count: 0,
             closed: false,
         }
@@ -256,6 +255,9 @@ impl PreparedSealJobBuilder {
         }
         if work.lane() == Lane::Bulk {
             self.bulk_count = self.bulk_count.saturating_add(1);
+        }
+        if self.work.capacity() == 0 {
+            self.work.reserve_exact(self.job_packets);
         }
         self.work.push(work);
         if self.work.len() >= self.job_packets {
@@ -672,16 +674,8 @@ impl DataplaneCryptoExecutor for DataplaneAeadWorkerPool {
             return 0;
         }
 
-        let (open_count, seal_count) = prepared
-            .iter()
-            .fold((0usize, 0usize), |(open, seal), work| match work {
-                PreparedCryptoWork::Open { .. } => (open.saturating_add(1), seal),
-                PreparedCryptoWork::Seal { .. } => (open, seal.saturating_add(1)),
-            });
-        let open_job_packets = dataplane_aead_worker_job_packets(open_count);
-        let seal_job_packets = dataplane_aead_worker_job_packets(seal_count);
-        let mut open_jobs = PreparedOpenRunJobBuilder::new(open_job_packets);
-        let mut seal_jobs = PreparedSealJobBuilder::new(seal_job_packets);
+        let mut open_jobs = PreparedOpenRunJobBuilder::new();
+        let mut seal_jobs = PreparedSealJobBuilder::new();
         for work in prepared.drain(..) {
             match work {
                 PreparedCryptoWork::Open { work, cipher } => {
@@ -867,10 +861,6 @@ fn dataplane_aead_worker_priority_reserve(max_in_flight: usize) -> usize {
     max_in_flight
         .saturating_sub(DATAPLANE_AEAD_WORKER_JOB_PACKETS)
         .min(DATAPLANE_AEAD_WORKER_JOB_PACKETS)
-}
-
-fn dataplane_aead_worker_job_packets(work_count: usize) -> usize {
-    work_count.clamp(1, DATAPLANE_AEAD_WORKER_BATCH_PACKETS)
 }
 
 impl Drop for DataplaneAeadWorkerPool {
