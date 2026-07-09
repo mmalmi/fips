@@ -219,6 +219,11 @@ fn event_table_exposes_current_dataplane_and_queue_events() {
             Event::DataplaneDispatchOutboundOwnerBlocked,
             "dataplane_dispatch_outbound_owner_blocked",
         ),
+        (Event::DataplaneAeadInFlight, "dataplane_aead_in_flight"),
+        (
+            Event::DataplaneAeadWorkQueueDepth,
+            "dataplane_aead_work_queue_depth",
+        ),
         (Event::ReservedEvent210, "reserved_event_210"),
         (Event::ReservedEvent211, "reserved_event_211"),
         (
@@ -258,14 +263,6 @@ fn event_table_exposes_current_dataplane_and_queue_events() {
             "dataplane_live_output_drops",
         ),
         (
-            Event::DataplaneAeadOpenInFlight,
-            "dataplane_aead_open_in_flight",
-        ),
-        (
-            Event::DataplaneAeadSealInFlight,
-            "dataplane_aead_seal_in_flight",
-        ),
-        (
             Event::DataplaneAeadCompletionQueueDepth,
             "dataplane_aead_completion_queue_depth",
         ),
@@ -296,14 +293,6 @@ fn event_table_exposes_current_dataplane_and_queue_events() {
         (
             Event::DataplaneLiveOutputBatchPackets,
             "dataplane_live_output_batch_packets",
-        ),
-        (
-            Event::DataplaneAeadOpenQueueDepth,
-            "dataplane_aead_open_queue_depth",
-        ),
-        (
-            Event::DataplaneAeadSealQueueDepth,
-            "dataplane_aead_seal_queue_depth",
         ),
         (
             Event::DataplaneFastIngressOwnerRuns,
@@ -426,8 +415,11 @@ fn event_table_exposes_current_dataplane_and_queue_events() {
         (Event::ReservedEvent96, "reserved_event_96"),
         (Event::ReservedEvent108, "reserved_event_108"),
         (Event::ReservedEvent171, "reserved_event_171"),
-        (Event::ReservedEvent219, "reserved_event_219"),
         (Event::ReservedEvent220, "reserved_event_220"),
+        (Event::ReservedEvent229, "reserved_event_229"),
+        (Event::ReservedEvent230, "reserved_event_230"),
+        (Event::ReservedEvent239, "reserved_event_239"),
+        (Event::ReservedEvent240, "reserved_event_240"),
     ] {
         assert_eq!(event_from_index(event as usize).name(), name);
     }

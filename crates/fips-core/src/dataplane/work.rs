@@ -139,10 +139,6 @@ impl CryptoCompletionBatch {
         self.lane
     }
 
-    pub(crate) fn source(&self) -> CryptoCompletionSource {
-        self.source
-    }
-
     pub(crate) fn is_open_fsp_session_payload_run(&self) -> bool {
         !self.completions.is_empty()
             && self.source == CryptoCompletionSource::Open
