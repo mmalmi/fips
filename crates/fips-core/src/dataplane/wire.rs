@@ -5,13 +5,10 @@ pub(crate) enum WirePreflightError {
     WrongPhase,
     PlaintextFsp,
     BadFspCoords,
-    CounterMismatch,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WireBuildError {
-    PayloadTooLarge,
-    ProtocolMismatch,
     PlaintextFsp,
     BadFspCoords,
     MissingFspTimestamp,

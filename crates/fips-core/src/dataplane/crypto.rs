@@ -5,21 +5,6 @@ pub(crate) enum PreparedCryptoWork {
     Seal { work: OutboundCryptoWork, cipher: AeadKey },
 }
 
-struct PreparedSealWork {
-    work: OutboundCryptoWork,
-    cipher: AeadKey,
-}
-
-impl PreparedSealWork {
-    fn execute(self) -> CryptoCompletion {
-        execute_seal_crypto_work(self.work, self.cipher)
-    }
-
-    fn lane(&self) -> Lane {
-        self.work.reservation.lane
-    }
-}
-
 const DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS: usize = 8;
 const DATAPLANE_AEAD_JOB_PACKETS: usize = 128;
 
@@ -38,103 +23,66 @@ impl PreparedCryptoWork {
             Self::Seal { work, .. } => work.reservation.lane,
         }
     }
-}
 
-enum PreparedCryptoJob {
-    OpenRun {
-        queued_at: Option<crate::perf_profile::TraceStamp>,
-        run: OpenCryptoOwnerRun,
-        cipher: AeadKey,
-        bulk_count: usize,
-    },
-    Seal {
-        queued_at: Option<crate::perf_profile::TraceStamp>,
-        work: Vec<PreparedSealWork>,
-        bulk_count: usize,
-    },
-}
-
-impl PreparedCryptoJob {
-    fn open_run(run: OpenCryptoOwnerRun, cipher: AeadKey) -> Self {
-        let bulk_count = run.bulk_count();
-        Self::OpenRun {
-            queued_at: crate::perf_profile::stamp(),
-            run,
-            cipher,
-            bulk_count,
-        }
-    }
-
-    fn seal(work: Vec<PreparedSealWork>, bulk_count: usize) -> Self {
-        Self::Seal {
-            queued_at: crate::perf_profile::stamp(),
-            work,
-            bulk_count,
-        }
-    }
-
-    fn queued_at(&self) -> Option<crate::perf_profile::TraceStamp> {
+    fn reservation(&self) -> &OwnerReservation {
         match self {
-            Self::OpenRun { queued_at, .. } | Self::Seal { queued_at, .. } => *queued_at,
+            Self::Open { work, .. } => &work.reservation,
+            Self::Seal { work, .. } => &work.reservation,
         }
     }
 
-    fn len(&self) -> usize {
+    fn cipher(&self) -> &AeadKey {
         match self {
-            Self::OpenRun { run, .. } => run.len(),
-            Self::Seal { work, .. } => work.len(),
+            Self::Open { cipher, .. } | Self::Seal { cipher, .. } => cipher,
         }
     }
 
-    fn bulk_count(&self) -> usize {
+    fn is_open(&self) -> bool {
+        matches!(self, Self::Open { .. })
+    }
+
+    fn is_open_fsp_session_payload(&self) -> bool {
         match self {
-            Self::OpenRun { bulk_count, .. } | Self::Seal { bulk_count, .. } => *bulk_count,
+            Self::Open { work, .. } => work.is_open_fsp_session_payload(),
+            Self::Seal { .. } => false,
         }
     }
 
-    fn execute_completion_batches(self) -> Vec<CryptoCompletionBatch> {
+    fn into_owner_item(self) -> (CryptoOwnerRunItem, AeadKey) {
         match self {
-            Self::OpenRun { run, cipher, .. } => execute_open_run_job(run, cipher),
-            Self::Seal { work, .. } => execute_seal_job(work),
+            Self::Open { work, cipher } => (CryptoOwnerRunItem::open(work), cipher),
+            Self::Seal { work, cipher } => (CryptoOwnerRunItem::seal(work), cipher),
         }
     }
 }
 
-struct PreparedOpenRunJobBuilder {
-    job_packets: usize,
-    run: Option<OpenCryptoOwnerRun>,
+struct CryptoOwnerRunBuilder {
     cipher: Option<AeadKey>,
+    run: Option<CryptoOwnerRun>,
 }
 
-impl PreparedOpenRunJobBuilder {
+impl CryptoOwnerRunBuilder {
     fn new() -> Self {
         Self {
-            job_packets: DATAPLANE_AEAD_JOB_PACKETS,
-            run: None,
             cipher: None,
+            run: None,
         }
     }
 
-    fn push(
-        &mut self,
-        pool: &mut DataplaneAeadWorkerPool,
-        work: CryptoWork,
-        cipher: AeadKey,
-    ) {
-        if !self.matches_run(&work, &cipher) {
-            self.flush(pool);
-        }
-        if self
-            .run
-            .as_ref()
-            .is_some_and(|run| run.len() >= self.job_packets)
+    fn push(&mut self, pool: &mut DataplaneAeadWorkerPool, work: PreparedCryptoWork) {
+        if !self.matches_run(&work)
+            || self
+                .run
+                .as_ref()
+                .is_some_and(|run| run.len() >= DATAPLANE_AEAD_JOB_PACKETS)
         {
             self.flush(pool);
         }
+        let (work, cipher) = work.into_owner_item();
         match &mut self.run {
             Some(run) => run.push(work),
             None => {
-                self.run = Some(OpenCryptoOwnerRun::new(work, self.job_packets));
+                self.run = Some(CryptoOwnerRun::new(work, DATAPLANE_AEAD_JOB_PACKETS));
                 self.cipher = Some(cipher);
             }
         }
@@ -147,61 +95,23 @@ impl PreparedOpenRunJobBuilder {
         let cipher = self
             .cipher
             .take()
-            .expect("open run cipher exists when work is non-empty");
-        pool.submit_open_run_job(run, cipher);
+            .expect("crypto run cipher exists when work is non-empty");
+        pool.submit_run(run, cipher);
     }
 
-    fn matches_run(&self, work: &CryptoWork, cipher: &AeadKey) -> bool {
+    fn matches_run(&self, work: &PreparedCryptoWork) -> bool {
         let Some(run) = self.run.as_ref() else {
             return true;
         };
         let Some(current_cipher) = self.cipher.as_ref() else {
             return true;
         };
-        Arc::ptr_eq(current_cipher, cipher) && run.matches(work)
-    }
-}
-
-struct PreparedSealJobBuilder {
-    job_packets: usize,
-    work: Vec<PreparedSealWork>,
-    bulk_count: usize,
-}
-
-impl PreparedSealJobBuilder {
-    fn new() -> Self {
-        Self {
-            job_packets: DATAPLANE_AEAD_JOB_PACKETS,
-            work: Vec::new(),
-            bulk_count: 0,
-        }
-    }
-
-    fn push(
-        &mut self,
-        pool: &mut DataplaneAeadWorkerPool,
-        work: PreparedSealWork,
-    ) {
-        if work.lane() == Lane::Bulk {
-            self.bulk_count = self.bulk_count.saturating_add(1);
-        }
-        if self.work.capacity() == 0 {
-            self.work.reserve_exact(self.job_packets);
-        }
-        self.work.push(work);
-        if self.work.len() >= self.job_packets {
-            self.flush(pool);
-        }
-    }
-
-    fn flush(&mut self, pool: &mut DataplaneAeadWorkerPool) {
-        if self.work.is_empty() {
-            return;
-        }
-        let next = Vec::with_capacity(self.job_packets);
-        let work = std::mem::replace(&mut self.work, next);
-        let bulk_count = std::mem::take(&mut self.bulk_count);
-        pool.submit_seal_job(work, bulk_count);
+        Arc::ptr_eq(current_cipher, work.cipher())
+            && run.matches(
+                work.reservation(),
+                work.is_open(),
+                work.is_open_fsp_session_payload(),
+            )
     }
 }
 
@@ -236,10 +146,10 @@ impl DataplaneAeadWorkerCounters {
 
 #[derive(Debug)]
 pub(crate) struct DataplaneAeadWorkerPool {
-    completion_tx: tokio::sync::mpsc::Sender<Vec<CryptoCompletionBatch>>,
-    completion_rx: tokio::sync::mpsc::Receiver<Vec<CryptoCompletionBatch>>,
+    completion_tx: tokio::sync::mpsc::Sender<CryptoCompletionBatch>,
+    completion_rx: tokio::sync::mpsc::Receiver<CryptoCompletionBatch>,
     completion_notify: Arc<tokio::sync::Notify>,
-    pending_completion_batches: VecDeque<CryptoCompletionBatch>,
+    pending_completion_batch: Option<CryptoCompletionBatch>,
     counters: DataplaneAeadWorkerCounters,
     max_in_flight: usize,
     runtime: Option<tokio::runtime::Handle>,
@@ -255,7 +165,7 @@ impl DataplaneAeadWorkerPool {
             completion_tx,
             completion_rx,
             completion_notify: Arc::new(tokio::sync::Notify::new()),
-            pending_completion_batches: VecDeque::new(),
+            pending_completion_batch: None,
             counters: DataplaneAeadWorkerCounters::new(),
             max_in_flight,
             runtime: tokio::runtime::Handle::try_current().ok(),
@@ -268,8 +178,7 @@ impl DataplaneAeadWorkerPool {
     }
 
     pub(crate) fn has_ready_completions(&self) -> bool {
-        !self.pending_completion_batches.is_empty()
-            || !self.completion_rx.is_empty()
+        self.pending_completion_batch.is_some() || !self.completion_rx.is_empty()
     }
 
     pub(crate) fn drain_completion_batches_into_sink<S>(
@@ -294,11 +203,10 @@ impl DataplaneAeadWorkerPool {
             self.counters.in_flight.load(Relaxed) as u64,
         );
         let pending_completion_depth = self
-            .pending_completion_batches
-            .iter()
-            .map(CryptoCompletionBatch::len)
-            .sum::<usize>();
-        let pending_completion_batches = self.pending_completion_batches.len();
+            .pending_completion_batch
+            .as_ref()
+            .map_or(0, CryptoCompletionBatch::len);
+        let pending_completion_batches = self.pending_completion_batch.is_some() as usize;
         let rx_queued_messages = self.completion_rx.len();
         let completion_depth = pending_completion_depth.saturating_add(rx_queued_messages);
         crate::perf_profile::record_event_count(
@@ -348,45 +256,22 @@ impl DataplaneAeadWorkerPool {
         self.reap_finished_tasks();
         let mut drained = 0usize;
         while drained < limit {
-            if let Some(batch) = self.pending_completion_batches.pop_front() {
-                let (got, pending) = self.drain_completion_batch(
-                    batch,
-                    limit.saturating_sub(drained),
-                    &mut push_batch,
-                );
-                drained = drained.saturating_add(got);
-                if let Some(pending) = pending {
-                    self.pending_completion_batches.push_front(pending);
-                    break;
-                }
-                continue;
-            }
-
-            let received = self.completion_rx.try_recv();
-            match received {
-                Ok(mut batches) => {
-                    let mut batches = batches.drain(..);
-                    while let Some(batch) = batches.next() {
-                        if drained >= limit {
-                            self.pending_completion_batches.push_back(batch);
-                            self.pending_completion_batches.extend(batches);
-                            break;
-                        }
-                        let (got, pending) = self.drain_completion_batch(
-                            batch,
-                            limit.saturating_sub(drained),
-                            &mut push_batch,
-                        );
-                        drained = drained.saturating_add(got);
-                        if let Some(pending) = pending {
-                            self.pending_completion_batches.push_back(pending);
-                            self.pending_completion_batches.extend(batches);
-                            break;
-                        }
-                    }
-                }
-                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
-                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+            let Some(batch) = self
+                .pending_completion_batch
+                .take()
+                .or_else(|| self.completion_rx.try_recv().ok())
+            else {
+                break;
+            };
+            let (got, pending) = self.drain_completion_batch(
+                batch,
+                limit.saturating_sub(drained),
+                &mut push_batch,
+            );
+            drained = drained.saturating_add(got);
+            if let Some(pending) = pending {
+                self.pending_completion_batch = Some(pending);
+                break;
             }
         }
         self.reap_finished_tasks();
@@ -416,29 +301,11 @@ impl DataplaneAeadWorkerPool {
         bulk_limit.saturating_sub(bulk_in_flight).min(total_available)
     }
 
-    fn submit_seal_job(
-        &mut self,
-        work: Vec<PreparedSealWork>,
-        bulk_count: usize,
-    ) {
-        if work.is_empty() {
-            return;
-        }
-        let job = PreparedCryptoJob::seal(work, bulk_count);
-        self.submit_job(job);
-    }
-
-    fn submit_open_run_job(&mut self, run: OpenCryptoOwnerRun, cipher: AeadKey) {
-        if run.is_empty() {
-            return;
-        }
-        self.submit_job(PreparedCryptoJob::open_run(run, cipher));
-    }
-
-    fn submit_job(&mut self, job: PreparedCryptoJob) {
+    fn submit_run(&mut self, run: CryptoOwnerRun, cipher: AeadKey) {
         self.reap_finished_tasks();
-        let chunk_len = job.len();
-        let bulk_count = job.bulk_count();
+        let chunk_len = run.len();
+        let bulk_count = run.bulk_count();
+        let queued_at = crate::perf_profile::stamp();
         self.counters.add(chunk_len, bulk_count);
         let completion_tx = self.completion_tx.clone();
         let completion_notify = Arc::clone(&self.completion_notify);
@@ -451,25 +318,21 @@ impl DataplaneAeadWorkerPool {
             async move {
                 crate::perf_profile::record_since(
                     crate::perf_profile::Stage::DataplaneAeadWorkerQueueWait,
-                    job.queued_at(),
+                    queued_at,
                 );
-                let completions = job.execute_completion_batches();
-                if completions.is_empty() {
-                    return;
-                }
-                let completed_count = completions
-                    .iter()
-                    .map(CryptoCompletionBatch::len)
-                    .sum::<usize>();
-                let completed_bulk_count = completions
-                    .iter()
-                    .filter(|batch| batch.lane() == Lane::Bulk)
-                    .map(CryptoCompletionBatch::len)
-                    .sum::<usize>();
-                if send_completion_batches(completions, &completion_tx)
-                    .await
-                    .is_err()
-                {
+                let completion = execute_crypto_owner_run(run, cipher);
+                let completed_count = completion.len();
+                let completed_bulk_count = if completion.lane() == Lane::Bulk {
+                    completed_count
+                } else {
+                    0
+                };
+                crate::perf_profile::record_dataplane_aead_completion_send(
+                    1,
+                    1,
+                    completed_count,
+                );
+                if completion_tx.send(completion).await.is_err() {
                     counters.finish(completed_count, completed_bulk_count);
                     return;
                 }
@@ -494,76 +357,40 @@ impl DataplaneAeadWorkerPool {
             return;
         }
 
-        let mut open_jobs = PreparedOpenRunJobBuilder::new();
-        let mut seal_jobs = PreparedSealJobBuilder::new();
+        let mut runs = CryptoOwnerRunBuilder::new();
         for work in prepared.drain(..) {
-            match work {
-                PreparedCryptoWork::Open { work, cipher } => {
-                    open_jobs.push(self, work, cipher);
-                }
-                PreparedCryptoWork::Seal { work, cipher } => {
-                    seal_jobs.push(self, PreparedSealWork { work, cipher });
-                }
-            }
+            runs.push(self, work);
         }
-        open_jobs.flush(self);
-        seal_jobs.flush(self);
+        runs.flush(self);
     }
 }
 
-async fn send_completion_batches(
-    batches: Vec<CryptoCompletionBatch>,
-    completion_tx: &tokio::sync::mpsc::Sender<Vec<CryptoCompletionBatch>>,
-) -> Result<(), ()> {
-    if batches.is_empty() {
-        return Ok(());
-    }
-
-    if crate::perf_profile::enabled() {
-        let completion_batch_count = batches.len();
-        let completion_packet_count = batches
-            .iter()
-            .map(CryptoCompletionBatch::len)
-            .sum::<usize>();
-        crate::perf_profile::record_dataplane_aead_completion_send(
-            1,
-            completion_batch_count,
-            completion_packet_count,
-        );
-    }
-    completion_tx.send(batches).await.map_err(|_| ())?;
-    Ok(())
-}
-
-fn execute_open_run_job(
-    mut run: OpenCryptoOwnerRun,
+fn execute_crypto_owner_run(
+    mut run: CryptoOwnerRun,
     cipher: AeadKey,
-) -> Vec<CryptoCompletionBatch> {
-    if run.is_empty() {
-        return Vec::new();
-    }
-    let _timer =
-        crate::perf_profile::Timer::start(crate::perf_profile::Stage::DataplaneAeadOpen);
+) -> CryptoCompletionBatch {
+    let _open_timer = run.is_open().then(|| {
+        crate::perf_profile::Timer::start(crate::perf_profile::Stage::DataplaneAeadOpen)
+    });
     for item in &mut run.items {
-        let OpenCryptoOwnerRunItem::Prepared(work) =
-            std::mem::replace(item, OpenCryptoOwnerRunItem::Vacant)
-        else {
-            panic!("open owner run executed twice");
+        let state = std::mem::replace(
+            &mut item.state,
+            CryptoOwnerRunItemState::Completed(CryptoResult::Failed(CryptoFailureKind::Open)),
+        );
+        let result = match state {
+            CryptoOwnerRunItemState::Open(packet) => {
+                execute_open_crypto_work(packet, &item.reservation, &cipher)
+            }
+            CryptoOwnerRunItemState::Seal(packet) => {
+                execute_seal_crypto_work(packet, &item.reservation, &cipher)
+            }
+            CryptoOwnerRunItemState::Completed(_) => {
+                panic!("crypto owner run executed twice")
+            }
         };
-        *item = OpenCryptoOwnerRunItem::Completed(execute_open_crypto_work(work, &cipher));
+        item.state = CryptoOwnerRunItemState::Completed(result);
     }
-    vec![CryptoCompletionBatch::from_open_owner_run(run)]
-}
-
-fn execute_seal_job(work: Vec<PreparedSealWork>) -> Vec<CryptoCompletionBatch> {
-    if work.is_empty() {
-        return Vec::new();
-    }
-    let mut completions = Vec::with_capacity(work.len());
-    for work in work {
-        CryptoCompletionBatch::push_grouped(work.execute(), &mut completions);
-    }
-    completions
+    CryptoCompletionBatch::from_owner_run(run)
 }
 
 fn dataplane_aead_worker_priority_reserve(max_in_flight: usize) -> usize {
@@ -612,140 +439,87 @@ impl AeadHeader {
     }
 }
 
-struct AeadOpenWork {
-    work: CryptoWork,
-    header: AeadHeader,
-    ciphertext_offset: usize,
-}
-
-fn execute_open_crypto_work(work: CryptoWork, cipher: &LessSafeKey) -> CryptoCompletion {
-    let reservation = work.reservation.clone();
-    match AeadOpenWork::from_crypto_work(work) {
-        Ok(work) => work.execute(cipher),
-        Err(_) => failed_crypto_completion(reservation, CryptoFailureKind::Open),
+fn execute_open_crypto_work(
+    mut packet: SocketPacket,
+    reservation: &OwnerReservation,
+    cipher: &LessSafeKey,
+) -> CryptoResult {
+    let parsed = match packet.owner.protocol {
+        PacketProtocol::Fmp => FmpWireHeader::parse(packet.payload.as_slice()).map(|header| {
+            (
+                AeadHeader::Fmp(header.header_bytes()),
+                header.ciphertext_offset(),
+                header.counter(),
+            )
+        }),
+        PacketProtocol::Fsp => FspWireHeader::parse(packet.payload.as_slice()).map(|header| {
+            (
+                AeadHeader::Fsp(header.header_bytes()),
+                header.ciphertext_offset(),
+                header.counter(),
+            )
+        }),
+    };
+    let Ok((header, ciphertext_offset, counter)) = parsed else {
+        return CryptoResult::Failed(CryptoFailureKind::Open);
+    };
+    if counter != packet.counter {
+        return CryptoResult::Failed(CryptoFailureKind::Open);
     }
+
+    let target = packet.output;
+    let source_wire_len = packet.payload.len();
+    let plaintext_len = {
+        let Some(ciphertext) = packet.payload.as_mut_slice().get_mut(ciphertext_offset..) else {
+            return CryptoResult::Failed(CryptoFailureKind::Open);
+        };
+        let nonce = aead_nonce(reservation.counter);
+        let Ok(plaintext) = cipher.open_in_place(nonce, Aad::from(header.as_aad()), ciphertext)
+        else {
+            return CryptoResult::Failed(CryptoFailureKind::Open);
+        };
+        plaintext.len()
+    };
+    packet.payload.truncate(ciphertext_offset + plaintext_len);
+    CryptoResult::Opened(PacketOutput {
+        owner: reservation.owner,
+        counter: reservation.counter,
+        ingress_seq: reservation.ingress_seq,
+        lane: reservation.lane,
+        target,
+        source_path: reservation.source_path.clone(),
+        previous_hop: reservation.previous_hop,
+        ce_flag: reservation.ce_flag,
+        path_mtu: reservation.path_mtu,
+        source_peer: reservation.source_peer,
+        path: reservation.output_path.clone(),
+        activity_tick: reservation.activity_tick,
+        fmp_timestamp_ms: reservation.fmp_timestamp_ms,
+        source_wire_len: Some(source_wire_len),
+        fsp_send_receipt: None,
+        send_token: reservation.send_token,
+        payload: packet.payload,
+    })
 }
 
-impl AeadOpenWork {
-    fn from_crypto_work(work: CryptoWork) -> Result<Self, WirePreflightError> {
-        let (header, ciphertext_offset, counter) = match work.packet.owner.protocol {
-            PacketProtocol::Fmp => {
-                let header = FmpWireHeader::parse(work.packet.payload.as_slice())?;
-                (
-                    AeadHeader::Fmp(header.header_bytes()),
-                    header.ciphertext_offset(),
-                    header.counter(),
-                )
-            }
-            PacketProtocol::Fsp => {
-                let header = FspWireHeader::parse(work.packet.payload.as_slice())?;
-                (
-                    AeadHeader::Fsp(header.header_bytes()),
-                    header.ciphertext_offset(),
-                    header.counter(),
-                )
-            }
-        };
-        if counter != work.packet.counter {
-            return Err(WirePreflightError::CounterMismatch);
-        }
-
-        Ok(Self {
-            work,
-            header,
-            ciphertext_offset,
-        })
-    }
-    fn execute(self, cipher: &LessSafeKey) -> CryptoCompletion {
-        let mut work = self;
-        let reservation = work.work.reservation;
-        let target = work.work.packet.output;
-        let header = work.header;
-        let source_wire_len = work.work.packet.payload.len();
-        let opened_len = match work
-            .work
-            .packet
-            .payload
-            .as_mut_slice()
-            .get_mut(work.ciphertext_offset..)
-        {
-            Some(ciphertext) => {
-                let nonce = aead_nonce(reservation.counter);
-                cipher
-                    .open_in_place(nonce, Aad::from(header.as_aad()), ciphertext)
-                    .map(|plaintext| plaintext.len())
-                    .ok()
-            }
-            None => None,
-        };
-
-        let result = match opened_len {
-            Some(plaintext_len) => {
-                work.work
-                    .packet
-                    .payload
-                    .truncate(work.ciphertext_offset + plaintext_len);
-                CryptoResult::Opened(PacketOutput {
-                    owner: reservation.owner,
-                    counter: reservation.counter,
-                    ingress_seq: reservation.ingress_seq,
-                    lane: reservation.lane,
-                    target,
-                    source_path: reservation.source_path.clone(),
-                    previous_hop: reservation.previous_hop,
-                    ce_flag: reservation.ce_flag,
-                    path_mtu: reservation.path_mtu,
-                    source_peer: reservation.source_peer,
-                    path: reservation.output_path.clone(),
-                    activity_tick: reservation.activity_tick,
-                    fmp_timestamp_ms: reservation.fmp_timestamp_ms,
-                    source_wire_len: Some(source_wire_len),
-                    fsp_send_receipt: None,
-                    send_token: reservation.send_token,
-                    payload: work.work.packet.payload,
-                })
-            }
-            None => CryptoResult::Failed(CryptoFailureKind::Open),
-        };
-
-        CryptoCompletion {
-            reservation,
-            result,
-        }
-    }
-}
-
-struct AeadSealWork {
-    work: OutboundCryptoWork,
-    cipher: AeadKey,
-    post_seal: OutboundPostSeal,
-    aad_len: usize,
-    ciphertext_offset: usize,
-}
-
-fn execute_seal_crypto_work(work: OutboundCryptoWork, cipher: AeadKey) -> CryptoCompletion {
-    let reservation = work.reservation.clone();
+fn execute_seal_crypto_work(
+    mut packet: OutboundPacket,
+    reservation: &OwnerReservation,
+    cipher: &LessSafeKey,
+) -> CryptoResult {
     let _timer = crate::perf_profile::Timer::start(crate::perf_profile::Stage::DataplaneAeadSeal);
-    match AeadSealWork::from_outbound_work(work, cipher) {
-        Ok(work) => work.execute(),
-        Err(_) => failed_crypto_completion(reservation, CryptoFailureKind::Seal),
-    }
-}
-
-impl AeadSealWork {
-    fn from_outbound_work(
-        mut work: OutboundCryptoWork,
-        cipher: AeadKey,
-    ) -> Result<Self, WireBuildError> {
-        let inner_prefix = work.packet.crypto_plaintext_prefix(
-            work.reservation.fmp_timestamp_ms,
-            work.reservation.fsp_timestamp_ms,
-        )?;
-        let payload_len = u16::try_from(inner_prefix.len().saturating_add(work.packet.payload.len()))
-            .map_err(|_| WireBuildError::PayloadTooLarge)?;
-        let counter = work.reservation.counter;
-        let (header, coord_prefix, ciphertext_offset) =
-            match (work.packet.owner.protocol, work.packet.wire) {
+    let inner_prefix = match packet.crypto_plaintext_prefix(
+        reservation.fmp_timestamp_ms,
+        reservation.fsp_timestamp_ms,
+    ) {
+        Ok(prefix) => prefix,
+        Err(_) => return CryptoResult::Failed(CryptoFailureKind::Seal),
+    };
+    let Ok(payload_len) = u16::try_from(inner_prefix.len().saturating_add(packet.payload.len()))
+    else {
+        return CryptoResult::Failed(CryptoFailureKind::Seal);
+    };
+    let (header, coord_prefix, ciphertext_offset) = match (packet.owner.protocol, packet.wire) {
             (
                 PacketProtocol::Fmp,
                 OutboundWire::Fmp {
@@ -755,7 +529,7 @@ impl AeadSealWork {
             ) => (
                 AeadHeader::Fmp(build_fmp_established_header(
                     receiver_idx,
-                    counter,
+                    reservation.counter,
                     flags,
                     payload_len,
                 )),
@@ -763,124 +537,103 @@ impl AeadSealWork {
                 FMP_ESTABLISHED_HEADER_SIZE,
             ),
             (PacketProtocol::Fsp, OutboundWire::Fsp { flags }) => {
-                let coord_prefix = std::mem::take(&mut work.packet.fsp_cleartext_prefix);
-                validate_fsp_cleartext_prefix(flags, &coord_prefix)?;
+                let coord_prefix = std::mem::take(&mut packet.fsp_cleartext_prefix);
+                if validate_fsp_cleartext_prefix(flags, &coord_prefix).is_err() {
+                    return CryptoResult::Failed(CryptoFailureKind::Seal);
+                }
                 let ciphertext_offset = FSP_HEADER_SIZE + coord_prefix.len();
+                let Ok(header) = build_fsp_established_header(
+                    reservation.counter,
+                    flags,
+                    payload_len,
+                ) else {
+                    return CryptoResult::Failed(CryptoFailureKind::Seal);
+                };
                 (
-                    AeadHeader::Fsp(build_fsp_established_header(counter, flags, payload_len)?),
+                    AeadHeader::Fsp(header),
                     coord_prefix,
                     ciphertext_offset,
                 )
             }
-            _ => return Err(WireBuildError::ProtocolMismatch),
+            _ => return CryptoResult::Failed(CryptoFailureKind::Seal),
         };
 
-        let aad = header.as_aad();
-        let aad_len = aad.len();
-        let prefix_len = aad
-            .len()
-            .saturating_add(coord_prefix.len())
-            .saturating_add(inner_prefix.len());
-        if work.packet.payload.try_prepend_slices(
-            &[aad, coord_prefix.as_slice(), inner_prefix.as_slice()],
-            AEAD_TAG_SIZE,
-        ) {
-            crate::perf_profile::record_event(crate::perf_profile::Event::DataplaneSealInPlace);
-        } else {
-            crate::perf_profile::record_event(crate::perf_profile::Event::DataplaneSealAllocated);
-            let plaintext = std::mem::take(&mut work.packet.payload);
-            let mut payload = Vec::with_capacity(
-                prefix_len
-                    .saturating_add(plaintext.len())
-                    .saturating_add(AEAD_TAG_SIZE),
-            );
-            payload.extend_from_slice(aad);
-            payload.extend_from_slice(&coord_prefix);
-            payload.extend_from_slice(&inner_prefix);
-            payload.extend_from_slice(plaintext.as_slice());
-            work.packet.payload = PacketBuffer::new(payload);
-        }
-
-        Ok(Self {
-            post_seal: work.packet.post_seal,
-            work,
-            cipher,
-            aad_len,
-            ciphertext_offset,
-        })
+    let aad = header.as_aad();
+    let aad_len = aad.len();
+    let prefix_len = aad
+        .len()
+        .saturating_add(coord_prefix.len())
+        .saturating_add(inner_prefix.len());
+    if packet.payload.try_prepend_slices(
+        &[aad, coord_prefix.as_slice(), inner_prefix.as_slice()],
+        AEAD_TAG_SIZE,
+    ) {
+        crate::perf_profile::record_event(crate::perf_profile::Event::DataplaneSealInPlace);
+    } else {
+        crate::perf_profile::record_event(crate::perf_profile::Event::DataplaneSealAllocated);
+        let plaintext = std::mem::take(&mut packet.payload);
+        let mut payload = Vec::with_capacity(
+            prefix_len
+                .saturating_add(plaintext.len())
+                .saturating_add(AEAD_TAG_SIZE),
+        );
+        payload.extend_from_slice(aad);
+        payload.extend_from_slice(&coord_prefix);
+        payload.extend_from_slice(&inner_prefix);
+        payload.extend_from_slice(plaintext.as_slice());
+        packet.payload = PacketBuffer::new(payload);
     }
-    fn execute(self) -> CryptoCompletion {
-        let mut work = self;
-        let reservation = work.work.reservation;
-        let tag = if work.aad_len <= work.ciphertext_offset
-            && work.ciphertext_offset <= work.work.packet.payload.len()
-        {
-            let nonce = aead_nonce(reservation.counter);
-            let (prefix, plaintext) = work
-                .work
-                .packet
-                .payload
-                .as_mut_slice()
-                .split_at_mut(work.ciphertext_offset);
-            let Some(aad) = prefix.get(..work.aad_len) else {
-                return CryptoCompletion {
-                    reservation,
-                    result: CryptoResult::Failed(CryptoFailureKind::Seal),
-                };
-            };
-            work.cipher
-                .seal_in_place_separate_tag(nonce, Aad::from(aad), plaintext)
-                .ok()
-        } else {
-            None
-        };
 
-        let result = match tag {
-            Some(tag) => {
-                work.work.packet.payload.extend_from_slice(tag.as_ref());
-                match work.post_seal {
-                    OutboundPostSeal::Transport => CryptoResult::Sealed(PacketOutput {
-                        owner: reservation.owner,
-                        counter: reservation.counter,
-                        ingress_seq: reservation.ingress_seq,
-                        lane: reservation.lane,
-                        target: OutputTarget::Transport,
-                        source_path: reservation.source_path.clone(),
-                        previous_hop: reservation.previous_hop,
-                        ce_flag: reservation.ce_flag,
-                        path_mtu: reservation.path_mtu,
-                        source_peer: reservation.source_peer,
-                        path: reservation.output_path.clone(),
-                        activity_tick: reservation.activity_tick,
-                        fmp_timestamp_ms: reservation.fmp_timestamp_ms,
-                        source_wire_len: None,
-                        fsp_send_receipt: work.work.packet.fsp_send_receipt,
-                        send_token: reservation.send_token,
-                        payload: work.work.packet.payload,
-                    }),
-                    OutboundPostSeal::FmpWrap(route) => {
-                        let mut packet = route
-                            .into_fmp_outbound(work.work.packet.class, work.work.packet.payload)
-                            .with_fsp_send_receipt(DataplaneFspSendReceipt {
-                                owner: reservation.owner,
-                                counter: reservation.counter,
-                            });
-                        if let Some(send_token) = work.work.packet.send_token {
-                            packet = packet.with_send_token(send_token);
-                        }
-                        if let Some(tick) = reservation.activity_tick {
-                            packet = packet.with_activity_tick(tick);
-                        }
-                        CryptoResult::Outbound(packet)
-                    }
-                }
+    if aad_len > ciphertext_offset || ciphertext_offset > packet.payload.len() {
+        return CryptoResult::Failed(CryptoFailureKind::Seal);
+    }
+    let nonce = aead_nonce(reservation.counter);
+    let (prefix, plaintext) = packet
+        .payload
+        .as_mut_slice()
+        .split_at_mut(ciphertext_offset);
+    let Some(aad) = prefix.get(..aad_len) else {
+        return CryptoResult::Failed(CryptoFailureKind::Seal);
+    };
+    let Ok(tag) = cipher.seal_in_place_separate_tag(nonce, Aad::from(aad), plaintext) else {
+        return CryptoResult::Failed(CryptoFailureKind::Seal);
+    };
+    packet.payload.extend_from_slice(tag.as_ref());
+
+    match packet.post_seal {
+        OutboundPostSeal::Transport => CryptoResult::Sealed(PacketOutput {
+            owner: reservation.owner,
+            counter: reservation.counter,
+            ingress_seq: reservation.ingress_seq,
+            lane: reservation.lane,
+            target: OutputTarget::Transport,
+            source_path: reservation.source_path.clone(),
+            previous_hop: reservation.previous_hop,
+            ce_flag: reservation.ce_flag,
+            path_mtu: reservation.path_mtu,
+            source_peer: reservation.source_peer,
+            path: reservation.output_path.clone(),
+            activity_tick: reservation.activity_tick,
+            fmp_timestamp_ms: reservation.fmp_timestamp_ms,
+            source_wire_len: None,
+            fsp_send_receipt: packet.fsp_send_receipt,
+            send_token: reservation.send_token,
+            payload: packet.payload,
+        }),
+        OutboundPostSeal::FmpWrap(route) => {
+            let mut output = route
+                .into_fmp_outbound(packet.class, packet.payload)
+                .with_fsp_send_receipt(DataplaneFspSendReceipt {
+                    owner: reservation.owner,
+                    counter: reservation.counter,
+                });
+            if let Some(send_token) = packet.send_token {
+                output = output.with_send_token(send_token);
             }
-            None => CryptoResult::Failed(CryptoFailureKind::Seal),
-        };
-
-        CryptoCompletion {
-            reservation,
-            result,
+            if let Some(tick) = reservation.activity_tick {
+                output = output.with_activity_tick(tick);
+            }
+            CryptoResult::Outbound(output)
         }
     }
 }

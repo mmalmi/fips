@@ -24,52 +24,70 @@ pub(crate) struct CryptoCompletion {
 }
 
 #[derive(Debug)]
-struct OpenCryptoOwnerRun {
+struct CryptoOwnerRun {
     next_order: OrderToken,
-    fsp_session_payload: bool,
-    items: Vec<OpenCryptoOwnerRunItem>,
+    open_fsp_session_payload: bool,
+    items: Vec<CryptoOwnerRunItem>,
 }
 
 #[derive(Debug)]
 // Inline states keep the 128-packet run in one allocation without per-packet boxes.
-#[allow(clippy::large_enum_variant)]
-enum OpenCryptoOwnerRunItem {
-    Prepared(CryptoWork),
-    Completed(CryptoCompletion),
-    Vacant,
+struct CryptoOwnerRunItem {
+    reservation: OwnerReservation,
+    state: CryptoOwnerRunItemState,
 }
 
-impl OpenCryptoOwnerRun {
-    fn new(work: CryptoWork, capacity: usize) -> Self {
-        let reservation = &work.reservation;
+#[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
+enum CryptoOwnerRunItemState {
+    Open(SocketPacket),
+    Seal(OutboundPacket),
+    Completed(CryptoResult),
+}
+
+impl CryptoOwnerRun {
+    fn new(work: CryptoOwnerRunItem, capacity: usize) -> Self {
         let mut items = Vec::with_capacity(capacity);
-        let next_order = reservation.order.next();
-        let fsp_session_payload = work.is_open_fsp_session_payload();
-        items.push(OpenCryptoOwnerRunItem::Prepared(work));
+        let next_order = work.reservation.order.next();
+        let open_fsp_session_payload = work.is_open_fsp_session_payload();
+        items.push(work);
         Self {
             next_order,
-            fsp_session_payload,
+            open_fsp_session_payload,
             items,
         }
     }
 
-    fn matches(&self, work: &CryptoWork) -> bool {
+    fn matches(
+        &self,
+        reservation: &OwnerReservation,
+        is_open: bool,
+        open_fsp_session_payload: bool,
+    ) -> bool {
         let Some(first) = self.first_reservation() else {
             return false;
         };
-        first.owner_shard() == work.reservation.owner_shard()
-            && first.owner == work.reservation.owner
-            && first.generation == work.reservation.generation
-            && first.lane == work.reservation.lane
-            && first.source_path == work.reservation.source_path
-            && self.next_order == work.reservation.order
-            && self.fsp_session_payload == work.is_open_fsp_session_payload()
+        first.owner_shard() == reservation.owner_shard()
+            && first.owner == reservation.owner
+            && first.generation == reservation.generation
+            && first.lane == reservation.lane
+            && self.next_order == reservation.order
+            && self.is_open() == is_open
+            && (!is_open || first.source_path == reservation.source_path)
+            && self.open_fsp_session_payload == open_fsp_session_payload
     }
 
-    fn push(&mut self, work: CryptoWork) {
-        assert!(self.matches(&work), "open owner run work must be contiguous");
+    fn push(&mut self, work: CryptoOwnerRunItem) {
+        assert!(
+            self.matches(
+                &work.reservation,
+                work.is_open(),
+                work.is_open_fsp_session_payload(),
+            ),
+            "crypto owner run must be contiguous"
+        );
         self.next_order = work.reservation.order.next();
-        self.items.push(OpenCryptoOwnerRunItem::Prepared(work));
+        self.items.push(work);
     }
 
     fn len(&self) -> usize {
@@ -81,13 +99,11 @@ impl OpenCryptoOwnerRun {
     }
 
     fn first_order(&self) -> Option<OrderToken> {
-        self.items.first().and_then(OpenCryptoOwnerRunItem::order)
+        self.items.first().map(|item| item.reservation.order)
     }
 
     fn first_reservation(&self) -> Option<&OwnerReservation> {
-        self.items
-            .first()
-            .and_then(OpenCryptoOwnerRunItem::reservation)
+        self.items.first().map(|item| &item.reservation)
     }
 
     fn bulk_count(&self) -> usize {
@@ -103,20 +119,27 @@ impl OpenCryptoOwnerRun {
 
     fn is_open_fsp_session_payload_run(&self) -> bool {
         !self.is_empty()
+            && self.is_open()
             && self
                 .first_reservation()
                 .is_some_and(|reservation| reservation.owner.protocol() == PacketProtocol::Fsp)
-            && self.fsp_session_payload
+            && self.open_fsp_session_payload
             && self
                 .items
                 .iter()
-                .all(OpenCryptoOwnerRunItem::is_open_fsp_session_payload)
+                .all(CryptoOwnerRunItem::is_open_fsp_session_payload)
+    }
+
+    fn is_open(&self) -> bool {
+        self.items
+            .first()
+            .is_some_and(CryptoOwnerRunItem::is_open)
     }
 
     fn split_off(&mut self, at: usize) -> Self {
         Self {
             next_order: self.next_order,
-            fsp_session_payload: self.fsp_session_payload,
+            open_fsp_session_payload: self.open_fsp_session_payload,
             items: self.items.split_off(at),
         }
     }
@@ -128,39 +151,60 @@ impl OpenCryptoOwnerRun {
     }
 }
 
-impl OpenCryptoOwnerRunItem {
-    fn reservation(&self) -> Option<&OwnerReservation> {
-        match self {
-            Self::Prepared(work) => Some(&work.reservation),
-            Self::Completed(completion) => Some(&completion.reservation),
-            Self::Vacant => None,
+impl CryptoOwnerRunItem {
+    fn open(work: CryptoWork) -> Self {
+        let CryptoWork {
+            reservation,
+            packet,
+        } = work;
+        Self {
+            reservation,
+            state: CryptoOwnerRunItemState::Open(packet),
         }
     }
 
-    fn order(&self) -> Option<OrderToken> {
-        match self {
-            Self::Prepared(work) => Some(work.reservation.order),
-            Self::Completed(completion) => Some(completion.order()),
-            Self::Vacant => None,
+    fn seal(work: OutboundCryptoWork) -> Self {
+        let OutboundCryptoWork {
+            reservation,
+            packet,
+        } = work;
+        Self {
+            reservation,
+            state: CryptoOwnerRunItemState::Seal(packet),
+        }
+    }
+
+    fn is_open(&self) -> bool {
+        match &self.state {
+            CryptoOwnerRunItemState::Open(_) => true,
+            CryptoOwnerRunItemState::Seal(_) => false,
+            CryptoOwnerRunItemState::Completed(result) => result.is_open_family(),
         }
     }
 
     fn is_open_fsp_session_payload(&self) -> bool {
-        matches!(
-            self,
-            Self::Completed(CryptoCompletion {
-                result: CryptoResult::Opened(output),
-                ..
-            }) if matches!(output.target(), OutputTarget::SessionPayload { .. })
-        )
+        match &self.state {
+            CryptoOwnerRunItemState::Open(packet) => {
+                self.reservation.owner.protocol() == PacketProtocol::Fsp
+                    && matches!(packet.output, OutputTarget::SessionPayload { .. })
+            }
+            CryptoOwnerRunItemState::Completed(CryptoResult::Opened(output)) => {
+                matches!(output.target(), OutputTarget::SessionPayload { .. })
+            }
+            CryptoOwnerRunItemState::Seal(_) | CryptoOwnerRunItemState::Completed(_) => false,
+        }
     }
 
     fn into_completion(self) -> CryptoCompletion {
-        match self {
-            Self::Completed(completion) => completion,
-            Self::Prepared(_) | Self::Vacant => {
-                panic!("open owner run retired before crypto completed")
+        let result = match self.state {
+            CryptoOwnerRunItemState::Completed(result) => result,
+            CryptoOwnerRunItemState::Open(_) | CryptoOwnerRunItemState::Seal(_) => {
+                panic!("crypto owner run retired before completion")
             }
+        };
+        CryptoCompletion {
+            reservation: self.reservation,
+            result,
         }
     }
 }
@@ -168,7 +212,7 @@ impl OpenCryptoOwnerRunItem {
 #[derive(Debug)]
 enum CryptoCompletionRun {
     Completed(Vec<CryptoCompletion>),
-    OpenOwnerRun(OpenCryptoOwnerRun),
+    OwnerRun(CryptoOwnerRun),
 }
 
 #[derive(Debug)]
@@ -182,12 +226,7 @@ pub(crate) struct CryptoCompletionBatch {
 
 impl CryptoCompletion {
     fn is_open_family(&self) -> bool {
-        match &self.result {
-            CryptoResult::Opened(_) | CryptoResult::Failed(CryptoFailureKind::Open) => true,
-            CryptoResult::Sealed(_)
-            | CryptoResult::Outbound(_)
-            | CryptoResult::Failed(CryptoFailureKind::Seal) => false,
-        }
+        self.result.is_open_family()
     }
 
     fn same_family(&self, other: &CryptoCompletion) -> bool {
@@ -196,6 +235,17 @@ impl CryptoCompletion {
 
     fn order(&self) -> OrderToken {
         self.reservation.order
+    }
+}
+
+impl CryptoResult {
+    fn is_open_family(&self) -> bool {
+        match self {
+            CryptoResult::Opened(_) | CryptoResult::Failed(CryptoFailureKind::Open) => true,
+            CryptoResult::Sealed(_)
+            | CryptoResult::Outbound(_)
+            | CryptoResult::Failed(CryptoFailureKind::Seal) => false,
+        }
     }
 }
 
@@ -214,10 +264,10 @@ impl CryptoCompletionBatch {
         }
     }
 
-    fn from_open_owner_run(run: OpenCryptoOwnerRun) -> Self {
+    fn from_owner_run(run: CryptoOwnerRun) -> Self {
         let reservation = run
             .first_reservation()
-            .expect("open owner run contains a completion");
+            .expect("crypto owner run contains a completion");
         let owner_shard = reservation.owner_shard();
         let owner = reservation.owner;
         let generation = reservation.generation;
@@ -227,7 +277,7 @@ impl CryptoCompletionBatch {
             owner,
             generation,
             lane,
-            completions: CryptoCompletionRun::OpenOwnerRun(run),
+            completions: CryptoCompletionRun::OwnerRun(run),
         }
     }
 
@@ -239,7 +289,7 @@ impl CryptoCompletionBatch {
             && last.matches(&completion)
         {
             let CryptoCompletionRun::Completed(completions) = &mut last.completions else {
-                unreachable!("shared open owner runs do not match grouped completions");
+                unreachable!("shared owner runs do not match grouped completions");
             };
             completions.push(completion);
             return;
@@ -262,7 +312,7 @@ impl CryptoCompletionBatch {
     pub(crate) fn len(&self) -> usize {
         match &self.completions {
             CryptoCompletionRun::Completed(completions) => completions.len(),
-            CryptoCompletionRun::OpenOwnerRun(run) => run.len(),
+            CryptoCompletionRun::OwnerRun(run) => run.len(),
         }
     }
 
@@ -275,7 +325,7 @@ impl CryptoCompletionBatch {
             CryptoCompletionRun::Completed(completions) => {
                 completions.first().map(CryptoCompletion::order)
             }
-            CryptoCompletionRun::OpenOwnerRun(run) => run.first_order(),
+            CryptoCompletionRun::OwnerRun(run) => run.first_order(),
         }
     }
 
@@ -307,7 +357,7 @@ impl CryptoCompletionBatch {
                         if matches!(output.target(), OutputTarget::SessionPayload { .. })
                 )
             }),
-            CryptoCompletionRun::OpenOwnerRun(run) => run.is_open_fsp_session_payload_run(),
+            CryptoCompletionRun::OwnerRun(run) => run.is_open_fsp_session_payload_run(),
         }
     }
 
@@ -316,8 +366,8 @@ impl CryptoCompletionBatch {
             CryptoCompletionRun::Completed(completions) => {
                 CryptoCompletionRun::Completed(completions.split_off(at))
             }
-            CryptoCompletionRun::OpenOwnerRun(run) => {
-                CryptoCompletionRun::OpenOwnerRun(run.split_off(at))
+            CryptoCompletionRun::OwnerRun(run) => {
+                CryptoCompletionRun::OwnerRun(run.split_off(at))
             }
         };
         Self {
@@ -342,7 +392,7 @@ impl CryptoCompletionBatch {
                     consume(completion);
                 }
             }
-            CryptoCompletionRun::OpenOwnerRun(run) => run.consume_in_order(consume),
+            CryptoCompletionRun::OwnerRun(run) => run.consume_in_order(consume),
         }
     }
 
