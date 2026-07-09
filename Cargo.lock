@@ -1470,6 +1470,7 @@ dependencies = [
 name = "fips-core"
 version = "0.3.81"
 dependencies = [
+ "async-channel",
  "bluer",
  "bytes",
  "dirs",

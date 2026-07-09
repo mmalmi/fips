@@ -169,7 +169,10 @@ impl DataplaneLiveNode {
         let worker_capacity = config.total_capacity().max(1);
         Self {
             driver: DataplaneTurnDriver::new(config),
-            crypto_worker: DataplaneAeadWorkerPool::new(worker_capacity),
+            crypto_worker: DataplaneAeadWorkerPool::new(
+                dataplane_aead_worker_count(),
+                worker_capacity,
+            ),
             routes: DataplaneLiveRouteTable::default(),
             fast_ingress_capacity: worker_capacity,
             deferred_endpoint_data_batches: Vec::new(),
@@ -800,6 +803,14 @@ impl DataplaneLiveNode {
         self.direct_fsp_reassembler = direct_fsp_reassembler;
         turn
     }
+}
+
+fn dataplane_aead_worker_count() -> usize {
+    tokio::runtime::Handle::current()
+        .metrics()
+        .num_workers()
+        .saturating_sub(1)
+        .max(1)
 }
 
 fn record_dataplane_live_turn_perf(turn: &DataplaneLiveNodeTurn) {

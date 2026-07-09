@@ -236,30 +236,45 @@ impl DataplaneAeadWorkerCounters {
 
 #[derive(Debug)]
 pub(crate) struct DataplaneAeadWorkerPool {
-    completion_tx: tokio::sync::mpsc::Sender<Vec<CryptoCompletionBatch>>,
+    work_tx: async_channel::Sender<PreparedCryptoJob>,
     completion_rx: tokio::sync::mpsc::Receiver<Vec<CryptoCompletionBatch>>,
     completion_notify: Arc<tokio::sync::Notify>,
     pending_completion_batches: VecDeque<CryptoCompletionBatch>,
     counters: DataplaneAeadWorkerCounters,
     max_in_flight: usize,
-    runtime: Option<tokio::runtime::Handle>,
-    tasks: tokio::task::JoinSet<()>,
+    workers: tokio::task::JoinSet<()>,
 }
 
 impl DataplaneAeadWorkerPool {
-    pub(crate) fn new(max_in_flight: usize) -> Self {
+    pub(crate) fn new(worker_count: usize, max_in_flight: usize) -> Self {
+        let worker_count = worker_count.max(1);
         let max_in_flight = max_in_flight.max(1);
         let (completion_tx, completion_rx) = tokio::sync::mpsc::channel(max_in_flight);
+        let completion_notify = Arc::new(tokio::sync::Notify::new());
+        let counters = DataplaneAeadWorkerCounters::new();
+        let (work_tx, work_rx) = async_channel::bounded(max_in_flight);
+        let runtime = tokio::runtime::Handle::current();
+        let mut workers = tokio::task::JoinSet::new();
+        for _ in 0..worker_count.min(max_in_flight) {
+            workers.spawn_on(
+                run_dataplane_aead_worker(
+                    work_rx.clone(),
+                    completion_tx.clone(),
+                    Arc::clone(&completion_notify),
+                    counters.clone(),
+                ),
+                &runtime,
+            );
+        }
 
         Self {
-            completion_tx,
+            work_tx,
             completion_rx,
-            completion_notify: Arc::new(tokio::sync::Notify::new()),
+            completion_notify,
             pending_completion_batches: VecDeque::new(),
-            counters: DataplaneAeadWorkerCounters::new(),
+            counters,
             max_in_flight,
-            runtime: tokio::runtime::Handle::try_current().ok(),
-            tasks: tokio::task::JoinSet::new(),
+            workers,
         }
     }
 
@@ -345,7 +360,7 @@ impl DataplaneAeadWorkerPool {
         limit: usize,
         mut push_batch: impl FnMut(CryptoCompletionBatch),
     ) -> usize {
-        self.reap_finished_tasks();
+        self.reap_finished_workers();
         let mut drained = 0usize;
         while drained < limit {
             if let Some(batch) = self.pending_completion_batches.pop_front() {
@@ -389,7 +404,7 @@ impl DataplaneAeadWorkerPool {
                 Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
             }
         }
-        self.reap_finished_tasks();
+        self.reap_finished_workers();
         drained
     }
 
@@ -436,53 +451,26 @@ impl DataplaneAeadWorkerPool {
     }
 
     fn submit_job(&mut self, job: PreparedCryptoJob) {
-        self.reap_finished_tasks();
+        self.reap_finished_workers();
         let chunk_len = job.len();
         let bulk_count = job.bulk_count();
         self.counters.add(chunk_len, bulk_count);
-        let completion_tx = self.completion_tx.clone();
-        let completion_notify = Arc::clone(&self.completion_notify);
-        let counters = self.counters.clone();
-        let runtime = self
-            .runtime
-            .get_or_insert_with(tokio::runtime::Handle::current)
-            .clone();
-        self.tasks.spawn_on(
-            async move {
-                crate::perf_profile::record_since(
-                    crate::perf_profile::Stage::DataplaneAeadWorkerQueueWait,
-                    job.queued_at(),
-                );
-                let completions = job.execute_completion_batches();
-                if completions.is_empty() {
-                    return;
-                }
-                let completed_count = completions
-                    .iter()
-                    .map(CryptoCompletionBatch::len)
-                    .sum::<usize>();
-                let completed_bulk_count = completions
-                    .iter()
-                    .filter(|batch| batch.lane() == Lane::Bulk)
-                    .map(CryptoCompletionBatch::len)
-                    .sum::<usize>();
-                if send_completion_batches(completions, &completion_tx)
-                    .await
-                    .is_err()
-                {
-                    counters.finish(completed_count, completed_bulk_count);
-                    return;
-                }
-                completion_notify.notify_one();
-            },
-            &runtime,
-        );
+        match self.work_tx.try_send(job) {
+            Ok(()) => {}
+            Err(async_channel::TrySendError::Full(_)) => {
+                panic!("dataplane AEAD work exceeded reserved capacity")
+            }
+            Err(async_channel::TrySendError::Closed(_)) => {
+                panic!("dataplane AEAD workers stopped")
+            }
+        }
         crate::perf_profile::record_dataplane_aead_prepared_job(chunk_len);
     }
 
-    fn reap_finished_tasks(&mut self) {
-        while let Some(result) = self.tasks.try_join_next() {
-            result.expect("dataplane AEAD task failed");
+    fn reap_finished_workers(&mut self) {
+        while let Some(result) = self.workers.try_join_next() {
+            result.expect("dataplane AEAD worker failed");
+            panic!("dataplane AEAD worker stopped");
         }
     }
 
@@ -508,6 +496,38 @@ impl DataplaneAeadWorkerPool {
         }
         open_jobs.flush(self);
         seal_jobs.flush(self);
+    }
+}
+
+impl Drop for DataplaneAeadWorkerPool {
+    fn drop(&mut self) {
+        self.work_tx.close();
+        self.workers.abort_all();
+    }
+}
+
+async fn run_dataplane_aead_worker(
+    work_rx: async_channel::Receiver<PreparedCryptoJob>,
+    completion_tx: tokio::sync::mpsc::Sender<Vec<CryptoCompletionBatch>>,
+    completion_notify: Arc<tokio::sync::Notify>,
+    counters: DataplaneAeadWorkerCounters,
+) {
+    while let Ok(job) = work_rx.recv().await {
+        crate::perf_profile::record_since(
+            crate::perf_profile::Stage::DataplaneAeadWorkerQueueWait,
+            job.queued_at(),
+        );
+        let count = job.len();
+        let bulk_count = job.bulk_count();
+        let completions = job.execute_completion_batches();
+        if send_completion_batches(completions, &completion_tx)
+            .await
+            .is_err()
+        {
+            counters.finish(count, bulk_count);
+            return;
+        }
+        completion_notify.notify_one();
     }
 }
 

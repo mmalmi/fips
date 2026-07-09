@@ -17,7 +17,7 @@
                 .expect("test AEAD runtime")
         });
         let _guard = runtime.enter();
-        DataplaneAeadWorkerPool::new(max_in_flight)
+        DataplaneAeadWorkerPool::new(1, max_in_flight)
     }
 
     fn endpoint_payloads(payloads: Vec<Vec<u8>>) -> Vec<EndpointDataPayload> {
