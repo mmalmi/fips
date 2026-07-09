@@ -9,7 +9,6 @@ mod acl;
 mod bloom;
 mod core_impl;
 mod dataplane_integration;
-mod discovery_rate_limit;
 mod endpoint_channels;
 mod endpoint_event;
 mod endpoint_traffic;
@@ -22,11 +21,10 @@ mod link_registry;
 mod peer_lifecycle;
 mod peer_runtime;
 mod rate_limit;
+#[cfg(test)]
 mod recent_requests;
 mod retry;
 mod route_impl;
-mod routing;
-mod routing_error_rate_limit;
 pub(crate) mod session;
 mod session_access_impl;
 mod session_registry;
@@ -45,6 +43,7 @@ pub use error::NodeError;
 pub use identity_cache::NodeDeliveredPacket;
 pub use state::NodeState;
 
+pub(crate) use crate::proto::lookup_state::{RecentDiscoveryRequests, RecentResponseForward};
 pub(crate) use endpoint_channels::{
     ENDPOINT_STALE_DATA_DROP_MS, EndpointDataBatchRx, EndpointDataBatchTx, EndpointDataPayload,
     NodeEndpointControlCommand, NodeEndpointDataBatch, endpoint_data_batch_channel,
@@ -64,16 +63,12 @@ pub(in crate::node) use identity_cache::IdentityCache;
 pub(in crate::node) use link_registry::{LinkRegistry, PendingConnect, TransportDropTracker};
 pub(in crate::node) use peer_lifecycle::*;
 pub(in crate::node) use peer_runtime::*;
-pub(crate) use recent_requests::{RecentDiscoveryRequests, RecentResponseForward};
 pub(in crate::node) use session_registry::*;
 pub(in crate::node) use support_state::{
     BootstrapTransports, DiscoveryFallbackTransit, LocalSendFailures, SessionDirectDegradation,
 };
 
-use self::discovery_rate_limit::{DiscoveryBackoff, DiscoveryForwardRateLimiter};
 use self::rate_limit::HandshakeRateLimiter;
-use self::routing::{LearnedRouteTable, LearnedRouteTableSnapshot};
-use self::routing_error_rate_limit::RoutingErrorRateLimiter;
 use self::wire::{FLAG_CE, FLAG_KEY_EPOCH};
 use crate::bloom::{BloomFilter, BloomState};
 use crate::cache::CoordCache;
@@ -85,6 +80,9 @@ use crate::dataplane::{
 use crate::node::session::SessionEntry;
 use crate::node::session_wire::{FSP_PHASE_ESTABLISHED, FspCommonPrefix};
 use crate::peer::{ActivePeer, PeerConnection};
+use crate::proto::lookup_limits::{DiscoveryBackoff, DiscoveryForwardRateLimiter};
+use crate::proto::rate_limit::RoutingErrorRateLimiter;
+use crate::proto::routing::{LearnedRouteTable, LearnedRouteTableSnapshot};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::transport::ethernet::EthernetTransport;
 use crate::transport::tcp::TcpTransport;

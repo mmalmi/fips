@@ -1,52 +1,9 @@
-//! FIPS Protocol Messages
+//! Protocol compatibility exports.
 //!
-//! Wire format definitions for FIPS protocol communication across two layers:
-//!
-//! ## Link Layer (peer-to-peer, hop-by-hop)
-//!
-//! Messages exchanged between directly connected peers over Noise-encrypted
-//! links. Includes spanning tree gossip, bloom filter propagation, discovery
-//! protocol, and forwarding of session-layer datagrams.
-//!
-//! Link-layer peer authentication uses Noise IK (see `noise.rs`), which
-//! establishes the encrypted channel before any of these messages are sent.
-//!
-//! ## Session Layer (end-to-end, between FIPS addresses)
-//!
-//! Messages exchanged between source and destination FIPS nodes, encrypted
-//! with session keys that intermediate nodes cannot read. Includes session
-//! establishment, IPv6 datagram encapsulation, and routing errors.
-//!
-//! Session-layer datagrams are carried as opaque payloads through the link
-//! layer, encrypted end-to-end independently of per-hop link encryption.
+//! Runtime-agnostic wire codecs live under `proto::protocol`; this module keeps
+//! the existing public `crate::protocol` path stable.
 
-mod discovery;
-mod error;
-mod filter;
-mod link;
-mod session;
-mod tree;
+pub use crate::proto::protocol::*;
 
-// Re-export all public types at protocol:: level
-pub use discovery::{LookupRequest, LookupResponse};
-pub use error::ProtocolError;
-pub use filter::FilterAnnounce;
-pub use link::{
-    Disconnect, DisconnectReason, HandshakeMessageType, LinkMessageType,
-    SESSION_DATAGRAM_HEADER_SIZE, SessionDatagram, SessionDatagramRef,
-};
-pub use session::{
-    COORDS_REQUIRED_SIZE, CoordsRequired, FspFlags, FspInnerFlags, MTU_EXCEEDED_SIZE, MtuExceeded,
-    PATH_MTU_NOTIFICATION_SIZE, PathBroken, PathMtuNotification, SESSION_RECEIVER_REPORT_SIZE,
-    SESSION_SENDER_REPORT_SIZE, SessionAck, SessionFlags, SessionMessageType, SessionMsg3,
-    SessionReceiverReport, SessionSenderReport, SessionSetup,
-};
-pub(crate) use session::{coords_wire_size, decode_optional_coords, encode_coords};
-pub use tree::TreeAnnounce;
-
-/// Protocol version for message compatibility.
-pub const PROTOCOL_VERSION: u8 = 1;
-
-// Legacy type alias re-export
-#[allow(deprecated)]
-pub use link::MessageType;
+pub(crate) use crate::proto::protocol::{coords_wire_size, decode_optional_coords, encode_coords};
+pub(crate) use crate::proto::protocol::{error, session};
