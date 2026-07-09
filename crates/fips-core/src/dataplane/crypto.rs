@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+
 pub(crate) enum PreparedCryptoWork {
     Open { work: CryptoWork, cipher: AeadKey },
     Seal { work: OutboundCryptoWork, cipher: AeadKey },
@@ -280,33 +282,29 @@ pub(crate) trait DataplaneCryptoExecutor {
 
 #[derive(Clone, Debug)]
 struct DataplaneAeadWorkerCounters {
-    in_flight: Arc<std::sync::atomic::AtomicUsize>,
-    bulk_in_flight: Arc<std::sync::atomic::AtomicUsize>,
+    in_flight: Arc<AtomicUsize>,
+    bulk_in_flight: Arc<AtomicUsize>,
 }
 
 impl DataplaneAeadWorkerCounters {
     fn new() -> Self {
         Self {
-            in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            bulk_in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            in_flight: Arc::new(AtomicUsize::new(0)),
+            bulk_in_flight: Arc::new(AtomicUsize::new(0)),
         }
     }
 
     fn add(&self, count: usize, bulk_count: usize) {
-        self.in_flight
-            .fetch_add(count, std::sync::atomic::Ordering::AcqRel);
+        self.in_flight.fetch_add(count, Relaxed);
         if bulk_count > 0 {
-            self.bulk_in_flight
-                .fetch_add(bulk_count, std::sync::atomic::Ordering::AcqRel);
+            self.bulk_in_flight.fetch_add(bulk_count, Relaxed);
         }
     }
 
     fn finish(&self, count: usize, bulk_count: usize) {
-        self.in_flight
-            .fetch_sub(count, std::sync::atomic::Ordering::AcqRel);
+        self.in_flight.fetch_sub(count, Relaxed);
         if bulk_count > 0 {
-            self.bulk_in_flight
-                .fetch_sub(bulk_count, std::sync::atomic::Ordering::AcqRel);
+            self.bulk_in_flight.fetch_sub(bulk_count, Relaxed);
         }
     }
 }
@@ -369,9 +367,7 @@ impl DataplaneAeadWorkerPool {
         }
         crate::perf_profile::record_event_count(
             crate::perf_profile::Event::DataplaneAeadInFlight,
-            self.counters
-                .in_flight
-                .load(std::sync::atomic::Ordering::Acquire) as u64,
+            self.counters.in_flight.load(Relaxed) as u64,
         );
         let pending_completion_depth = self
             .pending_completion_batches
@@ -489,9 +485,7 @@ impl DataplaneAeadWorkerPool {
             return 0;
         }
         self.max_in_flight.saturating_sub(
-            self.counters
-                .in_flight
-                .load(std::sync::atomic::Ordering::Acquire),
+            self.counters.in_flight.load(Relaxed),
         )
     }
 
@@ -508,7 +502,7 @@ impl DataplaneAeadWorkerPool {
         let bulk_in_flight = self
             .counters
             .bulk_in_flight
-            .load(std::sync::atomic::Ordering::Acquire);
+            .load(Relaxed);
         bulk_limit.saturating_sub(bulk_in_flight).min(total_available)
     }
 
