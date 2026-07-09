@@ -335,10 +335,6 @@ fn event_table_exposes_current_dataplane_and_queue_events() {
             "dataplane_aead_completion_split_packets",
         ),
         (
-            Event::DataplaneAeadCompletionEmptyPolls,
-            "dataplane_aead_completion_empty_polls",
-        ),
-        (
             Event::DataplaneAeadCompletionRxQueuedMessages,
             "dataplane_aead_completion_rx_queued_messages",
         ),
@@ -420,6 +416,7 @@ fn event_table_exposes_current_dataplane_and_queue_events() {
         (Event::ReservedEvent230, "reserved_event_230"),
         (Event::ReservedEvent239, "reserved_event_239"),
         (Event::ReservedEvent240, "reserved_event_240"),
+        (Event::ReservedEvent251, "reserved_event_251"),
     ] {
         assert_eq!(event_from_index(event as usize).name(), name);
     }

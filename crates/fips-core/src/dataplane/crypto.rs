@@ -440,7 +440,6 @@ impl DataplaneAeadWorkerPool {
         mut push_batch: impl FnMut(CryptoCompletionBatch),
     ) -> usize {
         let mut drained = 0usize;
-        let mut empty_polls = 0usize;
         while drained < limit {
             if let Some(batch) = self.pending_completion_batches.pop_front() {
                 let (got, pending) = self.drain_completion_batch(
@@ -482,14 +481,10 @@ impl DataplaneAeadWorkerPool {
                         }
                     }
                 }
-                Err(crossbeam_channel::TryRecvError::Empty) => {
-                    empty_polls = empty_polls.saturating_add(1);
-                    break;
-                }
+                Err(crossbeam_channel::TryRecvError::Empty) => break,
                 Err(crossbeam_channel::TryRecvError::Disconnected) => break,
             }
         }
-        crate::perf_profile::record_dataplane_aead_completion_empty_polls(empty_polls);
         drained
     }
 

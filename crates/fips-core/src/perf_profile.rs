@@ -515,7 +515,7 @@ pub enum Event {
     DataplaneAeadCompletionMessagePackets = 248,
     DataplaneAeadCompletionSplitBatches = 249,
     DataplaneAeadCompletionSplitPackets = 250,
-    DataplaneAeadCompletionEmptyPolls = 251,
+    ReservedEvent251 = 251,
     DataplaneAeadCompletionRxQueuedMessages = 252,
     DataplaneAeadCompletionPendingBatches = 253,
     DataplaneAeadCompletionPendingPackets = 254,
@@ -805,7 +805,7 @@ impl Event {
             }
             Event::DataplaneAeadCompletionSplitBatches => "dataplane_aead_completion_split_batches",
             Event::DataplaneAeadCompletionSplitPackets => "dataplane_aead_completion_split_packets",
-            Event::DataplaneAeadCompletionEmptyPolls => "dataplane_aead_completion_empty_polls",
+            Event::ReservedEvent251 => "reserved_event_251",
             Event::DataplaneAeadCompletionRxQueuedMessages => {
                 "dataplane_aead_completion_rx_queued_messages"
             }
@@ -1098,7 +1098,7 @@ fn event_from_index(idx: usize) -> Event {
         248 => Event::DataplaneAeadCompletionMessagePackets,
         249 => Event::DataplaneAeadCompletionSplitBatches,
         250 => Event::DataplaneAeadCompletionSplitPackets,
-        251 => Event::DataplaneAeadCompletionEmptyPolls,
+        251 => Event::ReservedEvent251,
         252 => Event::DataplaneAeadCompletionRxQueuedMessages,
         253 => Event::DataplaneAeadCompletionPendingBatches,
         254 => Event::DataplaneAeadCompletionPendingPackets,
@@ -1441,11 +1441,6 @@ pub(crate) fn record_dataplane_aead_completion_split(packets: usize) {
     }
     record_event_count_sample(Event::DataplaneAeadCompletionSplitBatches, 1);
     record_event_count_sample(Event::DataplaneAeadCompletionSplitPackets, packets as u64);
-}
-
-#[inline]
-pub(crate) fn record_dataplane_aead_completion_empty_polls(count: usize) {
-    record_event_count(Event::DataplaneAeadCompletionEmptyPolls, count as u64);
 }
 
 #[inline]
