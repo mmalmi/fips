@@ -34,26 +34,6 @@ impl PreparedCryptoWork {
         Self::Seal { work, cipher }
     }
 
-    #[cfg(test)]
-    pub(crate) fn execute(self) -> CryptoCompletion {
-        match self {
-            Self::Open { work, cipher } => {
-                let reservation = work.reservation.clone();
-                let _timer = crate::perf_profile::Timer::start(
-                    crate::perf_profile::Stage::DataplaneAeadOpen,
-                );
-                match AeadOpenWork::from_crypto_work(work) {
-                    Ok(work) => work.execute(&cipher),
-                    Err(_) => failed_crypto_completion(reservation, CryptoFailureKind::Open),
-                }
-            }
-            Self::Seal {
-                work,
-                cipher,
-            } => execute_seal_crypto_work(work, cipher),
-        }
-    }
-
     fn lane(&self) -> Lane {
         match self {
             Self::Open { work, .. } => work.reservation.lane,

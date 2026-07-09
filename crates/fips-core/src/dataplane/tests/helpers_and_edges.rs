@@ -64,10 +64,25 @@
             completions.clear();
             let count = prepared.len();
             for work in prepared.drain(..) {
-                completions.push(work.execute());
+                completions.push(execute_test_prepared_crypto_work(work));
             }
             count
         }
+    }
+
+    fn execute_test_prepared_crypto_work(work: PreparedCryptoWork) -> CryptoCompletion {
+        match work {
+            PreparedCryptoWork::Open { work, cipher } => execute_open_crypto_work(work, &cipher),
+            PreparedCryptoWork::Seal { work, cipher } => execute_seal_crypto_work(work, cipher),
+        }
+    }
+
+    fn complete_test_open_work(work: CryptoWork, key: u8) -> CryptoCompletion {
+        execute_test_prepared_crypto_work(PreparedCryptoWork::open(work, test_key(key)))
+    }
+
+    fn complete_test_seal_work(work: OutboundCryptoWork, key: u8) -> CryptoCompletion {
+        execute_test_prepared_crypto_work(PreparedCryptoWork::seal(work, test_key(key)))
     }
 
     #[derive(Debug, Default)]
