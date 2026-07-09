@@ -569,7 +569,7 @@ impl Node {
             turns += 1;
             let mut runnable_work = self.dataplane.has_runnable_work();
 
-            while control_drained == 0
+            if control_drained == 0
                 && bulk_admission_pressure_relief_due(
                     admission_dropped,
                     runnable_work,
