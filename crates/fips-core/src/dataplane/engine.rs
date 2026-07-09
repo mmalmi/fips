@@ -602,6 +602,7 @@ impl Dataplane {
         completion_work.clear();
         completion_batches.clear();
         let mut dispatched_total = 0usize;
+        let record_fsp_path_open = crate::perf_profile::enabled();
         let mut fsp_path_open = 0u64;
         let mut fsp_path_open_bulk = 0u64;
         {
@@ -645,6 +646,7 @@ impl Dataplane {
                 pre_priority_inbound_limit,
                 prepared_work,
                 false,
+                record_fsp_path_open,
                 &mut fsp_path_open,
                 &mut fsp_path_open_bulk,
             );
@@ -671,6 +673,7 @@ impl Dataplane {
                 priority_inbound_limit,
                 prepared_work,
                 true,
+                record_fsp_path_open,
                 &mut fsp_path_open,
                 &mut fsp_path_open_bulk,
             );
@@ -684,6 +687,7 @@ impl Dataplane {
                 bulk_dispatch_capacity,
                 prepared_work,
                 false,
+                record_fsp_path_open,
                 &mut fsp_path_open,
                 &mut fsp_path_open_bulk,
             );
@@ -707,7 +711,9 @@ impl Dataplane {
                 prepared_work[bulk_inbound_start..outbound_start + leading_priority_seals]
                     .rotate_right(leading_priority_seals);
             }
-            record_fsp_path_open_dispatch(fsp_path_open, fsp_path_open_bulk);
+            if record_fsp_path_open {
+                record_fsp_path_open_dispatch(fsp_path_open, fsp_path_open_bulk);
+            }
         }
 
         {
@@ -787,6 +793,7 @@ impl Dataplane {
         limit: usize,
         prepared: &mut Vec<PreparedCryptoWork>,
         priority_only: bool,
+        record_fsp_path_open: bool,
         fsp_path_open: &mut u64,
         fsp_path_open_bulk: &mut u64,
     ) -> usize {
@@ -821,6 +828,7 @@ impl Dataplane {
                     shard_limit.min(limit.saturating_sub(dispatched)),
                     prepared,
                     priority_only,
+                    record_fsp_path_open,
                     fsp_path_open,
                     fsp_path_open_bulk,
                     &mut self.drops,

@@ -2061,6 +2061,7 @@ impl OwnerState {
 
         let mut endpoint_data_batch = None;
         let mut endpoint_packets = 0usize;
+        let record_endpoint_packets = crate::perf_profile::enabled();
         let mut direct_enqueued_at_ms = None;
         for completion in batch.into_completions() {
             debug_assert_eq!(completion.order(), OrderToken(self.next_retire));
@@ -2094,7 +2095,9 @@ impl OwnerState {
                     DataplaneFspEndpointDataIngress::take_from_output(&mut output, enqueued_at_ms)
                 {
                     self.record_retired_endpoint_data_ingress(&ingress);
-                    endpoint_packets = endpoint_packets.saturating_add(ingress.len());
+                    if record_endpoint_packets {
+                        endpoint_packets = endpoint_packets.saturating_add(ingress.len());
+                    }
                     match &mut endpoint_data_batch {
                         Some(batch) => batch.push(ingress),
                         None => {
@@ -2110,9 +2113,11 @@ impl OwnerState {
             retired.push_output(output);
         }
         flush_retired_endpoint_data_batch(retired, &mut endpoint_data_batch);
-        crate::perf_profile::record_dataplane_established_fsp_data_retire_run(
-            endpoint_packets,
-        );
+        if record_endpoint_packets {
+            crate::perf_profile::record_dataplane_established_fsp_data_retire_run(
+                endpoint_packets,
+            );
+        }
         Ok(())
     }
 

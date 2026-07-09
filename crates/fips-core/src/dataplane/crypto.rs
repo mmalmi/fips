@@ -820,16 +820,18 @@ fn send_completion_batches(
         return Ok(());
     }
 
-    let completion_batch_count = batches.len();
-    let mut completion_packet_count = 0usize;
-    for batch in &batches {
-        completion_packet_count = completion_packet_count.saturating_add(batch.len());
+    if crate::perf_profile::enabled() {
+        let completion_batch_count = batches.len();
+        let completion_packet_count = batches
+            .iter()
+            .map(CryptoCompletionBatch::len)
+            .sum::<usize>();
+        crate::perf_profile::record_dataplane_aead_completion_send(
+            1,
+            completion_batch_count,
+            completion_packet_count,
+        );
     }
-    crate::perf_profile::record_dataplane_aead_completion_send(
-        1,
-        completion_batch_count,
-        completion_packet_count,
-    );
     completion_tx.send(batches).map_err(|_| ())?;
     Ok(())
 }

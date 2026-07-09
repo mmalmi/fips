@@ -305,6 +305,7 @@ impl DataplaneOwnerShard {
         limit: usize,
         prepared: &mut Vec<PreparedCryptoWork>,
         priority_only: bool,
+        record_fsp_path_open: bool,
         fsp_path_open: &mut u64,
         fsp_path_open_bulk: &mut u64,
         drops: &mut Vec<PacketDrop>,
@@ -357,11 +358,13 @@ impl DataplaneOwnerShard {
                         let packet_counter = queued.packet.counter;
                         let packet_lane = queued.packet.lane();
                         let reservation = reservation.with_owner_shard(self.index);
-                        count_fsp_path_open_dispatch(
-                            &reservation,
-                            fsp_path_open,
-                            fsp_path_open_bulk,
-                        );
+                        if record_fsp_path_open {
+                            count_fsp_path_open_dispatch(
+                                &reservation,
+                                fsp_path_open,
+                                fsp_path_open_bulk,
+                            );
+                        }
                         let prepared_work = match open_key {
                             Some(open_key) => PreparedCryptoWork::open(
                                 CryptoWork {
