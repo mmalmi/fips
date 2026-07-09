@@ -567,9 +567,32 @@ impl Node {
                 )
                 .await;
             turns += 1;
-            let runnable_work = self.dataplane.has_runnable_work();
+            let mut runnable_work = self.dataplane.has_runnable_work();
+
+            if control_drained == 0
+                && bulk_admission_pressure_relief_due(
+                    admission_dropped,
+                    runnable_work,
+                    turns,
+                    started.elapsed(),
+                    io.packet_rx.priority_ready_packets(),
+                )
+            {
+                let mut relief_turn = self
+                    .drain_dataplane_completion_turn(io, LATENCY_PACKET_DRAIN_BUDGET)
+                    .await;
+                let relief_control_drained = self
+                    .finish_dataplane_turn(&mut relief_turn, maintenance_state, control_query_rx, 0)
+                    .await;
+                turns += 1;
+                runnable_work = self.dataplane.has_runnable_work();
+                if relief_control_drained > 0 || !runnable_work {
+                    break;
+                }
+            }
 
             if control_drained > 0
+                || admission_dropped
                 || (!keep_servicing && !runnable_work)
                 || (control_activity > 0 && !runnable_work)
             {
@@ -719,4 +742,18 @@ impl Node {
         self.compute_mesh_size();
         self.record_stats_history();
     }
+}
+
+fn bulk_admission_pressure_relief_due(
+    admission_dropped: bool,
+    runnable_work: bool,
+    turns: usize,
+    elapsed: Duration,
+    priority_ready_packets: usize,
+) -> bool {
+    admission_dropped
+        && runnable_work
+        && turns < RX_LOOP_BULK_SERVICE_MAX_TURNS
+        && elapsed < RX_LOOP_BULK_SERVICE_MAX_ELAPSED
+        && priority_ready_packets == 0
 }

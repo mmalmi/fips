@@ -49,6 +49,43 @@ fn mixed_packet_and_tun_turn_crypto_budget_covers_admitted_sources() {
 }
 
 #[test]
+fn admission_pressure_relief_runs_only_for_bulk_capacity_pressure() {
+    for (admission_dropped, runnable_work, turns, elapsed, priority_ready, expected) in [
+        (true, true, 1, Duration::from_micros(100), 0, true),
+        (false, true, 1, Duration::from_micros(100), 0, false),
+        (true, false, 1, Duration::from_micros(100), 0, false),
+        (
+            true,
+            true,
+            super::budget::RX_LOOP_BULK_SERVICE_MAX_TURNS,
+            Duration::from_micros(100),
+            0,
+            false,
+        ),
+        (
+            true,
+            true,
+            1,
+            super::budget::RX_LOOP_BULK_SERVICE_MAX_ELAPSED,
+            0,
+            false,
+        ),
+        (true, true, 1, Duration::from_micros(100), 1, false),
+    ] {
+        assert_eq!(
+            super::bulk_admission_pressure_relief_due(
+                admission_dropped,
+                runnable_work,
+                turns,
+                elapsed,
+                priority_ready,
+            ),
+            expected
+        );
+    }
+}
+
+#[test]
 fn rx_loop_data_drain_stats_owns_counts_total_and_pressure() {
     let empty = RxLoopDataDrainStats::default();
     assert_eq!(empty.total(), 0);
