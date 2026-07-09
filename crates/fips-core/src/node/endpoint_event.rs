@@ -49,8 +49,20 @@ impl FipsEndpointDirectPacketSegment {
     }
 
     fn from_shared_buffer(buffer: Arc<PacketBuffer>, ranges: Vec<Range<usize>>) -> Self {
-        debug_assert!(ranges.windows(2).all(|pair| pair[0].end <= pair[1].start));
         let packet_bytes = ranges.iter().map(|range| range.len()).sum();
+        Self::from_shared_buffer_with_packet_bytes(buffer, ranges, packet_bytes)
+    }
+
+    fn from_shared_buffer_with_packet_bytes(
+        buffer: Arc<PacketBuffer>,
+        ranges: Vec<Range<usize>>,
+        packet_bytes: usize,
+    ) -> Self {
+        debug_assert!(ranges.windows(2).all(|pair| pair[0].end <= pair[1].start));
+        debug_assert_eq!(
+            packet_bytes,
+            ranges.iter().map(|range| range.len()).sum::<usize>()
+        );
         Self {
             buffer,
             ranges,
@@ -70,11 +82,14 @@ impl FipsEndpointDirectPacketSegment {
         if at >= self.ranges.len() {
             return None;
         }
+        let original_packet_bytes = self.packet_bytes;
         let tail_ranges = self.ranges.split_off(at);
         self.packet_bytes = self.ranges.iter().map(|range| range.len()).sum();
-        Some(Self::from_shared_buffer(
+        let tail_packet_bytes = original_packet_bytes.saturating_sub(self.packet_bytes);
+        Some(Self::from_shared_buffer_with_packet_bytes(
             Arc::clone(&self.buffer),
             tail_ranges,
+            tail_packet_bytes,
         ))
     }
 
@@ -197,6 +212,7 @@ impl FipsEndpointDirectPacketStorage {
                 packet_ends,
                 packet_bytes,
             } => {
+                let original_packet_bytes = *packet_bytes;
                 let segment_index = packet_ends.partition_point(|end| *end <= at);
                 let previous_end = segment_index
                     .checked_sub(1)
@@ -230,11 +246,8 @@ impl FipsEndpointDirectPacketStorage {
                     tail_packet_ends.insert(0, original_segment_end - at);
                 }
 
-                let tail_packet_bytes = tail_segments
-                    .iter()
-                    .map(|segment| segment.packet_bytes)
-                    .sum();
-                *packet_bytes = packet_bytes.saturating_sub(tail_packet_bytes);
+                *packet_bytes = segments.iter().map(|segment| segment.packet_bytes).sum();
+                let tail_packet_bytes = original_packet_bytes.saturating_sub(*packet_bytes);
                 Some(Self::build_chained_from_parts(
                     tail_segments,
                     tail_packet_ends,
