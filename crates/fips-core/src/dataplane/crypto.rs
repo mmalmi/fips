@@ -297,8 +297,6 @@ struct DataplaneAeadWorkerCounters {
     bulk_in_flight: Arc<std::sync::atomic::AtomicUsize>,
     open_in_flight: Arc<std::sync::atomic::AtomicUsize>,
     seal_in_flight: Arc<std::sync::atomic::AtomicUsize>,
-    open_bulk_in_flight: Arc<std::sync::atomic::AtomicUsize>,
-    seal_bulk_in_flight: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl DataplaneAeadWorkerCounters {
@@ -308,21 +306,16 @@ impl DataplaneAeadWorkerCounters {
             bulk_in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             open_in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             seal_in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            open_bulk_in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            seal_bulk_in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 
-    fn direction_counters(
+    fn direction_in_flight(
         &self,
         direction: DataplaneAeadDirection,
-    ) -> (
-        &std::sync::atomic::AtomicUsize,
-        &std::sync::atomic::AtomicUsize,
-    ) {
+    ) -> &std::sync::atomic::AtomicUsize {
         match direction {
-            DataplaneAeadDirection::Open => (&self.open_in_flight, &self.open_bulk_in_flight),
-            DataplaneAeadDirection::Seal => (&self.seal_in_flight, &self.seal_bulk_in_flight),
+            DataplaneAeadDirection::Open => &self.open_in_flight,
+            DataplaneAeadDirection::Seal => &self.seal_in_flight,
         }
     }
 
@@ -333,11 +326,8 @@ impl DataplaneAeadWorkerCounters {
             self.bulk_in_flight
                 .fetch_add(bulk_count, std::sync::atomic::Ordering::AcqRel);
         }
-        let (direction_in_flight, direction_bulk_in_flight) = self.direction_counters(direction);
-        direction_in_flight.fetch_add(count, std::sync::atomic::Ordering::AcqRel);
-        if bulk_count > 0 {
-            direction_bulk_in_flight.fetch_add(bulk_count, std::sync::atomic::Ordering::AcqRel);
-        }
+        self.direction_in_flight(direction)
+            .fetch_add(count, std::sync::atomic::Ordering::AcqRel);
     }
 
     fn finish(&self, direction: DataplaneAeadDirection, count: usize, bulk_count: usize) {
@@ -347,11 +337,8 @@ impl DataplaneAeadWorkerCounters {
             self.bulk_in_flight
                 .fetch_sub(bulk_count, std::sync::atomic::Ordering::AcqRel);
         }
-        let (direction_in_flight, direction_bulk_in_flight) = self.direction_counters(direction);
-        direction_in_flight.fetch_sub(count, std::sync::atomic::Ordering::AcqRel);
-        if bulk_count > 0 {
-            direction_bulk_in_flight.fetch_sub(bulk_count, std::sync::atomic::Ordering::AcqRel);
-        }
+        self.direction_in_flight(direction)
+            .fetch_sub(count, std::sync::atomic::Ordering::AcqRel);
     }
 }
 
