@@ -94,6 +94,13 @@ impl PreparedCryptoJob {
         }
     }
 
+    fn direction(&self) -> DataplaneAeadDirection {
+        match self {
+            Self::OpenRun { .. } => DataplaneAeadDirection::Open,
+            Self::Seal { .. } => DataplaneAeadDirection::Seal,
+        }
+    }
+
     fn push_executor_failed_completions(self, completions: &mut Vec<CryptoCompletion>) {
         match self {
             Self::OpenRun { work, .. } => push_failed_open_work(work, completions),
@@ -296,20 +303,79 @@ enum DataplaneAeadDirection {
     Seal,
 }
 
-#[derive(Debug)]
-pub(crate) struct DataplaneAeadWorkerPool {
-    open_tx: Option<crossbeam_channel::Sender<PreparedCryptoJob>>,
-    seal_tx: Option<crossbeam_channel::Sender<PreparedCryptoJob>>,
-    completion_rx: Option<crossbeam_channel::Receiver<Vec<CryptoCompletionBatch>>>,
-    completion_notify: Arc<tokio::sync::Notify>,
-    pending_completion_batches: VecDeque<CryptoCompletionBatch>,
+#[derive(Clone, Debug)]
+struct DataplaneAeadWorkerCounters {
+    in_flight: Arc<std::sync::atomic::AtomicUsize>,
+    bulk_in_flight: Arc<std::sync::atomic::AtomicUsize>,
     open_in_flight: Arc<std::sync::atomic::AtomicUsize>,
     seal_in_flight: Arc<std::sync::atomic::AtomicUsize>,
     open_bulk_in_flight: Arc<std::sync::atomic::AtomicUsize>,
     seal_bulk_in_flight: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl DataplaneAeadWorkerCounters {
+    fn new() -> Self {
+        Self {
+            in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            bulk_in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            open_in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            seal_in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            open_bulk_in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            seal_bulk_in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+
+    fn direction_counters(
+        &self,
+        direction: DataplaneAeadDirection,
+    ) -> (
+        &std::sync::atomic::AtomicUsize,
+        &std::sync::atomic::AtomicUsize,
+    ) {
+        match direction {
+            DataplaneAeadDirection::Open => (&self.open_in_flight, &self.open_bulk_in_flight),
+            DataplaneAeadDirection::Seal => (&self.seal_in_flight, &self.seal_bulk_in_flight),
+        }
+    }
+
+    fn add(&self, direction: DataplaneAeadDirection, count: usize, bulk_count: usize) {
+        self.in_flight
+            .fetch_add(count, std::sync::atomic::Ordering::AcqRel);
+        if bulk_count > 0 {
+            self.bulk_in_flight
+                .fetch_add(bulk_count, std::sync::atomic::Ordering::AcqRel);
+        }
+        let (direction_in_flight, direction_bulk_in_flight) = self.direction_counters(direction);
+        direction_in_flight.fetch_add(count, std::sync::atomic::Ordering::AcqRel);
+        if bulk_count > 0 {
+            direction_bulk_in_flight.fetch_add(bulk_count, std::sync::atomic::Ordering::AcqRel);
+        }
+    }
+
+    fn finish(&self, direction: DataplaneAeadDirection, count: usize, bulk_count: usize) {
+        self.in_flight
+            .fetch_sub(count, std::sync::atomic::Ordering::AcqRel);
+        if bulk_count > 0 {
+            self.bulk_in_flight
+                .fetch_sub(bulk_count, std::sync::atomic::Ordering::AcqRel);
+        }
+        let (direction_in_flight, direction_bulk_in_flight) = self.direction_counters(direction);
+        direction_in_flight.fetch_sub(count, std::sync::atomic::Ordering::AcqRel);
+        if bulk_count > 0 {
+            direction_bulk_in_flight.fetch_sub(bulk_count, std::sync::atomic::Ordering::AcqRel);
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct DataplaneAeadWorkerPool {
+    work_tx: Option<crossbeam_channel::Sender<PreparedCryptoJob>>,
+    completion_rx: Option<crossbeam_channel::Receiver<Vec<CryptoCompletionBatch>>>,
+    completion_notify: Arc<tokio::sync::Notify>,
+    pending_completion_batches: VecDeque<CryptoCompletionBatch>,
+    counters: DataplaneAeadWorkerCounters,
     max_in_flight: usize,
-    open_workers: Vec<std::thread::JoinHandle<()>>,
-    seal_workers: Vec<std::thread::JoinHandle<()>>,
+    workers: Vec<std::thread::JoinHandle<()>>,
 }
 
 impl DataplaneAeadWorkerPool {
@@ -321,42 +387,23 @@ impl DataplaneAeadWorkerPool {
             crossbeam_channel::Receiver<Vec<CryptoCompletionBatch>>,
         ) = crossbeam_channel::bounded(max_in_flight.saturating_mul(worker_count));
         let completion_notify = Arc::new(tokio::sync::Notify::new());
-        let open_in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let seal_in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let open_bulk_in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let seal_bulk_in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let (open_tx, open_workers) = spawn_dataplane_aead_workers(
-            DataplaneAeadDirection::Open,
-            worker_count,
-            max_in_flight,
-            completion_tx.clone(),
-            Arc::clone(&completion_notify),
-            Arc::clone(&open_in_flight),
-            Arc::clone(&open_bulk_in_flight),
-        );
-        let (seal_tx, seal_workers) = spawn_dataplane_aead_workers(
-            DataplaneAeadDirection::Seal,
+        let counters = DataplaneAeadWorkerCounters::new();
+        let (work_tx, workers) = spawn_dataplane_aead_workers(
             worker_count,
             max_in_flight,
             completion_tx,
             Arc::clone(&completion_notify),
-            Arc::clone(&seal_in_flight),
-            Arc::clone(&seal_bulk_in_flight),
+            counters.clone(),
         );
 
         Self {
-            open_tx: Some(open_tx),
-            seal_tx: Some(seal_tx),
+            work_tx: Some(work_tx),
             completion_rx: Some(completion_rx),
             completion_notify,
             pending_completion_batches: VecDeque::new(),
-            open_in_flight,
-            seal_in_flight,
-            open_bulk_in_flight,
-            seal_bulk_in_flight,
+            counters,
             max_in_flight,
-            open_workers,
-            seal_workers,
+            workers,
         }
     }
 
@@ -378,12 +425,14 @@ impl DataplaneAeadWorkerPool {
         }
         crate::perf_profile::record_event_count(
             crate::perf_profile::Event::DataplaneAeadOpenInFlight,
-            self.open_in_flight
+            self.counters
+                .open_in_flight
                 .load(std::sync::atomic::Ordering::Acquire) as u64,
         );
         crate::perf_profile::record_event_count(
             crate::perf_profile::Event::DataplaneAeadSealInFlight,
-            self.seal_in_flight
+            self.counters
+                .seal_in_flight
                 .load(std::sync::atomic::Ordering::Acquire) as u64,
         );
         let pending_completion_depth = self
@@ -403,13 +452,14 @@ impl DataplaneAeadWorkerPool {
             pending_completion_batches,
             pending_completion_depth,
         );
+        let work_queue_depth = self.work_tx.as_ref().map_or(0, |tx| tx.len()) as u64;
         crate::perf_profile::record_event_count(
             crate::perf_profile::Event::DataplaneAeadOpenQueueDepth,
-            self.open_tx.as_ref().map_or(0, |tx| tx.len()) as u64,
+            work_queue_depth,
         );
         crate::perf_profile::record_event_count(
             crate::perf_profile::Event::DataplaneAeadSealQueueDepth,
-            self.seal_tx.as_ref().map_or(0, |tx| tx.len()) as u64,
+            work_queue_depth,
         );
     }
 
@@ -419,11 +469,7 @@ impl DataplaneAeadWorkerPool {
         count: usize,
         bulk_count: usize,
     ) {
-        let (in_flight, bulk_in_flight) = self.direction_counters(direction);
-        in_flight.fetch_sub(count, std::sync::atomic::Ordering::AcqRel);
-        if bulk_count > 0 {
-            bulk_in_flight.fetch_sub(bulk_count, std::sync::atomic::Ordering::AcqRel);
-        }
+        self.counters.finish(direction, count, bulk_count);
     }
 
     fn drain_completion_batch(
@@ -510,36 +556,19 @@ impl DataplaneAeadWorkerPool {
         drained
     }
 
-    fn direction_counters(
-        &self,
-        direction: DataplaneAeadDirection,
-    ) -> (
-        &std::sync::atomic::AtomicUsize,
-        &std::sync::atomic::AtomicUsize,
-    ) {
-        match direction {
-            DataplaneAeadDirection::Open => (&self.open_in_flight, &self.open_bulk_in_flight),
-            DataplaneAeadDirection::Seal => (&self.seal_in_flight, &self.seal_bulk_in_flight),
-        }
-    }
-
-    fn direction_has_sender(&self, direction: DataplaneAeadDirection) -> bool {
-        match direction {
-            DataplaneAeadDirection::Open => self.open_tx.is_some(),
-            DataplaneAeadDirection::Seal => self.seal_tx.is_some(),
-        }
-    }
-
-    fn direction_capacity(&self, direction: DataplaneAeadDirection) -> usize {
-        if !self.direction_has_sender(direction) {
+    fn capacity(&self) -> usize {
+        if self.work_tx.is_none() {
             return 0;
         }
-        let (in_flight, _) = self.direction_counters(direction);
-        self.max_in_flight.saturating_sub(in_flight.load(std::sync::atomic::Ordering::Acquire))
+        self.max_in_flight.saturating_sub(
+            self.counters
+                .in_flight
+                .load(std::sync::atomic::Ordering::Acquire),
+        )
     }
 
-    fn direction_capacity_for_lane(&self, direction: DataplaneAeadDirection, lane: Lane) -> usize {
-        let total_available = self.direction_capacity(direction);
+    fn capacity_for_lane(&self, lane: Lane) -> usize {
+        let total_available = self.capacity();
         if lane == Lane::Priority {
             return total_available;
         }
@@ -548,8 +577,10 @@ impl DataplaneAeadWorkerPool {
                 .saturating_sub(dataplane_aead_worker_priority_reserve(
                     self.max_in_flight,
                 ));
-        let (_, bulk_in_flight) = self.direction_counters(direction);
-        let bulk_in_flight = bulk_in_flight.load(std::sync::atomic::Ordering::Acquire);
+        let bulk_in_flight = self
+            .counters
+            .bulk_in_flight
+            .load(std::sync::atomic::Ordering::Acquire);
         bulk_limit.saturating_sub(bulk_in_flight).min(total_available)
     }
 
@@ -562,13 +593,8 @@ impl DataplaneAeadWorkerPool {
         if work.is_empty() {
             return true;
         }
-        let Some(work_tx) = self.seal_tx.as_ref() else {
-            push_failed_seal_work(work, completions);
-            return false;
-        };
-
         let job = PreparedCryptoJob::seal(work, bulk_count);
-        self.submit_job(work_tx, DataplaneAeadDirection::Seal, job, completions)
+        self.submit_job(job, completions)
     }
 
     fn submit_open_run_job(
@@ -580,29 +606,23 @@ impl DataplaneAeadWorkerPool {
         if work.is_empty() {
             return true;
         }
-        let Some(work_tx) = self.open_tx.as_ref() else {
-            push_failed_open_work(work, completions);
-            return false;
-        };
-
         let job = PreparedCryptoJob::open_run(work, cipher);
-        self.submit_job(work_tx, DataplaneAeadDirection::Open, job, completions)
+        self.submit_job(job, completions)
     }
 
     fn submit_job(
         &self,
-        work_tx: &crossbeam_channel::Sender<PreparedCryptoJob>,
-        direction: DataplaneAeadDirection,
         job: PreparedCryptoJob,
         completions: &mut Vec<CryptoCompletion>,
     ) -> bool {
+        let Some(work_tx) = self.work_tx.as_ref() else {
+            job.push_executor_failed_completions(completions);
+            return false;
+        };
         let chunk_len = job.len();
         let bulk_count = job.bulk_count();
-        let (in_flight, bulk_in_flight) = self.direction_counters(direction);
-        in_flight.fetch_add(chunk_len, std::sync::atomic::Ordering::AcqRel);
-        if bulk_count > 0 {
-            bulk_in_flight.fetch_add(bulk_count, std::sync::atomic::Ordering::AcqRel);
-        }
+        let direction = job.direction();
+        self.counters.add(direction, chunk_len, bulk_count);
         match work_tx.try_send(job) {
             Ok(()) => {
                 crate::perf_profile::record_dataplane_aead_prepared_job(chunk_len);
@@ -610,10 +630,7 @@ impl DataplaneAeadWorkerPool {
             }
             Err(crossbeam_channel::TrySendError::Full(job))
             | Err(crossbeam_channel::TrySendError::Disconnected(job)) => {
-                in_flight.fetch_sub(chunk_len, std::sync::atomic::Ordering::AcqRel);
-                if bulk_count > 0 {
-                    bulk_in_flight.fetch_sub(bulk_count, std::sync::atomic::Ordering::AcqRel);
-                }
+                self.counters.finish(direction, chunk_len, bulk_count);
                 job.push_executor_failed_completions(completions);
                 false
             }
@@ -623,24 +640,23 @@ impl DataplaneAeadWorkerPool {
 
 impl DataplaneCryptoExecutor for DataplaneAeadWorkerPool {
     fn available_capacity(&self) -> usize {
-        self.available_open_capacity()
-            .saturating_add(self.available_seal_capacity())
+        self.capacity()
     }
 
     fn available_open_capacity(&self) -> usize {
-        self.direction_capacity(DataplaneAeadDirection::Open)
+        self.capacity()
     }
 
     fn available_seal_capacity(&self) -> usize {
-        self.direction_capacity(DataplaneAeadDirection::Seal)
+        self.capacity()
     }
 
     fn available_open_capacity_for_lane(&self, lane: Lane) -> usize {
-        self.direction_capacity_for_lane(DataplaneAeadDirection::Open, lane)
+        self.capacity_for_lane(lane)
     }
 
     fn available_seal_capacity_for_lane(&self, lane: Lane) -> usize {
-        self.direction_capacity_for_lane(DataplaneAeadDirection::Seal, lane)
+        self.capacity_for_lane(lane)
     }
 
     fn execute_prepared_chunk(
@@ -688,13 +704,11 @@ impl DataplaneCompletionSource for DataplaneAeadWorkerPool {
 }
 
 fn spawn_dataplane_aead_workers(
-    direction: DataplaneAeadDirection,
     worker_count: usize,
     max_in_flight: usize,
     completion_tx: crossbeam_channel::Sender<Vec<CryptoCompletionBatch>>,
     completion_notify: Arc<tokio::sync::Notify>,
-    in_flight: Arc<std::sync::atomic::AtomicUsize>,
-    bulk_in_flight: Arc<std::sync::atomic::AtomicUsize>,
+    counters: DataplaneAeadWorkerCounters,
 ) -> (
     crossbeam_channel::Sender<PreparedCryptoJob>,
     Vec<std::thread::JoinHandle<()>>,
@@ -707,47 +721,37 @@ fn spawn_dataplane_aead_workers(
     for worker_idx in 0..worker_count {
         let work_rx = work_rx.clone();
         workers.push(spawn_dataplane_aead_worker_thread(
-            direction,
             worker_idx,
             work_rx,
             completion_tx.clone(),
             Arc::clone(&completion_notify),
-            Arc::clone(&in_flight),
-            Arc::clone(&bulk_in_flight),
+            counters.clone(),
         ));
     }
     (work_tx, workers)
 }
 
 fn spawn_dataplane_aead_worker_thread(
-    direction: DataplaneAeadDirection,
     worker_idx: usize,
     work_rx: crossbeam_channel::Receiver<PreparedCryptoJob>,
     completion_tx: crossbeam_channel::Sender<Vec<CryptoCompletionBatch>>,
     completion_notify: Arc<tokio::sync::Notify>,
-    in_flight: Arc<std::sync::atomic::AtomicUsize>,
-    bulk_in_flight: Arc<std::sync::atomic::AtomicUsize>,
+    counters: DataplaneAeadWorkerCounters,
 ) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
-        .name(format!(
-            "dataplane-aead-{}-{worker_idx}",
-            match direction {
-                DataplaneAeadDirection::Open => "open",
-                DataplaneAeadDirection::Seal => "seal",
-            }
-        ))
+        .name(format!("dataplane-aead-{worker_idx}"))
         .spawn(move || {
             while let Ok(job) = work_rx.recv() {
                 crate::perf_profile::record_since(
                     crate::perf_profile::Stage::DataplaneAeadWorkerQueueWait,
                     job.queued_at(),
                 );
+                let direction = job.direction();
                 let count = job.len();
                 let bulk_count = job.bulk_count();
                 let completions = job.execute_completion_batches();
                 if send_completion_batches(completions, &completion_tx).is_err() {
-                    in_flight.fetch_sub(count, std::sync::atomic::Ordering::AcqRel);
-                    bulk_in_flight.fetch_sub(bulk_count, std::sync::atomic::Ordering::AcqRel);
+                    counters.finish(direction, count, bulk_count);
                     break;
                 }
                 completion_notify.notify_one();
@@ -845,13 +849,9 @@ fn dataplane_aead_worker_priority_reserve(max_in_flight: usize) -> usize {
 
 impl Drop for DataplaneAeadWorkerPool {
     fn drop(&mut self) {
-        self.open_tx.take();
-        self.seal_tx.take();
+        self.work_tx.take();
         self.completion_rx.take();
-        for worker in self.open_workers.drain(..) {
-            let _ = worker.join();
-        }
-        for worker in self.seal_workers.drain(..) {
+        for worker in self.workers.drain(..) {
             let _ = worker.join();
         }
     }

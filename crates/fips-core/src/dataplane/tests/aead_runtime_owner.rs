@@ -206,7 +206,7 @@
         let completions = drain_worker_pool_completions(&mut pool, 2);
         assert_eq!(completions.len(), 2);
         assert_eq!(pool.available_open_capacity(), 6);
-        assert_eq!(pool.available_seal_capacity(), 8);
+        assert_eq!(pool.available_seal_capacity(), 6);
         for completion in completions {
             retired.extend(retire_completion(&mut mover, completion));
         }
@@ -230,7 +230,7 @@
     }
 
     #[test]
-    fn aead_worker_pool_has_independent_open_and_seal_capacity() {
+    fn aead_worker_pool_uses_shared_open_and_seal_capacity() {
         let owner = fmp_owner(710);
         let open_key = 23;
         let seal_key = 24;
@@ -257,7 +257,7 @@
         let mut pool = DataplaneAeadWorkerPool::new(1, 2);
         let (dispatched, retired, drops) = run_with_executor_limit(&mut mover, &mut pool, 4);
 
-        assert_eq!(dispatched, 4);
+        assert_eq!(dispatched, 2);
         assert!(retired.is_empty());
         assert!(drops.is_empty());
         assert_eq!(pool.available_open_capacity(), 0);
@@ -443,7 +443,7 @@
         assert_eq!(dispatched, 2);
         assert!(retired.is_empty());
         assert!(drops.is_empty());
-        assert_eq!(pool.available_seal_capacity(), 2);
+        assert_eq!(pool.available_seal_capacity(), 0);
         assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 2);
 
         let (dispatched, retired, drops) = run_with_executor(&mut mover, &mut pool);
