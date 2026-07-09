@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.82] - 2026-07-10
+
+### Added
+
+- Exposed bounded, authenticated, port-addressed FSP service datagrams from
+  embedded endpoints without changing the existing DataPacket wire format.
+- Added batched service receive/send APIs used by local Nostr pubsub providers.
+
 ## [0.3.81] - 2026-07-08
 
 ### Fixed
