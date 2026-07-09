@@ -185,7 +185,7 @@
                 .max(1),
         );
         let capacity_before = pool.available_capacity();
-        let dispatched = mover.run_aead_available_into_with_executor(
+        let dispatched = mover.run_aead_available_into(
             limit,
             DataplaneAeadRunBuffers::new(
                 &mut prepared_work,
@@ -272,7 +272,7 @@
         loop {
             let dispatched_before = summary.dispatched;
             let capacity_before = pool.available_capacity();
-            summary = driver.collect_aead_outputs_with_executor(
+            summary = driver.collect_aead_outputs(
                 summary,
                 remaining,
                 &mut pool,
@@ -318,7 +318,7 @@
         loop {
             let dispatched_before = summary.dispatched;
             let capacity_before = pool.available_capacity();
-            summary = driver.collect_live_session_outputs_with_executor(
+            summary = driver.collect_live_session_outputs(
                 summary,
                 router,
                 remaining,
@@ -618,10 +618,10 @@
         loop {
             let capacity_before = pool.available_capacity();
             let report = driver
-                .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
+                .pump_aead_live_node_route_table_turn_after_completion_with_firsts(
                 DataplaneLivePumpRequest {
                     summary,
-                    executor: &mut pool,
+                    crypto_worker: &mut pool,
                     fast_ingress: None,
                     raw_ingress,
                     routes,

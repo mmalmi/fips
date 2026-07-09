@@ -579,11 +579,11 @@ impl Dataplane {
         retired_count
     }
 
-    fn run_aead_available_into_with_executor(
+    fn run_aead_available_into(
         &mut self,
         limit: usize,
         buffers: DataplaneAeadRunBuffers<'_>,
-        executor: &mut DataplaneAeadWorkerPool,
+        worker_pool: &mut DataplaneAeadWorkerPool,
         compact_endpoint_data: bool,
     ) -> usize {
         let DataplaneAeadRunBuffers {
@@ -600,14 +600,14 @@ impl Dataplane {
             limit,
             prepared_work,
             completion_batches,
-            executor,
+            worker_pool,
         );
 
         {
             let _executor_submit_timer = crate::perf_profile::Timer::start(
                 crate::perf_profile::Stage::DataplaneExecutorSubmit,
             );
-            executor.submit_prepared_chunk(prepared_work, completion_work);
+            worker_pool.submit_prepared_chunk(prepared_work, completion_work);
         }
         {
             let _completion_queue_timer = crate::perf_profile::Timer::start(
@@ -642,9 +642,9 @@ impl Dataplane {
         let _owner_dispatch_timer = crate::perf_profile::Timer::start(
             crate::perf_profile::Stage::DataplaneOwnerDispatch,
         );
-        let executor_capacity = worker_pool.available_capacity();
-        let total_limit = limit.min(executor_capacity);
-        if limit > 0 && executor_capacity == 0 {
+        let worker_capacity = worker_pool.available_capacity();
+        let total_limit = limit.min(worker_capacity);
+        if limit > 0 && worker_capacity == 0 {
             crate::perf_profile::record_event(
                 crate::perf_profile::Event::DataplaneDispatchExecutorFull,
             );

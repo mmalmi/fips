@@ -676,10 +676,10 @@ impl DataplaneLiveNode {
                 compact_endpoint_data,
             );
         let turn = self.driver
-            .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
+            .pump_aead_live_node_route_table_turn_after_completion_with_firsts(
                 DataplaneLivePumpRequest {
                     summary,
-                    executor: &mut self.crypto_worker,
+                    crypto_worker: &mut self.crypto_worker,
                     fast_ingress,
                     raw_ingress,
                     routes: &mut self.routes,

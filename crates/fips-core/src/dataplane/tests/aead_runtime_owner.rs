@@ -97,7 +97,7 @@
         let mut outbound_packets = Vec::new();
         let mut fsp_authenticated_ingress = DataplaneFspAuthenticatedIngress::default();
         let mut drops = Vec::new();
-        let dispatched = mover.run_aead_available_into_with_executor(
+        let dispatched = mover.run_aead_available_into(
             limit,
             DataplaneAeadRunBuffers::new(
                 &mut prepared_work,

@@ -59,7 +59,7 @@ struct DataplaneLiveOutputRequest<'a> {
     deferred_raw_ingress: &'a mut std::collections::VecDeque<(DataplaneRawIngress, u8)>,
     crypto_limit: usize,
     collect_transport_sent_receipts: bool,
-    executor: &'a mut DataplaneAeadWorkerPool,
+    crypto_worker: &'a mut DataplaneAeadWorkerPool,
     transport_send_batch_packets: usize,
 }
 
@@ -70,7 +70,7 @@ struct DataplaneLiveFinishRequest<'a> {
     transports: &'a HashMap<TransportId, TransportHandle>,
     crypto_limit: usize,
     collect_transport_sent_receipts: bool,
-    executor: &'a mut DataplaneAeadWorkerPool,
+    crypto_worker: &'a mut DataplaneAeadWorkerPool,
     transport_send_batch_packets: usize,
     deferred_raw_ingress: &'a mut std::collections::VecDeque<(DataplaneRawIngress, u8)>,
     deferred_endpoint_data_batches: &'a mut Vec<NodeEndpointDataBatch>,
@@ -79,7 +79,7 @@ struct DataplaneLiveFinishRequest<'a> {
 
 struct DataplaneLivePumpRequest<'a, RI> {
     summary: DataplaneRuntimeSummary,
-    executor: &'a mut DataplaneAeadWorkerPool,
+    crypto_worker: &'a mut DataplaneAeadWorkerPool,
     fast_ingress: Option<DataplaneFastIngressBatch>,
     raw_ingress: &'a mut RI,
     routes: &'a mut DataplaneLiveRouteTable,
@@ -331,7 +331,7 @@ impl DataplaneTurnDriver {
         self.mover.record_fsp_decrypt_failure(owner)
     }
 
-    async fn finish_aead_live_node_output_turn_with_executor(
+    async fn finish_aead_live_node_output_turn(
         &mut self,
         request: DataplaneLiveOutputRequest<'_>,
     ) -> DataplaneLiveNodeTurn {
@@ -343,15 +343,15 @@ impl DataplaneTurnDriver {
             deferred_raw_ingress,
             crypto_limit,
             collect_transport_sent_receipts,
-            executor,
+            crypto_worker,
             transport_send_batch_packets,
         } = request;
         let compact_endpoint_data = endpoint_tx.direct_sink().is_some();
-        let summary = self.collect_live_session_outputs_with_executor(
+        let summary = self.collect_live_session_outputs(
             summary,
             routes,
             crypto_limit,
-            executor,
+            crypto_worker,
             compact_endpoint_data,
             deferred_raw_ingress,
         );
@@ -448,7 +448,7 @@ impl DataplaneTurnDriver {
         limit.saturating_mul(DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS)
     }
 
-    async fn pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts<RI>(
+    async fn pump_aead_live_node_route_table_turn_after_completion_with_firsts<RI>(
         &mut self,
         request: DataplaneLivePumpRequest<'_, RI>,
     ) -> DataplaneLiveNodeTurn
@@ -457,7 +457,7 @@ impl DataplaneTurnDriver {
     {
         let DataplaneLivePumpRequest {
             summary,
-            executor,
+            crypto_worker,
             fast_ingress,
             raw_ingress,
             routes,
@@ -485,7 +485,7 @@ impl DataplaneTurnDriver {
         let mut remaining_crypto_limit = crypto_limit;
         if admission_summary.has_activity() {
             let report = self
-                .finish_aead_live_node_output_turn_with_executor(DataplaneLiveOutputRequest {
+                .finish_aead_live_node_output_turn(DataplaneLiveOutputRequest {
                     summary: admission_summary,
                     routes,
                     endpoint_tx,
@@ -493,7 +493,7 @@ impl DataplaneTurnDriver {
                     deferred_raw_ingress: &mut completion_deferred_raw_ingress,
                     crypto_limit: remaining_crypto_limit,
                     collect_transport_sent_receipts,
-                    executor: &mut *executor,
+                    crypto_worker: &mut *crypto_worker,
                     transport_send_batch_packets,
                 })
                 .await;
@@ -532,7 +532,7 @@ impl DataplaneTurnDriver {
                         transports,
                         crypto_limit: remaining_crypto_limit,
                         collect_transport_sent_receipts,
-                        executor,
+                        crypto_worker,
                         transport_send_batch_packets,
                         deferred_raw_ingress,
                         deferred_endpoint_data_batches,
@@ -551,7 +551,7 @@ impl DataplaneTurnDriver {
                     transports,
                     crypto_limit: remaining_crypto_limit,
                     collect_transport_sent_receipts,
-                    executor,
+                    crypto_worker,
                     transport_send_batch_packets,
                     deferred_raw_ingress,
                     deferred_endpoint_data_batches,
@@ -736,7 +736,7 @@ impl DataplaneTurnDriver {
             transports,
             crypto_limit,
             collect_transport_sent_receipts,
-            executor,
+            crypto_worker,
             transport_send_batch_packets,
             deferred_raw_ingress,
             deferred_endpoint_data_batches,
@@ -749,7 +749,7 @@ impl DataplaneTurnDriver {
             tun_drained,
         } = admission;
         let mut report = self
-            .finish_aead_live_node_output_turn_with_executor(DataplaneLiveOutputRequest {
+            .finish_aead_live_node_output_turn(DataplaneLiveOutputRequest {
                 summary,
                 routes,
                 endpoint_tx,
@@ -757,7 +757,7 @@ impl DataplaneTurnDriver {
                 deferred_raw_ingress,
                 crypto_limit,
                 collect_transport_sent_receipts,
-                executor,
+                crypto_worker,
                 transport_send_batch_packets,
             })
             .await;
@@ -1112,12 +1112,12 @@ impl DataplaneTurnDriver {
         self.drops.append(&mut mover_drops);
     }
 
-    fn collect_live_session_outputs_with_executor<R>(
+    fn collect_live_session_outputs<R>(
         &mut self,
         mut summary: DataplaneRuntimeSummary,
         router: &mut R,
         crypto_limit: usize,
-        executor: &mut DataplaneAeadWorkerPool,
+        crypto_worker: &mut DataplaneAeadWorkerPool,
         compact_endpoint_data: bool,
         deferred_raw_ingress: &mut std::collections::VecDeque<(DataplaneRawIngress, u8)>,
     ) -> DataplaneRuntimeSummary
@@ -1128,10 +1128,10 @@ impl DataplaneTurnDriver {
         self.process_live_internal_outputs(router, &mut summary, deferred_raw_ingress);
         loop {
             let dispatched_before = summary.dispatched;
-            summary = self.collect_aead_outputs_with_executor(
+            summary = self.collect_aead_outputs(
                 summary,
                 remaining,
-                executor,
+                crypto_worker,
                 compact_endpoint_data,
             );
             let dispatched = summary.dispatched.saturating_sub(dispatched_before);
@@ -1154,11 +1154,11 @@ impl DataplaneTurnDriver {
         outputs
     }
 
-    fn collect_aead_outputs_with_executor(
+    fn collect_aead_outputs(
         &mut self,
         mut summary: DataplaneRuntimeSummary,
         limit: usize,
-        executor: &mut DataplaneAeadWorkerPool,
+        crypto_worker: &mut DataplaneAeadWorkerPool,
         compact_endpoint_data: bool,
     ) -> DataplaneRuntimeSummary {
         let mut remaining = limit;
@@ -1167,7 +1167,7 @@ impl DataplaneTurnDriver {
                 let _dispatch_timer = crate::perf_profile::Timer::start(
                     crate::perf_profile::Stage::DataplaneAeadDispatch,
                 );
-                self.mover.run_aead_available_into_with_executor(
+                self.mover.run_aead_available_into(
                     remaining,
                     DataplaneAeadRunBuffers::new(
                         &mut self.prepared_work,
@@ -1178,7 +1178,7 @@ impl DataplaneTurnDriver {
                         &mut self.fsp_authenticated_ingress,
                         &mut self.drops,
                     ),
-                    executor,
+                    crypto_worker,
                     compact_endpoint_data,
                 )
             };
