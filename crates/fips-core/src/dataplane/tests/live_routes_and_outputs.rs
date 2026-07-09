@@ -95,7 +95,7 @@
         let header =
             DataplaneIngressHeader::Fmp(FmpWireHeader::parse(raw.payload.as_slice()).unwrap());
         assert_eq!(routes.route(&raw, header), Some(route_b));
-        assert_eq!(routes.unregister_owner(owner_b), 1);
+        assert_eq!(routes.unregister_owner(owner_b), 2);
         let header =
             DataplaneIngressHeader::Fmp(FmpWireHeader::parse(raw.payload.as_slice()).unwrap());
         assert_eq!(routes.route(&raw, header), None);

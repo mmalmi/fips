@@ -455,19 +455,27 @@
         assert_eq!(second.transport_dropped(), 0);
         assert!(second.take_transport_sent_receipts().is_empty());
 
-        wait_for_live_worker_completion(&live_node).await;
-        let mut third = pump_live_node_outbound_firsts(
-            &mut live_node,
-            DataplaneLiveOutboundFirsts {
-                collect_transport_sent_receipts: true,
-                ..Default::default()
-            },
-            &endpoint_io.event_tx,
-            &transports,
-            1,
-            transport_send_batch_packets,
-        )
-        .await;
+        let mut third = None;
+        for _ in 0..50 {
+            let turn = pump_live_node_outbound_firsts(
+                &mut live_node,
+                DataplaneLiveOutboundFirsts {
+                    collect_transport_sent_receipts: true,
+                    ..Default::default()
+                },
+                &endpoint_io.event_tx,
+                &transports,
+                1,
+                transport_send_batch_packets,
+            )
+            .await;
+            if turn.transport_sent() > 0 {
+                third = Some(turn);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        let mut third = third.expect("completion turn should send continuation output");
         assert_eq!(third.summary().completions(), 1);
         assert_eq!(third.transport_sent(), 1);
         assert_eq!(third.transport_dropped(), 0);

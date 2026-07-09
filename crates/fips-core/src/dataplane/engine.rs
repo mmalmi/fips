@@ -618,25 +618,18 @@ impl Dataplane {
             }
             let priority_capacity =
                 total_limit.min(executor.available_capacity_for_lane(Lane::Priority));
-            let mut open_priority_capacity = priority_capacity;
-            let seal_priority_capacity = priority_capacity;
+            let mut priority_inbound_capacity = priority_capacity;
             let bulk_capacity = total_limit.min(executor.available_capacity_for_lane(Lane::Bulk));
-            let open_bulk_capacity = bulk_capacity;
-            let seal_bulk_capacity = bulk_capacity;
             let inbound_priority_pending = self.has_inbound_priority_pending();
-            let priority_feed_capacity = total_limit.min(
-                open_priority_capacity
-                    .saturating_add(seal_priority_capacity),
-            );
             let outbound_priority_reserve = outbound_priority_dispatch_limit(
-                priority_feed_capacity,
+                priority_capacity,
                 self.has_outbound_priority_pending(),
             );
             let pre_priority_inbound_limit = inbound_before_outbound_priority_limit(
-                priority_feed_capacity,
+                priority_capacity,
                 outbound_priority_reserve,
             )
-            .min(open_priority_capacity);
+            .min(priority_inbound_capacity);
 
             let pre_priority_inbound_dispatched = self.dispatch_prepared_ingress_shards_into(
                 pre_priority_inbound_limit,
@@ -648,12 +641,11 @@ impl Dataplane {
                 &mut fsp_path_open_bulk,
             );
             dispatched_total = dispatched_total.saturating_add(pre_priority_inbound_dispatched);
-            open_priority_capacity =
-                open_priority_capacity.saturating_sub(pre_priority_inbound_dispatched);
+            priority_inbound_capacity =
+                priority_inbound_capacity.saturating_sub(pre_priority_inbound_dispatched);
 
             let priority_outbound_limit = outbound_priority_reserve
-                .min(total_limit.saturating_sub(dispatched_total))
-                .min(seal_priority_capacity);
+                .min(total_limit.saturating_sub(dispatched_total));
             let priority_outbound_dispatched = self.dispatch_outbound_prepared_shards_into(
                 priority_outbound_limit,
                 prepared_work,
@@ -663,7 +655,7 @@ impl Dataplane {
             dispatched_total = dispatched_total.saturating_add(priority_outbound_dispatched);
 
             let priority_inbound_limit = if inbound_priority_pending {
-                open_priority_capacity.min(total_limit.saturating_sub(dispatched_total))
+                priority_inbound_capacity.min(total_limit.saturating_sub(dispatched_total))
             } else {
                 0
             };
@@ -680,7 +672,7 @@ impl Dataplane {
 
             let bulk_dispatch_capacity = total_limit
                 .saturating_sub(dispatched_total)
-                .min(open_bulk_capacity);
+                .min(bulk_capacity);
             let bulk_inbound_start = prepared_work.len();
             let inbound_dispatched = self.dispatch_prepared_ingress_shards_into(
                 bulk_dispatch_capacity,
@@ -694,9 +686,7 @@ impl Dataplane {
             dispatched_total = dispatched_total.saturating_add(inbound_dispatched);
             let outbound_start = prepared_work.len();
             let outbound_dispatched = self.dispatch_outbound_prepared_shards_into(
-                total_limit
-                    .saturating_sub(dispatched_total)
-                    .min(seal_bulk_capacity),
+                total_limit.saturating_sub(dispatched_total).min(bulk_capacity),
                 prepared_work,
                 completion_batches,
                 false,
