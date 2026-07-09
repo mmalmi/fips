@@ -451,10 +451,10 @@ impl DataplaneTurnDriver {
     }
 
     fn completion_drain_limit(&self, limit: usize) -> usize {
-        if limit < DATAPLANE_AEAD_WORKER_JOB_PACKETS || self.mover.has_priority_pending() {
+        if limit < DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS || self.mover.has_priority_pending() {
             return limit;
         }
-        limit.saturating_mul(DATAPLANE_AEAD_WORKER_JOB_PACKETS)
+        limit.saturating_mul(DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS)
     }
 
     async fn pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts<E, RI>(

@@ -369,7 +369,7 @@
         let mut mover = Dataplane::new(AdmissionConfig::new(16, 32));
         mover.register_owner(
             owner,
-            OwnerConfig::new(1, DATAPLANE_AEAD_WORKER_JOB_PACKETS * 2),
+            OwnerConfig::new(1, DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS * 2),
         );
         mover
             .owner_mut(owner)
@@ -377,10 +377,10 @@
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(open_key)));
         let mut pool = DataplaneAeadWorkerPool::new(
             1,
-            DATAPLANE_AEAD_WORKER_JOB_PACKETS * 2,
+            DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS * 2,
         );
 
-        for counter in 0..(DATAPLANE_AEAD_WORKER_JOB_PACKETS * 2) as u64 {
+        for counter in 0..(DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS * 2) as u64 {
             mover
                 .submit_socket_packet(encrypted_fmp_packet(
                     owner,
@@ -396,15 +396,15 @@
         let (dispatched, retired, drops) = run_with_executor_limit(
             &mut mover,
             &mut pool,
-            DATAPLANE_AEAD_WORKER_JOB_PACKETS * 2,
+            DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS * 2,
         );
-        assert_eq!(dispatched, DATAPLANE_AEAD_WORKER_JOB_PACKETS);
+        assert_eq!(dispatched, DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS);
         assert!(retired.is_empty());
         assert!(drops.is_empty());
         assert_eq!(pool.available_capacity_for_lane(Lane::Bulk), 0);
         assert_eq!(
             pool.available_capacity_for_lane(Lane::Priority),
-            DATAPLANE_AEAD_WORKER_JOB_PACKETS
+            DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS
         );
 
         mover
@@ -420,7 +420,7 @@
         let (dispatched, retired, drops) = run_with_executor_limit(
             &mut mover,
             &mut pool,
-            DATAPLANE_AEAD_WORKER_JOB_PACKETS * 2,
+            DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS * 2,
         );
         assert_eq!(dispatched, 1);
         assert!(retired.is_empty());

@@ -24,7 +24,7 @@ impl PreparedSealWork {
     }
 }
 
-const DATAPLANE_AEAD_WORKER_JOB_PACKETS: usize = 8;
+const DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS: usize = 8;
 const DATAPLANE_AEAD_WORKER_BATCH_PACKETS: usize = 128;
 
 impl PreparedCryptoWork {
@@ -327,7 +327,7 @@ impl DataplaneAeadWorkerPool {
         let (completion_tx, completion_rx): (
             crossbeam_channel::Sender<Vec<CryptoCompletionBatch>>,
             crossbeam_channel::Receiver<Vec<CryptoCompletionBatch>>,
-        ) = crossbeam_channel::bounded(max_in_flight.saturating_mul(worker_count));
+        ) = crossbeam_channel::bounded(max_in_flight);
         let completion_notify = Arc::new(tokio::sync::Notify::new());
         let counters = DataplaneAeadWorkerCounters::new();
         let (work_tx, workers) = spawn_dataplane_aead_workers(
@@ -742,8 +742,8 @@ fn dataplane_open_run_bulk_count(work: &[CryptoWork]) -> usize {
 
 fn dataplane_aead_worker_priority_reserve(max_in_flight: usize) -> usize {
     max_in_flight
-        .saturating_sub(DATAPLANE_AEAD_WORKER_JOB_PACKETS)
-        .min(DATAPLANE_AEAD_WORKER_JOB_PACKETS)
+        .saturating_sub(DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS)
+        .min(DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS)
 }
 
 impl Drop for DataplaneAeadWorkerPool {
