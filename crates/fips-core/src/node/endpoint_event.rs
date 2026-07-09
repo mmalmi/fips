@@ -112,6 +112,56 @@ impl FipsEndpointDirectPacketSegment {
         self.packet_bytes = packet_bytes;
         changed
     }
+
+    fn partition_ranges<F>(
+        self,
+        next_index: &mut usize,
+        classify: &mut F,
+    ) -> (Option<Self>, Option<Self>)
+    where
+        F: FnMut(usize, &[u8]) -> bool,
+    {
+        let Self {
+            buffer, mut ranges, ..
+        } = self;
+        let bytes = buffer.as_slice();
+        let mut retained_class = None;
+        let mut other_ranges = Vec::new();
+        let mut packet_bytes = [0usize; 2];
+        ranges.retain(|range| {
+            let index = *next_index;
+            *next_index = next_index.saturating_add(1);
+            let class = classify(index, &bytes[range.clone()]);
+            packet_bytes[usize::from(class)] =
+                packet_bytes[usize::from(class)].saturating_add(range.len());
+            if class == *retained_class.get_or_insert(class) {
+                true
+            } else {
+                other_ranges.push(range.clone());
+                false
+            }
+        });
+
+        let Some(retained_class) = retained_class else {
+            return (None, None);
+        };
+        let other_class = !retained_class;
+        let other = (!other_ranges.is_empty()).then(|| Self {
+            buffer: Arc::clone(&buffer),
+            ranges: other_ranges,
+            packet_bytes: packet_bytes[usize::from(other_class)],
+        });
+        let retained = Some(Self {
+            buffer,
+            ranges,
+            packet_bytes: packet_bytes[usize::from(retained_class)],
+        });
+        if retained_class {
+            (other, retained)
+        } else {
+            (retained, other)
+        }
+    }
 }
 
 /// Consecutive direct endpoint packets from one authenticated FIPS source.
@@ -182,6 +232,48 @@ impl FipsEndpointDirectPacketStorage {
         match self {
             Self::Segmented(segment) => segment.len(),
             Self::Chained { packet_ends, .. } => packet_ends.last().copied().unwrap_or(0),
+        }
+    }
+
+    fn partition_packets<F>(self, classify: &mut F) -> (Option<Self>, Option<Self>)
+    where
+        F: FnMut(usize, &[u8]) -> bool,
+    {
+        let mut next_index = 0usize;
+        match self {
+            Self::Segmented(segment) => {
+                let (false_segment, true_segment) =
+                    segment.partition_ranges(&mut next_index, classify);
+                (
+                    false_segment.map(Self::Segmented),
+                    true_segment.map(Self::Segmented),
+                )
+            }
+            Self::Chained { segments, .. } => {
+                let mut outputs = [None, None];
+                for segment in segments {
+                    let (false_segment, true_segment) =
+                        segment.partition_ranges(&mut next_index, classify);
+                    Self::push_partition_segment(&mut outputs[0], false_segment);
+                    Self::push_partition_segment(&mut outputs[1], true_segment);
+                }
+                let [false_output, true_output] = outputs;
+                (false_output, true_output)
+            }
+        }
+    }
+
+    fn push_partition_segment(
+        output: &mut Option<Self>,
+        segment: Option<FipsEndpointDirectPacketSegment>,
+    ) {
+        let Some(segment) = segment else {
+            return;
+        };
+        if let Some(storage) = output {
+            storage.push_segment(segment);
+        } else {
+            *output = Some(Self::Segmented(segment));
         }
     }
 
@@ -414,6 +506,25 @@ impl FipsEndpointDirectPacketRun {
                 }
             }
         }
+    }
+
+    /// Partition packets into false and true runs without copying packet bytes.
+    ///
+    /// The classifier is called once per packet in run order. Both outputs keep
+    /// the original segmented/chained representation and share packet buffers.
+    pub fn partition_packets<F>(self, mut classify: F) -> (Option<Self>, Option<Self>)
+    where
+        F: FnMut(usize, &[u8]) -> bool,
+    {
+        let Self { meta, storage } = self;
+        let (false_storage, true_storage) = storage.partition_packets(&mut classify);
+        (
+            false_storage.map(|storage| Self {
+                meta: meta.clone(),
+                storage,
+            }),
+            true_storage.map(|storage| Self { meta, storage }),
+        )
     }
 
     /// Split this run at a packet index without copying packet bytes.
