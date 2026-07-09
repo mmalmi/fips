@@ -3,6 +3,25 @@ pub(crate) enum PreparedCryptoWork {
     Seal { work: OutboundCryptoWork, cipher: AeadKey },
 }
 
+struct PreparedSealWork {
+    work: OutboundCryptoWork,
+    cipher: AeadKey,
+}
+
+impl PreparedSealWork {
+    fn execute(self) -> CryptoCompletion {
+        execute_seal_crypto_work(self.work, self.cipher)
+    }
+
+    fn failed_completion(self) -> CryptoCompletion {
+        failed_crypto_completion(self.work.reservation, CryptoFailureKind::Seal)
+    }
+
+    fn lane(&self) -> Lane {
+        self.work.reservation.lane
+    }
+}
+
 const DATAPLANE_AEAD_WORKER_JOB_PACKETS: usize = 8;
 const DATAPLANE_AEAD_WORKER_BATCH_PACKETS: usize = 128;
 
@@ -15,6 +34,7 @@ impl PreparedCryptoWork {
         Self::Seal { work, cipher }
     }
 
+    #[cfg(test)]
     pub(crate) fn execute(self) -> CryptoCompletion {
         match self {
             Self::Open { work, cipher } => {
@@ -30,31 +50,7 @@ impl PreparedCryptoWork {
             Self::Seal {
                 work,
                 cipher,
-            } => {
-                let reservation = work.reservation.clone();
-                let _timer = crate::perf_profile::Timer::start(
-                    crate::perf_profile::Stage::DataplaneAeadSeal,
-                );
-                match AeadSealWork::from_outbound_work(work, cipher) {
-                    Ok(work) => work.execute(),
-                    Err(_) => failed_crypto_completion(reservation, CryptoFailureKind::Seal),
-                }
-            }
-        }
-    }
-
-    fn push_executor_failed_completions(self, completions: &mut Vec<CryptoCompletion>) {
-        match self {
-            Self::Open { work, .. } => completions.push(failed_crypto_completion(
-                work.reservation,
-                CryptoFailureKind::Open,
-            )),
-            Self::Seal { work, .. } => {
-                completions.push(failed_crypto_completion(
-                    work.reservation,
-                    CryptoFailureKind::Seal,
-                ));
-            }
+            } => execute_seal_crypto_work(work, cipher),
         }
     }
 
@@ -73,9 +69,9 @@ enum PreparedCryptoJob {
         cipher: AeadKey,
         bulk_count: usize,
     },
-    Prepared {
+    Seal {
         queued_at: Option<crate::perf_profile::TraceStamp>,
-        work: Vec<PreparedCryptoWork>,
+        work: Vec<PreparedSealWork>,
         bulk_count: usize,
     },
 }
@@ -91,8 +87,8 @@ impl PreparedCryptoJob {
         }
     }
 
-    fn prepared(work: Vec<PreparedCryptoWork>, bulk_count: usize) -> Self {
-        Self::Prepared {
+    fn seal(work: Vec<PreparedSealWork>, bulk_count: usize) -> Self {
+        Self::Seal {
             queued_at: crate::perf_profile::stamp(),
             work,
             bulk_count,
@@ -101,40 +97,34 @@ impl PreparedCryptoJob {
 
     fn queued_at(&self) -> Option<crate::perf_profile::TraceStamp> {
         match self {
-            Self::OpenRun { queued_at, .. } | Self::Prepared { queued_at, .. } => *queued_at,
+            Self::OpenRun { queued_at, .. } | Self::Seal { queued_at, .. } => *queued_at,
         }
     }
 
     fn len(&self) -> usize {
         match self {
             Self::OpenRun { work, .. } => work.len(),
-            Self::Prepared { work, .. } => work.len(),
+            Self::Seal { work, .. } => work.len(),
         }
     }
 
     fn bulk_count(&self) -> usize {
         match self {
-            Self::OpenRun { bulk_count, .. } | Self::Prepared { bulk_count, .. } => *bulk_count,
+            Self::OpenRun { bulk_count, .. } | Self::Seal { bulk_count, .. } => *bulk_count,
         }
     }
 
     fn push_executor_failed_completions(self, completions: &mut Vec<CryptoCompletion>) {
         match self {
             Self::OpenRun { work, .. } => push_failed_open_work(work, completions),
-            Self::Prepared { work, .. } => push_failed_prepared_work(work, completions),
+            Self::Seal { work, .. } => push_failed_seal_work(work, completions),
         }
     }
 
     fn execute_completion_batches(self) -> Vec<CryptoCompletionBatch> {
         match self {
             Self::OpenRun { work, cipher, .. } => execute_open_run_job(work, cipher),
-            Self::Prepared { work, .. } => {
-                let mut completions = Vec::with_capacity(work.len());
-                for work in work {
-                    CryptoCompletionBatch::push_grouped(work.execute(), &mut completions);
-                }
-                completions
-            }
+            Self::Seal { work, .. } => execute_seal_job(work),
         }
     }
 }
@@ -236,14 +226,14 @@ impl PreparedOpenRunJobBuilder {
     }
 }
 
-struct PreparedCryptoJobBuilder {
+struct PreparedSealJobBuilder {
     job_packets: usize,
-    work: Vec<PreparedCryptoWork>,
+    work: Vec<PreparedSealWork>,
     bulk_count: usize,
     closed: bool,
 }
 
-impl PreparedCryptoJobBuilder {
+impl PreparedSealJobBuilder {
     fn new(job_packets: usize) -> Self {
         let job_packets = job_packets.max(1);
         Self {
@@ -257,11 +247,11 @@ impl PreparedCryptoJobBuilder {
     fn push(
         &mut self,
         pool: &DataplaneAeadWorkerPool,
-        work: PreparedCryptoWork,
+        work: PreparedSealWork,
         completions: &mut Vec<CryptoCompletion>,
     ) {
         if self.closed {
-            work.push_executor_failed_completions(completions);
+            completions.push(work.failed_completion());
             return;
         }
         if work.lane() == Lane::Bulk {
@@ -284,12 +274,7 @@ impl PreparedCryptoJobBuilder {
         let next = Vec::with_capacity(self.job_packets);
         let work = std::mem::replace(&mut self.work, next);
         let bulk_count = std::mem::take(&mut self.bulk_count);
-        if !pool.submit_prepared_job(
-            DataplaneAeadDirection::Seal,
-            work,
-            bulk_count,
-            completions,
-        ) {
+        if !pool.submit_seal_job(work, bulk_count, completions) {
             self.closed = true;
         }
     }
@@ -586,27 +571,22 @@ impl DataplaneAeadWorkerPool {
         bulk_limit.saturating_sub(bulk_in_flight).min(total_available)
     }
 
-    fn submit_prepared_job(
+    fn submit_seal_job(
         &self,
-        direction: DataplaneAeadDirection,
-        work: Vec<PreparedCryptoWork>,
+        work: Vec<PreparedSealWork>,
         bulk_count: usize,
         completions: &mut Vec<CryptoCompletion>,
     ) -> bool {
         if work.is_empty() {
             return true;
         }
-        let work_tx = match direction {
-            DataplaneAeadDirection::Open => self.open_tx.as_ref(),
-            DataplaneAeadDirection::Seal => self.seal_tx.as_ref(),
-        };
-        let Some(work_tx) = work_tx else {
-            push_failed_prepared_work(work, completions);
+        let Some(work_tx) = self.seal_tx.as_ref() else {
+            push_failed_seal_work(work, completions);
             return false;
         };
 
-        let job = PreparedCryptoJob::prepared(work, bulk_count);
-        self.submit_job(work_tx, direction, job, completions)
+        let job = PreparedCryptoJob::seal(work, bulk_count);
+        self.submit_job(work_tx, DataplaneAeadDirection::Seal, job, completions)
     }
 
     fn submit_open_run_job(
@@ -701,14 +681,14 @@ impl DataplaneCryptoExecutor for DataplaneAeadWorkerPool {
         let open_job_packets = dataplane_aead_worker_job_packets(open_count);
         let seal_job_packets = dataplane_aead_worker_job_packets(seal_count);
         let mut open_jobs = PreparedOpenRunJobBuilder::new(open_job_packets);
-        let mut seal_jobs = PreparedCryptoJobBuilder::new(seal_job_packets);
+        let mut seal_jobs = PreparedSealJobBuilder::new(seal_job_packets);
         for work in prepared.drain(..) {
             match work {
                 PreparedCryptoWork::Open { work, cipher } => {
                     open_jobs.push(self, work, cipher, completions);
                 }
-                work @ PreparedCryptoWork::Seal { .. } => {
-                    seal_jobs.push(self, work, completions);
+                PreparedCryptoWork::Seal { work, cipher } => {
+                    seal_jobs.push(self, PreparedSealWork { work, cipher }, completions);
                 }
             }
         }
@@ -835,9 +815,9 @@ fn dataplane_aead_direction_for_completion_source(
     }
 }
 
-fn push_failed_prepared_work(work: Vec<PreparedCryptoWork>, completions: &mut Vec<CryptoCompletion>) {
+fn push_failed_seal_work(work: Vec<PreparedSealWork>, completions: &mut Vec<CryptoCompletion>) {
     for work in work {
-        work.push_executor_failed_completions(completions);
+        completions.push(work.failed_completion());
     }
 }
 
@@ -863,6 +843,17 @@ fn execute_open_run_job(work: Vec<CryptoWork>, cipher: AeadKey) -> Vec<CryptoCom
     CryptoCompletionBatch::from_completion_run(completions)
         .into_iter()
         .collect()
+}
+
+fn execute_seal_job(work: Vec<PreparedSealWork>) -> Vec<CryptoCompletionBatch> {
+    if work.is_empty() {
+        return Vec::new();
+    }
+    let mut completions = Vec::with_capacity(work.len());
+    for work in work {
+        CryptoCompletionBatch::push_grouped(work.execute(), &mut completions);
+    }
+    completions
 }
 
 fn dataplane_open_run_bulk_count(work: &[CryptoWork]) -> usize {
@@ -1045,6 +1036,15 @@ struct AeadSealWork {
     post_seal: OutboundPostSeal,
     aad_len: usize,
     ciphertext_offset: usize,
+}
+
+fn execute_seal_crypto_work(work: OutboundCryptoWork, cipher: AeadKey) -> CryptoCompletion {
+    let reservation = work.reservation.clone();
+    let _timer = crate::perf_profile::Timer::start(crate::perf_profile::Stage::DataplaneAeadSeal);
+    match AeadSealWork::from_outbound_work(work, cipher) {
+        Ok(work) => work.execute(),
+        Err(_) => failed_crypto_completion(reservation, CryptoFailureKind::Seal),
+    }
 }
 
 impl AeadSealWork {
