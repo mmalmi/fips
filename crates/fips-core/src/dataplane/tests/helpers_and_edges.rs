@@ -68,9 +68,7 @@
     fn execute_test_prepared_crypto_work(work: PreparedCryptoWork) -> CryptoCompletion {
         let mut pool = test_aead_worker_pool(1);
         let mut prepared = vec![work];
-        let mut failed = Vec::new();
-        pool.submit_prepared_chunk(&mut prepared, &mut failed);
-        assert!(failed.is_empty());
+        pool.submit_prepared_chunk(&mut prepared);
         let mut completions = drain_worker_pool_completions(&mut pool, 1);
         assert_eq!(completions.len(), 1);
         completions.pop().unwrap()
@@ -184,7 +182,6 @@
 
     fn run_aead_available(mover: &mut Dataplane, limit: usize) -> DataplaneTurn {
         let mut prepared_work = Vec::new();
-        let mut completion_work = Vec::new();
         let mut completion_batches = Vec::new();
         let mut retired = Vec::new();
         let mut outbound_packets = Vec::new();
@@ -200,7 +197,6 @@
             limit,
             DataplaneAeadRunBuffers::new(
                 &mut prepared_work,
-                &mut completion_work,
                 &mut completion_batches,
                 &mut retired,
                 &mut outbound_packets,
@@ -364,12 +360,11 @@
     {
         driver.reset_turn_buffers();
 
-        driver.completion_work.clear();
-        driver.completion_work.extend(completions);
-        let queued = driver.completion_work.len();
+        let mut completion_work = completions.into_iter().collect::<Vec<_>>();
+        let queued = completion_work.len();
         driver.completion_batches.clear();
         CryptoCompletionBatch::drain_completion_vec_into_batches(
-            &mut driver.completion_work,
+            &mut completion_work,
             &mut driver.completion_batches,
         );
         let mut summary = DataplaneRuntimeSummary::default();

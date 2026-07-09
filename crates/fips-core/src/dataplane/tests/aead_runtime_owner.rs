@@ -91,7 +91,6 @@
         limit: usize,
     ) -> (usize, Vec<PacketOutput>, Vec<PacketDrop>) {
         let mut prepared_work = Vec::new();
-        let mut completion_work = Vec::new();
         let mut completion_batches = Vec::new();
         let mut retired = Vec::new();
         let mut outbound_packets = Vec::new();
@@ -101,7 +100,6 @@
             limit,
             DataplaneAeadRunBuffers::new(
                 &mut prepared_work,
-                &mut completion_work,
                 &mut completion_batches,
                 &mut retired,
                 &mut outbound_packets,
@@ -181,6 +179,104 @@
         );
         assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
         assert_eq!(pool.available_capacity(), 8);
+    }
+
+    #[test]
+    fn aead_worker_pool_retires_one_fsp_owner_run_across_bounded_subruns() {
+        let source_addr = test_node_addr(714);
+        let owner = OwnerId::fsp_node(source_addr);
+        let previous_hop = test_node_addr(715);
+        let local_addr = test_node_addr(716);
+        let open_key = 25;
+        let packet_count = DATAPLANE_AEAD_JOB_PACKETS;
+        let worker_capacity = packet_count + DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS;
+        let mut mover = Dataplane::new(AdmissionConfig::new(packet_count, packet_count));
+        mover.register_owner(owner, OwnerConfig::new(1, packet_count + 1));
+        mover
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(open_key)));
+        for counter in 0..packet_count {
+            submit_endpoint_data_payload(
+                &mut mover,
+                EndpointDataSubmit {
+                    owner,
+                    counter: counter as u64,
+                    timestamp: 714_000 + counter as u32,
+                    key: open_key,
+                    previous_hop,
+                    local_addr,
+                    payload: b"shared-owner-run",
+                },
+            );
+        }
+
+        let mut pool = test_aead_worker_pool(worker_capacity);
+        let (dispatched, retired, drops) =
+            run_with_worker_pool_limit(&mut mover, &mut pool, packet_count);
+
+        assert_eq!(dispatched, packet_count);
+        assert!(retired.is_empty());
+        assert!(drops.is_empty());
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, packet_count);
+
+        let mut batches = drain_worker_pool_completion_batches(&mut pool, packet_count);
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].len(), packet_count);
+        assert_eq!(pool.available_capacity(), worker_capacity);
+        let CryptoCompletionRun::OpenOwnerRun { run, range } = &batches[0].completions else {
+            panic!("FSP session payload opens must keep the shared owner-run container");
+        };
+        assert_eq!(range, &(0..packet_count));
+        assert_eq!(
+            run.shared
+                .remaining_subruns
+                .load(std::sync::atomic::Ordering::Acquire),
+            0
+        );
+
+        mover.queue_completion_batches(&mut batches);
+        let mut outputs = Vec::new();
+        let mut outbound_packets = Vec::new();
+        let mut fsp_authenticated_ingress = DataplaneFspAuthenticatedIngress::default();
+        assert_eq!(
+            mover.retire_queued_completions_into(
+                5,
+                &mut DataplaneRetiredOutputSink::new(
+                    &mut outputs,
+                    &mut outbound_packets,
+                    &mut fsp_authenticated_ingress,
+                ),
+                false,
+            ),
+            5
+        );
+        assert_eq!(
+            outputs.iter().map(PacketOutput::counter).collect::<Vec<_>>(),
+            (0..5).collect::<Vec<_>>()
+        );
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, packet_count - 5);
+
+        assert_eq!(
+            mover.retire_queued_completions_into(
+                packet_count,
+                &mut DataplaneRetiredOutputSink::new(
+                    &mut outputs,
+                    &mut outbound_packets,
+                    &mut fsp_authenticated_ingress,
+                ),
+                false,
+            ),
+            packet_count - 5
+        );
+        assert_eq!(
+            outputs.iter().map(PacketOutput::counter).collect::<Vec<_>>(),
+            (0..packet_count as u64).collect::<Vec<_>>()
+        );
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
+        assert!(outbound_packets.is_empty());
+        assert!(fsp_authenticated_ingress.is_empty());
+        assert!(mover.drain_drops().is_empty());
     }
 
     #[test]

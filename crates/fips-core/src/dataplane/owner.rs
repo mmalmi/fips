@@ -2042,10 +2042,10 @@ impl OwnerState {
             Err(batch) => batch,
         };
 
-        for completion in batch.into_completions() {
+        batch.consume_in_order(|completion| {
             debug_assert_eq!(completion.order(), OrderToken(self.next_retire));
             self.retire_ready_completion_into(completion, retired, drops, compact_endpoint_data);
-        }
+        });
     }
 
     fn retire_ready_open_fsp_session_payload_run_into(
@@ -2067,13 +2067,13 @@ impl OwnerState {
             self.bulk_in_flight = self.bulk_in_flight.saturating_sub(batch_len);
         }
         if batch.generation() != self.generation {
-            for completion in batch.into_completions() {
+            batch.consume_in_order(|completion| {
                 drops.push(PacketDrop::from_completion(
                     &completion,
                     PacketDropReason::StaleCompletionGeneration,
                     None,
                 ));
-            }
+            });
             return Ok(());
         }
 
@@ -2082,7 +2082,7 @@ impl OwnerState {
         let record_endpoint_packets = crate::perf_profile::enabled();
         let mut direct_enqueued_at_ms = None;
         let received_at = std::time::Instant::now();
-        for completion in batch.into_completions() {
+        batch.consume_in_order(|completion| {
             let CryptoResult::Opened(output) = completion.result else {
                 unreachable!("open FSP session payload run contains only opened outputs");
             };
@@ -2107,13 +2107,13 @@ impl OwnerState {
                                 Some(DataplaneEndpointDataBatch::from_ingress(ingress));
                         }
                     }
-                    continue;
+                    return;
                 }
             }
 
             flush_retired_endpoint_data_batch(retired, &mut endpoint_data_batch);
             retired.push_output(output);
-        }
+        });
         flush_retired_endpoint_data_batch(retired, &mut endpoint_data_batch);
         if record_endpoint_packets {
             crate::perf_profile::record_dataplane_established_fsp_data_retire_run(

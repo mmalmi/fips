@@ -15,7 +15,6 @@ pub(crate) struct Dataplane {
 
 pub(crate) struct DataplaneAeadRunBuffers<'a> {
     prepared_work: &'a mut Vec<PreparedCryptoWork>,
-    completion_work: &'a mut Vec<CryptoCompletion>,
     completion_batches: &'a mut Vec<CryptoCompletionBatch>,
     outputs: &'a mut Vec<PacketOutput>,
     outbound_packets: &'a mut Vec<OutboundPacket>,
@@ -26,7 +25,6 @@ pub(crate) struct DataplaneAeadRunBuffers<'a> {
 impl<'a> DataplaneAeadRunBuffers<'a> {
     pub(crate) fn new(
         prepared_work: &'a mut Vec<PreparedCryptoWork>,
-        completion_work: &'a mut Vec<CryptoCompletion>,
         completion_batches: &'a mut Vec<CryptoCompletionBatch>,
         outputs: &'a mut Vec<PacketOutput>,
         outbound_packets: &'a mut Vec<OutboundPacket>,
@@ -35,7 +33,6 @@ impl<'a> DataplaneAeadRunBuffers<'a> {
     ) -> Self {
         Self {
             prepared_work,
-            completion_work,
             completion_batches,
             outputs,
             outbound_packets,
@@ -588,14 +585,12 @@ impl Dataplane {
     ) -> usize {
         let DataplaneAeadRunBuffers {
             prepared_work,
-            completion_work,
             completion_batches,
             outputs,
             outbound_packets,
             fsp_authenticated_ingress,
             drops,
         } = buffers;
-        completion_work.clear();
         let dispatched_total = self.prepare_aead_available_into(
             limit,
             prepared_work,
@@ -607,15 +602,11 @@ impl Dataplane {
             let _executor_submit_timer = crate::perf_profile::Timer::start(
                 crate::perf_profile::Stage::DataplaneExecutorSubmit,
             );
-            worker_pool.submit_prepared_chunk(prepared_work, completion_work);
+            worker_pool.submit_prepared_chunk(prepared_work);
         }
         {
             let _completion_queue_timer = crate::perf_profile::Timer::start(
                 crate::perf_profile::Stage::DataplaneCompletionQueue,
-            );
-            CryptoCompletionBatch::drain_completion_vec_into_batches(
-                completion_work,
-                completion_batches,
             );
             self.queue_completion_batches(completion_batches);
             let mut retired = DataplaneRetiredOutputSink::new(

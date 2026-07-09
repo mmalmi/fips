@@ -22,6 +22,9 @@ impl PreparedSealWork {
 
 const DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS: usize = 8;
 const DATAPLANE_AEAD_JOB_PACKETS: usize = 128;
+const DATAPLANE_AEAD_OPEN_MAX_SUBRUNS: usize = 8;
+const DATAPLANE_AEAD_OPEN_SUBRUN_RESULT_SLOTS: usize =
+    DATAPLANE_AEAD_JOB_PACKETS.div_ceil(DATAPLANE_AEAD_OPEN_MAX_SUBRUNS);
 
 impl PreparedCryptoWork {
     pub(crate) fn open(work: CryptoWork, cipher: AeadKey) -> Self {
@@ -43,6 +46,14 @@ impl PreparedCryptoWork {
 enum PreparedCryptoJob {
     OpenRun {
         queued_at: Option<crate::perf_profile::TraceStamp>,
+        work: Vec<CryptoWork>,
+        cipher: AeadKey,
+        bulk_count: usize,
+    },
+    OpenOwnerSubrun {
+        queued_at: Option<crate::perf_profile::TraceStamp>,
+        run: OpenCryptoOwnerRunHandle,
+        start: usize,
         work: Vec<CryptoWork>,
         cipher: AeadKey,
         bulk_count: usize,
@@ -73,28 +84,56 @@ impl PreparedCryptoJob {
         }
     }
 
+    fn open_owner_subrun(
+        run: OpenCryptoOwnerRunHandle,
+        start: usize,
+        work: Vec<CryptoWork>,
+        cipher: AeadKey,
+    ) -> Self {
+        let bulk_count = dataplane_open_run_bulk_count(&work);
+        Self::OpenOwnerSubrun {
+            queued_at: crate::perf_profile::stamp(),
+            run,
+            start,
+            work,
+            cipher,
+            bulk_count,
+        }
+    }
+
     fn queued_at(&self) -> Option<crate::perf_profile::TraceStamp> {
         match self {
-            Self::OpenRun { queued_at, .. } | Self::Seal { queued_at, .. } => *queued_at,
+            Self::OpenRun { queued_at, .. }
+            | Self::OpenOwnerSubrun { queued_at, .. }
+            | Self::Seal { queued_at, .. } => *queued_at,
         }
     }
 
     fn len(&self) -> usize {
         match self {
-            Self::OpenRun { work, .. } => work.len(),
+            Self::OpenRun { work, .. } | Self::OpenOwnerSubrun { work, .. } => work.len(),
             Self::Seal { work, .. } => work.len(),
         }
     }
 
     fn bulk_count(&self) -> usize {
         match self {
-            Self::OpenRun { bulk_count, .. } | Self::Seal { bulk_count, .. } => *bulk_count,
+            Self::OpenRun { bulk_count, .. }
+            | Self::OpenOwnerSubrun { bulk_count, .. }
+            | Self::Seal { bulk_count, .. } => *bulk_count,
         }
     }
 
     fn execute_completion_batches(self) -> Vec<CryptoCompletionBatch> {
         match self {
             Self::OpenRun { work, cipher, .. } => execute_open_run_job(work, cipher),
+            Self::OpenOwnerSubrun {
+                run,
+                start,
+                work,
+                cipher,
+                ..
+            } => execute_open_owner_subrun_job(run, start, work, cipher),
             Self::Seal { work, .. } => execute_seal_job(work),
         }
     }
@@ -147,7 +186,14 @@ impl PreparedOpenRunJobBuilder {
             .take()
             .expect("open run cipher exists when work is non-empty");
         self.next_order = None;
-        pool.submit_open_run_job(work, cipher);
+        if work
+            .first()
+            .is_some_and(CryptoWork::is_open_fsp_session_payload)
+        {
+            pool.submit_open_owner_run_jobs(work, cipher);
+        } else {
+            pool.submit_open_run_job(work, cipher);
+        }
     }
 
     fn matches_run(&self, work: &CryptoWork, cipher: &AeadKey) -> bool {
@@ -158,6 +204,7 @@ impl PreparedOpenRunJobBuilder {
             return true;
         };
         Arc::ptr_eq(current_cipher, cipher)
+            && first.is_open_fsp_session_payload() == work.is_open_fsp_session_payload()
             && first.reservation.owner_shard() == work.reservation.owner_shard()
             && first.reservation.owner == work.reservation.owner
             && first.reservation.generation == work.reservation.generation
@@ -445,6 +492,31 @@ impl DataplaneAeadWorkerPool {
         self.submit_job(job);
     }
 
+    fn submit_open_owner_run_jobs(&mut self, work: Vec<CryptoWork>, cipher: AeadKey) {
+        let Some(first) = work.first() else {
+            return;
+        };
+        let packet_count = work.len();
+        assert!(
+            packet_count <= DATAPLANE_AEAD_JOB_PACKETS,
+            "open owner run exceeds outer container"
+        );
+        let subrun_packets = dataplane_aead_open_subrun_packets(packet_count);
+        let subrun_count = packet_count.div_ceil(subrun_packets);
+        let run = OpenCryptoOwnerRunHandle::new(&first.reservation, packet_count, subrun_count);
+        let mut work = work.into_iter();
+        for start in (0..packet_count).step_by(subrun_packets) {
+            let subrun = work.by_ref().take(subrun_packets).collect();
+            self.submit_job(PreparedCryptoJob::open_owner_subrun(
+                run.clone(),
+                start,
+                subrun,
+                cipher.clone(),
+            ));
+        }
+        debug_assert!(work.next().is_none());
+    }
+
     fn submit_job(&mut self, job: PreparedCryptoJob) {
         self.reap_finished_tasks();
         let chunk_len = job.len();
@@ -464,11 +536,23 @@ impl DataplaneAeadWorkerPool {
                     job.queued_at(),
                 );
                 let completions = job.execute_completion_batches();
+                if completions.is_empty() {
+                    return;
+                }
+                let completed_count = completions
+                    .iter()
+                    .map(CryptoCompletionBatch::len)
+                    .sum::<usize>();
+                let completed_bulk_count = completions
+                    .iter()
+                    .filter(|batch| batch.lane() == Lane::Bulk)
+                    .map(CryptoCompletionBatch::len)
+                    .sum::<usize>();
                 if send_completion_batches(completions, &completion_tx)
                     .await
                     .is_err()
                 {
-                    counters.finish(chunk_len, bulk_count);
+                    counters.finish(completed_count, completed_bulk_count);
                     return;
                 }
                 completion_notify.notify_one();
@@ -487,9 +571,7 @@ impl DataplaneAeadWorkerPool {
     fn submit_prepared_chunk(
         &mut self,
         prepared: &mut Vec<PreparedCryptoWork>,
-        completions: &mut Vec<CryptoCompletion>,
     ) {
-        completions.clear();
         if prepared.is_empty() {
             return;
         }
@@ -550,6 +632,38 @@ fn execute_open_run_job(work: Vec<CryptoWork>, cipher: AeadKey) -> Vec<CryptoCom
         .collect()
 }
 
+fn execute_open_owner_subrun_job(
+    run: OpenCryptoOwnerRunHandle,
+    start: usize,
+    work: Vec<CryptoWork>,
+    cipher: AeadKey,
+) -> Vec<CryptoCompletionBatch> {
+    let _timer =
+        crate::perf_profile::Timer::start(crate::perf_profile::Stage::DataplaneAeadOpen);
+    let subrun_len = work.len();
+    assert!(
+        subrun_len <= DATAPLANE_AEAD_OPEN_SUBRUN_RESULT_SLOTS,
+        "open owner crypto subrun exceeds result slots"
+    );
+    let mut completions: [Option<CryptoCompletion>; DATAPLANE_AEAD_OPEN_SUBRUN_RESULT_SLOTS] =
+        std::array::from_fn(|_| None);
+    for (slot, work) in completions.iter_mut().zip(work) {
+        *slot = Some(execute_open_crypto_work(work, &cipher));
+    }
+    run.complete_subrun(
+        start,
+        completions
+            .into_iter()
+            .take(subrun_len)
+            .map(|completion| completion.expect("open owner crypto result initialized")),
+    );
+    if run.finish_subrun() {
+        vec![CryptoCompletionBatch::from_open_owner_run(run)]
+    } else {
+        Vec::new()
+    }
+}
+
 fn execute_seal_job(work: Vec<PreparedSealWork>) -> Vec<CryptoCompletionBatch> {
     if work.is_empty() {
         return Vec::new();
@@ -566,6 +680,12 @@ fn dataplane_open_run_bulk_count(work: &[CryptoWork]) -> usize {
         Some(first) if first.reservation.lane == Lane::Bulk => work.len(),
         Some(_) | None => 0,
     }
+}
+
+fn dataplane_aead_open_subrun_packets(packet_count: usize) -> usize {
+    packet_count
+        .div_ceil(DATAPLANE_AEAD_OPEN_MAX_SUBRUNS)
+        .max(DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS)
 }
 
 fn dataplane_aead_worker_priority_reserve(max_in_flight: usize) -> usize {

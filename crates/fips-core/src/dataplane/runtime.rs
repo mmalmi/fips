@@ -4,7 +4,6 @@ const DATAPLANE_DEFERRED_RAW_INGRESS_MAX_RETRIES: u8 = 8;
 pub(crate) struct DataplaneTurnDriver {
     mover: Dataplane,
     prepared_work: Vec<PreparedCryptoWork>,
-    completion_work: Vec<CryptoCompletion>,
     completion_batches: Vec<CryptoCompletionBatch>,
     raw_ingress_drops: Vec<DataplaneRawIngressDrop>,
     output_drops: Vec<DataplaneOutputDrop>,
@@ -103,7 +102,6 @@ impl DataplaneTurnDriver {
         Self {
             mover: Dataplane::new(config),
             prepared_work: Vec::new(),
-            completion_work: Vec::new(),
             completion_batches: Vec::new(),
             raw_ingress_drops: Vec::new(),
             output_drops: Vec::new(),
@@ -1171,7 +1169,6 @@ impl DataplaneTurnDriver {
                     remaining,
                     DataplaneAeadRunBuffers::new(
                         &mut self.prepared_work,
-                        &mut self.completion_work,
                         &mut self.completion_batches,
                         &mut self.outputs,
                         &mut self.retired_outbound_packets,
