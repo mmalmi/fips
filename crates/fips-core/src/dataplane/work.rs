@@ -16,32 +16,27 @@ pub(crate) struct CryptoCompletion {
     result: CryptoResult,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CryptoCompletionSource {
-    Open,
-    Seal,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CryptoCompletionBatch {
     owner_shard: usize,
     owner: OwnerId,
     generation: u64,
     lane: Lane,
-    source: CryptoCompletionSource,
     completions: Vec<CryptoCompletion>,
 }
 
 impl CryptoCompletion {
-    fn source(&self) -> CryptoCompletionSource {
+    fn is_open_family(&self) -> bool {
         match &self.result {
-            CryptoResult::Opened(_) | CryptoResult::Failed(CryptoFailureKind::Open) => {
-                CryptoCompletionSource::Open
-            }
+            CryptoResult::Opened(_) | CryptoResult::Failed(CryptoFailureKind::Open) => true,
             CryptoResult::Sealed(_)
             | CryptoResult::Outbound(_)
-            | CryptoResult::Failed(CryptoFailureKind::Seal) => CryptoCompletionSource::Seal,
+            | CryptoResult::Failed(CryptoFailureKind::Seal) => false,
         }
+    }
+
+    fn same_family(&self, other: &CryptoCompletion) -> bool {
+        self.is_open_family() == other.is_open_family()
     }
 
     fn order(&self) -> OrderToken {
@@ -55,13 +50,11 @@ impl CryptoCompletionBatch {
         let owner = completion.reservation.owner;
         let generation = completion.reservation.generation;
         let lane = completion.reservation.lane;
-        let source = completion.source();
         Self {
             owner_shard,
             owner,
             generation,
             lane,
-            source,
             completions: vec![completion],
         }
     }
@@ -72,21 +65,18 @@ impl CryptoCompletionBatch {
         let owner = first.reservation.owner;
         let generation = first.reservation.generation;
         let lane = first.reservation.lane;
-        let source = first.source();
         debug_assert!(completion_run_is_contiguous(
             &completions,
             owner_shard,
             owner,
             generation,
             lane,
-            source,
         ));
         Some(Self {
             owner_shard,
             owner,
             generation,
             lane,
-            source,
             completions,
         })
     }
@@ -141,7 +131,6 @@ impl CryptoCompletionBatch {
 
     pub(crate) fn is_open_fsp_session_payload_run(&self) -> bool {
         !self.completions.is_empty()
-            && self.source == CryptoCompletionSource::Open
             && self.owner.protocol() == PacketProtocol::Fsp
             && self.completions.iter().all(|completion| {
                 matches!(
@@ -158,7 +147,6 @@ impl CryptoCompletionBatch {
             owner: self.owner,
             generation: self.generation,
             lane: self.lane,
-            source: self.source,
             completions: self.completions.split_off(at),
         }
     }
@@ -172,7 +160,10 @@ impl CryptoCompletionBatch {
             && self.owner == completion.reservation.owner
             && self.generation == completion.reservation.generation
             && self.lane == completion.reservation.lane
-            && self.source == completion.source()
+            && self
+                .completions
+                .first()
+                .is_none_or(|first| first.same_family(completion))
             && self
                 .completions
                 .last()
@@ -186,15 +177,15 @@ fn completion_run_is_contiguous(
     owner: OwnerId,
     generation: u64,
     lane: Lane,
-    source: CryptoCompletionSource,
 ) -> bool {
     let mut expected = completions.first().map(CryptoCompletion::order);
+    let first = completions.first();
     for completion in completions {
         if completion.reservation.owner_shard() != owner_shard
             || completion.reservation.owner != owner
             || completion.reservation.generation != generation
             || completion.reservation.lane != lane
-            || completion.source() != source
+            || first.is_some_and(|first| !first.same_family(completion))
             || Some(completion.order()) != expected
         {
             return false;
