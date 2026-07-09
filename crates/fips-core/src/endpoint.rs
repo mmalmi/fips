@@ -8,13 +8,15 @@ use crate::config::{EthernetConfig, NostrDiscoveryPolicy, TransportInstances, Ud
 use crate::node::ENDPOINT_EVENT_TEST_PAYLOAD_LEN;
 use crate::node::{
     EndpointDataBatchTx, EndpointDataPayload, EndpointDirectSink, EndpointEventSender,
-    NodeEndpointControlCommand, NodeEndpointDataBatch, NodeEndpointEvent,
+    EndpointServiceEventSender, NodeEndpointControlCommand, NodeEndpointDataBatch,
+    NodeEndpointEvent,
 };
 use crate::upper::tun::TunOutboundTx;
 use crate::{
     Config, FipsAddress, IdentityConfig, Node, NodeAddr, NodeDeliveredPacket, NodeError,
     PeerIdentity,
 };
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex as StdMutex};
 use thiserror::Error;
 use tokio::sync::{Mutex, mpsc, oneshot};
@@ -35,7 +37,7 @@ pub use crate::node::{
     FipsEndpointDirectSink,
 };
 pub use builder::FipsEndpointBuilder;
-use receive::EndpointReceiveState;
+use receive::{EndpointReceiveState, ServiceReceiveState};
 pub use status::{FipsEndpointPeer, FipsEndpointRelayStatus};
 
 /// Endpoint data bytes delivered by FIPS.
@@ -58,6 +60,15 @@ pub enum FipsEndpointError {
 
     #[error("endpoint data payload is too large: {len} bytes exceeds max {max} bytes")]
     EndpointDataTooLarge { len: usize, max: usize },
+
+    #[error("service datagram payload is too large: {len} bytes exceeds max {max} bytes")]
+    ServiceDatagramTooLarge { len: usize, max: usize },
+
+    #[error("FSP service port {port} is reserved")]
+    ServicePortReserved { port: u16 },
+
+    #[error("FSP service port {port} is already registered")]
+    ServicePortAlreadyRegistered { port: u16 },
 }
 
 /// Source-attributed endpoint data delivered to an embedded application.
@@ -68,6 +79,34 @@ pub struct FipsEndpointMessage {
     /// Application-owned payload bytes.
     pub data: FipsEndpointData,
     /// Unix-millisecond time when FIPS queued this message for the embedder.
+    pub enqueued_at_ms: u64,
+}
+
+/// One owned outbound FSP DataPacket service payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FipsEndpointOutboundDatagram {
+    pub source_port: u16,
+    pub destination_port: u16,
+    pub data: Vec<u8>,
+}
+
+impl FipsEndpointOutboundDatagram {
+    pub fn new(source_port: u16, destination_port: u16, data: Vec<u8>) -> Self {
+        Self {
+            source_port,
+            destination_port,
+            data,
+        }
+    }
+}
+
+/// Authenticated FSP DataPacket service payload delivered to an embedder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FipsEndpointServiceDatagram {
+    pub source_peer: PeerIdentity,
+    pub source_port: u16,
+    pub destination_port: u16,
+    pub data: FipsEndpointData,
     pub enqueued_at_ms: u64,
 }
 
@@ -200,6 +239,25 @@ fn endpoint_data_payloads_from_vecs(
     Ok(converted)
 }
 
+fn service_datagram_payloads(
+    datagrams: Vec<FipsEndpointOutboundDatagram>,
+) -> Result<Vec<EndpointDataPayload>, FipsEndpointError> {
+    let max = crate::node::session_wire::fsp_service_datagram_max_body_len();
+    let mut payloads = Vec::with_capacity(datagrams.len());
+    for datagram in datagrams {
+        let len = datagram.data.len();
+        let Some(payload) = EndpointDataPayload::from_service_datagram(
+            datagram.source_port,
+            datagram.destination_port,
+            datagram.data,
+        ) else {
+            return Err(FipsEndpointError::ServiceDatagramTooLarge { len, max });
+        };
+        payloads.push(payload);
+    }
+    Ok(payloads)
+}
+
 fn spawn_node_task(
     mut node: Node,
     shutdown_rx: oneshot::Receiver<()>,
@@ -244,6 +302,9 @@ pub struct FipsEndpoint {
     /// -- the translation happens inline in `recv()` and the second hop
     /// (with its scheduler wake per packet) is gone.
     inbound_endpoint_rx: Arc<Mutex<EndpointReceiveState>>,
+    inbound_service_tx: EndpointServiceEventSender,
+    inbound_service_rx: Arc<Mutex<ServiceReceiveState>>,
+    registered_services: Arc<StdMutex<HashSet<u16>>>,
     shutdown_tx: StdMutex<Option<oneshot::Sender<()>>>,
     task: StdMutex<Option<JoinHandle<Result<(), NodeError>>>>,
 }
@@ -287,6 +348,101 @@ impl FipsEndpoint {
         payloads: Vec<Vec<u8>>,
     ) -> Result<(), FipsEndpointError> {
         self.send_payloads_to_peer(remote, payloads)
+    }
+
+    /// Register one local FSP DataPacket destination port.
+    ///
+    /// Port 256 remains reserved for the built-in IPv6 shim. Datagrams for
+    /// unregistered ports are discarded by the authenticated receive path.
+    pub async fn register_service(&self, port: u16) -> Result<(), FipsEndpointError> {
+        if port == crate::node::session_wire::FSP_PORT_IPV6_SHIM {
+            return Err(FipsEndpointError::ServicePortReserved { port });
+        }
+
+        let (response_tx, response_rx) = oneshot::channel();
+        self.endpoint_control_tx
+            .send(NodeEndpointControlCommand::RegisterService { port, response_tx })
+            .await
+            .map_err(|_| FipsEndpointError::Closed)?;
+        if !response_rx.await.map_err(|_| FipsEndpointError::Closed)? {
+            return Err(FipsEndpointError::ServicePortAlreadyRegistered { port });
+        }
+        self.registered_services
+            .lock()
+            .map_err(|_| FipsEndpointError::Closed)?
+            .insert(port);
+        Ok(())
+    }
+
+    /// Send one owned FSP DataPacket service payload to a resolved peer.
+    pub async fn send_datagram(
+        &self,
+        remote: PeerIdentity,
+        source_port: u16,
+        destination_port: u16,
+        payload: Vec<u8>,
+    ) -> Result<(), FipsEndpointError> {
+        self.send_service_datagrams_to_peer(
+            remote,
+            vec![FipsEndpointOutboundDatagram::new(
+                source_port,
+                destination_port,
+                payload,
+            )],
+        )
+    }
+
+    /// Send a caller-owned batch of FSP DataPacket service payloads to one peer.
+    pub async fn send_datagram_batch_to_peer(
+        &self,
+        remote: PeerIdentity,
+        datagrams: Vec<FipsEndpointOutboundDatagram>,
+    ) -> Result<(), FipsEndpointError> {
+        self.send_service_datagrams_to_peer(remote, datagrams)
+    }
+
+    fn send_service_datagrams_to_peer(
+        &self,
+        remote: PeerIdentity,
+        datagrams: Vec<FipsEndpointOutboundDatagram>,
+    ) -> Result<(), FipsEndpointError> {
+        let max = crate::node::session_wire::fsp_service_datagram_max_body_len();
+        if let Some(datagram) = datagrams.iter().find(|datagram| datagram.data.len() > max) {
+            return Err(FipsEndpointError::ServiceDatagramTooLarge {
+                len: datagram.data.len(),
+                max,
+            });
+        }
+        if datagrams.is_empty() {
+            return Ok(());
+        }
+
+        if *remote.node_addr() == self.node_addr {
+            let deliveries = {
+                let registered = self
+                    .registered_services
+                    .lock()
+                    .map_err(|_| FipsEndpointError::Closed)?;
+                datagrams
+                    .into_iter()
+                    .filter(|datagram| registered.contains(&datagram.destination_port))
+                    .map(|datagram| {
+                        crate::node::EndpointServiceDatagramDelivery::new(
+                            self.identity,
+                            datagram.source_port,
+                            datagram.destination_port,
+                            crate::transport::PacketBuffer::new(datagram.data),
+                        )
+                    })
+                    .collect()
+            };
+            return self
+                .inbound_service_tx
+                .send(deliveries)
+                .map_err(|_| FipsEndpointError::Closed);
+        }
+
+        self.send_endpoint_data_batch(remote, service_datagram_payloads(datagrams)?)
     }
 
     fn send_payloads_to_peer(
@@ -395,6 +551,31 @@ impl FipsEndpoint {
         Some(messages.len())
     }
 
+    /// Receive one registered service datagram and drain ready follow-ons.
+    pub async fn recv_service_datagram_batch_into(
+        &self,
+        datagrams: &mut Vec<FipsEndpointServiceDatagram>,
+        max: usize,
+    ) -> Option<usize> {
+        let max = max.clamp(1, ENDPOINT_RECV_BATCH_MAX);
+        datagrams.clear();
+
+        let mut state = self.inbound_service_rx.lock().await;
+        state.drain_pending_into(datagrams, max);
+        while datagrams.len() < max {
+            let event = if datagrams.is_empty() {
+                state.rx.recv().await?
+            } else {
+                match state.rx.try_recv() {
+                    Ok(event) => event,
+                    Err(_) => break,
+                }
+            };
+            state.push_event_into(event, datagrams, max);
+        }
+        Some(datagrams.len())
+    }
+
     /// Synchronous blocking batch send to one resolved remote identity.
     ///
     /// This is the blocking-thread counterpart to [`Self::send_batch_to_peer`].
@@ -406,6 +587,33 @@ impl FipsEndpoint {
         payloads: Vec<Vec<u8>>,
     ) -> Result<(), FipsEndpointError> {
         self.send_payloads_to_peer(remote, payloads)
+    }
+
+    /// Synchronous blocking send of one FSP DataPacket service payload.
+    pub fn blocking_send_datagram(
+        &self,
+        remote: PeerIdentity,
+        source_port: u16,
+        destination_port: u16,
+        payload: Vec<u8>,
+    ) -> Result<(), FipsEndpointError> {
+        self.send_service_datagrams_to_peer(
+            remote,
+            vec![FipsEndpointOutboundDatagram::new(
+                source_port,
+                destination_port,
+                payload,
+            )],
+        )
+    }
+
+    /// Synchronous blocking send of an owned service datagram batch.
+    pub fn blocking_send_datagram_batch_to_peer(
+        &self,
+        remote: PeerIdentity,
+        datagrams: Vec<FipsEndpointOutboundDatagram>,
+    ) -> Result<(), FipsEndpointError> {
+        self.send_service_datagrams_to_peer(remote, datagrams)
     }
 
     /// Synchronous blocking batch receive into a caller-owned buffer.
@@ -439,6 +647,31 @@ impl FipsEndpoint {
         }
 
         Some(messages.len())
+    }
+
+    /// Synchronous blocking receive of registered service datagrams.
+    pub fn blocking_recv_service_datagram_batch_into(
+        &self,
+        datagrams: &mut Vec<FipsEndpointServiceDatagram>,
+        max: usize,
+    ) -> Option<usize> {
+        let max = max.clamp(1, ENDPOINT_RECV_BATCH_MAX);
+        datagrams.clear();
+
+        let mut state = self.inbound_service_rx.blocking_lock();
+        state.drain_pending_into(datagrams, max);
+        while datagrams.len() < max {
+            let event = if datagrams.is_empty() {
+                state.rx.blocking_recv()?
+            } else {
+                match state.rx.try_recv() {
+                    Ok(event) => event,
+                    Err(_) => break,
+                }
+            };
+            state.push_event_into(event, datagrams, max);
+        }
+        Some(datagrams.len())
     }
 
     /// Replace the runtime peer list. Newly added auto-connect peers get

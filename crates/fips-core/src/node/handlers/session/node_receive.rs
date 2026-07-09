@@ -80,6 +80,8 @@ impl Node {
         let mut processed = 0usize;
         let mut endpoint_deliveries = Vec::new();
         let mut endpoint_commit = SessionReceiveBatchCommit::default();
+        let mut service_deliveries = Vec::new();
+        let mut service_commit = SessionReceiveBatchCommit::default();
         let mut tun_packets = Vec::new();
         let mut tun_commit = SessionReceiveBatchCommit::default();
 
@@ -91,6 +93,11 @@ impl Node {
             if dispatch.is_endpoint_data() {
                 self.flush_dataplane_tun_session_batch(&mut tun_packets, &mut tun_commit)
                     .await;
+                self.flush_dataplane_service_session_batch(
+                    &mut service_deliveries,
+                    &mut service_commit,
+                )
+                .await;
                 let deliveries =
                     dispatch.dispatch_endpoint_data_batched(self, &mut endpoint_commit);
                 processed = processed.saturating_add(deliveries.len());
@@ -104,7 +111,29 @@ impl Node {
                     &mut endpoint_commit,
                 )
                 .await;
+                self.flush_dataplane_service_session_batch(
+                    &mut service_deliveries,
+                    &mut service_commit,
+                )
+                .await;
                 dispatch.dispatch_ipv6_shim_batched(self, &mut tun_packets, &mut tun_commit);
+                processed = processed.saturating_add(1);
+                continue;
+            }
+
+            if dispatch.is_service_data_packet() {
+                self.flush_dataplane_endpoint_session_batch(
+                    &mut endpoint_deliveries,
+                    &mut endpoint_commit,
+                )
+                .await;
+                self.flush_dataplane_tun_session_batch(&mut tun_packets, &mut tun_commit)
+                    .await;
+                if let Some(delivery) =
+                    dispatch.dispatch_service_datagram_batched(self, &mut service_commit)
+                {
+                    service_deliveries.push(delivery);
+                }
                 processed = processed.saturating_add(1);
                 continue;
             }
@@ -116,6 +145,11 @@ impl Node {
             .await;
             self.flush_dataplane_tun_session_batch(&mut tun_packets, &mut tun_commit)
                 .await;
+            self.flush_dataplane_service_session_batch(
+                &mut service_deliveries,
+                &mut service_commit,
+            )
+            .await;
             dispatch.dispatch(self).await;
             processed = processed.saturating_add(1);
         }
@@ -124,6 +158,11 @@ impl Node {
             .await;
         self.flush_dataplane_tun_session_batch(&mut tun_packets, &mut tun_commit)
             .await;
+        self.flush_dataplane_service_session_batch(
+            &mut service_deliveries,
+            &mut service_commit,
+        )
+        .await;
         processed
     }
 
@@ -340,6 +379,24 @@ impl Node {
         let pending_flush_destinations = std::mem::take(endpoint_commit).finish(self);
         if !endpoint_deliveries.is_empty() {
             self.deliver_endpoint_data_batch(std::mem::take(endpoint_deliveries));
+        }
+        for dest_addr in pending_flush_destinations {
+            self.flush_pending_packets(&dest_addr).await;
+        }
+    }
+
+    async fn flush_dataplane_service_session_batch(
+        &mut self,
+        deliveries: &mut Vec<EndpointServiceDatagramDelivery>,
+        commit: &mut SessionReceiveBatchCommit,
+    ) {
+        if deliveries.is_empty() && commit.is_empty() {
+            return;
+        }
+
+        let pending_flush_destinations = std::mem::take(commit).finish(self);
+        if !deliveries.is_empty() {
+            self.deliver_endpoint_service_datagram_batch(std::mem::take(deliveries));
         }
         for dest_addr in pending_flush_destinations {
             self.flush_pending_packets(&dest_addr).await;

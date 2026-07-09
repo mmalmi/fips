@@ -28,6 +28,22 @@ async fn recv_endpoint_batch(
     messages
 }
 
+async fn recv_service_batch(
+    endpoint: &FipsEndpoint,
+    max: usize,
+    expected: &str,
+) -> Vec<FipsEndpointServiceDatagram> {
+    let mut datagrams = Vec::with_capacity(max);
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        endpoint.recv_service_datagram_batch_into(&mut datagrams, max),
+    )
+    .await
+    .expect("service receive should not time out")
+    .unwrap_or_else(|| panic!("{expected}"));
+    datagrams
+}
+
 #[tokio::test]
 async fn endpoint_starts_without_system_tun() {
     let endpoint = FipsEndpoint::builder()
@@ -65,6 +81,95 @@ async fn send_batch_to_peer_loopback_endpoint_data_roundtrips() {
     assert_eq!(second.source_peer.node_addr(), endpoint.node_addr());
     assert_eq!(second.source_peer.npub(), endpoint.npub());
     assert_eq!(second.data.as_slice(), &b"pong"[..]);
+
+    endpoint.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test]
+async fn registered_service_loopback_request_reply_preserves_ports_and_endpoint_data() {
+    const SERVICE_PORT: u16 = 7368;
+    let endpoint = FipsEndpoint::builder()
+        .without_system_tun()
+        .bind()
+        .await
+        .expect("endpoint should bind");
+    endpoint
+        .register_service(SERVICE_PORT)
+        .await
+        .expect("service should register");
+
+    let duplicate = endpoint
+        .register_service(SERVICE_PORT)
+        .await
+        .expect_err("duplicate registration should fail");
+    assert!(matches!(
+        duplicate,
+        FipsEndpointError::ServicePortAlreadyRegistered { port: SERVICE_PORT }
+    ));
+    let reserved = endpoint
+        .register_service(crate::node::session_wire::FSP_PORT_IPV6_SHIM)
+        .await
+        .expect_err("IPv6 shim port should stay reserved");
+    assert!(matches!(
+        reserved,
+        FipsEndpointError::ServicePortReserved {
+            port: crate::node::session_wire::FSP_PORT_IPV6_SHIM
+        }
+    ));
+
+    let local = PeerIdentity::from_npub(endpoint.npub()).expect("local peer identity");
+    endpoint
+        .send_datagram(local, 41_000, SERVICE_PORT, b"REQ".to_vec())
+        .await
+        .expect("service request should send");
+    let request = recv_service_batch(&endpoint, 8, "request should arrive").await;
+    assert_eq!(request.len(), 1);
+    assert_eq!(request[0].source_peer.node_addr(), local.node_addr());
+    assert_eq!(request[0].source_peer.npub(), local.npub());
+    assert_eq!(request[0].source_port, 41_000);
+    assert_eq!(request[0].destination_port, SERVICE_PORT);
+    assert_eq!(request[0].data.as_slice(), b"REQ");
+
+    endpoint
+        .send_datagram(
+            local,
+            SERVICE_PORT,
+            request[0].source_port,
+            b"EVENT".to_vec(),
+        )
+        .await
+        .expect("service reply should send");
+    endpoint
+        .register_service(41_000)
+        .await
+        .expect("request source port should register");
+    endpoint
+        .send_datagram_batch_to_peer(
+            local,
+            vec![
+                FipsEndpointOutboundDatagram::new(SERVICE_PORT, 41_000, b"EVENT-1".to_vec()),
+                FipsEndpointOutboundDatagram::new(SERVICE_PORT, 41_000, b"EVENT-2".to_vec()),
+            ],
+        )
+        .await
+        .expect("registered reply batch should send");
+    let reply = recv_service_batch(&endpoint, 1, "first reply should arrive").await;
+    assert_eq!(reply.len(), 1);
+    assert_eq!(reply[0].source_peer.node_addr(), local.node_addr());
+    assert_eq!(reply[0].source_peer.npub(), local.npub());
+    assert_eq!(reply[0].source_port, SERVICE_PORT);
+    assert_eq!(reply[0].destination_port, 41_000);
+    assert_eq!(reply[0].data.as_slice(), b"EVENT-1");
+    let reply_tail = recv_service_batch(&endpoint, 8, "second reply should arrive").await;
+    assert_eq!(reply_tail.len(), 1);
+    assert_eq!(reply_tail[0].data.as_slice(), b"EVENT-2");
+
+    endpoint
+        .send_batch_to_peer(local, vec![b"legacy-endpoint".to_vec()])
+        .await
+        .expect("legacy endpoint data should still send");
+    let endpoint_messages = recv_endpoint_batch(&endpoint, 1, "endpoint data should arrive").await;
+    assert_eq!(endpoint_messages[0].data.as_slice(), b"legacy-endpoint");
 
     endpoint.shutdown().await.expect("shutdown should succeed");
 }

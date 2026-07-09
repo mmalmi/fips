@@ -79,15 +79,19 @@ impl Node {
         // queue.
         let (event_tx, event_rx) =
             EndpointEventSender::channel_with_direct_sink(capacity, direct_sink);
+        let (service_event_tx, service_event_rx) = EndpointServiceEventSender::channel(capacity);
         self.endpoint_control_rx = Some(control_rx);
         self.endpoint_data_rx = Some(data_rx);
         self.endpoint_events.attach(event_tx.clone());
+        self.endpoint_services.attach(service_event_tx.clone());
 
         Ok(EndpointDataIo {
             control_tx,
             data_batch_tx,
             event_rx,
             event_tx,
+            service_event_rx,
+            service_event_tx,
         })
     }
 

@@ -85,6 +85,7 @@ pub use peer::{
 pub use endpoint::{
     FipsEndpoint, FipsEndpointBuilder, FipsEndpointDirectDeliveryError,
     FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun, FipsEndpointDirectSink,
-    FipsEndpointError, FipsEndpointMessage,
+    FipsEndpointError, FipsEndpointMessage, FipsEndpointOutboundDatagram,
+    FipsEndpointServiceDatagram,
 };
 pub use node::{ExternalPacketIo, Node, NodeDeliveredPacket, NodeError, NodeState};

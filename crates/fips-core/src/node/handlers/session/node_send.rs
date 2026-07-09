@@ -85,6 +85,9 @@ impl Node {
                 let result = self.refresh_peer_paths(npubs).await;
                 let _ = response_tx.send(result);
             }
+            NodeEndpointControlCommand::RegisterService { port, response_tx } => {
+                let _ = response_tx.send(self.endpoint_services.register(port));
+            }
             NodeEndpointControlCommand::PeerSnapshot { response_tx } => {
                 let snapshot_now = Instant::now();
                 let nostr_failure_state: std::collections::HashMap<String, _> = self

@@ -73,6 +73,99 @@ async fn test_session_direct_peer_handshake() {
 }
 
 #[test]
+fn test_registered_service_datagram_request_reply_and_ipv6_port_compatibility() {
+    run_large_stack_async_test("fips-service-datagram-request-reply", || async {
+        const CLIENT_PORT: u16 = 41_000;
+        const SERVICE_PORT: u16 = 7368;
+        let edges = vec![(0, 1)];
+        let mut nodes = run_tree_test(2, &edges, false).await;
+        verify_tree_convergence(&nodes);
+        populate_all_coord_caches(&mut nodes);
+
+        let mut client_endpoint = nodes[0]
+            .node
+            .attach_endpoint_data_io(8)
+            .expect("client endpoint I/O should attach");
+        let mut server_endpoint = nodes[1]
+            .node
+            .attach_endpoint_data_io(8)
+            .expect("server endpoint I/O should attach");
+        assert!(nodes[0].node.endpoint_services.register(CLIENT_PORT));
+        assert!(nodes[1].node.endpoint_services.register(SERVICE_PORT));
+
+        let client_identity =
+            PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
+        let server_identity =
+            PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
+        send_service_datagram_via_dataplane(
+            &mut nodes[0].node,
+            server_identity,
+            CLIENT_PORT,
+            SERVICE_PORT,
+            b"REQ".to_vec(),
+        )
+        .await;
+
+        let request = recv_service_event_while_draining(
+            &mut nodes,
+            &mut server_endpoint.service_event_rx,
+            Duration::from_secs(10),
+            "service request",
+        )
+        .await;
+        assert_eq!(request.messages.len(), 1);
+        let request = &request.messages[0];
+        assert_eq!(request.source_peer, client_identity);
+        assert_eq!(request.source_port, CLIENT_PORT);
+        assert_eq!(request.destination_port, SERVICE_PORT);
+        assert_eq!(request.payload.as_slice(), b"REQ");
+
+        send_service_datagram_via_dataplane(
+            &mut nodes[1].node,
+            request.source_peer,
+            SERVICE_PORT,
+            request.source_port,
+            b"EVENT".to_vec(),
+        )
+        .await;
+        let reply = recv_service_event_while_draining(
+            &mut nodes,
+            &mut client_endpoint.service_event_rx,
+            Duration::from_secs(10),
+            "service reply",
+        )
+        .await;
+        assert_eq!(reply.messages.len(), 1);
+        let reply = &reply.messages[0];
+        assert_eq!(reply.source_peer, server_identity);
+        assert_eq!(reply.source_port, SERVICE_PORT);
+        assert_eq!(reply.destination_port, CLIENT_PORT);
+        assert_eq!(reply.payload.as_slice(), b"EVENT");
+
+        let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
+        nodes[1].node.tun_tx = Some(tun_tx);
+        let ipv6_packet = build_ipv6_packet(
+            client_identity.address(),
+            server_identity.address(),
+            b"port-256-still-ipv6",
+        );
+        send_tun_packet_via_dataplane(&mut nodes, 0, ipv6_packet.clone()).await;
+        let delivered = recv_tun_packet_while_draining(
+            &mut nodes,
+            &tun_rx,
+            Duration::from_secs(10),
+            "port 256 IPv6 packet",
+        )
+        .await;
+        assert_eq!(delivered, ipv6_packet);
+
+        assert!(client_endpoint.event_rx.try_recv().is_err());
+        assert!(server_endpoint.event_rx.try_recv().is_err());
+        cleanup_nodes(&mut nodes).await;
+    });
+}
+
+#[test]
 fn test_endpoint_data_flushes_after_session_establishment() {
     run_large_stack_async_test("fips-endpoint-data-flushes", || async {
         let edges = vec![(0, 1)];

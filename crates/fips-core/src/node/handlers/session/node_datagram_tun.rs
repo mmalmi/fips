@@ -24,6 +24,22 @@ impl Node {
         }
     }
 
+    fn deliver_endpoint_service_datagram_batch(
+        &mut self,
+        deliveries: Vec<EndpointServiceDatagramDelivery>,
+    ) {
+        if deliveries.is_empty() {
+            return;
+        }
+        let count = deliveries.len();
+        if self.endpoint_services.deliver(deliveries).is_err() {
+            debug!(
+                messages = count,
+                "Failed to deliver endpoint service datagram batch"
+            );
+        }
+    }
+
     /// Send a non-data session message (reports, notifications) over an established session.
     ///
     /// Similar to endpoint/TUN dataplane data sends, but:

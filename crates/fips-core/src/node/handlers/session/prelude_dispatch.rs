@@ -8,8 +8,9 @@ use crate::node::session_wire::{
 };
 use crate::node::wire::{FLAG_CE, FLAG_SP};
 use crate::node::{
-    EndpointDataDelivery, EndpointDataPayload, LocalSessionPayload, Node, NodeEndpointControlCommand,
-    NodeEndpointDataBatch, NodeEndpointPeer, NodeEndpointRelayStatus, NodeError,
+    EndpointDataDelivery, EndpointDataPayload, EndpointServiceDatagramDelivery,
+    LocalSessionPayload, Node, NodeEndpointControlCommand, NodeEndpointDataBatch, NodeEndpointPeer,
+    NodeEndpointRelayStatus, NodeError,
     SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD, SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
     SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
 };
@@ -142,6 +143,26 @@ impl AuthenticatedSessionMessage {
         self.buffer.truncate(body_len);
         let source_peer = self.source_peer;
         vec![EndpointDataDelivery::new(source_peer, self.buffer)]
+    }
+
+    fn into_service_datagram_delivery(
+        mut self,
+        source_port: u16,
+        destination_port: u16,
+    ) -> EndpointServiceDatagramDelivery {
+        debug_assert_eq!(self.msg_type, SessionMessageType::DataPacket.to_byte());
+        let body_offset = self.plaintext_offset + FSP_INNER_HEADER_SIZE + FSP_PORT_HEADER_SIZE;
+        let body_len = self.body_len().saturating_sub(FSP_PORT_HEADER_SIZE);
+        if body_offset > 0 {
+            assert!(self.buffer.trim_front(body_offset));
+        }
+        self.buffer.truncate(body_len);
+        EndpointServiceDatagramDelivery::new(
+            self.source_peer,
+            source_port,
+            destination_port,
+            self.buffer,
+        )
     }
 }
 
@@ -309,6 +330,25 @@ impl AuthenticatedSessionDispatch {
         u16::from_le_bytes([rest[2], rest[3]]) == FSP_PORT_IPV6_SHIM
     }
 
+    fn service_ports(&self) -> Option<(u16, u16)> {
+        if self.msg_type() != SessionMessageType::DataPacket.to_byte() {
+            return None;
+        }
+        let body = self.body();
+        if body.len() < FSP_PORT_HEADER_SIZE {
+            return None;
+        }
+        Some((
+            u16::from_le_bytes([body[0], body[1]]),
+            u16::from_le_bytes([body[2], body[3]]),
+        ))
+    }
+
+    fn is_service_data_packet(&self) -> bool {
+        self.service_ports()
+            .is_some_and(|(_, destination_port)| destination_port != FSP_PORT_IPV6_SHIM)
+    }
+
     fn body(&self) -> &[u8] {
         self.message.body()
     }
@@ -356,7 +396,7 @@ impl AuthenticatedSessionDispatch {
 
         match SessionMessageType::from_byte(msg_type) {
             Some(SessionMessageType::DataPacket) => {
-                let (dst_port, service_payload_len) = {
+                let (src_port, dst_port, service_payload_len) = {
                     let rest = self.body();
                     // msg_type 0x10: port-multiplexed service dispatch
                     if rest.len() < FSP_PORT_HEADER_SIZE {
@@ -364,6 +404,7 @@ impl AuthenticatedSessionDispatch {
                         return;
                     }
                     (
+                        u16::from_le_bytes([rest[0], rest[1]]),
                         u16::from_le_bytes([rest[2], rest[3]]),
                         rest.len() - FSP_PORT_HEADER_SIZE,
                     )
@@ -412,11 +453,18 @@ impl AuthenticatedSessionDispatch {
                         }
                     }
                     _ => {
-                        debug!(
-                            src = %node.peer_display_name(&source_addr),
-                            dst_port,
-                            "Unknown FSP service port, dropping DataPacket"
-                        );
+                        if node.endpoint_services.is_registered(dst_port) {
+                            node.deliver_endpoint_service_datagram_batch(vec![
+                                self.message
+                                    .into_service_datagram_delivery(src_port, dst_port),
+                            ]);
+                        } else {
+                            debug!(
+                                src = %node.peer_display_name(&source_addr),
+                                dst_port,
+                                "Unregistered FSP service port, dropping DataPacket"
+                            );
+                        }
                     }
                 }
             }
@@ -523,6 +571,26 @@ impl AuthenticatedSessionDispatch {
                 );
             }
         }
+    }
+
+    fn dispatch_service_datagram_batched(
+        self,
+        node: &mut Node,
+        commit: &mut SessionReceiveBatchCommit,
+    ) -> Option<EndpointServiceDatagramDelivery> {
+        debug_assert!(self.is_service_data_packet());
+        let (source_port, destination_port) = self
+            .service_ports()
+            .expect("validated service DataPacket must carry ports");
+
+        node.learn_reverse_route(*self.source_addr(), *self.previous_hop_addr());
+        commit.push_dispatch(&self);
+        node.endpoint_services
+            .is_registered(destination_port)
+            .then(|| {
+                self.message
+                    .into_service_datagram_delivery(source_port, destination_port)
+            })
     }
 }
 

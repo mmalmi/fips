@@ -120,6 +120,7 @@ pub(crate) struct NodeEndpointDataBatch {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct EndpointDataPayload {
+    msg_type: u8,
     body: crate::transport::PacketBuffer,
 }
 
@@ -127,9 +128,29 @@ impl EndpointDataPayload {
     pub(crate) fn from_packet_payload(payload: Vec<u8>) -> Option<Self> {
         (payload.len() <= crate::node::session_wire::fsp_endpoint_data_max_body_len()).then_some(
             Self {
+                msg_type: crate::protocol::SessionMessageType::EndpointData.to_byte(),
                 body: crate::transport::PacketBuffer::new(payload),
             },
         )
+    }
+
+    pub(crate) fn from_service_datagram(
+        source_port: u16,
+        destination_port: u16,
+        payload: Vec<u8>,
+    ) -> Option<Self> {
+        if payload.len() > crate::node::session_wire::fsp_service_datagram_max_body_len() {
+            return None;
+        }
+        let mut body =
+            Vec::with_capacity(crate::node::session_wire::FSP_PORT_HEADER_SIZE + payload.len());
+        body.extend_from_slice(&source_port.to_le_bytes());
+        body.extend_from_slice(&destination_port.to_le_bytes());
+        body.extend_from_slice(&payload);
+        Some(Self {
+            msg_type: crate::protocol::SessionMessageType::DataPacket.to_byte(),
+            body: crate::transport::PacketBuffer::new(body),
+        })
     }
 
     pub(crate) fn body_len(&self) -> usize {
@@ -138,6 +159,10 @@ impl EndpointDataPayload {
 
     pub(crate) fn into_body(self) -> crate::transport::PacketBuffer {
         self.body
+    }
+
+    pub(crate) fn into_fsp_payload(self) -> (u8, crate::transport::PacketBuffer) {
+        (self.msg_type, self.body)
     }
 }
 
@@ -221,5 +246,9 @@ pub(crate) enum NodeEndpointControlCommand {
     RefreshPeerPaths {
         npubs: Vec<String>,
         response_tx: tokio::sync::oneshot::Sender<Result<usize, NodeError>>,
+    },
+    RegisterService {
+        port: u16,
+        response_tx: tokio::sync::oneshot::Sender<bool>,
     },
 }

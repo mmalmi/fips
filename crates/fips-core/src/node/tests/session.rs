@@ -116,6 +116,28 @@ async fn recv_endpoint_event_while_draining(
     .unwrap_or_else(|_| panic!("{context}: endpoint data should not time out"))
 }
 
+async fn recv_service_event_while_draining(
+    nodes: &mut [TestNode],
+    rx: &mut EndpointServiceEventReceiver,
+    timeout: Duration,
+    context: &str,
+) -> NodeEndpointServiceEvent {
+    tokio::time::timeout(timeout, async {
+        loop {
+            tokio::select! {
+                event = rx.recv() => {
+                    return event.unwrap_or_else(|| panic!("{context}: service event channel closed"));
+                }
+                _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                    process_available_packets(nodes).await;
+                }
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{context}: service datagram should not time out"))
+}
+
 fn expect_single_endpoint_data_event(
     event: NodeEndpointEvent,
 ) -> crate::node::EndpointDataDelivery {
@@ -155,6 +177,39 @@ async fn send_endpoint_data_via_dataplane(
         node.flush_pending_packets(&dest_addr).await;
     }
     Ok(())
+}
+
+async fn send_service_datagram_via_dataplane(
+    node: &mut Node,
+    remote: PeerIdentity,
+    source_port: u16,
+    destination_port: u16,
+    payload: Vec<u8>,
+) {
+    let dest_addr = *remote.node_addr();
+    node.handle_endpoint_data_batch_no_established_flush(
+        crate::node::NodeEndpointDataBatch::from_payloads(
+            remote,
+            vec![
+                crate::node::EndpointDataPayload::from_service_datagram(
+                    source_port,
+                    destination_port,
+                    payload,
+                )
+                .expect("test service datagram payload"),
+            ],
+            None,
+        )
+        .expect("one-packet service datagram batch"),
+    )
+    .await;
+    if node
+        .get_session(&dest_addr)
+        .is_some_and(|entry| entry.is_established())
+        && node.find_next_hop(&dest_addr).is_some()
+    {
+        node.flush_pending_packets(&dest_addr).await;
+    }
 }
 
 fn enqueue_tun_packet_via_dataplane(nodes: &mut [TestNode], index: usize, packet: Vec<u8>) {

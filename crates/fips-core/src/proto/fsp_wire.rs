@@ -94,6 +94,11 @@ pub const fn fsp_endpoint_data_max_body_len() -> usize {
     u16::MAX as usize - FSP_INNER_HEADER_SIZE
 }
 
+/// Maximum service payload bytes after the DataPacket source/destination ports.
+pub const fn fsp_service_datagram_max_body_len() -> usize {
+    fsp_endpoint_data_max_body_len() - FSP_PORT_HEADER_SIZE
+}
+
 // ============================================================================
 // Common Prefix
 // ============================================================================

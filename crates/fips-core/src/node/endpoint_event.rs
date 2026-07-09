@@ -589,6 +589,10 @@ pub(crate) struct EndpointDataIo {
     /// inject an event into the same queue without going through the encrypt /
     /// decrypt path, while keeping every consumer reading from a single channel.
     pub(crate) event_tx: EndpointEventSender,
+    /// Receive registered FSP service datagrams.
+    pub(crate) service_event_rx: EndpointServiceEventReceiver,
+    /// Clone used for registered in-process loopback service sends.
+    pub(crate) service_event_tx: EndpointServiceEventSender,
 }
 
 /// Observable owner for endpoint events delivered to embedded applications.

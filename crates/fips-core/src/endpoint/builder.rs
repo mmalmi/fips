@@ -143,6 +143,7 @@ impl FipsEndpointBuilder {
         let task = spawn_node_task(node, shutdown_rx);
         let endpoint_control_tx = endpoint_data_io.control_tx;
         let endpoint_data_batches = endpoint_data_io.data_batch_tx;
+        let inbound_service_tx = endpoint_data_io.service_event_tx;
 
         Ok(FipsEndpoint {
             identity,
@@ -158,6 +159,11 @@ impl FipsEndpointBuilder {
             inbound_endpoint_rx: Arc::new(Mutex::new(EndpointReceiveState::new(
                 endpoint_data_io.event_rx,
             ))),
+            inbound_service_tx,
+            inbound_service_rx: Arc::new(Mutex::new(ServiceReceiveState::new(
+                endpoint_data_io.service_event_rx,
+            ))),
+            registered_services: Arc::new(StdMutex::new(HashSet::new())),
             shutdown_tx: std::sync::Mutex::new(Some(shutdown_tx)),
             task: std::sync::Mutex::new(Some(task)),
         })

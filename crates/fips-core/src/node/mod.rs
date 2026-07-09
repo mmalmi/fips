@@ -11,6 +11,7 @@ mod core_impl;
 mod dataplane_integration;
 mod endpoint_channels;
 mod endpoint_event;
+mod endpoint_service;
 mod endpoint_traffic;
 mod error;
 mod handlers;
@@ -57,6 +58,11 @@ pub(crate) use endpoint_event::{
 pub use endpoint_event::{
     FipsEndpointDirectDeliveryError, FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun,
     FipsEndpointDirectSink,
+};
+pub(in crate::node) use endpoint_service::EndpointServiceRuntime;
+pub(crate) use endpoint_service::{
+    EndpointServiceDatagramDelivery, EndpointServiceEventReceiver, EndpointServiceEventSender,
+    NodeEndpointServiceEvent,
 };
 pub(crate) use endpoint_traffic::{PendingEndpointData, PendingSessionTrafficQueues};
 pub(in crate::node) use identity_cache::IdentityCache;
@@ -288,6 +294,8 @@ pub struct Node {
     endpoint_data_rx: Option<EndpointDataBatchRx>,
     /// Endpoint data event delivery runtime used by embedded/no-daemon integrations.
     endpoint_events: EndpointEventRuntime,
+    /// Registered FSP DataPacket services and their app delivery queue.
+    endpoint_services: EndpointServiceRuntime,
     /// TUN reader thread handle.
     tun_reader_handle: Option<JoinHandle<()>>,
     /// TUN writer thread handle.

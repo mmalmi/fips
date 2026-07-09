@@ -75,12 +75,10 @@ impl DataplaneEndpointDataRoute {
     ) -> DataplaneEndpointDataBatchRoute {
         let mut result = DataplaneEndpointDataBatchRoute::with_capacity(payloads.len());
         for payload in payloads {
+            let (msg_type, body) = payload.into_fsp_payload();
             result.routed.push(
-                self.build_packet(
-                    crate::protocol::SessionMessageType::EndpointData.to_byte(),
-                    payload.into_body(),
-                )
-                .with_activity_tick(activity_tick),
+                self.build_packet(msg_type, body)
+                    .with_activity_tick(activity_tick),
             );
         }
         result

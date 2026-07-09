@@ -109,6 +109,7 @@ impl Node {
             endpoint_control_rx: None,
             endpoint_data_rx: None,
             endpoint_events: EndpointEventRuntime::default(),
+            endpoint_services: EndpointServiceRuntime::default(),
             tun_reader_handle: None,
             tun_writer_handle: None,
             #[cfg(target_os = "macos")]
@@ -252,6 +253,7 @@ impl Node {
             endpoint_control_rx: None,
             endpoint_data_rx: None,
             endpoint_events: EndpointEventRuntime::default(),
+            endpoint_services: EndpointServiceRuntime::default(),
             tun_reader_handle: None,
             tun_writer_handle: None,
             #[cfg(target_os = "macos")]
