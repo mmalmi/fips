@@ -9,6 +9,25 @@ fn endpoint_delivery(source: PeerIdentity, payload: Vec<u8>) -> EndpointDataDeli
     EndpointDataDelivery::new(source, crate::transport::PacketBuffer::new(payload))
 }
 
+fn direct_packet_run(source: PeerIdentity, payloads: &[&[u8]]) -> FipsEndpointDirectPacketRun {
+    let mut bytes = Vec::new();
+    let mut ranges = Vec::with_capacity(payloads.len());
+    for payload in payloads {
+        let start = bytes.len();
+        bytes.extend_from_slice(payload);
+        ranges.push(start..bytes.len());
+    }
+    FipsEndpointDirectPacketRun::from_segmented_payload(
+        FipsEndpointDirectPacketRunMeta::new(source, *source.node_addr(), false, true, 0),
+        crate::transport::PacketBuffer::new(bytes),
+        ranges,
+    )
+}
+
+fn direct_packet_payloads(run: &FipsEndpointDirectPacketRun) -> Vec<Vec<u8>> {
+    run.packet_slices().map(<[u8]>::to_vec).collect()
+}
+
 fn one_message_endpoint_event(source: PeerIdentity, payload: Vec<u8>) -> NodeEndpointEvent {
     NodeEndpointEvent {
         messages: vec![endpoint_delivery(source, payload)],
@@ -25,6 +44,45 @@ fn expect_one_message(event: NodeEndpointEvent) -> EndpointDataDelivery {
             panic!("expected one endpoint message, got {}", messages.len())
         }
     }
+}
+
+#[test]
+fn direct_packet_run_split_preserves_chained_packet_boundaries() {
+    let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+    let mut run = direct_packet_run(source, &[b"one", b"two", b"three"]);
+    run.append_run(direct_packet_run(source, &[b"four", b"five"]));
+
+    let mut tail = run
+        .split_off_packets(2)
+        .expect("split inside first segment should produce tail");
+    assert_eq!(run.len(), 2);
+    assert_eq!(run.packet_bytes(), b"one".len() + b"two".len());
+    assert_eq!(
+        direct_packet_payloads(&run),
+        vec![b"one".to_vec(), b"two".to_vec()]
+    );
+    assert_eq!(tail.len(), 3);
+    assert_eq!(
+        tail.packet_bytes(),
+        b"three".len() + b"four".len() + b"five".len()
+    );
+    assert_eq!(
+        direct_packet_payloads(&tail),
+        vec![b"three".to_vec(), b"four".to_vec(), b"five".to_vec()]
+    );
+
+    let next_tail = tail
+        .split_off_packets(1)
+        .expect("split at chained segment boundary should produce tail");
+    assert_eq!(tail.len(), 1);
+    assert_eq!(tail.packet_bytes(), b"three".len());
+    assert_eq!(direct_packet_payloads(&tail), vec![b"three".to_vec()]);
+    assert_eq!(next_tail.len(), 2);
+    assert_eq!(next_tail.packet_bytes(), b"four".len() + b"five".len());
+    assert_eq!(
+        direct_packet_payloads(&next_tail),
+        vec![b"four".to_vec(), b"five".to_vec()]
+    );
 }
 
 #[test]

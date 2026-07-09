@@ -127,26 +127,6 @@ impl FipsEndpointDirectPacketStorage {
         Self::Segmented(FipsEndpointDirectPacketSegment::empty())
     }
 
-    fn build_chained(mut segments: Vec<FipsEndpointDirectPacketSegment>) -> Self {
-        let mut packet_ends = Vec::with_capacity(segments.len());
-        let mut packet_count = 0usize;
-        let mut packet_bytes = 0usize;
-        segments.retain(|segment| {
-            if segment.is_empty() {
-                return false;
-            }
-            packet_count = packet_count.saturating_add(segment.len());
-            packet_ends.push(packet_count);
-            packet_bytes = packet_bytes.saturating_add(segment.packet_bytes);
-            true
-        });
-        Self::Chained {
-            segments,
-            packet_ends,
-            packet_bytes,
-        }
-    }
-
     fn push_segment(&mut self, segment: FipsEndpointDirectPacketSegment) {
         if segment.is_empty() {
             return;
@@ -195,18 +175,6 @@ impl FipsEndpointDirectPacketStorage {
         }
     }
 
-    fn build(segments: Vec<FipsEndpointDirectPacketSegment>) -> Self {
-        let mut segments: Vec<_> = segments
-            .into_iter()
-            .filter(|segment| !segment.is_empty())
-            .collect();
-        match segments.len() {
-            0 => Self::empty_segmented(),
-            1 => Self::Segmented(segments.pop().expect("one segment must exist")),
-            _ => Self::build_chained(segments),
-        }
-    }
-
     fn packet_count(&self) -> usize {
         match self {
             Self::Segmented(segment) => segment.len(),
@@ -214,41 +182,82 @@ impl FipsEndpointDirectPacketStorage {
         }
     }
 
-    fn into_segments(self) -> Vec<FipsEndpointDirectPacketSegment> {
-        match self {
-            Self::Segmented(segment) => vec![segment],
-            Self::Chained { segments, .. } => segments,
-        }
-    }
-
     fn split_off_packets(&mut self, at: usize) -> Option<Self> {
         if at >= self.packet_count() {
             return None;
         }
-
-        let current = std::mem::replace(self, Self::empty_segmented());
-        let mut head = Vec::new();
-        let mut tail = Vec::new();
-        let mut remaining = at;
-        for mut segment in current.into_segments() {
-            if remaining == 0 {
-                tail.push(segment);
-                continue;
-            }
-            if segment.len() <= remaining {
-                remaining -= segment.len();
-                head.push(segment);
-                continue;
-            }
-            if let Some(tail_segment) = segment.split_off(remaining) {
-                head.push(segment);
-                tail.push(tail_segment);
-            }
-            remaining = 0;
+        if at == 0 {
+            return Some(std::mem::replace(self, Self::empty_segmented()));
         }
 
-        *self = Self::build(head);
-        Some(Self::build(tail))
+        match self {
+            Self::Segmented(segment) => segment.split_off(at).map(Self::Segmented),
+            Self::Chained {
+                segments,
+                packet_ends,
+                packet_bytes,
+            } => {
+                let segment_index = packet_ends.partition_point(|end| *end <= at);
+                let previous_end = segment_index
+                    .checked_sub(1)
+                    .and_then(|index| packet_ends.get(index).copied())
+                    .unwrap_or(0);
+                let split_in_segment = at - previous_end;
+                let mut tail_segments;
+                let mut tail_packet_ends;
+
+                if split_in_segment == 0 {
+                    tail_segments = segments.split_off(segment_index);
+                    tail_packet_ends = packet_ends.split_off(segment_index);
+                    for end in &mut tail_packet_ends {
+                        *end = end.saturating_sub(at);
+                    }
+                } else {
+                    let original_segment_end = packet_ends[segment_index];
+                    tail_segments = segments.split_off(segment_index + 1);
+                    let tail_segment = segments[segment_index]
+                        .split_off(split_in_segment)
+                        .expect("split point inside segment must produce a tail");
+                    tail_segments.insert(0, tail_segment);
+
+                    tail_packet_ends = packet_ends.split_off(segment_index + 1);
+                    if let Some(head_end) = packet_ends.last_mut() {
+                        *head_end = at;
+                    }
+                    for end in &mut tail_packet_ends {
+                        *end = end.saturating_sub(at);
+                    }
+                    tail_packet_ends.insert(0, original_segment_end - at);
+                }
+
+                let tail_packet_bytes = tail_segments
+                    .iter()
+                    .map(|segment| segment.packet_bytes)
+                    .sum();
+                *packet_bytes = packet_bytes.saturating_sub(tail_packet_bytes);
+                Some(Self::build_chained_from_parts(
+                    tail_segments,
+                    tail_packet_ends,
+                    tail_packet_bytes,
+                ))
+            }
+        }
+    }
+
+    fn build_chained_from_parts(
+        mut segments: Vec<FipsEndpointDirectPacketSegment>,
+        packet_ends: Vec<usize>,
+        packet_bytes: usize,
+    ) -> Self {
+        match segments.len() {
+            0 => Self::empty_segmented(),
+            1 => Self::Segmented(segments.pop().expect("one segment must exist")),
+            _ => Self::Chained {
+                segments,
+                packet_ends,
+                packet_bytes,
+            },
+        }
     }
 }
 
