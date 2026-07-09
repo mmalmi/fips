@@ -708,6 +708,7 @@ impl Node {
     // === Connection Management (Handshake Phase) ===
 
     /// Add a pending connection.
+    #[cfg(test)]
     pub fn add_connection(&mut self, connection: PeerConnection) -> Result<(), NodeError> {
         let link_id = connection.link_id();
 
@@ -726,22 +727,25 @@ impl Node {
     }
 
     /// Get a connection by LinkId.
+    #[cfg(test)]
     pub fn get_connection(&self, link_id: &LinkId) -> Option<&PeerConnection> {
         self.peers.get_connection(link_id)
     }
 
     /// Get a mutable connection by LinkId.
+    #[cfg(test)]
     pub fn get_connection_mut(&mut self, link_id: &LinkId) -> Option<&mut PeerConnection> {
         self.peers.get_connection_mut(link_id)
     }
 
     /// Remove a connection.
+    #[cfg(test)]
     pub fn remove_connection(&mut self, link_id: &LinkId) -> Option<PeerConnection> {
         self.peers.remove_connection(link_id)
     }
 
     /// Iterate over all connections.
-    pub fn connections(&self) -> impl Iterator<Item = &PeerConnection> {
+    pub(crate) fn connections(&self) -> impl Iterator<Item = &PeerConnection> {
         self.peers.connection_values()
     }
 
