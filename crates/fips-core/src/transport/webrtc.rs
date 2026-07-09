@@ -82,6 +82,7 @@ struct IncomingSignal {
 }
 
 struct WebRtcConnection {
+    session_id: String,
     pc: Arc<RTCPeerConnection>,
     data_channel: Arc<RTCDataChannel>,
 }
@@ -237,10 +238,25 @@ impl WebRtcTransport {
             signaling.stop().await;
         }
         self.failed.lock().await.clear();
-        self.pending.lock().await.clear();
+        let pending = self
+            .pending
+            .lock()
+            .await
+            .drain()
+            .map(|(_, pending)| pending)
+            .collect::<Vec<_>>();
+        for pending in pending {
+            let _ = pending.pc.close().await;
+        }
         self.ready.lock().await.clear();
-        let mut pool = self.pool.lock().await;
-        for (_, conn) in pool.drain() {
+        let connections = self
+            .pool
+            .lock()
+            .await
+            .drain()
+            .map(|(_, connection)| connection)
+            .collect::<Vec<_>>();
+        for conn in connections {
             let _ = conn.data_channel.close().await;
             let _ = conn.pc.close().await;
         }
@@ -344,10 +360,12 @@ impl WebRtcTransport {
 
     /// Close a WebRTC connection.
     pub async fn close_connection_async(&self, addr: &TransportAddr) {
-        if let Some(pending) = self.pending.lock().await.remove(addr) {
+        let pending = self.pending.lock().await.remove(addr);
+        if let Some(pending) = pending {
             let _ = pending.pc.close().await;
         }
-        if let Some(conn) = self.pool.lock().await.remove(addr) {
+        let conn = self.pool.lock().await.remove(addr);
+        if let Some(conn) = conn {
             let _ = conn.data_channel.close().await;
             let _ = conn.pc.close().await;
         }
@@ -395,17 +413,19 @@ impl WebRtcRuntime {
         wire_data_channel(
             self,
             remote_addr.clone(),
+            session_id.clone(),
             Arc::clone(&pc),
             Arc::clone(&data_channel),
         );
 
-        self.pending.lock().await.insert(
-            remote_addr.clone(),
-            PendingDial {
-                session_id: session_id.clone(),
-                pc: Arc::clone(&pc),
-            },
-        );
+        if !self
+            .try_reserve_pending(&remote_addr, session_id.clone(), Arc::clone(&pc))
+            .await
+        {
+            let _ = data_channel.close().await;
+            let _ = pc.close().await;
+            return Ok(());
+        }
         self.spawn_connect_timeout(remote_addr.clone(), session_id.clone());
 
         let offer = pc
@@ -484,6 +504,25 @@ impl WebRtcRuntime {
         if !self.config.accept_connections() {
             return Ok(());
         }
+        let remote_addr = TransportAddr::from_string(&signal.sender);
+        if self.pool.lock().await.contains_key(&remote_addr) {
+            return Ok(());
+        }
+        let pending_session = self
+            .pending
+            .lock()
+            .await
+            .get(&remote_addr)
+            .map(|pending| pending.session_id.clone());
+        if let Some(pending_session) = pending_session {
+            if pending_session == signal.session_id {
+                return Ok(());
+            }
+            let _ = self
+                .send_reject(&signal.sender, sender_xonly, signal.session_id)
+                .await;
+            return Err(TransportError::ConnectionRefused);
+        }
         if self.pool.lock().await.len() + self.pending.lock().await.len()
             >= self.config.max_connections()
         {
@@ -493,70 +532,114 @@ impl WebRtcRuntime {
             return Err(TransportError::ConnectionRefused);
         }
 
-        let remote_addr = TransportAddr::from_string(&signal.sender);
+        let session_id = signal.session_id.clone();
         let pc = Arc::new(self.new_peer_connection().await?);
         wire_peer_connection_state(self.transport_id, remote_addr.clone(), Arc::clone(&pc));
         let runtime = self.clone();
         let pc_for_data_channel = Arc::clone(&pc);
+        let session_for_data_channel = session_id.clone();
+        let addr_for_data_channel = remote_addr.clone();
         pc.on_data_channel(Box::new(move |data_channel: Arc<RTCDataChannel>| {
             let runtime = runtime.clone();
-            let remote_addr = remote_addr.clone();
+            let remote_addr = addr_for_data_channel.clone();
+            let session_id = session_for_data_channel.clone();
             let pc = Arc::clone(&pc_for_data_channel);
             Box::pin(async move {
-                wire_data_channel(&runtime, remote_addr, pc, data_channel);
+                wire_data_channel(&runtime, remote_addr, session_id, pc, data_channel);
             })
         }));
 
-        let offer = RTCSessionDescription::offer(signal.sdp.clone().unwrap_or_default())
-            .map_err(|e| TransportError::StartFailed(e.to_string()))?;
-        pc.set_remote_description(offer)
+        if !self
+            .try_reserve_pending(&remote_addr, session_id.clone(), Arc::clone(&pc))
             .await
-            .map_err(|e| TransportError::StartFailed(e.to_string()))?;
-        let answer = pc
-            .create_answer(None)
-            .await
-            .map_err(|e| TransportError::StartFailed(e.to_string()))?;
-        let mut gathering = pc.gathering_complete_promise().await;
-        pc.set_local_description(answer)
-            .await
-            .map_err(|e| TransportError::StartFailed(e.to_string()))?;
-        let _ = tokio::time::timeout(
-            Duration::from_millis(self.config.ice_gather_timeout_ms()),
-            gathering.recv(),
-        )
+        {
+            let _ = pc.close().await;
+            let _ = self
+                .send_reject(&signal.sender, sender_xonly, session_id)
+                .await;
+            return Err(TransportError::ConnectionRefused);
+        }
+        self.spawn_connect_timeout(remote_addr.clone(), session_id.clone());
+
+        let result = async {
+            let offer = RTCSessionDescription::offer(signal.sdp.unwrap_or_default())
+                .map_err(|e| TransportError::StartFailed(e.to_string()))?;
+            pc.set_remote_description(offer)
+                .await
+                .map_err(|e| TransportError::StartFailed(e.to_string()))?;
+            let answer = pc
+                .create_answer(None)
+                .await
+                .map_err(|e| TransportError::StartFailed(e.to_string()))?;
+            let mut gathering = pc.gathering_complete_promise().await;
+            pc.set_local_description(answer)
+                .await
+                .map_err(|e| TransportError::StartFailed(e.to_string()))?;
+            let _ = tokio::time::timeout(
+                Duration::from_millis(self.config.ice_gather_timeout_ms()),
+                gathering.recv(),
+            )
+            .await;
+
+            let sdp = pc
+                .local_description()
+                .await
+                .ok_or_else(|| TransportError::StartFailed("missing local WebRTC answer".into()))?
+                .sdp;
+            let now = now_ms();
+            let reply = WebRtcSignal {
+                protocol: WEBRTC_PROTOCOL.to_string(),
+                version: WEBRTC_SIGNAL_VERSION,
+                session_id: session_id.clone(),
+                kind: WebRtcSignalKind::Answer,
+                sender: self.local_pubkey_hex.clone(),
+                recipient: signal.sender.clone(),
+                sdp: Some(sdp),
+                candidates: None,
+                created_at_ms: now,
+                expires_at_ms: now.saturating_add(SIGNAL_TTL_MS),
+            };
+            self.signaling
+                .send_signal(&self.signal_relays, sender_xonly, &reply)
+                .await?;
+            debug!(
+                transport_id = %self.transport_id,
+                remote_addr = %remote_addr,
+                session = %reply.session_id,
+                sdp_bytes = reply.sdp.as_ref().map(|s| s.len()).unwrap_or(0),
+                "WebRTC answer sent"
+            );
+            Ok(())
+        }
         .await;
 
-        let sdp = pc
-            .local_description()
-            .await
-            .ok_or_else(|| TransportError::StartFailed("missing local WebRTC answer".into()))?
-            .sdp;
-        let now = now_ms();
-        let session_id = signal.session_id;
-        let signal_sender = signal.sender;
-        let reply = WebRtcSignal {
-            protocol: WEBRTC_PROTOCOL.to_string(),
-            version: WEBRTC_SIGNAL_VERSION,
-            session_id,
-            kind: WebRtcSignalKind::Answer,
-            sender: self.local_pubkey_hex.clone(),
-            recipient: signal_sender.clone(),
-            sdp: Some(sdp),
-            candidates: None,
-            created_at_ms: now,
-            expires_at_ms: now.saturating_add(SIGNAL_TTL_MS),
-        };
-        self.signaling
-            .send_signal(&self.signal_relays, sender_xonly, &reply)
-            .await?;
-        debug!(
-            transport_id = %self.transport_id,
-            remote_addr = %signal_sender,
-            session = %reply.session_id,
-            sdp_bytes = reply.sdp.as_ref().map(|s| s.len()).unwrap_or(0),
-            "WebRTC answer sent"
-        );
-        Ok(())
+        if let Err(err) = &result {
+            self.mark_session_failed(
+                remote_addr,
+                &session_id,
+                format!("WebRTC inbound connection failed: {err}"),
+            )
+            .await;
+        }
+        result
+    }
+
+    async fn try_reserve_pending(
+        &self,
+        addr: &TransportAddr,
+        session_id: String,
+        pc: Arc<RTCPeerConnection>,
+    ) -> bool {
+        let pool = self.pool.lock().await;
+        let mut pending = self.pending.lock().await;
+        if pool.contains_key(addr)
+            || pending.contains_key(addr)
+            || pool.len() + pending.len() >= self.config.max_connections()
+        {
+            return false;
+        }
+        pending.insert(addr.clone(), PendingDial { session_id, pc });
+        true
     }
 
     async fn handle_answer(&self, signal: WebRtcSignal) -> Result<(), TransportError> {
@@ -669,9 +752,39 @@ impl WebRtcRuntime {
     }
 
     async fn mark_failed(&self, addr: TransportAddr, reason: String) {
-        if let Some(pending) = self.pending.lock().await.remove(&addr) {
+        let pending = self.pending.lock().await.remove(&addr);
+        if let Some(pending) = pending {
             let _ = pending.pc.close().await;
         }
+        self.ready.lock().await.remove(&addr);
+        self.failed
+            .lock()
+            .await
+            .insert(addr.clone(), reason.clone());
+        warn!(
+            transport_id = %self.transport_id,
+            remote_addr = %addr,
+            reason = %reason,
+            "WebRTC connection failed"
+        );
+    }
+
+    async fn mark_session_failed(&self, addr: TransportAddr, session_id: &str, reason: String) {
+        let pending = {
+            let mut pending = self.pending.lock().await;
+            if pending
+                .get(&addr)
+                .is_some_and(|pending| pending.session_id == session_id)
+            {
+                pending.remove(&addr)
+            } else {
+                None
+            }
+        };
+        let Some(pending) = pending else {
+            return;
+        };
+        let _ = pending.pc.close().await;
         self.ready.lock().await.remove(&addr);
         self.failed
             .lock()
@@ -736,6 +849,7 @@ fn wire_peer_connection_state(
 fn wire_data_channel(
     runtime: &WebRtcRuntime,
     remote_addr: TransportAddr,
+    session_id: String,
     pc: Arc<RTCPeerConnection>,
     data_channel: Arc<RTCDataChannel>,
 ) {
@@ -797,6 +911,7 @@ fn wire_data_channel(
     }));
 
     let open_addr = remote_addr.clone();
+    let open_session = session_id.clone();
     let open_pc = Arc::clone(&pc);
     let open_dc = Arc::clone(&data_channel);
     let open_pool = Arc::clone(&runtime.pool);
@@ -805,6 +920,7 @@ fn wire_data_channel(
     let open_ready = Arc::clone(&runtime.ready);
     data_channel.on_open(Box::new(move || {
         let open_addr = open_addr.clone();
+        let open_session = open_session.clone();
         let open_pc = Arc::clone(&open_pc);
         let open_dc = Arc::clone(&open_dc);
         let open_pool = Arc::clone(&open_pool);
@@ -813,15 +929,36 @@ fn wire_data_channel(
         let open_ready = Arc::clone(&open_ready);
         Box::pin(async move {
             let ready_dc = Arc::clone(&open_dc);
+            let is_active_session = {
+                let mut pending = open_pending.lock().await;
+                if pending
+                    .get(&open_addr)
+                    .is_some_and(|pending| pending.session_id == open_session)
+                {
+                    pending.remove(&open_addr);
+                    true
+                } else {
+                    false
+                }
+            };
+            if !is_active_session {
+                let _ = open_dc.close().await;
+                let _ = open_pc.close().await;
+                return;
+            }
             open_failed.lock().await.remove(&open_addr);
-            open_pending.lock().await.remove(&open_addr);
-            open_pool.lock().await.insert(
+            let previous = open_pool.lock().await.insert(
                 open_addr.clone(),
                 WebRtcConnection {
+                    session_id: open_session,
                     pc: open_pc,
                     data_channel: open_dc,
                 },
             );
+            if let Some(previous) = previous {
+                let _ = previous.data_channel.close().await;
+                let _ = previous.pc.close().await;
+            }
             if let Err(err) = ready_dc
                 .send(&Bytes::copy_from_slice(WEBRTC_READY_FRAME))
                 .await
@@ -844,18 +981,44 @@ fn wire_data_channel(
     }));
 
     let close_addr = remote_addr;
+    let close_session = session_id;
     let close_pool = Arc::clone(&runtime.pool);
     let close_pending = Arc::clone(&runtime.pending);
     let close_ready = Arc::clone(&runtime.ready);
     data_channel.on_close(Box::new(move || {
         let close_addr = close_addr.clone();
+        let close_session = close_session.clone();
         let close_pool = Arc::clone(&close_pool);
         let close_pending = Arc::clone(&close_pending);
         let close_ready = Arc::clone(&close_ready);
         Box::pin(async move {
-            close_pool.lock().await.remove(&close_addr);
-            close_pending.lock().await.remove(&close_addr);
-            close_ready.lock().await.remove(&close_addr);
+            let removed_connection = {
+                let mut pool = close_pool.lock().await;
+                if pool
+                    .get(&close_addr)
+                    .is_some_and(|connection| connection.session_id == close_session)
+                {
+                    pool.remove(&close_addr);
+                    true
+                } else {
+                    false
+                }
+            };
+            let removed_pending = {
+                let mut pending = close_pending.lock().await;
+                if pending
+                    .get(&close_addr)
+                    .is_some_and(|pending| pending.session_id == close_session)
+                {
+                    pending.remove(&close_addr);
+                    true
+                } else {
+                    false
+                }
+            };
+            if removed_connection || removed_pending {
+                close_ready.lock().await.remove(&close_addr);
+            }
         })
     }));
 }
