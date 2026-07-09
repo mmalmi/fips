@@ -361,6 +361,19 @@ impl DataplaneAeadWorkerPool {
                 .is_some_and(|completion_rx| !completion_rx.is_empty())
     }
 
+    pub(crate) fn drain_completion_batches_into_sink<S>(
+        &mut self,
+        limit: usize,
+        sink: &mut S,
+    ) -> usize
+    where
+        S: DataplaneCompletionSink,
+    {
+        self.drain_completion_batches_with(limit, |batch| {
+            sink.push_completion_batch(batch);
+        })
+    }
+
     pub(crate) fn record_perf_depths(&self) {
         if !crate::perf_profile::enabled() {
             return;
@@ -594,21 +607,6 @@ impl DataplaneCryptoExecutor for DataplaneAeadWorkerPool {
         open_jobs.flush(self, completions);
         seal_jobs.flush(self, completions);
         count
-    }
-}
-
-impl DataplaneCompletionSource for DataplaneAeadWorkerPool {
-    fn drain_completion_batches_into_sink<S>(
-        &mut self,
-        limit: usize,
-        sink: &mut S,
-    ) -> usize
-    where
-        S: DataplaneCompletionSink,
-    {
-        self.drain_completion_batches_with(limit, |batch| {
-            sink.push_completion_batch(batch);
-        })
     }
 }
 

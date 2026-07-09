@@ -409,15 +409,12 @@ impl DataplaneTurnDriver {
         report
     }
 
-    fn start_aead_completion_turn<C>(
+    fn start_aead_completion_turn(
         &mut self,
-        completions: &mut C,
+        completions: &mut DataplaneAeadWorkerPool,
         completion_limit: usize,
         compact_endpoint_data: bool,
-    ) -> DataplaneRuntimeSummary
-    where
-        C: DataplaneCompletionSource,
-    {
+    ) -> DataplaneRuntimeSummary {
         self.reset_turn_buffers();
         self.drain_aead_completion_turn_into_summary(
             DataplaneRuntimeSummary::default(),
@@ -427,16 +424,13 @@ impl DataplaneTurnDriver {
         )
     }
 
-    fn drain_aead_completion_turn_into_summary<C>(
+    fn drain_aead_completion_turn_into_summary(
         &mut self,
         mut summary: DataplaneRuntimeSummary,
-        completions: &mut C,
+        completions: &mut DataplaneAeadWorkerPool,
         completion_limit: usize,
         compact_endpoint_data: bool,
-    ) -> DataplaneRuntimeSummary
-    where
-        C: DataplaneCompletionSource,
-    {
+    ) -> DataplaneRuntimeSummary {
         let _completion_timer = crate::perf_profile::Timer::start(
             crate::perf_profile::Stage::DataplaneCompletionDrain,
         );

@@ -155,7 +155,7 @@
         let mut completions = Vec::new();
         let mut batches = Vec::new();
         for _ in 0..100 {
-            pool.drain_completion_batches_into(
+            pool.drain_completion_batches_into_sink(
                 expected.saturating_sub(completions.len()),
                 &mut batches,
             );
@@ -177,7 +177,10 @@
         let mut batches = Vec::new();
         for _ in 0..100 {
             let drained = batches.iter().map(CryptoCompletionBatch::len).sum::<usize>();
-            pool.drain_completion_batches_into(expected.saturating_sub(drained), &mut batches);
+            pool.drain_completion_batches_into_sink(
+                expected.saturating_sub(drained),
+                &mut batches,
+            );
             if batches.iter().map(CryptoCompletionBatch::len).sum::<usize>() >= expected {
                 break;
             }
@@ -187,7 +190,7 @@
     }
 
     #[test]
-    fn aead_worker_pool_returns_completions_through_completion_source() {
+    fn aead_worker_pool_returns_completion_batches() {
         let owner = fmp_owner(706);
         let open_key = 20;
         let mut mover = mover();
@@ -2166,7 +2169,7 @@
             .drain(..)
             .map(execute_test_prepared_crypto_work)
             .collect::<VecDeque<_>>();
-        let _summary = driver.start_aead_completion_turn(&mut completions, 8, true);
+        let _summary = start_test_aead_completion_turn(&mut driver, &mut completions, 8, true);
 
         let endpoint_batches = driver_endpoint_batches(&driver);
         assert_eq!(endpoint_batches.len(), 1);
@@ -2341,7 +2344,7 @@
             .drain(..)
             .map(execute_test_prepared_crypto_work)
             .collect::<VecDeque<_>>();
-        let _summary = driver.start_aead_completion_turn(&mut completions, 8, true);
+        let _summary = start_test_aead_completion_turn(&mut driver, &mut completions, 8, true);
 
         let endpoint_batches = driver_endpoint_batches(&driver);
         assert_eq!(endpoint_batches.len(), 1);
@@ -2428,7 +2431,7 @@
             .into_iter()
             .map(execute_test_prepared_crypto_work)
             .collect::<VecDeque<_>>();
-        let summary = driver.start_aead_completion_turn(&mut completions, 8, true);
+        let summary = start_test_aead_completion_turn(&mut driver, &mut completions, 8, true);
 
         assert_eq!(summary.completions(), 5);
         assert_eq!(summary.outputs(), 0);

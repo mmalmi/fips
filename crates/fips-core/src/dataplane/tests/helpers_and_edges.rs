@@ -176,31 +176,6 @@
         }
     }
 
-    impl DataplaneCompletionSource for VecDeque<CryptoCompletion> {
-        fn drain_completion_batches_into_sink<S>(
-            &mut self,
-            limit: usize,
-            sink: &mut S,
-        ) -> usize
-        where
-            S: DataplaneCompletionSink,
-        {
-            let mut drained = 0;
-            let mut completion_batches = Vec::new();
-            while drained < limit {
-                let Some(completion) = self.pop_front() else {
-                    break;
-                };
-                CryptoCompletionBatch::push_grouped(completion, &mut completion_batches);
-                drained += 1;
-            }
-            for batch in completion_batches {
-                sink.push_completion_batch(batch);
-            }
-            drained
-        }
-    }
-
     fn run_aead_available(mover: &mut Dataplane, limit: usize) -> DataplaneTurn {
         let mut prepared_work = Vec::new();
         let mut completion_work = Vec::new();
@@ -373,8 +348,8 @@
         finish_aead_turn_with_inline(driver, summary, limit)
     }
 
-    struct AeadOutputCompletionTurn<'a, C, RI, R, S> {
-        completions: &'a mut C,
+    struct AeadOutputCompletionTurn<'a, RI, R, S> {
+        completions: &'a mut VecDeque<CryptoCompletion>,
         completion_limit: usize,
         raw_ingress: &'a mut RI,
         router: &'a mut R,
@@ -385,12 +360,11 @@
         crypto_limit: usize,
     }
 
-    fn pump_aead_output_completion_turn<'a, C, RI, R, S>(
+    fn pump_aead_output_completion_turn<'a, RI, R, S>(
         driver: &'a mut DataplaneTurnDriver,
-        request: AeadOutputCompletionTurn<'_, C, RI, R, S>,
+        request: AeadOutputCompletionTurn<'_, RI, R, S>,
     ) -> DataplaneRuntimeTurn<'a>
     where
-        C: DataplaneCompletionSource,
         RI: DataplaneRawIngressSource,
         R: DataplaneIngressRouter,
         S: DataplaneOutputSink,
@@ -410,13 +384,8 @@
         driver.reset_turn_buffers();
 
         let mut summary = DataplaneRuntimeSummary::default();
-        driver.completion_batches.clear();
-        let queued = completions
-            .drain_completion_batches_into(completion_limit, &mut driver.completion_batches);
+        let queued = drain_test_completions_into_mover(driver, completions, completion_limit);
         summary.completions = summary.completions.saturating_add(queued);
-        driver
-            .mover
-            .queue_completion_batches(&mut driver.completion_batches);
         driver.retire_queued_completed_aead_outputs(completion_limit, false);
         summary = driver.admit_retired_outbound_packets(summary);
 
@@ -467,18 +436,17 @@
         .await
     }
 
-    struct AeadLiveRouteTableCompletionTurn<'a, C, RI> {
-        completions: &'a mut C,
+    struct AeadLiveRouteTableCompletionTurn<'a, RI> {
+        completions: &'a mut VecDeque<CryptoCompletion>,
         completion_limit: usize,
         route: AeadLiveRouteTableTurn<'a, RI>,
     }
 
-    async fn pump_aead_live_node_route_table_turn_with_completions<C, RI>(
+    async fn pump_aead_live_node_route_table_turn_with_completions<RI>(
         driver: &mut DataplaneTurnDriver,
-        request: AeadLiveRouteTableCompletionTurn<'_, C, RI>,
+        request: AeadLiveRouteTableCompletionTurn<'_, RI>,
     ) -> DataplaneLiveNodeTurn
     where
-        C: DataplaneCompletionSource,
         RI: DataplaneRawIngressSource,
     {
         let AeadLiveRouteTableCompletionTurn {
@@ -503,7 +471,8 @@
         let transport_send_batch_packets = 8;
         let mut executor = InlineDataplaneCryptoExecutor;
         let mut deferred_raw_ingress = std::collections::VecDeque::new();
-        let summary = driver.start_aead_completion_turn(
+        let summary = start_test_aead_completion_turn(
+            driver,
             completions,
             completion_limit,
             endpoint_tx.direct_sink().is_some(),
@@ -564,6 +533,37 @@
         let summary =
             driver.collect_aead_outputs_with_executor(summary, limit, &mut executor, false);
         driver.send_collected_outputs(summary, sink)
+    }
+
+    fn drain_test_completions_into_mover(
+        driver: &mut DataplaneTurnDriver,
+        completions: &mut VecDeque<CryptoCompletion>,
+        limit: usize,
+    ) -> usize {
+        driver.completion_batches.clear();
+        let drained = limit.min(completions.len());
+        for completion in completions.drain(..drained) {
+            CryptoCompletionBatch::push_grouped(completion, &mut driver.completion_batches);
+        }
+        driver
+            .mover
+            .queue_completion_batches(&mut driver.completion_batches);
+        drained
+    }
+
+    fn start_test_aead_completion_turn(
+        driver: &mut DataplaneTurnDriver,
+        completions: &mut VecDeque<CryptoCompletion>,
+        completion_limit: usize,
+        compact_endpoint_data: bool,
+    ) -> DataplaneRuntimeSummary {
+        driver.reset_turn_buffers();
+        let completion_limit = driver.completion_drain_limit(completion_limit);
+        let queued = drain_test_completions_into_mover(driver, completions, completion_limit);
+        let mut summary = DataplaneRuntimeSummary::default();
+        summary.completions = queued;
+        driver.retire_queued_completed_aead_outputs(completion_limit, compact_endpoint_data);
+        driver.admit_retired_outbound_packets(summary)
     }
 
     fn test_node_addr(id: u64) -> NodeAddr {

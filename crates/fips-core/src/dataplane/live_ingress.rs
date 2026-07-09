@@ -1109,26 +1109,6 @@ pub(crate) trait DataplaneRawIngressSource {
         F: FnMut(DataplaneRawIngress);
 }
 
-pub(crate) trait DataplaneCompletionSource {
-    fn drain_completion_batches_into_sink<S>(
-        &mut self,
-        limit: usize,
-        sink: &mut S,
-    ) -> usize
-    where
-        S: DataplaneCompletionSink;
-
-    #[cfg(test)]
-    fn drain_completion_batches_into(
-        &mut self,
-        limit: usize,
-        completion_batches: &mut Vec<CryptoCompletionBatch>,
-    ) -> usize {
-        completion_batches.clear();
-        self.drain_completion_batches_into_sink(limit, completion_batches)
-    }
-}
-
 pub(crate) trait DataplaneCompletionSink {
     fn push_completion_batch(&mut self, batch: CryptoCompletionBatch);
 }
