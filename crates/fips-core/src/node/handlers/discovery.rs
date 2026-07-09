@@ -7,6 +7,7 @@
 
 use crate::config::RoutingMode;
 use crate::node::{Node, RecentResponseForward};
+use crate::proto::lookup::{LookupPeerCandidate, plan_forward_peers, plan_initiate_peers};
 use crate::protocol::{LookupRequest, LookupResponse};
 use crate::transport::{TransportAddr, TransportId};
 use crate::{NodeAddr, NodeError, PeerIdentity};
@@ -412,17 +413,36 @@ impl Node {
         }
         let mut forward_limiter_checked = false;
 
+        let candidates = self.lookup_peer_candidates(&request.target);
+        let reply_learned_fallback_enabled = self.config.node.routing.mode
+            == RoutingMode::ReplyLearned
+            && self.should_use_reply_learned_lookup_fallback_for_origin_target(
+                &request.origin,
+                &request.target,
+            );
+        let plan = plan_forward_peers(
+            *from,
+            request.origin,
+            request.target,
+            self.config.node.routing.mode,
+            reply_learned_fallback_enabled,
+            &candidates,
+            MAX_REPLY_LEARNED_EXTRA_LOOKUP_PEERS,
+        );
+        let forward_to = plan.peers;
+
         // If the target is a direct active peer, hand the lookup to it even
-        // when it is not part of our current tree neighborhood. This preserves
-        // reply-learned fallback across NAT/topology asymmetry: a transit peer
-        // may have a working direct edge to the target even though the origin
-        // does not.
-        if request.target != *from
-            && self
-                .peers
-                .get(&request.target)
-                .is_some_and(|peer| peer.can_send())
-        {
+        // when it is not part of our current tree neighborhood. Stale direct
+        // targets remain probeable, but reply-learned routing lets a planned
+        // healthy fallback carry the request instead of giving the stale target
+        // exclusive request-id ownership.
+        let stale_direct_probe_allowed =
+            self.config.node.routing.mode != RoutingMode::ReplyLearned || forward_to.is_empty();
+        let direct_target_sendable = request.target != *from
+            && self.peers.get(&request.target).is_some_and(|peer| {
+                peer.can_send() && (peer.is_healthy() || stale_direct_probe_allowed)
+            });
+        if direct_target_sendable {
             if !self.should_forward_lookup_for_target(&request) {
                 return LookupForwardOutcome::RateLimited;
             }
@@ -451,63 +471,6 @@ impl Node {
             }
         }
 
-        // Collect tree peers whose bloom filter contains the target.
-        let mut forward_to: Vec<NodeAddr> = self
-            .peers
-            .iter()
-            .filter(|(addr, peer)| {
-                **addr != *from
-                    && self.is_tree_peer(addr)
-                    && peer.can_send()
-                    && peer.may_reach(&request.target)
-            })
-            .map(|(addr, _)| *addr)
-            .collect();
-        let tree_match_count = forward_to.len();
-
-        // Reply-learned routing treats tree/bloom reachability as a hint, not
-        // an exclusive path. In NAT-asymmetric meshes a stale tree candidate
-        // can blackhole first-contact discovery, so also ask live neighbors.
-        if self.config.node.routing.mode == RoutingMode::ReplyLearned
-            && self.should_use_reply_learned_lookup_fallback_for_origin_target(
-                &request.origin,
-                &request.target,
-            )
-        {
-            let fallback_budget =
-                MAX_REPLY_LEARNED_EXTRA_LOOKUP_PEERS.saturating_sub(forward_to.len());
-            let extra_peers: Vec<NodeAddr> = self
-                .peers
-                .iter()
-                .filter(|(addr, peer)| {
-                    **addr != *from
-                        && **addr != request.origin
-                        && peer.can_send()
-                        && self.should_use_reply_learned_lookup_fallback_peer(
-                            addr,
-                            peer,
-                            &request.target,
-                        )
-                })
-                .map(|(addr, _)| *addr)
-                .filter(|addr| !forward_to.contains(addr))
-                .take(fallback_budget)
-                .collect();
-            forward_to.extend(extra_peers);
-        } else if forward_to.is_empty() {
-            forward_to = self
-                .peers
-                .iter()
-                .filter(|(addr, peer)| {
-                    **addr != *from
-                        && !self.is_tree_peer(addr)
-                        && peer.can_send()
-                        && peer.may_reach(&request.target)
-                })
-                .map(|(addr, _)| *addr)
-                .collect();
-        }
-
         if forward_to.is_empty() {
             self.stats_mut().discovery.req_no_tree_peer += 1;
             trace!(
@@ -521,12 +484,7 @@ impl Node {
             return LookupForwardOutcome::RateLimited;
         }
 
-        let used_fallback = (self.config.node.routing.mode == RoutingMode::ReplyLearned
-            && forward_to.len() > tree_match_count)
-            || (self.config.node.routing.mode != RoutingMode::ReplyLearned
-                && tree_match_count == 0);
-
-        if used_fallback {
+        if plan.used_fallback {
             self.stats_mut().discovery.req_fallback_forwarded += 1;
             debug!(
                 request_id = request.request_id,
@@ -579,6 +537,21 @@ impl Node {
         false
     }
 
+    fn lookup_peer_candidates(&self, target: &NodeAddr) -> Vec<LookupPeerCandidate> {
+        self.peers
+            .iter()
+            .map(|(addr, peer)| LookupPeerCandidate {
+                addr: *addr,
+                can_send: peer.can_send(),
+                is_healthy: peer.is_healthy(),
+                is_tree_peer: self.is_tree_peer(addr),
+                may_reach_target: peer.may_reach(target),
+                reply_learned_fallback_allowed: self
+                    .should_use_reply_learned_lookup_fallback_peer(addr, peer, target),
+            })
+            .collect()
+    }
+
     /// Initiate a discovery lookup for a target node.
     ///
     /// Creates a LookupRequest and sends it to tree peers whose bloom
@@ -592,39 +565,17 @@ impl Node {
         let origin_coords = self.tree_state().my_coords().clone();
         let request = LookupRequest::generate(*target, origin, origin_coords, ttl, 0);
 
-        // Send first to tree peers whose bloom filter contains the target.
-        // Reply-learned mode also fans out to sendable peers: stale tree state
-        // and NAT asymmetry are common during joins, roaming, and VM/host
-        // topologies, and a single bad bloom match must not block discovery.
-        let mut peer_addrs: Vec<NodeAddr> = self
-            .peers
-            .iter()
-            .filter(|(addr, peer)| {
-                self.is_tree_peer(addr) && peer.can_send() && peer.may_reach(target)
-            })
-            .map(|(addr, _)| *addr)
-            .collect();
-        let tree_match_count = peer_addrs.len();
-        if self.config.node.routing.mode == RoutingMode::ReplyLearned
-            && self.should_use_reply_learned_lookup_fallback_for_target(target)
-        {
-            let fallback_budget =
-                MAX_REPLY_LEARNED_EXTRA_LOOKUP_PEERS.saturating_sub(peer_addrs.len());
-            let extra_peers: Vec<NodeAddr> = self
-                .peers
-                .iter()
-                .filter(|(addr, peer)| {
-                    peer.can_send()
-                        && self.should_use_reply_learned_lookup_fallback_peer(addr, peer, target)
-                })
-                .map(|(addr, _)| *addr)
-                .filter(|addr| !peer_addrs.contains(addr))
-                .take(fallback_budget)
-                .collect();
-            peer_addrs.extend(extra_peers);
-        }
-        let used_fallback = self.config.node.routing.mode == RoutingMode::ReplyLearned
-            && peer_addrs.len() > tree_match_count;
+        let candidates = self.lookup_peer_candidates(target);
+        let reply_learned_fallback_enabled = self.config.node.routing.mode
+            == RoutingMode::ReplyLearned
+            && self.should_use_reply_learned_lookup_fallback_for_target(target);
+        let plan = plan_initiate_peers(
+            self.config.node.routing.mode,
+            reply_learned_fallback_enabled,
+            &candidates,
+            MAX_REPLY_LEARNED_EXTRA_LOOKUP_PEERS,
+        );
+        let peer_addrs = plan.peers;
 
         let peer_count = peer_addrs.len();
 
@@ -634,7 +585,7 @@ impl Node {
                 ttl = ttl,
                 peer_count = peer_count,
                 total_peers = self.peers.len(),
-            fallback = used_fallback,
+            fallback = plan.used_fallback,
             "Discovery lookup initiated"
         );
 

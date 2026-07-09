@@ -22,6 +22,7 @@ pub mod noise;
 pub mod peer;
 pub mod peer_rating;
 pub(crate) mod perf_profile;
+pub(crate) mod proto;
 pub mod protocol;
 pub(crate) mod time;
 pub mod transport;
