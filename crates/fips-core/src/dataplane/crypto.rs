@@ -1,7 +1,6 @@
 pub(crate) enum PreparedCryptoWork {
     Open { work: CryptoWork, cipher: AeadKey },
     Seal { work: OutboundCryptoWork, cipher: AeadKey },
-    Completed(CryptoCompletion),
 }
 
 const DATAPLANE_AEAD_WORKER_JOB_PACKETS: usize = 8;
@@ -14,10 +13,6 @@ impl PreparedCryptoWork {
 
     pub(crate) fn seal(work: OutboundCryptoWork, cipher: AeadKey) -> Self {
         Self::Seal { work, cipher }
-    }
-
-    pub(crate) fn failed(reservation: OwnerReservation, kind: CryptoFailureKind) -> Self {
-        Self::Completed(failed_crypto_completion(reservation, kind))
     }
 
     pub(crate) fn execute(self) -> CryptoCompletion {
@@ -45,7 +40,6 @@ impl PreparedCryptoWork {
                     Err(_) => failed_crypto_completion(reservation, CryptoFailureKind::Seal),
                 }
             }
-            Self::Completed(completion) => completion,
         }
     }
 
@@ -61,7 +55,6 @@ impl PreparedCryptoWork {
                     CryptoFailureKind::Seal,
                 ));
             }
-            Self::Completed(completion) => completions.push(completion),
         }
     }
 
@@ -69,7 +62,6 @@ impl PreparedCryptoWork {
         match self {
             Self::Open { work, .. } => work.reservation.lane,
             Self::Seal { work, .. } => work.reservation.lane,
-            Self::Completed(completion) => completion.reservation.lane,
         }
     }
 }
@@ -705,7 +697,6 @@ impl DataplaneCryptoExecutor for DataplaneAeadWorkerPool {
             .fold((0usize, 0usize), |(open, seal), work| match work {
                 PreparedCryptoWork::Open { .. } => (open.saturating_add(1), seal),
                 PreparedCryptoWork::Seal { .. } => (open, seal.saturating_add(1)),
-                PreparedCryptoWork::Completed(_) => (open, seal),
             });
         let open_job_packets = dataplane_aead_worker_job_packets(open_count);
         let seal_job_packets = dataplane_aead_worker_job_packets(seal_count);
@@ -719,7 +710,6 @@ impl DataplaneCryptoExecutor for DataplaneAeadWorkerPool {
                 work @ PreparedCryptoWork::Seal { .. } => {
                     seal_jobs.push(self, work, completions);
                 }
-                PreparedCryptoWork::Completed(completion) => completions.push(completion),
             }
         }
         open_jobs.flush(self, completions);
@@ -917,10 +907,6 @@ impl std::fmt::Debug for PreparedCryptoWork {
                 .debug_struct("PreparedCryptoWork::Seal")
                 .field("reservation", &work.reservation)
                 .finish_non_exhaustive(),
-            Self::Completed(completion) => f
-                .debug_tuple("PreparedCryptoWork::Completed")
-                .field(completion)
-                .finish(),
         }
     }
 }

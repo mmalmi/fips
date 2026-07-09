@@ -645,6 +645,7 @@ impl Dataplane {
             let pre_priority_inbound_dispatched = self.dispatch_prepared_ingress_shards_into(
                 pre_priority_inbound_limit,
                 prepared_work,
+                completion_batches,
                 false,
                 record_fsp_path_open,
                 &mut fsp_path_open,
@@ -660,6 +661,7 @@ impl Dataplane {
             let priority_outbound_dispatched = self.dispatch_outbound_prepared_shards_into(
                 priority_outbound_limit,
                 prepared_work,
+                completion_batches,
                 true,
             );
             dispatched_total = dispatched_total.saturating_add(priority_outbound_dispatched);
@@ -672,6 +674,7 @@ impl Dataplane {
             let priority_inbound_dispatched = self.dispatch_prepared_ingress_shards_into(
                 priority_inbound_limit,
                 prepared_work,
+                completion_batches,
                 true,
                 record_fsp_path_open,
                 &mut fsp_path_open,
@@ -686,6 +689,7 @@ impl Dataplane {
             let inbound_dispatched = self.dispatch_prepared_ingress_shards_into(
                 bulk_dispatch_capacity,
                 prepared_work,
+                completion_batches,
                 false,
                 record_fsp_path_open,
                 &mut fsp_path_open,
@@ -698,6 +702,7 @@ impl Dataplane {
                     .saturating_sub(dispatched_total)
                     .min(seal_bulk_capacity),
                 prepared_work,
+                completion_batches,
                 false,
             );
             dispatched_total = dispatched_total.saturating_add(outbound_dispatched);
@@ -792,6 +797,7 @@ impl Dataplane {
         &mut self,
         limit: usize,
         prepared: &mut Vec<PreparedCryptoWork>,
+        completion_batches: &mut Vec<CryptoCompletionBatch>,
         priority_only: bool,
         record_fsp_path_open: bool,
         fsp_path_open: &mut u64,
@@ -802,7 +808,6 @@ impl Dataplane {
             return 0;
         }
 
-        let start_len = prepared.len();
         let priority_only = priority_only || self.has_inbound_priority_pending();
         let mut dispatched = 0usize;
         while dispatched < limit {
@@ -827,6 +832,7 @@ impl Dataplane {
                 let got = self.shards[shard].dispatch_ingress_prepared_into(
                     shard_limit.min(limit.saturating_sub(dispatched)),
                     prepared,
+                    completion_batches,
                     priority_only,
                     record_fsp_path_open,
                     fsp_path_open,
@@ -845,9 +851,7 @@ impl Dataplane {
                 break;
             }
         }
-        crate::perf_profile::record_dataplane_crypto_open_batch(
-            prepared.len().saturating_sub(start_len),
-        );
+        crate::perf_profile::record_dataplane_crypto_open_batch(dispatched);
         dispatched
     }
 
@@ -855,6 +859,7 @@ impl Dataplane {
         &mut self,
         limit: usize,
         prepared: &mut Vec<PreparedCryptoWork>,
+        completion_batches: &mut Vec<CryptoCompletionBatch>,
         priority_only: bool,
     ) -> usize {
         if limit == 0 || self.shards.is_empty() {
@@ -863,7 +868,6 @@ impl Dataplane {
         }
 
         let priority_only = priority_only || self.has_outbound_priority_pending();
-        let start_len = prepared.len();
         let mut dispatched = 0usize;
         while dispatched < limit {
             let ready_lanes = self.outbound_ready_shards.ready_len(priority_only);
@@ -886,6 +890,7 @@ impl Dataplane {
                 let got = self.shards[shard].dispatch_outbound_prepared_into(
                     shard_limit.min(limit.saturating_sub(dispatched)),
                     prepared,
+                    completion_batches,
                     priority_only,
                     &mut self.drops,
                 );
@@ -903,9 +908,7 @@ impl Dataplane {
             }
         }
 
-        crate::perf_profile::record_dataplane_crypto_seal_batch(
-            prepared.len().saturating_sub(start_len),
-        );
+        crate::perf_profile::record_dataplane_crypto_seal_batch(dispatched);
         dispatched.min(limit)
     }
 

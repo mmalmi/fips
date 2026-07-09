@@ -96,9 +96,6 @@
                 PreparedCryptoWork::Seal { work, .. } => {
                     panic!("unexpected outbound work while capturing inbound: {work:?}")
                 }
-                PreparedCryptoWork::Completed(completion) => {
-                    panic!("unexpected completed work while capturing inbound: {completion:?}")
-                }
             })
             .collect()
     }
@@ -113,9 +110,6 @@
                 PreparedCryptoWork::Seal { work, .. } => work,
                 PreparedCryptoWork::Open { work, .. } => {
                     panic!("unexpected inbound work while capturing outbound: {work:?}")
-                }
-                PreparedCryptoWork::Completed(completion) => {
-                    panic!("unexpected completed work while capturing outbound: {completion:?}")
                 }
             })
             .collect()

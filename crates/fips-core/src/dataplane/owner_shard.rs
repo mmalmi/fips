@@ -304,6 +304,7 @@ impl DataplaneOwnerShard {
         &mut self,
         limit: usize,
         prepared: &mut Vec<PreparedCryptoWork>,
+        completion_batches: &mut Vec<CryptoCompletionBatch>,
         priority_only: bool,
         record_fsp_path_open: bool,
         fsp_path_open: &mut u64,
@@ -365,25 +366,25 @@ impl DataplaneOwnerShard {
                                 fsp_path_open_bulk,
                             );
                         }
-                        let prepared_work = match open_key {
-                            Some(open_key) => PreparedCryptoWork::open(
+                        match open_key {
+                            Some(open_key) => prepared.push(PreparedCryptoWork::open(
                                 CryptoWork {
                                     reservation,
                                     packet: queued.packet,
                                 },
                                 open_key,
+                            )),
+                            None => CryptoCompletionBatch::push_grouped(
+                                failed_crypto_completion(reservation, CryptoFailureKind::Open),
+                                completion_batches,
                             ),
-                            None => {
-                                PreparedCryptoWork::failed(reservation, CryptoFailureKind::Open)
-                            }
-                        };
+                        }
                         tracing::debug!(
                             owner = ?packet_owner,
                             counter = packet_counter,
                             lane = ?packet_lane,
                             "dataplane inbound dispatched"
                         );
-                        prepared.push(prepared_work);
                         dispatched = dispatched.saturating_add(1);
                         attempts_remaining = self.admission.len();
                     }
@@ -425,14 +426,14 @@ impl DataplaneOwnerShard {
         &mut self,
         limit: usize,
         prepared: &mut Vec<PreparedCryptoWork>,
+        completion_batches: &mut Vec<CryptoCompletionBatch>,
         priority_only: bool,
         drops: &mut Vec<PacketDrop>,
     ) -> usize {
-        let start_len = prepared.len();
-        let target_len = start_len.saturating_add(limit);
+        let mut dispatched = 0usize;
         let mut attempts_remaining = self.outbound_admission.len();
-        while prepared.len() < target_len && attempts_remaining > 0 {
-            let run_limit = target_len.saturating_sub(prepared.len());
+        while dispatched < limit && attempts_remaining > 0 {
+            let run_limit = limit.saturating_sub(dispatched);
             let Some(mut run) = self
                 .outbound_admission
                 .pop_next_run(priority_only, run_limit)
@@ -474,19 +475,20 @@ impl DataplaneOwnerShard {
                 match owner.reserve_outbound(queued.packet, ingress_seq) {
                     Ok((reservation, packet)) => {
                         let reservation = reservation.with_owner_shard(self.index);
-                        let prepared_work = match owner.seal_key() {
-                            Some(seal_key) => PreparedCryptoWork::seal(
+                        match owner.seal_key() {
+                            Some(seal_key) => prepared.push(PreparedCryptoWork::seal(
                                 OutboundCryptoWork {
                                     reservation,
                                     packet,
                                 },
                                 seal_key,
+                            )),
+                            None => CryptoCompletionBatch::push_grouped(
+                                failed_crypto_completion(reservation, CryptoFailureKind::Seal),
+                                completion_batches,
                             ),
-                            None => {
-                                PreparedCryptoWork::failed(reservation, CryptoFailureKind::Seal)
-                            }
-                        };
-                        prepared.push(prepared_work);
+                        }
+                        dispatched = dispatched.saturating_add(1);
                     }
                     Err(error) => {
                         drops.push(PacketDrop {
@@ -509,7 +511,7 @@ impl DataplaneOwnerShard {
                 self.outbound_admission.defer_owner_run(run);
             }
         }
-        prepared.len().saturating_sub(start_len)
+        dispatched
     }
 
     pub(crate) fn retire_completion_batch_into(
