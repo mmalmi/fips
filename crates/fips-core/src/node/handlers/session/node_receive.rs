@@ -75,7 +75,7 @@ impl Node {
 
     pub(in crate::node) async fn process_dataplane_authenticated_sessions(
         &mut self,
-        ingress_batch: Vec<crate::dataplane::DataplaneFspSessionIngress>,
+        ingress_batch: &mut Vec<crate::dataplane::DataplaneFspSessionIngress>,
     ) -> usize {
         let mut processed = 0usize;
         let mut endpoint_deliveries = Vec::new();
@@ -83,7 +83,7 @@ impl Node {
         let mut tun_packets = Vec::new();
         let mut tun_commit = SessionReceiveBatchCommit::default();
 
-        for ingress in ingress_batch {
+        for ingress in ingress_batch.drain(..) {
             let Some(dispatch) = self.dataplane_authenticated_session_dispatch(ingress) else {
                 continue;
             };
@@ -133,6 +133,7 @@ impl Node {
     ) -> usize {
         let mut processed = 0usize;
         let mut endpoint_batches = Vec::new();
+        let mut endpoint_message_count = 0usize;
         let mut session_ingress = Vec::new();
         let (runs, endpoint_data_batches, sessions) = ingress_batch.into_parts();
         let mut endpoint_data_batches = endpoint_data_batches.into_iter();
@@ -142,22 +143,22 @@ impl Node {
             match run {
                 crate::dataplane::DataplaneFspAuthenticatedIngressRun::EndpointDataBatch => {
                     processed = processed.saturating_add(
-                        self.process_dataplane_authenticated_sessions(std::mem::take(
-                            &mut session_ingress,
-                        ))
+                        self.process_dataplane_authenticated_sessions(&mut session_ingress)
                         .await,
                     );
-                    endpoint_batches.push(
-                        endpoint_data_batches
-                            .next()
-                            .expect("endpoint-data run has a batch"),
-                    );
+                    let endpoint_batch = endpoint_data_batches
+                        .next()
+                        .expect("endpoint-data run has a batch");
+                    endpoint_message_count =
+                        endpoint_message_count.saturating_add(endpoint_batch.len());
+                    endpoint_batches.push(endpoint_batch);
                 }
                 crate::dataplane::DataplaneFspAuthenticatedIngressRun::Sessions { count } => {
                     processed = processed.saturating_add(
-                        self.process_dataplane_compact_endpoint_data(std::mem::take(
+                        self.process_dataplane_compact_endpoint_data(
                             &mut endpoint_batches,
-                        ))
+                            &mut endpoint_message_count,
+                        )
                         .await,
                     );
                     for _ in 0..count {
@@ -177,11 +178,14 @@ impl Node {
         );
 
         processed = processed.saturating_add(
-            self.process_dataplane_compact_endpoint_data(endpoint_batches)
-                .await,
+            self.process_dataplane_compact_endpoint_data(
+                &mut endpoint_batches,
+                &mut endpoint_message_count,
+            )
+            .await,
         );
         processed = processed.saturating_add(
-            self.process_dataplane_authenticated_sessions(session_ingress)
+            self.process_dataplane_authenticated_sessions(&mut session_ingress)
                 .await,
         );
         processed
@@ -189,18 +193,28 @@ impl Node {
 
     pub(in crate::node) async fn process_dataplane_compact_endpoint_data(
         &mut self,
-        endpoint_batches: Vec<crate::dataplane::DataplaneEndpointDataBatch>,
+        endpoint_batches: &mut Vec<crate::dataplane::DataplaneEndpointDataBatch>,
+        message_count: &mut usize,
     ) -> usize {
+        let message_count = std::mem::take(message_count);
         if endpoint_batches.is_empty() {
+            debug_assert_eq!(
+                message_count, 0,
+                "empty compact endpoint-data batch should not carry messages"
+            );
             return 0;
         }
-        let message_count = endpoint_batches
-            .iter()
-            .map(crate::dataplane::DataplaneEndpointDataBatch::len)
-            .sum::<usize>();
+        debug_assert_eq!(
+            message_count,
+            endpoint_batches
+                .iter()
+                .map(crate::dataplane::DataplaneEndpointDataBatch::len)
+                .sum::<usize>(),
+            "compact endpoint-data message count must match carried batches"
+        );
 
         let mut endpoint_commit = SessionReceiveBatchCommit::default();
-        for batch in &endpoint_batches {
+        for batch in endpoint_batches.iter() {
             for run in batch.commit_runs() {
                 let commit = run.commit();
                 let source_addr = commit.source_addr();
@@ -229,6 +243,7 @@ impl Node {
         for dest_addr in pending_flush_destinations {
             self.flush_pending_packets(&dest_addr).await;
         }
+        endpoint_batches.clear();
         message_count
     }
 

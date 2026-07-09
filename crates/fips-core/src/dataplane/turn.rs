@@ -659,6 +659,7 @@ pub(crate) enum DataplaneFspAuthenticatedIngressRun {
 pub(crate) struct DataplaneFspAuthenticatedIngress {
     runs: Vec<DataplaneFspAuthenticatedIngressRun>,
     endpoint_data_batches: Vec<DataplaneEndpointDataBatch>,
+    endpoint_data_packet_count: usize,
     sessions: Vec<DataplaneFspSessionIngress>,
 }
 
@@ -670,10 +671,14 @@ impl DataplaneFspAuthenticatedIngress {
     pub(crate) fn clear(&mut self) {
         self.runs.clear();
         self.endpoint_data_batches.clear();
+        self.endpoint_data_packet_count = 0;
         self.sessions.clear();
     }
 
     pub(crate) fn append(&mut self, other: &mut Self) {
+        self.endpoint_data_packet_count = self
+            .endpoint_data_packet_count
+            .saturating_add(std::mem::take(&mut other.endpoint_data_packet_count));
         match (self.runs.last_mut(), other.runs.first().copied()) {
             (
                 Some(DataplaneFspAuthenticatedIngressRun::EndpointDataBatch),
@@ -713,6 +718,8 @@ impl DataplaneFspAuthenticatedIngress {
     }
 
     pub(crate) fn push_endpoint_data_batch(&mut self, bulk: DataplaneEndpointDataBatch) {
+        self.endpoint_data_packet_count =
+            self.endpoint_data_packet_count.saturating_add(bulk.len());
         if matches!(
             self.runs.last(),
             Some(DataplaneFspAuthenticatedIngressRun::EndpointDataBatch)
@@ -757,10 +764,7 @@ impl DataplaneFspAuthenticatedIngress {
     }
 
     pub(crate) fn endpoint_data_packet_count(&self) -> usize {
-        self.endpoint_data_batches
-            .iter()
-            .map(DataplaneEndpointDataBatch::len)
-            .sum()
+        self.endpoint_data_packet_count
     }
 
     pub(crate) fn endpoint_data_batch_count(&self) -> usize {
