@@ -1,9 +1,9 @@
 //! Discovery messages: LookupRequest and LookupResponse.
 
 use crate::NodeAddr;
-use crate::protocol::error::ProtocolError;
-use crate::protocol::session::{decode_coords, encode_coords};
-use crate::tree::TreeCoordinate;
+use crate::proto::protocol::error::ProtocolError;
+use crate::proto::protocol::session::{decode_coords, encode_coords};
+use crate::proto::stp::TreeCoordinate;
 use secp256k1::schnorr::Signature;
 
 /// Request to discover a node's coordinates.

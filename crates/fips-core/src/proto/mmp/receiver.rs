@@ -5,9 +5,9 @@
 
 use std::time::{Duration, Instant};
 
-use crate::mmp::algorithms::{JitterEstimator, OwdTrendDetector};
-use crate::mmp::report::ReceiverReport;
-use crate::mmp::{
+use super::algorithms::{JitterEstimator, OwdTrendDetector};
+use super::report::ReceiverReport;
+use super::{
     COLD_START_SAMPLES, DEFAULT_COLD_START_INTERVAL_MS, DEFAULT_OWD_WINDOW_SIZE,
     MAX_REPORT_INTERVAL_MS, MIN_REPORT_INTERVAL_MS,
 };

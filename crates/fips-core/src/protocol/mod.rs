@@ -5,5 +5,4 @@
 
 pub use crate::proto::protocol::*;
 
-pub(crate) use crate::proto::protocol::{coords_wire_size, decode_optional_coords, encode_coords};
-pub(crate) use crate::proto::protocol::{error, session};
+pub(crate) use crate::proto::protocol::{coords_wire_size, encode_coords};

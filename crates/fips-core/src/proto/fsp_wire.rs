@@ -34,8 +34,8 @@
 //! | 0x2   | -      | Handshake msg2   | SessionAck (Noise XK msg2)        |
 //! | 0x3   | -      | Handshake msg3   | SessionMsg3 (Noise XK msg3)       |
 
-use crate::protocol::{ProtocolError, decode_optional_coords};
-use crate::tree::TreeCoordinate;
+use crate::proto::protocol::{ProtocolError, decode_optional_coords};
+use crate::proto::stp::TreeCoordinate;
 
 // ============================================================================
 // Constants

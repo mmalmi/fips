@@ -5,8 +5,8 @@
 //! EWMA trend indicators. Updated by the sender side when it receives
 //! a ReceiverReport about its own traffic.
 
-use crate::mmp::algorithms::{DualEwma, SrttEstimator, compute_etx};
-use crate::mmp::report::ReceiverReport;
+use super::algorithms::{DualEwma, SrttEstimator, compute_etx};
+use super::report::ReceiverReport;
 use std::time::Instant;
 use tracing::trace;
 

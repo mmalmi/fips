@@ -1,7 +1,7 @@
 use super::{SessionMessageType, decode_optional_coords, encode_coords, encode_empty_coords};
 use crate::NodeAddr;
-use crate::protocol::ProtocolError;
-use crate::tree::TreeCoordinate;
+use crate::proto::protocol::ProtocolError;
+use crate::proto::stp::TreeCoordinate;
 
 /// Path MTU notification (msg_type 0x13).
 ///

@@ -3,7 +3,7 @@
 use super::error::ProtocolError;
 use super::link::LinkMessageType;
 use crate::NodeAddr;
-use crate::tree::{CoordEntry, ParentDeclaration, TreeCoordinate, TreeError};
+use crate::proto::stp::{CoordEntry, ParentDeclaration, TreeCoordinate, TreeError};
 use secp256k1::schnorr::Signature;
 
 /// Spanning tree announcement carrying parent declaration and ancestry.

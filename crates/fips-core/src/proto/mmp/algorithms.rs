@@ -6,7 +6,7 @@
 use std::collections::VecDeque;
 use std::time::Instant;
 
-use crate::mmp::{EWMA_LONG_ALPHA, EWMA_SHORT_ALPHA};
+use super::{EWMA_LONG_ALPHA, EWMA_SHORT_ALPHA};
 
 // ============================================================================
 // Jitter Estimator (RFC 3550 §6.4.1)

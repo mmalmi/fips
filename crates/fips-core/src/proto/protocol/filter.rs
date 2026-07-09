@@ -2,7 +2,7 @@
 
 use super::error::ProtocolError;
 use super::link::LinkMessageType;
-use crate::bloom::BloomFilter;
+use crate::proto::bloom::{BloomFilter, V1_SIZE_CLASS};
 
 /// Bloom filter announcement for reachability propagation.
 ///
@@ -35,7 +35,7 @@ impl FilterAnnounce {
     pub fn new(filter: BloomFilter, sequence: u64) -> Self {
         Self {
             hash_count: filter.hash_count(),
-            size_class: crate::bloom::V1_SIZE_CLASS,
+            size_class: V1_SIZE_CLASS,
             filter,
             sequence,
         }
@@ -64,7 +64,7 @@ impl FilterAnnounce {
 
     /// Check if this is a v1-compliant filter (size_class=1).
     pub fn is_v1_compliant(&self) -> bool {
-        self.size_class == crate::bloom::V1_SIZE_CLASS
+        self.size_class == V1_SIZE_CLASS
     }
 
     /// Minimum payload size after msg_type is stripped:
@@ -142,10 +142,10 @@ impl FilterAnnounce {
         }
 
         // v1 compliance check
-        if size_class != crate::bloom::V1_SIZE_CLASS {
+        if size_class != V1_SIZE_CLASS {
             return Err(ProtocolError::Malformed(format!(
                 "unsupported size_class: {size_class} (v1 requires {})",
-                crate::bloom::V1_SIZE_CLASS
+                V1_SIZE_CLASS
             )));
         }
 
@@ -160,7 +160,7 @@ impl FilterAnnounce {
         }
 
         // Construct BloomFilter from bytes
-        let filter = crate::bloom::BloomFilter::from_slice(&payload[pos..], hash_count)
+        let filter = BloomFilter::from_slice(&payload[pos..], hash_count)
             .map_err(|e| ProtocolError::Malformed(format!("invalid bloom filter: {e}")))?;
 
         let announce = Self {

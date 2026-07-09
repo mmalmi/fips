@@ -3,7 +3,7 @@
 //! Serialization and deserialization for the two report types exchanged
 //! between link-layer peers. Wire format follows the MMP design doc.
 
-use crate::protocol::ProtocolError;
+use crate::proto::protocol::ProtocolError;
 
 // ============================================================================
 // SenderReport (msg_type 0x01, 48-byte body including type byte)
@@ -176,7 +176,7 @@ impl ReceiverReport {
 // Conversions between link-layer and session-layer report types
 // ============================================================================
 
-use crate::protocol::{SessionReceiverReport, SessionSenderReport};
+use crate::proto::protocol::{SessionReceiverReport, SessionSenderReport};
 
 impl From<&SenderReport> for SessionSenderReport {
     fn from(r: &SenderReport) -> Self {

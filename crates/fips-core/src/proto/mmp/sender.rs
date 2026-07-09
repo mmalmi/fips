@@ -5,8 +5,8 @@
 
 use std::time::{Duration, Instant};
 
-use crate::mmp::report::SenderReport;
-use crate::mmp::{
+use super::report::SenderReport;
+use super::{
     COLD_START_SAMPLES, DEFAULT_COLD_START_INTERVAL_MS, MAX_REPORT_INTERVAL_MS,
     MIN_REPORT_INTERVAL_MS,
 };
