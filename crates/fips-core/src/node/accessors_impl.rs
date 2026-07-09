@@ -753,6 +753,7 @@ impl Node {
     }
 
     /// Get a mutable peer by NodeAddr.
+    #[cfg(test)]
     pub fn get_peer_mut(&mut self, node_addr: &NodeAddr) -> Option<&mut ActivePeer> {
         if self.peers.contains_key(node_addr) {
             self.mark_dataplane_direct_fsp_sources_dirty();
