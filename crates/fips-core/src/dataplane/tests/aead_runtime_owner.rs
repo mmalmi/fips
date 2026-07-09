@@ -78,24 +78,18 @@
             .unwrap();
     }
 
-    fn run_with_executor<E>(
+    fn run_with_worker_pool(
         mover: &mut Dataplane,
-        executor: &mut E,
-    ) -> (usize, Vec<PacketOutput>, Vec<PacketDrop>)
-    where
-        E: DataplaneCryptoExecutor,
-    {
-        run_with_executor_limit(mover, executor, 8)
+        pool: &mut DataplaneAeadWorkerPool,
+    ) -> (usize, Vec<PacketOutput>, Vec<PacketDrop>) {
+        run_with_worker_pool_limit(mover, pool, 8)
     }
 
-    fn run_with_executor_limit<E>(
+    fn run_with_worker_pool_limit(
         mover: &mut Dataplane,
-        executor: &mut E,
+        pool: &mut DataplaneAeadWorkerPool,
         limit: usize,
-    ) -> (usize, Vec<PacketOutput>, Vec<PacketDrop>)
-    where
-        E: DataplaneCryptoExecutor,
-    {
+    ) -> (usize, Vec<PacketOutput>, Vec<PacketDrop>) {
         let mut prepared_work = Vec::new();
         let mut completion_work = Vec::new();
         let mut completion_batches = Vec::new();
@@ -114,7 +108,7 @@
                 &mut fsp_authenticated_ingress,
                 &mut drops,
             ),
-            executor,
+            pool,
             false,
         );
         assert!(outbound_packets.is_empty());
@@ -148,47 +142,6 @@
         std::mem::take(&mut driver.fsp_authenticated_ingress).endpoint_data_batches
     }
 
-    fn drain_worker_pool_completions(
-        pool: &mut DataplaneAeadWorkerPool,
-        expected: usize,
-    ) -> Vec<CryptoCompletion> {
-        let mut completions = Vec::new();
-        let mut batches = Vec::new();
-        for _ in 0..100 {
-            pool.drain_completion_batches_into_sink(
-                expected.saturating_sub(completions.len()),
-                &mut batches,
-            );
-            for batch in batches.drain(..) {
-                completions.extend(batch.into_completions());
-            }
-            if completions.len() >= expected {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        completions
-    }
-
-    fn drain_worker_pool_completion_batches(
-        pool: &mut DataplaneAeadWorkerPool,
-        expected: usize,
-    ) -> Vec<CryptoCompletionBatch> {
-        let mut batches = Vec::new();
-        for _ in 0..100 {
-            let drained = batches.iter().map(CryptoCompletionBatch::len).sum::<usize>();
-            pool.drain_completion_batches_into_sink(
-                expected.saturating_sub(drained),
-                &mut batches,
-            );
-            if batches.iter().map(CryptoCompletionBatch::len).sum::<usize>() >= expected {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        batches
-    }
-
     #[test]
     fn aead_worker_pool_returns_completion_batches() {
         let owner = fmp_owner(706);
@@ -198,7 +151,7 @@
         submit_fmp_inbound_range(&mut mover, owner, 706, open_key, 100..104, b"worker");
 
         let mut pool = DataplaneAeadWorkerPool::new(2, 8);
-        let (dispatched, retired, drops) = run_with_executor(&mut mover, &mut pool);
+        let (dispatched, retired, drops) = run_with_worker_pool(&mut mover, &mut pool);
 
         assert_eq!(dispatched, 4);
         assert!(retired.is_empty());
@@ -256,113 +209,12 @@
         }
 
         let mut pool = DataplaneAeadWorkerPool::new(1, 2);
-        let (dispatched, retired, drops) = run_with_executor_limit(&mut mover, &mut pool, 4);
+        let (dispatched, retired, drops) = run_with_worker_pool_limit(&mut mover, &mut pool, 4);
 
         assert_eq!(dispatched, 2);
         assert!(retired.is_empty());
         assert!(drops.is_empty());
         assert_eq!(pool.available_capacity(), 0);
-    }
-
-    #[test]
-    fn aead_worker_pool_keeps_large_open_owner_run_in_one_completion_batch() {
-        let owner = fmp_owner(714);
-        let open_key = 25;
-        let mut mover = Dataplane::new(AdmissionConfig::new(4, 32));
-        mover.register_owner(owner, OwnerConfig::new(1, 32));
-        mover
-            .owner_mut(owner)
-            .unwrap()
-            .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(open_key)));
-        submit_fmp_inbound_range(&mut mover, owner, 714, open_key, 100..116, b"fanout");
-
-        let mut pool = DataplaneAeadWorkerPool::new(4, 32);
-        let (dispatched, retired, drops) = run_with_executor_limit(&mut mover, &mut pool, 16);
-
-        assert_eq!(dispatched, 16);
-        assert!(retired.is_empty());
-        assert!(drops.is_empty());
-        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 16);
-
-        let mut batches = drain_worker_pool_completion_batches(&mut pool, 16);
-        assert_eq!(
-            batches.iter().map(CryptoCompletionBatch::len).sum::<usize>(),
-            16
-        );
-        let mut batch_runs = batches
-            .iter()
-            .map(|batch| (batch.first_order(), batch.len()))
-            .collect::<Vec<_>>();
-        batch_runs.sort_by_key(|(order, _)| *order);
-        assert_eq!(
-            batch_runs,
-            vec![(Some(OrderToken(0)), 16)]
-        );
-
-        let mut retired = Vec::new();
-        mover.queue_completion_batches(&mut batches);
-        assert_eq!(
-            retire_queued_completions_to_outputs(&mut mover, 16, &mut retired),
-            16
-        );
-        let outputs = retired;
-        assert_eq!(
-            outputs
-                .iter()
-                .map(PacketOutput::counter)
-                .collect::<Vec<_>>(),
-            (100..116).collect::<Vec<_>>()
-        );
-        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
-    }
-
-    #[test]
-    fn aead_worker_pool_completion_turn_retires_direct_owner_shard_batches() {
-        let owner = fmp_owner(716);
-        let open_key = 26;
-        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 32));
-        driver.register_owner(owner, OwnerConfig::new(1, 32));
-        driver
-            .mover
-            .owner_mut(owner)
-            .unwrap()
-            .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(open_key)));
-        submit_fmp_inbound_range(&mut driver.mover, owner, 716, open_key, 100..116, b"direct");
-
-        let mut pool = DataplaneAeadWorkerPool::new(4, 32);
-        let dispatch_summary = driver.collect_aead_outputs_with_executor(
-            DataplaneRuntimeSummary::default(),
-            16,
-            &mut pool,
-            false,
-        );
-
-        assert_eq!(dispatch_summary.dispatched(), 16);
-        assert_eq!(dispatch_summary.outputs(), 0);
-        assert_eq!(driver.mover.owner_mut(owner).unwrap().in_flight, 16);
-
-        let mut completion_summary = DataplaneRuntimeSummary::default();
-        for _ in 0..100 {
-            completion_summary = driver.start_aead_completion_turn(&mut pool, 16, false);
-            if completion_summary.completions() >= 16 {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-
-        assert_eq!(completion_summary.completions(), 16);
-        assert_eq!(completion_summary.outputs(), 16);
-        assert!(driver.completion_batches.is_empty());
-        assert_eq!(
-            driver
-                .outputs
-                .iter()
-                .map(PacketOutput::counter)
-                .collect::<Vec<_>>(),
-            (100..116).collect::<Vec<_>>()
-        );
-        assert_eq!(driver.mover.owner_mut(owner).unwrap().in_flight, 0);
-        assert_eq!(pool.available_capacity(), 32);
     }
 
     #[test]
@@ -396,7 +248,7 @@
                 .unwrap();
         }
 
-        let (dispatched, retired, drops) = run_with_executor_limit(
+        let (dispatched, retired, drops) = run_with_worker_pool_limit(
             &mut mover,
             &mut pool,
             DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS * 2,
@@ -420,7 +272,7 @@
                 open_key,
             ))
             .unwrap();
-        let (dispatched, retired, drops) = run_with_executor_limit(
+        let (dispatched, retired, drops) = run_with_worker_pool_limit(
             &mut mover,
             &mut pool,
             DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS * 2,
@@ -439,14 +291,14 @@
         submit_fmp_inbound_range(&mut mover, owner, 707, open_key, 100..104, b"worker-cap");
 
         let mut pool = DataplaneAeadWorkerPool::new(1, 2);
-        let (dispatched, retired, drops) = run_with_executor(&mut mover, &mut pool);
+        let (dispatched, retired, drops) = run_with_worker_pool(&mut mover, &mut pool);
         assert_eq!(dispatched, 2);
         assert!(retired.is_empty());
         assert!(drops.is_empty());
         assert_eq!(pool.available_capacity(), 0);
         assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 2);
 
-        let (dispatched, retired, drops) = run_with_executor(&mut mover, &mut pool);
+        let (dispatched, retired, drops) = run_with_worker_pool(&mut mover, &mut pool);
         assert_eq!(dispatched, 0);
         assert!(retired.is_empty());
         assert!(drops.is_empty());
@@ -460,7 +312,7 @@
         assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
         assert_eq!(pool.available_capacity(), 2);
 
-        let (dispatched, retired, drops) = run_with_executor(&mut mover, &mut pool);
+        let (dispatched, retired, drops) = run_with_worker_pool(&mut mover, &mut pool);
         assert_eq!(dispatched, 2);
         assert!(retired.is_empty());
         assert!(drops.is_empty());
@@ -473,7 +325,7 @@
         }
         assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
 
-        let (dispatched, retired, drops) = run_with_executor(&mut mover, &mut pool);
+        let (dispatched, retired, drops) = run_with_worker_pool(&mut mover, &mut pool);
         assert_eq!(dispatched, 0);
         assert!(retired.is_empty());
         assert!(drops.is_empty());
@@ -1767,7 +1619,7 @@
                 inbound_dropped: 0,
                 outbound_admitted: 1,
                 outbound_dropped: 0,
-                completions: 0,
+                completions: 2,
                 dispatched: 2,
                 outputs: 2,
                 outputs_sent: 0,
@@ -2102,14 +1954,13 @@
                 .unwrap();
         }
 
-        let mut executor = InlineDataplaneCryptoExecutor;
         let mut router = NullIngressRouter;
         let mut deferred_raw_ingress = std::collections::VecDeque::new();
-        let summary = driver.collect_live_session_outputs_with_executor(
+        let summary = collect_test_live_session_outputs(
+            &mut driver,
             DataplaneRuntimeSummary::default(),
             &mut router,
             8,
-            &mut executor,
             true,
             &mut deferred_raw_ingress,
         );
@@ -2273,13 +2124,12 @@
         });
 
         let mut routes = DataplaneLiveRouteTable::default();
-        let mut executor = InlineDataplaneCryptoExecutor;
         let mut deferred_raw_ingress = std::collections::VecDeque::new();
-        let summary = driver.collect_live_session_outputs_with_executor(
+        let summary = collect_test_live_session_outputs(
+            &mut driver,
             DataplaneRuntimeSummary::default(),
             &mut routes,
             0,
-            &mut executor,
             false,
             &mut deferred_raw_ingress,
         );

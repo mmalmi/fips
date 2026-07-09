@@ -264,22 +264,6 @@ impl PreparedSealJobBuilder {
     }
 }
 
-pub(crate) trait DataplaneCryptoExecutor {
-    fn available_capacity(&self) -> usize {
-        usize::MAX
-    }
-
-    fn available_capacity_for_lane(&self, _lane: Lane) -> usize {
-        self.available_capacity()
-    }
-
-    fn execute_prepared_chunk(
-        &mut self,
-        prepared: &mut Vec<PreparedCryptoWork>,
-        completions: &mut Vec<CryptoCompletion>,
-    ) -> usize;
-}
-
 #[derive(Clone, Debug)]
 struct DataplaneAeadWorkerCounters {
     in_flight: Arc<AtomicUsize>,
@@ -488,7 +472,7 @@ impl DataplaneAeadWorkerPool {
         drained
     }
 
-    fn capacity(&self) -> usize {
+    fn available_capacity(&self) -> usize {
         if self.work_tx.is_none() {
             return 0;
         }
@@ -497,8 +481,8 @@ impl DataplaneAeadWorkerPool {
         )
     }
 
-    fn capacity_for_lane(&self, lane: Lane) -> usize {
-        let total_available = self.capacity();
+    fn available_capacity_for_lane(&self, lane: Lane) -> usize {
+        let total_available = self.available_capacity();
         if lane == Lane::Priority {
             return total_available;
         }
@@ -565,26 +549,15 @@ impl DataplaneAeadWorkerPool {
             }
         }
     }
-}
 
-impl DataplaneCryptoExecutor for DataplaneAeadWorkerPool {
-    fn available_capacity(&self) -> usize {
-        self.capacity()
-    }
-
-    fn available_capacity_for_lane(&self, lane: Lane) -> usize {
-        self.capacity_for_lane(lane)
-    }
-
-    fn execute_prepared_chunk(
+    fn submit_prepared_chunk(
         &mut self,
         prepared: &mut Vec<PreparedCryptoWork>,
         completions: &mut Vec<CryptoCompletion>,
-    ) -> usize {
+    ) {
         completions.clear();
-        let count = prepared.len();
-        if count == 0 {
-            return 0;
+        if prepared.is_empty() {
+            return;
         }
 
         let mut open_jobs = PreparedOpenRunJobBuilder::new();
@@ -601,7 +574,6 @@ impl DataplaneCryptoExecutor for DataplaneAeadWorkerPool {
         }
         open_jobs.flush(self, completions);
         seal_jobs.flush(self, completions);
-        count
     }
 }
 

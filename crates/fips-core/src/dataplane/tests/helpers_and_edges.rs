@@ -52,29 +52,15 @@
         }
     }
 
-    #[derive(Debug, Default)]
-    struct InlineDataplaneCryptoExecutor;
-
-    impl DataplaneCryptoExecutor for InlineDataplaneCryptoExecutor {
-        fn execute_prepared_chunk(
-            &mut self,
-            prepared: &mut Vec<PreparedCryptoWork>,
-            completions: &mut Vec<CryptoCompletion>,
-        ) -> usize {
-            completions.clear();
-            let count = prepared.len();
-            for work in prepared.drain(..) {
-                completions.push(execute_test_prepared_crypto_work(work));
-            }
-            count
-        }
-    }
-
     fn execute_test_prepared_crypto_work(work: PreparedCryptoWork) -> CryptoCompletion {
-        match work {
-            PreparedCryptoWork::Open { work, cipher } => execute_open_crypto_work(work, &cipher),
-            PreparedCryptoWork::Seal { work, cipher } => execute_seal_crypto_work(work, cipher),
-        }
+        let mut pool = DataplaneAeadWorkerPool::new(1, 1);
+        let mut prepared = vec![work];
+        let mut failed = Vec::new();
+        pool.submit_prepared_chunk(&mut prepared, &mut failed);
+        assert!(failed.is_empty());
+        let mut completions = drain_worker_pool_completions(&mut pool, 1);
+        assert_eq!(completions.len(), 1);
+        completions.pop().unwrap()
     }
 
     fn complete_test_open_work(work: CryptoWork, key: u8) -> CryptoCompletion {
@@ -83,24 +69,6 @@
 
     fn complete_test_seal_work(work: OutboundCryptoWork, key: u8) -> CryptoCompletion {
         execute_test_prepared_crypto_work(PreparedCryptoWork::seal(work, test_key(key)))
-    }
-
-    #[derive(Debug, Default)]
-    struct CapturingPreparedCryptoExecutor {
-        prepared: Vec<PreparedCryptoWork>,
-    }
-
-    impl DataplaneCryptoExecutor for CapturingPreparedCryptoExecutor {
-        fn execute_prepared_chunk(
-            &mut self,
-            prepared: &mut Vec<PreparedCryptoWork>,
-            completions: &mut Vec<CryptoCompletion>,
-        ) -> usize {
-            completions.clear();
-            let count = prepared.len();
-            self.prepared.append(prepared);
-            count
-        }
     }
 
     fn dispatch_available(mover: &mut Dataplane, limit: usize) -> Vec<CryptoWork> {
@@ -133,36 +101,21 @@
     fn capture_prepared_work(mover: &mut Dataplane, limit: usize) -> Vec<PreparedCryptoWork> {
         seed_missing_test_owner_keys(mover);
         let mut prepared_work = Vec::new();
-        let mut completion_work = Vec::new();
         let mut completion_batches = Vec::new();
-        let mut retired = Vec::new();
-        let mut outbound_packets = Vec::new();
-        let mut fsp_authenticated_ingress = DataplaneFspAuthenticatedIngress::default();
-        let mut drops = Vec::new();
-        let mut executor = CapturingPreparedCryptoExecutor::default();
-        mover.run_aead_available_into_with_executor(
-            limit,
-            DataplaneAeadRunBuffers::new(
-                &mut prepared_work,
-                &mut completion_work,
-                &mut completion_batches,
-                &mut retired,
-                &mut outbound_packets,
-                &mut fsp_authenticated_ingress,
-                &mut drops,
-            ),
-            &mut executor,
-            false,
+        let pool = DataplaneAeadWorkerPool::new(
+            1,
+            limit
+                .saturating_add(DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS)
+                .max(1),
         );
-        debug_assert!(prepared_work.is_empty());
-        debug_assert!(completion_work.is_empty());
-        debug_assert!(retired.is_empty());
-        assert!(outbound_packets.is_empty());
-        assert!(fsp_authenticated_ingress.is_empty());
-        for drop in drops {
-            mover.record_drop(drop);
-        }
-        executor.prepared
+        mover.prepare_aead_available_into(
+            limit,
+            &mut prepared_work,
+            &mut completion_batches,
+            &pool,
+        );
+        assert!(completion_batches.is_empty());
+        prepared_work
     }
 
     fn seed_missing_test_owner_keys(mover: &mut Dataplane) {
@@ -176,6 +129,47 @@
         }
     }
 
+    fn drain_worker_pool_completions(
+        pool: &mut DataplaneAeadWorkerPool,
+        expected: usize,
+    ) -> Vec<CryptoCompletion> {
+        let mut completions = Vec::new();
+        let mut batches = Vec::new();
+        for _ in 0..100 {
+            pool.drain_completion_batches_into_sink(
+                expected.saturating_sub(completions.len()),
+                &mut batches,
+            );
+            for batch in batches.drain(..) {
+                completions.extend(batch.into_completions());
+            }
+            if completions.len() >= expected {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        completions
+    }
+
+    fn drain_worker_pool_completion_batches(
+        pool: &mut DataplaneAeadWorkerPool,
+        expected: usize,
+    ) -> Vec<CryptoCompletionBatch> {
+        let mut batches = Vec::new();
+        for _ in 0..100 {
+            let drained = batches.iter().map(CryptoCompletionBatch::len).sum::<usize>();
+            pool.drain_completion_batches_into_sink(
+                expected.saturating_sub(drained),
+                &mut batches,
+            );
+            if batches.iter().map(CryptoCompletionBatch::len).sum::<usize>() >= expected {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        batches
+    }
+
     fn run_aead_available(mover: &mut Dataplane, limit: usize) -> DataplaneTurn {
         let mut prepared_work = Vec::new();
         let mut completion_work = Vec::new();
@@ -184,7 +178,13 @@
         let mut outbound_packets = Vec::new();
         let mut fsp_authenticated_ingress = DataplaneFspAuthenticatedIngress::default();
         let mut drops = Vec::new();
-        let mut executor = InlineDataplaneCryptoExecutor;
+        let mut pool = DataplaneAeadWorkerPool::new(
+            1,
+            limit
+                .saturating_add(DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS)
+                .max(1),
+        );
+        let capacity_before = pool.available_capacity();
         let dispatched = mover.run_aead_available_into_with_executor(
             limit,
             DataplaneAeadRunBuffers::new(
@@ -196,9 +196,30 @@
                 &mut fsp_authenticated_ingress,
                 &mut drops,
             ),
-            &mut executor,
+            &mut pool,
             false,
         );
+        let worker_dispatched = capacity_before.saturating_sub(pool.available_capacity());
+        let mut worker_batches =
+            drain_worker_pool_completion_batches(&mut pool, worker_dispatched);
+        assert_eq!(
+            worker_batches
+                .iter()
+                .map(CryptoCompletionBatch::len)
+                .sum::<usize>(),
+            worker_dispatched
+        );
+        mover.queue_completion_batches(&mut worker_batches);
+        mover.retire_queued_completions_into(
+            limit,
+            &mut DataplaneRetiredOutputSink::new(
+                &mut retired,
+                &mut outbound_packets,
+                &mut fsp_authenticated_ingress,
+            ),
+            false,
+        );
+        drops.append(&mut mover.drain_drops());
         assert!(outbound_packets.is_empty());
         assert!(fsp_authenticated_ingress.is_empty());
 
@@ -207,6 +228,121 @@
             retired,
             drops,
         }
+    }
+
+    fn drain_worker_pool_into_driver(
+        driver: &mut DataplaneTurnDriver,
+        mut summary: DataplaneRuntimeSummary,
+        pool: &mut DataplaneAeadWorkerPool,
+        expected: usize,
+        compact_endpoint_data: bool,
+    ) -> DataplaneRuntimeSummary {
+        let mut drained = 0usize;
+        for _ in 0..100 {
+            drained = drained.saturating_add(
+                pool.drain_completion_batches_into_sink(
+                    expected.saturating_sub(drained),
+                    &mut driver.mover,
+                ),
+            );
+            if drained >= expected {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(drained, expected);
+        summary.completions = summary.completions.saturating_add(drained);
+        driver.retire_queued_completed_aead_outputs(expected, compact_endpoint_data);
+        driver.admit_retired_outbound_packets(summary)
+    }
+
+    fn collect_test_aead_outputs(
+        driver: &mut DataplaneTurnDriver,
+        mut summary: DataplaneRuntimeSummary,
+        limit: usize,
+        compact_endpoint_data: bool,
+    ) -> DataplaneRuntimeSummary {
+        let mut pool = DataplaneAeadWorkerPool::new(
+            1,
+            limit
+                .saturating_add(DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS)
+                .max(1),
+        );
+        let mut remaining = limit;
+        loop {
+            let dispatched_before = summary.dispatched;
+            let capacity_before = pool.available_capacity();
+            summary = driver.collect_aead_outputs_with_executor(
+                summary,
+                remaining,
+                &mut pool,
+                compact_endpoint_data,
+            );
+            let dispatched = summary.dispatched.saturating_sub(dispatched_before);
+            let worker_dispatched = capacity_before.saturating_sub(pool.available_capacity());
+            remaining = remaining.saturating_sub(dispatched);
+            if dispatched == 0 {
+                break;
+            }
+            summary = drain_worker_pool_into_driver(
+                driver,
+                summary,
+                &mut pool,
+                worker_dispatched,
+                compact_endpoint_data,
+            );
+        }
+        summary.outputs = driver.outputs.len();
+        summary.drops = driver.drops.len();
+        summary
+    }
+
+    fn collect_test_live_session_outputs<R>(
+        driver: &mut DataplaneTurnDriver,
+        mut summary: DataplaneRuntimeSummary,
+        router: &mut R,
+        limit: usize,
+        compact_endpoint_data: bool,
+        deferred_raw_ingress: &mut std::collections::VecDeque<(DataplaneRawIngress, u8)>,
+    ) -> DataplaneRuntimeSummary
+    where
+        R: DataplaneIngressRouter,
+    {
+        let mut pool = DataplaneAeadWorkerPool::new(
+            1,
+            limit
+                .saturating_add(DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS)
+                .max(1),
+        );
+        let mut remaining = limit;
+        loop {
+            let dispatched_before = summary.dispatched;
+            let capacity_before = pool.available_capacity();
+            summary = driver.collect_live_session_outputs_with_executor(
+                summary,
+                router,
+                remaining,
+                &mut pool,
+                compact_endpoint_data,
+                deferred_raw_ingress,
+            );
+            let dispatched = summary.dispatched.saturating_sub(dispatched_before);
+            let worker_dispatched = capacity_before.saturating_sub(pool.available_capacity());
+            remaining = remaining.saturating_sub(dispatched);
+            if dispatched == 0 {
+                break;
+            }
+            summary = drain_worker_pool_into_driver(
+                driver,
+                summary,
+                &mut pool,
+                worker_dispatched,
+                compact_endpoint_data,
+            );
+        }
+        summary.outputs = driver.outputs.len();
+        summary.drops = driver.drops.len();
+        summary
     }
 
     fn run_aead_completion_turn<I>(
@@ -234,9 +370,7 @@
             .queue_completion_batches(&mut driver.completion_batches);
         driver.retire_queued_completed_aead_outputs(queued, false);
         let summary = driver.admit_retired_outbound_packets(summary);
-        let mut executor = InlineDataplaneCryptoExecutor;
-        let summary =
-            driver.collect_aead_outputs_with_executor(summary, limit, &mut executor, false);
+        let summary = collect_test_aead_outputs(driver, summary, limit, false);
 
         DataplaneRuntimeTurn {
             summary,
@@ -274,7 +408,7 @@
             driver.admit_outbound_packet(packet, &mut summary);
         }
 
-        finish_aead_turn_with_inline(driver, summary, limit)
+        finish_test_aead_turn(driver, summary, limit)
     }
 
     fn run_aead_classified_output_turn<'a, I, O, S>(
@@ -299,7 +433,7 @@
             driver.admit_outbound_packet(packet, &mut summary);
         }
 
-        finish_aead_output_turn_with_inline(driver, summary, sink, limit)
+        finish_test_aead_output_turn(driver, summary, sink, limit)
     }
 
     fn admit_test_raw_ingress_packet<R>(
@@ -345,7 +479,7 @@
         for packet in outbound {
             driver.admit_outbound_packet(packet, &mut summary);
         }
-        finish_aead_turn_with_inline(driver, summary, limit)
+        finish_test_aead_turn(driver, summary, limit)
     }
 
     struct AeadOutputCompletionTurn<'a, RI, R, S> {
@@ -380,7 +514,6 @@
             sink,
             crypto_limit,
         } = request;
-        let mut executor = InlineDataplaneCryptoExecutor;
         driver.reset_turn_buffers();
 
         let mut summary = DataplaneRuntimeSummary::default();
@@ -397,8 +530,7 @@
             driver.admit_outbound_packet(packet, &mut summary);
         }
 
-        summary =
-            driver.collect_aead_outputs_with_executor(summary, crypto_limit, &mut executor, false);
+        summary = collect_test_aead_outputs(driver, summary, crypto_limit, false);
         driver.send_collected_outputs(summary, sink)
     }
 
@@ -469,19 +601,27 @@
             crypto_limit,
         } = route;
         let transport_send_batch_packets = 8;
-        let mut executor = InlineDataplaneCryptoExecutor;
+        let mut pool = DataplaneAeadWorkerPool::new(
+            1,
+            crypto_limit
+                .saturating_add(DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS)
+                .max(1),
+        );
         let mut deferred_raw_ingress = std::collections::VecDeque::new();
-        let summary = start_test_aead_completion_turn(
+        let mut summary = start_test_aead_completion_turn(
             driver,
             completions,
             completion_limit,
             endpoint_tx.direct_sink().is_some(),
         );
-        driver
-            .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
+        let mut aggregate: Option<DataplaneLiveNodeTurn> = None;
+        loop {
+            let capacity_before = pool.available_capacity();
+            let report = driver
+                .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
                 DataplaneLivePumpRequest {
                     summary,
-                    executor: &mut executor,
+                    executor: &mut pool,
                     fast_ingress: None,
                     raw_ingress,
                     routes,
@@ -500,17 +640,39 @@
                     transport_send_batch_packets,
                 },
             )
-            .await
+            .await;
+            let dispatched = report.summary().dispatched();
+            let worker_dispatched = capacity_before.saturating_sub(pool.available_capacity());
+            if let Some(aggregate) = aggregate.as_mut() {
+                aggregate.absorb(report);
+            } else {
+                aggregate = Some(report);
+            }
+            if dispatched == 0 || worker_dispatched == 0 {
+                break;
+            }
+            for _ in 0..100 {
+                if pool.has_ready_completions() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            summary = driver.start_aead_completion_turn(
+                &mut pool,
+                crypto_limit,
+                endpoint_tx.direct_sink().is_some(),
+            );
+            assert_eq!(summary.completions(), worker_dispatched);
+        }
+        aggregate.expect("live test turn")
     }
 
-    fn finish_aead_turn_with_inline(
+    fn finish_test_aead_turn(
         driver: &mut DataplaneTurnDriver,
         summary: DataplaneRuntimeSummary,
         limit: usize,
     ) -> DataplaneRuntimeTurn<'_> {
-        let mut executor = InlineDataplaneCryptoExecutor;
-        let summary =
-            driver.collect_aead_outputs_with_executor(summary, limit, &mut executor, false);
+        let summary = collect_test_aead_outputs(driver, summary, limit, false);
         DataplaneRuntimeTurn {
             summary,
             raw_ingress_drops: &driver.raw_ingress_drops,
@@ -520,7 +682,7 @@
         }
     }
 
-    fn finish_aead_output_turn_with_inline<'a, S>(
+    fn finish_test_aead_output_turn<'a, S>(
         driver: &'a mut DataplaneTurnDriver,
         summary: DataplaneRuntimeSummary,
         sink: &mut S,
@@ -529,9 +691,7 @@
     where
         S: DataplaneOutputSink,
     {
-        let mut executor = InlineDataplaneCryptoExecutor;
-        let summary =
-            driver.collect_aead_outputs_with_executor(summary, limit, &mut executor, false);
+        let summary = collect_test_aead_outputs(driver, summary, limit, false);
         driver.send_collected_outputs(summary, sink)
     }
 

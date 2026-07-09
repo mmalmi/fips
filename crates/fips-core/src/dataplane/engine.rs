@@ -579,16 +579,13 @@ impl Dataplane {
         retired_count
     }
 
-    fn run_aead_available_into_with_executor<E>(
+    fn run_aead_available_into_with_executor(
         &mut self,
         limit: usize,
         buffers: DataplaneAeadRunBuffers<'_>,
-        executor: &mut E,
+        executor: &mut DataplaneAeadWorkerPool,
         compact_endpoint_data: bool,
-    ) -> usize
-    where
-        E: DataplaneCryptoExecutor,
-    {
+    ) -> usize {
         let DataplaneAeadRunBuffers {
             prepared_work,
             completion_work,
@@ -598,120 +595,19 @@ impl Dataplane {
             fsp_authenticated_ingress,
             drops,
         } = buffers;
-        prepared_work.clear();
         completion_work.clear();
-        completion_batches.clear();
-        let mut dispatched_total = 0usize;
-        let record_fsp_path_open = crate::perf_profile::enabled();
-        let mut fsp_path_open = 0u64;
-        let mut fsp_path_open_bulk = 0u64;
-        {
-            let _owner_dispatch_timer = crate::perf_profile::Timer::start(
-                crate::perf_profile::Stage::DataplaneOwnerDispatch,
-            );
-            let executor_capacity = executor.available_capacity();
-            let total_limit = limit.min(executor_capacity);
-            if limit > 0 && executor_capacity == 0 {
-                crate::perf_profile::record_event(
-                    crate::perf_profile::Event::DataplaneDispatchExecutorFull,
-                );
-            }
-            let priority_capacity =
-                total_limit.min(executor.available_capacity_for_lane(Lane::Priority));
-            let mut priority_inbound_capacity = priority_capacity;
-            let bulk_capacity = total_limit.min(executor.available_capacity_for_lane(Lane::Bulk));
-            let inbound_priority_pending = self.has_inbound_priority_pending();
-            let outbound_priority_reserve = outbound_priority_dispatch_limit(
-                priority_capacity,
-                self.has_outbound_priority_pending(),
-            );
-            let pre_priority_inbound_limit = inbound_before_outbound_priority_limit(
-                priority_capacity,
-                outbound_priority_reserve,
-            )
-            .min(priority_inbound_capacity);
-
-            let pre_priority_inbound_dispatched = self.dispatch_prepared_ingress_shards_into(
-                pre_priority_inbound_limit,
-                prepared_work,
-                completion_batches,
-                false,
-                record_fsp_path_open,
-                &mut fsp_path_open,
-                &mut fsp_path_open_bulk,
-            );
-            dispatched_total = dispatched_total.saturating_add(pre_priority_inbound_dispatched);
-            priority_inbound_capacity =
-                priority_inbound_capacity.saturating_sub(pre_priority_inbound_dispatched);
-
-            let priority_outbound_limit = outbound_priority_reserve
-                .min(total_limit.saturating_sub(dispatched_total));
-            let priority_outbound_dispatched = self.dispatch_outbound_prepared_shards_into(
-                priority_outbound_limit,
-                prepared_work,
-                completion_batches,
-                true,
-            );
-            dispatched_total = dispatched_total.saturating_add(priority_outbound_dispatched);
-
-            let priority_inbound_limit = if inbound_priority_pending {
-                priority_inbound_capacity.min(total_limit.saturating_sub(dispatched_total))
-            } else {
-                0
-            };
-            let priority_inbound_dispatched = self.dispatch_prepared_ingress_shards_into(
-                priority_inbound_limit,
-                prepared_work,
-                completion_batches,
-                true,
-                record_fsp_path_open,
-                &mut fsp_path_open,
-                &mut fsp_path_open_bulk,
-            );
-            dispatched_total = dispatched_total.saturating_add(priority_inbound_dispatched);
-
-            let bulk_dispatch_capacity = total_limit
-                .saturating_sub(dispatched_total)
-                .min(bulk_capacity);
-            let bulk_inbound_start = prepared_work.len();
-            let inbound_dispatched = self.dispatch_prepared_ingress_shards_into(
-                bulk_dispatch_capacity,
-                prepared_work,
-                completion_batches,
-                false,
-                record_fsp_path_open,
-                &mut fsp_path_open,
-                &mut fsp_path_open_bulk,
-            );
-            dispatched_total = dispatched_total.saturating_add(inbound_dispatched);
-            let outbound_start = prepared_work.len();
-            let outbound_dispatched = self.dispatch_outbound_prepared_shards_into(
-                total_limit.saturating_sub(dispatched_total).min(bulk_capacity),
-                prepared_work,
-                completion_batches,
-                false,
-            );
-            dispatched_total = dispatched_total.saturating_add(outbound_dispatched);
-            debug_assert!(dispatched_total <= total_limit);
-
-            let leading_priority_seals = prepared_work[outbound_start..]
-                .iter()
-                .take_while(|work| work.lane() == Lane::Priority)
-                .count();
-            if leading_priority_seals > 0 {
-                prepared_work[bulk_inbound_start..outbound_start + leading_priority_seals]
-                    .rotate_right(leading_priority_seals);
-            }
-            if record_fsp_path_open {
-                record_fsp_path_open_dispatch(fsp_path_open, fsp_path_open_bulk);
-            }
-        }
+        let dispatched_total = self.prepare_aead_available_into(
+            limit,
+            prepared_work,
+            completion_batches,
+            executor,
+        );
 
         {
             let _executor_submit_timer = crate::perf_profile::Timer::start(
                 crate::perf_profile::Stage::DataplaneExecutorSubmit,
             );
-            execute_prepared_crypto_chunk(executor, prepared_work, completion_work);
+            executor.submit_prepared_chunk(prepared_work, completion_work);
         }
         {
             let _completion_queue_timer = crate::perf_profile::Timer::start(
@@ -731,6 +627,123 @@ impl Dataplane {
         }
 
         drops.append(&mut self.drops);
+        dispatched_total
+    }
+
+    fn prepare_aead_available_into(
+        &mut self,
+        limit: usize,
+        prepared_work: &mut Vec<PreparedCryptoWork>,
+        completion_batches: &mut Vec<CryptoCompletionBatch>,
+        worker_pool: &DataplaneAeadWorkerPool,
+    ) -> usize {
+        prepared_work.clear();
+        completion_batches.clear();
+        let _owner_dispatch_timer = crate::perf_profile::Timer::start(
+            crate::perf_profile::Stage::DataplaneOwnerDispatch,
+        );
+        let executor_capacity = worker_pool.available_capacity();
+        let total_limit = limit.min(executor_capacity);
+        if limit > 0 && executor_capacity == 0 {
+            crate::perf_profile::record_event(
+                crate::perf_profile::Event::DataplaneDispatchExecutorFull,
+            );
+        }
+        let priority_capacity =
+            total_limit.min(worker_pool.available_capacity_for_lane(Lane::Priority));
+        let mut priority_inbound_capacity = priority_capacity;
+        let bulk_capacity = total_limit.min(worker_pool.available_capacity_for_lane(Lane::Bulk));
+        let inbound_priority_pending = self.has_inbound_priority_pending();
+        let outbound_priority_reserve = outbound_priority_dispatch_limit(
+            priority_capacity,
+            self.has_outbound_priority_pending(),
+        );
+        let pre_priority_inbound_limit = inbound_before_outbound_priority_limit(
+            priority_capacity,
+            outbound_priority_reserve,
+        )
+        .min(priority_inbound_capacity);
+        let record_fsp_path_open = crate::perf_profile::enabled();
+        let mut fsp_path_open = 0u64;
+        let mut fsp_path_open_bulk = 0u64;
+
+        let mut dispatched_total = self.dispatch_prepared_ingress_shards_into(
+            pre_priority_inbound_limit,
+            prepared_work,
+            completion_batches,
+            false,
+            record_fsp_path_open,
+            &mut fsp_path_open,
+            &mut fsp_path_open_bulk,
+        );
+        priority_inbound_capacity =
+            priority_inbound_capacity.saturating_sub(dispatched_total);
+
+        let priority_outbound_limit =
+            outbound_priority_reserve.min(total_limit.saturating_sub(dispatched_total));
+        dispatched_total = dispatched_total.saturating_add(
+            self.dispatch_outbound_prepared_shards_into(
+                priority_outbound_limit,
+                prepared_work,
+                completion_batches,
+                true,
+            ),
+        );
+
+        let priority_inbound_limit = if inbound_priority_pending {
+            priority_inbound_capacity.min(total_limit.saturating_sub(dispatched_total))
+        } else {
+            0
+        };
+        dispatched_total = dispatched_total.saturating_add(
+            self.dispatch_prepared_ingress_shards_into(
+                priority_inbound_limit,
+                prepared_work,
+                completion_batches,
+                true,
+                record_fsp_path_open,
+                &mut fsp_path_open,
+                &mut fsp_path_open_bulk,
+            ),
+        );
+
+        let bulk_dispatch_capacity = total_limit
+            .saturating_sub(dispatched_total)
+            .min(bulk_capacity);
+        let bulk_inbound_start = prepared_work.len();
+        dispatched_total = dispatched_total.saturating_add(
+            self.dispatch_prepared_ingress_shards_into(
+                bulk_dispatch_capacity,
+                prepared_work,
+                completion_batches,
+                false,
+                record_fsp_path_open,
+                &mut fsp_path_open,
+                &mut fsp_path_open_bulk,
+            ),
+        );
+        let outbound_start = prepared_work.len();
+        dispatched_total = dispatched_total.saturating_add(
+            self.dispatch_outbound_prepared_shards_into(
+                total_limit.saturating_sub(dispatched_total).min(bulk_capacity),
+                prepared_work,
+                completion_batches,
+                false,
+            ),
+        );
+        debug_assert!(dispatched_total <= total_limit);
+
+        let leading_priority_seals = prepared_work[outbound_start..]
+            .iter()
+            .take_while(|work| work.lane() == Lane::Priority)
+            .count();
+        if leading_priority_seals > 0 {
+            prepared_work[bulk_inbound_start..outbound_start + leading_priority_seals]
+                .rotate_right(leading_priority_seals);
+        }
+        if record_fsp_path_open {
+            record_fsp_path_open_dispatch(fsp_path_open, fsp_path_open_bulk);
+        }
         dispatched_total
     }
 
@@ -1091,23 +1104,6 @@ fn record_owner_blocked(
         }
         None => {}
     }
-}
-
-fn execute_prepared_crypto_chunk<E>(
-    executor: &mut E,
-    prepared: &mut Vec<PreparedCryptoWork>,
-    completions: &mut Vec<CryptoCompletion>,
-) -> usize
-where
-    E: DataplaneCryptoExecutor,
-{
-    let prepared_len = prepared.len();
-    let accepted = executor.execute_prepared_chunk(prepared, completions);
-    debug_assert_eq!(
-        accepted, prepared_len,
-        "dataplane crypto executor must accept an entire owner-reserved prepared chunk"
-    );
-    accepted
 }
 
 fn socket_packet_run_owner_lane(packets: &[SocketPacket]) -> Option<(OwnerId, Lane)> {
