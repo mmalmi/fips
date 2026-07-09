@@ -49,20 +49,8 @@ impl FipsEndpointDirectPacketSegment {
     }
 
     fn from_shared_buffer(buffer: Arc<PacketBuffer>, ranges: Vec<Range<usize>>) -> Self {
-        let packet_bytes = ranges.iter().map(|range| range.len()).sum();
-        Self::from_shared_buffer_with_packet_bytes(buffer, ranges, packet_bytes)
-    }
-
-    fn from_shared_buffer_with_packet_bytes(
-        buffer: Arc<PacketBuffer>,
-        ranges: Vec<Range<usize>>,
-        packet_bytes: usize,
-    ) -> Self {
         debug_assert!(ranges.windows(2).all(|pair| pair[0].end <= pair[1].start));
-        debug_assert_eq!(
-            packet_bytes,
-            ranges.iter().map(|range| range.len()).sum::<usize>()
-        );
+        let packet_bytes = ranges.iter().map(|range| range.len()).sum();
         Self {
             buffer,
             ranges,
@@ -86,11 +74,11 @@ impl FipsEndpointDirectPacketSegment {
         let tail_ranges = self.ranges.split_off(at);
         self.packet_bytes = self.ranges.iter().map(|range| range.len()).sum();
         let tail_packet_bytes = original_packet_bytes.saturating_sub(self.packet_bytes);
-        Some(Self::from_shared_buffer_with_packet_bytes(
-            Arc::clone(&self.buffer),
-            tail_ranges,
-            tail_packet_bytes,
-        ))
+        Some(Self {
+            buffer: Arc::clone(&self.buffer),
+            ranges: tail_ranges,
+            packet_bytes: tail_packet_bytes,
+        })
     }
 
     fn retain_ranges<F>(&mut self, next_index: &mut usize, keep: &mut F) -> bool
