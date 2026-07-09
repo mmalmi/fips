@@ -205,8 +205,7 @@
         let mut retired = Vec::new();
         let completions = drain_worker_pool_completions(&mut pool, 2);
         assert_eq!(completions.len(), 2);
-        assert_eq!(pool.available_open_capacity(), 6);
-        assert_eq!(pool.available_seal_capacity(), 6);
+        assert_eq!(pool.available_capacity(), 6);
         for completion in completions {
             retired.extend(retire_completion(&mut mover, completion));
         }
@@ -225,8 +224,7 @@
             vec![100, 101, 102, 103]
         );
         assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
-        assert_eq!(pool.available_open_capacity(), 8);
-        assert_eq!(pool.available_seal_capacity(), 8);
+        assert_eq!(pool.available_capacity(), 8);
     }
 
     #[test]
@@ -260,8 +258,7 @@
         assert_eq!(dispatched, 2);
         assert!(retired.is_empty());
         assert!(drops.is_empty());
-        assert_eq!(pool.available_open_capacity(), 0);
-        assert_eq!(pool.available_seal_capacity(), 0);
+        assert_eq!(pool.available_capacity(), 0);
     }
 
     #[test]
@@ -362,7 +359,7 @@
             (100..116).collect::<Vec<_>>()
         );
         assert_eq!(driver.mover.owner_mut(owner).unwrap().in_flight, 0);
-        assert_eq!(pool.available_open_capacity(), 32);
+        assert_eq!(pool.available_capacity(), 32);
     }
 
     #[test]
@@ -404,9 +401,9 @@
         assert_eq!(dispatched, DATAPLANE_AEAD_WORKER_JOB_PACKETS);
         assert!(retired.is_empty());
         assert!(drops.is_empty());
-        assert_eq!(pool.available_open_capacity_for_lane(Lane::Bulk), 0);
+        assert_eq!(pool.available_capacity_for_lane(Lane::Bulk), 0);
         assert_eq!(
-            pool.available_open_capacity_for_lane(Lane::Priority),
+            pool.available_capacity_for_lane(Lane::Priority),
             DATAPLANE_AEAD_WORKER_JOB_PACKETS
         );
 
@@ -443,7 +440,7 @@
         assert_eq!(dispatched, 2);
         assert!(retired.is_empty());
         assert!(drops.is_empty());
-        assert_eq!(pool.available_seal_capacity(), 0);
+        assert_eq!(pool.available_capacity(), 0);
         assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 2);
 
         let (dispatched, retired, drops) = run_with_executor(&mut mover, &mut pool);
@@ -458,7 +455,7 @@
             retire_completion(&mut mover, completion);
         }
         assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
-        assert_eq!(pool.available_open_capacity(), 2);
+        assert_eq!(pool.available_capacity(), 2);
 
         let (dispatched, retired, drops) = run_with_executor(&mut mover, &mut pool);
         assert_eq!(dispatched, 2);

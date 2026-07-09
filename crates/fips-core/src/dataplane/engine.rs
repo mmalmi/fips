@@ -609,24 +609,20 @@ impl Dataplane {
             let _owner_dispatch_timer = crate::perf_profile::Timer::start(
                 crate::perf_profile::Stage::DataplaneOwnerDispatch,
             );
-            let open_capacity = executor.available_open_capacity();
-            let seal_capacity = executor.available_seal_capacity();
-            let direction_capacity = open_capacity.saturating_add(seal_capacity);
-            let executor_capacity = executor.available_capacity().min(direction_capacity);
+            let executor_capacity = executor.available_capacity();
             let total_limit = limit.min(executor_capacity);
             if limit > 0 && executor_capacity == 0 {
                 crate::perf_profile::record_event(
                     crate::perf_profile::Event::DataplaneDispatchExecutorFull,
                 );
             }
-            let mut open_priority_capacity =
-                total_limit.min(executor.available_open_capacity_for_lane(Lane::Priority));
-            let seal_priority_capacity =
-                total_limit.min(executor.available_seal_capacity_for_lane(Lane::Priority));
-            let open_bulk_capacity =
-                total_limit.min(executor.available_open_capacity_for_lane(Lane::Bulk));
-            let seal_bulk_capacity =
-                total_limit.min(executor.available_seal_capacity_for_lane(Lane::Bulk));
+            let priority_capacity =
+                total_limit.min(executor.available_capacity_for_lane(Lane::Priority));
+            let mut open_priority_capacity = priority_capacity;
+            let seal_priority_capacity = priority_capacity;
+            let bulk_capacity = total_limit.min(executor.available_capacity_for_lane(Lane::Bulk));
+            let open_bulk_capacity = bulk_capacity;
+            let seal_bulk_capacity = bulk_capacity;
             let inbound_priority_pending = self.has_inbound_priority_pending();
             let priority_feed_capacity = total_limit.min(
                 open_priority_capacity

@@ -274,20 +274,8 @@ pub(crate) trait DataplaneCryptoExecutor {
         usize::MAX
     }
 
-    fn available_open_capacity(&self) -> usize {
+    fn available_capacity_for_lane(&self, _lane: Lane) -> usize {
         self.available_capacity()
-    }
-
-    fn available_seal_capacity(&self) -> usize {
-        self.available_capacity()
-    }
-
-    fn available_open_capacity_for_lane(&self, _lane: Lane) -> usize {
-        self.available_open_capacity()
-    }
-
-    fn available_seal_capacity_for_lane(&self, _lane: Lane) -> usize {
-        self.available_seal_capacity()
     }
 
     fn execute_prepared_chunk(
@@ -643,19 +631,7 @@ impl DataplaneCryptoExecutor for DataplaneAeadWorkerPool {
         self.capacity()
     }
 
-    fn available_open_capacity(&self) -> usize {
-        self.capacity()
-    }
-
-    fn available_seal_capacity(&self) -> usize {
-        self.capacity()
-    }
-
-    fn available_open_capacity_for_lane(&self, lane: Lane) -> usize {
-        self.capacity_for_lane(lane)
-    }
-
-    fn available_seal_capacity_for_lane(&self, lane: Lane) -> usize {
+    fn available_capacity_for_lane(&self, lane: Lane) -> usize {
         self.capacity_for_lane(lane)
     }
 
