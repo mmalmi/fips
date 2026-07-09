@@ -125,6 +125,10 @@ impl CryptoCompletionBatch {
         self.owner
     }
 
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
     pub(crate) fn lane(&self) -> Lane {
         self.lane
     }

@@ -2059,28 +2059,30 @@ impl OwnerState {
             return Err(batch);
         }
 
-        let mut endpoint_data_batch = None;
-        let mut endpoint_packets = 0usize;
-        let record_endpoint_packets = crate::perf_profile::enabled();
-        let mut direct_enqueued_at_ms = None;
-        for completion in batch.into_completions() {
-            debug_assert_eq!(completion.order(), OrderToken(self.next_retire));
-            self.next_retire = self.next_retire.wrapping_add(1);
-            self.in_flight = self.in_flight.saturating_sub(1);
-            if completion.reservation.lane == Lane::Bulk {
-                self.bulk_in_flight = self.bulk_in_flight.saturating_sub(1);
-            }
-
-            if completion.reservation.generation != self.generation {
-                flush_retired_endpoint_data_batch(retired, &mut endpoint_data_batch);
+        let batch_len = batch.len();
+        debug_assert_eq!(batch.first_order(), Some(OrderToken(self.next_retire)));
+        self.next_retire = self.next_retire.wrapping_add(batch_len as u64);
+        self.in_flight = self.in_flight.saturating_sub(batch_len);
+        if batch.lane() == Lane::Bulk {
+            self.bulk_in_flight = self.bulk_in_flight.saturating_sub(batch_len);
+        }
+        if batch.generation() != self.generation {
+            for completion in batch.into_completions() {
                 drops.push(PacketDrop::from_completion(
                     &completion,
                     PacketDropReason::StaleCompletionGeneration,
                     None,
                 ));
-                continue;
             }
+            return Ok(());
+        }
 
+        let mut endpoint_data_batch: Option<DataplaneEndpointDataBatch> = None;
+        let mut endpoint_packets = 0usize;
+        let record_endpoint_packets = crate::perf_profile::enabled();
+        let mut direct_enqueued_at_ms = None;
+        let received_at = std::time::Instant::now();
+        for completion in batch.into_completions() {
             let CryptoResult::Opened(output) = completion.result else {
                 unreachable!("open FSP session payload run contains only opened outputs");
             };
@@ -2094,7 +2096,7 @@ impl OwnerState {
                 if let Some(ingress) =
                     DataplaneFspEndpointDataIngress::take_from_output(&mut output, enqueued_at_ms)
                 {
-                    self.record_retired_endpoint_data_ingress(&ingress);
+                    self.record_retired_endpoint_data_ingress(&ingress, received_at);
                     if record_endpoint_packets {
                         endpoint_packets = endpoint_packets.saturating_add(ingress.len());
                     }
@@ -2174,7 +2176,7 @@ impl OwnerState {
             if let Some(ingress) =
                 DataplaneFspEndpointDataIngress::take_from_output(&mut output, crate::time::now_ms())
             {
-                self.record_retired_endpoint_data_ingress(&ingress);
+                self.record_retired_endpoint_data_ingress(&ingress, std::time::Instant::now());
                 retired.push_endpoint_data_batch(ingress);
             } else {
                 retired.push_output(output);
@@ -2188,6 +2190,7 @@ impl OwnerState {
     fn record_retired_endpoint_data_ingress(
         &mut self,
         ingress: &DataplaneFspEndpointDataIngress,
+        received_at: std::time::Instant,
     ) {
         let commit = ingress.commit();
         if self.owner != OwnerId::fsp_node(commit.source_addr()) {
@@ -2200,7 +2203,7 @@ impl OwnerState {
             ingress.body_len,
             ingress.receive_sync,
             ingress.activity_tick,
-            std::time::Instant::now(),
+            received_at,
         ));
     }
 
