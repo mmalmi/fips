@@ -78,12 +78,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     std::io::stdout().flush()?;
 
-    while let Some(message) = endpoint.recv().await {
-        let source_npub = message.source_peer.npub();
-        let len = message.data.len();
-        endpoint.send(source_npub, message.data.into_vec()).await?;
-        println!("{}", json!({ "type": "echo", "bytes": len }));
-        std::io::stdout().flush()?;
+    let mut messages = Vec::with_capacity(32);
+    while endpoint.recv_batch_into(&mut messages, 32).await.is_some() {
+        for message in messages.drain(..) {
+            let len = message.data.len();
+            endpoint
+                .send_batch_to_peer(message.source_peer, vec![message.data.into_vec()])
+                .await?;
+            println!("{}", json!({ "type": "echo", "bytes": len }));
+            std::io::stdout().flush()?;
+        }
     }
 
     Ok(())
