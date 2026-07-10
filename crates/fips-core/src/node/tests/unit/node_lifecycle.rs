@@ -334,54 +334,6 @@ async fn test_active_peer_match_rejects_unresolvable_numeric_udp_candidate() {
 }
 
 #[tokio::test]
-async fn test_udp_transport_resolution_cache_clears_after_transport_change() {
-    let mut node = make_node();
-    let remote_addr: SocketAddr = "127.0.0.1:9".parse().unwrap();
-
-    assert!(
-        node.find_udp_transport_for_remote_addr(remote_addr)
-            .is_none(),
-        "missing UDP transport should cache a negative result"
-    );
-
-    let (packet_tx, packet_rx) = packet_channel(64);
-    node.packet_tx = Some(packet_tx.clone());
-    node.packet_rx = Some(packet_rx);
-
-    let transport_id = TransportId::new(42);
-    let mut udp = UdpTransport::new(
-        transport_id,
-        Some("primary".to_string()),
-        crate::config::UdpConfig {
-            bind_addr: Some("127.0.0.1:0".to_string()),
-            ..Default::default()
-        },
-        packet_tx,
-    );
-    udp.start_async().await.unwrap();
-    node.transports
-        .insert(transport_id, TransportHandle::Udp(udp));
-
-    assert!(
-        node.find_udp_transport_for_remote_addr(remote_addr)
-            .is_none(),
-        "cache should retain the short-lived negative result until invalidated"
-    );
-
-    node.udp_transport_resolution_cache.clear();
-    assert_eq!(
-        node.find_udp_transport_for_remote_addr(remote_addr)
-            .map(|(id, _)| id),
-        Some(transport_id),
-        "transport changes must invalidate cached UDP resolution"
-    );
-
-    for transport in node.transports.values_mut() {
-        transport.stop().await.ok();
-    }
-}
-
-#[tokio::test]
 async fn test_transport_discovery_avoids_bootstrap_udp_transport() {
     let mut node = make_node();
     let (packet_tx, packet_rx) = packet_channel(64);

@@ -293,13 +293,9 @@ impl Node {
     pub(in crate::node) fn find_udp_transport_for_remote_addr(
         &self,
         remote_addr: SocketAddr,
+        trust_configured_route: bool,
     ) -> Option<(TransportId, SocketAddr)> {
-        if let Some(result) = self.udp_transport_resolution_cache.get(remote_addr) {
-            return result;
-        }
-
-        let result = self
-            .transports
+        self.transports
             .iter()
             .filter(|(id, handle)| {
                 handle.transport_type().name == "udp"
@@ -309,13 +305,14 @@ impl Node {
             .filter_map(|(id, handle)| {
                 let local_addr = handle.local_addr()?;
                 (socket_addr_families_compatible(local_addr, remote_addr)
-                    && udp_remote_addr_locally_plausible(local_addr, remote_addr))
+                    && udp_remote_addr_locally_plausible(
+                        local_addr,
+                        remote_addr,
+                        trust_configured_route,
+                    ))
                 .then_some((*id, local_addr))
             })
-            .min_by_key(|(id, _)| id.as_u32());
-        self.udp_transport_resolution_cache
-            .insert(remote_addr, result);
-        result
+            .min_by_key(|(id, _)| id.as_u32())
     }
 
     pub(in crate::node) fn transport_discovery_candidate(
@@ -346,7 +343,7 @@ impl Node {
         };
 
         let Some((transport_id, local_addr)) =
-            self.find_udp_transport_for_remote_addr(remote_socket_addr)
+            self.find_udp_transport_for_remote_addr(remote_socket_addr, false)
         else {
             debug!(
                 transport_id = %discovered_transport_id,
@@ -427,8 +424,11 @@ impl Node {
         let transport_id = if candidate.transport == "udp"
             && let Ok(remote_socket_addr) = candidate.addr.parse::<SocketAddr>()
         {
-            self.find_udp_transport_for_remote_addr(remote_socket_addr)
-                .map(|(id, _)| id)?
+            self.find_udp_transport_for_remote_addr(
+                remote_socket_addr,
+                candidate.seen_at_ms.is_none(),
+            )
+            .map(|(id, _)| id)?
         } else {
             self.find_transport_for_type(&candidate.transport)?
         };

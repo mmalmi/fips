@@ -239,7 +239,10 @@ impl Node {
                 let tid = if addr.transport == "udp"
                     && let Ok(remote_socket_addr) = addr.addr.parse::<SocketAddr>()
                 {
-                    match self.find_udp_transport_for_remote_addr(remote_socket_addr) {
+                    match self.find_udp_transport_for_remote_addr(
+                        remote_socket_addr,
+                        addr.seen_at_ms.is_none(),
+                    ) {
                         Some((id, _)) => id,
                         None => {
                             debug!(

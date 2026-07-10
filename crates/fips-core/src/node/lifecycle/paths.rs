@@ -420,7 +420,7 @@ impl Node {
             return None;
         }
         let socket_addr = current_addr.as_str()?.parse::<SocketAddr>().ok()?;
-        self.find_udp_transport_for_remote_addr(socket_addr)?;
+        self.find_udp_transport_for_remote_addr(socket_addr, true)?;
 
         // A healthy current endpoint has already authenticated for this peer,
         // so prefer it over older overlay hints during idle refresh. If the

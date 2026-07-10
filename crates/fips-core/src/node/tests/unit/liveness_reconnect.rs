@@ -423,11 +423,6 @@ fn fresh_static_udp_peer_data_liveness_skips_retry_without_resolving_hints() {
         !node.active_peer_should_keep_direct_retry(&peer_addr, &peer_config),
         "fresh authenticated endpoint data should treat static UDP addresses as hints, not mandatory retry targets"
     );
-    assert_eq!(
-        node.udp_transport_resolution_cache.len(),
-        0,
-        "fresh endpoint data should skip static hint resolution entirely"
-    );
 }
 
 #[test]

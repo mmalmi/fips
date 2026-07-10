@@ -202,10 +202,6 @@ pub struct Node {
     // === Transports & Links ===
     /// Active transports (owned by Node).
     transports: HashMap<TransportId, TransportHandle>,
-    /// Short-lived cache for numeric UDP candidate -> compatible local transport.
-    /// This avoids repeated interface scans and route-probe sockets while direct
-    /// retry code is reconsidering the same LAN/NAT hints.
-    udp_transport_resolution_cache: lifecycle::UdpTransportResolutionCache,
     /// Per-transport kernel drop tracking for congestion detection.
     transport_drops: TransportDropTracker,
     /// Per-transport wildcard socket-local drop tracking for observability.

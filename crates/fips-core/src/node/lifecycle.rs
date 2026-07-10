@@ -20,7 +20,7 @@ use secp256k1::PublicKey;
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,64 +92,19 @@ impl LocalInterfaceNetwork {
     }
 }
 
-const UDP_TRANSPORT_RESOLUTION_CACHE_TTL: Duration = Duration::from_secs(2);
-
-#[derive(Default)]
-pub(in crate::node) struct UdpTransportResolutionCache {
-    entries: std::sync::Mutex<HashMap<SocketAddr, UdpTransportResolutionCacheEntry>>,
-}
-
-#[derive(Clone, Copy)]
-struct UdpTransportResolutionCacheEntry {
-    expires_at: Instant,
-    result: Option<(TransportId, SocketAddr)>,
-}
-
-impl UdpTransportResolutionCache {
-    fn get(&self, remote_addr: SocketAddr) -> Option<Option<(TransportId, SocketAddr)>> {
-        let now = Instant::now();
-        let mut entries = self.entries.lock().ok()?;
-        match entries.get(&remote_addr).copied() {
-            Some(entry) if entry.expires_at > now => Some(entry.result),
-            Some(_) => {
-                entries.remove(&remote_addr);
-                None
-            }
-            None => None,
-        }
+/// Configured UDP endpoints may use an explicit private route. Learned private,
+/// CGNAT, link-local, loopback, and ULA hints still require local-scope evidence.
+fn udp_remote_addr_locally_plausible(
+    local_addr: SocketAddr,
+    remote_addr: SocketAddr,
+    trust_configured_route: bool,
+) -> bool {
+    if udp_remote_addr_invalid(remote_addr.ip()) {
+        return false;
     }
-
-    fn insert(&self, remote_addr: SocketAddr, result: Option<(TransportId, SocketAddr)>) {
-        if let Ok(mut entries) = self.entries.lock() {
-            entries.insert(
-                remote_addr,
-                UdpTransportResolutionCacheEntry {
-                    expires_at: Instant::now() + UDP_TRANSPORT_RESOLUTION_CACHE_TTL,
-                    result,
-                },
-            );
-        }
+    if trust_configured_route {
+        return true;
     }
-
-    #[cfg(test)]
-    pub(in crate::node) fn len(&self) -> usize {
-        self.entries
-            .lock()
-            .map(|entries| entries.len())
-            .unwrap_or(0)
-    }
-
-    pub(in crate::node) fn clear(&self) {
-        if let Ok(mut entries) = self.entries.lock() {
-            entries.clear();
-        }
-    }
-}
-
-/// Public UDP endpoints are globally plausible. Private, CGNAT, link-local,
-/// loopback, and ULA endpoints are only hints: use them only when local routing
-/// evidence says this machine is on the same scoped network.
-fn udp_remote_addr_locally_plausible(local_addr: SocketAddr, remote_addr: SocketAddr) -> bool {
     let networks = local_interface_networks();
     udp_remote_addr_locally_plausible_with_evidence(
         local_addr,

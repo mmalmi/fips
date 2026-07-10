@@ -1096,7 +1096,7 @@ impl Node {
             if let Some(socket_addr) = transport.resolved_udp_socket_addr_if_cached(&candidate_addr)
             {
                 if let Some((candidate_transport_id, _)) =
-                    self.find_udp_transport_for_remote_addr(socket_addr)
+                    self.find_udp_transport_for_remote_addr(socket_addr, true)
                     && candidate_transport_id == transport_id
                 {
                     let resolved_addr =

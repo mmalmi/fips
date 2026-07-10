@@ -167,7 +167,6 @@ impl Node {
             transport_id,
             crate::transport::TransportHandle::Udp(transport),
         );
-        self.udp_transport_resolution_cache.clear();
         self.bootstrap_transports
             .register(transport_id, traversal.peer_npub.clone());
 
@@ -178,7 +177,6 @@ impl Node {
         {
             self.bootstrap_transports.remove(&transport_id);
             if let Some(mut handle) = self.transports.remove(&transport_id) {
-                self.udp_transport_resolution_cache.clear();
                 let _ = handle.stop().await;
             }
             return Err(err);
