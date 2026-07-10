@@ -83,9 +83,9 @@ pub use peer::{
 
 // Re-export node types
 pub use endpoint::{
-    FipsEndpoint, FipsEndpointBuilder, FipsEndpointDirectDeliveryError,
-    FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun, FipsEndpointDirectSink,
-    FipsEndpointError, FipsEndpointMessage, FipsEndpointOutboundDatagram,
+    FIPS_ENDPOINT_DIRECT_PACKET_RUN_MAX_PACKETS, FipsEndpoint, FipsEndpointBuilder,
+    FipsEndpointDirectDeliveryError, FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun,
+    FipsEndpointDirectSink, FipsEndpointError, FipsEndpointMessage, FipsEndpointOutboundDatagram,
     FipsEndpointServiceDatagram, FipsEndpointServiceReceiver,
 };
 pub use node::{ExternalPacketIo, Node, NodeDeliveredPacket, NodeError, NodeState};

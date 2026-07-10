@@ -623,9 +623,7 @@ impl DataplaneEndpointDataBatch {
             }
         }
         self.len = self.len.saturating_add(other.len);
-        for run in other.packet_runs {
-            self.push_direct_packet_run(run);
-        }
+        self.packet_runs.extend(other.packet_runs);
     }
 
     pub(crate) fn commit_runs(&self) -> &[DataplaneFspEndpointDataCommitRun] {

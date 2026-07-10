@@ -33,8 +33,8 @@ mod status;
 mod tests;
 
 pub use crate::node::{
-    FipsEndpointDirectDeliveryError, FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun,
-    FipsEndpointDirectSink,
+    FIPS_ENDPOINT_DIRECT_PACKET_RUN_MAX_PACKETS, FipsEndpointDirectDeliveryError,
+    FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun, FipsEndpointDirectSink,
 };
 pub use builder::FipsEndpointBuilder;
 use receive::{EndpointReceiveState, ServiceReceiveState};

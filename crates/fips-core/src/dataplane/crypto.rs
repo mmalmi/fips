@@ -6,7 +6,7 @@ pub(crate) enum PreparedCryptoWork {
 }
 
 const DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS: usize = 8;
-const DATAPLANE_AEAD_JOB_PACKETS: usize = 128;
+const DATAPLANE_AEAD_JOB_PACKETS: usize = crate::FIPS_ENDPOINT_DIRECT_PACKET_RUN_MAX_PACKETS;
 
 impl PreparedCryptoWork {
     pub(crate) fn open(work: CryptoWork, cipher: AeadKey) -> Self {

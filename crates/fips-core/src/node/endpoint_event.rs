@@ -3,6 +3,9 @@ use crate::transport::PacketBuffer;
 use std::ops::Range;
 use std::sync::Arc;
 
+/// Maximum endpoint packets in one authenticated direct packet run.
+pub const FIPS_ENDPOINT_DIRECT_PACKET_RUN_MAX_PACKETS: usize = 128;
+
 /// Authenticated source/session facts for a direct endpoint packet run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FipsEndpointDirectPacketRunMeta {
@@ -483,6 +486,11 @@ pub struct FipsEndpointDirectPacketBatch {
 
 impl FipsEndpointDirectPacketBatch {
     pub(crate) fn from_packet_runs(packet_runs: Vec<FipsEndpointDirectPacketRun>) -> Self {
+        debug_assert!(
+            packet_runs
+                .iter()
+                .all(|run| run.len() <= FIPS_ENDPOINT_DIRECT_PACKET_RUN_MAX_PACKETS)
+        );
         Self { packet_runs }
     }
 
