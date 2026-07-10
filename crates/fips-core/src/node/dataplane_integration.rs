@@ -1091,7 +1091,7 @@ impl Node {
 
         let mut addrs = Vec::new();
         for candidate in &peer_config.addresses {
-            if candidate.seen_at_ms.is_some()
+            if !candidate.is_configured()
                 || !candidate.transport.eq_ignore_ascii_case("udp")
                 || candidate.addr.eq_ignore_ascii_case("nat")
             {
@@ -1103,7 +1103,7 @@ impl Node {
             if let Some(socket_addr) = transport.resolved_udp_socket_addr_if_cached(&candidate_addr)
             {
                 if let Some((candidate_transport_id, _)) =
-                    self.find_udp_transport_for_remote_addr(socket_addr, true)
+                    self.find_udp_transport_for_remote_addr(socket_addr, candidate.provenance)
                     && candidate_transport_id == transport_id
                 {
                     let resolved_addr =

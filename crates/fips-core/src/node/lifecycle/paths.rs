@@ -420,7 +420,6 @@ impl Node {
             return None;
         }
         let socket_addr = current_addr.as_str()?.parse::<SocketAddr>().ok()?;
-        self.find_udp_transport_for_remote_addr(socket_addr, true)?;
 
         // A healthy current endpoint has already authenticated for this peer,
         // so prefer it over older overlay hints during idle refresh. If the
@@ -431,21 +430,26 @@ impl Node {
         let current_is_configured = self
             .configured_path_priority(peer_node_addr, peer.transport_id()?, current_addr)
             .is_some();
+        let provenance = if current_is_configured {
+            PeerAddressProvenance::Configured
+        } else {
+            PeerAddressProvenance::Learned
+        };
+        self.find_udp_transport_for_remote_addr(socket_addr, provenance)?;
         let has_configured_static_udp = self
             .configured_static_udp_path_for_peer(peer_node_addr, peer.transport_id()?)
             .is_some();
-        if peer.is_healthy() && (!has_configured_static_udp || current_is_configured) {
-            Some(
+        let mut candidate =
+            if peer.is_healthy() && (!has_configured_static_udp || current_is_configured) {
                 PeerAddress::with_priority("udp", socket_addr.to_string(), 0)
-                    .with_seen_at_ms(Self::now_ms()),
-            )
-        } else {
-            Some(PeerAddress::with_priority(
-                "udp",
-                socket_addr.to_string(),
-                u8::MAX,
-            ))
+                    .with_seen_at_ms(Self::now_ms())
+            } else {
+                PeerAddress::with_priority("udp", socket_addr.to_string(), u8::MAX)
+            };
+        if current_is_configured {
+            candidate = candidate.configured();
         }
+        Some(candidate)
     }
 
     pub(super) fn active_peer_current_path_priority(
@@ -520,6 +524,9 @@ impl Node {
             .addresses
             .iter()
             .filter_map(|candidate| {
+                if !candidate.is_configured() {
+                    return None;
+                }
                 let (candidate_transport_id, candidate_addr) =
                     self.resolve_peer_address_for_match(candidate)?;
                 (candidate_transport_id == transport_id && &candidate_addr == remote_addr)
@@ -537,9 +544,7 @@ impl Node {
             .addresses
             .iter()
             .filter_map(|candidate| {
-                if candidate.seen_at_ms.is_some()
-                    || !candidate.transport.eq_ignore_ascii_case("udp")
-                {
+                if !candidate.is_configured() || !candidate.transport.eq_ignore_ascii_case("udp") {
                     return None;
                 }
                 let (candidate_transport_id, candidate_addr) =
@@ -642,7 +647,7 @@ impl Node {
         peer_config: &PeerConfig,
     ) -> bool {
         peer_config.addresses.iter().any(|addr| {
-            addr.seen_at_ms.is_some() && self.active_peer_matches_candidate(peer_node_addr, addr)
+            !addr.is_configured() && self.active_peer_matches_candidate(peer_node_addr, addr)
         })
     }
 

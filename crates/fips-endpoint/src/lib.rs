@@ -2,7 +2,8 @@
 
 pub use fips_core::config::{
     Config, ConnectPolicy, EthernetConfig, NostrDiscoveryConfig, NostrDiscoveryPolicy, PeerAddress,
-    PeerConfig, RoutingMode, TransportInstances, TransportsConfig, UdpConfig,
+    PeerAddressProvenance, PeerConfig, RoutingMode, TransportInstances, TransportsConfig,
+    UdpConfig,
 };
 pub use fips_core::endpoint::{
     FipsEndpoint, FipsEndpointBuilder, FipsEndpointData, FipsEndpointDirectDeliveryError,

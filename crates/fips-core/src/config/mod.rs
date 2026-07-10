@@ -38,7 +38,7 @@ pub use node::{
     NodeConfig, NostrDiscoveryConfig, NostrDiscoveryPolicy, RateLimitConfig, RekeyConfig,
     RetryConfig, RoutingConfig, RoutingMode, SessionConfig, SessionMmpConfig, TreeConfig,
 };
-pub use peer::{ConnectPolicy, PeerAddress, PeerConfig};
+pub use peer::{ConnectPolicy, PeerAddress, PeerAddressProvenance, PeerConfig};
 #[cfg(feature = "sim-transport")]
 pub use transport::SimTransportConfig;
 pub use transport::{
@@ -422,13 +422,30 @@ pub struct Config {
     pub transports: TransportsConfig,
 
     /// Static peers to connect to (`peers`).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_configured_peers",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub peers: Vec<PeerConfig>,
 
     /// Gateway configuration (`gateway`).
     #[cfg(target_os = "linux")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway: Option<GatewayConfig>,
+}
+
+fn deserialize_configured_peers<'de, D>(deserializer: D) -> Result<Vec<PeerConfig>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let mut peers = Vec::<PeerConfig>::deserialize(deserializer)?;
+    for address in peers.iter_mut().flat_map(|peer| &mut peer.addresses) {
+        if address.provenance == PeerAddressProvenance::Unspecified {
+            address.provenance = PeerAddressProvenance::Configured;
+        }
+    }
+    Ok(peers)
 }
 
 impl Config {

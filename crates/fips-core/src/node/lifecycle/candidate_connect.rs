@@ -293,8 +293,12 @@ impl Node {
     pub(in crate::node) fn find_udp_transport_for_remote_addr(
         &self,
         remote_addr: SocketAddr,
-        trust_configured_route: bool,
+        provenance: PeerAddressProvenance,
     ) -> Option<(TransportId, SocketAddr)> {
+        if udp_remote_addr_invalid(remote_addr.ip()) {
+            return None;
+        }
+        let evidence = UdpRouteEvidence::capture(remote_addr, provenance)?;
         self.transports
             .iter()
             .filter(|(id, handle)| {
@@ -305,10 +309,12 @@ impl Node {
             .filter_map(|(id, handle)| {
                 let local_addr = handle.local_addr()?;
                 (socket_addr_families_compatible(local_addr, remote_addr)
+                    && evidence.transport_matches_route(local_addr)
                     && udp_remote_addr_locally_plausible(
                         local_addr,
                         remote_addr,
-                        trust_configured_route,
+                        provenance,
+                        &evidence,
                     ))
                 .then_some((*id, local_addr))
             })
@@ -342,8 +348,8 @@ impl Node {
             return Some((discovered_transport_id, discovered_addr, transport_name));
         };
 
-        let Some((transport_id, local_addr)) =
-            self.find_udp_transport_for_remote_addr(remote_socket_addr, false)
+        let Some((transport_id, local_addr)) = self
+            .find_udp_transport_for_remote_addr(remote_socket_addr, PeerAddressProvenance::Learned)
         else {
             debug!(
                 transport_id = %discovered_transport_id,
@@ -424,11 +430,8 @@ impl Node {
         let transport_id = if candidate.transport == "udp"
             && let Ok(remote_socket_addr) = candidate.addr.parse::<SocketAddr>()
         {
-            self.find_udp_transport_for_remote_addr(
-                remote_socket_addr,
-                candidate.seen_at_ms.is_none(),
-            )
-            .map(|(id, _)| id)?
+            self.find_udp_transport_for_remote_addr(remote_socket_addr, candidate.provenance)
+                .map(|(id, _)| id)?
         } else {
             self.find_transport_for_type(&candidate.transport)?
         };

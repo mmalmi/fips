@@ -1,7 +1,9 @@
 //! Node lifecycle management: start, stop, and peer connection initiation.
 
 use super::{ConfiguredPeerSendWeights, Node, NodeError, NodeState};
-use crate::config::{ConnectPolicy, NostrDiscoveryPolicy, PeerAddress, PeerConfig};
+use crate::config::{
+    ConnectPolicy, NostrDiscoveryPolicy, PeerAddress, PeerAddressProvenance, PeerConfig,
+};
 use crate::discovery::nostr::{
     ADVERT_IDENTIFIER, ADVERT_VERSION, BootstrapEvent, MeshTraversalSignal, NostrDiscovery,
     OverlayAdvert, OverlayEndpointAdvert, OverlayTransportKind,
@@ -92,25 +94,50 @@ impl LocalInterfaceNetwork {
     }
 }
 
+struct UdpRouteEvidence {
+    networks: Vec<LocalInterfaceNetwork>,
+    route_probe_local_ip: IpAddr,
+}
+
+impl UdpRouteEvidence {
+    fn capture(remote_addr: SocketAddr, provenance: PeerAddressProvenance) -> Option<Self> {
+        let networks = if provenance == PeerAddressProvenance::Learned
+            && udp_remote_addr_requires_local_scope(remote_addr.ip())
+        {
+            local_interface_networks()
+        } else {
+            Vec::new()
+        };
+        Some(Self {
+            networks,
+            route_probe_local_ip: udp_route_probe_local_ip(remote_addr)?,
+        })
+    }
+
+    fn transport_matches_route(&self, local_addr: SocketAddr) -> bool {
+        local_addr.ip().is_unspecified() || local_addr.ip() == self.route_probe_local_ip
+    }
+}
+
 /// Configured UDP endpoints may use an explicit private route. Learned private,
 /// CGNAT, link-local, loopback, and ULA hints still require local-scope evidence.
 fn udp_remote_addr_locally_plausible(
     local_addr: SocketAddr,
     remote_addr: SocketAddr,
-    trust_configured_route: bool,
+    provenance: PeerAddressProvenance,
+    evidence: &UdpRouteEvidence,
 ) -> bool {
     if udp_remote_addr_invalid(remote_addr.ip()) {
         return false;
     }
-    if trust_configured_route {
+    if provenance == PeerAddressProvenance::Configured {
         return true;
     }
-    let networks = local_interface_networks();
     udp_remote_addr_locally_plausible_with_evidence(
         local_addr,
         remote_addr,
-        &networks,
-        udp_route_probe_local_ip(remote_addr),
+        &evidence.networks,
+        Some(evidence.route_probe_local_ip),
     )
 }
 

@@ -91,7 +91,7 @@ impl Node {
 
         if let Some(best_static) = existing
             .iter()
-            .filter(|addr| addr.seen_at_ms.is_none())
+            .filter(|addr| addr.is_configured())
             .map(|addr| addr.priority)
             .min()
             .filter(|priority| *priority < DEFAULT_ADDRESS_PRIORITY)
@@ -239,10 +239,9 @@ impl Node {
                 let tid = if addr.transport == "udp"
                     && let Ok(remote_socket_addr) = addr.addr.parse::<SocketAddr>()
                 {
-                    match self.find_udp_transport_for_remote_addr(
-                        remote_socket_addr,
-                        addr.seen_at_ms.is_none(),
-                    ) {
+                    match self
+                        .find_udp_transport_for_remote_addr(remote_socket_addr, addr.provenance)
+                    {
                         Some((id, _)) => id,
                         None => {
                             debug!(

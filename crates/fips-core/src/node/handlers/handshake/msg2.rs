@@ -301,7 +301,7 @@ impl Node {
                             .filter(|peer| peer.npub == peer_npub)
                             .flat_map(|peer| peer.addresses.iter())
                             .any(|candidate| {
-                                candidate.seen_at_ms.is_none()
+                                candidate.is_configured()
                                     && candidate.transport.eq_ignore_ascii_case("udp")
                                     && crate::transport::TransportAddr::from_string(&candidate.addr)
                                         == addr

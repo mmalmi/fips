@@ -22,6 +22,28 @@ pub enum ConnectPolicy {
     Manual,
 }
 
+/// Whether a peer address came from operator configuration or discovery.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PeerAddressProvenance {
+    /// Provenance was absent during deserialization. Treated as learned unless
+    /// the address came through the trusted root configuration parser.
+    #[default]
+    #[doc(hidden)]
+    #[serde(skip)]
+    Unspecified,
+    /// The operator explicitly configured this address.
+    Configured,
+    /// The address was learned from a peer, advert, or active socket.
+    Learned,
+}
+
+impl PeerAddressProvenance {
+    fn is_unspecified(&self) -> bool {
+        matches!(self, Self::Unspecified)
+    }
+}
+
 /// A transport-specific address for reaching a peer.
 ///
 /// Each peer can have multiple addresses across different transports,
@@ -46,14 +68,22 @@ pub struct PeerAddress {
     #[serde(default = "default_priority")]
     pub priority: u8,
 
+    /// Trust provenance for policies that distinguish operator routes from
+    /// learned address hints.
+    ///
+    /// The trusted root config parser treats omission as configured for legacy
+    /// files. Other serde paths treat omission as untrusted, and new values are
+    /// serialized so round trips preserve provenance.
+    #[serde(default, skip_serializing_if = "PeerAddressProvenance::is_unspecified")]
+    pub provenance: PeerAddressProvenance,
+
     /// Wall-clock observation timestamp (Unix ms) for ranking by recency
     /// within the same priority.
     ///
-    /// `None` means "no freshness signal" — typically an operator-edited
-    /// static config. The dialer primarily honors explicit address priority
-    /// and only uses this field to order otherwise-equal candidates. Skipped
-    /// from serde so that round-tripping a config file doesn't produce noisy
-    /// empty fields.
+    /// `None` means "no freshness signal". The dialer primarily honors
+    /// explicit address priority and only uses this field to order
+    /// otherwise-equal candidates. Skipped from serde so that round-tripping
+    /// a config file doesn't produce noisy empty fields.
     ///
     /// Excluded from `PartialEq`: refreshing the timestamp on a peer that's
     /// otherwise unchanged should not flag it as "updated" in
@@ -67,6 +97,7 @@ impl PartialEq for PeerAddress {
         self.transport == other.transport
             && self.addr == other.addr
             && self.priority == other.priority
+            && self.provenance == other.provenance
     }
 }
 
@@ -85,17 +116,18 @@ fn default_discovery_fallback_transit() -> bool {
 }
 
 impl PeerAddress {
-    /// Create a new peer address.
+    /// Create a learned peer address.
     pub fn new(transport: impl Into<String>, addr: impl Into<String>) -> Self {
         Self {
             transport: transport.into(),
             addr: addr.into(),
             priority: default_priority(),
+            provenance: PeerAddressProvenance::Learned,
             seen_at_ms: None,
         }
     }
 
-    /// Create a new peer address with priority.
+    /// Create a learned peer address with priority.
     pub fn with_priority(
         transport: impl Into<String>,
         addr: impl Into<String>,
@@ -105,8 +137,20 @@ impl PeerAddress {
             transport: transport.into(),
             addr: addr.into(),
             priority,
+            provenance: PeerAddressProvenance::Learned,
             seen_at_ms: None,
         }
+    }
+
+    /// Mark this address as explicitly operator-configured.
+    pub fn configured(mut self) -> Self {
+        self.provenance = PeerAddressProvenance::Configured;
+        self
+    }
+
+    /// Whether this address was explicitly operator-configured.
+    pub fn is_configured(&self) -> bool {
+        self.provenance == PeerAddressProvenance::Configured
     }
 
     /// Tag this address with a freshness timestamp. Used by the dialer to
@@ -183,7 +227,7 @@ impl PeerConfig {
         Self {
             npub: npub.into(),
             alias: None,
-            addresses: vec![PeerAddress::new(transport, addr)],
+            addresses: vec![PeerAddress::new(transport, addr).configured()],
             connect_policy: ConnectPolicy::default(),
             auto_reconnect: default_auto_reconnect(),
             discovery_fallback_transit: default_discovery_fallback_transit(),

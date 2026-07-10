@@ -776,7 +776,7 @@ impl Node {
         for event in events {
             let crate::discovery::lan::LanEvent::Discovered(peer) = event;
             let Some((transport_id, local_addr)) =
-                self.find_udp_transport_for_remote_addr(peer.addr, false)
+                self.find_udp_transport_for_remote_addr(peer.addr, PeerAddressProvenance::Learned)
             else {
                 debug!(
                     addr = %peer.addr,

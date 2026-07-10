@@ -830,7 +830,7 @@ impl Node {
         };
 
         peer_config.addresses.iter().any(|candidate| {
-            candidate.seen_at_ms.is_none()
+            candidate.is_configured()
                 && candidate.transport.eq_ignore_ascii_case("udp")
                 && self.active_peer_matches_candidate(peer_addr, candidate)
         })
