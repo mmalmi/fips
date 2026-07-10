@@ -16,7 +16,7 @@ use crate::{
     Config, FipsAddress, IdentityConfig, Node, NodeAddr, NodeDeliveredPacket, NodeError,
     PeerIdentity,
 };
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 use thiserror::Error;
 use tokio::sync::{Mutex, mpsc, oneshot};
@@ -108,6 +108,41 @@ pub struct FipsEndpointServiceDatagram {
     pub destination_port: u16,
     pub data: FipsEndpointData,
     pub enqueued_at_ms: u64,
+}
+
+/// Port-scoped receiver for one registered FSP service.
+///
+/// Unlike [`FipsEndpoint::recv_service_datagram_batch_into`], this receiver
+/// cannot consume datagrams registered by another service owner.
+pub struct FipsEndpointServiceReceiver {
+    state: Mutex<ServiceReceiveState>,
+}
+
+impl FipsEndpointServiceReceiver {
+    /// Receive one datagram for this service, then drain ready follow-ons.
+    pub async fn recv_batch_into(
+        &self,
+        datagrams: &mut Vec<FipsEndpointServiceDatagram>,
+        max: usize,
+    ) -> Option<usize> {
+        let max = max.clamp(1, ENDPOINT_RECV_BATCH_MAX);
+        datagrams.clear();
+
+        let mut state = self.state.lock().await;
+        state.drain_pending_into(datagrams, max);
+        while datagrams.len() < max {
+            let event = if datagrams.is_empty() {
+                state.rx.recv().await?
+            } else {
+                match state.rx.try_recv() {
+                    Ok(event) => event,
+                    Err(_) => break,
+                }
+            };
+            state.push_event_into(event, datagrams, max);
+        }
+        Some(datagrams.len())
+    }
 }
 
 /// Reports what changed in response to [`FipsEndpoint::update_peers`].
@@ -304,7 +339,8 @@ pub struct FipsEndpoint {
     inbound_endpoint_rx: Arc<Mutex<EndpointReceiveState>>,
     inbound_service_tx: EndpointServiceEventSender,
     inbound_service_rx: Arc<Mutex<ServiceReceiveState>>,
-    registered_services: Arc<StdMutex<HashSet<u16>>>,
+    registered_services: Arc<StdMutex<HashMap<u16, EndpointServiceEventSender>>>,
+    service_channel_capacity: usize,
     shutdown_tx: StdMutex<Option<oneshot::Sender<()>>>,
     task: StdMutex<Option<JoinHandle<Result<(), NodeError>>>>,
 }
@@ -355,13 +391,38 @@ impl FipsEndpoint {
     /// Port 256 remains reserved for the built-in IPv6 shim. Datagrams for
     /// unregistered ports are discarded by the authenticated receive path.
     pub async fn register_service(&self, port: u16) -> Result<(), FipsEndpointError> {
+        self.register_service_with_sender(port, self.inbound_service_tx.clone())
+            .await
+    }
+
+    /// Register one local FSP service port with an isolated receiver.
+    pub async fn register_service_receiver(
+        &self,
+        port: u16,
+    ) -> Result<FipsEndpointServiceReceiver, FipsEndpointError> {
+        let (sender, receiver) = EndpointServiceEventSender::channel(self.service_channel_capacity);
+        self.register_service_with_sender(port, sender).await?;
+        Ok(FipsEndpointServiceReceiver {
+            state: Mutex::new(ServiceReceiveState::new(receiver)),
+        })
+    }
+
+    async fn register_service_with_sender(
+        &self,
+        port: u16,
+        sender: EndpointServiceEventSender,
+    ) -> Result<(), FipsEndpointError> {
         if port == crate::node::session_wire::FSP_PORT_IPV6_SHIM {
             return Err(FipsEndpointError::ServicePortReserved { port });
         }
 
         let (response_tx, response_rx) = oneshot::channel();
         self.endpoint_control_tx
-            .send(NodeEndpointControlCommand::RegisterService { port, response_tx })
+            .send(NodeEndpointControlCommand::RegisterService {
+                port,
+                sender: sender.clone(),
+                response_tx,
+            })
             .await
             .map_err(|_| FipsEndpointError::Closed)?;
         if !response_rx.await.map_err(|_| FipsEndpointError::Closed)? {
@@ -370,7 +431,7 @@ impl FipsEndpoint {
         self.registered_services
             .lock()
             .map_err(|_| FipsEndpointError::Closed)?
-            .insert(port);
+            .insert(port, sender);
         Ok(())
     }
 
@@ -418,28 +479,41 @@ impl FipsEndpoint {
         }
 
         if *remote.node_addr() == self.node_addr {
-            let deliveries = {
+            let deliveries_by_port = {
                 let registered = self
                     .registered_services
                     .lock()
                     .map_err(|_| FipsEndpointError::Closed)?;
-                datagrams
-                    .into_iter()
-                    .filter(|datagram| registered.contains(&datagram.destination_port))
-                    .map(|datagram| {
-                        crate::node::EndpointServiceDatagramDelivery::new(
+                let mut grouped: HashMap<
+                    u16,
+                    (
+                        EndpointServiceEventSender,
+                        Vec<crate::node::EndpointServiceDatagramDelivery>,
+                    ),
+                > = HashMap::new();
+                for datagram in datagrams {
+                    let Some(sender) = registered.get(&datagram.destination_port) else {
+                        continue;
+                    };
+                    grouped
+                        .entry(datagram.destination_port)
+                        .or_insert_with(|| (sender.clone(), Vec::new()))
+                        .1
+                        .push(crate::node::EndpointServiceDatagramDelivery::new(
                             self.identity,
                             datagram.source_port,
                             datagram.destination_port,
                             crate::transport::PacketBuffer::new(datagram.data),
-                        )
-                    })
-                    .collect()
+                        ));
+                }
+                grouped
             };
-            return self
-                .inbound_service_tx
-                .send(deliveries)
-                .map_err(|_| FipsEndpointError::Closed);
+            for (_, (sender, deliveries)) in deliveries_by_port {
+                sender
+                    .send(deliveries)
+                    .map_err(|_| FipsEndpointError::Closed)?;
+            }
+            return Ok(());
         }
 
         self.send_endpoint_data_batch(remote, service_datagram_payloads(datagrams)?)

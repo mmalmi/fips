@@ -175,6 +175,63 @@ async fn registered_service_loopback_request_reply_preserves_ports_and_endpoint_
 }
 
 #[tokio::test]
+async fn registered_service_receivers_isolate_destination_ports() {
+    const JOIN_PORT: u16 = 7368;
+    const MESH_PORT: u16 = 7369;
+    let endpoint = FipsEndpoint::builder()
+        .without_system_tun()
+        .bind()
+        .await
+        .expect("endpoint should bind");
+    let join_receiver = endpoint
+        .register_service_receiver(JOIN_PORT)
+        .await
+        .expect("join service should register");
+    let mesh_receiver = endpoint
+        .register_service_receiver(MESH_PORT)
+        .await
+        .expect("mesh service should register");
+
+    let local = PeerIdentity::from_npub(endpoint.npub()).expect("local peer identity");
+    endpoint
+        .send_datagram_batch_to_peer(
+            local,
+            vec![
+                FipsEndpointOutboundDatagram::new(41_000, MESH_PORT, b"mesh".to_vec()),
+                FipsEndpointOutboundDatagram::new(41_001, JOIN_PORT, b"join".to_vec()),
+            ],
+        )
+        .await
+        .expect("interleaved services should send");
+
+    let mut join = Vec::new();
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        join_receiver.recv_batch_into(&mut join, 8),
+    )
+    .await
+    .expect("join receive should not time out")
+    .expect("join datagram should arrive");
+    assert_eq!(join.len(), 1);
+    assert_eq!(join[0].destination_port, JOIN_PORT);
+    assert_eq!(join[0].data.as_slice(), b"join");
+
+    let mut mesh = Vec::new();
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        mesh_receiver.recv_batch_into(&mut mesh, 8),
+    )
+    .await
+    .expect("mesh receive should not time out")
+    .expect("mesh datagram should arrive");
+    assert_eq!(mesh.len(), 1);
+    assert_eq!(mesh[0].destination_port, MESH_PORT);
+    assert_eq!(mesh[0].data.as_slice(), b"mesh");
+
+    endpoint.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test]
 async fn endpoint_send_batch_rejects_oversize_payload() {
     let endpoint = FipsEndpoint::builder()
         .without_system_tun()

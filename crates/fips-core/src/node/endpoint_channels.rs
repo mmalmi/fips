@@ -249,6 +249,7 @@ pub(crate) enum NodeEndpointControlCommand {
     },
     RegisterService {
         port: u16,
+        sender: EndpointServiceEventSender,
         response_tx: tokio::sync::oneshot::Sender<bool>,
     },
 }

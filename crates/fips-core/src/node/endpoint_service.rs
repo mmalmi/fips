@@ -1,6 +1,6 @@
 use super::*;
 use crate::transport::PacketBuffer;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use tokio::sync::mpsc::error::TryRecvError;
@@ -129,30 +129,44 @@ impl Drop for EndpointServiceEventReceiver {
 
 #[derive(Debug, Default)]
 pub(in crate::node) struct EndpointServiceRuntime {
-    registered_ports: HashSet<u16>,
-    sender: Option<EndpointServiceEventSender>,
+    senders: HashMap<u16, EndpointServiceEventSender>,
 }
 
 impl EndpointServiceRuntime {
-    pub(in crate::node) fn attach(&mut self, sender: EndpointServiceEventSender) {
-        self.sender = Some(sender);
-    }
-
-    pub(in crate::node) fn register(&mut self, port: u16) -> bool {
-        self.registered_ports.insert(port)
+    pub(in crate::node) fn register(
+        &mut self,
+        port: u16,
+        sender: EndpointServiceEventSender,
+    ) -> bool {
+        if self.senders.contains_key(&port) {
+            return false;
+        }
+        self.senders.insert(port, sender);
+        true
     }
 
     pub(in crate::node) fn is_registered(&self, port: u16) -> bool {
-        self.registered_ports.contains(&port)
+        self.senders.contains_key(&port)
     }
 
     pub(in crate::node) fn deliver(
         &self,
         messages: Vec<EndpointServiceDatagramDelivery>,
     ) -> Result<(), ()> {
-        let Some(sender) = &self.sender else {
-            return Ok(());
-        };
-        sender.send(messages)
+        let mut by_port: HashMap<u16, Vec<EndpointServiceDatagramDelivery>> = HashMap::new();
+        for message in messages {
+            if self.senders.contains_key(&message.destination_port) {
+                by_port
+                    .entry(message.destination_port)
+                    .or_default()
+                    .push(message);
+            }
+        }
+        for (port, messages) in by_port {
+            if let Some(sender) = self.senders.get(&port) {
+                sender.send(messages)?;
+            }
+        }
+        Ok(())
     }
 }

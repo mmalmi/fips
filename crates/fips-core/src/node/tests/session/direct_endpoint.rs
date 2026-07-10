@@ -90,8 +90,18 @@ fn test_registered_service_datagram_request_reply_and_ipv6_port_compatibility() 
             .node
             .attach_endpoint_data_io(8)
             .expect("server endpoint I/O should attach");
-        assert!(nodes[0].node.endpoint_services.register(CLIENT_PORT));
-        assert!(nodes[1].node.endpoint_services.register(SERVICE_PORT));
+        assert!(
+            nodes[0]
+                .node
+                .endpoint_services
+                .register(CLIENT_PORT, client_endpoint.service_event_tx.clone())
+        );
+        assert!(
+            nodes[1]
+                .node
+                .endpoint_services
+                .register(SERVICE_PORT, server_endpoint.service_event_tx.clone())
+        );
 
         let client_identity =
             PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());

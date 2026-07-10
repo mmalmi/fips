@@ -83,7 +83,6 @@ impl Node {
         self.endpoint_control_rx = Some(control_rx);
         self.endpoint_data_rx = Some(data_rx);
         self.endpoint_events.attach(event_tx.clone());
-        self.endpoint_services.attach(service_event_tx.clone());
 
         Ok(EndpointDataIo {
             control_tx,
