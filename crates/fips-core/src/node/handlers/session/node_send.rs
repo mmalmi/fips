@@ -239,6 +239,11 @@ impl Node {
 
                 let _ = response_tx.send(peers);
             }
+            NodeEndpointControlCommand::PeerRatingEvents { scope, response_tx } => {
+                let result = crate::control::queries::peer_rating_events(self, &scope)
+                    .map_err(NodeError::Discovery);
+                let _ = response_tx.send(result);
+            }
             NodeEndpointControlCommand::LocalAdvertSnapshot { response_tx } => {
                 let endpoints = if let Some(discovery) = self.nostr_discovery_handle() {
                     discovery.local_advert_endpoints().await

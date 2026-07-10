@@ -809,6 +809,26 @@ impl FipsEndpoint {
             .map_err(|_| FipsEndpointError::Closed)
     }
 
+    /// Snapshot signed machine-rating events for peers with enough local
+    /// health evidence. Event signing remains inside the FIPS node identity.
+    pub async fn peer_rating_events(
+        &self,
+        scope: impl Into<String>,
+    ) -> Result<Vec<nostr::Event>, FipsEndpointError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.endpoint_control_tx
+            .send(NodeEndpointControlCommand::PeerRatingEvents {
+                scope: scope.into(),
+                response_tx,
+            })
+            .await
+            .map_err(|_| FipsEndpointError::Closed)?;
+        response_rx
+            .await
+            .map_err(|_| FipsEndpointError::Closed)?
+            .map_err(FipsEndpointError::Node)
+    }
+
     /// Feed a signed Nostr discovery event received outside the endpoint's
     /// relay client into the same advert/rating validation and caches.
     ///

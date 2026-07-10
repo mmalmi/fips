@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 mod peer_ratings;
 mod stats;
 
+pub(crate) use peer_ratings::peer_rating_events;
 pub use peer_ratings::show_peer_ratings;
 pub use stats::{
     show_stats_all_history, show_stats_history, show_stats_history_all_peers, show_stats_list,

@@ -97,16 +97,8 @@ fn build_peer_rating_export(
     format: PeerRatingExportFormat,
     now: u64,
 ) -> Result<Value, String> {
-    let peers_value = super::show_peers(node);
-    let peers = peers_value
-        .get("peers")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "show_peers response did not include peers array".to_string())?;
     let rater = node.npub();
-    let ratings = peers
-        .iter()
-        .filter_map(|peer| peer_rating_record(&rater, peer, scope, now))
-        .collect::<Vec<_>>();
+    let ratings = peer_rating_records(node, &rater, scope, now)?;
 
     match format {
         PeerRatingExportFormat::Records => Ok(json!({
@@ -119,11 +111,7 @@ fn build_peer_rating_export(
             "ratings": ratings,
         })),
         PeerRatingExportFormat::Events => {
-            let keys = nostr_keys_for_node(node)?;
-            let events = ratings
-                .iter()
-                .map(|rating| rating.to_fact_event(&keys))
-                .collect::<Result<Vec<_>, _>>()?;
+            let events = rating_records_to_events(node, &ratings)?;
             Ok(json!({
                 "schema": 1,
                 "type": "fips_peer_rating_fact_event_export",
@@ -136,6 +124,44 @@ fn build_peer_rating_export(
             }))
         }
     }
+}
+
+pub(crate) fn peer_rating_events(node: &Node, scope: &str) -> Result<Vec<Event>, String> {
+    let scope = scope.trim();
+    if scope.is_empty() {
+        return Err("rating scope cannot be empty".to_string());
+    }
+    let rater = node.npub();
+    let ratings = peer_rating_records(node, &rater, scope, now_unix_secs())?;
+    rating_records_to_events(node, &ratings)
+}
+
+fn peer_rating_records(
+    node: &Node,
+    rater: &str,
+    scope: &str,
+    now: u64,
+) -> Result<Vec<PeerRatingRecord>, String> {
+    let peers_value = super::show_peers(node);
+    let peers = peers_value
+        .get("peers")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "show_peers response did not include peers array".to_string())?;
+    Ok(peers
+        .iter()
+        .filter_map(|peer| peer_rating_record(rater, peer, scope, now))
+        .collect())
+}
+
+fn rating_records_to_events(
+    node: &Node,
+    ratings: &[PeerRatingRecord],
+) -> Result<Vec<Event>, String> {
+    let keys = nostr_keys_for_node(node)?;
+    ratings
+        .iter()
+        .map(|rating| rating.to_fact_event(&keys))
+        .collect()
 }
 
 fn nostr_keys_for_node(node: &Node) -> Result<Keys, String> {

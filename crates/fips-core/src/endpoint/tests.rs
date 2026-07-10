@@ -329,3 +329,20 @@ async fn endpoint_peer_snapshot_starts_empty() {
 
     endpoint.shutdown().await.expect("shutdown should succeed");
 }
+
+#[tokio::test]
+async fn endpoint_exposes_signed_machine_rating_events() {
+    let endpoint = FipsEndpoint::builder()
+        .without_system_tun()
+        .bind()
+        .await
+        .expect("endpoint should bind");
+
+    let events = endpoint
+        .peer_rating_events("fips.peer")
+        .await
+        .expect("peer rating snapshot");
+    assert!(events.is_empty());
+
+    endpoint.shutdown().await.expect("shutdown should succeed");
+}

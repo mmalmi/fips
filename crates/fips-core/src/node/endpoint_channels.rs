@@ -227,6 +227,10 @@ pub(crate) enum NodeEndpointControlCommand {
     PeerSnapshot {
         response_tx: tokio::sync::oneshot::Sender<Vec<NodeEndpointPeer>>,
     },
+    PeerRatingEvents {
+        scope: String,
+        response_tx: tokio::sync::oneshot::Sender<Result<Vec<nostr::Event>, NodeError>>,
+    },
     LocalAdvertSnapshot {
         response_tx:
             tokio::sync::oneshot::Sender<Vec<crate::discovery::nostr::OverlayEndpointAdvert>>,
