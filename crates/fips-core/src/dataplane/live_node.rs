@@ -666,7 +666,6 @@ impl DataplaneLiveNode {
         let summary = self
             .driver
             .start_aead_completion_turn(
-                &mut self.crypto_worker,
                 crypto_limit,
                 compact_endpoint_data,
             );

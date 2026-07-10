@@ -146,7 +146,6 @@
         expected: usize,
     ) -> Vec<CryptoCompletion> {
         for _ in 0..100 {
-            pool.reap_finished_tasks();
             if slots.iter().all(|slot| slot.is_ready()) {
                 break;
             }
@@ -169,7 +168,6 @@
         mover: &Dataplane,
     ) {
         for _ in 0..100 {
-            pool.reap_finished_tasks();
             if mover
                 .shards
                 .iter()
@@ -638,7 +636,6 @@
                 break;
             }
             for _ in 0..100 {
-                pool.reap_finished_tasks();
                 if driver
                     .mover
                     .shards
@@ -650,7 +647,6 @@
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
             summary = driver.start_aead_completion_turn(
-                &mut pool,
                 crypto_limit,
                 endpoint_tx.direct_sink().is_some(),
             );

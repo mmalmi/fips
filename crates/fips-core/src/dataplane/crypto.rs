@@ -1,5 +1,5 @@
 use std::cell::UnsafeCell;
-use std::sync::Mutex;
+use std::sync::{Condvar, LazyLock, Mutex, Weak};
 use std::sync::atomic::{
     AtomicBool, AtomicUsize, Ordering::Acquire, Ordering::Relaxed, Ordering::Release,
 };
@@ -340,6 +340,7 @@ struct PreparedCryptoOwnerRun {
     slot: Arc<CryptoReadySlot>,
     cipher: AeadKey,
     is_open: bool,
+    readiness_notify: Arc<tokio::sync::Notify>,
     queued_at: Option<crate::perf_profile::TraceStamp>,
 }
 
@@ -347,71 +348,189 @@ struct PreparedCryptoOwnerRun {
 struct CryptoOwnerRunQueue {
     priority: VecDeque<PreparedCryptoOwnerRun>,
     bulk: VecDeque<PreparedCryptoOwnerRun>,
+    priority_packets_with_bulk_waiting: usize,
+    closed: bool,
 }
 
 #[derive(Debug)]
 struct CryptoWorkerQueue {
     runs: Mutex<CryptoOwnerRunQueue>,
-    available: tokio::sync::Semaphore,
+    available: Condvar,
 }
 
 impl CryptoWorkerQueue {
     fn new() -> Self {
         Self {
             runs: Mutex::new(CryptoOwnerRunQueue::default()),
-            available: tokio::sync::Semaphore::new(0),
+            available: Condvar::new(),
         }
     }
 
     fn push(&self, run: PreparedCryptoOwnerRun) {
         let lane = run.slot.lane();
         let mut runs = self.runs.lock().expect("AEAD worker queue poisoned");
+        assert!(!runs.closed, "AEAD worker queue closed");
         match lane {
             Lane::Priority => runs.priority.push_back(run),
             Lane::Bulk => runs.bulk.push_back(run),
         }
         drop(runs);
-        self.available.add_permits(1);
+        self.available.notify_one();
     }
 
-    async fn pop(&self) -> PreparedCryptoOwnerRun {
-        self.available
-            .acquire()
-            .await
-            .expect("AEAD worker queue closed")
-            .forget();
+    fn pop(&self) -> Option<PreparedCryptoOwnerRun> {
         let mut runs = self.runs.lock().expect("AEAD worker queue poisoned");
-        runs.priority
-            .pop_front()
-            .or_else(|| runs.bulk.pop_front())
-            .expect("AEAD worker permit without queued work")
+        loop {
+            let run = if runs.bulk.is_empty() {
+                runs.priority_packets_with_bulk_waiting = 0;
+                runs.priority.pop_front()
+            } else if runs.priority.is_empty()
+                || runs.priority_packets_with_bulk_waiting
+                    >= DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS
+            {
+                runs.priority_packets_with_bulk_waiting = 0;
+                runs.bulk.pop_front()
+            } else {
+                let run = runs.priority.pop_front();
+                if let Some(run) = &run {
+                    runs.priority_packets_with_bulk_waiting = runs
+                        .priority_packets_with_bulk_waiting
+                        .saturating_add(run.slot.len());
+                }
+                run
+            };
+            if let Some(run) = run {
+                return Some(run);
+            }
+            if runs.closed {
+                return None;
+            }
+            runs = self
+                .available
+                .wait(runs)
+                .expect("AEAD worker queue poisoned");
+        }
+    }
+
+    fn close(&self) {
+        let mut runs = self.runs.lock().expect("AEAD worker queue poisoned");
+        runs.closed = true;
+        drop(runs);
+        self.available.notify_all();
+    }
+}
+
+#[derive(Debug)]
+struct NativeExecutor {
+    worker_queue: Arc<CryptoWorkerQueue>,
+    workers: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl NativeExecutor {
+    fn try_new() -> std::io::Result<Self> {
+        let worker_queue = Arc::new(CryptoWorkerQueue::new());
+        let worker_count = dataplane_aead_worker_count();
+        let mut workers = Vec::with_capacity(worker_count);
+        for index in 0..worker_count {
+            let queue = Arc::clone(&worker_queue);
+            let worker = std::thread::Builder::new()
+                .name(format!("fips-aead-{index}"))
+                .spawn(move || {
+                    // A popped ordered run cannot be reconstructed after a panic.
+                    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        run_crypto_worker(queue)
+                    }))
+                    .is_err()
+                    {
+                        std::process::abort();
+                    }
+                });
+            match worker {
+                Ok(worker) => workers.push(worker),
+                Err(error) => {
+                    worker_queue.close();
+                    for worker in workers {
+                        let _ = worker.join();
+                    }
+                    return Err(error);
+                }
+            }
+        }
+
+        Ok(Self {
+            worker_queue,
+            workers,
+        })
+    }
+}
+
+static NATIVE_EXECUTOR: LazyLock<(Mutex<Option<Weak<NativeExecutor>>>, Condvar)> =
+    LazyLock::new(|| (Mutex::new(None), Condvar::new()));
+
+fn acquire_native_executor() -> Arc<NativeExecutor> {
+    let (registry, released) = &*NATIVE_EXECUTOR;
+    let mut registered = registry.lock().expect("native AEAD registry poisoned");
+    loop {
+        match registered.as_ref() {
+            Some(executor) => match executor.upgrade() {
+                Some(executor) => return executor,
+                None => {
+                    registered = released
+                        .wait(registered)
+                        .expect("native AEAD registry poisoned");
+                }
+            },
+            None => {
+                let executor = match NativeExecutor::try_new() {
+                    Ok(executor) => Arc::new(executor),
+                    Err(error) => {
+                        drop(registered);
+                        panic!("failed to spawn dataplane AEAD workers: {error}");
+                    }
+                };
+                *registered = Some(Arc::downgrade(&executor));
+                return executor;
+            }
+        }
+    }
+}
+
+impl Drop for NativeExecutor {
+    fn drop(&mut self) {
+        let (registry, released) = &*NATIVE_EXECUTOR;
+        let mut registered = registry.lock().expect("native AEAD registry poisoned");
+        debug_assert!(registered
+            .as_ref()
+            .is_some_and(|executor| std::ptr::eq(executor.as_ptr(), self)));
+        self.worker_queue.close();
+        let worker_failed = self
+            .workers
+            .drain(..)
+            .fold(false, |failed, worker| worker.join().is_err() || failed);
+        *registered = None;
+        released.notify_all();
+        drop(registered);
+        if worker_failed && !std::thread::panicking() {
+            panic!("dataplane AEAD worker failed");
+        }
     }
 }
 
 #[derive(Debug)]
 pub(crate) struct DataplaneAeadWorkerPool {
     readiness_notify: Arc<tokio::sync::Notify>,
-    worker_queue: Arc<CryptoWorkerQueue>,
+    native_executor: Option<Arc<NativeExecutor>>,
     counters: DataplaneAeadWorkerCounters,
     max_in_flight: usize,
-    worker_count: usize,
-    runtime: Option<tokio::runtime::Handle>,
-    workers: tokio::task::JoinSet<()>,
 }
 
 impl DataplaneAeadWorkerPool {
     pub(crate) fn new(max_in_flight: usize) -> Self {
-        let max_in_flight = max_in_flight.max(1);
-        let worker_count = dataplane_aead_worker_count(max_in_flight);
-
         Self {
             readiness_notify: Arc::new(tokio::sync::Notify::new()),
-            worker_queue: Arc::new(CryptoWorkerQueue::new()),
+            native_executor: None,
             counters: DataplaneAeadWorkerCounters::new(),
-            max_in_flight,
-            worker_count,
-            runtime: tokio::runtime::Handle::try_current().ok(),
-            workers: tokio::task::JoinSet::new(),
+            max_in_flight: max_in_flight.max(1),
         }
     }
 
@@ -419,8 +538,7 @@ impl DataplaneAeadWorkerPool {
         Arc::clone(&self.readiness_notify)
     }
 
-    pub(crate) fn record_perf_depths(&mut self) {
-        self.reap_finished_tasks();
+    pub(crate) fn record_perf_depths(&self) {
         if !crate::perf_profile::enabled() {
             return;
         }
@@ -472,42 +590,18 @@ impl DataplaneAeadWorkerPool {
             slot,
             cipher,
             is_open,
+            readiness_notify: Arc::clone(&self.readiness_notify),
             queued_at: crate::perf_profile::stamp(),
         }
     }
 
     fn submit_owner_run(&mut self, run: PreparedCryptoOwnerRun) {
-        self.reap_finished_tasks();
         let run_len = run.slot.len();
-        self.start_workers();
-        self.worker_queue.push(run);
+        self.native_executor
+            .get_or_insert_with(acquire_native_executor)
+            .worker_queue
+            .push(run);
         crate::perf_profile::record_dataplane_aead_prepared_job(run_len);
-    }
-
-    fn start_workers(&mut self) {
-        if !self.workers.is_empty() {
-            return;
-        }
-        let runtime = self
-            .runtime
-            .get_or_insert_with(tokio::runtime::Handle::current)
-            .clone();
-        for _ in 0..self.worker_count {
-            self.workers.spawn_on(
-                run_crypto_worker(
-                    Arc::clone(&self.worker_queue),
-                    Arc::clone(&self.readiness_notify),
-                    self.worker_count == 1,
-                ),
-                &runtime,
-            );
-        }
-    }
-
-    pub(crate) fn reap_finished_tasks(&mut self) {
-        while let Some(result) = self.workers.try_join_next() {
-            result.expect("dataplane AEAD worker failed");
-        }
     }
 
     fn submit_prepared_chunk(
@@ -527,13 +621,8 @@ impl DataplaneAeadWorkerPool {
     }
 }
 
-async fn run_crypto_worker(
-    queue: Arc<CryptoWorkerQueue>,
-    readiness_notify: Arc<tokio::sync::Notify>,
-    cooperative_yield: bool,
-) {
-    loop {
-        let prepared = queue.pop().await;
+fn run_crypto_worker(queue: Arc<CryptoWorkerQueue>) {
+    while let Some(prepared) = queue.pop() {
         crate::perf_profile::record_since(
             crate::perf_profile::Stage::DataplaneAeadWorkerQueueWait,
             prepared.queued_at,
@@ -549,10 +638,7 @@ async fn run_crypto_worker(
             prepared.slot.open_fsp_session_payload.store(false, Relaxed);
         }
         prepared.slot.complete();
-        readiness_notify.notify_one();
-        if cooperative_yield {
-            tokio::task::yield_now().await;
-        }
+        prepared.readiness_notify.notify_one();
     }
 }
 
@@ -589,14 +675,10 @@ fn execute_crypto_owner_run(
     succeeded
 }
 
-fn dataplane_aead_worker_count(max_in_flight: usize) -> usize {
+fn dataplane_aead_worker_count() -> usize {
     let parallelism = std::thread::available_parallelism()
-        .map_or(1, std::num::NonZeroUsize::get)
-        .min(max_in_flight);
-    if parallelism == 1 {
-        return 1;
-    }
-    parallelism - 1
+        .map_or(1, std::num::NonZeroUsize::get);
+    parallelism.saturating_sub(1).max(1)
 }
 
 fn dataplane_aead_worker_priority_reserve(max_in_flight: usize) -> usize {

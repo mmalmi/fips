@@ -406,14 +406,12 @@ impl DataplaneTurnDriver {
 
     fn start_aead_completion_turn(
         &mut self,
-        completions: &mut DataplaneAeadWorkerPool,
         completion_limit: usize,
         compact_endpoint_data: bool,
     ) -> DataplaneRuntimeSummary {
         self.reset_turn_buffers();
         self.drain_aead_completion_turn_into_summary(
             DataplaneRuntimeSummary::default(),
-            completions,
             completion_limit,
             compact_endpoint_data,
         )
@@ -422,7 +420,6 @@ impl DataplaneTurnDriver {
     fn drain_aead_completion_turn_into_summary(
         &mut self,
         mut summary: DataplaneRuntimeSummary,
-        completions: &mut DataplaneAeadWorkerPool,
         completion_limit: usize,
         compact_endpoint_data: bool,
     ) -> DataplaneRuntimeSummary {
@@ -430,7 +427,6 @@ impl DataplaneTurnDriver {
             crate::perf_profile::Stage::DataplaneCompletionDrain,
         );
         let completion_limit = self.completion_drain_limit(completion_limit);
-        completions.reap_finished_tasks();
         let retired = self.retire_ready_aead_outputs(completion_limit, compact_endpoint_data);
         summary.completions = summary.completions.saturating_add(retired);
         self.admit_retired_outbound_packets(summary)
