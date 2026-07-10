@@ -364,10 +364,6 @@ impl DataplaneFspSessionIngress {
         }
         let previous_hop_addr = output.previous_hop().unwrap_or(source_addr);
         let ce_flag = output.ce_flag();
-        let header = match FspWireHeader::parse(output.payload()) {
-            Ok(header) => header,
-            Err(_) => return None,
-        };
         let path_mtu = output.path_mtu();
         let activity_tick = output.activity_tick;
         let (timestamp_ms, msg_type, inner_flags, plaintext_len) = {
@@ -378,7 +374,7 @@ impl DataplaneFspSessionIngress {
         };
         let receive_sync = FspReceiveSync {
             counter: output.counter(),
-            received_k_bit: header.flags() & crate::node::session_wire::FSP_FLAG_K != 0,
+            received_k_bit: output.wire_flags & crate::node::session_wire::FSP_FLAG_K != 0,
             timestamp: timestamp_ms,
             plaintext_len,
             ce_flag,
@@ -485,13 +481,15 @@ impl DataplaneFspEndpointDataCommitRun {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct DataplaneFspEndpointDataIngress {
     commit: DataplaneFspEndpointDataCommit,
     body_len: usize,
     receive_sync: FspReceiveSync,
     activity_tick: Option<ActivityTick>,
-    packet_run: FipsEndpointDirectPacketRun,
+    source_peer: PeerIdentity,
+    enqueued_at_ms: u64,
+    packet: PacketBuffer,
 }
 
 impl DataplaneFspEndpointDataIngress {
@@ -504,10 +502,6 @@ impl DataplaneFspEndpointDataIngress {
 
         let previous_hop_addr = output.previous_hop().unwrap_or(source_addr);
         let ce_flag = output.ce_flag();
-        let header = match FspWireHeader::parse(output.payload()) {
-            Ok(header) => header,
-            Err(_) => return None,
-        };
         let path_mtu = output.path_mtu();
         let activity_tick = output.activity_tick;
         let (timestamp_ms, inner_flags, plaintext_len, body_len) = {
@@ -521,7 +515,7 @@ impl DataplaneFspEndpointDataIngress {
         };
         let receive_sync = FspReceiveSync {
             counter: output.counter(),
-            received_k_bit: header.flags() & crate::node::session_wire::FSP_FLAG_K != 0,
+            received_k_bit: output.wire_flags & crate::node::session_wire::FSP_FLAG_K != 0,
             timestamp: timestamp_ms,
             plaintext_len,
             ce_flag,
@@ -531,19 +525,6 @@ impl DataplaneFspEndpointDataIngress {
         let mut payload = output.take_opened_payload()?;
         assert!(payload.trim_front(FSP_INNER_HEADER_SIZE));
         payload.truncate(body_len);
-        let ranges = std::iter::once(0..body_len).collect();
-        let packet_run = FipsEndpointDirectPacketRun::from_segmented_payload(
-            FipsEndpointDirectPacketRunMeta::new(
-                source_peer,
-                previous_hop_addr,
-                receive_sync.received_k_bit,
-                previous_hop_addr == source_addr,
-                enqueued_at_ms,
-            ),
-            payload,
-            ranges,
-        );
-
         Some(Self {
             commit: DataplaneFspEndpointDataCommit {
                 source_addr,
@@ -554,7 +535,9 @@ impl DataplaneFspEndpointDataIngress {
             body_len,
             receive_sync,
             activity_tick,
-            packet_run,
+            source_peer,
+            enqueued_at_ms,
+            packet: payload,
         })
     }
 
@@ -562,16 +545,19 @@ impl DataplaneFspEndpointDataIngress {
         self.commit
     }
 
-    fn len(&self) -> usize {
-        self.packet_run.len()
-    }
-
-    pub(crate) fn into_direct_packet_run(self) -> FipsEndpointDirectPacketRun {
-        self.packet_run
+    fn into_direct_packet(self) -> (FipsEndpointDirectPacketRunMeta, PacketBuffer) {
+        let meta = FipsEndpointDirectPacketRunMeta::new(
+            self.source_peer,
+            self.commit.previous_hop_addr(),
+            self.commit.received_k_bit(),
+            self.commit.direct_path(),
+            self.enqueued_at_ms,
+        );
+        (meta, self.packet)
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct DataplaneEndpointDataBatch {
     commit_runs: Vec<DataplaneFspEndpointDataCommitRun>,
     packet_runs: Vec<FipsEndpointDirectPacketRun>,
@@ -580,12 +566,15 @@ pub(crate) struct DataplaneEndpointDataBatch {
 
 impl DataplaneEndpointDataBatch {
     pub(crate) fn from_ingress(ingress: DataplaneFspEndpointDataIngress) -> Self {
-        let len = ingress.len();
         let commit = ingress.commit();
+        let (packet_meta, packet) = ingress.into_direct_packet();
         Self {
-            commit_runs: vec![DataplaneFspEndpointDataCommitRun::new(commit, len)],
-            packet_runs: vec![ingress.into_direct_packet_run()],
-            len,
+            commit_runs: vec![DataplaneFspEndpointDataCommitRun::new(commit, 1)],
+            packet_runs: vec![FipsEndpointDirectPacketRun::from_packet(
+                packet_meta,
+                packet,
+            )],
+            len: 1,
         }
     }
 
@@ -598,18 +587,27 @@ impl DataplaneEndpointDataBatch {
     }
 
     pub(crate) fn push(&mut self, ingress: DataplaneFspEndpointDataIngress) {
-        let len = ingress.len();
         let commit = ingress.commit();
-        if !self
+        let extends_last_run = self
             .commit_runs
             .last_mut()
-            .is_some_and(|run| run.try_extend(commit, len))
-        {
+            .is_some_and(|run| run.try_extend(commit, 1));
+        if extends_last_run {
+            self.packet_runs
+                .last_mut()
+                .expect("endpoint commit run has a direct packet run")
+                .push_packet(ingress.packet);
+        } else {
             self.commit_runs
-                .push(DataplaneFspEndpointDataCommitRun::new(commit, len));
+                .push(DataplaneFspEndpointDataCommitRun::new(commit, 1));
+            let (packet_meta, packet) = ingress.into_direct_packet();
+            self.packet_runs
+                .push(FipsEndpointDirectPacketRun::from_packet(
+                    packet_meta,
+                    packet,
+                ));
         }
-        self.push_direct_packet_run(ingress.into_direct_packet_run());
-        self.len = self.len.saturating_add(len);
+        self.len = self.len.saturating_add(1);
     }
 
     pub(crate) fn extend(&mut self, other: Self) {
@@ -623,8 +621,15 @@ impl DataplaneEndpointDataBatch {
             }
         }
         self.len = self.len.saturating_add(other.len);
-        for run in other.packet_runs {
-            self.push_direct_packet_run(run);
+        for mut run in other.packet_runs {
+            if self
+                .packet_runs
+                .last_mut()
+                .is_some_and(|last| last.try_append(&mut run))
+            {
+                continue;
+            }
+            self.packet_runs.push(run);
         }
     }
 
@@ -635,18 +640,6 @@ impl DataplaneEndpointDataBatch {
     pub(crate) fn take_direct_packet_batch(&mut self) -> FipsEndpointDirectPacketBatch {
         FipsEndpointDirectPacketBatch::from_packet_runs(std::mem::take(&mut self.packet_runs))
     }
-
-    fn push_direct_packet_run(&mut self, run: FipsEndpointDirectPacketRun) {
-        if let Some(last) = self.packet_runs.last_mut() {
-            if last.matches_append_meta(&run) {
-                last.append_run(run);
-            } else {
-                self.packet_runs.push(run);
-            }
-        } else {
-            self.packet_runs.push(run);
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -655,7 +648,7 @@ pub(crate) enum DataplaneFspAuthenticatedIngressRun {
     Sessions { count: usize },
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub(crate) struct DataplaneFspAuthenticatedIngress {
     runs: Vec<DataplaneFspAuthenticatedIngressRun>,
     endpoint_data_batches: Vec<DataplaneEndpointDataBatch>,
@@ -776,7 +769,7 @@ impl DataplaneFspAuthenticatedIngress {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub(crate) struct DataplaneLiveNodeTurn {
     summary: DataplaneRuntimeSummary,
     fmp_control_ingress: Vec<DataplaneFmpControlIngress>,

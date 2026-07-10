@@ -421,32 +421,16 @@ impl DataplaneOutputDrop {
 
 impl PacketOutput {
     pub(crate) fn opened_payload(&self) -> Option<&[u8]> {
-        match self.owner.protocol {
-            PacketProtocol::Fmp => self.payload.as_slice().get(FMP_ESTABLISHED_HEADER_SIZE..),
-            PacketProtocol::Fsp => {
-                let header = FspWireHeader::parse(self.payload.as_slice()).ok()?;
-                self.payload.as_slice().get(header.ciphertext_offset()..)
-            }
-        }
-    }
-
-    fn opened_payload_header_len(&self) -> Option<usize> {
-        let header_len = match self.owner.protocol {
-            PacketProtocol::Fmp => FMP_ESTABLISHED_HEADER_SIZE,
-            PacketProtocol::Fsp => match FspWireHeader::parse(self.payload.as_slice()) {
-                Ok(header) => header.ciphertext_offset(),
-                Err(_) => return None,
-            },
-        };
-        if self.payload.len() < header_len {
+        let offset = usize::from(self.opened_payload_offset);
+        if offset == 0 {
             return None;
         }
-        Some(header_len)
+        self.payload.as_slice().get(offset..)
     }
 
     fn take_opened_payload(&mut self) -> Option<PacketBuffer> {
-        let header_len = self.opened_payload_header_len()?;
-        if !self.payload.trim_front(header_len) {
+        let offset = usize::from(self.opened_payload_offset);
+        if offset == 0 || !self.payload.trim_front(offset) {
             return None;
         }
         Some(std::mem::take(&mut self.payload))

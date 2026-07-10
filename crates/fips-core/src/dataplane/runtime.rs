@@ -4,7 +4,7 @@ const DATAPLANE_DEFERRED_RAW_INGRESS_MAX_RETRIES: u8 = 8;
 pub(crate) struct DataplaneTurnDriver {
     mover: Dataplane,
     prepared_work: Vec<PreparedCryptoWork>,
-    completion_batches: Vec<CryptoCompletionBatch>,
+    ready_slots: Vec<Arc<CryptoReadySlot>>,
     raw_ingress_drops: Vec<DataplaneRawIngressDrop>,
     output_drops: Vec<DataplaneOutputDrop>,
     outputs: Vec<PacketOutput>,
@@ -102,7 +102,7 @@ impl DataplaneTurnDriver {
         Self {
             mover: Dataplane::new(config),
             prepared_work: Vec::new(),
-            completion_batches: Vec::new(),
+            ready_slots: Vec::new(),
             raw_ingress_drops: Vec::new(),
             output_drops: Vec::new(),
             outputs: Vec::new(),
@@ -430,12 +430,9 @@ impl DataplaneTurnDriver {
             crate::perf_profile::Stage::DataplaneCompletionDrain,
         );
         let completion_limit = self.completion_drain_limit(completion_limit);
-        let queued = completions.drain_completion_batches_into_sink(
-            completion_limit,
-            &mut self.mover,
-        );
-        summary.completions = summary.completions.saturating_add(queued);
-        self.retire_queued_completed_aead_outputs(completion_limit, compact_endpoint_data);
+        completions.reap_finished_tasks();
+        let retired = self.retire_ready_aead_outputs(completion_limit, compact_endpoint_data);
+        summary.completions = summary.completions.saturating_add(retired);
         self.admit_retired_outbound_packets(summary)
     }
 
@@ -824,7 +821,7 @@ impl DataplaneTurnDriver {
             },
         };
 
-        let counter = header.counter();
+        let (counter, ciphertext_offset, wire_flags) = header.open_metadata();
         let Some(route) = router.route(&packet, header) else {
             if packet.protocol == PacketProtocol::Fsp
                 && packet.fsp_source.is_some()
@@ -841,7 +838,6 @@ impl DataplaneTurnDriver {
             return None;
         };
 
-        let wire_flags = header.flags();
         let DataplaneRawIngress {
             path: source_path,
             previous_hop,
@@ -855,6 +851,7 @@ impl DataplaneTurnDriver {
             route.owner,
             route.generation,
             counter,
+            ciphertext_offset,
             route.class,
             route.output,
             payload,
@@ -1089,14 +1086,14 @@ impl DataplaneTurnDriver {
         summary.inbound_admitted.saturating_sub(admitted_before)
     }
 
-    fn retire_queued_completed_aead_outputs(
+    fn retire_ready_aead_outputs(
         &mut self,
         limit: usize,
         compact_endpoint_data: bool,
-    ) {
+    ) -> usize {
         let retired_completions = self
             .mover
-            .retire_queued_completions_into(
+            .retire_ready_slots_into(
                 limit,
                 &mut DataplaneRetiredOutputSink::new(
                     &mut self.outputs,
@@ -1108,6 +1105,7 @@ impl DataplaneTurnDriver {
         crate::perf_profile::record_dataplane_live_completions_retired(retired_completions);
         let mut mover_drops = self.mover.drain_drops();
         self.drops.append(&mut mover_drops);
+        retired_completions
     }
 
     fn collect_live_session_outputs<R>(
@@ -1169,7 +1167,7 @@ impl DataplaneTurnDriver {
                     remaining,
                     DataplaneAeadRunBuffers::new(
                         &mut self.prepared_work,
-                        &mut self.completion_batches,
+                        &mut self.ready_slots,
                         &mut self.outputs,
                         &mut self.retired_outbound_packets,
                         &mut self.fsp_authenticated_ingress,

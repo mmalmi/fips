@@ -6,6 +6,7 @@ pub use fips_core::config::{
     UdpConfig,
 };
 pub use fips_core::endpoint::{
+    FIPS_ENDPOINT_DIRECT_PACKET_QUEUE_MAX_PACKETS, FIPS_ENDPOINT_DIRECT_PACKET_RUN_MAX_PACKETS,
     FipsEndpoint, FipsEndpointBuilder, FipsEndpointData, FipsEndpointDirectDeliveryError,
     FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun, FipsEndpointDirectSink,
     FipsEndpointError, FipsEndpointMessage, FipsEndpointPeer, FipsEndpointRelayStatus,

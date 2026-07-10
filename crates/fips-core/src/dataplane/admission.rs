@@ -163,12 +163,6 @@ struct OwnerAdmissionPop<T> {
     cursor: OwnerAdmissionCursor,
 }
 
-#[derive(Debug)]
-struct OwnerAdmissionRun<T> {
-    items: Vec<T>,
-    cursor: OwnerAdmissionCursor,
-}
-
 impl<T> OwnerAdmissionQueues<T>
 where
     T: OwnerQueuedAdmission,
@@ -237,10 +231,16 @@ where
         was_empty
     }
 
-    fn pop_next_run(&mut self, priority_only: bool, limit: usize) -> Option<OwnerAdmissionRun<T>> {
+    fn pop_next_run_into(
+        &mut self,
+        priority_only: bool,
+        limit: usize,
+        items: &mut Vec<T>,
+    ) -> Option<OwnerAdmissionCursor> {
         if limit == 0 {
             return None;
         }
+        debug_assert!(items.is_empty());
 
         let first = if priority_only {
             self.pop_lane(Lane::Priority)
@@ -249,7 +249,7 @@ where
                 .or_else(|| self.pop_lane(Lane::Bulk))
         }?;
         let mut cursor = first.cursor;
-        let mut items = Vec::with_capacity(limit.min(self.len().saturating_add(1)));
+        items.reserve(limit.min(self.len().saturating_add(1)));
         items.push(first.item);
 
         while items.len() < limit && cursor.owner_has_more {
@@ -261,7 +261,7 @@ where
             items.push(next.item);
         }
 
-        Some(OwnerAdmissionRun { items, cursor })
+        Some(cursor)
     }
 
     fn pop_owner_continue(
@@ -358,18 +358,20 @@ where
         }
     }
 
-    fn defer_owner_run(&mut self, run: OwnerAdmissionRun<T>) {
-        let owner = run.cursor.owner;
-        let lane = run.cursor.lane;
-        let count = run.items.len();
+    fn defer_owner_run(&mut self, cursor: OwnerAdmissionCursor, items: &mut Vec<T>) {
+        let count = items.len();
         if count == 0 {
             return;
         }
-        let queue = self.owners.entry(owner).or_default().lane_mut(lane);
-        for item in run.items.into_iter().rev() {
+        let queue = self
+            .owners
+            .entry(cursor.owner)
+            .or_default()
+            .lane_mut(cursor.lane);
+        for item in items.drain(..).rev() {
             queue.push_front(item);
         }
-        self.increment_lane_len_by(lane, count);
+        self.increment_lane_len_by(cursor.lane, count);
     }
 
     fn wake_owner(&mut self, owner: OwnerId) {
@@ -430,20 +432,26 @@ where
         self.queues.push_run_back(owner, lane, queued)
     }
 
-    fn pop_next_run(
+    fn pop_next_run_into(
         &mut self,
         priority_only: bool,
         limit: usize,
-    ) -> Option<OwnerAdmissionRun<QueuedAdmission<P>>> {
-        self.queues.pop_next_run(priority_only, limit)
+        items: &mut Vec<QueuedAdmission<P>>,
+    ) -> Option<OwnerAdmissionCursor> {
+        self.queues
+            .pop_next_run_into(priority_only, limit, items)
     }
 
     fn continue_owner_lane(&mut self, cursor: OwnerAdmissionCursor) {
         self.queues.continue_owner_lane(cursor);
     }
 
-    fn defer_owner_run(&mut self, run: OwnerAdmissionRun<QueuedAdmission<P>>) {
-        self.queues.defer_owner_run(run);
+    fn defer_owner_run(
+        &mut self,
+        cursor: OwnerAdmissionCursor,
+        items: &mut Vec<QueuedAdmission<P>>,
+    ) {
+        self.queues.defer_owner_run(cursor, items);
     }
 
     fn len(&self) -> usize {

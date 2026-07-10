@@ -2,7 +2,10 @@ use super::*;
 
 impl Node {
     fn new_dataplane_node() -> DataplaneNode {
-        DataplaneLiveNode::new(AdmissionConfig::new(1024, 4096))
+        DataplaneLiveNode::new(AdmissionConfig::new(
+            1024,
+            FIPS_ENDPOINT_DIRECT_PACKET_QUEUE_MAX_PACKETS,
+        ))
     }
 
     /// Create a new node from configuration.

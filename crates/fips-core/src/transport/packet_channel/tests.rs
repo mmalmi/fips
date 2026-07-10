@@ -111,6 +111,23 @@ fn packet_buffer_pool_cached_len(pool: &PacketBufferPool) -> usize {
     pool.available.load(Relaxed)
 }
 
+#[test]
+fn packet_buffer_batch_recycle_preserves_pool_accounting() {
+    let (tx, _rx) = packet_channel(1);
+    let first = tx.recv_buffer(1600);
+    let first_ptr = first.as_ptr();
+    let second = tx.recv_buffer(1600);
+    let second_ptr = second.as_ptr();
+    let mut packets = [tx.packet_buffer(first), tx.packet_buffer(second)];
+
+    PacketBuffer::recycle_batch(&mut packets);
+
+    assert_eq!(packet_buffer_pool_cached_len(&tx.buffer_pool), 2);
+    let reused = [tx.recv_buffer(1600), tx.recv_buffer(1600)];
+    assert!(reused.iter().any(|buffer| buffer.as_ptr() == first_ptr));
+    assert!(reused.iter().any(|buffer| buffer.as_ptr() == second_ptr));
+}
+
 fn queued_packets(tx: &PacketTx) -> usize {
     tx.queued_packets.load(Relaxed)
 }

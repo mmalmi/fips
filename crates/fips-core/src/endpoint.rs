@@ -33,6 +33,7 @@ mod status;
 mod tests;
 
 pub use crate::node::{
+    FIPS_ENDPOINT_DIRECT_PACKET_QUEUE_MAX_PACKETS, FIPS_ENDPOINT_DIRECT_PACKET_RUN_MAX_PACKETS,
     FipsEndpointDirectDeliveryError, FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun,
     FipsEndpointDirectSink,
 };

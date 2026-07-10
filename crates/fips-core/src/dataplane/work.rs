@@ -34,8 +34,12 @@ struct CryptoOwnerRun {
 // Inline states keep the 128-packet run in one allocation without per-packet boxes.
 struct CryptoOwnerRunItem {
     reservation: OwnerReservation,
-    state: CryptoOwnerRunItemState,
+    state: std::cell::UnsafeCell<CryptoOwnerRunItemState>,
 }
+
+// A prepared run partitions items into disjoint subruns. Each item has one crypto
+// writer, and owner reads begin only after the run's release/acquire ready barrier.
+unsafe impl Sync for CryptoOwnerRunItem {}
 
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
@@ -98,10 +102,6 @@ impl CryptoOwnerRun {
         self.items.is_empty()
     }
 
-    fn first_order(&self) -> Option<OrderToken> {
-        self.items.first().map(|item| item.reservation.order)
-    }
-
     fn first_reservation(&self) -> Option<&OwnerReservation> {
         self.items.first().map(|item| &item.reservation)
     }
@@ -136,19 +136,6 @@ impl CryptoOwnerRun {
             .is_some_and(CryptoOwnerRunItem::is_open)
     }
 
-    fn split_off(&mut self, at: usize) -> Self {
-        Self {
-            next_order: self.next_order,
-            open_fsp_session_payload: self.open_fsp_session_payload,
-            items: self.items.split_off(at),
-        }
-    }
-
-    fn consume_in_order(self, mut consume: impl FnMut(CryptoCompletion)) {
-        for item in self.items {
-            consume(item.into_completion());
-        }
-    }
 }
 
 impl CryptoOwnerRunItem {
@@ -159,7 +146,7 @@ impl CryptoOwnerRunItem {
         } = work;
         Self {
             reservation,
-            state: CryptoOwnerRunItemState::Open(packet),
+            state: std::cell::UnsafeCell::new(CryptoOwnerRunItemState::Open(packet)),
         }
     }
 
@@ -170,246 +157,67 @@ impl CryptoOwnerRunItem {
         } = work;
         Self {
             reservation,
-            state: CryptoOwnerRunItemState::Seal(packet),
+            state: std::cell::UnsafeCell::new(CryptoOwnerRunItemState::Seal(packet)),
         }
     }
 
-    fn is_open(&self) -> bool {
-        match &self.state {
-            CryptoOwnerRunItemState::Open(_) => true,
-            CryptoOwnerRunItemState::Seal(_) => false,
-            CryptoOwnerRunItemState::Completed(result) => result.is_open_family(),
-        }
-    }
-
-    fn is_open_fsp_session_payload(&self) -> bool {
-        match &self.state {
-            CryptoOwnerRunItemState::Open(packet) => {
-                self.reservation.owner.protocol() == PacketProtocol::Fsp
-                    && matches!(packet.output, OutputTarget::SessionPayload { .. })
-            }
-            CryptoOwnerRunItemState::Completed(CryptoResult::Opened(output)) => {
-                matches!(output.target(), OutputTarget::SessionPayload { .. })
-            }
-            CryptoOwnerRunItemState::Seal(_) | CryptoOwnerRunItemState::Completed(_) => false,
+    fn completed(completion: CryptoCompletion) -> Self {
+        Self {
+            reservation: completion.reservation,
+            state: std::cell::UnsafeCell::new(CryptoOwnerRunItemState::Completed(
+                completion.result,
+            )),
         }
     }
 
     fn into_completion(self) -> CryptoCompletion {
-        let result = match self.state {
-            CryptoOwnerRunItemState::Completed(result) => result,
-            CryptoOwnerRunItemState::Open(_) | CryptoOwnerRunItemState::Seal(_) => {
-                panic!("crypto owner run retired before completion")
-            }
+        let CryptoOwnerRunItemState::Completed(result) = self.state.into_inner() else {
+            panic!("owner retired unfinished crypto work")
         };
         CryptoCompletion {
             reservation: self.reservation,
             result,
         }
     }
-}
 
-#[derive(Debug)]
-enum CryptoCompletionRun {
-    Completed(Vec<CryptoCompletion>),
-    OwnerRun(CryptoOwnerRun),
-}
-
-#[derive(Debug)]
-pub(crate) struct CryptoCompletionBatch {
-    owner_shard: usize,
-    owner: OwnerId,
-    generation: u64,
-    lane: Lane,
-    completions: CryptoCompletionRun,
-}
-
-impl CryptoCompletion {
-    fn is_open_family(&self) -> bool {
-        self.result.is_open_family()
-    }
-
-    fn same_family(&self, other: &CryptoCompletion) -> bool {
-        self.is_open_family() == other.is_open_family()
-    }
-
-    fn order(&self) -> OrderToken {
-        self.reservation.order
-    }
-}
-
-impl CryptoResult {
-    fn is_open_family(&self) -> bool {
-        match self {
-            CryptoResult::Opened(_) | CryptoResult::Failed(CryptoFailureKind::Open) => true,
-            CryptoResult::Sealed(_)
-            | CryptoResult::Outbound(_)
-            | CryptoResult::Failed(CryptoFailureKind::Seal) => false,
-        }
-    }
-}
-
-impl CryptoCompletionBatch {
-    pub(crate) fn from_completion(completion: CryptoCompletion) -> Self {
-        let owner_shard = completion.reservation.owner_shard();
-        let owner = completion.reservation.owner;
-        let generation = completion.reservation.generation;
-        let lane = completion.reservation.lane;
-        Self {
-            owner_shard,
-            owner,
-            generation,
-            lane,
-            completions: CryptoCompletionRun::Completed(vec![completion]),
+    fn is_open(&self) -> bool {
+        // Run construction is single-threaded and finishes before workers can see it.
+        match unsafe { &*self.state.get() } {
+            CryptoOwnerRunItemState::Open(_) => true,
+            CryptoOwnerRunItemState::Seal(_) => false,
+            CryptoOwnerRunItemState::Completed(_) => panic!("completed crypto work regrouped"),
         }
     }
 
-    fn from_owner_run(run: CryptoOwnerRun) -> Self {
-        let reservation = run
-            .first_reservation()
-            .expect("crypto owner run contains a completion");
-        let owner_shard = reservation.owner_shard();
-        let owner = reservation.owner;
-        let generation = reservation.generation;
-        let lane = reservation.lane;
-        Self {
-            owner_shard,
-            owner,
-            generation,
-            lane,
-            completions: CryptoCompletionRun::OwnerRun(run),
-        }
-    }
-
-    pub(crate) fn push_grouped(
-        completion: CryptoCompletion,
-        batches: &mut Vec<CryptoCompletionBatch>,
-    ) {
-        if let Some(last) = batches.last_mut()
-            && last.matches(&completion)
-        {
-            let CryptoCompletionRun::Completed(completions) = &mut last.completions else {
-                unreachable!("shared owner runs do not match grouped completions");
-            };
-            completions.push(completion);
-            return;
-        }
-        batches.push(Self::from_completion(completion));
-    }
-
-    #[cfg(test)]
-    pub(crate) fn drain_completion_vec_into_batches(
-        completions: &mut Vec<CryptoCompletion>,
-        batches: &mut Vec<CryptoCompletionBatch>,
-    ) -> usize {
-        let count = completions.len();
-        for completion in completions.drain(..) {
-            Self::push_grouped(completion, batches);
-        }
-        count
-    }
-
-    pub(crate) fn len(&self) -> usize {
-        match &self.completions {
-            CryptoCompletionRun::Completed(completions) => completions.len(),
-            CryptoCompletionRun::OwnerRun(run) => run.len(),
-        }
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub(crate) fn first_order(&self) -> Option<OrderToken> {
-        match &self.completions {
-            CryptoCompletionRun::Completed(completions) => {
-                completions.first().map(CryptoCompletion::order)
+    fn is_open_fsp_session_payload(&self) -> bool {
+        // Run construction is single-threaded and finishes before workers can see it.
+        match unsafe { &*self.state.get() } {
+            CryptoOwnerRunItemState::Open(packet) => {
+                self.reservation.owner.protocol() == PacketProtocol::Fsp
+                    && matches!(packet.output, OutputTarget::SessionPayload { .. })
             }
-            CryptoCompletionRun::OwnerRun(run) => run.first_order(),
+            CryptoOwnerRunItemState::Seal(_) => false,
+            CryptoOwnerRunItemState::Completed(_) => panic!("completed crypto work regrouped"),
         }
     }
 
-    pub(crate) fn owner_shard(&self) -> usize {
-        self.owner_shard
-    }
-
-    pub(crate) fn owner(&self) -> OwnerId {
-        self.owner
-    }
-
-    pub(crate) fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    pub(crate) fn lane(&self) -> Lane {
-        self.lane
-    }
-
-    pub(crate) fn is_open_fsp_session_payload_run(&self) -> bool {
-        if self.is_empty() || self.owner.protocol() != PacketProtocol::Fsp {
-            return false;
-        }
-        match &self.completions {
-            CryptoCompletionRun::Completed(completions) => completions.iter().all(|completion| {
-                matches!(
-                    &completion.result,
-                    CryptoResult::Opened(output)
-                        if matches!(output.target(), OutputTarget::SessionPayload { .. })
-                )
-            }),
-            CryptoCompletionRun::OwnerRun(run) => run.is_open_fsp_session_payload_run(),
+    /// # Safety
+    /// Exactly one worker may mutate this item, and `complete_crypto` must follow once.
+    unsafe fn begin_crypto(&self, failed: CryptoFailureKind) -> CryptoOwnerRunItemState {
+        unsafe {
+            std::mem::replace(
+                &mut *self.state.get(),
+                CryptoOwnerRunItemState::Completed(CryptoResult::Failed(failed)),
+            )
         }
     }
 
-    pub(crate) fn split_off(&mut self, at: usize) -> Self {
-        let completions = match &mut self.completions {
-            CryptoCompletionRun::Completed(completions) => {
-                CryptoCompletionRun::Completed(completions.split_off(at))
-            }
-            CryptoCompletionRun::OwnerRun(run) => {
-                CryptoCompletionRun::OwnerRun(run.split_off(at))
-            }
-        };
-        Self {
-            owner_shard: self.owner_shard,
-            owner: self.owner,
-            generation: self.generation,
-            lane: self.lane,
-            completions,
+    /// # Safety
+    /// Must be called once by the same sole writer after `begin_crypto`.
+    unsafe fn complete_crypto(&self, result: CryptoResult) {
+        unsafe {
+            *self.state.get() = CryptoOwnerRunItemState::Completed(result);
         }
-    }
-
-    pub(crate) fn into_completions(self) -> Vec<CryptoCompletion> {
-        let mut completions = Vec::with_capacity(self.len());
-        self.consume_in_order(|completion| completions.push(completion));
-        completions
-    }
-
-    pub(crate) fn consume_in_order(self, mut consume: impl FnMut(CryptoCompletion)) {
-        match self.completions {
-            CryptoCompletionRun::Completed(completions) => {
-                for completion in completions {
-                    consume(completion);
-                }
-            }
-            CryptoCompletionRun::OwnerRun(run) => run.consume_in_order(consume),
-        }
-    }
-
-    fn matches(&self, completion: &CryptoCompletion) -> bool {
-        let CryptoCompletionRun::Completed(completions) = &self.completions else {
-            return false;
-        };
-        self.owner_shard == completion.reservation.owner_shard()
-            && self.owner == completion.reservation.owner
-            && self.generation == completion.reservation.generation
-            && self.lane == completion.reservation.lane
-            && completions
-                .first()
-                .is_none_or(|first| first.same_family(completion))
-            && completions
-                .last()
-                .is_none_or(|last| last.order().next() == completion.order())
     }
 }
 
@@ -438,6 +246,8 @@ pub(crate) struct PacketOutput {
     previous_hop: Option<NodeAddr>,
     ce_flag: bool,
     path_mtu: u16,
+    wire_flags: u8,
+    opened_payload_offset: u16,
     source_peer: Option<crate::PeerIdentity>,
     path: Option<TransportPath>,
     activity_tick: Option<ActivityTick>,

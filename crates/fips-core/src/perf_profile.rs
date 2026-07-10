@@ -495,9 +495,9 @@ pub enum Event {
     DataplaneLiveOutputDrops = 228,
     ReservedEvent229 = 229,
     ReservedEvent230 = 230,
-    DataplaneAeadCompletionQueueDepth = 231,
-    DataplaneAeadCompletionBatch = 232,
-    DataplaneAeadCompletionBatchPackets = 233,
+    DataplaneAeadReadyPackets = 231,
+    DataplaneAeadReadySlots = 232,
+    DataplaneAeadReadySlotPackets = 233,
     DataplaneAeadPreparedJob = 234,
     DataplaneAeadPreparedJobPackets = 235,
     DataplaneLiveCompletionsRetired = 236,
@@ -509,16 +509,16 @@ pub enum Event {
     DataplaneFastIngressOwnerRunPackets = 242,
     DataplaneEstablishedFspDataRetireRuns = 243,
     DataplaneEstablishedFspDataRetirePackets = 244,
-    DataplaneAeadCompletionSendJobs = 245,
-    DataplaneAeadCompletionMessages = 246,
-    DataplaneAeadCompletionMessageBatches = 247,
-    DataplaneAeadCompletionMessagePackets = 248,
-    DataplaneAeadCompletionSplitBatches = 249,
-    DataplaneAeadCompletionSplitPackets = 250,
+    ReservedEvent245 = 245,
+    ReservedEvent246 = 246,
+    ReservedEvent247 = 247,
+    ReservedEvent248 = 248,
+    ReservedEvent249 = 249,
+    ReservedEvent250 = 250,
     ReservedEvent251 = 251,
-    DataplaneAeadCompletionRxQueuedMessages = 252,
-    DataplaneAeadCompletionPendingBatches = 253,
-    DataplaneAeadCompletionPendingPackets = 254,
+    ReservedEvent252 = 252,
+    ReservedEvent253 = 253,
+    ReservedEvent254 = 254,
     DataplaneLiveDropAdmission = 255,
     DataplaneLiveDropUnknownOwner = 256,
     DataplaneLiveDropReplay = 257,
@@ -775,9 +775,9 @@ impl Event {
             Event::DataplaneLiveOutputDrops => "dataplane_live_output_drops",
             Event::ReservedEvent229 => "reserved_event_229",
             Event::ReservedEvent230 => "reserved_event_230",
-            Event::DataplaneAeadCompletionQueueDepth => "dataplane_aead_completion_queue_depth",
-            Event::DataplaneAeadCompletionBatch => "dataplane_aead_completion_batch",
-            Event::DataplaneAeadCompletionBatchPackets => "dataplane_aead_completion_batch_packets",
+            Event::DataplaneAeadReadyPackets => "dataplane_aead_ready_packets",
+            Event::DataplaneAeadReadySlots => "dataplane_aead_ready_slots",
+            Event::DataplaneAeadReadySlotPackets => "dataplane_aead_ready_slot_packets",
             Event::DataplaneAeadPreparedJob => "dataplane_aead_prepared_job",
             Event::DataplaneAeadPreparedJobPackets => "dataplane_aead_prepared_job_packets",
             Event::DataplaneLiveCompletionsRetired => "dataplane_live_completions_retired",
@@ -795,26 +795,16 @@ impl Event {
             Event::DataplaneEstablishedFspDataRetirePackets => {
                 "dataplane_established_fsp_data_retire_packets"
             }
-            Event::DataplaneAeadCompletionSendJobs => "dataplane_aead_completion_send_jobs",
-            Event::DataplaneAeadCompletionMessages => "dataplane_aead_completion_messages",
-            Event::DataplaneAeadCompletionMessageBatches => {
-                "dataplane_aead_completion_message_batches"
-            }
-            Event::DataplaneAeadCompletionMessagePackets => {
-                "dataplane_aead_completion_message_packets"
-            }
-            Event::DataplaneAeadCompletionSplitBatches => "dataplane_aead_completion_split_batches",
-            Event::DataplaneAeadCompletionSplitPackets => "dataplane_aead_completion_split_packets",
+            Event::ReservedEvent245 => "reserved_event_245",
+            Event::ReservedEvent246 => "reserved_event_246",
+            Event::ReservedEvent247 => "reserved_event_247",
+            Event::ReservedEvent248 => "reserved_event_248",
+            Event::ReservedEvent249 => "reserved_event_249",
+            Event::ReservedEvent250 => "reserved_event_250",
             Event::ReservedEvent251 => "reserved_event_251",
-            Event::DataplaneAeadCompletionRxQueuedMessages => {
-                "dataplane_aead_completion_rx_queued_messages"
-            }
-            Event::DataplaneAeadCompletionPendingBatches => {
-                "dataplane_aead_completion_pending_batches"
-            }
-            Event::DataplaneAeadCompletionPendingPackets => {
-                "dataplane_aead_completion_pending_packets"
-            }
+            Event::ReservedEvent252 => "reserved_event_252",
+            Event::ReservedEvent253 => "reserved_event_253",
+            Event::ReservedEvent254 => "reserved_event_254",
             Event::DataplaneLiveDropAdmission => "dataplane_live_drop_admission",
             Event::DataplaneLiveDropUnknownOwner => "dataplane_live_drop_unknown_owner",
             Event::DataplaneLiveDropReplay => "dataplane_live_drop_replay",
@@ -1078,9 +1068,9 @@ fn event_from_index(idx: usize) -> Event {
         228 => Event::DataplaneLiveOutputDrops,
         229 => Event::ReservedEvent229,
         230 => Event::ReservedEvent230,
-        231 => Event::DataplaneAeadCompletionQueueDepth,
-        232 => Event::DataplaneAeadCompletionBatch,
-        233 => Event::DataplaneAeadCompletionBatchPackets,
+        231 => Event::DataplaneAeadReadyPackets,
+        232 => Event::DataplaneAeadReadySlots,
+        233 => Event::DataplaneAeadReadySlotPackets,
         234 => Event::DataplaneAeadPreparedJob,
         235 => Event::DataplaneAeadPreparedJobPackets,
         236 => Event::DataplaneLiveCompletionsRetired,
@@ -1092,16 +1082,16 @@ fn event_from_index(idx: usize) -> Event {
         242 => Event::DataplaneFastIngressOwnerRunPackets,
         243 => Event::DataplaneEstablishedFspDataRetireRuns,
         244 => Event::DataplaneEstablishedFspDataRetirePackets,
-        245 => Event::DataplaneAeadCompletionSendJobs,
-        246 => Event::DataplaneAeadCompletionMessages,
-        247 => Event::DataplaneAeadCompletionMessageBatches,
-        248 => Event::DataplaneAeadCompletionMessagePackets,
-        249 => Event::DataplaneAeadCompletionSplitBatches,
-        250 => Event::DataplaneAeadCompletionSplitPackets,
+        245 => Event::ReservedEvent245,
+        246 => Event::ReservedEvent246,
+        247 => Event::ReservedEvent247,
+        248 => Event::ReservedEvent248,
+        249 => Event::ReservedEvent249,
+        250 => Event::ReservedEvent250,
         251 => Event::ReservedEvent251,
-        252 => Event::DataplaneAeadCompletionRxQueuedMessages,
-        253 => Event::DataplaneAeadCompletionPendingBatches,
-        254 => Event::DataplaneAeadCompletionPendingPackets,
+        252 => Event::ReservedEvent252,
+        253 => Event::ReservedEvent253,
+        254 => Event::ReservedEvent254,
         255 => Event::DataplaneLiveDropAdmission,
         256 => Event::DataplaneLiveDropUnknownOwner,
         257 => Event::DataplaneLiveDropReplay,
@@ -1411,59 +1401,12 @@ fn dataplane_crypto_batch_bucket_flags(packets: usize) -> (bool, bool, bool, boo
 }
 
 #[inline]
-pub(crate) fn record_dataplane_aead_completion_batch(packets: usize) {
+pub(crate) fn record_dataplane_aead_ready_slot(packets: usize) {
     if !enabled() || packets == 0 {
         return;
     }
-    record_event_count_sample(Event::DataplaneAeadCompletionBatch, 1);
-    record_event_count_sample(Event::DataplaneAeadCompletionBatchPackets, packets as u64);
-}
-
-#[inline]
-pub(crate) fn record_dataplane_aead_completion_send(
-    messages: usize,
-    batches: usize,
-    packets: usize,
-) {
-    if !enabled() || messages == 0 {
-        return;
-    }
-    record_event_count_sample(Event::DataplaneAeadCompletionSendJobs, 1);
-    record_event_count_sample(Event::DataplaneAeadCompletionMessages, messages as u64);
-    record_event_count_sample(Event::DataplaneAeadCompletionMessageBatches, batches as u64);
-    record_event_count_sample(Event::DataplaneAeadCompletionMessagePackets, packets as u64);
-}
-
-#[inline]
-pub(crate) fn record_dataplane_aead_completion_split(packets: usize) {
-    if !enabled() || packets == 0 {
-        return;
-    }
-    record_event_count_sample(Event::DataplaneAeadCompletionSplitBatches, 1);
-    record_event_count_sample(Event::DataplaneAeadCompletionSplitPackets, packets as u64);
-}
-
-#[inline]
-pub(crate) fn record_dataplane_aead_completion_backlog(
-    rx_queued_messages: usize,
-    pending_batches: usize,
-    pending_packets: usize,
-) {
-    if !enabled() {
-        return;
-    }
-    record_event_count_sample(
-        Event::DataplaneAeadCompletionRxQueuedMessages,
-        rx_queued_messages as u64,
-    );
-    record_event_count_sample(
-        Event::DataplaneAeadCompletionPendingBatches,
-        pending_batches as u64,
-    );
-    record_event_count_sample(
-        Event::DataplaneAeadCompletionPendingPackets,
-        pending_packets as u64,
-    );
+    record_event_count_sample(Event::DataplaneAeadReadySlots, 1);
+    record_event_count_sample(Event::DataplaneAeadReadySlotPackets, packets as u64);
 }
 
 #[inline]

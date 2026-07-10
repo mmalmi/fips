@@ -56,6 +56,7 @@ pub(crate) use endpoint_event::{
     NodeEndpointRelayStatus, UpdatePeersOutcome,
 };
 pub use endpoint_event::{
+    FIPS_ENDPOINT_DIRECT_PACKET_QUEUE_MAX_PACKETS, FIPS_ENDPOINT_DIRECT_PACKET_RUN_MAX_PACKETS,
     FipsEndpointDirectDeliveryError, FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun,
     FipsEndpointDirectSink,
 };

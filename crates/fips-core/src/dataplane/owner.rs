@@ -462,6 +462,75 @@ impl OwnerReservation {
     }
 }
 
+#[derive(Debug)]
+struct OwnerRetireSlot {
+    slot: Arc<CryptoReadySlot>,
+    order: OrderToken,
+    results: Option<std::vec::IntoIter<CryptoOwnerRunItem>>,
+}
+
+impl OwnerRetireSlot {
+    fn new(slot: Arc<CryptoReadySlot>) -> Self {
+        let order = slot.first_order();
+        Self {
+            slot,
+            order,
+            results: None,
+        }
+    }
+
+    fn is_ready(&self) -> bool {
+        self.slot.is_ready()
+    }
+
+    fn generation(&self) -> u64 {
+        self.slot.generation()
+    }
+
+    fn order(&self) -> OrderToken {
+        self.order
+    }
+
+    fn lane(&self) -> Lane {
+        self.slot.lane()
+    }
+
+    fn remaining(&self) -> usize {
+        self.results
+            .as_ref()
+            .map_or_else(|| self.slot.len(), ExactSizeIterator::len)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.remaining() == 0
+    }
+
+    fn is_open_fsp_session_payload_run(&self) -> bool {
+        self.slot.may_be_open_fsp_session_payload_run()
+    }
+
+    fn drain_results(
+        &mut self,
+        limit: usize,
+        mut consume: impl FnMut(CryptoCompletion),
+    ) -> usize {
+        let drained = limit.min(self.remaining());
+        for item in self.results().take(drained) {
+            consume(item.into_completion());
+        }
+        self.order = OrderToken(self.order.0.wrapping_add(drained as u64));
+        self.slot.retire(drained);
+        drained
+    }
+
+    fn results(&mut self) -> &mut std::vec::IntoIter<CryptoOwnerRunItem> {
+        if self.results.is_none() {
+            self.results = Some(self.slot.take_results().into_iter());
+        }
+        self.results.as_mut().expect("owner results initialized")
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OwnerReserveError {
     Replay,
@@ -686,7 +755,7 @@ pub(crate) struct OwnerState {
     replay_window: ReplayWindow,
     previous_fmp_replay_window: Option<ReplayWindow>,
     previous_fsp_replay_window: Option<ReplayWindow>,
-    pending: BTreeMap<OrderToken, CryptoCompletionBatch>,
+    pending: VecDeque<OwnerRetireSlot>,
 }
 
 impl OwnerState {
@@ -751,7 +820,7 @@ impl OwnerState {
             replay_window: ReplayWindow::default(),
             previous_fmp_replay_window: None,
             previous_fsp_replay_window: None,
-            pending: BTreeMap::new(),
+            pending: VecDeque::new(),
         }
     }
 
@@ -1984,106 +2053,122 @@ impl OwnerState {
         Some(activity_ms.wrapping_sub(session_start_ms) as u32)
     }
 
-    pub(crate) fn retire_batch_outputs_into(
-        &mut self,
-        batch: CryptoCompletionBatch,
-        retired: &mut DataplaneRetiredOutputSink<'_>,
-        drops: &mut Vec<PacketDrop>,
-        compact_endpoint_data: bool,
-    ) {
-        self.retire_completion_batch_into(batch, retired, drops, compact_endpoint_data);
-        self.drain_ready_retirements_into(retired, drops, compact_endpoint_data);
-    }
-
-    fn retire_completion_batch_into(
-        &mut self,
-        batch: CryptoCompletionBatch,
-        retired: &mut DataplaneRetiredOutputSink<'_>,
-        drops: &mut Vec<PacketDrop>,
-        compact_endpoint_data: bool,
-    ) {
-        if batch.first_order() == Some(OrderToken(self.next_retire)) {
-            self.retire_ready_completion_run_into(batch, retired, drops, compact_endpoint_data);
+    fn stage_retire_slot(&mut self, slot: Arc<CryptoReadySlot>) -> bool {
+        debug_assert_eq!(slot.owner(), self.owner);
+        let was_empty = self.pending.is_empty();
+        let slot = OwnerRetireSlot::new(slot);
+        let order = slot.order();
+        if self
+            .pending
+            .back()
+            .is_none_or(|pending| pending.order() < order)
+        {
+            self.pending.push_back(slot);
         } else {
-            self.stage_retire_completion_run(batch);
+            let index = self
+                .pending
+                .partition_point(|pending| pending.order() < order);
+            assert_ne!(
+                self.pending[index].order(),
+                order,
+                "owner retire slot order reused"
+            );
+            self.pending.insert(index, slot);
         }
+        was_empty
     }
 
-    fn stage_retire_completion_run(&mut self, batch: CryptoCompletionBatch) {
-        let Some(first_order) = batch.first_order() else {
-            return;
-        };
-        self.pending.insert(first_order, batch);
+    fn has_pending_retirements(&self) -> bool {
+        !self.pending.is_empty()
     }
 
-    fn drain_ready_retirements_into(
+    fn has_ready_retirement(&self) -> bool {
+        self.pending
+            .front()
+            .is_some_and(|slot| slot.order() == OrderToken(self.next_retire) && slot.is_ready())
+    }
+
+    fn take_pending_retirements(&mut self) -> Vec<OwnerRetireSlot> {
+        self.pending.drain(..).collect()
+    }
+
+    fn retire_ready_slots_into(
         &mut self,
+        limit: usize,
         retired: &mut DataplaneRetiredOutputSink<'_>,
         drops: &mut Vec<PacketDrop>,
         compact_endpoint_data: bool,
-    ) {
-        while let Some(batch) = self.pending.remove(&OrderToken(self.next_retire)) {
-            self.retire_ready_completion_run_into(batch, retired, drops, compact_endpoint_data);
+    ) -> usize {
+        let mut retired_count = 0usize;
+        while retired_count < limit {
+            let order = OrderToken(self.next_retire);
+            let Some(front) = self.pending.front() else {
+                break;
+            };
+            if front.order() != order || !front.is_ready() {
+                break;
+            }
+            let mut slot = self.pending.pop_front().expect("owner retire head exists");
+
+            let slot_limit = limit.saturating_sub(retired_count).min(slot.remaining());
+            let stale_generation = slot.generation() != self.generation;
+            let compact_fsp_run = !stale_generation
+                && slot.is_open_fsp_session_payload_run();
+            let drained = if stale_generation {
+                slot.drain_results(slot_limit, |completion| {
+                    drops.push(PacketDrop::from_completion(
+                        &completion,
+                        PacketDropReason::StaleCompletionGeneration,
+                        None,
+                    ));
+                })
+            } else if compact_fsp_run {
+                self.retire_ready_open_fsp_session_payload_slot_into(
+                    &mut slot,
+                    slot_limit,
+                    retired,
+                    compact_endpoint_data,
+                )
+            } else {
+                slot.drain_results(slot_limit, |completion| {
+                    self.retire_ready_completion_into(
+                        completion,
+                        retired,
+                        drops,
+                        compact_endpoint_data,
+                    );
+                })
+            };
+
+            self.next_retire = self.next_retire.wrapping_add(drained as u64);
+            self.in_flight = self.in_flight.saturating_sub(drained);
+            if slot.lane() == Lane::Bulk {
+                self.bulk_in_flight = self.bulk_in_flight.saturating_sub(drained);
+            }
+            retired_count = retired_count.saturating_add(drained);
+            if !slot.is_empty() {
+                debug_assert_eq!(slot.order(), OrderToken(self.next_retire));
+                self.pending.push_front(slot);
+            }
         }
+        retired_count
     }
 
-    fn retire_ready_completion_run_into(
+    fn retire_ready_open_fsp_session_payload_slot_into(
         &mut self,
-        batch: CryptoCompletionBatch,
-        retired: &mut DataplaneRetiredOutputSink<'_>,
-        drops: &mut Vec<PacketDrop>,
-        compact_endpoint_data: bool,
-    ) {
-        let batch_len = batch.len();
-        debug_assert_eq!(batch.first_order(), Some(OrderToken(self.next_retire)));
-        self.next_retire = self.next_retire.wrapping_add(batch_len as u64);
-        self.in_flight = self.in_flight.saturating_sub(batch_len);
-        if batch.lane() == Lane::Bulk {
-            self.bulk_in_flight = self.bulk_in_flight.saturating_sub(batch_len);
-        }
-        if batch.generation() != self.generation {
-            batch.consume_in_order(|completion| {
-                drops.push(PacketDrop::from_completion(
-                    &completion,
-                    PacketDropReason::StaleCompletionGeneration,
-                    None,
-                ));
-            });
-            return;
-        }
-
-        let batch = match self.retire_ready_open_fsp_session_payload_run_into(
-            batch,
-            retired,
-            compact_endpoint_data,
-        ) {
-            Ok(()) => return,
-            Err(batch) => batch,
-        };
-
-        batch.consume_in_order(|completion| {
-            self.retire_ready_completion_into(completion, retired, drops, compact_endpoint_data);
-        });
-    }
-
-    fn retire_ready_open_fsp_session_payload_run_into(
-        &mut self,
-        batch: CryptoCompletionBatch,
+        slot: &mut OwnerRetireSlot,
+        limit: usize,
         retired: &mut DataplaneRetiredOutputSink<'_>,
         compact_endpoint_data: bool,
-    ) -> Result<(), CryptoCompletionBatch> {
-        if !batch.is_open_fsp_session_payload_run() {
-            return Err(batch);
-        }
-
+    ) -> usize {
         let mut endpoint_data_batch: Option<DataplaneEndpointDataBatch> = None;
         let mut endpoint_packets = 0usize;
         let record_endpoint_packets = crate::perf_profile::enabled();
         let mut direct_enqueued_at_ms = None;
         let received_at = std::time::Instant::now();
-        batch.consume_in_order(|completion| {
+        let drained = slot.drain_results(limit, |completion| {
             let CryptoResult::Opened(output) = completion.result else {
-                unreachable!("open FSP session payload run contains only opened outputs");
+                unreachable!("open FSP session payload slot contains only opened outputs");
             };
             self.authenticated_counter_highest = self
                 .authenticated_counter_highest
@@ -2097,7 +2182,7 @@ impl OwnerState {
                 {
                     self.record_retired_endpoint_data_ingress(&ingress, received_at);
                     if record_endpoint_packets {
-                        endpoint_packets = endpoint_packets.saturating_add(ingress.len());
+                        endpoint_packets = endpoint_packets.saturating_add(1);
                     }
                     match &mut endpoint_data_batch {
                         Some(batch) => batch.push(ingress),
@@ -2115,11 +2200,9 @@ impl OwnerState {
         });
         flush_retired_endpoint_data_batch(retired, &mut endpoint_data_batch);
         if record_endpoint_packets {
-            crate::perf_profile::record_dataplane_established_fsp_data_retire_run(
-                endpoint_packets,
-            );
+            crate::perf_profile::record_dataplane_established_fsp_data_retire_run(endpoint_packets);
         }
-        Ok(())
+        drained
     }
 
     fn retire_ready_completion_into(

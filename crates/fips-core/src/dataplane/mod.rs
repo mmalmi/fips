@@ -13,7 +13,7 @@
 //!
 //! The core invariant is simple: owners reserve replay, order, generation, and
 //! in-flight state before crypto work leaves the owner; workers only copy/open
-//! bytes and return completions; owners retire those completions in order.
+//! bytes into fixed result slots; owners retire ready slots in order.
 //!
 //! Worker/shard direction: owner loops, not crypto workers, own replay,
 //! counters, session generation, liveness, path state, and ordered output.
@@ -35,7 +35,7 @@ use crate::transport::{
 use crate::upper::tun::TunOutboundRx;
 use crate::{NodeAddr, PeerIdentity};
 use ring::aead::{Aad, LessSafeKey, Nonce};
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, RwLock};
 
 const FMP_VERSION: u8 = crate::node::wire::FMP_VERSION;

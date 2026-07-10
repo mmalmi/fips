@@ -1,70 +1,12 @@
 #[derive(Debug)]
-struct DataplaneOwnerShardRetireWorker {
-    completed: VecDeque<CryptoCompletionBatch>,
-}
-
-impl DataplaneOwnerShardRetireWorker {
-    fn new() -> Self {
-        Self {
-            completed: VecDeque::new(),
-        }
-    }
-
-    fn queue_completion_batch(&mut self, batch: CryptoCompletionBatch) -> bool {
-        if batch.is_empty() {
-            return false;
-        }
-        let was_empty = self.completed.is_empty();
-        self.completed.push_back(batch);
-        was_empty
-    }
-
-    fn retire_queued_completions_into(
-        &mut self,
-        owner_shard: &mut DataplaneOwnerShard,
-        limit: usize,
-        retired: &mut DataplaneRetiredOutputSink<'_>,
-        drops: &mut Vec<PacketDrop>,
-        compact_endpoint_data: bool,
-    ) -> usize {
-        let mut retired_count = 0usize;
-        while retired_count < limit {
-            let Some(mut batch) = self.completed.pop_front() else {
-                break;
-            };
-            let batch_limit = limit.saturating_sub(retired_count);
-            let pending = if batch.len() > batch_limit {
-                Some(batch.split_off(batch_limit))
-            } else {
-                None
-            };
-            let batch_len = batch.len();
-            owner_shard.retire_completion_batch_into(
-                batch,
-                retired,
-                drops,
-                compact_endpoint_data,
-            );
-            retired_count = retired_count.saturating_add(batch_len);
-            if let Some(pending) = pending {
-                self.completed.push_front(pending);
-                break;
-            }
-        }
-        retired_count
-    }
-
-    fn has_queued_completions(&self) -> bool {
-        !self.completed.is_empty()
-    }
-}
-
-#[derive(Debug)]
 struct DataplaneOwnerShard {
     index: usize,
     admission: AdmissionQueue,
     outbound_admission: OutboundAdmissionQueue,
+    admission_run: Vec<QueuedPacket>,
+    outbound_admission_run: Vec<QueuedOutboundPacket>,
     owners: HashMap<OwnerId, OwnerState>,
+    retire_owners: VecDeque<OwnerId>,
 }
 
 impl DataplaneOwnerShard {
@@ -73,16 +15,36 @@ impl DataplaneOwnerShard {
             index,
             admission: AdmissionQueue::new(),
             outbound_admission: OutboundAdmissionQueue::new(),
+            admission_run: Vec::new(),
+            outbound_admission_run: Vec::new(),
             owners: HashMap::new(),
+            retire_owners: VecDeque::new(),
         }
     }
 
-    fn register_owner(&mut self, owner: OwnerId, config: OwnerConfig) {
-        self.owners.insert(owner, OwnerState::new(owner, config));
+    fn register_owner(&mut self, owner: OwnerId, config: OwnerConfig) -> Vec<OwnerRetireSlot> {
+        self.retire_owners.retain(|queued| *queued != owner);
+        let orphaned = self
+            .owners
+            .insert(owner, OwnerState::new(owner, config))
+            .map_or_else(Vec::new, |mut previous| {
+                previous.take_pending_retirements()
+            });
+        self.admission.wake_owner(owner);
+        self.outbound_admission.wake_owner(owner);
+        orphaned
     }
 
-    fn unregister_owner(&mut self, owner: OwnerId) -> bool {
-        self.owners.remove(&owner).is_some()
+    fn unregister_owner(&mut self, owner: OwnerId) -> Option<Vec<OwnerRetireSlot>> {
+        self.retire_owners.retain(|queued| *queued != owner);
+        let orphaned = self.owners.remove(&owner).map(|mut owner| {
+            owner.take_pending_retirements()
+        });
+        if orphaned.is_some() {
+            self.admission.wake_owner(owner);
+            self.outbound_admission.wake_owner(owner);
+        }
+        orphaned
     }
 
     fn has_owner(&self, owner: OwnerId) -> bool {
@@ -304,18 +266,20 @@ impl DataplaneOwnerShard {
         &mut self,
         limit: usize,
         prepared: &mut Vec<PreparedCryptoWork>,
-        completion_batches: &mut Vec<CryptoCompletionBatch>,
+        ready_slots: &mut Vec<Arc<CryptoReadySlot>>,
         priority_only: bool,
-        record_fsp_path_open: bool,
-        fsp_path_open: &mut u64,
-        fsp_path_open_bulk: &mut u64,
+        fsp_path_open: &mut FspPathOpenDispatch,
         drops: &mut Vec<PacketDrop>,
     ) -> usize {
         let mut dispatched = 0usize;
         let mut attempts_remaining = self.admission.len();
         while dispatched < limit && attempts_remaining > 0 {
             let run_limit = limit.saturating_sub(dispatched);
-            let Some(mut run) = self.admission.pop_next_run(priority_only, run_limit) else {
+            let Some(cursor) = self.admission.pop_next_run_into(
+                priority_only,
+                run_limit,
+                &mut self.admission_run,
+            ) else {
                 if !priority_only && limit > 0 {
                     crate::perf_profile::record_event(
                         crate::perf_profile::Event::DataplaneDispatchNoIngress,
@@ -323,33 +287,33 @@ impl DataplaneOwnerShard {
                 }
                 break;
             };
-            attempts_remaining = attempts_remaining.saturating_sub(run.items.len());
-            if run.items.len() > 1 {
+            attempts_remaining = attempts_remaining.saturating_sub(self.admission_run.len());
+            if self.admission_run.len() > 1 {
                 crate::perf_profile::record_event_count(
                     crate::perf_profile::Event::DataplaneIngressOwnerRunContinue,
-                    run.items.len().saturating_sub(1) as u64,
+                    self.admission_run.len().saturating_sub(1) as u64,
                 );
             }
-            let owner_id = run.cursor.owner;
+            let owner_id = cursor.owner;
 
             let Some(owner) = self.owners.get_mut(&owner_id) else {
-                for queued in &run.items {
+                for queued in &self.admission_run {
                     drops.push(PacketDrop::from_queued(
                         queued,
                         PacketDropReason::UnknownOwner,
                     ));
                 }
-                self.admission.continue_owner_lane(run.cursor);
+                self.admission_run.clear();
+                self.admission.continue_owner_lane(cursor);
                 continue;
             };
 
-            let mut remaining = Vec::new();
-            let mut items = std::mem::take(&mut run.items).into_iter();
-            while let Some(queued) = items.next() {
+            self.admission_run.reverse();
+            while let Some(queued) = self.admission_run.pop() {
                 if !owner.can_reserve_class(queued.packet.class) {
                     record_ingress_owner_blocked(owner.reserve_block_reason(queued.packet.class));
-                    remaining.push(queued);
-                    remaining.extend(items);
+                    self.admission_run.push(queued);
+                    self.admission_run.reverse();
                     break;
                 }
 
@@ -359,13 +323,7 @@ impl DataplaneOwnerShard {
                         let packet_counter = queued.packet.counter;
                         let packet_lane = queued.packet.lane();
                         let reservation = reservation.with_owner_shard(self.index);
-                        if record_fsp_path_open {
-                            count_fsp_path_open_dispatch(
-                                &reservation,
-                                fsp_path_open,
-                                fsp_path_open_bulk,
-                            );
-                        }
+                        fsp_path_open.count(&reservation);
                         match open_key {
                             Some(open_key) => prepared.push(PreparedCryptoWork::open(
                                 CryptoWork {
@@ -374,10 +332,9 @@ impl DataplaneOwnerShard {
                                 },
                                 open_key,
                             )),
-                            None => CryptoCompletionBatch::push_grouped(
+                            None => ready_slots.push(CryptoReadySlot::completed(
                                 failed_crypto_completion(reservation, CryptoFailureKind::Open),
-                                completion_batches,
-                            ),
+                            )),
                         }
                         tracing::debug!(
                             owner = ?packet_owner,
@@ -406,11 +363,11 @@ impl DataplaneOwnerShard {
                 }
             }
 
-            if remaining.is_empty() {
-                self.admission.continue_owner_lane(run.cursor);
+            if self.admission_run.is_empty() {
+                self.admission.continue_owner_lane(cursor);
             } else {
-                run.items = remaining;
-                self.admission.defer_owner_run(run);
+                self.admission
+                    .defer_owner_run(cursor, &mut self.admission_run);
             }
         }
 
@@ -426,7 +383,7 @@ impl DataplaneOwnerShard {
         &mut self,
         limit: usize,
         prepared: &mut Vec<PreparedCryptoWork>,
-        completion_batches: &mut Vec<CryptoCompletionBatch>,
+        ready_slots: &mut Vec<Arc<CryptoReadySlot>>,
         priority_only: bool,
         drops: &mut Vec<PacketDrop>,
     ) -> usize {
@@ -434,41 +391,44 @@ impl DataplaneOwnerShard {
         let mut attempts_remaining = self.outbound_admission.len();
         while dispatched < limit && attempts_remaining > 0 {
             let run_limit = limit.saturating_sub(dispatched);
-            let Some(mut run) = self
-                .outbound_admission
-                .pop_next_run(priority_only, run_limit)
+            let Some(cursor) = self.outbound_admission.pop_next_run_into(
+                priority_only,
+                run_limit,
+                &mut self.outbound_admission_run,
+            )
             else {
                 break;
             };
-            attempts_remaining = attempts_remaining.saturating_sub(run.items.len());
-            if run.items.len() > 1 {
+            attempts_remaining =
+                attempts_remaining.saturating_sub(self.outbound_admission_run.len());
+            if self.outbound_admission_run.len() > 1 {
                 crate::perf_profile::record_event_count(
                     crate::perf_profile::Event::DataplaneOutboundOwnerRunContinue,
-                    run.items.len().saturating_sub(1) as u64,
+                    self.outbound_admission_run.len().saturating_sub(1) as u64,
                 );
             }
-            let owner_id = run.cursor.owner;
+            let owner_id = cursor.owner;
 
             let Some(owner) = self.owners.get_mut(&owner_id) else {
-                for queued in &run.items {
+                for queued in &self.outbound_admission_run {
                     drops.push(PacketDrop::from_queued_outbound(
                         queued,
                         PacketDropReason::UnknownOwner,
                     ));
                 }
-                self.outbound_admission.continue_owner_lane(run.cursor);
+                self.outbound_admission_run.clear();
+                self.outbound_admission.continue_owner_lane(cursor);
                 continue;
             };
 
-            let mut remaining = Vec::new();
-            let mut items = std::mem::take(&mut run.items).into_iter();
-            while let Some(queued) = items.next() {
+            self.outbound_admission_run.reverse();
+            while let Some(queued) = self.outbound_admission_run.pop() {
                 let class = queued.packet.class;
                 let ingress_seq = queued.ingress_seq;
                 if !owner.can_reserve_class(class) {
                     record_outbound_owner_blocked(owner.reserve_block_reason(class));
-                    remaining.push(queued);
-                    remaining.extend(items);
+                    self.outbound_admission_run.push(queued);
+                    self.outbound_admission_run.reverse();
                     break;
                 }
 
@@ -484,10 +444,9 @@ impl DataplaneOwnerShard {
                                 },
                                 seal_key,
                             )),
-                            None => CryptoCompletionBatch::push_grouped(
+                            None => ready_slots.push(CryptoReadySlot::completed(
                                 failed_crypto_completion(reservation, CryptoFailureKind::Seal),
-                                completion_batches,
-                            ),
+                            )),
                         }
                         dispatched = dispatched.saturating_add(1);
                     }
@@ -506,43 +465,83 @@ impl DataplaneOwnerShard {
                 attempts_remaining = self.outbound_admission.len();
             }
 
-            if remaining.is_empty() {
-                self.outbound_admission.continue_owner_lane(run.cursor);
+            if self.outbound_admission_run.is_empty() {
+                self.outbound_admission.continue_owner_lane(cursor);
             } else {
-                run.items = remaining;
-                self.outbound_admission.defer_owner_run(run);
+                self.outbound_admission
+                    .defer_owner_run(cursor, &mut self.outbound_admission_run);
             }
         }
         dispatched
     }
 
-    pub(crate) fn retire_completion_batch_into(
+    fn stage_retire_slot(
         &mut self,
-        batch: CryptoCompletionBatch,
+        slot: Arc<CryptoReadySlot>,
+    ) -> Result<(), Arc<CryptoReadySlot>> {
+        let owner_id = slot.owner();
+        let Some(owner) = self.owners.get_mut(&owner_id) else {
+            return Err(slot);
+        };
+        if owner.stage_retire_slot(slot) {
+            self.retire_owners.push_back(owner_id);
+        }
+        Ok(())
+    }
+
+    fn has_pending_retirements(&self) -> bool {
+        !self.retire_owners.is_empty()
+    }
+
+    fn has_ready_retirements(&self) -> bool {
+        self.retire_owners.iter().any(|owner| {
+            self.owners
+                .get(owner)
+                .is_some_and(OwnerState::has_ready_retirement)
+        })
+    }
+
+    fn retire_ready_slots_into(
+        &mut self,
+        limit: usize,
         retired: &mut DataplaneRetiredOutputSink<'_>,
         drops: &mut Vec<PacketDrop>,
         compact_endpoint_data: bool,
-    ) {
+    ) -> usize {
         let _timer =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::DataplaneRetire);
-        let owner_id = batch.owner();
-        let Some(owner) = self.owners.get_mut(&owner_id) else {
-            for completion in batch.into_completions() {
-                let drop = PacketDrop::from_completion(
-                    &completion,
-                    PacketDropReason::UnknownOwner,
-                    None,
-                );
-                drops.push(drop);
+        let owners_to_scan = self.retire_owners.len();
+        let mut retired_count = 0usize;
+        for remaining_owners in (1..=owners_to_scan).rev() {
+            if retired_count >= limit {
+                break;
             }
-            return;
-        };
-        let before_in_flight = owner.in_flight;
-        owner.retire_batch_outputs_into(batch, retired, drops, compact_endpoint_data);
-        if owner.in_flight < before_in_flight {
-            self.admission.wake_owner(owner_id);
-            self.outbound_admission.wake_owner(owner_id);
+            let Some(owner_id) = self.retire_owners.pop_front() else {
+                break;
+            };
+            let Some(owner) = self.owners.get_mut(&owner_id) else {
+                continue;
+            };
+            let owner_limit = limit
+                .saturating_sub(retired_count)
+                .div_ceil(remaining_owners);
+            let before_in_flight = owner.in_flight;
+            let got = owner.retire_ready_slots_into(
+                owner_limit,
+                retired,
+                drops,
+                compact_endpoint_data,
+            );
+            retired_count = retired_count.saturating_add(got);
+            if owner.in_flight < before_in_flight {
+                self.admission.wake_owner(owner_id);
+                self.outbound_admission.wake_owner(owner_id);
+            }
+            if owner.has_pending_retirements() {
+                self.retire_owners.push_back(owner_id);
+            }
         }
+        retired_count
     }
 
     fn admission_queue_lens(&self) -> (usize, usize) {

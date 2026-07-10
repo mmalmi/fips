@@ -16,7 +16,9 @@ pub(crate) enum WireBuildError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FmpWireHeader {
-    header_bytes: [u8; FMP_ESTABLISHED_HEADER_SIZE],
+    receiver_idx: u32,
+    counter: u64,
+    flags: u8,
 }
 
 impl FmpWireHeader {
@@ -33,41 +35,37 @@ impl FmpWireHeader {
             return Err(WirePreflightError::WrongPhase);
         }
 
-        let mut header_bytes = [0u8; FMP_ESTABLISHED_HEADER_SIZE];
-        header_bytes.copy_from_slice(&data[..FMP_ESTABLISHED_HEADER_SIZE]);
-
-        Ok(Self { header_bytes })
+        Ok(Self {
+            receiver_idx: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
+            counter: u64::from_le_bytes([
+                data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15],
+            ]),
+            flags: data[1],
+        })
     }
 
     pub(crate) fn receiver_idx(&self) -> u32 {
-        let bytes = &self.header_bytes;
-        u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]])
+        self.receiver_idx
     }
 
     pub(crate) fn counter(&self) -> u64 {
-        let bytes = &self.header_bytes;
-        u64::from_le_bytes([
-            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
-        ])
+        self.counter
     }
 
     pub(crate) fn flags(&self) -> u8 {
-        self.header_bytes[1]
+        self.flags
     }
 
-    pub(crate) fn header_bytes(self) -> [u8; FMP_ESTABLISHED_HEADER_SIZE] {
-        self.header_bytes
-    }
-
-    pub(crate) fn ciphertext_offset(self) -> usize {
-        FMP_ESTABLISHED_HEADER_SIZE
+    pub(crate) fn ciphertext_offset(self) -> u16 {
+        FMP_ESTABLISHED_HEADER_SIZE as u16
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FspWireHeader {
-    header_bytes: [u8; FSP_HEADER_SIZE],
-    ciphertext_offset: usize,
+    counter: u64,
+    ciphertext_offset: u16,
+    flags: u8,
 }
 
 impl FspWireHeader {
@@ -88,9 +86,6 @@ impl FspWireHeader {
             return Err(WirePreflightError::PlaintextFsp);
         }
 
-        let mut header_bytes = [0u8; FSP_HEADER_SIZE];
-        header_bytes.copy_from_slice(&data[..FSP_HEADER_SIZE]);
-
         let mut ciphertext_offset = FSP_HEADER_SIZE;
         if flags & crate::node::session_wire::FSP_FLAG_CP != 0 {
             let (_source_coords, _dest_coords, coords_len) =
@@ -98,29 +93,27 @@ impl FspWireHeader {
                     .map_err(|_| WirePreflightError::BadFspCoords)?;
             ciphertext_offset = ciphertext_offset.saturating_add(coords_len);
         }
+        let ciphertext_offset =
+            u16::try_from(ciphertext_offset).map_err(|_| WirePreflightError::BadFspCoords)?;
 
         Ok(Self {
-            header_bytes,
+            counter: u64::from_le_bytes([
+                data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
+            ]),
             ciphertext_offset,
+            flags,
         })
     }
 
     pub(crate) fn counter(&self) -> u64 {
-        let bytes = &self.header_bytes;
-        u64::from_le_bytes([
-            bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11],
-        ])
+        self.counter
     }
 
     pub(crate) fn flags(&self) -> u8 {
-        self.header_bytes[1]
+        self.flags
     }
 
-    pub(crate) fn header_bytes(self) -> [u8; FSP_HEADER_SIZE] {
-        self.header_bytes
-    }
-
-    pub(crate) fn ciphertext_offset(self) -> usize {
+    pub(crate) fn ciphertext_offset(self) -> u16 {
         self.ciphertext_offset
     }
 }

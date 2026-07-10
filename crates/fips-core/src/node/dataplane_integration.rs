@@ -393,7 +393,7 @@ impl Node {
             turns = turns.saturating_add(1);
         }
         if !self.deferred_dataplane_control_turns.is_empty() {
-            self.dataplane.completion_notify().notify_one();
+            self.dataplane.readiness_notify().notify_one();
         }
         processed
     }
@@ -656,7 +656,7 @@ impl Node {
     }
 
     async fn wait_for_dataplane_completion(&self) {
-        let notify = self.dataplane.completion_notify();
+        let notify = self.dataplane.readiness_notify();
         let _ = tokio::time::timeout(
             DATAPLANE_PENDING_OUTBOUND_COMPLETION_TIMEOUT,
             notify.notified(),
@@ -1101,18 +1101,15 @@ impl Node {
             let candidate_addr = crate::transport::TransportAddr::from_string(&candidate.addr);
             let mut added_resolved_addr = false;
             if let Some(socket_addr) = transport.resolved_udp_socket_addr_if_cached(&candidate_addr)
-            {
-                if let Some((candidate_transport_id, _)) =
+                && let Some((candidate_transport_id, _)) =
                     self.find_udp_transport_for_remote_addr(socket_addr, candidate.provenance)
-                    && candidate_transport_id == transport_id
-                {
-                    let resolved_addr =
-                        crate::transport::TransportAddr::from_socket_addr(socket_addr);
-                    if !addrs.iter().any(|existing| existing == &resolved_addr) {
-                        addrs.push(resolved_addr);
-                    }
-                    added_resolved_addr = true;
+                && candidate_transport_id == transport_id
+            {
+                let resolved_addr = crate::transport::TransportAddr::from_socket_addr(socket_addr);
+                if !addrs.iter().any(|existing| existing == &resolved_addr) {
+                    addrs.push(resolved_addr);
                 }
+                added_resolved_addr = true;
             }
             if added_resolved_addr {
                 continue;

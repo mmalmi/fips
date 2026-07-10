@@ -68,6 +68,7 @@ fn submit_endpoint_data_payload(mover: &mut Dataplane, request: EndpointDataSubm
                 owner,
                 1,
                 counter,
+                FSP_HEADER_SIZE as u16,
                 PacketClass::Bulk,
                 OutputTarget::SessionPayload { local_addr },
                 PacketBuffer::new(fsp_encrypted_wire(counter, 0, &fsp_inner, key)),
@@ -91,7 +92,7 @@ fn run_with_worker_pool_limit(
     limit: usize,
 ) -> (usize, Vec<PacketOutput>, Vec<PacketDrop>) {
     let mut prepared_work = Vec::new();
-    let mut completion_batches = Vec::new();
+    let mut ready_slots = Vec::new();
     let mut retired = Vec::new();
     let mut outbound_packets = Vec::new();
     let mut fsp_authenticated_ingress = DataplaneFspAuthenticatedIngress::default();
@@ -100,7 +101,7 @@ fn run_with_worker_pool_limit(
         limit,
         DataplaneAeadRunBuffers::new(
             &mut prepared_work,
-            &mut completion_batches,
+            &mut ready_slots,
             &mut retired,
             &mut outbound_packets,
             &mut fsp_authenticated_ingress,
@@ -122,16 +123,6 @@ fn driver_endpoint_batches(driver: &DataplaneTurnDriver) -> Vec<&DataplaneEndpoi
         .collect()
 }
 
-fn endpoint_batch_direct_packet_count(batch: &DataplaneEndpointDataBatch) -> usize {
-    let mut batch = batch.clone();
-    batch
-        .take_direct_packet_batch()
-        .into_packet_runs()
-        .iter()
-        .map(FipsEndpointDirectPacketRun::len)
-        .sum()
-}
-
 fn take_driver_endpoint_batches(
     driver: &mut DataplaneTurnDriver,
 ) -> Vec<DataplaneEndpointDataBatch> {
@@ -139,44 +130,89 @@ fn take_driver_endpoint_batches(
 }
 
 #[test]
-fn aead_worker_pool_returns_completion_batches() {
+fn aead_worker_pool_publishes_ordered_readiness_slots() {
     let owner = fmp_owner(706);
     let open_key = 20;
-    let mut mover = mover();
-    register_owner_with_test_keys(&mut mover, owner, open_key, open_key);
-    submit_fmp_inbound_range(&mut mover, owner, 706, open_key, 100..104, b"worker");
+    let mut mover = Dataplane::new(AdmissionConfig::new(4, 16));
+    mover.register_owner(owner, OwnerConfig::new(1, 16));
+    mover
+        .owner_mut(owner)
+        .unwrap()
+        .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(open_key)));
+    submit_fmp_inbound_range(&mut mover, owner, 706, open_key, 100..112, b"worker");
 
-    let mut pool = test_aead_worker_pool(8);
-    let (dispatched, retired, drops) = run_with_worker_pool(&mut mover, &mut pool);
+    let mut pool = test_aead_worker_pool(20);
+    let (dispatched, retired, drops) = run_with_worker_pool_limit(&mut mover, &mut pool, 16);
 
-    assert_eq!(dispatched, 4);
+    assert_eq!(dispatched, 12);
     assert!(retired.is_empty());
     assert!(drops.is_empty());
-    assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 4);
+    assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 12);
 
     let mut retired = Vec::new();
-    let completions = drain_worker_pool_completions(&mut pool, 2);
-    assert_eq!(completions.len(), 2);
-    assert_eq!(pool.available_capacity(), 6);
-    for completion in completions {
-        retired.extend(retire_completion(&mut mover, completion));
-    }
+    wait_for_owner_readiness(&mut pool, &mover);
+    assert_eq!(retire_ready_slots_to_outputs(&mut mover, 6, &mut retired), 6);
+    assert_eq!(pool.available_capacity(), 14);
 
-    let completions = drain_worker_pool_completions(&mut pool, 2);
-    assert_eq!(completions.len(), 2);
-    for completion in completions {
-        retired.extend(retire_completion(&mut mover, completion));
-    }
+    assert_eq!(retire_ready_slots_to_outputs(&mut mover, 6, &mut retired), 6);
     let outputs = retired;
     assert_eq!(
         outputs
             .iter()
             .map(PacketOutput::counter)
             .collect::<Vec<_>>(),
-        vec![100, 101, 102, 103]
+        (100..112).collect::<Vec<_>>()
     );
     assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
-    assert_eq!(pool.available_capacity(), 8);
+    assert_eq!(pool.available_capacity(), 20);
+}
+
+#[test]
+fn owner_membership_changes_wake_deferred_lanes() {
+    let inbound_owner = fmp_owner(712);
+    let mut inbound = mover();
+    inbound.register_owner(inbound_owner, OwnerConfig::new(1, 1));
+    submit_fmp_inbound_range(
+        &mut inbound,
+        inbound_owner,
+        712,
+        12,
+        100..102,
+        b"inbound",
+    );
+    assert_eq!(dispatch_available(&mut inbound, 8).len(), 1);
+    assert!(!inbound.has_runnable_work());
+    inbound.register_owner(inbound_owner, OwnerConfig::new(1, 1));
+    assert!(inbound.has_runnable_work());
+    assert_eq!(dispatch_available(&mut inbound, 8).len(), 1);
+
+    let outbound_owner = fmp_owner(713);
+    let mut outbound = mover();
+    outbound.register_owner(
+        outbound_owner,
+        OwnerConfig::new(1, 1).with_next_send_counter(500),
+    );
+    for payload in [b"first".as_slice(), b"second".as_slice()] {
+        outbound
+            .submit_outbound_packet(outbound_packet(
+                outbound_owner,
+                1,
+                PacketClass::Bulk,
+                payload,
+            ))
+            .unwrap();
+    }
+    assert_eq!(dispatch_outbound_available(&mut outbound, 8).len(), 1);
+    assert!(!outbound.has_runnable_work());
+    assert!(outbound.unregister_owner(outbound_owner));
+    assert!(outbound.has_runnable_work());
+    assert!(dispatch_outbound_available(&mut outbound, 8).is_empty());
+    assert!(
+        outbound
+            .drain_drops()
+            .iter()
+            .any(|drop| drop.reason == PacketDropReason::UnknownOwner)
+    );
 }
 
 #[test]
@@ -297,11 +333,9 @@ fn aead_worker_pool_capacity_blocks_reservation_until_completion_drain() {
     assert!(drops.is_empty());
     assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 2);
 
-    let completions = drain_worker_pool_completions(&mut pool, 2);
-    assert_eq!(completions.len(), 2);
-    for completion in completions {
-        retire_completion(&mut mover, completion);
-    }
+    wait_for_owner_readiness(&mut pool, &mover);
+    let mut retired = Vec::new();
+    assert_eq!(retire_ready_slots_to_outputs(&mut mover, 2, &mut retired), 2);
     assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
     assert_eq!(pool.available_capacity(), 2);
 
@@ -311,11 +345,9 @@ fn aead_worker_pool_capacity_blocks_reservation_until_completion_drain() {
     assert!(drops.is_empty());
     assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 2);
 
-    let completions = drain_worker_pool_completions(&mut pool, 2);
-    assert_eq!(completions.len(), 2);
-    for completion in completions {
-        retire_completion(&mut mover, completion);
-    }
+    wait_for_owner_readiness(&mut pool, &mover);
+    let mut retired = Vec::new();
+    assert_eq!(retire_ready_slots_to_outputs(&mut mover, 2, &mut retired), 2);
     assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
 
     let (dispatched, retired, drops) = run_with_worker_pool(&mut mover, &mut pool);
@@ -882,6 +914,7 @@ fn stale_generation_does_not_move_owner_path() {
                 owner,
                 1,
                 5,
+                FSP_HEADER_SIZE as u16,
                 PacketClass::Bulk,
                 OutputTarget::Transport,
                 PacketBuffer::new(b"stale".to_vec()),
@@ -1294,6 +1327,7 @@ fn fsp_owner_keeps_previous_receive_epoch_during_rekey_drain() {
             owner,
             1,
             10,
+            FSP_HEADER_SIZE as u16,
             PacketClass::Bulk,
             OutputTarget::Transport,
             PacketBuffer::new(fsp_encrypted_wire(10, 0, b"old-before", old_key)),
@@ -1321,6 +1355,7 @@ fn fsp_owner_keeps_previous_receive_epoch_during_rekey_drain() {
             owner,
             2,
             11,
+            FSP_HEADER_SIZE as u16,
             PacketClass::Bulk,
             OutputTarget::Transport,
             PacketBuffer::new(fsp_encrypted_wire(11, 0, b"old-after", old_key)),
@@ -1330,6 +1365,7 @@ fn fsp_owner_keeps_previous_receive_epoch_during_rekey_drain() {
         owner,
         2,
         1,
+        FSP_HEADER_SIZE as u16,
         PacketClass::Bulk,
         OutputTarget::Transport,
         PacketBuffer::new(fsp_encrypted_wire(
@@ -1386,6 +1422,7 @@ fn fsp_owner_authenticates_pending_receive_epoch_before_cutover() {
                 owner,
                 1,
                 1,
+                FSP_HEADER_SIZE as u16,
                 PacketClass::Bulk,
                 OutputTarget::Transport,
                 PacketBuffer::new(fsp_encrypted_wire(
@@ -1420,6 +1457,7 @@ fn fsp_owner_authenticates_pending_receive_epoch_before_cutover() {
                 owner,
                 2,
                 1,
+                FSP_HEADER_SIZE as u16,
                 PacketClass::Bulk,
                 OutputTarget::Transport,
                 PacketBuffer::new(fsp_encrypted_wire(
@@ -1961,6 +1999,7 @@ fn compact_authenticated_ingress_preserves_retirement_order() {
                     owner,
                     1,
                     917 + idx as u64,
+                    FSP_HEADER_SIZE as u16,
                     PacketClass::Bulk,
                     OutputTarget::SessionPayload { local_addr },
                     PacketBuffer::new(fsp_encrypted_wire(
@@ -2127,6 +2166,8 @@ fn session_ingress_raw_handoff_defers_unrouted_fsp() {
         previous_hop: None,
         ce_flag: false,
         path_mtu: u16::MAX,
+        wire_flags: 0,
+        opened_payload_offset: FMP_ESTABLISHED_HEADER_SIZE as u16,
         source_peer: None,
         path: None,
         activity_tick: Some(ActivityTick::new(919_002)),
@@ -2209,7 +2250,7 @@ fn direct_endpoint_packet_batches_leave_commit_only_turn_bulk() {
     let endpoint_batches = driver_endpoint_batches(&driver);
     assert_eq!(endpoint_batches.len(), 1);
     assert_eq!(endpoint_batches[0].len(), 2);
-    assert_eq!(endpoint_batch_direct_packet_count(endpoint_batches[0]), 2);
+    assert!(endpoint_batches[0].has_direct_packet_runs());
 
     let delivered = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let captured = std::sync::Arc::clone(&delivered);
@@ -2235,7 +2276,7 @@ fn direct_endpoint_packet_batches_leave_commit_only_turn_bulk() {
     assert_eq!(endpoint_batches[0].len(), 2);
     assert_eq!(endpoint_batches[0].commit_runs().len(), 1);
     assert_eq!(endpoint_batches[0].commit_runs()[0].len(), 2);
-    assert_eq!(endpoint_batch_direct_packet_count(endpoint_batches[0]), 0);
+    assert!(!endpoint_batches[0].has_direct_packet_runs());
     let mut batches = take_driver_endpoint_batches(&mut driver);
     let direct_runs = batches
         .last_mut()
@@ -2297,7 +2338,7 @@ fn compact_endpoint_data_completion_coalesces_adjacent_direct_runs() {
     assert_eq!(endpoint_batches[0].len(), 5);
     assert_eq!(endpoint_batches[0].commit_runs().len(), 1);
     assert_eq!(endpoint_batches[0].commit_runs()[0].len(), 5);
-    assert_eq!(endpoint_batch_direct_packet_count(endpoint_batches[0]), 5);
+    assert!(endpoint_batches[0].has_direct_packet_runs());
     assert!(driver.outputs.is_empty());
 
     let mut batches = take_driver_endpoint_batches(&mut driver);
@@ -2427,179 +2468,6 @@ fn completion_only_turn_retires_out_of_order_completions_in_owner_order() {
         assert!(turn.drops().is_empty());
     }
     assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 0);
-}
-
-#[test]
-fn owner_retire_consumes_contiguous_completion_batch_without_pending_map() {
-    let owner = fmp_owner(811);
-    let open_key = 81;
-    let mut mover = mover();
-    register_owner_with_test_keys(&mut mover, owner, open_key, open_key);
-    submit_fmp_inbound_range(&mut mover, owner, 811, open_key, 100..104, b"run");
-
-    let mut completions = dispatch_available(&mut mover, 8)
-        .drain(..)
-        .map(|work| complete_test_open_work(work, open_key))
-        .collect::<Vec<_>>();
-    assert_eq!(completions.len(), 4);
-
-    let mut batches = Vec::new();
-    assert_eq!(
-        CryptoCompletionBatch::drain_completion_vec_into_batches(&mut completions, &mut batches,),
-        4
-    );
-    assert_eq!(batches.len(), 1);
-
-    let mut retired = Vec::new();
-    mover.queue_completion_batches(&mut batches);
-    assert_eq!(
-        retire_queued_completions_to_outputs(&mut mover, 4, &mut retired),
-        4
-    );
-    let outputs = retired;
-    assert_eq!(
-        outputs
-            .iter()
-            .map(PacketOutput::counter)
-            .collect::<Vec<_>>(),
-        vec![100, 101, 102, 103]
-    );
-    let owner_state = mover.owner_mut(owner).unwrap();
-    assert!(owner_state.pending.is_empty());
-    assert_eq!(owner_state.next_retire, 4);
-    assert_eq!(owner_state.in_flight, 0);
-}
-
-#[test]
-fn owner_retire_stages_only_gap_then_releases_from_next_contiguous_batch() {
-    let owner = fmp_owner(812);
-    let open_key = 82;
-    let mut mover = mover();
-    register_owner_with_test_keys(&mut mover, owner, open_key, open_key);
-    submit_fmp_inbound_range(&mut mover, owner, 812, open_key, 100..103, b"gap");
-
-    let mut completions = dispatch_available(&mut mover, 8)
-        .drain(..)
-        .map(|work| complete_test_open_work(work, open_key))
-        .collect::<Vec<_>>();
-    assert_eq!(completions.len(), 3);
-    let third = completions.pop().unwrap();
-
-    let mut batches = vec![CryptoCompletionBatch::from_completion(third)];
-    let mut retired = Vec::new();
-    mover.queue_completion_batches(&mut batches);
-    assert_eq!(
-        retire_queued_completions_to_outputs(&mut mover, 3, &mut retired),
-        1
-    );
-    assert!(retired.is_empty());
-    {
-        let owner_state = mover.owner_mut(owner).unwrap();
-        assert_eq!(owner_state.pending.len(), 1);
-        assert_eq!(owner_state.next_retire, 0);
-        assert_eq!(owner_state.in_flight, 3);
-    }
-
-    let mut batches = Vec::new();
-    assert_eq!(
-        CryptoCompletionBatch::drain_completion_vec_into_batches(&mut completions, &mut batches,),
-        2
-    );
-    assert_eq!(batches.len(), 1);
-    let mut retired = Vec::new();
-    mover.queue_completion_batches(&mut batches);
-    assert_eq!(
-        retire_queued_completions_to_outputs(&mut mover, 3, &mut retired),
-        2
-    );
-    let outputs = retired;
-    assert_eq!(
-        outputs
-            .iter()
-            .map(PacketOutput::counter)
-            .collect::<Vec<_>>(),
-        vec![100, 101, 102]
-    );
-    let owner_state = mover.owner_mut(owner).unwrap();
-    assert!(owner_state.pending.is_empty());
-    assert_eq!(owner_state.next_retire, 3);
-    assert_eq!(owner_state.in_flight, 0);
-}
-
-#[test]
-fn owner_retire_stages_later_contiguous_batch_as_one_pending_run() {
-    let owner = fmp_owner(813);
-    let open_key = 83;
-    let mut mover = mover();
-    register_owner_with_test_keys(&mut mover, owner, open_key, open_key);
-    submit_fmp_inbound_range(&mut mover, owner, 813, open_key, 100..106, b"pending-run");
-
-    let completions = dispatch_available(&mut mover, 8)
-        .drain(..)
-        .map(|work| complete_test_open_work(work, open_key))
-        .collect::<Vec<_>>();
-    assert_eq!(completions.len(), 6);
-
-    let mut later = completions[2..].to_vec();
-    let mut later_batches = Vec::new();
-    assert_eq!(
-        CryptoCompletionBatch::drain_completion_vec_into_batches(&mut later, &mut later_batches,),
-        4
-    );
-    assert_eq!(later_batches.len(), 1);
-    assert_eq!(later_batches[0].first_order(), Some(OrderToken(2)));
-
-    let mut retired = Vec::new();
-    mover.queue_completion_batches(&mut later_batches);
-    assert_eq!(
-        retire_queued_completions_to_outputs(&mut mover, 6, &mut retired),
-        4
-    );
-    assert!(retired.is_empty());
-    {
-        let owner_state = mover.owner_mut(owner).unwrap();
-        assert_eq!(owner_state.pending.len(), 1);
-        assert_eq!(
-            owner_state
-                .pending
-                .get(&OrderToken(2))
-                .map(CryptoCompletionBatch::len),
-            Some(4)
-        );
-        assert_eq!(owner_state.next_retire, 0);
-        assert_eq!(owner_state.in_flight, 6);
-    }
-
-    let mut earlier = completions[..2].to_vec();
-    let mut earlier_batches = Vec::new();
-    assert_eq!(
-        CryptoCompletionBatch::drain_completion_vec_into_batches(
-            &mut earlier,
-            &mut earlier_batches,
-        ),
-        2
-    );
-    assert_eq!(earlier_batches.len(), 1);
-    assert_eq!(earlier_batches[0].first_order(), Some(OrderToken(0)));
-
-    let mut retired = Vec::new();
-    mover.queue_completion_batches(&mut earlier_batches);
-    assert_eq!(
-        retire_queued_completions_to_outputs(&mut mover, 6, &mut retired),
-        2
-    );
-    let outputs = retired;
-    assert_eq!(
-        outputs
-            .iter()
-            .map(PacketOutput::counter)
-            .collect::<Vec<_>>(),
-        vec![100, 101, 102, 103, 104, 105]
-    );
-    let owner_state = mover.owner_mut(owner).unwrap();
-    assert!(owner_state.pending.is_empty());
-    assert_eq!(owner_state.next_retire, 6);
-    assert_eq!(owner_state.in_flight, 0);
 }
 
 #[test]
@@ -3057,7 +2925,7 @@ impl DataplaneIngressRouter for FixedIngressRouter {
         );
         assert_eq!(packet.protocol, PacketProtocol::Fmp);
         assert!(matches!(header, DataplaneIngressHeader::Fmp(_)));
-        assert_eq!(header.counter(), 1200);
+        assert_eq!(header.open_metadata().0, 1200);
         self.route
     }
 }

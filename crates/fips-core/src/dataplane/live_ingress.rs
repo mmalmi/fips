@@ -61,17 +61,18 @@ pub(crate) enum DataplaneIngressHeader {
 }
 
 impl DataplaneIngressHeader {
-    pub(crate) fn counter(self) -> u64 {
+    pub(crate) fn open_metadata(self) -> (u64, u16, u8) {
         match self {
-            Self::Fmp(header) => header.counter(),
-            Self::Fsp(header) => header.counter(),
-        }
-    }
-
-    pub(crate) fn flags(self) -> u8 {
-        match self {
-            Self::Fmp(header) => header.flags(),
-            Self::Fsp(header) => header.flags(),
+            Self::Fmp(header) => (
+                header.counter(),
+                header.ciphertext_offset(),
+                header.flags(),
+            ),
+            Self::Fsp(header) => (
+                header.counter(),
+                header.ciphertext_offset(),
+                header.flags(),
+            ),
         }
     }
 }
@@ -491,6 +492,7 @@ impl DataplaneEstablishedFastIngressSink {
             route.owner,
             route.generation,
             header.counter(),
+            header.ciphertext_offset(),
             route.class,
             route.output,
             packet.data,
@@ -540,6 +542,7 @@ impl DataplaneEstablishedFastIngressSink {
             route.owner,
             route.generation,
             header.counter(),
+            header.ciphertext_offset(),
             route.class,
             route.output,
             packet.data,
@@ -1192,15 +1195,4 @@ pub(crate) trait DataplaneRawIngressSource {
     fn drain_raw_ingress<F>(&mut self, limit: usize, push: F) -> usize
     where
         F: FnMut(DataplaneRawIngress);
-}
-
-pub(crate) trait DataplaneCompletionSink {
-    fn push_completion_batch(&mut self, batch: CryptoCompletionBatch);
-}
-
-#[cfg(test)]
-impl DataplaneCompletionSink for Vec<CryptoCompletionBatch> {
-    fn push_completion_batch(&mut self, batch: CryptoCompletionBatch) {
-        self.push(batch);
-    }
 }

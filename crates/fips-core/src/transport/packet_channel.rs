@@ -241,6 +241,23 @@ impl PacketBuffer {
         self.data[self.start..self.start + prefix_len].copy_from_slice(prefix);
         true
     }
+
+    pub(crate) fn recycle_batch(packets: &mut [Self]) {
+        let Some(pool) = packets.first().and_then(|packet| packet.pool.clone()) else {
+            return;
+        };
+        if packets.iter().all(|packet| {
+            packet
+                .pool
+                .as_ref()
+                .is_some_and(|packet_pool| pool.shares_storage(packet_pool))
+        }) {
+            for packet in packets.iter_mut() {
+                packet.pool = None;
+            }
+            pool.put_batch(packets);
+        }
+    }
 }
 
 impl Clone for PacketBuffer {
@@ -598,6 +615,46 @@ impl PacketBufferPool {
             crate::perf_profile::record_event(crate::perf_profile::Event::PacketBufferPoolReturn);
         } else {
             crate::perf_profile::record_event(crate::perf_profile::Event::PacketBufferPoolDiscard);
+        }
+    }
+
+    fn shares_storage(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    fn put_batch(&self, packets: &mut [PacketBuffer]) {
+        let mut returned = 0usize;
+        let mut discarded = 0usize;
+        let mut guard = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        let available_slots = PACKET_BUFFER_POOL_LIMIT.saturating_sub(guard.len());
+        for packet in packets {
+            packet.start = 0;
+            let mut buffer = mem::take(&mut packet.data);
+            buffer.clear();
+            if buffer.capacity() <= PACKET_BUFFER_MAX_RETAINED_CAPACITY
+                && returned < available_slots
+            {
+                guard.push(buffer);
+                returned += 1;
+            } else {
+                discarded += 1;
+            }
+        }
+        if returned > 0 {
+            self.available.fetch_add(returned, Relaxed);
+        }
+        drop(guard);
+        if returned > 0 {
+            crate::perf_profile::record_event_count(
+                crate::perf_profile::Event::PacketBufferPoolReturn,
+                returned as u64,
+            );
+        }
+        if discarded > 0 {
+            crate::perf_profile::record_event_count(
+                crate::perf_profile::Event::PacketBufferPoolDiscard,
+                discarded as u64,
+            );
         }
     }
 }

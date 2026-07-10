@@ -200,7 +200,7 @@
         );
         register_fsp_session_payload_route(&mut routes, source_addr, fsp_owner, local_addr);
 
-        let turn = pump_one_fmp_session_ingress_turn(
+        let mut turn = pump_one_fmp_session_ingress_turn(
             &mut driver,
             &mut routes,
             transport_id,
@@ -213,8 +213,7 @@
         assert_eq!(turn.summary().raw_ingress_dropped(), 0);
         assert_eq!(turn.summary().inbound_admitted(), 2);
         assert_eq!(turn.summary().outputs_dropped(), 0);
-        let mut receipt_turn = turn.clone();
-        let fmp_ingress_receipts = receipt_turn.take_fmp_ingress_receipts();
+        let fmp_ingress_receipts = turn.take_fmp_ingress_receipts();
         assert_eq!(fmp_ingress_receipts.len(), 1);
         assert!(turn.fmp_link_ingress().is_empty());
         assert_fmp_receipt(
@@ -421,7 +420,7 @@
             local_addr,
         );
 
-        let turn = pump_one_fmp_session_ingress_turn(
+        let mut turn = pump_one_fmp_session_ingress_turn(
             &mut driver,
             &mut routes,
             transport_id,
@@ -434,8 +433,7 @@
         assert_eq!(turn.summary().raw_ingress_dropped(), 0);
         assert_eq!(turn.summary().inbound_admitted(), 1);
         assert_eq!(turn.summary().outputs_dropped(), 0);
-        let mut receipt_turn = turn.clone();
-        let fmp_ingress_receipts = receipt_turn.take_fmp_ingress_receipts();
+        let fmp_ingress_receipts = turn.take_fmp_ingress_receipts();
         assert_eq!(fmp_ingress_receipts.len(), 1);
         assert!(turn.fmp_link_ingress().is_empty());
         assert_eq!(turn.fsp_session_ingress_count(), 0);
@@ -501,7 +499,7 @@
             local_addr,
         );
 
-        let turn = pump_one_fmp_session_ingress_turn(
+        let mut turn = pump_one_fmp_session_ingress_turn(
             &mut driver,
             &mut routes,
             transport_id,
@@ -515,8 +513,7 @@
         assert_eq!(turn.summary().inbound_admitted(), 1);
         assert_eq!(turn.summary().outputs(), 0);
         assert_eq!(turn.summary().outputs_dropped(), 0);
-        let mut receipt_turn = turn.clone();
-        assert!(receipt_turn.take_fmp_ingress_receipts().is_empty());
+        assert!(turn.take_fmp_ingress_receipts().is_empty());
         assert_eq!(turn.fmp_link_ingress().len(), 1);
         let ingress = &turn.fmp_link_ingress()[0];
         assert_eq!(
