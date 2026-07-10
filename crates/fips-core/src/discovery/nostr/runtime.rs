@@ -8,7 +8,7 @@ use nostr::nips::nip17;
 use nostr::nips::nip19::ToBech32;
 use nostr::prelude::{
     Alphabet, Event, EventBuilder, EventId, Filter, Kind, PublicKey, RelayUrl, SingleLetterTag,
-    Tag, TagKind, Timestamp,
+    SubscriptionId, Tag, TagKind, Timestamp,
 };
 use nostr_sdk::{Client, ClientOptions, prelude::RelayPoolNotification};
 use serde::Serialize;
@@ -278,8 +278,8 @@ pub struct NostrDiscovery {
     event_rx: Mutex<mpsc::Receiver<BootstrapEvent>>,
     mesh_signal_tx: mpsc::Sender<MeshTraversalSignal>,
     mesh_signal_rx: Mutex<mpsc::Receiver<MeshTraversalSignal>>,
-    connect_task: Mutex<Option<JoinHandle<()>>>,
-    relay_startup_task: Mutex<Option<JoinHandle<()>>>,
+    relay_task: Mutex<Option<JoinHandle<()>>>,
+    relay_refresh: Notify,
     publish_task: Mutex<Option<JoinHandle<()>>>,
     publish_notify: Notify,
     notify_task: Mutex<Option<JoinHandle<()>>>,
@@ -387,8 +387,8 @@ impl NostrDiscovery {
             event_rx: Mutex::new(event_rx),
             mesh_signal_tx,
             mesh_signal_rx: Mutex::new(mesh_signal_rx),
-            connect_task: Mutex::new(None),
-            relay_startup_task: Mutex::new(None),
+            relay_task: Mutex::new(None),
+            relay_refresh: Notify::new(),
             publish_task: Mutex::new(None),
             publish_notify: Notify::new(),
             notify_task: Mutex::new(None),
@@ -411,8 +411,7 @@ impl NostrDiscovery {
         let notifications = runtime.client.notifications();
         runtime.load_rating_fact_events_from_files().await;
         *runtime.publish_task.lock().await = Some(runtime.clone().spawn_publish_loop());
-        *runtime.connect_task.lock().await = Some(runtime.clone().spawn_connect_loop());
-        *runtime.relay_startup_task.lock().await = Some(runtime.clone().spawn_relay_startup_loop());
+        *runtime.relay_task.lock().await = Some(runtime.clone().spawn_relay_loop());
         *runtime.advertise_task.lock().await = Some(runtime.clone().spawn_advertise_loop());
         *runtime.notify_task.lock().await = Some(runtime.clone().spawn_notify_loop(notifications));
 
@@ -564,14 +563,10 @@ impl NostrDiscovery {
         };
 
         let previous = self.relay_config.read().await.clone();
-        if previous == next {
-            return Ok(());
-        }
-
         let previous_union = previous.union();
         let next_union = next.union();
 
-        for relay in next_union.difference(&previous_union) {
+        for relay in &next_union {
             self.client
                 .add_relay(relay)
                 .await
@@ -590,19 +585,7 @@ impl NostrDiscovery {
             *relay_config = next;
         }
 
-        for relay in next_union {
-            if let Err(error) = self.client.connect_relay(relay.clone()).await {
-                warn!(relay = %relay, error = %error, "failed to connect updated Nostr relay");
-            }
-        }
-
-        if let Err(error) = self.subscribe().await {
-            warn!(error = %error, "failed to subscribe updated Nostr relays");
-        }
-        if let Err(error) = self.publish_inbox_relays().await {
-            warn!(error = %error, "failed to publish updated Nostr inbox relay list");
-        }
-        self.request_publish_advert();
+        self.relay_refresh.notify_one();
         Ok(())
     }
 

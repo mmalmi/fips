@@ -5,10 +5,7 @@ impl NostrDiscovery {
         if let Some(handle) = self.advertise_task.lock().await.take() {
             handle.abort();
         }
-        if let Some(handle) = self.connect_task.lock().await.take() {
-            handle.abort();
-        }
-        if let Some(handle) = self.relay_startup_task.lock().await.take() {
+        if let Some(handle) = self.relay_task.lock().await.take() {
             handle.abort();
         }
         if let Some(handle) = self.publish_task.lock().await.take() {
@@ -44,10 +41,14 @@ impl NostrDiscovery {
         })
     }
 
-    pub(super) fn spawn_relay_startup_loop(self: Arc<Self>) -> JoinHandle<()> {
+    pub(super) fn spawn_relay_loop(self: Arc<Self>) -> JoinHandle<()> {
         tokio::spawn(async move {
             let mut retry_delay = Duration::from_secs(2);
             loop {
+                self.client.connect().await;
+                self.client
+                    .wait_for_connection(RELAY_STARTUP_OP_TIMEOUT)
+                    .await;
                 let subscribed =
                     match tokio::time::timeout(RELAY_STARTUP_OP_TIMEOUT, self.subscribe()).await {
                         Ok(Ok(())) => true,
@@ -81,18 +82,19 @@ impl NostrDiscovery {
                 self.request_publish_advert();
 
                 if subscribed {
-                    break;
+                    retry_delay = Duration::from_secs(2);
+                    self.relay_refresh.notified().await;
+                } else {
+                    tokio::select! {
+                        _ = self.relay_refresh.notified() => {
+                            retry_delay = Duration::from_secs(2);
+                        }
+                        _ = tokio::time::sleep(retry_delay) => {
+                            retry_delay = retry_delay.saturating_mul(2).min(Duration::from_secs(60));
+                        }
+                    }
                 }
-
-                tokio::time::sleep(retry_delay).await;
-                retry_delay = retry_delay.saturating_mul(2).min(Duration::from_secs(60));
             }
-        })
-    }
-
-    pub(super) fn spawn_connect_loop(self: Arc<Self>) -> JoinHandle<()> {
-        tokio::spawn(async move {
-            self.client.connect().await;
         })
     }
 
@@ -152,48 +154,71 @@ impl NostrDiscovery {
 
     pub(super) async fn subscribe(&self) -> Result<(), BootstrapError> {
         let relay_config = self.relay_config.read().await.clone();
-        self.client
-            .subscribe_to(
+        let signal_result = self
+            .subscribe_required(
                 relay_config.dm_relays.clone(),
+                "fips-traversal-signals",
                 Filter::new()
                     .kind(Kind::Custom(SIGNAL_KIND))
                     .pubkey(self.pubkey)
                     .limit(0),
-                None,
+            )
+            .await;
+
+        let advert_result = if self.should_subscribe_ambient_adverts() {
+            self.subscribe_required(
+                relay_config.advert_relays.clone(),
+                "fips-ambient-adverts",
+                self.ambient_advert_filter(),
             )
             .await
-            .map_err(|e| BootstrapError::Nostr(e.to_string()))?;
-
-        if self.should_subscribe_ambient_adverts() {
-            self.client
-                .subscribe_to(
-                    relay_config.advert_relays.clone(),
-                    self.ambient_advert_filter(),
-                    None,
-                )
-                .await
-                .map_err(|e| BootstrapError::Nostr(e.to_string()))?;
         } else {
             debug!(
                 policy = ?self.config.policy,
                 "skipping ambient Nostr advert subscription"
             );
-        }
+            Ok(())
+        };
 
-        if self.should_subscribe_rating_facts() {
-            self.client
-                .subscribe_to(
-                    relay_config.advert_relays.clone(),
-                    self.rating_fact_filter(),
-                    None,
-                )
-                .await
-                .map_err(|e| BootstrapError::Nostr(e.to_string()))?;
+        let rating_result = if self.should_subscribe_rating_facts() {
+            self.subscribe_required(
+                relay_config.advert_relays.clone(),
+                "fips-rating-facts",
+                self.rating_fact_filter(),
+            )
+            .await
         } else {
             debug!("skipping Nostr rating fact subscription");
-        }
+            Ok(())
+        };
 
-        Ok(())
+        signal_result?;
+        advert_result?;
+        rating_result
+    }
+
+    async fn subscribe_required(
+        &self,
+        relays: Vec<String>,
+        id: &'static str,
+        filter: Filter,
+    ) -> Result<(), BootstrapError> {
+        // Targeted SDK subscriptions report per-relay REQ failures in Output;
+        // failed REQs are not retained for reconnect.
+        let output = self
+            .client
+            .subscribe_with_id_to(relays, SubscriptionId::new(id), filter, None)
+            .await
+            .map_err(|error| BootstrapError::Nostr(error.to_string()))?;
+        if output.failed.is_empty() {
+            Ok(())
+        } else {
+            Err(BootstrapError::Nostr(format!(
+                "{id} subscription failed on {} relay(s): {:?}",
+                output.failed.len(),
+                output.failed
+            )))
+        }
     }
 
     pub(super) async fn publish_inbox_relays(&self) -> Result<(), BootstrapError> {
