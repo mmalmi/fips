@@ -92,6 +92,15 @@ impl Node {
             } => {
                 let _ = response_tx.send(self.endpoint_services.register(port, sender));
             }
+            NodeEndpointControlCommand::IngestNostrPubsubEvent { event, response_tx } => {
+                let accepted = if let Some(discovery) = self.nostr_discovery_handle() {
+                    discovery.ingest_advert_event(&event).await.cached()
+                        || discovery.process_rating_fact_event(&event).await
+                } else {
+                    false
+                };
+                let _ = response_tx.send(accepted);
+            }
             NodeEndpointControlCommand::PeerSnapshot { response_tx } => {
                 let snapshot_now = Instant::now();
                 let nostr_failure_state: std::collections::HashMap<String, _> = self

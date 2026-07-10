@@ -58,6 +58,26 @@ async fn endpoint_starts_without_system_tun() {
 }
 
 #[tokio::test]
+async fn endpoint_rejects_external_nostr_event_when_discovery_is_disabled() {
+    let endpoint = FipsEndpoint::builder()
+        .without_system_tun()
+        .bind()
+        .await
+        .expect("endpoint should bind");
+    let event = nostr::EventBuilder::text_note("not a discovery event")
+        .sign_with_keys(&nostr::Keys::generate())
+        .expect("signed event");
+
+    assert!(
+        !endpoint
+            .ingest_nostr_pubsub_event(event)
+            .await
+            .expect("ingest command should complete")
+    );
+    endpoint.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test]
 async fn send_batch_to_peer_loopback_endpoint_data_roundtrips() {
     let endpoint = FipsEndpoint::builder()
         .without_system_tun()

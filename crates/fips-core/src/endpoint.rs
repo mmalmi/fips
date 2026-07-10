@@ -809,6 +809,25 @@ impl FipsEndpoint {
             .map_err(|_| FipsEndpointError::Closed)
     }
 
+    /// Feed a signed Nostr discovery event received outside the endpoint's
+    /// relay client into the same advert/rating validation and caches.
+    ///
+    /// This is the adapter boundary for FIPS-carried or content-addressed
+    /// pubsub. It accepts kind 37195 peer adverts and configured/trusted kind
+    /// 7368 rating facts; unsupported, invalid, stale, or disabled-discovery
+    /// events return `false`.
+    pub async fn ingest_nostr_pubsub_event(
+        &self,
+        event: nostr::Event,
+    ) -> Result<bool, FipsEndpointError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.endpoint_control_tx
+            .send(NodeEndpointControlCommand::IngestNostrPubsubEvent { event, response_tx })
+            .await
+            .map_err(|_| FipsEndpointError::Closed)?;
+        response_rx.await.map_err(|_| FipsEndpointError::Closed)
+    }
+
     /// Snapshot the endpoint addresses this node is currently advertising via
     /// Nostr discovery.
     pub async fn local_advertised_endpoints(
