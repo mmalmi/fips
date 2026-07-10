@@ -2034,33 +2034,6 @@ impl OwnerState {
         drops: &mut Vec<PacketDrop>,
         compact_endpoint_data: bool,
     ) {
-        let batch = match self.retire_ready_open_fsp_session_payload_run_into(
-            batch,
-            retired,
-            drops,
-            compact_endpoint_data,
-        ) {
-            Ok(()) => return,
-            Err(batch) => batch,
-        };
-
-        batch.consume_in_order(|completion| {
-            debug_assert_eq!(completion.order(), OrderToken(self.next_retire));
-            self.retire_ready_completion_into(completion, retired, drops, compact_endpoint_data);
-        });
-    }
-
-    fn retire_ready_open_fsp_session_payload_run_into(
-        &mut self,
-        batch: CryptoCompletionBatch,
-        retired: &mut DataplaneRetiredOutputSink<'_>,
-        drops: &mut Vec<PacketDrop>,
-        compact_endpoint_data: bool,
-    ) -> Result<(), CryptoCompletionBatch> {
-        if !batch.is_open_fsp_session_payload_run() {
-            return Err(batch);
-        }
-
         let batch_len = batch.len();
         debug_assert_eq!(batch.first_order(), Some(OrderToken(self.next_retire)));
         self.next_retire = self.next_retire.wrapping_add(batch_len as u64);
@@ -2076,7 +2049,31 @@ impl OwnerState {
                     None,
                 ));
             });
-            return Ok(());
+            return;
+        }
+
+        let batch = match self.retire_ready_open_fsp_session_payload_run_into(
+            batch,
+            retired,
+            compact_endpoint_data,
+        ) {
+            Ok(()) => return,
+            Err(batch) => batch,
+        };
+
+        batch.consume_in_order(|completion| {
+            self.retire_ready_completion_into(completion, retired, drops, compact_endpoint_data);
+        });
+    }
+
+    fn retire_ready_open_fsp_session_payload_run_into(
+        &mut self,
+        batch: CryptoCompletionBatch,
+        retired: &mut DataplaneRetiredOutputSink<'_>,
+        compact_endpoint_data: bool,
+    ) -> Result<(), CryptoCompletionBatch> {
+        if !batch.is_open_fsp_session_payload_run() {
+            return Err(batch);
         }
 
         let mut endpoint_data_batch: Option<DataplaneEndpointDataBatch> = None;
@@ -2132,21 +2129,6 @@ impl OwnerState {
         drops: &mut Vec<PacketDrop>,
         compact_endpoint_data: bool,
     ) {
-        self.next_retire = self.next_retire.wrapping_add(1);
-        self.in_flight = self.in_flight.saturating_sub(1);
-        if completion.reservation.lane == Lane::Bulk {
-            self.bulk_in_flight = self.bulk_in_flight.saturating_sub(1);
-        }
-
-        if completion.reservation.generation != self.generation {
-            drops.push(PacketDrop::from_completion(
-                &completion,
-                PacketDropReason::StaleCompletionGeneration,
-                None,
-            ));
-            return;
-        }
-
         match completion.result {
             CryptoResult::Opened(output) => {
                 self.authenticated_counter_highest = self
