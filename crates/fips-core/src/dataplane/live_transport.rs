@@ -395,7 +395,8 @@ fn non_udp_transport_send_timeout(
 ) -> Option<std::time::Duration> {
     // A peer that stops reading TCP must not park the single-thread node loop
     // while it is sending heartbeats, MMP, or other priority control frames.
-    // Bulk traffic deliberately keeps TCP backpressure and remains unbounded.
+    // Bulk traffic relies on the transport's longer stall bound so ordinary
+    // TCP backpressure does not consume the priority control-frame budget.
     (transport_type == "tcp" && lane == Lane::Priority)
         .then_some(DATAPLANE_TCP_PRIORITY_SEND_TIMEOUT)
 }

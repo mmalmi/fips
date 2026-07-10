@@ -43,7 +43,7 @@
     }
 
     #[test]
-    fn tcp_priority_output_is_bounded_without_weakening_bulk_backpressure() {
+    fn tcp_priority_output_has_a_shorter_bound_than_bulk() {
         assert_eq!(
             non_udp_transport_send_timeout("tcp", Lane::Priority),
             Some(DATAPLANE_TCP_PRIORITY_SEND_TIMEOUT)
