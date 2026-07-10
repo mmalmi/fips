@@ -34,6 +34,7 @@ pub(crate) enum AdmissionDropReason {
 pub(crate) struct AdmissionDrop {
     owner: OwnerId,
     counter: Option<u64>,
+    send_token: Option<u64>,
     reason: AdmissionDropReason,
 }
 
@@ -42,6 +43,7 @@ impl AdmissionDrop {
         Self {
             owner: packet.owner,
             counter: Some(packet.counter),
+            send_token: None,
             reason: admission_drop_reason(packet.lane()),
         }
     }
@@ -50,6 +52,7 @@ impl AdmissionDrop {
         Self {
             owner: packet.owner,
             counter: None,
+            send_token: packet.send_token,
             reason: admission_drop_reason(packet.lane()),
         }
     }

@@ -472,6 +472,7 @@ impl DataplaneOwnerShard {
                     break;
                 }
 
+                let send_token = queued.packet.send_token;
                 match owner.reserve_outbound(queued.packet, ingress_seq) {
                     Ok((reservation, packet)) => {
                         let reservation = reservation.with_owner_shard(self.index);
@@ -494,6 +495,7 @@ impl DataplaneOwnerShard {
                         drops.push(PacketDrop {
                             owner: owner_id,
                             counter: None,
+                            send_token,
                             reason: error.into(),
                             crypto_failure: None,
                             wire_flags: None,

@@ -584,6 +584,7 @@ pub(crate) enum PacketDropReason {
 pub(crate) struct PacketDrop {
     owner: OwnerId,
     counter: Option<u64>,
+    send_token: Option<u64>,
     reason: PacketDropReason,
     crypto_failure: Option<CryptoFailureKind>,
     wire_flags: Option<u8>,
@@ -595,6 +596,7 @@ impl PacketDrop {
         Self {
             owner: queued.packet.owner,
             counter: Some(queued.packet.counter),
+            send_token: None,
             reason,
             crypto_failure: None,
             wire_flags: Some(queued.packet.wire_flags),
@@ -606,6 +608,7 @@ impl PacketDrop {
         Self {
             owner: queued.packet.owner,
             counter: None,
+            send_token: queued.packet.send_token,
             reason,
             crypto_failure: None,
             wire_flags: None,
@@ -621,6 +624,7 @@ impl PacketDrop {
         Self {
             owner: completion.reservation.owner,
             counter: Some(completion.reservation.counter),
+            send_token: completion.reservation.send_token,
             reason,
             crypto_failure,
             wire_flags: Some(completion.reservation.wire_flags),
@@ -647,6 +651,10 @@ impl PacketDrop {
         self.counter
     }
 
+    pub(crate) fn send_token(&self) -> Option<u64> {
+        self.send_token
+    }
+
     pub(crate) fn reason(&self) -> PacketDropReason {
         self.reason
     }
@@ -669,6 +677,7 @@ impl From<AdmissionDrop> for PacketDrop {
         Self {
             owner: drop.owner,
             counter: drop.counter,
+            send_token: drop.send_token,
             reason: PacketDropReason::Admission(drop.reason),
             crypto_failure: None,
             wire_flags: None,

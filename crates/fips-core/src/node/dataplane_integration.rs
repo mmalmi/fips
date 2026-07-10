@@ -598,7 +598,14 @@ impl Node {
             let summary = turn.summary();
             let deferred =
                 turn.deferred_endpoint_data_batches_count() > 0 || turn.tun_deferred_packets() > 0;
-            let failed = turn.has_failures();
+            let failed = turn
+                .drops()
+                .iter()
+                .any(|drop| drop.owner() == owner && drop.send_token() == Some(send_token))
+                || turn
+                    .output_drops()
+                    .iter()
+                    .any(|drop| drop.owner() == owner && drop.send_token() == Some(send_token));
             let needs_continuation = Self::dataplane_pending_outbound_needs_continuation(&turn);
             let made_progress =
                 summary.has_activity() || turn.transport_sent() > 0 || turn.transport_dropped() > 0;
