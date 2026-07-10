@@ -100,8 +100,6 @@ fn test_udp_socket_bind() {
 #[cfg(target_os = "linux")]
 #[test]
 fn udp_gso_prefix_accepts_vectored_equal_len_payloads() {
-    use crate::transport::udp::UdpPayloadBatch;
-
     let payloads = TestPayloadBatch::new(vec![
         vec![b"DFP1".as_slice(), b"aaaaaaaa".as_slice()],
         vec![b"DFP1".as_slice(), b"bbbbbbbb".as_slice()],

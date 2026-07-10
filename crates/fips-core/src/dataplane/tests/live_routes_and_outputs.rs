@@ -43,6 +43,19 @@
     }
 
     #[test]
+    fn tcp_priority_output_is_bounded_without_weakening_bulk_backpressure() {
+        assert_eq!(
+            non_udp_transport_send_timeout("tcp", Lane::Priority),
+            Some(DATAPLANE_TCP_PRIORITY_SEND_TIMEOUT)
+        );
+        assert_eq!(non_udp_transport_send_timeout("tcp", Lane::Bulk), None);
+        assert_eq!(
+            non_udp_transport_send_timeout("tor", Lane::Priority),
+            None
+        );
+    }
+
+    #[test]
     fn live_ingress_routes_fmp_by_transport_and_receiver_idx() {
         let transport_id = TransportId::new(40);
         let other_transport_id = TransportId::new(41);

@@ -1,4 +1,6 @@
 pub(crate) const DATAPLANE_TRANSPORT_SEND_BATCH_PACKETS: usize = 64;
+const DATAPLANE_TCP_PRIORITY_SEND_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_millis(100);
 
 #[derive(Debug)]
 enum DataplaneTransportPayloadRecord {
@@ -314,7 +316,14 @@ async fn send_non_udp_transport_plan_group(
     for output in outputs {
         match dataplane_direct_fsp_transport_output(output) {
             DataplaneDirectFspTransportOutput::Whole(output) => {
-                match transport.send(&remote_addr, output.payload()).await {
+                match send_non_udp_transport_payload(
+                    transport,
+                    &remote_addr,
+                    output.lane(),
+                    output.payload(),
+                )
+                .await
+                {
                     Ok(_) => {
                         *sent += 1;
                         if let Some(sent_receipts) = sent_receipts.as_deref_mut() {
@@ -330,9 +339,12 @@ async fn send_non_udp_transport_plan_group(
             }
             DataplaneDirectFspTransportOutput::Segments(segments) => {
                 let mut send_error = None;
+                let lane = segments.output.lane();
                 for index in 0..segments.len() {
                     let payload = segments.contiguous_payload(index);
-                    if let Err(error) = transport.send(&remote_addr, &payload).await {
+                    if let Err(error) =
+                        send_non_udp_transport_payload(transport, &remote_addr, lane, &payload).await
+                    {
                         send_error = Some(dataplane_output_error_for_transport(&error));
                         break;
                     }
@@ -360,6 +372,32 @@ async fn send_non_udp_transport_plan_group(
             }
         }
     }
+}
+
+async fn send_non_udp_transport_payload(
+    transport: &TransportHandle,
+    remote_addr: &TransportAddr,
+    lane: Lane,
+    payload: &[u8],
+) -> Result<usize, TransportError> {
+    let send = transport.send(remote_addr, payload);
+    let Some(timeout) = non_udp_transport_send_timeout(transport.transport_type().name, lane) else {
+        return send.await;
+    };
+    tokio::time::timeout(timeout, send)
+        .await
+        .unwrap_or(Err(TransportError::Timeout))
+}
+
+fn non_udp_transport_send_timeout(
+    transport_type: &str,
+    lane: Lane,
+) -> Option<std::time::Duration> {
+    // A peer that stops reading TCP must not park the single-thread node loop
+    // while it is sending heartbeats, MMP, or other priority control frames.
+    // Bulk traffic deliberately keeps TCP backpressure and remains unbounded.
+    (transport_type == "tcp" && lane == Lane::Priority)
+        .then_some(DATAPLANE_TCP_PRIORITY_SEND_TIMEOUT)
 }
 
 async fn send_udp_transport_plan_group(
