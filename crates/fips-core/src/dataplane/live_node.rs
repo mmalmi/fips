@@ -190,7 +190,6 @@ impl DataplaneLiveNode {
 
     pub(crate) fn has_runnable_work(&self) -> bool {
         self.driver.has_runnable_work()
-            || !self.deferred_raw_ingress.is_empty()
     }
 
     pub(crate) fn attach_established_fast_ingress(

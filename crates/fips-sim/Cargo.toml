@@ -9,7 +9,7 @@ repository = "https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n
 publish = false
 
 [dependencies]
-fips-core = { version = "0.3.86", path = "../fips-core", features = ["sim-transport"] }
+fips-core = { version = "0.3.87", path = "../fips-core", features = ["sim-transport"] }
 
 hex = "0.4"
 nostr = { version = "0.44", features = ["std"] }

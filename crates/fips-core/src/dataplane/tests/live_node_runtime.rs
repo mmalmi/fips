@@ -211,6 +211,29 @@
         assert!(!turn.has_activity());
     }
 
+    #[test]
+    fn deferred_raw_ingress_waits_for_route_progress_before_retrying() {
+        let source = NodeAddr::from_bytes([0x75; 16]);
+        let raw = DataplaneRawIngress::from_live_received(
+            PacketProtocol::Fsp,
+            ReceivedPacket::with_timestamp(
+                TransportId::new(175),
+                TransportAddr::from_string("198.51.100.175:9000"),
+                PacketBuffer::new(fsp_wire(
+                    175,
+                    crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT,
+                )),
+                175_000,
+            ),
+        )
+        .with_fsp_source(source);
+        let mut live_node = DataplaneLiveNode::new(AdmissionConfig::new(4, 8));
+        live_node.deferred_raw_ingress.push_back((raw, 1));
+
+        assert!(live_node.has_deferred_raw_ingress());
+        assert!(!live_node.has_runnable_work());
+    }
+
     #[tokio::test]
     async fn live_completion_turn_sends_ready_output_and_dispatches_next_work() {
         let send_transport_id = TransportId::new(176);

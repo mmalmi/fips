@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.87] - 2026-07-10
+
+### Fixed
+
+- Deferred first-session direct FSP ingress until authenticated handshake
+  progress installs its route, avoiding a tight retry loop that could drop the
+  first queued endpoint packet delivered alongside msg3.
+
 ## [0.3.86] - 2026-07-10
 
 ### Changed
