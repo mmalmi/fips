@@ -892,8 +892,100 @@ pub(crate) struct DataplaneDirectFspSource {
     pub(crate) path_mtu: u16,
 }
 
+// `None` keeps a key ambiguous after conflicting sources are merged.
+type DataplaneDirectFspSourceMatch = Option<DataplaneDirectFspSource>;
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DataplaneDirectFspTransportSources {
+    pub(crate) exact: HashMap<TransportAddr, DataplaneDirectFspSource>,
+    by_ip: HashMap<std::net::IpAddr, DataplaneDirectFspSourceMatch>,
+    by_wildcard_port: HashMap<u16, DataplaneDirectFspSourceMatch>,
+}
+
 pub(crate) type DataplaneDirectFspSources =
-    Arc<HashMap<TransportId, HashMap<TransportAddr, DataplaneDirectFspSource>>>;
+    Arc<HashMap<TransportId, DataplaneDirectFspTransportSources>>;
+
+pub(crate) fn dataplane_direct_fsp_sources_from_exact(
+    sources: impl IntoIterator<Item = (TransportId, TransportAddr, DataplaneDirectFspSource)>,
+) -> DataplaneDirectFspSources {
+    let mut exact_candidates = HashMap::<
+        TransportId,
+        HashMap<TransportAddr, DataplaneDirectFspSourceMatch>,
+    >::new();
+    for (transport_id, remote_addr, source) in sources {
+        merge_dataplane_direct_fsp_source(
+            exact_candidates.entry(transport_id).or_default(),
+            remote_addr,
+            source,
+        );
+    }
+
+    let mut by_transport = HashMap::with_capacity(exact_candidates.len());
+    for (transport_id, candidates) in exact_candidates {
+        let mut indexed = DataplaneDirectFspTransportSources::default();
+        for (remote_addr, source) in candidates {
+            let Some(source) = source else {
+                continue;
+            };
+            if let Some(socket_addr) = direct_fsp_socket_addr(&remote_addr) {
+                if socket_addr.ip().is_unspecified() {
+                    merge_dataplane_direct_fsp_source(
+                        &mut indexed.by_wildcard_port,
+                        socket_addr.port(),
+                        source,
+                    );
+                } else {
+                    merge_dataplane_direct_fsp_source(
+                        &mut indexed.by_ip,
+                        socket_addr.ip(),
+                        source,
+                    );
+                }
+            }
+            indexed.exact.insert(remote_addr, source);
+        }
+        by_transport.insert(transport_id, indexed);
+    }
+
+    Arc::new(by_transport)
+}
+
+pub(crate) fn lookup_direct_fsp_source(
+    direct_fsp_sources: &DataplaneDirectFspSources,
+    transport_id: TransportId,
+    remote_addr: &TransportAddr,
+) -> Option<DataplaneDirectFspSource> {
+    let transport_sources = direct_fsp_sources.get(&transport_id)?;
+    if let Some(source) = transport_sources.exact.get(remote_addr).copied() {
+        return Some(source);
+    }
+
+    let remote_socket_addr = direct_fsp_socket_addr(remote_addr)?;
+    if !remote_socket_addr.ip().is_unspecified()
+        && let Some(source) = transport_sources.by_ip.get(&remote_socket_addr.ip())
+    {
+        return *source;
+    }
+    transport_sources
+        .by_wildcard_port
+        .get(&remote_socket_addr.port())
+        .copied()
+        .flatten()
+}
+
+fn merge_dataplane_direct_fsp_source<K: Eq + std::hash::Hash>(
+    sources: &mut HashMap<K, DataplaneDirectFspSourceMatch>,
+    key: K,
+    source: DataplaneDirectFspSource,
+) {
+    let matched = sources.entry(key).or_insert(Some(source));
+    match matched {
+        Some(existing) if existing.source_addr == source.source_addr => {
+            existing.path_mtu = existing.path_mtu.min(source.path_mtu);
+        }
+        _ => *matched = None,
+    }
+}
 
 /// Drains live transport packets from `PacketRx` as dataplane ingress.
 ///
@@ -1065,58 +1157,6 @@ fn classify_direct_fsp_packet(
             .with_previous_hop(source.source_addr)
             .with_path_mtu(source.path_mtu),
     )
-}
-
-fn lookup_direct_fsp_source(
-    direct_fsp_sources: &DataplaneDirectFspSources,
-    transport_id: TransportId,
-    remote_addr: &TransportAddr,
-) -> Option<DataplaneDirectFspSource> {
-    let transport_sources = direct_fsp_sources.get(&transport_id)?;
-    if let Some(source) = transport_sources.get(remote_addr).copied() {
-        return Some(source);
-    }
-
-    let remote_socket_addr = direct_fsp_socket_addr(remote_addr)?;
-    let remote_ip = remote_socket_addr.ip();
-    let mut matched = None;
-    for (candidate_addr, source) in transport_sources {
-        if direct_fsp_socket_addr(candidate_addr).map(|addr| addr.ip()) != Some(remote_ip) {
-            continue;
-        }
-        match matched {
-            None => matched = Some(*source),
-            Some(mut existing) if existing.source_addr == source.source_addr => {
-                existing.path_mtu = existing.path_mtu.min(source.path_mtu);
-                matched = Some(existing);
-            }
-            Some(_) => return None,
-        }
-    }
-    if matched.is_some() {
-        return matched;
-    }
-
-    let remote_port = remote_socket_addr.port();
-    for (candidate_addr, source) in transport_sources {
-        let Some(candidate_socket_addr) = direct_fsp_socket_addr(candidate_addr) else {
-            continue;
-        };
-        if !candidate_socket_addr.ip().is_unspecified()
-            || candidate_socket_addr.port() != remote_port
-        {
-            continue;
-        }
-        match matched {
-            None => matched = Some(*source),
-            Some(mut existing) if existing.source_addr == source.source_addr => {
-                existing.path_mtu = existing.path_mtu.min(source.path_mtu);
-                matched = Some(existing);
-            }
-            Some(_) => return None,
-        }
-    }
-    matched
 }
 
 fn direct_fsp_socket_addr(addr: &TransportAddr) -> Option<std::net::SocketAddr> {

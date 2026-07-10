@@ -10,7 +10,6 @@ use crate::dataplane::{
 };
 use crate::node::session_wire::{FSP_PHASE_MSG2, FSP_PHASE_MSG3, FspCommonPrefix};
 use crate::protocol::SessionMessageType;
-use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const DATAPLANE_PENDING_OUTBOUND_FAST_CONTINUATION_TURNS: usize = 2;
@@ -19,41 +18,6 @@ const DATAPLANE_PENDING_OUTBOUND_COMPLETION_TIMEOUT: std::time::Duration =
     std::time::Duration::from_millis(100);
 const DATAPLANE_DEFERRED_CONTROL_TURN_DRAIN_LIMIT: usize = 64;
 static DATAPLANE_FMP_LINK_SEND_TOKEN: AtomicU64 = AtomicU64::new(1);
-
-fn insert_dataplane_direct_fsp_source(
-    sources: &mut HashMap<
-        crate::transport::TransportId,
-        HashMap<crate::transport::TransportAddr, DataplaneDirectFspSource>,
-    >,
-    ambiguous: &mut HashSet<(
-        crate::transport::TransportId,
-        crate::transport::TransportAddr,
-    )>,
-    transport_id: crate::transport::TransportId,
-    remote_addr: crate::transport::TransportAddr,
-    source: DataplaneDirectFspSource,
-) {
-    let key = (transport_id, remote_addr.clone());
-    if ambiguous.contains(&key) {
-        return;
-    }
-
-    match sources.entry(transport_id).or_default().entry(remote_addr) {
-        std::collections::hash_map::Entry::Vacant(entry) => {
-            entry.insert(source);
-        }
-        std::collections::hash_map::Entry::Occupied(mut entry)
-            if entry.get().source_addr == source.source_addr =>
-        {
-            let existing = entry.get_mut();
-            existing.path_mtu = existing.path_mtu.min(source.path_mtu);
-        }
-        std::collections::hash_map::Entry::Occupied(entry) => {
-            entry.remove();
-            ambiguous.insert(key);
-        }
-    }
-}
 
 fn dataplane_static_udp_port_wildcard_addrs(
     addr: &str,
@@ -1049,7 +1013,7 @@ impl Node {
         &mut self,
     ) -> crate::dataplane::DataplaneDirectFspSources {
         if self.dataplane_direct_fsp_sources_dirty {
-            let sources = Arc::new(self.dataplane_direct_fsp_sources());
+            let sources = self.dataplane_direct_fsp_sources();
             self.dataplane
                 .set_established_fast_ingress_direct_fsp_sources(sources.clone());
             self.dataplane_direct_fsp_sources = sources;
@@ -1060,12 +1024,8 @@ impl Node {
 
     pub(in crate::node) fn dataplane_direct_fsp_sources(
         &self,
-    ) -> HashMap<
-        crate::transport::TransportId,
-        HashMap<crate::transport::TransportAddr, DataplaneDirectFspSource>,
-    > {
-        let mut sources = HashMap::new();
-        let mut ambiguous = HashSet::new();
+    ) -> crate::dataplane::DataplaneDirectFspSources {
+        let mut sources = Vec::new();
         for (node_addr, peer) in &self.peers {
             let (Some(transport_id), Some(remote_addr)) =
                 (peer.transport_id(), peer.current_addr().cloned())
@@ -1077,16 +1037,14 @@ impl Node {
                 .get(&transport_id)
                 .map(|transport| transport.link_mtu(&remote_addr))
                 .unwrap_or_else(|| self.transport_mtu());
-            insert_dataplane_direct_fsp_source(
-                &mut sources,
-                &mut ambiguous,
+            sources.push((
                 transport_id,
                 remote_addr,
                 DataplaneDirectFspSource {
                     source_addr: *node_addr,
                     path_mtu,
                 },
-            );
+            ));
 
             for static_addr in
                 self.dataplane_configured_static_udp_source_addrs(node_addr, transport_id)
@@ -1096,19 +1054,17 @@ impl Node {
                     .get(&transport_id)
                     .map(|transport| transport.link_mtu(&static_addr))
                     .unwrap_or(path_mtu);
-                insert_dataplane_direct_fsp_source(
-                    &mut sources,
-                    &mut ambiguous,
+                sources.push((
                     transport_id,
                     static_addr,
                     DataplaneDirectFspSource {
                         source_addr: *node_addr,
                         path_mtu,
                     },
-                );
+                ));
             }
         }
-        sources
+        crate::dataplane::dataplane_direct_fsp_sources_from_exact(sources)
     }
 
     fn dataplane_configured_static_udp_source_addrs(
@@ -1765,13 +1721,13 @@ mod tests {
         assert!(
             sources
                 .get(&transport_id)
-                .is_some_and(|sources| sources.contains_key(&observed_addr)),
+                .is_some_and(|sources| sources.exact.contains_key(&observed_addr)),
             "direct FSP ingress classification should stay keyed by the authenticated observed source"
         );
         assert!(
             !sources
                 .get(&transport_id)
-                .is_some_and(|sources| sources.contains_key(&preferred_send_addr)),
+                .is_some_and(|sources| sources.exact.contains_key(&preferred_send_addr)),
             "preferred outbound target must not replace the receive-source classifier"
         );
     }
@@ -1830,31 +1786,41 @@ mod tests {
         let sources = node.dataplane_direct_fsp_sources();
         let sources = sources.get(&transport_id).expect("UDP source map");
         assert_eq!(
-            sources.get(&observed_one).map(|source| source.source_addr),
+            sources
+                .exact
+                .get(&observed_one)
+                .map(|source| source.source_addr),
             Some(peer_one_addr)
         );
         assert_eq!(
-            sources.get(&observed_two).map(|source| source.source_addr),
+            sources
+                .exact
+                .get(&observed_two)
+                .map(|source| source.source_addr),
             Some(peer_two_addr)
         );
         assert_eq!(
-            sources.get(&unique_static).map(|source| source.source_addr),
+            sources
+                .exact
+                .get(&unique_static)
+                .map(|source| source.source_addr),
             Some(peer_one_addr),
             "configured numeric static source should be admitted"
         );
         assert_eq!(
             sources
+                .exact
                 .get(&unique_hostname_wildcard)
                 .map(|source| source.source_addr),
             Some(peer_one_addr),
             "unresolved hostname source port should be admitted when unique"
         );
         assert!(
-            !sources.contains_key(&shared_static),
+            !sources.exact.contains_key(&shared_static),
             "ambiguous configured static UDP tuples must not be assigned to an arbitrary peer"
         );
         assert!(
-            !sources.contains_key(&shared_hostname_wildcard),
+            !sources.exact.contains_key(&shared_hostname_wildcard),
             "ambiguous configured static UDP hostname ports must not be assigned to an arbitrary peer"
         );
 

@@ -28,20 +28,18 @@
     fn direct_fsp_sources_from(
         sources: impl IntoIterator<Item = (TransportId, TransportAddr, NodeAddr, u16)>,
     ) -> DataplaneDirectFspSources {
-        let mut by_transport = std::collections::HashMap::new();
-        for (transport_id, remote_addr, source_addr, path_mtu) in sources {
-            by_transport
-                .entry(transport_id)
-                .or_insert_with(std::collections::HashMap::new)
-                .insert(
+        dataplane_direct_fsp_sources_from_exact(sources.into_iter().map(
+            |(transport_id, remote_addr, source_addr, path_mtu)| {
+                (
+                    transport_id,
                     remote_addr,
                     DataplaneDirectFspSource {
                         source_addr,
                         path_mtu,
                     },
-                );
-        }
-        std::sync::Arc::new(by_transport)
+                )
+            },
+        ))
     }
 
     #[test]
@@ -243,14 +241,30 @@
     }
 
     #[test]
-    fn direct_fsp_nat_port_rewrite_requires_unambiguous_source_ip() {
+    fn direct_fsp_source_classifier_merges_mtu_and_rejects_ambiguous_ip() {
         let transport_id = TransportId::new(44);
+        let source = NodeAddr::from_bytes([0x44; 16]);
+        let learned_addr = TransportAddr::from_string("198.51.100.44:9000");
         let rewritten_addr = TransportAddr::from_string("198.51.100.44:53000");
+        let wildcard_addr = TransportAddr::from_string("0.0.0.0:53000");
+
+        let direct_sources = direct_fsp_sources_from([
+            (transport_id, learned_addr.clone(), source, 1400),
+            (transport_id, learned_addr, source, 1500),
+        ]);
+        assert_eq!(
+            lookup_direct_fsp_source(&direct_sources, transport_id, &rewritten_addr),
+            Some(DataplaneDirectFspSource {
+                source_addr: source,
+                path_mtu: 1400,
+            })
+        );
+
         let direct_sources = direct_fsp_sources_from([
             (
                 transport_id,
                 TransportAddr::from_string("198.51.100.44:9000"),
-                NodeAddr::from_bytes([0x44; 16]),
+                source,
                 1400,
             ),
             (
@@ -259,6 +273,7 @@
                 NodeAddr::from_bytes([0x45; 16]),
                 1400,
             ),
+            (transport_id, wildcard_addr, source, 1400),
         ]);
 
         assert_eq!(
@@ -271,14 +286,32 @@
     fn direct_fsp_source_classifier_matches_configured_udp_port_wildcard() {
         let transport_id = TransportId::new(44);
         let source = NodeAddr::from_bytes([0x46; 16]);
-        let static_source = TransportAddr::from_string("0.0.0.0:52528");
         let actual_source = TransportAddr::from_string("192.168.64.5:52528");
-        let direct_sources = direct_fsp_sources(transport_id, static_source, source, 1400);
+        let ipv4_wildcard = TransportAddr::from_string("0.0.0.0:52528");
+        let ipv6_wildcard = TransportAddr::from_string("[::]:52528");
+        let direct_sources = direct_fsp_sources_from([
+            (transport_id, ipv4_wildcard.clone(), source, 1400),
+            (transport_id, ipv6_wildcard.clone(), source, 1300),
+        ]);
 
         let matched = lookup_direct_fsp_source(&direct_sources, transport_id, &actual_source)
             .expect("configured static UDP port wildcard should match actual source IP");
         assert_eq!(matched.source_addr, source);
-        assert_eq!(matched.path_mtu, 1400);
+        assert_eq!(matched.path_mtu, 1300);
+
+        let ambiguous_sources = direct_fsp_sources_from([
+            (transport_id, ipv4_wildcard, source, 1400),
+            (
+                transport_id,
+                ipv6_wildcard,
+                NodeAddr::from_bytes([0x47; 16]),
+                1300,
+            ),
+        ]);
+        assert_eq!(
+            lookup_direct_fsp_source(&ambiguous_sources, transport_id, &actual_source),
+            None
+        );
     }
 
     #[test]
