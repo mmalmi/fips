@@ -17,6 +17,8 @@ use super::{
     TransportId, TransportState, TransportType,
 };
 
+const TCP_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// Wrapper enum for concrete transport implementations.
 ///
 /// This enables polymorphic transport handling without trait objects,
@@ -85,7 +87,11 @@ impl TransportHandle {
             TransportHandle::Sim(t) => t.send_async(addr, data).await,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             TransportHandle::Ethernet(t) => t.send_async(addr, data).await,
-            TransportHandle::Tcp(t) => t.send_async(addr, data).await,
+            TransportHandle::Tcp(t) => {
+                tokio::time::timeout(TCP_SEND_TIMEOUT, t.send_async(addr, data))
+                    .await
+                    .unwrap_or(Err(TransportError::Timeout))
+            }
             TransportHandle::Tor(t) => t.send_async(addr, data).await,
             #[cfg(feature = "webrtc-transport")]
             TransportHandle::WebRtc(t) => t.send_async(addr, data).await,

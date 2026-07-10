@@ -74,6 +74,42 @@ async fn connect_to_any_addr_tries_later_candidates() {
         .expect("accept should succeed");
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn transport_handle_bounds_a_stalled_tcp_write() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let remote = listener.local_addr().unwrap();
+    let accept = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        drop(stream);
+    });
+
+    let (tx, _rx) = packet_channel(100);
+    let mut config = make_outbound_config();
+    config.send_buf_size = Some(16 * 1024);
+    let mut transport = TcpTransport::new(TransportId::new(1), None, config, tx);
+    transport.start_async().await.unwrap();
+    let handle = crate::transport::TransportHandle::Tcp(transport);
+    let remote = TransportAddr::from_string(&remote.to_string());
+    let payload = vec![0u8; 1400];
+    let started = tokio::time::Instant::now();
+    let mut sent = 0usize;
+
+    loop {
+        match handle.send(&remote, &payload).await {
+            Ok(_) => sent += 1,
+            Err(TransportError::Timeout) => break,
+            Err(error) => panic!("unexpected stalled-write result: {error:?}"),
+        }
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    assert!(sent > 0);
+    assert!(started.elapsed() < Duration::from_secs(2));
+    accept.abort();
+}
+
 #[tokio::test]
 async fn test_start_outbound_only() {
     let (tx, _rx) = packet_channel(100);
