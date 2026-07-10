@@ -8,7 +8,6 @@ pub(crate) enum PreparedCryptoWork {
 
 const DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS: usize = 8;
 const DATAPLANE_AEAD_JOB_PACKETS: usize = 128;
-const DATAPLANE_AEAD_SUBRUN_MIN_PACKETS: usize = 8;
 
 impl PreparedCryptoWork {
     pub(crate) fn open(work: CryptoWork, cipher: AeadKey) -> Self {
@@ -338,7 +337,6 @@ pub(crate) struct DataplaneAeadWorkerPool {
     readiness_notify: Arc<tokio::sync::Notify>,
     counters: DataplaneAeadWorkerCounters,
     max_in_flight: usize,
-    parallel_jobs: usize,
     job_permits: Arc<tokio::sync::Semaphore>,
     runtime: Option<tokio::runtime::Handle>,
     tasks: tokio::task::JoinSet<()>,
@@ -356,7 +354,6 @@ impl DataplaneAeadWorkerPool {
             readiness_notify: Arc::new(tokio::sync::Notify::new()),
             counters: DataplaneAeadWorkerCounters::new(),
             max_in_flight,
-            parallel_jobs,
             job_permits: Arc::new(tokio::sync::Semaphore::new(parallel_jobs)),
             runtime: tokio::runtime::Handle::try_current().ok(),
             tasks: tokio::task::JoinSet::new(),
@@ -412,20 +409,14 @@ impl DataplaneAeadWorkerPool {
         cipher: AeadKey,
     ) -> PreparedCryptoOwnerRun {
         let len = run.len();
-        let target_jobs = self
-            .parallel_jobs
-            .min(len.div_ceil(DATAPLANE_AEAD_SUBRUN_MIN_PACKETS))
-            .max(1);
-        let subrun_packets = len.div_ceil(target_jobs);
-        let jobs = len.div_ceil(subrun_packets);
         let bulk_count = run.bulk_count();
         self.counters.add(len, bulk_count);
-        let slot = Arc::new(CryptoReadySlot::new(&run, jobs, self.counters.clone()));
+        let slot = Arc::new(CryptoReadySlot::new(&run, 1, self.counters.clone()));
         PreparedCryptoOwnerRun {
             slot,
             cipher,
             items: run.items,
-            subrun_packets,
+            subrun_packets: len,
         }
     }
 
