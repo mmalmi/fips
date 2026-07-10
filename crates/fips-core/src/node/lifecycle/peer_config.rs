@@ -334,6 +334,29 @@ impl Node {
                 state.reconnect = peer_config.auto_reconnect;
             }
 
+            match self
+                .sessions
+                .get(&node_addr)
+                .map(|session| session.is_established())
+            {
+                Some(true) if self.config.node.rekey.enabled => {
+                    let _ = self.initiate_session_rekey(&node_addr).await;
+                }
+                None => {
+                    if let Err(error) = self
+                        .initiate_session(node_addr, identity.pubkey_full())
+                        .await
+                    {
+                        debug!(
+                            peer = %identity.short_npub(),
+                            error = %error,
+                            "Peer path refresh could not start a missing end-to-end session"
+                        );
+                    }
+                }
+                Some(_) => {}
+            }
+
             let attempted = if self.peers.contains_key(&node_addr) {
                 self.initiate_active_peer_direct_refresh_connection(&peer_config)
                     .await?

@@ -779,6 +779,8 @@ impl FipsEndpoint {
     /// Unlike [`FipsEndpoint::update_peers`], this does not require a config
     /// diff. It asks the running node to race a fresh direct handshake for the
     /// supplied active peers while preserving existing sessions and routes.
+    /// Established end-to-end sessions also start an in-place recovery rekey
+    /// when rekeying is enabled; pending handshakes keep their retry state.
     pub async fn refresh_peer_paths(
         &self,
         peers: Vec<PeerIdentity>,

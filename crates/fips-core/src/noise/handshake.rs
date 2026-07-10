@@ -861,6 +861,9 @@ impl HandshakeState {
         let remote_static = self
             .remote_static
             .expect("remote static must be known after handshake");
+        let remote_epoch = self
+            .remote_epoch
+            .expect("remote epoch must be known after handshake");
 
         // Initiator sends with c1, receives with c2
         // Responder sends with c2, receives with c1
@@ -875,6 +878,7 @@ impl HandshakeState {
             recv_cipher,
             handshake_hash,
             remote_static,
+            remote_epoch,
         ))
     }
 

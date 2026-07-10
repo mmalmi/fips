@@ -207,9 +207,27 @@ impl SessionEntry {
         self.session_start_ms = now_ms;
     }
 
+    /// Install a fresh initial FSP epoch. Rekey promotion uses
+    /// `set_pending_session` instead and toggles the existing K bit.
     pub(crate) fn establish(&mut self, session: NoiseSession, now_ms: u64) {
         self.set_state(EndToEndState::Established(session));
         self.mark_established(now_ms);
+        self.current_k_bit = false;
+        self.drain_started_ms = 0;
+        self.rekey_state = None;
+        self.pending_new_session = None;
+        self.rekey_initiator = false;
+        self.last_peer_rekey_ms = 0;
+        self.rekey_completed_ms = 0;
+        self.clear_rekey_msg3_payload();
+        self.rekey_jitter_secs = draw_rekey_jitter();
+    }
+
+    pub(crate) fn remote_epoch_changed(&self, remote_epoch: Option<[u8; 8]>) -> bool {
+        matches!(
+            (self.current_noise_session(), remote_epoch),
+            (Some(session), Some(epoch)) if session.remote_epoch() != epoch
+        )
     }
 
     /// Whether this node initiated the Noise handshake.

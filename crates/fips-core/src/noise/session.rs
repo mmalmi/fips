@@ -84,6 +84,8 @@ pub struct NoiseSession {
     handshake_hash: [u8; 32],
     /// Remote peer's static public key.
     remote_static: PublicKey,
+    /// Remote process epoch authenticated by the handshake.
+    remote_epoch: [u8; 8],
     /// Replay window for received packets.
     replay_window: ReplayWindow,
 }
@@ -96,6 +98,7 @@ impl NoiseSession {
         recv_cipher: CipherState,
         handshake_hash: [u8; 32],
         remote_static: PublicKey,
+        remote_epoch: [u8; 8],
     ) -> Self {
         let send_counter = SendCounterAuthority::new(send_cipher.nonce());
         Self {
@@ -105,6 +108,7 @@ impl NoiseSession {
             recv_cipher,
             handshake_hash,
             remote_static,
+            remote_epoch,
             replay_window: ReplayWindow::new(),
         }
     }
@@ -322,6 +326,10 @@ impl NoiseSession {
     /// Get the remote peer's static public key.
     pub fn remote_static(&self) -> &PublicKey {
         &self.remote_static
+    }
+
+    pub(crate) fn remote_epoch(&self) -> [u8; 8] {
+        self.remote_epoch
     }
 
     /// Get the remote peer's x-only public key.

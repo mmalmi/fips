@@ -333,6 +333,7 @@ impl Node {
                     return;
                 }
             };
+            let remote_restarted = entry.remote_epoch_changed(handshake.remote_epoch());
 
             // Send SessionMsg3
             let msg3_wire = SessionMsg3::new(msg3);
@@ -362,6 +363,21 @@ impl Node {
 
             let now_ms = Self::now_ms();
             let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
+            if remote_restarted {
+                entry.establish(session, now_ms);
+                entry.set_handshake_payload(msg3_resend_payload, now_ms + resend_interval);
+                self.sessions.insert(*src_addr, entry);
+                self.sync_dataplane_fsp_owner_from_current_session(
+                    src_addr,
+                    self.config.node.session.coords_warmup_packets,
+                );
+                self.flush_pending_packets(src_addr).await;
+                info!(
+                    src = %self.peer_display_name(src_addr),
+                    "Remote FSP restart detected during rekey; replaced stale session"
+                );
+                return;
+            }
             let pending_receive =
                 session
                     .recv_cipher_clone()
@@ -543,6 +559,26 @@ impl Node {
                 return;
             }
 
+            let remote_pubkey = match handshake.remote_static() {
+                Some(pubkey) => *pubkey,
+                None => {
+                    debug!("No remote static key after processing rekey XK msg3");
+                    entry.abandon_rekey();
+                    self.sessions.insert(*src_addr, entry);
+                    return;
+                }
+            };
+            if !entry.authenticate_remote(*src_addr, remote_pubkey) {
+                debug!(
+                    src = %self.peer_display_name(src_addr),
+                    "Rejected rekey SessionMsg3 whose authenticated static key does not match the claimed source"
+                );
+                entry.abandon_rekey();
+                self.sessions.insert(*src_addr, entry);
+                return;
+            }
+            let remote_restarted = entry.remote_epoch_changed(handshake.remote_epoch());
+
             // Complete the handshake → store as pending new session
             let session = match handshake.into_session() {
                 Ok(s) => s,
@@ -553,6 +589,22 @@ impl Node {
                     return;
                 }
             };
+
+            if remote_restarted {
+                entry.establish(session, Self::now_ms());
+                self.sessions.insert(*src_addr, entry);
+                self.learn_reverse_route(*src_addr, *previous_hop_addr);
+                self.sync_dataplane_fsp_owner_from_current_session(
+                    src_addr,
+                    self.config.node.session.coords_warmup_packets,
+                );
+                self.flush_pending_packets(src_addr).await;
+                info!(
+                    src = %self.peer_display_name(src_addr),
+                    "Remote FSP restart authenticated by rekey msg3; replaced stale session"
+                );
+                return;
+            }
 
             let pending_receive =
                 session
