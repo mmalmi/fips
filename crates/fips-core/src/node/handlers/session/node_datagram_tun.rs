@@ -118,15 +118,17 @@ impl Node {
         datagram: &mut SessionDatagram,
     ) -> Result<SessionDatagramRuntimeRoute, NodeError> {
         let dest_addr = datagram.dest_addr;
-        let next_hop_addr = match self.find_next_hop(&dest_addr) {
-            Some(peer) => *peer.node_addr(),
-            None => {
-                return Err(NodeError::SendFailed {
-                    node_addr: dest_addr,
-                    reason: "no route to destination".into(),
-                });
-            }
-        };
+        let direct_peer = self
+            .peers
+            .get(&dest_addr)
+            .filter(|peer| peer.is_healthy() && peer.can_send())
+            .map(|peer| *peer.node_addr());
+        let next_hop_addr = direct_peer
+            .or_else(|| self.find_next_hop(&dest_addr).map(|peer| *peer.node_addr()))
+            .ok_or_else(|| NodeError::SendFailed {
+                node_addr: dest_addr,
+                reason: "no route to destination".into(),
+            })?;
 
         let mut path_mtu = datagram.path_mtu;
         if let Some(peer) = self.peers.get(&next_hop_addr)
@@ -463,20 +465,8 @@ impl Node {
             }
         };
 
-        match self
-            .sessions
-            .prepare_retry_session_after_discovery(&dest_addr)
-        {
-            DiscoveryRetrySessionDecision::Established => {
-                return;
-            }
-            DiscoveryRetrySessionDecision::RestartedPending => {
-                debug!(
-                    dest = %self.peer_display_name(&dest_addr),
-                    "Restarting pending session after discovery refreshed route"
-                );
-            }
-            DiscoveryRetrySessionDecision::Missing => {}
+        if self.sessions.should_skip_session_initiation(&dest_addr) {
+            return;
         }
 
         match self.initiate_session(dest_addr, dest_pubkey).await {

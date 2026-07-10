@@ -43,13 +43,6 @@ enum OutboundSessionState {
     Missing,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DiscoveryRetrySessionDecision {
-    Established,
-    RestartedPending,
-    Missing,
-}
-
 impl Node {
     fn dataplane_outbound_session_state(&self, dest_addr: &NodeAddr) -> OutboundSessionState {
         if self.dataplane_has_fsp_owner(dest_addr) {

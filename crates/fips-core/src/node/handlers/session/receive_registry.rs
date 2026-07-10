@@ -138,22 +138,6 @@ impl crate::node::SessionRegistry {
     }
 
     fn should_skip_session_initiation(&self, dest_addr: &NodeAddr) -> bool {
-        self.get(dest_addr)
-            .is_some_and(|entry| entry.is_established() || entry.is_initiating())
-    }
-
-    fn prepare_retry_session_after_discovery(
-        &mut self,
-        dest_addr: &NodeAddr,
-    ) -> DiscoveryRetrySessionDecision {
-        let Some(existing) = self.get(dest_addr) else {
-            return DiscoveryRetrySessionDecision::Missing;
-        };
-        if existing.is_established() {
-            return DiscoveryRetrySessionDecision::Established;
-        }
-
-        self.remove(dest_addr);
-        DiscoveryRetrySessionDecision::RestartedPending
+        self.get(dest_addr).is_some()
     }
 }

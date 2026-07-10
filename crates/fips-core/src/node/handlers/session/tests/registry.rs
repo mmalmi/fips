@@ -110,51 +110,6 @@
     }
 
     #[test]
-    fn session_registry_owns_discovery_retry_restart_policy() {
-        let local = Identity::generate();
-        let established_peer = Identity::generate();
-        let initiating_peer = Identity::generate();
-        let established_addr = *established_peer.node_addr();
-        let initiating_addr = *initiating_peer.node_addr();
-        let missing_addr = node_addr(0x88);
-        let mut sessions = crate::node::SessionRegistry::default();
-        assert!(
-            sessions
-                .insert(
-                    established_addr,
-                    established_entry(&local, &established_peer)
-                )
-                .is_none()
-        );
-        assert!(
-            sessions
-                .insert(initiating_addr, initiating_entry(&local, &initiating_peer))
-                .is_none()
-        );
-
-        assert_eq!(
-            sessions.prepare_retry_session_after_discovery(&established_addr),
-            DiscoveryRetrySessionDecision::Established
-        );
-        assert!(
-            sessions.get(&established_addr).is_some(),
-            "established sessions must remain intact"
-        );
-        assert_eq!(
-            sessions.prepare_retry_session_after_discovery(&initiating_addr),
-            DiscoveryRetrySessionDecision::RestartedPending
-        );
-        assert!(
-            sessions.get(&initiating_addr).is_none(),
-            "pending setup should be removed so it can be rebuilt with fresh coords"
-        );
-        assert_eq!(
-            sessions.prepare_retry_session_after_discovery(&missing_addr),
-            DiscoveryRetrySessionDecision::Missing
-        );
-    }
-
-    #[test]
     fn session_registry_owns_handshake_session_installation() {
         let local = Identity::generate();
         let peer = Identity::generate();
