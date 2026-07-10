@@ -616,14 +616,7 @@ fn execute_seal_crypto_work(
             activity_tick: reservation.activity_tick,
             fmp_timestamp_ms: reservation.fmp_timestamp_ms,
             source_wire_len: None,
-            fsp_send_receipt: packet.fsp_send_receipt.or_else(|| {
-                (reservation.owner.protocol() == PacketProtocol::Fsp).then_some(
-                    DataplaneFspSendReceipt {
-                        owner: reservation.owner,
-                        counter: reservation.counter,
-                    },
-                )
-            }),
+            fsp_send_receipt: packet.fsp_send_receipt,
             send_token: reservation.send_token,
             payload: packet.payload,
         }),

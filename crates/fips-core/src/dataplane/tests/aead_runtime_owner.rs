@@ -516,11 +516,10 @@ fn direct_fsp_endpoint_data_seals_payloads_to_transport() {
         assert_eq!(output.counter(), 90 + idx as u64);
         assert_eq!(output.target(), OutputTarget::Transport);
         assert_eq!(output.path.clone(), Some(path.clone()));
-        let receipt = output
-            .fsp_send_receipt
-            .expect("direct FSP transport output should carry a local send receipt");
-        assert_eq!(receipt.owner, owner);
-        assert_eq!(receipt.counter, 90 + idx as u64);
+        assert!(
+            output.fsp_send_receipt.is_none(),
+            "direct output already exposes its FSP owner and counter"
+        );
 
         let header = FspWireHeader::parse(output.payload()).unwrap();
         assert_eq!(header.counter(), 90 + idx as u64);

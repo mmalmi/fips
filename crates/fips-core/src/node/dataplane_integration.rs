@@ -700,7 +700,12 @@ impl Node {
         let owner = OwnerId::fsp_node(dest_addr);
         let mut sent_receipt = None;
         for transport_receipt in turn.take_transport_sent_receipts() {
-            if let Some(receipt) = transport_receipt.fsp_send_receipt
+            if transport_receipt.owner == owner {
+                sent_receipt = Some(DataplaneFspSendReceipt {
+                    owner,
+                    counter: transport_receipt.counter,
+                });
+            } else if let Some(receipt) = transport_receipt.fsp_send_receipt
                 && receipt.owner == owner
             {
                 sent_receipt = Some(receipt);
