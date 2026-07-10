@@ -81,7 +81,7 @@ async fn process_dataplane_turn(
         if dispatched == 0 {
             break;
         }
-        let notify = node.node.dataplane.completion_notify();
+        let notify = node.node.dataplane.readiness_notify();
         let _ = tokio::time::timeout(std::time::Duration::from_secs(1), notify.notified()).await;
 
         let mut completion_turn = {

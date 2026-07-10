@@ -91,7 +91,7 @@ fn run_with_worker_pool_limit(
     limit: usize,
 ) -> (usize, Vec<PacketOutput>, Vec<PacketDrop>) {
     let mut prepared_work = Vec::new();
-    let mut completion_batches = Vec::new();
+    let mut ready_slots = Vec::new();
     let mut retired = Vec::new();
     let mut outbound_packets = Vec::new();
     let mut fsp_authenticated_ingress = DataplaneFspAuthenticatedIngress::default();
@@ -100,7 +100,7 @@ fn run_with_worker_pool_limit(
         limit,
         DataplaneAeadRunBuffers::new(
             &mut prepared_work,
-            &mut completion_batches,
+            &mut ready_slots,
             &mut retired,
             &mut outbound_packets,
             &mut fsp_authenticated_ingress,
@@ -139,7 +139,7 @@ fn take_driver_endpoint_batches(
 }
 
 #[test]
-fn aead_worker_pool_returns_completion_batches() {
+fn aead_worker_pool_publishes_ordered_readiness_slots() {
     let owner = fmp_owner(706);
     let open_key = 20;
     let mut mover = mover();
@@ -155,18 +155,11 @@ fn aead_worker_pool_returns_completion_batches() {
     assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 4);
 
     let mut retired = Vec::new();
-    let completions = drain_worker_pool_completions(&mut pool, 2);
-    assert_eq!(completions.len(), 2);
+    wait_for_owner_readiness(&mut pool, &mover);
+    assert_eq!(retire_ready_slots_to_outputs(&mut mover, 2, &mut retired), 2);
     assert_eq!(pool.available_capacity(), 6);
-    for completion in completions {
-        retired.extend(retire_completion(&mut mover, completion));
-    }
 
-    let completions = drain_worker_pool_completions(&mut pool, 2);
-    assert_eq!(completions.len(), 2);
-    for completion in completions {
-        retired.extend(retire_completion(&mut mover, completion));
-    }
+    assert_eq!(retire_ready_slots_to_outputs(&mut mover, 2, &mut retired), 2);
     let outputs = retired;
     assert_eq!(
         outputs
@@ -297,11 +290,9 @@ fn aead_worker_pool_capacity_blocks_reservation_until_completion_drain() {
     assert!(drops.is_empty());
     assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 2);
 
-    let completions = drain_worker_pool_completions(&mut pool, 2);
-    assert_eq!(completions.len(), 2);
-    for completion in completions {
-        retire_completion(&mut mover, completion);
-    }
+    wait_for_owner_readiness(&mut pool, &mover);
+    let mut retired = Vec::new();
+    assert_eq!(retire_ready_slots_to_outputs(&mut mover, 2, &mut retired), 2);
     assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
     assert_eq!(pool.available_capacity(), 2);
 
@@ -311,11 +302,9 @@ fn aead_worker_pool_capacity_blocks_reservation_until_completion_drain() {
     assert!(drops.is_empty());
     assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 2);
 
-    let completions = drain_worker_pool_completions(&mut pool, 2);
-    assert_eq!(completions.len(), 2);
-    for completion in completions {
-        retire_completion(&mut mover, completion);
-    }
+    wait_for_owner_readiness(&mut pool, &mover);
+    let mut retired = Vec::new();
+    assert_eq!(retire_ready_slots_to_outputs(&mut mover, 2, &mut retired), 2);
     assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
 
     let (dispatched, retired, drops) = run_with_worker_pool(&mut mover, &mut pool);
@@ -2430,7 +2419,7 @@ fn completion_only_turn_retires_out_of_order_completions_in_owner_order() {
 }
 
 #[test]
-fn owner_retire_consumes_contiguous_completion_batch_without_pending_map() {
+fn owner_retire_consumes_one_contiguous_ready_slot() {
     let owner = fmp_owner(811);
     let open_key = 81;
     let mut mover = mover();
@@ -2443,17 +2432,11 @@ fn owner_retire_consumes_contiguous_completion_batch_without_pending_map() {
         .collect::<Vec<_>>();
     assert_eq!(completions.len(), 4);
 
-    let mut batches = Vec::new();
-    assert_eq!(
-        CryptoCompletionBatch::drain_completion_vec_into_batches(&mut completions, &mut batches,),
-        4
-    );
-    assert_eq!(batches.len(), 1);
-
+    let slot = CryptoReadySlot::completed_run(std::mem::take(&mut completions));
     let mut retired = Vec::new();
-    mover.queue_completion_batches(&mut batches);
+    mover.stage_retire_slot(slot);
     assert_eq!(
-        retire_queued_completions_to_outputs(&mut mover, 4, &mut retired),
+        retire_ready_slots_to_outputs(&mut mover, 4, &mut retired),
         4
     );
     let outputs = retired;
@@ -2471,7 +2454,7 @@ fn owner_retire_consumes_contiguous_completion_batch_without_pending_map() {
 }
 
 #[test]
-fn owner_retire_stages_only_gap_then_releases_from_next_contiguous_batch() {
+fn owner_retire_holds_a_ready_gap_until_the_ordered_head_arrives() {
     let owner = fmp_owner(812);
     let open_key = 82;
     let mut mover = mover();
@@ -2485,12 +2468,11 @@ fn owner_retire_stages_only_gap_then_releases_from_next_contiguous_batch() {
     assert_eq!(completions.len(), 3);
     let third = completions.pop().unwrap();
 
-    let mut batches = vec![CryptoCompletionBatch::from_completion(third)];
     let mut retired = Vec::new();
-    mover.queue_completion_batches(&mut batches);
+    mover.stage_retire_slot(CryptoReadySlot::completed(third));
     assert_eq!(
-        retire_queued_completions_to_outputs(&mut mover, 3, &mut retired),
-        1
+        retire_ready_slots_to_outputs(&mut mover, 3, &mut retired),
+        0
     );
     assert!(retired.is_empty());
     {
@@ -2500,17 +2482,11 @@ fn owner_retire_stages_only_gap_then_releases_from_next_contiguous_batch() {
         assert_eq!(owner_state.in_flight, 3);
     }
 
-    let mut batches = Vec::new();
-    assert_eq!(
-        CryptoCompletionBatch::drain_completion_vec_into_batches(&mut completions, &mut batches,),
-        2
-    );
-    assert_eq!(batches.len(), 1);
     let mut retired = Vec::new();
-    mover.queue_completion_batches(&mut batches);
+    mover.stage_retire_slot(CryptoReadySlot::completed_run(completions));
     assert_eq!(
-        retire_queued_completions_to_outputs(&mut mover, 3, &mut retired),
-        2
+        retire_ready_slots_to_outputs(&mut mover, 3, &mut retired),
+        3
     );
     let outputs = retired;
     assert_eq!(
@@ -2527,7 +2503,7 @@ fn owner_retire_stages_only_gap_then_releases_from_next_contiguous_batch() {
 }
 
 #[test]
-fn owner_retire_stages_later_contiguous_batch_as_one_pending_run() {
+fn owner_retire_keeps_a_later_contiguous_run_in_one_slot() {
     let owner = fmp_owner(813);
     let open_key = 83;
     let mut mover = mover();
@@ -2540,20 +2516,13 @@ fn owner_retire_stages_later_contiguous_batch_as_one_pending_run() {
         .collect::<Vec<_>>();
     assert_eq!(completions.len(), 6);
 
-    let mut later = completions[2..].to_vec();
-    let mut later_batches = Vec::new();
-    assert_eq!(
-        CryptoCompletionBatch::drain_completion_vec_into_batches(&mut later, &mut later_batches,),
-        4
-    );
-    assert_eq!(later_batches.len(), 1);
-    assert_eq!(later_batches[0].first_order(), Some(OrderToken(2)));
-
+    let later_slot = CryptoReadySlot::completed_run(completions[2..].to_vec());
+    assert_eq!(later_slot.first_order(), OrderToken(2));
     let mut retired = Vec::new();
-    mover.queue_completion_batches(&mut later_batches);
+    mover.stage_retire_slot(later_slot);
     assert_eq!(
-        retire_queued_completions_to_outputs(&mut mover, 6, &mut retired),
-        4
+        retire_ready_slots_to_outputs(&mut mover, 6, &mut retired),
+        0
     );
     assert!(retired.is_empty());
     {
@@ -2563,30 +2532,20 @@ fn owner_retire_stages_later_contiguous_batch_as_one_pending_run() {
             owner_state
                 .pending
                 .get(&OrderToken(2))
-                .map(CryptoCompletionBatch::len),
+                .map(OwnerRetireSlot::remaining),
             Some(4)
         );
         assert_eq!(owner_state.next_retire, 0);
         assert_eq!(owner_state.in_flight, 6);
     }
 
-    let mut earlier = completions[..2].to_vec();
-    let mut earlier_batches = Vec::new();
-    assert_eq!(
-        CryptoCompletionBatch::drain_completion_vec_into_batches(
-            &mut earlier,
-            &mut earlier_batches,
-        ),
-        2
-    );
-    assert_eq!(earlier_batches.len(), 1);
-    assert_eq!(earlier_batches[0].first_order(), Some(OrderToken(0)));
-
+    let earlier_slot = CryptoReadySlot::completed_run(completions[..2].to_vec());
+    assert_eq!(earlier_slot.first_order(), OrderToken(0));
     let mut retired = Vec::new();
-    mover.queue_completion_batches(&mut earlier_batches);
+    mover.stage_retire_slot(earlier_slot);
     assert_eq!(
-        retire_queued_completions_to_outputs(&mut mover, 6, &mut retired),
-        2
+        retire_ready_slots_to_outputs(&mut mover, 6, &mut retired),
+        6
     );
     let outputs = retired;
     assert_eq!(

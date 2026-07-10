@@ -192,7 +192,7 @@ impl Node {
             drop(rx);
             tx
         });
-        let dataplane_completion_notify = self.dataplane.completion_notify();
+        let dataplane_readiness_notify = self.dataplane.readiness_notify();
         let mut dataplane_runtime = RxLoopDataplaneRuntime {
             packet_rx,
             dataplane_fast_ingress_rx,
@@ -350,7 +350,7 @@ impl Node {
                         &mut control_query_rx,
                     ).await;
                 }
-                _ = dataplane_completion_notify.notified() => {
+                _ = dataplane_readiness_notify.notified() => {
                     let mut dataplane_io = dataplane_runtime.io();
                     self.service_dataplane_completion_turns(
                         &mut dataplane_io,
@@ -647,7 +647,7 @@ impl Node {
             .await
             .saturating_add(self.drain_deferred_dataplane_control_turns().await);
         if control_drained > 0 && self.dataplane.has_deferred_raw_ingress() {
-            self.dataplane.completion_notify().notify_one();
+            self.dataplane.readiness_notify().notify_one();
         }
         let query_drained = if control_query_budget > 0 {
             self.drain_control_queries(control_query_rx, None, control_query_budget)

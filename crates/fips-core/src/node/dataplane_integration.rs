@@ -393,7 +393,7 @@ impl Node {
             turns = turns.saturating_add(1);
         }
         if !self.deferred_dataplane_control_turns.is_empty() {
-            self.dataplane.completion_notify().notify_one();
+            self.dataplane.readiness_notify().notify_one();
         }
         processed
     }
@@ -649,7 +649,7 @@ impl Node {
     }
 
     async fn wait_for_dataplane_completion(&self) {
-        let notify = self.dataplane.completion_notify();
+        let notify = self.dataplane.readiness_notify();
         let _ = tokio::time::timeout(
             DATAPLANE_PENDING_OUTBOUND_COMPLETION_TIMEOUT,
             notify.notified(),

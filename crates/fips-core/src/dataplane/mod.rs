@@ -13,7 +13,7 @@
 //!
 //! The core invariant is simple: owners reserve replay, order, generation, and
 //! in-flight state before crypto work leaves the owner; workers only copy/open
-//! bytes and return completions; owners retire those completions in order.
+//! bytes into fixed result slots; owners retire ready slots in order.
 //!
 //! Worker/shard direction: owner loops, not crypto workers, own replay,
 //! counters, session generation, liveness, path state, and ordered output.

@@ -1,70 +1,10 @@
 #[derive(Debug)]
-struct DataplaneOwnerShardRetireWorker {
-    completed: VecDeque<CryptoCompletionBatch>,
-}
-
-impl DataplaneOwnerShardRetireWorker {
-    fn new() -> Self {
-        Self {
-            completed: VecDeque::new(),
-        }
-    }
-
-    fn queue_completion_batch(&mut self, batch: CryptoCompletionBatch) -> bool {
-        if batch.is_empty() {
-            return false;
-        }
-        let was_empty = self.completed.is_empty();
-        self.completed.push_back(batch);
-        was_empty
-    }
-
-    fn retire_queued_completions_into(
-        &mut self,
-        owner_shard: &mut DataplaneOwnerShard,
-        limit: usize,
-        retired: &mut DataplaneRetiredOutputSink<'_>,
-        drops: &mut Vec<PacketDrop>,
-        compact_endpoint_data: bool,
-    ) -> usize {
-        let mut retired_count = 0usize;
-        while retired_count < limit {
-            let Some(mut batch) = self.completed.pop_front() else {
-                break;
-            };
-            let batch_limit = limit.saturating_sub(retired_count);
-            let pending = if batch.len() > batch_limit {
-                Some(batch.split_off(batch_limit))
-            } else {
-                None
-            };
-            let batch_len = batch.len();
-            owner_shard.retire_completion_batch_into(
-                batch,
-                retired,
-                drops,
-                compact_endpoint_data,
-            );
-            retired_count = retired_count.saturating_add(batch_len);
-            if let Some(pending) = pending {
-                self.completed.push_front(pending);
-                break;
-            }
-        }
-        retired_count
-    }
-
-    fn has_queued_completions(&self) -> bool {
-        !self.completed.is_empty()
-    }
-}
-
-#[derive(Debug)]
 struct DataplaneOwnerShard {
     index: usize,
     admission: AdmissionQueue,
     outbound_admission: OutboundAdmissionQueue,
     owners: HashMap<OwnerId, OwnerState>,
+    retire_owners: VecDeque<OwnerId>,
 }
 
 impl DataplaneOwnerShard {
@@ -74,15 +14,24 @@ impl DataplaneOwnerShard {
             admission: AdmissionQueue::new(),
             outbound_admission: OutboundAdmissionQueue::new(),
             owners: HashMap::new(),
+            retire_owners: VecDeque::new(),
         }
     }
 
-    fn register_owner(&mut self, owner: OwnerId, config: OwnerConfig) {
-        self.owners.insert(owner, OwnerState::new(owner, config));
+    fn register_owner(&mut self, owner: OwnerId, config: OwnerConfig) -> Vec<OwnerRetireSlot> {
+        self.retire_owners.retain(|queued| *queued != owner);
+        self.owners
+            .insert(owner, OwnerState::new(owner, config))
+            .map_or_else(Vec::new, |mut previous| {
+                previous.take_pending_retirements()
+            })
     }
 
-    fn unregister_owner(&mut self, owner: OwnerId) -> bool {
-        self.owners.remove(&owner).is_some()
+    fn unregister_owner(&mut self, owner: OwnerId) -> Option<Vec<OwnerRetireSlot>> {
+        self.retire_owners.retain(|queued| *queued != owner);
+        self.owners.remove(&owner).map(|mut owner| {
+            owner.take_pending_retirements()
+        })
     }
 
     fn has_owner(&self, owner: OwnerId) -> bool {
@@ -304,7 +253,7 @@ impl DataplaneOwnerShard {
         &mut self,
         limit: usize,
         prepared: &mut Vec<PreparedCryptoWork>,
-        completion_batches: &mut Vec<CryptoCompletionBatch>,
+        ready_slots: &mut Vec<Arc<CryptoReadySlot>>,
         priority_only: bool,
         record_fsp_path_open: bool,
         fsp_path_open: &mut u64,
@@ -374,10 +323,9 @@ impl DataplaneOwnerShard {
                                 },
                                 open_key,
                             )),
-                            None => CryptoCompletionBatch::push_grouped(
+                            None => ready_slots.push(CryptoReadySlot::completed(
                                 failed_crypto_completion(reservation, CryptoFailureKind::Open),
-                                completion_batches,
-                            ),
+                            )),
                         }
                         tracing::debug!(
                             owner = ?packet_owner,
@@ -426,7 +374,7 @@ impl DataplaneOwnerShard {
         &mut self,
         limit: usize,
         prepared: &mut Vec<PreparedCryptoWork>,
-        completion_batches: &mut Vec<CryptoCompletionBatch>,
+        ready_slots: &mut Vec<Arc<CryptoReadySlot>>,
         priority_only: bool,
         drops: &mut Vec<PacketDrop>,
     ) -> usize {
@@ -483,10 +431,9 @@ impl DataplaneOwnerShard {
                                 },
                                 seal_key,
                             )),
-                            None => CryptoCompletionBatch::push_grouped(
+                            None => ready_slots.push(CryptoReadySlot::completed(
                                 failed_crypto_completion(reservation, CryptoFailureKind::Seal),
-                                completion_batches,
-                            ),
+                            )),
                         }
                         dispatched = dispatched.saturating_add(1);
                     }
@@ -514,33 +461,73 @@ impl DataplaneOwnerShard {
         dispatched
     }
 
-    pub(crate) fn retire_completion_batch_into(
+    fn stage_retire_slot(
         &mut self,
-        batch: CryptoCompletionBatch,
+        slot: Arc<CryptoReadySlot>,
+    ) -> Result<(), Arc<CryptoReadySlot>> {
+        let owner_id = slot.owner();
+        let Some(owner) = self.owners.get_mut(&owner_id) else {
+            return Err(slot);
+        };
+        if owner.stage_retire_slot(slot) {
+            self.retire_owners.push_back(owner_id);
+        }
+        Ok(())
+    }
+
+    fn has_pending_retirements(&self) -> bool {
+        !self.retire_owners.is_empty()
+    }
+
+    fn has_ready_retirements(&self) -> bool {
+        self.retire_owners.iter().any(|owner| {
+            self.owners
+                .get(owner)
+                .is_some_and(OwnerState::has_ready_retirement)
+        })
+    }
+
+    fn retire_ready_slots_into(
+        &mut self,
+        limit: usize,
         retired: &mut DataplaneRetiredOutputSink<'_>,
         drops: &mut Vec<PacketDrop>,
         compact_endpoint_data: bool,
-    ) {
+    ) -> usize {
         let _timer =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::DataplaneRetire);
-        let owner_id = batch.owner();
-        let Some(owner) = self.owners.get_mut(&owner_id) else {
-            for completion in batch.into_completions() {
-                let drop = PacketDrop::from_completion(
-                    &completion,
-                    PacketDropReason::UnknownOwner,
-                    None,
-                );
-                drops.push(drop);
+        let owners_to_scan = self.retire_owners.len();
+        let mut retired_count = 0usize;
+        for remaining_owners in (1..=owners_to_scan).rev() {
+            if retired_count >= limit {
+                break;
             }
-            return;
-        };
-        let before_in_flight = owner.in_flight;
-        owner.retire_batch_outputs_into(batch, retired, drops, compact_endpoint_data);
-        if owner.in_flight < before_in_flight {
-            self.admission.wake_owner(owner_id);
-            self.outbound_admission.wake_owner(owner_id);
+            let Some(owner_id) = self.retire_owners.pop_front() else {
+                break;
+            };
+            let Some(owner) = self.owners.get_mut(&owner_id) else {
+                continue;
+            };
+            let owner_limit = limit
+                .saturating_sub(retired_count)
+                .div_ceil(remaining_owners);
+            let before_in_flight = owner.in_flight;
+            let got = owner.retire_ready_slots_into(
+                owner_limit,
+                retired,
+                drops,
+                compact_endpoint_data,
+            );
+            retired_count = retired_count.saturating_add(got);
+            if owner.in_flight < before_in_flight {
+                self.admission.wake_owner(owner_id);
+                self.outbound_admission.wake_owner(owner_id);
+            }
+            if owner.has_pending_retirements() {
+                self.retire_owners.push_back(owner_id);
+            }
         }
+        retired_count
     }
 
     fn admission_queue_lens(&self) -> (usize, usize) {

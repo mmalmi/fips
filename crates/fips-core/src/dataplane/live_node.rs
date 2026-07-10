@@ -180,8 +180,8 @@ impl DataplaneLiveNode {
         }
     }
 
-    pub(crate) fn completion_notify(&self) -> Arc<tokio::sync::Notify> {
-        self.crypto_worker.completion_notify()
+    pub(crate) fn readiness_notify(&self) -> Arc<tokio::sync::Notify> {
+        self.crypto_worker.readiness_notify()
     }
 
     pub(crate) fn has_deferred_raw_ingress(&self) -> bool {
@@ -190,7 +190,6 @@ impl DataplaneLiveNode {
 
     pub(crate) fn has_runnable_work(&self) -> bool {
         self.driver.has_runnable_work()
-            || self.crypto_worker.has_ready_completions()
             || !self.deferred_raw_ingress.is_empty()
     }
 
@@ -697,10 +696,10 @@ impl DataplaneLiveNode {
             )
             .await;
         if !self.deferred_raw_ingress.is_empty() && !turn.fsp_local_session_ingress().is_empty() {
-            self.crypto_worker.completion_notify().notify_one();
+            self.crypto_worker.readiness_notify().notify_one();
         }
         if self.has_runnable_work() {
-            self.crypto_worker.completion_notify().notify_one();
+            self.crypto_worker.readiness_notify().notify_one();
         }
         record_dataplane_live_turn_perf(&turn);
         turn

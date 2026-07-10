@@ -1193,14 +1193,3 @@ pub(crate) trait DataplaneRawIngressSource {
     where
         F: FnMut(DataplaneRawIngress);
 }
-
-pub(crate) trait DataplaneCompletionSink {
-    fn push_completion_batch(&mut self, batch: CryptoCompletionBatch);
-}
-
-#[cfg(test)]
-impl DataplaneCompletionSink for Vec<CryptoCompletionBatch> {
-    fn push_completion_batch(&mut self, batch: CryptoCompletionBatch) {
-        self.push(batch);
-    }
-}

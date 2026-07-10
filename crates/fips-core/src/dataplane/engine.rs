@@ -2,20 +2,20 @@
 pub(crate) struct Dataplane {
     config: AdmissionConfig,
     shards: Vec<DataplaneOwnerShard>,
-    retire_workers: Vec<DataplaneOwnerShardRetireWorker>,
     admission_lens: LaneLens,
     outbound_admission_lens: LaneLens,
     drops: Vec<PacketDrop>,
+    orphaned_slots: VecDeque<OwnerRetireSlot>,
     next_ingress_seq: u64,
     next_outbound_seq: u64,
     ingress_ready_shards: ReadyShardQueues,
     outbound_ready_shards: ReadyShardQueues,
-    completion_ready_shards: ReadyShardQueue,
+    pending_retire_shards: ReadyShardQueue,
 }
 
 pub(crate) struct DataplaneAeadRunBuffers<'a> {
     prepared_work: &'a mut Vec<PreparedCryptoWork>,
-    completion_batches: &'a mut Vec<CryptoCompletionBatch>,
+    ready_slots: &'a mut Vec<Arc<CryptoReadySlot>>,
     outputs: &'a mut Vec<PacketOutput>,
     outbound_packets: &'a mut Vec<OutboundPacket>,
     fsp_authenticated_ingress: &'a mut DataplaneFspAuthenticatedIngress,
@@ -25,7 +25,7 @@ pub(crate) struct DataplaneAeadRunBuffers<'a> {
 impl<'a> DataplaneAeadRunBuffers<'a> {
     pub(crate) fn new(
         prepared_work: &'a mut Vec<PreparedCryptoWork>,
-        completion_batches: &'a mut Vec<CryptoCompletionBatch>,
+        ready_slots: &'a mut Vec<Arc<CryptoReadySlot>>,
         outputs: &'a mut Vec<PacketOutput>,
         outbound_packets: &'a mut Vec<OutboundPacket>,
         fsp_authenticated_ingress: &'a mut DataplaneFspAuthenticatedIngress,
@@ -33,7 +33,7 @@ impl<'a> DataplaneAeadRunBuffers<'a> {
     ) -> Self {
         Self {
             prepared_work,
-            completion_batches,
+            ready_slots,
             outputs,
             outbound_packets,
             fsp_authenticated_ingress,
@@ -48,30 +48,32 @@ impl Dataplane {
         let shards = (0..shard_count)
             .map(DataplaneOwnerShard::new)
             .collect();
-        let retire_workers = (0..shard_count)
-            .map(|_| DataplaneOwnerShardRetireWorker::new())
-            .collect();
         Self {
             config,
             shards,
-            retire_workers,
             admission_lens: LaneLens::default(),
             outbound_admission_lens: LaneLens::default(),
             drops: Vec::new(),
+            orphaned_slots: VecDeque::new(),
             next_ingress_seq: 0,
             next_outbound_seq: 0,
             ingress_ready_shards: ReadyShardQueues::new(shard_count),
             outbound_ready_shards: ReadyShardQueues::new(shard_count),
-            completion_ready_shards: ReadyShardQueue::new(shard_count),
+            pending_retire_shards: ReadyShardQueue::new(shard_count),
         }
     }
 
     pub(crate) fn register_owner(&mut self, owner: OwnerId, config: OwnerConfig) {
-        self.owner_shard_mut(owner).register_owner(owner, config);
+        let mut orphaned = self.owner_shard_mut(owner).register_owner(owner, config);
+        self.orphaned_slots.extend(orphaned.drain(..));
     }
 
     pub(crate) fn unregister_owner(&mut self, owner: OwnerId) -> bool {
-        self.owner_shard_mut(owner).unregister_owner(owner)
+        let Some(mut orphaned) = self.owner_shard_mut(owner).unregister_owner(owner) else {
+            return false;
+        };
+        self.orphaned_slots.extend(orphaned.drain(..));
+        true
     }
 
     pub(crate) fn has_owner(&self, owner: OwnerId) -> bool {
@@ -81,7 +83,11 @@ impl Dataplane {
     pub(crate) fn has_runnable_work(&self) -> bool {
         self.ingress_ready_shards.has_ready()
             || self.outbound_ready_shards.has_ready()
-            || self.completion_ready_shards.has_ready()
+            || self
+                .shards
+                .iter()
+                .any(DataplaneOwnerShard::has_ready_retirements)
+            || self.orphaned_slots.iter().any(OwnerRetireSlot::is_ready)
     }
 
     pub(crate) fn fsp_owner_destinations(&self) -> Vec<NodeAddr> {
@@ -479,98 +485,96 @@ impl Dataplane {
         (admitted, dropped)
     }
 
-    fn queue_completion_batches(&mut self, batches: &mut Vec<CryptoCompletionBatch>) -> usize {
-        let mut count = 0usize;
-        for batch in batches.drain(..) {
-            count = count.saturating_add(batch.len());
-            self.queue_completion_run(batch);
+    fn stage_retire_slots(&mut self, slots: &mut Vec<Arc<CryptoReadySlot>>) {
+        for slot in slots.drain(..) {
+            self.stage_retire_slot(slot);
         }
-        count
     }
 
-    fn queue_completion_run(&mut self, batch: CryptoCompletionBatch) {
-        if batch.is_empty() {
-            return;
-        }
-        let shard = batch.owner_shard();
+    fn stage_retire_slot(&mut self, slot: Arc<CryptoReadySlot>) {
+        let shard = slot.owner_shard();
         #[cfg(debug_assertions)]
-        let expected_shard = self.owner_shard_index(batch.owner());
-        let Some(retire_worker) = self.retire_workers.get_mut(shard) else {
-            for completion in batch.into_completions() {
-                let drop =
-                    PacketDrop::from_completion(&completion, PacketDropReason::UnknownOwner, None);
-                self.drops.push(drop);
-            }
+        debug_assert_eq!(shard, self.owner_shard_index(slot.owner()));
+        let Some(owner_shard) = self.shards.get_mut(shard) else {
+            self.orphaned_slots.push_back(OwnerRetireSlot::new(slot));
             return;
         };
-        #[cfg(debug_assertions)]
-        debug_assert_eq!(shard, expected_shard);
-        if retire_worker.queue_completion_batch(batch) {
-            self.completion_ready_shards.mark(shard);
+        match owner_shard.stage_retire_slot(slot) {
+            Ok(()) => self.pending_retire_shards.mark(shard),
+            Err(slot) => self.orphaned_slots.push_back(OwnerRetireSlot::new(slot)),
         }
     }
 
-    fn retire_queued_completions_into(
+    fn retire_ready_slots_into(
         &mut self,
         limit: usize,
         retired: &mut DataplaneRetiredOutputSink<'_>,
         compact_endpoint_data: bool,
     ) -> usize {
-        if limit == 0 || self.shards.is_empty() {
+        if limit == 0 {
             return 0;
         }
 
         let mut retired_count = 0usize;
-        while retired_count < limit {
-            let ready_shards = self.completion_ready_shards.len();
-            if ready_shards == 0 {
+        let shards_to_scan = self.pending_retire_shards.len();
+        for remaining_shards in (1..=shards_to_scan).rev() {
+            if retired_count >= limit {
                 break;
             }
-            let shard_limit = dataplane_owner_shard_dispatch_quantum(
-                limit.saturating_sub(retired_count),
-                ready_shards,
+            let Some(shard) = self.pending_retire_shards.pop() else {
+                break;
+            };
+            let Some(owner_shard) = self.shards.get_mut(shard) else {
+                continue;
+            };
+            let shard_limit = limit
+                .saturating_sub(retired_count)
+                .div_ceil(remaining_shards);
+            let got = owner_shard.retire_ready_slots_into(
+                shard_limit,
+                retired,
+                &mut self.drops,
+                compact_endpoint_data,
             );
-            let mut pass_retired = 0usize;
-            for _ in 0..ready_shards {
-                if retired_count >= limit {
-                    break;
-                }
-                let Some(shard) = self.completion_ready_shards.pop() else {
-                    break;
-                };
-                let (got, ingress_ready_after, outbound_ready_after, has_queued_completions) = {
-                    let Some(owner_shard) = self.shards.get_mut(shard) else {
-                        continue;
-                    };
-                    let Some(retire_worker) = self.retire_workers.get_mut(shard) else {
-                        continue;
-                    };
-                    let got = retire_worker.retire_queued_completions_into(
-                        owner_shard,
-                        shard_limit.min(limit.saturating_sub(retired_count)),
-                        retired,
-                        &mut self.drops,
-                        compact_endpoint_data,
-                    );
-                    (
-                        got,
-                        LaneLens::from_tuple(owner_shard.admission_ready_lens()),
-                        LaneLens::from_tuple(owner_shard.outbound_admission_ready_lens()),
-                        retire_worker.has_queued_completions(),
-                    )
-                };
-                retired_count = retired_count.saturating_add(got);
-                pass_retired = pass_retired.saturating_add(got);
-                self.ingress_ready_shards
-                    .mark_from_lens(shard, ingress_ready_after);
-                self.outbound_ready_shards
-                    .mark_from_lens(shard, outbound_ready_after);
-                if has_queued_completions {
-                    self.completion_ready_shards.mark(shard);
-                }
+            retired_count = retired_count.saturating_add(got);
+            self.ingress_ready_shards.mark_from_lens(
+                shard,
+                LaneLens::from_tuple(owner_shard.admission_ready_lens()),
+            );
+            self.outbound_ready_shards.mark_from_lens(
+                shard,
+                LaneLens::from_tuple(owner_shard.outbound_admission_ready_lens()),
+            );
+            if owner_shard.has_pending_retirements() {
+                self.pending_retire_shards.mark(shard);
             }
-            if pass_retired == 0 {
+        }
+
+        let orphans_to_scan = self.orphaned_slots.len();
+        for _ in 0..orphans_to_scan {
+            if retired_count >= limit {
                 break;
+            }
+            let Some(mut slot) = self.orphaned_slots.pop_front() else {
+                break;
+            };
+            if !slot.is_ready() {
+                self.orphaned_slots.push_back(slot);
+                continue;
+            }
+            let got = slot.drain_results(
+                limit.saturating_sub(retired_count).min(slot.remaining()),
+                |completion| {
+                    self.drops.push(PacketDrop::from_completion(
+                        &completion,
+                        PacketDropReason::UnknownOwner,
+                        None,
+                    ));
+                },
+            );
+            retired_count = retired_count.saturating_add(got);
+            if !slot.is_empty() {
+                self.orphaned_slots.push_back(slot);
             }
         }
         retired_count
@@ -585,7 +589,7 @@ impl Dataplane {
     ) -> usize {
         let DataplaneAeadRunBuffers {
             prepared_work,
-            completion_batches,
+            ready_slots,
             outputs,
             outbound_packets,
             fsp_authenticated_ingress,
@@ -594,27 +598,29 @@ impl Dataplane {
         let dispatched_total = self.prepare_aead_available_into(
             limit,
             prepared_work,
-            completion_batches,
+            ready_slots,
             worker_pool,
         );
 
+        self.stage_retire_slots(ready_slots);
         {
             let _executor_submit_timer = crate::perf_profile::Timer::start(
                 crate::perf_profile::Stage::DataplaneExecutorSubmit,
             );
-            worker_pool.submit_prepared_chunk(prepared_work);
+            worker_pool.submit_prepared_chunk(prepared_work, |slot| {
+                self.stage_retire_slot(slot);
+            });
         }
         {
             let _completion_queue_timer = crate::perf_profile::Timer::start(
                 crate::perf_profile::Stage::DataplaneCompletionQueue,
             );
-            self.queue_completion_batches(completion_batches);
             let mut retired = DataplaneRetiredOutputSink::new(
                 outputs,
                 outbound_packets,
                 fsp_authenticated_ingress,
             );
-            self.retire_queued_completions_into(limit, &mut retired, compact_endpoint_data);
+            self.retire_ready_slots_into(limit, &mut retired, compact_endpoint_data);
         }
 
         drops.append(&mut self.drops);
@@ -625,11 +631,11 @@ impl Dataplane {
         &mut self,
         limit: usize,
         prepared_work: &mut Vec<PreparedCryptoWork>,
-        completion_batches: &mut Vec<CryptoCompletionBatch>,
+        ready_slots: &mut Vec<Arc<CryptoReadySlot>>,
         worker_pool: &DataplaneAeadWorkerPool,
     ) -> usize {
         prepared_work.clear();
-        completion_batches.clear();
+        ready_slots.clear();
         let _owner_dispatch_timer = crate::perf_profile::Timer::start(
             crate::perf_profile::Stage::DataplaneOwnerDispatch,
         );
@@ -661,7 +667,7 @@ impl Dataplane {
         let mut dispatched_total = self.dispatch_prepared_ingress_shards_into(
             pre_priority_inbound_limit,
             prepared_work,
-            completion_batches,
+            ready_slots,
             false,
             record_fsp_path_open,
             &mut fsp_path_open,
@@ -676,7 +682,7 @@ impl Dataplane {
             self.dispatch_outbound_prepared_shards_into(
                 priority_outbound_limit,
                 prepared_work,
-                completion_batches,
+                ready_slots,
                 true,
             ),
         );
@@ -690,7 +696,7 @@ impl Dataplane {
             self.dispatch_prepared_ingress_shards_into(
                 priority_inbound_limit,
                 prepared_work,
-                completion_batches,
+                ready_slots,
                 true,
                 record_fsp_path_open,
                 &mut fsp_path_open,
@@ -706,7 +712,7 @@ impl Dataplane {
             self.dispatch_prepared_ingress_shards_into(
                 bulk_dispatch_capacity,
                 prepared_work,
-                completion_batches,
+                ready_slots,
                 false,
                 record_fsp_path_open,
                 &mut fsp_path_open,
@@ -718,7 +724,7 @@ impl Dataplane {
             self.dispatch_outbound_prepared_shards_into(
                 total_limit.saturating_sub(dispatched_total).min(bulk_capacity),
                 prepared_work,
-                completion_batches,
+                ready_slots,
                 false,
             ),
         );
@@ -787,7 +793,7 @@ impl Dataplane {
         &mut self,
         limit: usize,
         prepared: &mut Vec<PreparedCryptoWork>,
-        completion_batches: &mut Vec<CryptoCompletionBatch>,
+        ready_slots: &mut Vec<Arc<CryptoReadySlot>>,
         priority_only: bool,
         record_fsp_path_open: bool,
         fsp_path_open: &mut u64,
@@ -822,7 +828,7 @@ impl Dataplane {
                 let got = self.shards[shard].dispatch_ingress_prepared_into(
                     shard_limit.min(limit.saturating_sub(dispatched)),
                     prepared,
-                    completion_batches,
+                    ready_slots,
                     priority_only,
                     record_fsp_path_open,
                     fsp_path_open,
@@ -849,7 +855,7 @@ impl Dataplane {
         &mut self,
         limit: usize,
         prepared: &mut Vec<PreparedCryptoWork>,
-        completion_batches: &mut Vec<CryptoCompletionBatch>,
+        ready_slots: &mut Vec<Arc<CryptoReadySlot>>,
         priority_only: bool,
     ) -> usize {
         if limit == 0 || self.shards.is_empty() {
@@ -880,7 +886,7 @@ impl Dataplane {
                 let got = self.shards[shard].dispatch_outbound_prepared_into(
                     shard_limit.min(limit.saturating_sub(dispatched)),
                     prepared,
-                    completion_batches,
+                    ready_slots,
                     priority_only,
                     &mut self.drops,
                 );
@@ -902,12 +908,6 @@ impl Dataplane {
         dispatched.min(limit)
     }
 
-}
-
-impl DataplaneCompletionSink for Dataplane {
-    fn push_completion_batch(&mut self, batch: CryptoCompletionBatch) {
-        self.queue_completion_run(batch);
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

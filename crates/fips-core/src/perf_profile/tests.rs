@@ -259,16 +259,13 @@ fn event_table_exposes_current_dataplane_and_queue_events() {
             "dataplane_live_output_drops",
         ),
         (
-            Event::DataplaneAeadCompletionQueueDepth,
-            "dataplane_aead_completion_queue_depth",
+            Event::DataplaneAeadReadyPackets,
+            "dataplane_aead_ready_packets",
         ),
+        (Event::DataplaneAeadReadySlots, "dataplane_aead_ready_slots"),
         (
-            Event::DataplaneAeadCompletionBatch,
-            "dataplane_aead_completion_batch",
-        ),
-        (
-            Event::DataplaneAeadCompletionBatchPackets,
-            "dataplane_aead_completion_batch_packets",
+            Event::DataplaneAeadReadySlotPackets,
+            "dataplane_aead_ready_slot_packets",
         ),
         (
             Event::DataplaneAeadPreparedJob,
@@ -307,41 +304,20 @@ fn event_table_exposes_current_dataplane_and_queue_events() {
             "dataplane_established_fsp_data_retire_packets",
         ),
         (
-            Event::DataplaneAeadCompletionSendJobs,
-            "dataplane_aead_completion_send_jobs",
+            Event::DataplaneAeadResultDeposits,
+            "dataplane_aead_result_deposits",
         ),
         (
-            Event::DataplaneAeadCompletionMessages,
-            "dataplane_aead_completion_messages",
+            Event::DataplaneAeadResultDepositPackets,
+            "dataplane_aead_result_deposit_packets",
         ),
-        (
-            Event::DataplaneAeadCompletionMessageBatches,
-            "dataplane_aead_completion_message_batches",
-        ),
-        (
-            Event::DataplaneAeadCompletionMessagePackets,
-            "dataplane_aead_completion_message_packets",
-        ),
-        (
-            Event::DataplaneAeadCompletionSplitBatches,
-            "dataplane_aead_completion_split_batches",
-        ),
-        (
-            Event::DataplaneAeadCompletionSplitPackets,
-            "dataplane_aead_completion_split_packets",
-        ),
-        (
-            Event::DataplaneAeadCompletionRxQueuedMessages,
-            "dataplane_aead_completion_rx_queued_messages",
-        ),
-        (
-            Event::DataplaneAeadCompletionPendingBatches,
-            "dataplane_aead_completion_pending_batches",
-        ),
-        (
-            Event::DataplaneAeadCompletionPendingPackets,
-            "dataplane_aead_completion_pending_packets",
-        ),
+        (Event::ReservedEvent247, "reserved_event_247"),
+        (Event::ReservedEvent248, "reserved_event_248"),
+        (Event::ReservedEvent249, "reserved_event_249"),
+        (Event::ReservedEvent250, "reserved_event_250"),
+        (Event::ReservedEvent252, "reserved_event_252"),
+        (Event::ReservedEvent253, "reserved_event_253"),
+        (Event::ReservedEvent254, "reserved_event_254"),
         (
             Event::DataplaneLiveDropAdmission,
             "dataplane_live_drop_admission",
