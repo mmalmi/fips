@@ -15,7 +15,6 @@ pub(crate) struct Dataplane {
 
 pub(crate) struct DataplaneAeadRunBuffers<'a> {
     prepared_work: &'a mut Vec<PreparedCryptoWork>,
-    completion_batches: &'a mut Vec<CryptoCompletionBatch>,
     outputs: &'a mut Vec<PacketOutput>,
     outbound_packets: &'a mut Vec<OutboundPacket>,
     fsp_authenticated_ingress: &'a mut DataplaneFspAuthenticatedIngress,
@@ -25,7 +24,6 @@ pub(crate) struct DataplaneAeadRunBuffers<'a> {
 impl<'a> DataplaneAeadRunBuffers<'a> {
     pub(crate) fn new(
         prepared_work: &'a mut Vec<PreparedCryptoWork>,
-        completion_batches: &'a mut Vec<CryptoCompletionBatch>,
         outputs: &'a mut Vec<PacketOutput>,
         outbound_packets: &'a mut Vec<OutboundPacket>,
         fsp_authenticated_ingress: &'a mut DataplaneFspAuthenticatedIngress,
@@ -33,7 +31,6 @@ impl<'a> DataplaneAeadRunBuffers<'a> {
     ) -> Self {
         Self {
             prepared_work,
-            completion_batches,
             outputs,
             outbound_packets,
             fsp_authenticated_ingress,
@@ -479,75 +476,84 @@ impl Dataplane {
         (admitted, dropped)
     }
 
-    fn queue_completion_batches(&mut self, batches: &mut Vec<CryptoCompletionBatch>) -> usize {
-        let mut count = 0usize;
-        for batch in batches.drain(..) {
-            count = count.saturating_add(batch.len());
-            self.queue_completion_run(batch);
-        }
-        count
-    }
-
-    fn queue_completion_run(&mut self, batch: CryptoCompletionBatch) {
-        if batch.is_empty() {
-            return;
-        }
-        let shard = batch.owner_shard();
+    fn queue_crypto_run(&mut self, run: Arc<CryptoOwnerRun>) {
+        let shard = run.owner_shard;
         #[cfg(debug_assertions)]
-        let expected_shard = self.owner_shard_index(batch.owner());
+        let expected_shard = self.owner_shard_index(run.owner);
         let Some(retire_worker) = self.retire_workers.get_mut(shard) else {
-            for completion in batch.into_completions() {
-                let drop =
-                    PacketDrop::from_completion(&completion, PacketDropReason::UnknownOwner, None);
-                self.drops.push(drop);
-            }
-            return;
+            panic!("crypto owner run references an unknown shard");
         };
         #[cfg(debug_assertions)]
         debug_assert_eq!(shard, expected_shard);
-        if retire_worker.queue_completion_batch(batch) {
+        if retire_worker.queue_run(run) {
             self.completion_ready_shards.mark(shard);
         }
     }
 
-    fn retire_queued_completions_into(
+    fn mark_crypto_ready(&mut self, ready: CryptoOwnerReady) {
+        let Some(retire_worker) = self.retire_workers.get_mut(ready.owner_shard) else {
+            return;
+        };
+        retire_worker.mark_ready(ready.owner);
+        self.completion_ready_shards.mark(ready.owner_shard);
+    }
+
+    fn drain_ready_crypto_into(
+        &mut self,
+        worker_pool: &mut DataplaneAeadWorkerPool,
+        limit: usize,
+        retired: &mut DataplaneRetiredOutputSink<'_>,
+        compact_endpoint_data: bool,
+    ) -> (usize, usize) {
+        let signaled = worker_pool.drain_ready_owners(limit, |ready| {
+            self.mark_crypto_ready(ready);
+        });
+        let retired_crypto = self.retire_ready_crypto_into(limit, retired, compact_endpoint_data);
+        worker_pool.finish_retired(
+            retired_crypto.worker_packets,
+            retired_crypto.bulk_packets,
+        );
+        (signaled, retired_crypto.packets)
+    }
+
+    fn retire_ready_crypto_into(
         &mut self,
         limit: usize,
         retired: &mut DataplaneRetiredOutputSink<'_>,
         compact_endpoint_data: bool,
-    ) -> usize {
+    ) -> RetiredCrypto {
         if limit == 0 || self.shards.is_empty() {
-            return 0;
+            return RetiredCrypto::default();
         }
 
-        let mut retired_count = 0usize;
-        while retired_count < limit {
+        let mut retired_crypto = RetiredCrypto::default();
+        while retired_crypto.packets < limit {
             let ready_shards = self.completion_ready_shards.len();
             if ready_shards == 0 {
                 break;
             }
             let shard_limit = dataplane_owner_shard_dispatch_quantum(
-                limit.saturating_sub(retired_count),
+                limit.saturating_sub(retired_crypto.packets),
                 ready_shards,
             );
             let mut pass_retired = 0usize;
             for _ in 0..ready_shards {
-                if retired_count >= limit {
+                if retired_crypto.packets >= limit {
                     break;
                 }
                 let Some(shard) = self.completion_ready_shards.pop() else {
                     break;
                 };
-                let (got, ingress_ready_after, outbound_ready_after, has_queued_completions) = {
+                let (got, ingress_ready_after, outbound_ready_after, has_ready_runs) = {
                     let Some(owner_shard) = self.shards.get_mut(shard) else {
                         continue;
                     };
                     let Some(retire_worker) = self.retire_workers.get_mut(shard) else {
                         continue;
                     };
-                    let got = retire_worker.retire_queued_completions_into(
+                    let got = retire_worker.retire_ready_runs_into(
                         owner_shard,
-                        shard_limit.min(limit.saturating_sub(retired_count)),
+                        shard_limit.min(limit.saturating_sub(retired_crypto.packets)),
                         retired,
                         &mut self.drops,
                         compact_endpoint_data,
@@ -556,16 +562,22 @@ impl Dataplane {
                         got,
                         LaneLens::from_tuple(owner_shard.admission_ready_lens()),
                         LaneLens::from_tuple(owner_shard.outbound_admission_ready_lens()),
-                        retire_worker.has_queued_completions(),
+                        retire_worker.has_ready_runs(),
                     )
                 };
-                retired_count = retired_count.saturating_add(got);
-                pass_retired = pass_retired.saturating_add(got);
+                retired_crypto.packets = retired_crypto.packets.saturating_add(got.packets);
+                retired_crypto.worker_packets = retired_crypto
+                    .worker_packets
+                    .saturating_add(got.worker_packets);
+                retired_crypto.bulk_packets = retired_crypto
+                    .bulk_packets
+                    .saturating_add(got.bulk_packets);
+                pass_retired = pass_retired.saturating_add(got.packets);
                 self.ingress_ready_shards
                     .mark_from_lens(shard, ingress_ready_after);
                 self.outbound_ready_shards
                     .mark_from_lens(shard, outbound_ready_after);
-                if has_queued_completions {
+                if has_ready_runs {
                     self.completion_ready_shards.mark(shard);
                 }
             }
@@ -573,7 +585,7 @@ impl Dataplane {
                 break;
             }
         }
-        retired_count
+        retired_crypto
     }
 
     fn run_aead_available_into(
@@ -585,36 +597,35 @@ impl Dataplane {
     ) -> usize {
         let DataplaneAeadRunBuffers {
             prepared_work,
-            completion_batches,
             outputs,
             outbound_packets,
             fsp_authenticated_ingress,
             drops,
         } = buffers;
-        let dispatched_total = self.prepare_aead_available_into(
-            limit,
-            prepared_work,
-            completion_batches,
-            worker_pool,
-        );
+        let dispatched_total =
+            self.prepare_aead_available_into(limit, prepared_work, worker_pool);
 
         {
             let _executor_submit_timer = crate::perf_profile::Timer::start(
                 crate::perf_profile::Stage::DataplaneExecutorSubmit,
             );
-            worker_pool.submit_prepared_chunk(prepared_work);
+            worker_pool.submit_prepared_chunk(prepared_work, |run| self.queue_crypto_run(run));
         }
         {
             let _completion_queue_timer = crate::perf_profile::Timer::start(
                 crate::perf_profile::Stage::DataplaneCompletionQueue,
             );
-            self.queue_completion_batches(completion_batches);
             let mut retired = DataplaneRetiredOutputSink::new(
                 outputs,
                 outbound_packets,
                 fsp_authenticated_ingress,
             );
-            self.retire_queued_completions_into(limit, &mut retired, compact_endpoint_data);
+            let retired_crypto =
+                self.retire_ready_crypto_into(limit, &mut retired, compact_endpoint_data);
+            worker_pool.finish_retired(
+                retired_crypto.worker_packets,
+                retired_crypto.bulk_packets,
+            );
         }
 
         drops.append(&mut self.drops);
@@ -625,11 +636,9 @@ impl Dataplane {
         &mut self,
         limit: usize,
         prepared_work: &mut Vec<PreparedCryptoWork>,
-        completion_batches: &mut Vec<CryptoCompletionBatch>,
         worker_pool: &DataplaneAeadWorkerPool,
     ) -> usize {
         prepared_work.clear();
-        completion_batches.clear();
         let _owner_dispatch_timer = crate::perf_profile::Timer::start(
             crate::perf_profile::Stage::DataplaneOwnerDispatch,
         );
@@ -661,7 +670,6 @@ impl Dataplane {
         let mut dispatched_total = self.dispatch_prepared_ingress_shards_into(
             pre_priority_inbound_limit,
             prepared_work,
-            completion_batches,
             false,
             record_fsp_path_open,
             &mut fsp_path_open,
@@ -676,7 +684,6 @@ impl Dataplane {
             self.dispatch_outbound_prepared_shards_into(
                 priority_outbound_limit,
                 prepared_work,
-                completion_batches,
                 true,
             ),
         );
@@ -690,7 +697,6 @@ impl Dataplane {
             self.dispatch_prepared_ingress_shards_into(
                 priority_inbound_limit,
                 prepared_work,
-                completion_batches,
                 true,
                 record_fsp_path_open,
                 &mut fsp_path_open,
@@ -706,7 +712,6 @@ impl Dataplane {
             self.dispatch_prepared_ingress_shards_into(
                 bulk_dispatch_capacity,
                 prepared_work,
-                completion_batches,
                 false,
                 record_fsp_path_open,
                 &mut fsp_path_open,
@@ -718,7 +723,6 @@ impl Dataplane {
             self.dispatch_outbound_prepared_shards_into(
                 total_limit.saturating_sub(dispatched_total).min(bulk_capacity),
                 prepared_work,
-                completion_batches,
                 false,
             ),
         );
@@ -787,7 +791,6 @@ impl Dataplane {
         &mut self,
         limit: usize,
         prepared: &mut Vec<PreparedCryptoWork>,
-        completion_batches: &mut Vec<CryptoCompletionBatch>,
         priority_only: bool,
         record_fsp_path_open: bool,
         fsp_path_open: &mut u64,
@@ -822,7 +825,6 @@ impl Dataplane {
                 let got = self.shards[shard].dispatch_ingress_prepared_into(
                     shard_limit.min(limit.saturating_sub(dispatched)),
                     prepared,
-                    completion_batches,
                     priority_only,
                     record_fsp_path_open,
                     fsp_path_open,
@@ -849,7 +851,6 @@ impl Dataplane {
         &mut self,
         limit: usize,
         prepared: &mut Vec<PreparedCryptoWork>,
-        completion_batches: &mut Vec<CryptoCompletionBatch>,
         priority_only: bool,
     ) -> usize {
         if limit == 0 || self.shards.is_empty() {
@@ -880,7 +881,6 @@ impl Dataplane {
                 let got = self.shards[shard].dispatch_outbound_prepared_into(
                     shard_limit.min(limit.saturating_sub(dispatched)),
                     prepared,
-                    completion_batches,
                     priority_only,
                     &mut self.drops,
                 );
@@ -902,12 +902,6 @@ impl Dataplane {
         dispatched.min(limit)
     }
 
-}
-
-impl DataplaneCompletionSink for Dataplane {
-    fn push_completion_batch(&mut self, batch: CryptoCompletionBatch) {
-        self.queue_completion_run(batch);
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

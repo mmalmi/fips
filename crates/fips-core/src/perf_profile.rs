@@ -1411,15 +1411,6 @@ fn dataplane_crypto_batch_bucket_flags(packets: usize) -> (bool, bool, bool, boo
 }
 
 #[inline]
-pub(crate) fn record_dataplane_aead_completion_batch(packets: usize) {
-    if !enabled() || packets == 0 {
-        return;
-    }
-    record_event_count_sample(Event::DataplaneAeadCompletionBatch, 1);
-    record_event_count_sample(Event::DataplaneAeadCompletionBatchPackets, packets as u64);
-}
-
-#[inline]
 pub(crate) fn record_dataplane_aead_completion_send(
     messages: usize,
     batches: usize,
@@ -1432,15 +1423,6 @@ pub(crate) fn record_dataplane_aead_completion_send(
     record_event_count_sample(Event::DataplaneAeadCompletionMessages, messages as u64);
     record_event_count_sample(Event::DataplaneAeadCompletionMessageBatches, batches as u64);
     record_event_count_sample(Event::DataplaneAeadCompletionMessagePackets, packets as u64);
-}
-
-#[inline]
-pub(crate) fn record_dataplane_aead_completion_split(packets: usize) {
-    if !enabled() || packets == 0 {
-        return;
-    }
-    record_event_count_sample(Event::DataplaneAeadCompletionSplitBatches, 1);
-    record_event_count_sample(Event::DataplaneAeadCompletionSplitPackets, packets as u64);
 }
 
 #[inline]

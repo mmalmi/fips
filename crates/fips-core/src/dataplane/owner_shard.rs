@@ -1,61 +1,152 @@
 #[derive(Debug)]
 struct DataplaneOwnerShardRetireWorker {
-    completed: VecDeque<CryptoCompletionBatch>,
+    owners: HashMap<OwnerId, CryptoOwnerContinuation>,
+    ready: VecDeque<OwnerId>,
+}
+
+#[derive(Debug, Default)]
+struct CryptoOwnerContinuation {
+    runs: VecDeque<PendingCryptoOwnerRun>,
+    ready_queued: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct RetiredCrypto {
+    packets: usize,
+    worker_packets: usize,
+    bulk_packets: usize,
 }
 
 impl DataplaneOwnerShardRetireWorker {
     fn new() -> Self {
         Self {
-            completed: VecDeque::new(),
+            owners: HashMap::new(),
+            ready: VecDeque::new(),
         }
     }
 
-    fn queue_completion_batch(&mut self, batch: CryptoCompletionBatch) -> bool {
-        if batch.is_empty() {
+    fn queue_run(&mut self, run: Arc<CryptoOwnerRun>) -> bool {
+        let owner = run.owner;
+        let is_ready = run.is_ready();
+        let continuation = self.owners.entry(owner).or_default();
+        if let Some(last) = continuation.runs.back() {
+            debug_assert_eq!(
+                OrderToken(last.next_order.0.wrapping_add(last.remaining as u64)),
+                run.first_order,
+                "crypto owner runs must be queued in reservation order"
+            );
+        }
+        continuation
+            .runs
+            .push_back(PendingCryptoOwnerRun::new(run));
+        is_ready && self.mark_ready(owner)
+    }
+
+    fn mark_ready(&mut self, owner: OwnerId) -> bool {
+        let Some(continuation) = self.owners.get_mut(&owner) else {
+            return false;
+        };
+        if continuation.ready_queued {
             return false;
         }
-        let was_empty = self.completed.is_empty();
-        self.completed.push_back(batch);
+        let was_empty = self.ready.is_empty();
+        continuation.ready_queued = true;
+        self.ready.push_back(owner);
         was_empty
     }
 
-    fn retire_queued_completions_into(
+    fn retire_ready_runs_into(
         &mut self,
         owner_shard: &mut DataplaneOwnerShard,
         limit: usize,
         retired: &mut DataplaneRetiredOutputSink<'_>,
         drops: &mut Vec<PacketDrop>,
         compact_endpoint_data: bool,
-    ) -> usize {
-        let mut retired_count = 0usize;
-        while retired_count < limit {
-            let Some(mut batch) = self.completed.pop_front() else {
+    ) -> RetiredCrypto {
+        let mut retired_crypto = RetiredCrypto::default();
+        while retired_crypto.packets < limit {
+            let Some(owner_id) = self.ready.pop_front() else {
                 break;
             };
-            let batch_limit = limit.saturating_sub(retired_count);
-            let pending = if batch.len() > batch_limit {
-                Some(batch.split_off(batch_limit))
-            } else {
-                None
+            let Some(continuation) = self.owners.get_mut(&owner_id) else {
+                continue;
             };
-            let batch_len = batch.len();
-            owner_shard.retire_completion_batch_into(
-                batch,
-                retired,
-                drops,
-                compact_endpoint_data,
-            );
-            retired_count = retired_count.saturating_add(batch_len);
-            if let Some(pending) = pending {
-                self.completed.push_front(pending);
+            continuation.ready_queued = false;
+            while retired_crypto.packets < limit {
+                let Some(run) = continuation.runs.front_mut() else {
+                    break;
+                };
+                if !run.is_ready() {
+                    break;
+                }
+                let run_limit = limit.saturating_sub(retired_crypto.packets);
+                let before_in_flight = owner_shard
+                    .owners
+                    .get(&owner_id)
+                    .map_or(0, |owner| owner.in_flight);
+                let got = match owner_shard.owners.get_mut(&owner_id) {
+                    Some(owner) => owner.retire_ready_run_prefix_into(
+                        run,
+                        run_limit,
+                        retired,
+                        drops,
+                        compact_endpoint_data,
+                    ),
+                    None => {
+                        let got = run_limit.min(run.remaining);
+                        run.consume_prefix(got, |completion| {
+                            drops.push(PacketDrop::from_completion(
+                                &completion,
+                                PacketDropReason::UnknownOwner,
+                                None,
+                            ));
+                        });
+                        got
+                    }
+                };
+                if got == 0 {
+                    break;
+                }
+                retired_crypto.packets = retired_crypto.packets.saturating_add(got);
+                if run.worker_counted() {
+                    retired_crypto.worker_packets = retired_crypto.worker_packets.saturating_add(got);
+                    if run.lane() == Lane::Bulk {
+                        retired_crypto.bulk_packets = retired_crypto.bulk_packets.saturating_add(got);
+                    }
+                }
+                if owner_shard
+                    .owners
+                    .get(&owner_id)
+                    .is_some_and(|owner| owner.in_flight < before_in_flight)
+                {
+                    owner_shard.admission.wake_owner(owner_id);
+                    owner_shard.outbound_admission.wake_owner(owner_id);
+                }
+                if run.is_empty() {
+                    continuation.runs.pop_front();
+                }
+            }
+            if continuation
+                .runs
+                .front()
+                .is_some_and(PendingCryptoOwnerRun::is_ready)
+                && retired_crypto.packets >= limit
+            {
+                continuation.ready_queued = true;
+                self.ready.push_back(owner_id);
+            }
+            if continuation.runs.is_empty() {
+                self.owners.remove(&owner_id);
+            }
+            if retired_crypto.packets >= limit {
                 break;
             }
         }
-        retired_count
+        retired_crypto
     }
 
-    fn has_queued_completions(&self) -> bool {
-        !self.completed.is_empty()
+    fn has_ready_runs(&self) -> bool {
+        !self.ready.is_empty()
     }
 }
 
@@ -304,7 +395,6 @@ impl DataplaneOwnerShard {
         &mut self,
         limit: usize,
         prepared: &mut Vec<PreparedCryptoWork>,
-        completion_batches: &mut Vec<CryptoCompletionBatch>,
         priority_only: bool,
         record_fsp_path_open: bool,
         fsp_path_open: &mut u64,
@@ -374,10 +464,10 @@ impl DataplaneOwnerShard {
                                 },
                                 open_key,
                             )),
-                            None => CryptoCompletionBatch::push_grouped(
-                                failed_crypto_completion(reservation, CryptoFailureKind::Open),
-                                completion_batches,
-                            ),
+                            None => prepared.push(PreparedCryptoWork::failed(
+                                reservation,
+                                CryptoFailureKind::Open,
+                            )),
                         }
                         tracing::debug!(
                             owner = ?packet_owner,
@@ -426,7 +516,6 @@ impl DataplaneOwnerShard {
         &mut self,
         limit: usize,
         prepared: &mut Vec<PreparedCryptoWork>,
-        completion_batches: &mut Vec<CryptoCompletionBatch>,
         priority_only: bool,
         drops: &mut Vec<PacketDrop>,
     ) -> usize {
@@ -483,10 +572,10 @@ impl DataplaneOwnerShard {
                                 },
                                 seal_key,
                             )),
-                            None => CryptoCompletionBatch::push_grouped(
-                                failed_crypto_completion(reservation, CryptoFailureKind::Seal),
-                                completion_batches,
-                            ),
+                            None => prepared.push(PreparedCryptoWork::failed(
+                                reservation,
+                                CryptoFailureKind::Seal,
+                            )),
                         }
                         dispatched = dispatched.saturating_add(1);
                     }
@@ -512,35 +601,6 @@ impl DataplaneOwnerShard {
             }
         }
         dispatched
-    }
-
-    pub(crate) fn retire_completion_batch_into(
-        &mut self,
-        batch: CryptoCompletionBatch,
-        retired: &mut DataplaneRetiredOutputSink<'_>,
-        drops: &mut Vec<PacketDrop>,
-        compact_endpoint_data: bool,
-    ) {
-        let _timer =
-            crate::perf_profile::Timer::start(crate::perf_profile::Stage::DataplaneRetire);
-        let owner_id = batch.owner();
-        let Some(owner) = self.owners.get_mut(&owner_id) else {
-            for completion in batch.into_completions() {
-                let drop = PacketDrop::from_completion(
-                    &completion,
-                    PacketDropReason::UnknownOwner,
-                    None,
-                );
-                drops.push(drop);
-            }
-            return;
-        };
-        let before_in_flight = owner.in_flight;
-        owner.retire_batch_outputs_into(batch, retired, drops, compact_endpoint_data);
-        if owner.in_flight < before_in_flight {
-            self.admission.wake_owner(owner_id);
-            self.outbound_admission.wake_owner(owner_id);
-        }
     }
 
     fn admission_queue_lens(&self) -> (usize, usize) {
