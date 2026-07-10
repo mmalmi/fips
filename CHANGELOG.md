@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.83] - 2026-07-10
+
+### Added
+
+- Published `FipsEndpoint::peer_rating_events`, returning bounded signed
+  machine-rating events from the endpoint's authenticated node identity for
+  shared decentralized pubsub reputation.
+
+### Changed
+
+- Updated the `nostr-pubsub` dependency to 0.1.6 so FIPS consumers can compose
+  the shared peer and event-author policy without duplicate protocol versions.
+
 ## [0.3.82] - 2026-07-10
 
 ### Added

@@ -1468,7 +1468,7 @@ dependencies = [
 
 [[package]]
 name = "fips-core"
-version = "0.3.82"
+version = "0.3.83"
 dependencies = [
  "bluer",
  "bytes",
@@ -2478,12 +2478,13 @@ dependencies = [
 
 [[package]]
 name = "nostr-pubsub"
-version = "0.1.3"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2650ba24f43a5f51cda05b7521766fcc3083efc64a69b2fd0edaf62d7dfd443"
+checksum = "e65526f2dfdcf7fe14d8bf81c15357cb17e3dbc5ed9d1239a0608cc50645d091"
 dependencies = [
  "async-trait",
  "nostr",
+ "serde",
  "serde_json",
  "thiserror 2.0.18",
 ]
