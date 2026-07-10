@@ -329,7 +329,6 @@ struct PreparedCryptoOwnerRun {
     slot: Arc<CryptoReadySlot>,
     cipher: AeadKey,
     items: Vec<CryptoOwnerRunItem>,
-    subrun_packets: usize,
 }
 
 #[derive(Debug)]
@@ -337,7 +336,6 @@ pub(crate) struct DataplaneAeadWorkerPool {
     readiness_notify: Arc<tokio::sync::Notify>,
     counters: DataplaneAeadWorkerCounters,
     max_in_flight: usize,
-    job_permits: Arc<tokio::sync::Semaphore>,
     runtime: Option<tokio::runtime::Handle>,
     tasks: tokio::task::JoinSet<()>,
 }
@@ -345,16 +343,11 @@ pub(crate) struct DataplaneAeadWorkerPool {
 impl DataplaneAeadWorkerPool {
     pub(crate) fn new(max_in_flight: usize) -> Self {
         let max_in_flight = max_in_flight.max(1);
-        let parallel_jobs = std::thread::available_parallelism()
-            .map_or(1, usize::from)
-            .saturating_sub(1)
-            .max(1);
 
         Self {
             readiness_notify: Arc::new(tokio::sync::Notify::new()),
             counters: DataplaneAeadWorkerCounters::new(),
             max_in_flight,
-            job_permits: Arc::new(tokio::sync::Semaphore::new(parallel_jobs)),
             runtime: tokio::runtime::Handle::try_current().ok(),
             tasks: tokio::task::JoinSet::new(),
         }
@@ -416,7 +409,6 @@ impl DataplaneAeadWorkerPool {
             slot,
             cipher,
             items: run.items,
-            subrun_packets: len,
         }
     }
 
@@ -426,42 +418,29 @@ impl DataplaneAeadWorkerPool {
             slot,
             cipher,
             items,
-            subrun_packets,
         } = run;
         let runtime = self
             .runtime
             .get_or_insert_with(tokio::runtime::Handle::current)
             .clone();
-        let mut items = items.into_iter();
-        for start in (0..slot.len()).step_by(subrun_packets) {
-            let chunk: Vec<_> = items.by_ref().take(subrun_packets).collect();
-            let chunk_len = chunk.len();
-            let slot = Arc::clone(&slot);
-            let cipher = Arc::clone(&cipher);
-            let readiness_notify = Arc::clone(&self.readiness_notify);
-            let job_permits = Arc::clone(&self.job_permits);
-            let queued_at = crate::perf_profile::stamp();
-            self.tasks.spawn_on(
-                async move {
-                    let _permit = job_permits
-                        .acquire_owned()
-                        .await
-                        .expect("dataplane AEAD permit closed");
-                    crate::perf_profile::record_since(
-                        crate::perf_profile::Stage::DataplaneAeadWorkerQueueWait,
-                        queued_at,
-                    );
-                    let completions = execute_crypto_owner_subrun(chunk, &cipher);
-                    crate::perf_profile::record_dataplane_aead_result_deposit(completions.len());
-                    if slot.complete(start, completions) {
-                        readiness_notify.notify_one();
-                    }
-                },
-                &runtime,
-            );
-            crate::perf_profile::record_dataplane_aead_prepared_job(chunk_len);
-        }
-        debug_assert!(items.next().is_none());
+        let run_len = items.len();
+        let readiness_notify = Arc::clone(&self.readiness_notify);
+        let queued_at = crate::perf_profile::stamp();
+        self.tasks.spawn_on(
+            async move {
+                crate::perf_profile::record_since(
+                    crate::perf_profile::Stage::DataplaneAeadWorkerQueueWait,
+                    queued_at,
+                );
+                let completions = execute_crypto_owner_run(items, &cipher).await;
+                crate::perf_profile::record_dataplane_aead_result_deposit(completions.len());
+                if slot.complete(0, completions) {
+                    readiness_notify.notify_one();
+                }
+            },
+            &runtime,
+        );
+        crate::perf_profile::record_dataplane_aead_prepared_job(run_len);
     }
 
     pub(crate) fn reap_finished_tasks(&mut self) {
@@ -487,30 +466,41 @@ impl DataplaneAeadWorkerPool {
     }
 }
 
-fn execute_crypto_owner_subrun(
+async fn execute_crypto_owner_run(
     items: Vec<CryptoOwnerRunItem>,
     cipher: &AeadKey,
 ) -> Vec<CryptoCompletion> {
-    let _open_timer = items.first().is_some_and(CryptoOwnerRunItem::is_open).then(|| {
-        crate::perf_profile::Timer::start(crate::perf_profile::Stage::DataplaneAeadOpen)
-    });
-    items
-        .into_iter()
-        .map(|item| {
-            let result = match item.state {
-            CryptoOwnerRunItemState::Open(packet) => {
-                    execute_open_crypto_work(packet, &item.reservation, cipher)
+    let is_open = items.first().is_some_and(CryptoOwnerRunItem::is_open);
+    let mut items = items.into_iter();
+    let mut completions = Vec::with_capacity(items.len());
+    while !items.as_slice().is_empty() {
+        {
+            let _open_timer = is_open.then(|| {
+                crate::perf_profile::Timer::start(crate::perf_profile::Stage::DataplaneAeadOpen)
+            });
+            for item in items
+                .by_ref()
+                .take(DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS)
+            {
+                let result = match item.state {
+                    CryptoOwnerRunItemState::Open(packet) => {
+                        execute_open_crypto_work(packet, &item.reservation, cipher)
+                    }
+                    CryptoOwnerRunItemState::Seal(packet) => {
+                        execute_seal_crypto_work(packet, &item.reservation, cipher)
+                    }
+                };
+                completions.push(CryptoCompletion {
+                    reservation: item.reservation,
+                    result,
+                });
             }
-            CryptoOwnerRunItemState::Seal(packet) => {
-                    execute_seal_crypto_work(packet, &item.reservation, cipher)
-            }
-            };
-            CryptoCompletion {
-                reservation: item.reservation,
-                result,
-            }
-        })
-        .collect()
+        }
+        if !items.as_slice().is_empty() {
+            tokio::task::yield_now().await;
+        }
+    }
+    completions
 }
 
 fn dataplane_aead_worker_priority_reserve(max_in_flight: usize) -> usize {
