@@ -6,7 +6,7 @@ pub(crate) enum PreparedCryptoWork {
 }
 
 const DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS: usize = 8;
-const DATAPLANE_AEAD_JOB_PACKETS: usize = 128;
+const DATAPLANE_AEAD_OWNER_RUN_PACKETS: usize = 128;
 
 impl PreparedCryptoWork {
     pub(crate) fn open(work: CryptoWork, cipher: AeadKey) -> Self {
@@ -70,11 +70,12 @@ impl CryptoOwnerRunBuilder {
     }
 
     fn push(&mut self, pool: &mut DataplaneAeadWorkerPool, work: PreparedCryptoWork) {
+        let run_packets = pool.run_packets;
         if !self.matches_run(&work)
             || self
                 .run
                 .as_ref()
-                .is_some_and(|run| run.len() >= DATAPLANE_AEAD_JOB_PACKETS)
+                .is_some_and(|run| run.len() >= run_packets)
         {
             self.flush(pool);
         }
@@ -82,7 +83,7 @@ impl CryptoOwnerRunBuilder {
         match &mut self.run {
             Some(run) => run.push(work),
             None => {
-                self.run = Some(CryptoOwnerRun::new(work, DATAPLANE_AEAD_JOB_PACKETS));
+                self.run = Some(CryptoOwnerRun::new(work, run_packets));
                 self.cipher = Some(cipher);
             }
         }
@@ -152,6 +153,7 @@ pub(crate) struct DataplaneAeadWorkerPool {
     pending_completion_batch: Option<CryptoCompletionBatch>,
     counters: DataplaneAeadWorkerCounters,
     max_in_flight: usize,
+    run_packets: usize,
     runtime: Option<tokio::runtime::Handle>,
     tasks: tokio::task::JoinSet<()>,
 }
@@ -160,6 +162,16 @@ impl DataplaneAeadWorkerPool {
     pub(crate) fn new(max_in_flight: usize) -> Self {
         let max_in_flight = max_in_flight.max(1);
         let (completion_tx, completion_rx) = tokio::sync::mpsc::channel(max_in_flight);
+        let runtime = tokio::runtime::Handle::try_current().ok();
+        let owner_subruns = runtime
+            .as_ref()
+            .map(|runtime| runtime.metrics().num_workers())
+            .unwrap_or(1)
+            .saturating_sub(1)
+            .max(1);
+        let run_packets = DATAPLANE_AEAD_OWNER_RUN_PACKETS
+            .div_ceil(owner_subruns)
+            .max(DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS);
 
         Self {
             completion_tx,
@@ -168,7 +180,8 @@ impl DataplaneAeadWorkerPool {
             pending_completion_batch: None,
             counters: DataplaneAeadWorkerCounters::new(),
             max_in_flight,
-            runtime: tokio::runtime::Handle::try_current().ok(),
+            run_packets,
+            runtime,
             tasks: tokio::task::JoinSet::new(),
         }
     }

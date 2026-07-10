@@ -31,7 +31,7 @@ struct CryptoOwnerRun {
 }
 
 #[derive(Debug)]
-// Inline states keep the 128-packet run in one allocation without per-packet boxes.
+// Inline states keep each owner subrun in one allocation without per-packet boxes.
 struct CryptoOwnerRunItem {
     reservation: OwnerReservation,
     state: CryptoOwnerRunItemState,
