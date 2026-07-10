@@ -11,7 +11,7 @@
         static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
         let runtime = RUNTIME.get_or_init(|| {
             tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
+                .worker_threads(3)
                 .enable_all()
                 .build()
                 .expect("test AEAD runtime")

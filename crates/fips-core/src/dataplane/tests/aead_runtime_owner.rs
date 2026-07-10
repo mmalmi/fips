@@ -142,28 +142,33 @@ fn take_driver_endpoint_batches(
 fn aead_worker_pool_returns_completion_batches() {
     let owner = fmp_owner(706);
     let open_key = 20;
-    let mut mover = mover();
-    register_owner_with_test_keys(&mut mover, owner, open_key, open_key);
-    submit_fmp_inbound_range(&mut mover, owner, 706, open_key, 100..104, b"worker");
+    let mut mover = Dataplane::new(AdmissionConfig::new(16, 32));
+    mover.register_owner(owner, OwnerConfig::new(1, 24));
+    mover
+        .owner_mut(owner)
+        .unwrap()
+        .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(open_key)));
+    submit_fmp_inbound_range(&mut mover, owner, 706, open_key, 100..116, b"worker");
 
-    let mut pool = test_aead_worker_pool(8);
-    let (dispatched, retired, drops) = run_with_worker_pool(&mut mover, &mut pool);
+    let mut pool = test_aead_worker_pool(32);
+    let (dispatched, retired, drops) =
+        run_with_worker_pool_limit(&mut mover, &mut pool, 16);
 
-    assert_eq!(dispatched, 4);
+    assert_eq!(dispatched, 16);
     assert!(retired.is_empty());
     assert!(drops.is_empty());
-    assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 4);
+    assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 16);
 
     let mut retired = Vec::new();
-    let completions = drain_worker_pool_completions(&mut pool, 2);
-    assert_eq!(completions.len(), 2);
-    assert_eq!(pool.available_capacity(), 6);
+    let completions = drain_worker_pool_completions(&mut pool, 5);
+    assert_eq!(completions.len(), 5);
+    assert_eq!(pool.available_capacity(), 21);
     for completion in completions {
         retired.extend(retire_completion(&mut mover, completion));
     }
 
-    let completions = drain_worker_pool_completions(&mut pool, 2);
-    assert_eq!(completions.len(), 2);
+    let completions = drain_worker_pool_completions(&mut pool, 11);
+    assert_eq!(completions.len(), 11);
     for completion in completions {
         retired.extend(retire_completion(&mut mover, completion));
     }
@@ -173,10 +178,10 @@ fn aead_worker_pool_returns_completion_batches() {
             .iter()
             .map(PacketOutput::counter)
             .collect::<Vec<_>>(),
-        vec![100, 101, 102, 103]
+        (100..116).collect::<Vec<_>>()
     );
     assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
-    assert_eq!(pool.available_capacity(), 8);
+    assert_eq!(pool.available_capacity(), 32);
 }
 
 #[test]

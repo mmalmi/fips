@@ -1,4 +1,7 @@
-use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+use std::sync::{
+    Mutex,
+    atomic::{AtomicUsize, Ordering::Relaxed},
+};
 
 pub(crate) enum PreparedCryptoWork {
     Open { work: CryptoWork, cipher: AeadKey },
@@ -144,6 +147,48 @@ impl DataplaneAeadWorkerCounters {
     }
 }
 
+struct CryptoOwnerRunCompletions {
+    state: Mutex<CryptoOwnerRunCompletionState>,
+}
+
+struct CryptoOwnerRunCompletionState {
+    remaining: usize,
+    runs: Vec<Option<CryptoOwnerRun>>,
+}
+
+impl CryptoOwnerRunCompletions {
+    fn new(run_count: usize) -> Self {
+        Self {
+            state: Mutex::new(CryptoOwnerRunCompletionState {
+                remaining: run_count,
+                runs: (0..run_count).map(|_| None).collect(),
+            }),
+        }
+    }
+
+    fn complete(&self, index: usize, run: CryptoOwnerRun) -> Option<Vec<CryptoOwnerRun>> {
+        let mut state = self
+            .state
+            .lock()
+            .expect("crypto owner subrun completion lock poisoned");
+        assert!(
+            state.runs[index].replace(run).is_none(),
+            "crypto owner subrun completed twice"
+        );
+        state.remaining -= 1;
+        if state.remaining != 0 {
+            return None;
+        }
+        Some(
+            state
+                .runs
+                .iter_mut()
+                .map(|run| run.take().expect("crypto owner subrun completed"))
+                .collect(),
+        )
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct DataplaneAeadWorkerPool {
     completion_tx: tokio::sync::mpsc::Sender<CryptoCompletionBatch>,
@@ -152,6 +197,7 @@ pub(crate) struct DataplaneAeadWorkerPool {
     pending_completion_batch: Option<CryptoCompletionBatch>,
     counters: DataplaneAeadWorkerCounters,
     max_in_flight: usize,
+    owner_subruns: usize,
     runtime: Option<tokio::runtime::Handle>,
     tasks: tokio::task::JoinSet<()>,
 }
@@ -160,6 +206,12 @@ impl DataplaneAeadWorkerPool {
     pub(crate) fn new(max_in_flight: usize) -> Self {
         let max_in_flight = max_in_flight.max(1);
         let (completion_tx, completion_rx) = tokio::sync::mpsc::channel(max_in_flight);
+        let runtime = tokio::runtime::Handle::try_current().ok();
+        let owner_subruns = runtime
+            .as_ref()
+            .map(|runtime| runtime.metrics().num_workers().saturating_sub(1))
+            .unwrap_or(1)
+            .max(1);
 
         Self {
             completion_tx,
@@ -168,7 +220,8 @@ impl DataplaneAeadWorkerPool {
             pending_completion_batch: None,
             counters: DataplaneAeadWorkerCounters::new(),
             max_in_flight,
-            runtime: tokio::runtime::Handle::try_current().ok(),
+            owner_subruns,
+            runtime,
             tasks: tokio::task::JoinSet::new(),
         }
     }
@@ -305,42 +358,59 @@ impl DataplaneAeadWorkerPool {
         self.reap_finished_tasks();
         let chunk_len = run.len();
         let bulk_count = run.bulk_count();
-        let queued_at = crate::perf_profile::stamp();
         self.counters.add(chunk_len, bulk_count);
-        let completion_tx = self.completion_tx.clone();
-        let completion_notify = Arc::clone(&self.completion_notify);
-        let counters = self.counters.clone();
         let runtime = self
             .runtime
             .get_or_insert_with(tokio::runtime::Handle::current)
             .clone();
-        self.tasks.spawn_on(
-            async move {
-                crate::perf_profile::record_since(
-                    crate::perf_profile::Stage::DataplaneAeadWorkerQueueWait,
-                    queued_at,
-                );
-                let completion = execute_crypto_owner_run(run, cipher);
-                let completed_count = completion.len();
-                let completed_bulk_count = if completion.lane() == Lane::Bulk {
-                    completed_count
-                } else {
-                    0
-                };
-                crate::perf_profile::record_dataplane_aead_completion_send(
-                    1,
-                    1,
-                    completed_count,
-                );
-                if completion_tx.send(completion).await.is_err() {
-                    counters.finish(completed_count, completed_bulk_count);
-                    return;
-                }
-                completion_notify.notify_one();
-            },
-            &runtime,
-        );
-        crate::perf_profile::record_dataplane_aead_prepared_job(chunk_len);
+        let subruns = run.into_subruns(self.owner_subruns);
+        let completions = (subruns.len() > 1)
+            .then(|| Arc::new(CryptoOwnerRunCompletions::new(subruns.len())));
+        for (index, run) in subruns.into_iter().enumerate() {
+            let queued_at = crate::perf_profile::stamp();
+            let completion_tx = self.completion_tx.clone();
+            let completion_notify = Arc::clone(&self.completion_notify);
+            let counters = self.counters.clone();
+            let cipher = Arc::clone(&cipher);
+            let completions = completions.clone();
+            let subrun_len = run.len();
+            self.tasks.spawn_on(
+                async move {
+                    crate::perf_profile::record_since(
+                        crate::perf_profile::Stage::DataplaneAeadWorkerQueueWait,
+                        queued_at,
+                    );
+                    let run = execute_crypto_owner_run(run, cipher);
+                    let completion = match completions {
+                        Some(completions) => completions
+                            .complete(index, run)
+                            .map(CryptoCompletionBatch::from_owner_subruns),
+                        None => Some(CryptoCompletionBatch::from_owner_run(run)),
+                    };
+                    let Some(completion) = completion else {
+                        return;
+                    };
+                    let completed_count = completion.len();
+                    let completed_bulk_count = if completion.lane() == Lane::Bulk {
+                        completed_count
+                    } else {
+                        0
+                    };
+                    crate::perf_profile::record_dataplane_aead_completion_send(
+                        1,
+                        1,
+                        completed_count,
+                    );
+                    if completion_tx.send(completion).await.is_err() {
+                        counters.finish(completed_count, completed_bulk_count);
+                        return;
+                    }
+                    completion_notify.notify_one();
+                },
+                &runtime,
+            );
+            crate::perf_profile::record_dataplane_aead_prepared_job(subrun_len);
+        }
     }
 
     fn reap_finished_tasks(&mut self) {
@@ -368,7 +438,7 @@ impl DataplaneAeadWorkerPool {
 fn execute_crypto_owner_run(
     mut run: CryptoOwnerRun,
     cipher: AeadKey,
-) -> CryptoCompletionBatch {
+) -> CryptoOwnerRun {
     let _open_timer = run.is_open().then(|| {
         crate::perf_profile::Timer::start(crate::perf_profile::Stage::DataplaneAeadOpen)
     });
@@ -390,7 +460,7 @@ fn execute_crypto_owner_run(
         };
         item.state = CryptoOwnerRunItemState::Completed(result);
     }
-    CryptoCompletionBatch::from_owner_run(run)
+    run
 }
 
 fn dataplane_aead_worker_priority_reserve(max_in_flight: usize) -> usize {

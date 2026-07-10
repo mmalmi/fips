@@ -144,6 +144,25 @@ impl CryptoOwnerRun {
         }
     }
 
+    fn into_subruns(mut self, max_subruns: usize) -> Vec<Self> {
+        let subrun_count = (self.len() / DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS)
+            .min(max_subruns)
+            .max(1);
+        if subrun_count == 1 {
+            return vec![self];
+        }
+
+        let subrun_len = self.len() / subrun_count;
+        let mut subruns = Vec::with_capacity(subrun_count);
+        for _ in 1..subrun_count {
+            let split_at = self.len().saturating_sub(subrun_len);
+            subruns.push(self.split_off(split_at));
+        }
+        subruns.push(self);
+        subruns.reverse();
+        subruns
+    }
+
     fn consume_in_order(self, mut consume: impl FnMut(CryptoCompletion)) {
         for item in self.items {
             consume(item.into_completion());
@@ -213,6 +232,7 @@ impl CryptoOwnerRunItem {
 enum CryptoCompletionRun {
     Completed(Vec<CryptoCompletion>),
     OwnerRun(CryptoOwnerRun),
+    OwnerSubruns(Vec<CryptoOwnerRun>),
 }
 
 #[derive(Debug)]
@@ -281,6 +301,23 @@ impl CryptoCompletionBatch {
         }
     }
 
+    fn from_owner_subruns(mut runs: Vec<CryptoOwnerRun>) -> Self {
+        if runs.len() == 1 {
+            return Self::from_owner_run(runs.pop().expect("one crypto owner subrun"));
+        }
+        let reservation = runs
+            .first()
+            .and_then(CryptoOwnerRun::first_reservation)
+            .expect("crypto owner subruns contain a completion");
+        Self {
+            owner_shard: reservation.owner_shard(),
+            owner: reservation.owner,
+            generation: reservation.generation,
+            lane: reservation.lane,
+            completions: CryptoCompletionRun::OwnerSubruns(runs),
+        }
+    }
+
     pub(crate) fn push_grouped(
         completion: CryptoCompletion,
         batches: &mut Vec<CryptoCompletionBatch>,
@@ -289,7 +326,7 @@ impl CryptoCompletionBatch {
             && last.matches(&completion)
         {
             let CryptoCompletionRun::Completed(completions) = &mut last.completions else {
-                unreachable!("shared owner runs do not match grouped completions");
+                unreachable!("owner runs do not match grouped completions");
             };
             completions.push(completion);
             return;
@@ -313,6 +350,9 @@ impl CryptoCompletionBatch {
         match &self.completions {
             CryptoCompletionRun::Completed(completions) => completions.len(),
             CryptoCompletionRun::OwnerRun(run) => run.len(),
+            CryptoCompletionRun::OwnerSubruns(runs) => {
+                runs.iter().map(CryptoOwnerRun::len).sum()
+            }
         }
     }
 
@@ -326,6 +366,9 @@ impl CryptoCompletionBatch {
                 completions.first().map(CryptoCompletion::order)
             }
             CryptoCompletionRun::OwnerRun(run) => run.first_order(),
+            CryptoCompletionRun::OwnerSubruns(runs) => {
+                runs.first().and_then(CryptoOwnerRun::first_order)
+            }
         }
     }
 
@@ -358,6 +401,9 @@ impl CryptoCompletionBatch {
                 )
             }),
             CryptoCompletionRun::OwnerRun(run) => run.is_open_fsp_session_payload_run(),
+            CryptoCompletionRun::OwnerSubruns(runs) => runs
+                .iter()
+                .all(CryptoOwnerRun::is_open_fsp_session_payload_run),
         }
     }
 
@@ -368,6 +414,9 @@ impl CryptoCompletionBatch {
             }
             CryptoCompletionRun::OwnerRun(run) => {
                 CryptoCompletionRun::OwnerRun(run.split_off(at))
+            }
+            CryptoCompletionRun::OwnerSubruns(runs) => {
+                CryptoCompletionRun::OwnerSubruns(split_owner_subruns(runs, at))
             }
         };
         Self {
@@ -393,6 +442,11 @@ impl CryptoCompletionBatch {
                 }
             }
             CryptoCompletionRun::OwnerRun(run) => run.consume_in_order(consume),
+            CryptoCompletionRun::OwnerSubruns(runs) => {
+                for run in runs {
+                    run.consume_in_order(&mut consume);
+                }
+            }
         }
     }
 
@@ -411,6 +465,28 @@ impl CryptoCompletionBatch {
                 .last()
                 .is_none_or(|last| last.order().next() == completion.order())
     }
+}
+
+fn split_owner_subruns(runs: &mut Vec<CryptoOwnerRun>, at: usize) -> Vec<CryptoOwnerRun> {
+    let mut offset = 0usize;
+    for index in 0..runs.len() {
+        let run_end = offset.saturating_add(runs[index].len());
+        if at == run_end {
+            return runs.split_off(index + 1);
+        }
+        if at < run_end {
+            let local_at = at.saturating_sub(offset);
+            let mut pending = runs.split_off(index + 1);
+            if local_at == 0 {
+                pending.insert(0, runs.pop().expect("split owner subrun exists"));
+            } else {
+                pending.insert(0, runs[index].split_off(local_at));
+            }
+            return pending;
+        }
+        offset = run_end;
+    }
+    Vec::new()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
