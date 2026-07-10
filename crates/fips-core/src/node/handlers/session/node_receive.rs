@@ -14,6 +14,7 @@ impl Node {
         delivery: LocalSessionPayload<'_>,
     ) {
         let src_addr = *delivery.source_addr();
+        let previous_hop_addr = *delivery.previous_hop_addr();
         let payload = delivery.payload();
         let prefix = match FspCommonPrefix::parse(payload) {
             Some(p) => p,
@@ -30,13 +31,15 @@ impl Node {
 
         match prefix.phase {
             FSP_PHASE_MSG1 => {
-                self.handle_session_setup(&src_addr, inner).await;
+                self.handle_session_setup(&src_addr, &previous_hop_addr, inner)
+                    .await;
             }
             FSP_PHASE_MSG2 => {
                 self.handle_session_ack(&src_addr, inner).await;
             }
             FSP_PHASE_MSG3 => {
-                self.handle_session_msg3(&src_addr, inner).await;
+                self.handle_session_msg3(&src_addr, &previous_hop_addr, inner)
+                    .await;
             }
             FSP_PHASE_ESTABLISHED if prefix.is_unencrypted() => {
                 // Plaintext error signals: read msg_type from first byte after prefix

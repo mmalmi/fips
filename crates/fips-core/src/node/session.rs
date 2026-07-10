@@ -154,11 +154,16 @@ impl SessionEntry {
         self.remote_identity
     }
 
-    pub(crate) fn authenticate_remote(&mut self, remote_addr: NodeAddr, remote_pubkey: PublicKey) {
+    pub(crate) fn authenticate_remote(
+        &mut self,
+        remote_addr: NodeAddr,
+        remote_pubkey: PublicKey,
+    ) -> bool {
         self.remote_pubkey = remote_pubkey;
         let remote_identity = PeerIdentity::from_pubkey_full(remote_pubkey);
-        self.remote_identity =
-            (*remote_identity.node_addr() == remote_addr).then_some(remote_identity);
+        let authenticated = *remote_identity.node_addr() == remote_addr;
+        self.remote_identity = authenticated.then_some(remote_identity);
+        authenticated
     }
 
     /// Replace the session state.

@@ -32,6 +32,30 @@ fn test_session_entry_handshake_payload_storage() {
     assert_eq!(entry.next_resend_at_ms(), 2000);
 }
 
+#[test]
+fn test_session_entry_rejects_authenticated_remote_key_for_different_node_addr() {
+    use crate::noise::HandshakeState;
+
+    let identity_a = Identity::generate();
+    let claimed_identity = Identity::generate();
+    let authenticated_identity = Identity::generate();
+    let handshake =
+        HandshakeState::new_initiator(identity_a.keypair(), claimed_identity.pubkey_full());
+    let mut entry = crate::node::session::SessionEntry::new(
+        *claimed_identity.node_addr(),
+        claimed_identity.pubkey_full(),
+        EndToEndState::Initiating(handshake),
+        1000,
+        true,
+    );
+
+    assert!(!entry.authenticate_remote(
+        *claimed_identity.node_addr(),
+        authenticated_identity.pubkey_full(),
+    ));
+    assert!(entry.remote_identity().is_none());
+}
+
 /// Test that resend_count and next_resend_at_ms track correctly on SessionEntry.
 #[test]
 fn test_session_entry_resend_tracking() {

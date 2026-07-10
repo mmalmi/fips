@@ -84,6 +84,26 @@ impl Node {
     ) -> Result<(), NodeError> {
         let runtime_route = self.resolve_session_datagram_runtime_route(datagram)?;
 
+        self.send_session_datagram_on_runtime_route(datagram, runtime_route)
+            .await
+    }
+
+    pub(in crate::node) async fn send_session_datagram_via_next_hop(
+        &mut self,
+        datagram: &mut SessionDatagram,
+        next_hop_addr: &NodeAddr,
+    ) -> Result<(), NodeError> {
+        let runtime_route =
+            self.prepare_session_datagram_runtime_route(datagram, *next_hop_addr);
+        self.send_session_datagram_on_runtime_route(datagram, runtime_route)
+            .await
+    }
+
+    async fn send_session_datagram_on_runtime_route(
+        &mut self,
+        datagram: &SessionDatagram,
+        runtime_route: SessionDatagramRuntimeRoute,
+    ) -> Result<(), NodeError> {
         let encoded = datagram.encode();
         if let Err(err) = self
             .send_dataplane_fmp_link_plaintext(&runtime_route.next_hop_addr, &encoded, false)
@@ -130,6 +150,15 @@ impl Node {
                 reason: "no route to destination".into(),
             })?;
 
+        Ok(self.prepare_session_datagram_runtime_route(datagram, next_hop_addr))
+    }
+
+    fn prepare_session_datagram_runtime_route(
+        &mut self,
+        datagram: &mut SessionDatagram,
+        next_hop_addr: NodeAddr,
+    ) -> SessionDatagramRuntimeRoute {
+        let dest_addr = datagram.dest_addr;
         let mut path_mtu = datagram.path_mtu;
         if let Some(peer) = self.peers.get(&next_hop_addr)
             && let Some(tid) = peer.transport_id()
@@ -145,11 +174,11 @@ impl Node {
 
         let _ = self.dataplane.seed_fsp_path_mtu(dest_addr, path_mtu);
 
-        Ok(SessionDatagramRuntimeRoute {
+        SessionDatagramRuntimeRoute {
             dest_addr,
             next_hop_addr,
             path_mtu,
-        })
+        }
     }
 
     /// Look up destination coordinates from available caches.

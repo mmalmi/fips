@@ -108,6 +108,7 @@ pub(in crate::node) struct AuthenticatedSessionDatagram<'a> {
 
 pub(in crate::node) struct LocalSessionPayload<'a> {
     source_addr: NodeAddr,
+    previous_hop_addr: NodeAddr,
     payload: &'a [u8],
 }
 
@@ -163,15 +164,24 @@ impl<'a> AuthenticatedSessionDatagram<'a> {
 }
 
 impl<'a> LocalSessionPayload<'a> {
-    pub(in crate::node) fn new(source_addr: NodeAddr, payload: &'a [u8]) -> Self {
+    pub(in crate::node) fn new(
+        source_addr: NodeAddr,
+        previous_hop_addr: NodeAddr,
+        payload: &'a [u8],
+    ) -> Self {
         Self {
             source_addr,
+            previous_hop_addr,
             payload,
         }
     }
 
     pub(in crate::node) fn source_addr(&self) -> &NodeAddr {
         &self.source_addr
+    }
+
+    pub(in crate::node) fn previous_hop_addr(&self) -> &NodeAddr {
+        &self.previous_hop_addr
     }
 
     pub(in crate::node) fn payload(&self) -> &'a [u8] {

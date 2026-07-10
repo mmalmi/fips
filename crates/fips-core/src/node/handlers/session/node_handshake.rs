@@ -4,7 +4,12 @@ impl Node {
     /// The remote node wants to establish an end-to-end session with us.
     /// We create an XK responder handshake, process msg1, send SessionAck with msg2,
     /// and transition to AwaitingMsg3.
-    async fn handle_session_setup(&mut self, src_addr: &NodeAddr, inner: &[u8]) {
+    async fn handle_session_setup(
+        &mut self,
+        src_addr: &NodeAddr,
+        previous_hop_addr: &NodeAddr,
+        inner: &[u8],
+    ) {
         let setup = match SessionSetup::decode(inner) {
             Ok(s) => s,
             Err(e) => {
@@ -54,7 +59,10 @@ impl Node {
                     let my_addr = *self.node_addr();
                     let mut datagram = SessionDatagram::new(my_addr, *src_addr, payload.to_vec())
                         .with_ttl(self.config.node.session.default_ttl);
-                    if let Err(e) = self.send_session_datagram(&mut datagram).await {
+                    if let Err(e) = self
+                        .send_session_datagram_via_next_hop(&mut datagram, previous_hop_addr)
+                        .await
+                    {
                         debug!(error = %e, dest = %self.peer_display_name(src_addr), "Failed to resend SessionAck");
                     }
                 } else {
@@ -91,7 +99,13 @@ impl Node {
                             let my_addr = *self.node_addr();
                             let mut datagram = SessionDatagram::new(my_addr, *src_addr, payload)
                                 .with_ttl(self.config.node.session.default_ttl);
-                            let sent = match self.send_session_datagram(&mut datagram).await {
+                            let sent = match self
+                                .send_session_datagram_via_next_hop(
+                                    &mut datagram,
+                                    previous_hop_addr,
+                                )
+                                .await
+                            {
                                 Ok(()) => true,
                                 Err(e) => {
                                     debug!(error = %e, dest = %self.peer_display_name(src_addr), "Failed to resend rekey SessionAck");
@@ -168,7 +182,10 @@ impl Node {
                         SessionDatagram::new(my_addr, *src_addr, ack_payload.clone())
                             .with_ttl(self.config.node.session.default_ttl);
 
-                    if let Err(e) = self.send_session_datagram(&mut datagram).await {
+                    if let Err(e) = self
+                        .send_session_datagram_via_next_hop(&mut datagram, previous_hop_addr)
+                        .await
+                    {
                         debug!(error = %e, dest = %self.peer_display_name(src_addr), "Failed to send rekey SessionAck");
                         return;
                     }
@@ -227,8 +244,13 @@ impl Node {
         let mut datagram = SessionDatagram::new(my_addr, *src_addr, ack_payload.clone())
             .with_ttl(self.config.node.session.default_ttl);
 
-        // Route the ack back to the initiator
-        if let Err(e) = self.send_session_datagram(&mut datagram).await {
+        // Return msg2 through the authenticated hop that delivered msg1. The
+        // initiator identity is not authenticated until msg3, so this is a
+        // bounded response path rather than a learned route.
+        if let Err(e) = self
+            .send_session_datagram_via_next_hop(&mut datagram, previous_hop_addr)
+            .await
+        {
             debug!(error = %e, dest = %self.peer_display_name(src_addr), "Failed to send SessionAck");
             return;
         }
@@ -471,7 +493,12 @@ impl Node {
     /// The initiator reveals their encrypted static key. The responder
     /// processes msg3, learns the initiator's identity, and transitions
     /// to Established.
-    async fn handle_session_msg3(&mut self, src_addr: &NodeAddr, inner: &[u8]) {
+    async fn handle_session_msg3(
+        &mut self,
+        src_addr: &NodeAddr,
+        previous_hop_addr: &NodeAddr,
+        inner: &[u8],
+    ) {
         let msg3 = match SessionMsg3::decode(inner) {
             Ok(m) => m,
             Err(e) => {
@@ -536,6 +563,7 @@ impl Node {
             if let Some((pending_k_bit, open)) = pending_receive {
                 self.install_dataplane_fsp_pending_receive_epoch(src_addr, pending_k_bit, open);
             }
+            self.learn_reverse_route(*src_addr, *previous_hop_addr);
             self.refresh_dataplane_fsp_owner_routes(src_addr);
 
             debug!(
@@ -571,8 +599,13 @@ impl Node {
             }
         };
 
-        // Register the initiator's identity for future TUN → session routing
-        self.register_identity(*src_addr, remote_pubkey);
+        if !entry.authenticate_remote(*src_addr, remote_pubkey) {
+            debug!(
+                src = %self.peer_display_name(src_addr),
+                "Rejected SessionMsg3 whose authenticated static key does not match the claimed source"
+            );
+            return;
+        }
 
         // Complete the handshake
         let session = match handshake.into_session() {
@@ -584,11 +617,21 @@ impl Node {
         };
 
         let now_ms = Self::now_ms();
-        entry.authenticate_remote(*src_addr, remote_pubkey);
+        // Register the authenticated initiator for future TUN → session routing.
+        if !self.register_identity(*src_addr, remote_pubkey) {
+            debug!(
+                src = %self.peer_display_name(src_addr),
+                "Failed to register authenticated SessionMsg3 identity"
+            );
+            return;
+        }
         entry.establish(session, now_ms);
         self.sessions.insert(*src_addr, entry);
         self.pending_lookups.remove(src_addr);
         self.discovery_backoff.record_success(src_addr);
+        // Msg3 binds the initiator's static key to src_addr, so its authenticated
+        // FMP ingress hop is now safe to retain as the reverse route.
+        self.learn_reverse_route(*src_addr, *previous_hop_addr);
         self.sync_dataplane_fsp_owner_from_current_session(
             src_addr,
             self.config.node.session.coords_warmup_packets,

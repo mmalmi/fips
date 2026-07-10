@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.85] - 2026-07-10
+
+### Fixed
+
+- Returned routed FSP `SessionAck` messages through the authenticated hop that
+  delivered `SessionSetup`, allowing browser and other non-tree transit nodes
+  to carry the initial end-to-end session handshake without a learned reverse
+  route.
+
 ## [0.3.84] - 2026-07-10
 
 ### Fixed

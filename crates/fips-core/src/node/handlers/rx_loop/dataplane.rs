@@ -175,8 +175,8 @@ impl Node {
         &mut self,
         ingress: crate::dataplane::DataplaneFspLocalSessionIngress,
     ) -> bool {
-        let (source_addr, _previous_hop_addr, _ce_flag, _path_mtu, payload) = ingress.into_parts();
-        let delivery = LocalSessionPayload::new(source_addr, payload.as_slice());
+        let (source_addr, previous_hop_addr, _ce_flag, _path_mtu, payload) = ingress.into_parts();
+        let delivery = LocalSessionPayload::new(source_addr, previous_hop_addr, payload.as_slice());
         self.handle_session_payload(delivery).await;
         true
     }

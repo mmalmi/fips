@@ -78,6 +78,7 @@ impl Node {
             self.stats_mut().forwarding.record_delivered(payload.len());
             self.handle_session_payload(LocalSessionPayload::new(
                 datagram_ref.src_addr,
+                previous_hop,
                 datagram_ref.payload,
             ))
             .await;
