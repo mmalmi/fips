@@ -439,17 +439,18 @@ impl Node {
         let has_configured_static_udp = self
             .configured_static_udp_path_for_peer(peer_node_addr, peer.transport_id()?)
             .is_some();
-        let mut candidate =
+        let candidate =
             if peer.is_healthy() && (!has_configured_static_udp || current_is_configured) {
                 PeerAddress::with_priority("udp", socket_addr.to_string(), 0)
                     .with_seen_at_ms(Self::now_ms())
             } else {
                 PeerAddress::with_priority("udp", socket_addr.to_string(), u8::MAX)
             };
-        if current_is_configured {
-            candidate = candidate.configured();
-        }
-        Some(candidate)
+        Some(if current_is_configured {
+            candidate
+        } else {
+            candidate.learned()
+        })
     }
 
     pub(super) fn active_peer_current_path_priority(

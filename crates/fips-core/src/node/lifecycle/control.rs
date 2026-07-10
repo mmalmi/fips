@@ -17,7 +17,7 @@ impl Node {
         let peer_config = PeerConfig {
             npub: npub.to_string(),
             alias: None,
-            addresses: vec![PeerAddress::new(transport, address).configured()],
+            addresses: vec![PeerAddress::new(transport, address)],
             connect_policy: ConnectPolicy::Manual,
             auto_reconnect: false,
             discovery_fallback_transit: true,

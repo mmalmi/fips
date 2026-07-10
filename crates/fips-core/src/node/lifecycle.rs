@@ -96,26 +96,21 @@ impl LocalInterfaceNetwork {
 
 struct UdpRouteEvidence {
     networks: Vec<LocalInterfaceNetwork>,
-    route_probe_local_ip: IpAddr,
+    route_probe_local_ip: Option<IpAddr>,
 }
 
 impl UdpRouteEvidence {
-    fn capture(remote_addr: SocketAddr, provenance: PeerAddressProvenance) -> Option<Self> {
-        let networks = if provenance == PeerAddressProvenance::Learned
-            && udp_remote_addr_requires_local_scope(remote_addr.ip())
-        {
-            local_interface_networks()
-        } else {
-            Vec::new()
-        };
-        Some(Self {
-            networks,
-            route_probe_local_ip: udp_route_probe_local_ip(remote_addr)?,
-        })
-    }
-
-    fn transport_matches_route(&self, local_addr: SocketAddr) -> bool {
-        local_addr.ip().is_unspecified() || local_addr.ip() == self.route_probe_local_ip
+    fn capture(remote_addr: SocketAddr, provenance: PeerAddressProvenance) -> Self {
+        let needs_local_scope = provenance == PeerAddressProvenance::Learned
+            && udp_remote_addr_requires_local_scope(remote_addr.ip());
+        Self {
+            networks: needs_local_scope
+                .then(local_interface_networks)
+                .unwrap_or_default(),
+            route_probe_local_ip: needs_local_scope
+                .then(|| udp_route_probe_local_ip(remote_addr))
+                .flatten(),
+        }
     }
 }
 
@@ -137,7 +132,7 @@ fn udp_remote_addr_locally_plausible(
         local_addr,
         remote_addr,
         &evidence.networks,
-        Some(evidence.route_probe_local_ip),
+        evidence.route_probe_local_ip,
     )
 }
 

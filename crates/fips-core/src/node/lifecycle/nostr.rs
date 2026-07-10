@@ -171,6 +171,7 @@ impl Node {
         };
         Some(
             PeerAddress::with_priority(transport, endpoint.addr.clone(), priority)
+                .learned()
                 .with_seen_at_ms(seen_at_ms),
         )
     }

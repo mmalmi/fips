@@ -54,7 +54,8 @@ impl Node {
                             transport_name,
                             &remote_addr,
                         ),
-                    );
+                    )
+                    .learned();
                     if self.active_peer_candidate_is_fresh_enough_to_skip(
                         &node_addr,
                         std::slice::from_ref(&candidate),
@@ -647,6 +648,7 @@ impl Node {
             }
             let address =
                 PeerAddress::with_priority(contact.transport.clone(), contact.addr.clone(), 10)
+                    .learned()
                     .with_seen_at_ms(record.updated_at_ms);
             if addresses.iter().any(|existing: &PeerAddress| {
                 existing.transport == address.transport && existing.addr == address.addr
@@ -794,7 +796,7 @@ impl Node {
             let peer_node_addr = *identity.node_addr();
             let remote_addr = crate::transport::TransportAddr::from_string(&peer.addr.to_string());
             if self.peers.contains_key(&peer_node_addr) {
-                let candidate = PeerAddress::new("udp", peer.addr.to_string());
+                let candidate = PeerAddress::new("udp", peer.addr.to_string()).learned();
                 if self.active_peer_candidate_is_fresh_enough_to_skip(
                     &peer_node_addr,
                     std::slice::from_ref(&candidate),

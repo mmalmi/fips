@@ -298,7 +298,7 @@ impl Node {
         if udp_remote_addr_invalid(remote_addr.ip()) {
             return None;
         }
-        let evidence = UdpRouteEvidence::capture(remote_addr, provenance)?;
+        let evidence = UdpRouteEvidence::capture(remote_addr, provenance);
         self.transports
             .iter()
             .filter(|(id, handle)| {
@@ -309,7 +309,6 @@ impl Node {
             .filter_map(|(id, handle)| {
                 let local_addr = handle.local_addr()?;
                 (socket_addr_families_compatible(local_addr, remote_addr)
-                    && evidence.transport_matches_route(local_addr)
                     && udp_remote_addr_locally_plausible(
                         local_addr,
                         remote_addr,

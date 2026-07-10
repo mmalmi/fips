@@ -26,21 +26,16 @@ pub enum ConnectPolicy {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PeerAddressProvenance {
-    /// Provenance was absent during deserialization. Treated as learned unless
-    /// the address came through the trusted root configuration parser.
-    #[default]
-    #[doc(hidden)]
-    #[serde(skip)]
-    Unspecified,
     /// The operator explicitly configured this address.
+    #[default]
     Configured,
     /// The address was learned from a peer, advert, or active socket.
     Learned,
 }
 
 impl PeerAddressProvenance {
-    fn is_unspecified(&self) -> bool {
-        matches!(self, Self::Unspecified)
+    fn is_configured(&self) -> bool {
+        matches!(self, Self::Configured)
     }
 }
 
@@ -71,10 +66,9 @@ pub struct PeerAddress {
     /// Trust provenance for policies that distinguish operator routes from
     /// learned address hints.
     ///
-    /// The trusted root config parser treats omission as configured for legacy
-    /// files. Other serde paths treat omission as untrusted, and new values are
-    /// serialized so round trips preserve provenance.
-    #[serde(default, skip_serializing_if = "PeerAddressProvenance::is_unspecified")]
+    /// Omission means configured for compatibility with existing config files.
+    /// Learned runtime values retain their provenance when serialized.
+    #[serde(default, skip_serializing_if = "PeerAddressProvenance::is_configured")]
     pub provenance: PeerAddressProvenance,
 
     /// Wall-clock observation timestamp (Unix ms) for ranking by recency
@@ -116,18 +110,18 @@ fn default_discovery_fallback_transit() -> bool {
 }
 
 impl PeerAddress {
-    /// Create a learned peer address.
+    /// Create an explicitly configured peer address.
     pub fn new(transport: impl Into<String>, addr: impl Into<String>) -> Self {
         Self {
             transport: transport.into(),
             addr: addr.into(),
             priority: default_priority(),
-            provenance: PeerAddressProvenance::Learned,
+            provenance: PeerAddressProvenance::Configured,
             seen_at_ms: None,
         }
     }
 
-    /// Create a learned peer address with priority.
+    /// Create an explicitly configured peer address with priority.
     pub fn with_priority(
         transport: impl Into<String>,
         addr: impl Into<String>,
@@ -137,14 +131,14 @@ impl PeerAddress {
             transport: transport.into(),
             addr: addr.into(),
             priority,
-            provenance: PeerAddressProvenance::Learned,
+            provenance: PeerAddressProvenance::Configured,
             seen_at_ms: None,
         }
     }
 
-    /// Mark this address as explicitly operator-configured.
-    pub fn configured(mut self) -> Self {
-        self.provenance = PeerAddressProvenance::Configured;
+    /// Mark this address as learned from discovery or an active path.
+    pub fn learned(mut self) -> Self {
+        self.provenance = PeerAddressProvenance::Learned;
         self
     }
 
@@ -227,7 +221,7 @@ impl PeerConfig {
         Self {
             npub: npub.into(),
             alias: None,
-            addresses: vec![PeerAddress::new(transport, addr).configured()],
+            addresses: vec![PeerAddress::new(transport, addr)],
             connect_policy: ConnectPolicy::default(),
             auto_reconnect: default_auto_reconnect(),
             discovery_fallback_transit: default_discovery_fallback_transit(),
