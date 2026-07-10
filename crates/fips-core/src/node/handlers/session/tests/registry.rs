@@ -180,26 +180,6 @@
         assert_eq!(entry.handshake_payload(), Some([0x44, 0x55].as_slice()));
         assert_eq!(entry.next_resend_at_ms(), 3_750);
 
-        let (_, responder_session) = make_xk_session_pair(&peer, &local);
-        let entry = SessionEntry::new_established(
-            peer_addr,
-            peer.pubkey_full(),
-            responder_session,
-            4_000,
-            false,
-        );
-        assert!(
-            sessions.insert(peer_addr, entry).is_some(),
-            "established responder install replaces the old initiator entry"
-        );
-        let entry = sessions
-            .get(&peer_addr)
-            .expect("established responder session should be installed");
-        assert!(entry.is_established());
-        assert!(!entry.is_initiator());
-        assert_eq!(entry.session_start_ms(), 4_000);
-        assert_eq!(*entry.remote_pubkey(), peer.pubkey_full());
-        assert_eq!(entry.handshake_payload(), None);
     }
 
     #[test]

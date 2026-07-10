@@ -144,24 +144,6 @@ impl SessionEntry {
         }
     }
 
-    pub(crate) fn new_established(
-        remote_addr: NodeAddr,
-        remote_pubkey: PublicKey,
-        session: NoiseSession,
-        now_ms: u64,
-        is_initiator: bool,
-    ) -> Self {
-        let mut entry = Self::new(
-            remote_addr,
-            remote_pubkey,
-            EndToEndState::Established(session),
-            now_ms,
-            is_initiator,
-        );
-        entry.mark_established(now_ms);
-        entry
-    }
-
     /// Get the remote node's public key.
     pub(crate) fn remote_pubkey(&self) -> &PublicKey {
         &self.remote_pubkey
@@ -170,6 +152,13 @@ impl SessionEntry {
     /// Get the remote node's authenticated identity.
     pub(crate) fn remote_identity(&self) -> Option<PeerIdentity> {
         self.remote_identity
+    }
+
+    pub(crate) fn authenticate_remote(&mut self, remote_addr: NodeAddr, remote_pubkey: PublicKey) {
+        self.remote_pubkey = remote_pubkey;
+        let remote_identity = PeerIdentity::from_pubkey_full(remote_pubkey);
+        self.remote_identity =
+            (*remote_identity.node_addr() == remote_addr).then_some(remote_identity);
     }
 
     /// Replace the session state.

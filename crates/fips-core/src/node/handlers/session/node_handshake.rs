@@ -41,7 +41,13 @@ impl Node {
                     src = %self.peer_display_name(src_addr),
                     "Simultaneous session initiation: we lose, becoming responder"
                 );
-            } else if existing.is_awaiting_msg3() {
+            } else if existing.is_awaiting_msg3()
+                || (existing.is_established()
+                    && !existing.is_initiator()
+                    && !existing.has_rekey_in_progress()
+                    && existing.pending_new_session().is_none()
+                    && existing.handshake_payload().is_some())
+            {
                 // Duplicate setup while we already sent msg2 — resend stored ack
                 if let Some(payload) = existing.handshake_payload() {
                     debug!(src = %self.peer_display_name(src_addr), "Duplicate SessionSetup, resending SessionAck");
@@ -56,6 +62,17 @@ impl Node {
                 }
                 return;
             } else if existing.is_established() {
+                if existing.is_initiator()
+                    && !existing.has_rekey_in_progress()
+                    && existing.pending_new_session().is_none()
+                    && existing.handshake_payload().is_some()
+                {
+                    debug!(
+                        src = %self.peer_display_name(src_addr),
+                        "Late simultaneous SessionSetup while initial handshake is settling"
+                    );
+                    return;
+                }
                 // Rekey: if rekey enabled, treat as rekey for key rotation.
                 // The existing established session remains active for traffic.
                 if self.config.node.rekey.enabled {
@@ -567,14 +584,8 @@ impl Node {
         };
 
         let now_ms = Self::now_ms();
-        // Replace the placeholder pubkey with the real one
-        let entry = SessionEntry::new_established(
-            *src_addr,
-            remote_pubkey,
-            session,
-            now_ms,
-            false,
-        );
+        entry.authenticate_remote(*src_addr, remote_pubkey);
+        entry.establish(session, now_ms);
         self.sessions.insert(*src_addr, entry);
         self.pending_lookups.remove(src_addr);
         self.discovery_backoff.record_success(src_addr);
