@@ -686,7 +686,6 @@ pub(crate) struct OwnerState {
     replay_window: ReplayWindow,
     previous_fmp_replay_window: Option<ReplayWindow>,
     previous_fsp_replay_window: Option<ReplayWindow>,
-    pending: BTreeMap<OrderToken, CryptoCompletionBatch>,
 }
 
 impl OwnerState {
@@ -751,7 +750,6 @@ impl OwnerState {
             replay_window: ReplayWindow::default(),
             previous_fmp_replay_window: None,
             previous_fsp_replay_window: None,
-            pending: BTreeMap::new(),
         }
     }
 
@@ -1984,104 +1982,61 @@ impl OwnerState {
         Some(activity_ms.wrapping_sub(session_start_ms) as u32)
     }
 
-    pub(crate) fn retire_batch_outputs_into(
+    fn retire_ordered_run_outputs_into(
         &mut self,
-        batch: CryptoCompletionBatch,
+        run: &mut OrderedCryptoOwnerRun,
+        limit: usize,
         retired: &mut DataplaneRetiredOutputSink<'_>,
         drops: &mut Vec<PacketDrop>,
         compact_endpoint_data: bool,
-    ) {
-        self.retire_completion_batch_into(batch, retired, drops, compact_endpoint_data);
-        self.drain_ready_retirements_into(retired, drops, compact_endpoint_data);
-    }
-
-    fn retire_completion_batch_into(
-        &mut self,
-        batch: CryptoCompletionBatch,
-        retired: &mut DataplaneRetiredOutputSink<'_>,
-        drops: &mut Vec<PacketDrop>,
-        compact_endpoint_data: bool,
-    ) {
-        if batch.first_order() == Some(OrderToken(self.next_retire)) {
-            self.retire_ready_completion_run_into(batch, retired, drops, compact_endpoint_data);
-        } else {
-            self.stage_retire_completion_run(batch);
+    ) -> usize {
+        let count = limit.min(run.remaining);
+        debug_assert_eq!(run.first_order(), OrderToken(self.next_retire));
+        self.next_retire = self.next_retire.wrapping_add(count as u64);
+        self.in_flight = self.in_flight.saturating_sub(count);
+        if run.run.lane() == Lane::Bulk {
+            self.bulk_in_flight = self.bulk_in_flight.saturating_sub(count);
         }
-    }
-
-    fn stage_retire_completion_run(&mut self, batch: CryptoCompletionBatch) {
-        let Some(first_order) = batch.first_order() else {
-            return;
-        };
-        self.pending.insert(first_order, batch);
-    }
-
-    fn drain_ready_retirements_into(
-        &mut self,
-        retired: &mut DataplaneRetiredOutputSink<'_>,
-        drops: &mut Vec<PacketDrop>,
-        compact_endpoint_data: bool,
-    ) {
-        while let Some(batch) = self.pending.remove(&OrderToken(self.next_retire)) {
-            self.retire_ready_completion_run_into(batch, retired, drops, compact_endpoint_data);
-        }
-    }
-
-    fn retire_ready_completion_run_into(
-        &mut self,
-        batch: CryptoCompletionBatch,
-        retired: &mut DataplaneRetiredOutputSink<'_>,
-        drops: &mut Vec<PacketDrop>,
-        compact_endpoint_data: bool,
-    ) {
-        let batch_len = batch.len();
-        debug_assert_eq!(batch.first_order(), Some(OrderToken(self.next_retire)));
-        self.next_retire = self.next_retire.wrapping_add(batch_len as u64);
-        self.in_flight = self.in_flight.saturating_sub(batch_len);
-        if batch.lane() == Lane::Bulk {
-            self.bulk_in_flight = self.bulk_in_flight.saturating_sub(batch_len);
-        }
-        if batch.generation() != self.generation {
-            batch.consume_in_order(|completion| {
+        if run.run.generation() != self.generation {
+            return run.consume_prefix(count, |completion| {
                 drops.push(PacketDrop::from_completion(
                     &completion,
                     PacketDropReason::StaleCompletionGeneration,
                     None,
                 ));
             });
-            return;
         }
 
-        let batch = match self.retire_ready_open_fsp_session_payload_run_into(
-            batch,
-            retired,
-            compact_endpoint_data,
-        ) {
-            Ok(()) => return,
-            Err(batch) => batch,
-        };
+        if run
+            .run
+            .ready_prefix_is_open_fsp_session_payload(count)
+        {
+            return self.retire_ready_open_fsp_session_payload_run_into(
+                run,
+                count,
+                retired,
+                compact_endpoint_data,
+            );
+        }
 
-        batch.consume_in_order(|completion| {
+        run.consume_prefix(count, |completion| {
             self.retire_ready_completion_into(completion, retired, drops, compact_endpoint_data);
-        });
+        })
     }
 
     fn retire_ready_open_fsp_session_payload_run_into(
         &mut self,
-        batch: CryptoCompletionBatch,
+        run: &mut OrderedCryptoOwnerRun,
+        count: usize,
         retired: &mut DataplaneRetiredOutputSink<'_>,
         compact_endpoint_data: bool,
-    ) -> Result<(), CryptoCompletionBatch> {
-        if !batch.is_open_fsp_session_payload_run() {
-            return Err(batch);
-        }
-
+    ) -> usize {
         let mut endpoint_data_batch: Option<DataplaneEndpointDataBatch> = None;
         let mut endpoint_packets = 0usize;
         let record_endpoint_packets = crate::perf_profile::enabled();
         let mut direct_enqueued_at_ms = None;
         let received_at = std::time::Instant::now();
-        batch.consume_in_order(|completion| {
+        let retired_count = run.consume_prefix(count, |completion| {
             let CryptoResult::Opened(output) = completion.result else {
                 unreachable!("open FSP session payload run contains only opened outputs");
             };
@@ -2119,7 +2074,7 @@ impl OwnerState {
                 endpoint_packets,
             );
         }
-        Ok(())
+        retired_count
     }
 
     fn retire_ready_completion_into(

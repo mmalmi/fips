@@ -23,8 +23,41 @@ pub(crate) struct CryptoCompletion {
     result: CryptoResult,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct DataplaneOwnerReadiness {
+    shards: Arc<[Arc<tokio::sync::Notify>]>,
+}
+
+impl DataplaneOwnerReadiness {
+    fn new(shard_count: usize) -> Self {
+        let shards = (0..shard_count.max(1))
+            .map(|_| Arc::new(tokio::sync::Notify::new()))
+            .collect::<Vec<_>>();
+        Self {
+            shards: Arc::from(shards),
+        }
+    }
+
+    fn shard(&self, shard: usize) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.shards[shard % self.shards.len()])
+    }
+
+    fn wake(&self) {
+        self.shards[0].notify_one();
+    }
+
+    pub(crate) async fn notified(&self) {
+        let waits = self
+            .shards
+            .iter()
+            .map(|notify| Box::pin(notify.notified()))
+            .collect::<Vec<_>>();
+        let _ = futures::future::select_all(waits).await;
+    }
+}
+
 #[derive(Debug)]
-struct CryptoOwnerRun {
+struct CryptoOwnerRunDraft {
     next_order: OrderToken,
     open_fsp_session_payload: bool,
     items: Vec<CryptoOwnerRunItem>,
@@ -45,7 +78,7 @@ enum CryptoOwnerRunItemState {
     Completed(CryptoResult),
 }
 
-impl CryptoOwnerRun {
+impl CryptoOwnerRunDraft {
     fn new(work: CryptoOwnerRunItem, capacity: usize) -> Self {
         let mut items = Vec::with_capacity(capacity);
         let next_order = work.reservation.order.next();
@@ -94,14 +127,6 @@ impl CryptoOwnerRun {
         self.items.len()
     }
 
-    fn is_empty(&self) -> bool {
-        self.items.is_empty()
-    }
-
-    fn first_order(&self) -> Option<OrderToken> {
-        self.items.first().map(|item| item.reservation.order)
-    }
-
     fn first_reservation(&self) -> Option<&OwnerReservation> {
         self.items.first().map(|item| &item.reservation)
     }
@@ -117,38 +142,12 @@ impl CryptoOwnerRun {
         }
     }
 
-    fn is_open_fsp_session_payload_run(&self) -> bool {
-        !self.is_empty()
-            && self.is_open()
-            && self
-                .first_reservation()
-                .is_some_and(|reservation| reservation.owner.protocol() == PacketProtocol::Fsp)
-            && self.open_fsp_session_payload
-            && self
-                .items
-                .iter()
-                .all(CryptoOwnerRunItem::is_open_fsp_session_payload)
-    }
-
     fn is_open(&self) -> bool {
         self.items
             .first()
             .is_some_and(CryptoOwnerRunItem::is_open)
     }
 
-    fn split_off(&mut self, at: usize) -> Self {
-        Self {
-            next_order: self.next_order,
-            open_fsp_session_payload: self.open_fsp_session_payload,
-            items: self.items.split_off(at),
-        }
-    }
-
-    fn consume_in_order(self, mut consume: impl FnMut(CryptoCompletion)) {
-        for item in self.items {
-            consume(item.into_completion());
-        }
-    }
 }
 
 impl CryptoOwnerRunItem {
@@ -195,6 +194,24 @@ impl CryptoOwnerRunItem {
         }
     }
 
+    fn execute(&mut self, cipher: &AeadKey) {
+        let state = std::mem::replace(
+            &mut self.state,
+            CryptoOwnerRunItemState::Completed(CryptoResult::Failed(CryptoFailureKind::Open)),
+        );
+        self.state = CryptoOwnerRunItemState::Completed(match state {
+            CryptoOwnerRunItemState::Open(packet) => {
+                execute_open_crypto_work(packet, &self.reservation, cipher)
+            }
+            CryptoOwnerRunItemState::Seal(packet) => {
+                execute_seal_crypto_work(packet, &self.reservation, cipher)
+            }
+            CryptoOwnerRunItemState::Completed(_) => {
+                panic!("crypto owner subrun executed twice")
+            }
+        });
+    }
+
     fn into_completion(self) -> CryptoCompletion {
         let result = match self.state {
             CryptoOwnerRunItemState::Completed(result) => result,
@@ -210,32 +227,25 @@ impl CryptoOwnerRunItem {
 }
 
 #[derive(Debug)]
-enum CryptoCompletionRun {
-    Completed(Vec<CryptoCompletion>),
-    OwnerRun(CryptoOwnerRun),
-}
-
-#[derive(Debug)]
-pub(crate) struct CryptoCompletionBatch {
+struct CryptoOwnerRun {
     owner_shard: usize,
     owner: OwnerId,
     generation: u64,
     lane: Lane,
-    completions: CryptoCompletionRun,
+    first_order: OrderToken,
+    len: usize,
+    open_fsp_session_payload: bool,
+    subruns: Vec<std::sync::Mutex<VecDeque<CryptoOwnerRunItem>>>,
+    remaining_subruns: std::sync::atomic::AtomicUsize,
+    ready: Arc<tokio::sync::Notify>,
+    counters: Option<DataplaneAeadWorkerCounters>,
 }
 
-impl CryptoCompletion {
-    fn is_open_family(&self) -> bool {
-        self.result.is_open_family()
-    }
-
-    fn same_family(&self, other: &CryptoCompletion) -> bool {
-        self.is_open_family() == other.is_open_family()
-    }
-
-    fn order(&self) -> OrderToken {
-        self.reservation.order
-    }
+#[derive(Debug)]
+struct OrderedCryptoOwnerRun {
+    run: Arc<CryptoOwnerRun>,
+    next_order: OrderToken,
+    remaining: usize,
 }
 
 impl CryptoResult {
@@ -249,167 +259,213 @@ impl CryptoResult {
     }
 }
 
-impl CryptoCompletionBatch {
-    pub(crate) fn from_completion(completion: CryptoCompletion) -> Self {
-        let owner_shard = completion.reservation.owner_shard();
-        let owner = completion.reservation.owner;
-        let generation = completion.reservation.generation;
-        let lane = completion.reservation.lane;
-        Self {
-            owner_shard,
-            owner,
-            generation,
-            lane,
-            completions: CryptoCompletionRun::Completed(vec![completion]),
-        }
-    }
-
-    fn from_owner_run(run: CryptoOwnerRun) -> Self {
-        let reservation = run
+impl CryptoOwnerRun {
+    fn new(
+        draft: CryptoOwnerRunDraft,
+        subrun_packets: usize,
+        ready: Arc<tokio::sync::Notify>,
+        counters: Option<DataplaneAeadWorkerCounters>,
+    ) -> Self {
+        let reservation = draft
             .first_reservation()
-            .expect("crypto owner run contains a completion");
+            .expect("crypto owner run contains work");
         let owner_shard = reservation.owner_shard();
         let owner = reservation.owner;
         let generation = reservation.generation;
         let lane = reservation.lane;
+        let first_order = reservation.order;
+        let len = draft.len();
+        let open_fsp_session_payload = draft.open_fsp_session_payload;
+        let mut items = draft.items.into_iter();
+        let mut subruns = Vec::with_capacity(len.div_ceil(subrun_packets.max(1)));
+        loop {
+            let subrun = items
+                .by_ref()
+                .take(subrun_packets.max(1))
+                .collect::<VecDeque<_>>();
+            if subrun.is_empty() {
+                break;
+            }
+            subruns.push(std::sync::Mutex::new(subrun));
+        }
+        let remaining_subruns = if counters.is_some() { subruns.len() } else { 0 };
         Self {
             owner_shard,
             owner,
             generation,
             lane,
-            completions: CryptoCompletionRun::OwnerRun(run),
+            first_order,
+            len,
+            open_fsp_session_payload,
+            subruns,
+            remaining_subruns: std::sync::atomic::AtomicUsize::new(remaining_subruns),
+            ready,
+            counters,
         }
     }
 
-    pub(crate) fn push_grouped(
-        completion: CryptoCompletion,
-        batches: &mut Vec<CryptoCompletionBatch>,
-    ) {
-        if let Some(last) = batches.last_mut()
-            && last.matches(&completion)
-        {
-            let CryptoCompletionRun::Completed(completions) = &mut last.completions else {
-                unreachable!("shared owner runs do not match grouped completions");
-            };
-            completions.push(completion);
-            return;
-        }
-        batches.push(Self::from_completion(completion));
+    fn len(&self) -> usize {
+        self.len
     }
 
-    #[cfg(test)]
-    pub(crate) fn drain_completion_vec_into_batches(
-        completions: &mut Vec<CryptoCompletion>,
-        batches: &mut Vec<CryptoCompletionBatch>,
-    ) -> usize {
-        let count = completions.len();
-        for completion in completions.drain(..) {
-            Self::push_grouped(completion, batches);
-        }
-        count
+    fn subrun_count(&self) -> usize {
+        self.subruns.len()
     }
 
-    pub(crate) fn len(&self) -> usize {
-        match &self.completions {
-            CryptoCompletionRun::Completed(completions) => completions.len(),
-            CryptoCompletionRun::OwnerRun(run) => run.len(),
+    fn subrun_len(&self, index: usize) -> usize {
+        self.subruns[index]
+            .lock()
+            .expect("crypto owner subrun lock poisoned")
+            .len()
+    }
+
+    fn is_ready(&self) -> bool {
+        self.remaining_subruns
+            .load(std::sync::atomic::Ordering::Acquire)
+            == 0
+    }
+
+    fn notify_if_ready(&self) {
+        if self.is_ready() {
+            self.ready.notify_one();
         }
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub(crate) fn first_order(&self) -> Option<OrderToken> {
-        match &self.completions {
-            CryptoCompletionRun::Completed(completions) => {
-                completions.first().map(CryptoCompletion::order)
-            }
-            CryptoCompletionRun::OwnerRun(run) => run.first_order(),
-        }
-    }
-
-    pub(crate) fn owner_shard(&self) -> usize {
+    fn owner_shard(&self) -> usize {
         self.owner_shard
     }
 
-    pub(crate) fn owner(&self) -> OwnerId {
+    fn owner(&self) -> OwnerId {
         self.owner
     }
 
-    pub(crate) fn generation(&self) -> u64 {
+    fn generation(&self) -> u64 {
         self.generation
     }
 
-    pub(crate) fn lane(&self) -> Lane {
+    fn lane(&self) -> Lane {
         self.lane
     }
 
-    pub(crate) fn is_open_fsp_session_payload_run(&self) -> bool {
-        if self.is_empty() || self.owner.protocol() != PacketProtocol::Fsp {
+    fn first_order(&self) -> OrderToken {
+        self.first_order
+    }
+
+    fn execute_subrun(&self, index: usize, cipher: &AeadKey) {
+        let mut items = self.subruns[index]
+            .lock()
+            .expect("crypto owner subrun lock poisoned");
+        let _open_timer = items.front().and_then(|item| {
+            item.is_open().then(|| {
+                crate::perf_profile::Timer::start(crate::perf_profile::Stage::DataplaneAeadOpen)
+            })
+        });
+        for item in items.iter_mut() {
+            item.execute(cipher);
+        }
+        drop(items);
+        if self
+            .remaining_subruns
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel)
+            == 1
+        {
+            self.ready.notify_one();
+        }
+    }
+
+    fn ready_prefix_is_open_fsp_session_payload(&self, mut count: usize) -> bool {
+        if count == 0
+            || !self.open_fsp_session_payload
+            || self.owner.protocol() != PacketProtocol::Fsp
+            || !self.is_ready()
+        {
             return false;
         }
-        match &self.completions {
-            CryptoCompletionRun::Completed(completions) => completions.iter().all(|completion| {
-                matches!(
-                    &completion.result,
-                    CryptoResult::Opened(output)
-                        if matches!(output.target(), OutputTarget::SessionPayload { .. })
-                )
-            }),
-            CryptoCompletionRun::OwnerRun(run) => run.is_open_fsp_session_payload_run(),
-        }
-    }
-
-    pub(crate) fn split_off(&mut self, at: usize) -> Self {
-        let completions = match &mut self.completions {
-            CryptoCompletionRun::Completed(completions) => {
-                CryptoCompletionRun::Completed(completions.split_off(at))
-            }
-            CryptoCompletionRun::OwnerRun(run) => {
-                CryptoCompletionRun::OwnerRun(run.split_off(at))
-            }
-        };
-        Self {
-            owner_shard: self.owner_shard,
-            owner: self.owner,
-            generation: self.generation,
-            lane: self.lane,
-            completions,
-        }
-    }
-
-    pub(crate) fn into_completions(self) -> Vec<CryptoCompletion> {
-        let mut completions = Vec::with_capacity(self.len());
-        self.consume_in_order(|completion| completions.push(completion));
-        completions
-    }
-
-    pub(crate) fn consume_in_order(self, mut consume: impl FnMut(CryptoCompletion)) {
-        match self.completions {
-            CryptoCompletionRun::Completed(completions) => {
-                for completion in completions {
-                    consume(completion);
+        for subrun in &self.subruns {
+            let items = subrun
+                .lock()
+                .expect("crypto owner subrun lock poisoned");
+            for item in items.iter().take(count) {
+                if !item.is_open_fsp_session_payload() {
+                    return false;
                 }
             }
-            CryptoCompletionRun::OwnerRun(run) => run.consume_in_order(consume),
+            count = count.saturating_sub(items.len());
+            if count == 0 {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn consume_ready_prefix(
+        &self,
+        mut count: usize,
+        mut consume: impl FnMut(CryptoCompletion),
+    ) -> usize {
+        assert!(self.is_ready(), "crypto owner run retired before readiness");
+        let requested = count;
+        for subrun in &self.subruns {
+            let mut items = subrun
+                .lock()
+                .expect("crypto owner subrun lock poisoned");
+            while count > 0 {
+                let Some(item) = items.pop_front() else {
+                    break;
+                };
+                consume(item.into_completion());
+                count -= 1;
+            }
+            if count == 0 {
+                break;
+            }
+        }
+        requested.saturating_sub(count)
+    }
+
+    fn finish_retired(&self, count: usize) {
+        if let Some(counters) = &self.counters {
+            counters.finish(count, if self.lane == Lane::Bulk { count } else { 0 });
+        }
+    }
+}
+
+impl OrderedCryptoOwnerRun {
+    fn new(run: Arc<CryptoOwnerRun>) -> Self {
+        Self {
+            next_order: run.first_order(),
+            remaining: run.len(),
+            run,
         }
     }
 
-    fn matches(&self, completion: &CryptoCompletion) -> bool {
-        let CryptoCompletionRun::Completed(completions) = &self.completions else {
-            return false;
-        };
-        self.owner_shard == completion.reservation.owner_shard()
-            && self.owner == completion.reservation.owner
-            && self.generation == completion.reservation.generation
-            && self.lane == completion.reservation.lane
-            && completions
-                .first()
-                .is_none_or(|first| first.same_family(completion))
-            && completions
-                .last()
-                .is_none_or(|last| last.order().next() == completion.order())
+    fn is_ready(&self) -> bool {
+        self.run.is_ready()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.remaining == 0
+    }
+
+    fn first_order(&self) -> OrderToken {
+        self.next_order
+    }
+
+    fn last_order_exclusive(&self) -> OrderToken {
+        OrderToken(self.next_order.0.wrapping_add(self.remaining as u64))
+    }
+
+    fn consume_prefix(
+        &mut self,
+        limit: usize,
+        consume: impl FnMut(CryptoCompletion),
+    ) -> usize {
+        let count = limit.min(self.remaining);
+        let consumed = self.run.consume_ready_prefix(count, consume);
+        self.remaining = self.remaining.saturating_sub(consumed);
+        self.next_order = OrderToken(self.next_order.0.wrapping_add(consumed as u64));
+        self.run.finish_retired(consumed);
+        consumed
     }
 }
 

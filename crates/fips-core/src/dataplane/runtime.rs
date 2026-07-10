@@ -4,7 +4,7 @@ const DATAPLANE_DEFERRED_RAW_INGRESS_MAX_RETRIES: u8 = 8;
 pub(crate) struct DataplaneTurnDriver {
     mover: Dataplane,
     prepared_work: Vec<PreparedCryptoWork>,
-    completion_batches: Vec<CryptoCompletionBatch>,
+    prepared_runs: Vec<PreparedCryptoOwnerRun>,
     raw_ingress_drops: Vec<DataplaneRawIngressDrop>,
     output_drops: Vec<DataplaneOutputDrop>,
     outputs: Vec<PacketOutput>,
@@ -102,7 +102,7 @@ impl DataplaneTurnDriver {
         Self {
             mover: Dataplane::new(config),
             prepared_work: Vec::new(),
-            completion_batches: Vec::new(),
+            prepared_runs: Vec::new(),
             raw_ingress_drops: Vec::new(),
             output_drops: Vec::new(),
             outputs: Vec::new(),
@@ -129,6 +129,14 @@ impl DataplaneTurnDriver {
 
     pub(crate) fn has_runnable_work(&self) -> bool {
         self.mover.has_runnable_work()
+    }
+
+    pub(crate) fn readiness(&self) -> DataplaneOwnerReadiness {
+        self.mover.readiness()
+    }
+
+    pub(crate) fn wake(&self) {
+        self.mover.wake();
     }
 
     pub(crate) fn has_owner(&self, owner: OwnerId) -> bool {
@@ -404,25 +412,22 @@ impl DataplaneTurnDriver {
         report
     }
 
-    fn start_aead_completion_turn(
+    fn start_aead_retire_turn(
         &mut self,
-        completions: &mut DataplaneAeadWorkerPool,
         completion_limit: usize,
         compact_endpoint_data: bool,
     ) -> DataplaneRuntimeSummary {
         self.reset_turn_buffers();
-        self.drain_aead_completion_turn_into_summary(
+        self.retire_ready_aead_into_summary(
             DataplaneRuntimeSummary::default(),
-            completions,
             completion_limit,
             compact_endpoint_data,
         )
     }
 
-    fn drain_aead_completion_turn_into_summary(
+    fn retire_ready_aead_into_summary(
         &mut self,
         mut summary: DataplaneRuntimeSummary,
-        completions: &mut DataplaneAeadWorkerPool,
         completion_limit: usize,
         compact_endpoint_data: bool,
     ) -> DataplaneRuntimeSummary {
@@ -430,12 +435,8 @@ impl DataplaneTurnDriver {
             crate::perf_profile::Stage::DataplaneCompletionDrain,
         );
         let completion_limit = self.completion_drain_limit(completion_limit);
-        let queued = completions.drain_completion_batches_into_sink(
-            completion_limit,
-            &mut self.mover,
-        );
-        summary.completions = summary.completions.saturating_add(queued);
-        self.retire_queued_completed_aead_outputs(completion_limit, compact_endpoint_data);
+        let retired = self.retire_ready_aead_outputs(completion_limit, compact_endpoint_data);
+        summary.completions = summary.completions.saturating_add(retired);
         self.admit_retired_outbound_packets(summary)
     }
 
@@ -1089,14 +1090,14 @@ impl DataplaneTurnDriver {
         summary.inbound_admitted.saturating_sub(admitted_before)
     }
 
-    fn retire_queued_completed_aead_outputs(
+    fn retire_ready_aead_outputs(
         &mut self,
         limit: usize,
         compact_endpoint_data: bool,
-    ) {
+    ) -> usize {
         let retired_completions = self
             .mover
-            .retire_queued_completions_into(
+            .retire_ready_runs_into(
                 limit,
                 &mut DataplaneRetiredOutputSink::new(
                     &mut self.outputs,
@@ -1108,6 +1109,7 @@ impl DataplaneTurnDriver {
         crate::perf_profile::record_dataplane_live_completions_retired(retired_completions);
         let mut mover_drops = self.mover.drain_drops();
         self.drops.append(&mut mover_drops);
+        retired_completions
     }
 
     fn collect_live_session_outputs<R>(
@@ -1169,7 +1171,7 @@ impl DataplaneTurnDriver {
                     remaining,
                     DataplaneAeadRunBuffers::new(
                         &mut self.prepared_work,
-                        &mut self.completion_batches,
+                        &mut self.prepared_runs,
                         &mut self.outputs,
                         &mut self.retired_outbound_packets,
                         &mut self.fsp_authenticated_ingress,

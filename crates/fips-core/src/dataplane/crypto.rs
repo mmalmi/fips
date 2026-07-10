@@ -3,10 +3,14 @@ use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 pub(crate) enum PreparedCryptoWork {
     Open { work: CryptoWork, cipher: AeadKey },
     Seal { work: OutboundCryptoWork, cipher: AeadKey },
+    Failed {
+        reservation: OwnerReservation,
+        kind: CryptoFailureKind,
+    },
 }
 
 const DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS: usize = 8;
-const DATAPLANE_AEAD_JOB_PACKETS: usize = 128;
+const DATAPLANE_AEAD_OWNER_RUN_PACKETS: usize = 128;
 
 impl PreparedCryptoWork {
     pub(crate) fn open(work: CryptoWork, cipher: AeadKey) -> Self {
@@ -17,10 +21,15 @@ impl PreparedCryptoWork {
         Self::Seal { work, cipher }
     }
 
+    pub(crate) fn failed(reservation: OwnerReservation, kind: CryptoFailureKind) -> Self {
+        Self::Failed { reservation, kind }
+    }
+
     fn lane(&self) -> Lane {
         match self {
             Self::Open { work, .. } => work.reservation.lane,
             Self::Seal { work, .. } => work.reservation.lane,
+            Self::Failed { reservation, .. } => reservation.lane,
         }
     }
 
@@ -28,37 +37,53 @@ impl PreparedCryptoWork {
         match self {
             Self::Open { work, .. } => &work.reservation,
             Self::Seal { work, .. } => &work.reservation,
+            Self::Failed { reservation, .. } => reservation,
         }
     }
 
-    fn cipher(&self) -> &AeadKey {
+    fn cipher(&self) -> Option<&AeadKey> {
         match self {
-            Self::Open { cipher, .. } | Self::Seal { cipher, .. } => cipher,
+            Self::Open { cipher, .. } | Self::Seal { cipher, .. } => Some(cipher),
+            Self::Failed { .. } => None,
         }
     }
 
     fn is_open(&self) -> bool {
-        matches!(self, Self::Open { .. })
+        matches!(
+            self,
+            Self::Open { .. }
+                | Self::Failed {
+                    kind: CryptoFailureKind::Open,
+                    ..
+                }
+        )
     }
 
     fn is_open_fsp_session_payload(&self) -> bool {
         match self {
             Self::Open { work, .. } => work.is_open_fsp_session_payload(),
-            Self::Seal { .. } => false,
+            Self::Seal { .. } | Self::Failed { .. } => false,
         }
     }
 
-    fn into_owner_item(self) -> (CryptoOwnerRunItem, AeadKey) {
+    fn into_owner_item(self) -> (CryptoOwnerRunItem, Option<AeadKey>) {
         match self {
-            Self::Open { work, cipher } => (CryptoOwnerRunItem::open(work), cipher),
-            Self::Seal { work, cipher } => (CryptoOwnerRunItem::seal(work), cipher),
+            Self::Open { work, cipher } => (CryptoOwnerRunItem::open(work), Some(cipher)),
+            Self::Seal { work, cipher } => (CryptoOwnerRunItem::seal(work), Some(cipher)),
+            Self::Failed { reservation, kind } => (
+                CryptoOwnerRunItem {
+                    reservation,
+                    state: CryptoOwnerRunItemState::Completed(CryptoResult::Failed(kind)),
+                },
+                None,
+            ),
         }
     }
 }
 
 struct CryptoOwnerRunBuilder {
     cipher: Option<AeadKey>,
-    run: Option<CryptoOwnerRun>,
+    run: Option<CryptoOwnerRunDraft>,
 }
 
 impl CryptoOwnerRunBuilder {
@@ -69,50 +94,82 @@ impl CryptoOwnerRunBuilder {
         }
     }
 
-    fn push(&mut self, pool: &mut DataplaneAeadWorkerPool, work: PreparedCryptoWork) {
+    fn push(
+        &mut self,
+        work: PreparedCryptoWork,
+        readiness: &DataplaneOwnerReadiness,
+        counters: &DataplaneAeadWorkerCounters,
+        runs: &mut Vec<PreparedCryptoOwnerRun>,
+    ) {
         if !self.matches_run(&work)
             || self
                 .run
                 .as_ref()
-                .is_some_and(|run| run.len() >= DATAPLANE_AEAD_JOB_PACKETS)
+                .is_some_and(|run| run.len() >= DATAPLANE_AEAD_OWNER_RUN_PACKETS)
         {
-            self.flush(pool);
+            self.flush(readiness, counters, runs);
         }
         let (work, cipher) = work.into_owner_item();
         match &mut self.run {
             Some(run) => run.push(work),
             None => {
-                self.run = Some(CryptoOwnerRun::new(work, DATAPLANE_AEAD_JOB_PACKETS));
-                self.cipher = Some(cipher);
+                self.run = Some(CryptoOwnerRunDraft::new(
+                    work,
+                    DATAPLANE_AEAD_OWNER_RUN_PACKETS,
+                ));
+                self.cipher = cipher;
             }
         }
     }
 
-    fn flush(&mut self, pool: &mut DataplaneAeadWorkerPool) {
-        let Some(run) = self.run.take() else {
+    fn flush(
+        &mut self,
+        readiness: &DataplaneOwnerReadiness,
+        counters: &DataplaneAeadWorkerCounters,
+        runs: &mut Vec<PreparedCryptoOwnerRun>,
+    ) {
+        let Some(draft) = self.run.take() else {
             return;
         };
-        let cipher = self
-            .cipher
-            .take()
-            .expect("crypto run cipher exists when work is non-empty");
-        pool.submit_run(run, cipher);
+        let cipher = self.cipher.take();
+        let counter = cipher.as_ref().map(|_| counters.clone());
+        if counter.is_some() {
+            counters.add(draft.len(), draft.bulk_count());
+        }
+        let ready = readiness.shard(draft.first_reservation().unwrap().owner_shard());
+        runs.push(PreparedCryptoOwnerRun {
+            run: Arc::new(CryptoOwnerRun::new(
+                draft,
+                DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS,
+                ready,
+                counter,
+            )),
+            cipher,
+        });
     }
 
     fn matches_run(&self, work: &PreparedCryptoWork) -> bool {
         let Some(run) = self.run.as_ref() else {
             return true;
         };
-        let Some(current_cipher) = self.cipher.as_ref() else {
-            return true;
+        let same_cipher = match (self.cipher.as_ref(), work.cipher()) {
+            (Some(current), Some(next)) => Arc::ptr_eq(current, next),
+            (None, None) => true,
+            _ => false,
         };
-        Arc::ptr_eq(current_cipher, work.cipher())
+        same_cipher
             && run.matches(
                 work.reservation(),
                 work.is_open(),
                 work.is_open_fsp_session_payload(),
             )
     }
+}
+
+#[derive(Debug)]
+pub(crate) struct PreparedCryptoOwnerRun {
+    run: Arc<CryptoOwnerRun>,
+    cipher: Option<AeadKey>,
 }
 
 #[derive(Clone, Debug)]
@@ -146,10 +203,6 @@ impl DataplaneAeadWorkerCounters {
 
 #[derive(Debug)]
 pub(crate) struct DataplaneAeadWorkerPool {
-    completion_tx: tokio::sync::mpsc::Sender<CryptoCompletionBatch>,
-    completion_rx: tokio::sync::mpsc::Receiver<CryptoCompletionBatch>,
-    completion_notify: Arc<tokio::sync::Notify>,
-    pending_completion_batch: Option<CryptoCompletionBatch>,
     counters: DataplaneAeadWorkerCounters,
     max_in_flight: usize,
     runtime: Option<tokio::runtime::Handle>,
@@ -159,39 +212,13 @@ pub(crate) struct DataplaneAeadWorkerPool {
 impl DataplaneAeadWorkerPool {
     pub(crate) fn new(max_in_flight: usize) -> Self {
         let max_in_flight = max_in_flight.max(1);
-        let (completion_tx, completion_rx) = tokio::sync::mpsc::channel(max_in_flight);
 
         Self {
-            completion_tx,
-            completion_rx,
-            completion_notify: Arc::new(tokio::sync::Notify::new()),
-            pending_completion_batch: None,
             counters: DataplaneAeadWorkerCounters::new(),
             max_in_flight,
             runtime: tokio::runtime::Handle::try_current().ok(),
             tasks: tokio::task::JoinSet::new(),
         }
-    }
-
-    pub(crate) fn completion_notify(&self) -> Arc<tokio::sync::Notify> {
-        Arc::clone(&self.completion_notify)
-    }
-
-    pub(crate) fn has_ready_completions(&self) -> bool {
-        self.pending_completion_batch.is_some() || !self.completion_rx.is_empty()
-    }
-
-    pub(crate) fn drain_completion_batches_into_sink<S>(
-        &mut self,
-        limit: usize,
-        sink: &mut S,
-    ) -> usize
-    where
-        S: DataplaneCompletionSink,
-    {
-        self.drain_completion_batches_with(limit, |batch| {
-            sink.push_completion_batch(batch);
-        })
     }
 
     pub(crate) fn record_perf_depths(&self) {
@@ -202,80 +229,6 @@ impl DataplaneAeadWorkerPool {
             crate::perf_profile::Event::DataplaneAeadInFlight,
             self.counters.in_flight.load(Relaxed) as u64,
         );
-        let pending_completion_depth = self
-            .pending_completion_batch
-            .as_ref()
-            .map_or(0, CryptoCompletionBatch::len);
-        let pending_completion_batches = self.pending_completion_batch.is_some() as usize;
-        let rx_queued_messages = self.completion_rx.len();
-        let completion_depth = pending_completion_depth.saturating_add(rx_queued_messages);
-        crate::perf_profile::record_event_count(
-            crate::perf_profile::Event::DataplaneAeadCompletionQueueDepth,
-            completion_depth as u64,
-        );
-        crate::perf_profile::record_dataplane_aead_completion_backlog(
-            rx_queued_messages,
-            pending_completion_batches,
-            pending_completion_depth,
-        );
-    }
-
-    fn finish_drained_completions(&self, count: usize, bulk_count: usize) {
-        self.counters.finish(count, bulk_count);
-    }
-
-    fn drain_completion_batch(
-        &mut self,
-        mut batch: CryptoCompletionBatch,
-        limit: usize,
-        push_batch: &mut impl FnMut(CryptoCompletionBatch),
-    ) -> (usize, Option<CryptoCompletionBatch>) {
-        crate::perf_profile::record_dataplane_aead_completion_batch(batch.len());
-        let drained = batch.len().min(limit);
-        if drained == 0 {
-            return (0, Some(batch));
-        }
-        let pending = if drained < batch.len() {
-            let pending = batch.split_off(drained);
-            crate::perf_profile::record_dataplane_aead_completion_split(pending.len());
-            Some(pending)
-        } else {
-            None
-        };
-        let bulk_count = if batch.lane() == Lane::Bulk { drained } else { 0 };
-        self.finish_drained_completions(drained, bulk_count);
-        push_batch(batch);
-        (drained, pending)
-    }
-
-    fn drain_completion_batches_with(
-        &mut self,
-        limit: usize,
-        mut push_batch: impl FnMut(CryptoCompletionBatch),
-    ) -> usize {
-        self.reap_finished_tasks();
-        let mut drained = 0usize;
-        while drained < limit {
-            let Some(batch) = self
-                .pending_completion_batch
-                .take()
-                .or_else(|| self.completion_rx.try_recv().ok())
-            else {
-                break;
-            };
-            let (got, pending) = self.drain_completion_batch(
-                batch,
-                limit.saturating_sub(drained),
-                &mut push_batch,
-            );
-            drained = drained.saturating_add(got);
-            if let Some(pending) = pending {
-                self.pending_completion_batch = Some(pending);
-                break;
-            }
-        }
-        self.reap_finished_tasks();
-        drained
     }
 
     fn available_capacity(&self) -> usize {
@@ -301,46 +254,49 @@ impl DataplaneAeadWorkerPool {
         bulk_limit.saturating_sub(bulk_in_flight).min(total_available)
     }
 
-    fn submit_run(&mut self, run: CryptoOwnerRun, cipher: AeadKey) {
+    fn build_prepared_runs(
+        &self,
+        prepared: &mut Vec<PreparedCryptoWork>,
+        readiness: &DataplaneOwnerReadiness,
+        runs: &mut Vec<PreparedCryptoOwnerRun>,
+    ) {
+        runs.clear();
+        let mut builder = CryptoOwnerRunBuilder::new();
+        for work in prepared.drain(..) {
+            builder.push(work, readiness, &self.counters, runs);
+        }
+        builder.flush(readiness, &self.counters, runs);
+    }
+
+    fn submit_prepared_runs(&mut self, runs: &mut Vec<PreparedCryptoOwnerRun>) {
         self.reap_finished_tasks();
-        let chunk_len = run.len();
-        let bulk_count = run.bulk_count();
-        let queued_at = crate::perf_profile::stamp();
-        self.counters.add(chunk_len, bulk_count);
-        let completion_tx = self.completion_tx.clone();
-        let completion_notify = Arc::clone(&self.completion_notify);
-        let counters = self.counters.clone();
         let runtime = self
             .runtime
             .get_or_insert_with(tokio::runtime::Handle::current)
             .clone();
-        self.tasks.spawn_on(
-            async move {
-                crate::perf_profile::record_since(
-                    crate::perf_profile::Stage::DataplaneAeadWorkerQueueWait,
-                    queued_at,
+        for prepared in runs.drain(..) {
+            let Some(cipher) = prepared.cipher else {
+                prepared.run.notify_if_ready();
+                continue;
+            };
+            for index in 0..prepared.run.subrun_count() {
+                let run = Arc::clone(&prepared.run);
+                let cipher = Arc::clone(&cipher);
+                let queued_at = crate::perf_profile::stamp();
+                let subrun_len = run.subrun_len(index);
+                self.tasks.spawn_on(
+                    async move {
+                        crate::perf_profile::record_since(
+                            crate::perf_profile::Stage::DataplaneAeadWorkerQueueWait,
+                            queued_at,
+                        );
+                        run.execute_subrun(index, &cipher);
+                    },
+                    &runtime,
                 );
-                let completion = execute_crypto_owner_run(run, cipher);
-                let completed_count = completion.len();
-                let completed_bulk_count = if completion.lane() == Lane::Bulk {
-                    completed_count
-                } else {
-                    0
-                };
-                crate::perf_profile::record_dataplane_aead_completion_send(
-                    1,
-                    1,
-                    completed_count,
-                );
-                if completion_tx.send(completion).await.is_err() {
-                    counters.finish(completed_count, completed_bulk_count);
-                    return;
-                }
-                completion_notify.notify_one();
-            },
-            &runtime,
-        );
-        crate::perf_profile::record_dataplane_aead_prepared_job(chunk_len);
+                crate::perf_profile::record_dataplane_aead_prepared_job(subrun_len);
+            }
+        }
     }
 
     fn reap_finished_tasks(&mut self) {
@@ -349,48 +305,6 @@ impl DataplaneAeadWorkerPool {
         }
     }
 
-    fn submit_prepared_chunk(
-        &mut self,
-        prepared: &mut Vec<PreparedCryptoWork>,
-    ) {
-        if prepared.is_empty() {
-            return;
-        }
-
-        let mut runs = CryptoOwnerRunBuilder::new();
-        for work in prepared.drain(..) {
-            runs.push(self, work);
-        }
-        runs.flush(self);
-    }
-}
-
-fn execute_crypto_owner_run(
-    mut run: CryptoOwnerRun,
-    cipher: AeadKey,
-) -> CryptoCompletionBatch {
-    let _open_timer = run.is_open().then(|| {
-        crate::perf_profile::Timer::start(crate::perf_profile::Stage::DataplaneAeadOpen)
-    });
-    for item in &mut run.items {
-        let state = std::mem::replace(
-            &mut item.state,
-            CryptoOwnerRunItemState::Completed(CryptoResult::Failed(CryptoFailureKind::Open)),
-        );
-        let result = match state {
-            CryptoOwnerRunItemState::Open(packet) => {
-                execute_open_crypto_work(packet, &item.reservation, &cipher)
-            }
-            CryptoOwnerRunItemState::Seal(packet) => {
-                execute_seal_crypto_work(packet, &item.reservation, &cipher)
-            }
-            CryptoOwnerRunItemState::Completed(_) => {
-                panic!("crypto owner run executed twice")
-            }
-        };
-        item.state = CryptoOwnerRunItemState::Completed(result);
-    }
-    CryptoCompletionBatch::from_owner_run(run)
 }
 
 fn dataplane_aead_worker_priority_reserve(max_in_flight: usize) -> usize {
@@ -410,17 +324,12 @@ impl std::fmt::Debug for PreparedCryptoWork {
                 .debug_struct("PreparedCryptoWork::Seal")
                 .field("reservation", &work.reservation)
                 .finish_non_exhaustive(),
+            Self::Failed { reservation, kind } => f
+                .debug_struct("PreparedCryptoWork::Failed")
+                .field("reservation", reservation)
+                .field("kind", kind)
+                .finish(),
         }
-    }
-}
-
-fn failed_crypto_completion(
-    reservation: OwnerReservation,
-    kind: CryptoFailureKind,
-) -> CryptoCompletion {
-    CryptoCompletion {
-        reservation,
-        result: CryptoResult::Failed(kind),
     }
 }
 

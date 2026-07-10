@@ -1,25 +1,38 @@
 #[derive(Debug)]
 struct DataplaneOwnerShardRetireWorker {
-    completed: VecDeque<CryptoCompletionBatch>,
+    owners: HashMap<OwnerId, VecDeque<OrderedCryptoOwnerRun>>,
+    order: VecDeque<OwnerId>,
 }
 
 impl DataplaneOwnerShardRetireWorker {
     fn new() -> Self {
         Self {
-            completed: VecDeque::new(),
+            owners: HashMap::new(),
+            order: VecDeque::new(),
         }
     }
 
-    fn queue_completion_batch(&mut self, batch: CryptoCompletionBatch) -> bool {
-        if batch.is_empty() {
-            return false;
+    fn queue_ordered_run(&mut self, run: Arc<CryptoOwnerRun>) {
+        let owner = run.owner();
+        match self.owners.entry(owner) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                debug_assert_eq!(
+                    entry
+                        .get()
+                        .back()
+                        .map(OrderedCryptoOwnerRun::last_order_exclusive),
+                    Some(run.first_order()),
+                );
+                entry.get_mut().push_back(OrderedCryptoOwnerRun::new(run));
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(VecDeque::from([OrderedCryptoOwnerRun::new(run)]));
+                self.order.push_back(owner);
+            }
         }
-        let was_empty = self.completed.is_empty();
-        self.completed.push_back(batch);
-        was_empty
     }
 
-    fn retire_queued_completions_into(
+    fn retire_ready_runs_into(
         &mut self,
         owner_shard: &mut DataplaneOwnerShard,
         limit: usize,
@@ -28,34 +41,46 @@ impl DataplaneOwnerShardRetireWorker {
         compact_endpoint_data: bool,
     ) -> usize {
         let mut retired_count = 0usize;
-        while retired_count < limit {
-            let Some(mut batch) = self.completed.pop_front() else {
+        let mut blocked = self.order.len();
+        while retired_count < limit && blocked > 0 {
+            let Some(owner) = self.order.pop_front() else {
                 break;
             };
-            let batch_limit = limit.saturating_sub(retired_count);
-            let pending = if batch.len() > batch_limit {
-                Some(batch.split_off(batch_limit))
+            let mut runs = self
+                .owners
+                .remove(&owner)
+                .expect("ordered crypto owner queue exists");
+            let got = match runs.front_mut() {
+                Some(run) if run.is_ready() => owner_shard.retire_ordered_run_into(
+                    run,
+                    limit.saturating_sub(retired_count),
+                    retired,
+                    drops,
+                    compact_endpoint_data,
+                ),
+                _ => 0,
+            };
+            if runs.front().is_some_and(OrderedCryptoOwnerRun::is_empty) {
+                runs.pop_front();
+            }
+            if !runs.is_empty() {
+                self.owners.insert(owner, runs);
+                self.order.push_back(owner);
+            }
+            if got == 0 {
+                blocked -= 1;
             } else {
-                None
-            };
-            let batch_len = batch.len();
-            owner_shard.retire_completion_batch_into(
-                batch,
-                retired,
-                drops,
-                compact_endpoint_data,
-            );
-            retired_count = retired_count.saturating_add(batch_len);
-            if let Some(pending) = pending {
-                self.completed.push_front(pending);
-                break;
+                retired_count = retired_count.saturating_add(got);
+                blocked = self.order.len();
             }
         }
         retired_count
     }
 
-    fn has_queued_completions(&self) -> bool {
-        !self.completed.is_empty()
+    fn has_ready_runs(&self) -> bool {
+        self.owners
+            .values()
+            .any(|runs| runs.front().is_some_and(OrderedCryptoOwnerRun::is_ready))
     }
 }
 
@@ -304,7 +329,6 @@ impl DataplaneOwnerShard {
         &mut self,
         limit: usize,
         prepared: &mut Vec<PreparedCryptoWork>,
-        completion_batches: &mut Vec<CryptoCompletionBatch>,
         priority_only: bool,
         record_fsp_path_open: bool,
         fsp_path_open: &mut u64,
@@ -374,10 +398,10 @@ impl DataplaneOwnerShard {
                                 },
                                 open_key,
                             )),
-                            None => CryptoCompletionBatch::push_grouped(
-                                failed_crypto_completion(reservation, CryptoFailureKind::Open),
-                                completion_batches,
-                            ),
+                            None => prepared.push(PreparedCryptoWork::failed(
+                                reservation,
+                                CryptoFailureKind::Open,
+                            )),
                         }
                         tracing::debug!(
                             owner = ?packet_owner,
@@ -426,7 +450,6 @@ impl DataplaneOwnerShard {
         &mut self,
         limit: usize,
         prepared: &mut Vec<PreparedCryptoWork>,
-        completion_batches: &mut Vec<CryptoCompletionBatch>,
         priority_only: bool,
         drops: &mut Vec<PacketDrop>,
     ) -> usize {
@@ -483,10 +506,10 @@ impl DataplaneOwnerShard {
                                 },
                                 seal_key,
                             )),
-                            None => CryptoCompletionBatch::push_grouped(
-                                failed_crypto_completion(reservation, CryptoFailureKind::Seal),
-                                completion_batches,
-                            ),
+                            None => prepared.push(PreparedCryptoWork::failed(
+                                reservation,
+                                CryptoFailureKind::Seal,
+                            )),
                         }
                         dispatched = dispatched.saturating_add(1);
                     }
@@ -514,33 +537,41 @@ impl DataplaneOwnerShard {
         dispatched
     }
 
-    pub(crate) fn retire_completion_batch_into(
+    fn retire_ordered_run_into(
         &mut self,
-        batch: CryptoCompletionBatch,
+        run: &mut OrderedCryptoOwnerRun,
+        limit: usize,
         retired: &mut DataplaneRetiredOutputSink<'_>,
         drops: &mut Vec<PacketDrop>,
         compact_endpoint_data: bool,
-    ) {
+    ) -> usize {
         let _timer =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::DataplaneRetire);
-        let owner_id = batch.owner();
+        let owner_id = run.run.owner();
         let Some(owner) = self.owners.get_mut(&owner_id) else {
-            for completion in batch.into_completions() {
+            let count = run.consume_prefix(limit, |completion| {
                 let drop = PacketDrop::from_completion(
                     &completion,
                     PacketDropReason::UnknownOwner,
                     None,
                 );
                 drops.push(drop);
-            }
-            return;
+            });
+            return count;
         };
         let before_in_flight = owner.in_flight;
-        owner.retire_batch_outputs_into(batch, retired, drops, compact_endpoint_data);
+        let count = owner.retire_ordered_run_outputs_into(
+            run,
+            limit,
+            retired,
+            drops,
+            compact_endpoint_data,
+        );
         if owner.in_flight < before_in_flight {
             self.admission.wake_owner(owner_id);
             self.outbound_admission.wake_owner(owner_id);
         }
+        count
     }
 
     fn admission_queue_lens(&self) -> (usize, usize) {

@@ -12,13 +12,13 @@
 //! ```
 //!
 //! The core invariant is simple: owners reserve replay, order, generation, and
-//! in-flight state before crypto work leaves the owner; workers only copy/open
-//! bytes and return completions; owners retire those completions in order.
+//! in-flight state and enqueue ordered runs before crypto starts; workers only
+//! fill those runs, and owners retire ready heads in order.
 //!
 //! Worker/shard direction: owner loops, not crypto workers, own replay,
 //! counters, session generation, liveness, path state, and ordered output.
-//! Stateless workers may only execute prepared crypto/send batches and wake the
-//! owner path for ordered retirement. Priority/control/rekey/liveness work must
+//! Stateless workers may only execute bounded crypto subruns and publish owner
+//! readiness. Priority/control/rekey/liveness work must
 //! keep reserved progress outside bulk pressure.
 
 #[cfg(test)]
@@ -35,7 +35,7 @@ use crate::transport::{
 use crate::upper::tun::TunOutboundRx;
 use crate::{NodeAddr, PeerIdentity};
 use ring::aead::{Aad, LessSafeKey, Nonce};
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, RwLock};
 
 const FMP_VERSION: u8 = crate::node::wire::FMP_VERSION;

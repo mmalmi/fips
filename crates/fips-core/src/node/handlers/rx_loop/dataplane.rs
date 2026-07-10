@@ -43,28 +43,6 @@ impl Node {
         turn
     }
 
-    pub(in crate::node) async fn drain_dataplane_completion_turn(
-        &mut self,
-        io: &mut RxLoopDataplaneIo<'_>,
-        crypto_limit: usize,
-    ) -> crate::dataplane::DataplaneLiveNodeTurn {
-        let turn = self
-            .dataplane
-            .pump_completion_output_turn_with_transport_batch(DataplaneLiveTurnIo {
-                endpoint_data_rx: &mut *io.endpoint_data_rx,
-                endpoint_limit: 0,
-                tun_outbound_rx: &mut *io.tun_outbound_rx,
-                tun_limit: 0,
-                endpoint_tx: io.endpoint_tx,
-                transports: &self.transports,
-                crypto_limit,
-                transport_send_batch_packets: self.dataplane_transport_send_batch_packets,
-            })
-            .await;
-        Self::observe_dataplane_turn(&turn);
-        turn
-    }
-
     pub(in crate::node) async fn process_dataplane_control_ingress(
         &mut self,
         turn: &mut crate::dataplane::DataplaneLiveNodeTurn,

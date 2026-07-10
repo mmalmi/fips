@@ -192,7 +192,7 @@ impl Node {
             drop(rx);
             tx
         });
-        let dataplane_completion_notify = self.dataplane.completion_notify();
+        let dataplane_readiness = self.dataplane.readiness();
         let mut dataplane_runtime = RxLoopDataplaneRuntime {
             packet_rx,
             dataplane_fast_ingress_rx,
@@ -350,10 +350,11 @@ impl Node {
                         &mut control_query_rx,
                     ).await;
                 }
-                _ = dataplane_completion_notify.notified() => {
+                _ = dataplane_readiness.notified() => {
                     let mut dataplane_io = dataplane_runtime.io();
-                    self.service_dataplane_completion_turns(
+                    self.service_dataplane_bulk_turns(
                         &mut dataplane_io,
+                        crate::dataplane::DataplaneLiveTurnFirsts::default(),
                         &mut maintenance_state,
                         &mut control_query_rx,
                     ).await;
@@ -579,7 +580,11 @@ impl Node {
                 )
             {
                 let mut relief_turn = self
-                    .drain_dataplane_completion_turn(io, LATENCY_PACKET_DRAIN_BUDGET)
+                    .drain_dataplane_turn_with_firsts(
+                        io,
+                        crate::dataplane::DataplaneLiveTurnFirsts::default(),
+                        RxLoopDataplaneTurnLimits::new(0, 0, 0, LATENCY_PACKET_DRAIN_BUDGET),
+                    )
                     .await;
                 let relief_control_drained = self
                     .finish_dataplane_turn(&mut relief_turn, maintenance_state, control_query_rx, 0)
@@ -601,39 +606,6 @@ impl Node {
         }
     }
 
-    async fn service_dataplane_completion_turns(
-        &mut self,
-        io: &mut RxLoopDataplaneIo<'_>,
-        maintenance_state: &mut RxLoopMaintenanceState,
-        control_query_rx: &mut Receiver<ControlMessage>,
-    ) {
-        let started = Instant::now();
-        let mut turns = 0usize;
-
-        loop {
-            if turns > 0
-                && (turns >= RX_LOOP_BULK_SERVICE_MAX_TURNS
-                    || started.elapsed() >= RX_LOOP_BULK_SERVICE_MAX_ELAPSED
-                    || io.packet_rx.priority_ready_packets() > 0)
-            {
-                break;
-            }
-
-            let mut turn = self
-                .drain_dataplane_completion_turn(io, LATENCY_PACKET_DRAIN_BUDGET)
-                .await;
-            let control_drained = self
-                .finish_dataplane_turn(&mut turn, maintenance_state, control_query_rx, 0)
-                .await;
-            turns += 1;
-
-            let runnable_work = self.dataplane.has_runnable_work();
-            if control_drained > 0 || !runnable_work {
-                break;
-            }
-        }
-    }
-
     async fn finish_dataplane_turn(
         &mut self,
         turn: &mut crate::dataplane::DataplaneLiveNodeTurn,
@@ -647,7 +619,7 @@ impl Node {
             .await
             .saturating_add(self.drain_deferred_dataplane_control_turns().await);
         if control_drained > 0 && self.dataplane.has_deferred_raw_ingress() {
-            self.dataplane.completion_notify().notify_one();
+            self.dataplane.wake();
         }
         let query_drained = if control_query_budget > 0 {
             self.drain_control_queries(control_query_rx, None, control_query_budget)

@@ -180,8 +180,12 @@ impl DataplaneLiveNode {
         }
     }
 
-    pub(crate) fn completion_notify(&self) -> Arc<tokio::sync::Notify> {
-        self.crypto_worker.completion_notify()
+    pub(crate) fn readiness(&self) -> DataplaneOwnerReadiness {
+        self.driver.readiness()
+    }
+
+    pub(crate) fn wake(&self) {
+        self.driver.wake();
     }
 
     pub(crate) fn has_deferred_raw_ingress(&self) -> bool {
@@ -190,7 +194,6 @@ impl DataplaneLiveNode {
 
     pub(crate) fn has_runnable_work(&self) -> bool {
         self.driver.has_runnable_work()
-            || self.crypto_worker.has_ready_completions()
             || !self.deferred_raw_ingress.is_empty()
     }
 
@@ -667,11 +670,7 @@ impl DataplaneLiveNode {
         let compact_endpoint_data = endpoint_tx.direct_sink().is_some();
         let summary = self
             .driver
-            .start_aead_completion_turn(
-                &mut self.crypto_worker,
-                crypto_limit,
-                compact_endpoint_data,
-            );
+            .start_aead_retire_turn(crypto_limit, compact_endpoint_data);
         let turn = self.driver
             .pump_aead_live_node_route_table_turn_after_completion_with_firsts(
                 DataplaneLivePumpRequest {
@@ -697,41 +696,12 @@ impl DataplaneLiveNode {
             )
             .await;
         if !self.deferred_raw_ingress.is_empty() && !turn.fsp_local_session_ingress().is_empty() {
-            self.crypto_worker.completion_notify().notify_one();
+            self.driver.wake();
         }
         if self.has_runnable_work() {
-            self.crypto_worker.completion_notify().notify_one();
+            self.driver.wake();
         }
         record_dataplane_live_turn_perf(&turn);
-        turn
-    }
-
-    pub(crate) async fn pump_completion_output_turn_with_transport_batch(
-        &mut self,
-        io: DataplaneLiveTurnIo<'_>,
-    ) -> DataplaneLiveNodeTurn {
-        let crypto_limit = io.crypto_limit;
-        let mut empty_raw_ingress = std::mem::take(&mut self.empty_raw_ingress);
-        empty_raw_ingress.clear();
-        let raw_ingress_limit = if self.deferred_raw_ingress.is_empty() {
-            0
-        } else {
-            crypto_limit.max(1)
-        };
-        let turn = self
-            .pump_turn_with_firsts_and_transport_batch(
-                None,
-                &mut empty_raw_ingress,
-                raw_ingress_limit,
-                DataplaneLiveOutboundFirsts::default(),
-                DataplaneLiveTurnIo {
-                    endpoint_limit: 0,
-                    tun_limit: 0,
-                    ..io
-                },
-            )
-            .await;
-        self.empty_raw_ingress = empty_raw_ingress;
         turn
     }
 
