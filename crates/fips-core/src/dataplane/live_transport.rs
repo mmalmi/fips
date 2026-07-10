@@ -312,17 +312,52 @@ async fn send_non_udp_transport_plan_group(
         ..
     } = group;
     for output in outputs {
-        match transport.send(&remote_addr, output.payload()).await {
-            Ok(_) => {
-                *sent += 1;
-                if let Some(sent_receipts) = sent_receipts.as_deref_mut() {
-                    sent_receipts.push(DataplaneTransportSentReceipt::from_output(&output));
+        match dataplane_direct_fsp_transport_output(output) {
+            DataplaneDirectFspTransportOutput::Whole(output) => {
+                match transport.send(&remote_addr, output.payload()).await {
+                    Ok(_) => {
+                        *sent += 1;
+                        if let Some(sent_receipts) = sent_receipts.as_deref_mut() {
+                            sent_receipts
+                                .push(DataplaneTransportSentReceipt::from_output(&output));
+                        }
+                    }
+                    Err(error) => drops.push(DataplaneOutputDrop::from_output(
+                        &output,
+                        dataplane_output_error_for_transport(&error),
+                    )),
                 }
             }
-            Err(error) => drops.push(DataplaneOutputDrop::from_output(
-                &output,
-                dataplane_output_error_for_transport(&error),
-            )),
+            DataplaneDirectFspTransportOutput::Segments(segments) => {
+                let mut send_error = None;
+                for index in 0..segments.len() {
+                    let payload = segments.contiguous_payload(index);
+                    if let Err(error) = transport.send(&remote_addr, &payload).await {
+                        send_error = Some(dataplane_output_error_for_transport(&error));
+                        break;
+                    }
+                }
+                if let Some(reason) = send_error {
+                    drops.push(DataplaneOutputDrop::from_output(
+                        &segments.output,
+                        reason,
+                    ));
+                } else {
+                    *sent += 1;
+                    if let Some(sent_receipts) = sent_receipts.as_deref_mut() {
+                        sent_receipts.push(DataplaneTransportSentReceipt::from_output(
+                            &segments.output,
+                        ));
+                    }
+                }
+            }
+            DataplaneDirectFspTransportOutput::MtuExceeded(output) => {
+                let mtu = output.path_mtu();
+                drops.push(DataplaneOutputDrop::from_output(
+                    &output,
+                    DataplaneOutputError::MtuExceeded { mtu },
+                ));
+            }
         }
     }
 }

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.84] - 2026-07-10
+
+### Fixed
+
+- Segmented oversized direct-FSP records on Ethernet and other non-UDP
+  transports, preserving logical send receipts and ordered MTU-sized delivery.
+
 ## [0.3.83] - 2026-07-10
 
 ### Added

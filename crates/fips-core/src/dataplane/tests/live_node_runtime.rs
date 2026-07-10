@@ -857,6 +857,105 @@
         recv_transport.stop().await.expect("stop recv udp");
     }
 
+    #[cfg(feature = "sim-transport")]
+    #[tokio::test]
+    async fn transport_plan_dispatch_segments_direct_fsp_record_over_non_udp_transport() {
+        let network_name = "dataplane-direct-fsp-non-udp-segmentation";
+        crate::register_sim_network(network_name, crate::SimNetwork::new(680));
+        let send_transport_id = TransportId::new(68);
+        let recv_transport_id = TransportId::new(69);
+        let path_mtu = 220usize;
+        let config = |addr: &str| crate::SimTransportConfig {
+            network: Some(network_name.to_string()),
+            addr: Some(addr.to_string()),
+            mtu: Some(path_mtu as u16),
+            ..Default::default()
+        };
+        let (recv_packet_tx, mut recv_packet_rx) = crate::transport::packet_channel(16);
+        let mut recv_transport = TransportHandle::Sim(crate::SimTransport::new(
+            recv_transport_id,
+            None,
+            config("receiver"),
+            recv_packet_tx,
+        ));
+        recv_transport.start().await.expect("start recv sim");
+        let (send_packet_tx, _send_packet_rx) = crate::transport::packet_channel(1);
+        let mut send_transport = TransportHandle::Sim(crate::SimTransport::new(
+            send_transport_id,
+            None,
+            config("sender"),
+            send_packet_tx,
+        ));
+        send_transport.start().await.expect("start send sim");
+
+        let owner = fsp_owner(68);
+        let mut wire = fsp_wire(
+            680,
+            crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT,
+        );
+        wire.extend((0..700).map(|idx| (idx % 251) as u8));
+        let mut output = transport_output(
+            owner,
+            680,
+            80,
+            send_transport_id,
+            TransportAddr::from_string("receiver"),
+            wire.clone(),
+        );
+        output.path_mtu = path_mtu as u16;
+        let expected_fragments =
+            wire.len().div_ceil(path_mtu - DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN);
+        let groups = vec![DataplaneTransportPlanGroup::new(
+            send_transport_id,
+            TransportAddr::from_string("receiver"),
+            output,
+        )];
+        let mut transports = HashMap::from([(send_transport_id, send_transport)]);
+        let mut drops = Vec::new();
+        let mut sent_receipts = Vec::new();
+
+        let sent = send_dataplane_transport_groups(
+            &transports,
+            groups,
+            &mut drops,
+            1,
+            Some(&mut sent_receipts),
+        )
+        .await;
+
+        assert_eq!(sent, 1);
+        assert!(drops.is_empty());
+        assert_eq!(sent_receipts.len(), 1);
+        assert_eq!(sent_receipts[0].owner, owner);
+        assert_eq!(sent_receipts[0].counter, 680);
+        assert_eq!(sent_receipts[0].payload_len, wire.len());
+
+        let mut reassembled = Vec::with_capacity(wire.len());
+        for expected_index in 0..expected_fragments {
+            let received =
+                tokio::time::timeout(std::time::Duration::from_secs(1), recv_packet_rx.recv())
+                    .await
+                    .expect("receive direct-FSP sim fragment")
+                    .expect("packet channel open");
+            assert_eq!(received.transport_id, recv_transport_id);
+            assert!(received.data.len() <= path_mtu);
+            let header = parse_direct_fsp_transport_fragment_header(received.data.as_slice())
+                .expect("DFP1 fragment header");
+            assert_eq!(header.total_len, wire.len());
+            assert_eq!(header.fragment_index, expected_index);
+            assert_eq!(header.fragment_count, expected_fragments);
+            reassembled.extend_from_slice(
+                &received.data.as_slice()[DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN..],
+            );
+        }
+        assert_eq!(reassembled, wire);
+
+        send_transport = transports.remove(&send_transport_id).unwrap();
+        send_transport.stop().await.expect("stop send sim");
+        recv_transport.stop().await.expect("stop recv sim");
+        crate::unregister_sim_network(network_name);
+    }
+
     #[tokio::test]
     async fn transport_plan_dispatch_spools_ordered_bulk_past_soft_capacity() {
         let send_transport_id = TransportId::new(64);

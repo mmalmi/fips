@@ -54,6 +54,14 @@ impl DataplaneDirectFspTransportSegments {
         out[1] = Some(&self.output.payload()[segment.payload_range.clone()]);
         2
     }
+
+    fn contiguous_payload(&self, index: usize) -> Vec<u8> {
+        let segment = &self.segments[index];
+        let mut payload = Vec::with_capacity(self.payload_len(index));
+        payload.extend_from_slice(&segment.header);
+        payload.extend_from_slice(&self.output.payload()[segment.payload_range.clone()]);
+        payload
+    }
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
