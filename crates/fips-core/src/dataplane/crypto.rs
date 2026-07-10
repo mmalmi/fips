@@ -1,7 +1,9 @@
 use std::cell::UnsafeCell;
+use std::ops::Range;
 use std::sync::Mutex;
 use std::sync::atomic::{
-    AtomicBool, AtomicUsize, Ordering::Acquire, Ordering::Relaxed, Ordering::Release,
+    AtomicBool, AtomicUsize, Ordering::AcqRel, Ordering::Acquire, Ordering::Relaxed,
+    Ordering::Release,
 };
 
 pub(crate) enum PreparedCryptoWork {
@@ -111,7 +113,7 @@ impl CryptoOwnerRunBuilder {
             .take()
             .expect("crypto run cipher exists when work is non-empty");
         let run = pool.prepare_owner_run(run, cipher);
-        stage(Arc::clone(&run.slot));
+        stage(Arc::clone(&run));
         pool.submit_owner_run(run);
     }
 
@@ -175,6 +177,11 @@ pub(crate) struct CryptoReadySlot {
     lane: Lane,
     first_order: OrderToken,
     len: usize,
+    cipher: Option<AeadKey>,
+    is_open: bool,
+    next: AtomicUsize,
+    remaining: AtomicUsize,
+    subrun_packets: usize,
     open_fsp_session_payload: AtomicBool,
     ready: AtomicBool,
     items: CryptoReadyItems,
@@ -184,7 +191,8 @@ pub(crate) struct CryptoReadySlot {
 #[derive(Debug)]
 struct CryptoReadyItems(UnsafeCell<Option<Vec<CryptoOwnerRunItem>>>);
 
-// One crypto worker owns the whole item vector until it publishes the ready flag.
+// Workers claim disjoint ranges, and owner reads begin only after the final
+// range publishes the ready flag.
 unsafe impl Sync for CryptoReadyItems {}
 
 impl CryptoReadyItems {
@@ -193,14 +201,14 @@ impl CryptoReadyItems {
     }
 
     /// # Safety
-    /// This may run once, and `take` must not run until it publishes readiness.
-    unsafe fn execute(&self, cipher: &AeadKey, is_open: bool) -> bool {
+    /// The caller must own `range`, and `take` must wait for run readiness.
+    unsafe fn execute(&self, range: Range<usize>, cipher: &AeadKey, is_open: bool) -> bool {
         let items = unsafe {
             (*self.0.get())
                 .as_ref()
                 .expect("AEAD owner run items already retired")
         };
-        execute_crypto_owner_run(items, cipher, is_open)
+        execute_crypto_owner_subrun(&items[range], cipher, is_open)
     }
 
     /// # Safety
@@ -215,7 +223,12 @@ impl CryptoReadyItems {
 }
 
 impl CryptoReadySlot {
-    fn new(run: CryptoOwnerRun, counters: DataplaneAeadWorkerCounters) -> Self {
+    fn new(
+        run: CryptoOwnerRun,
+        cipher: AeadKey,
+        subrun_packets: usize,
+        counters: DataplaneAeadWorkerCounters,
+    ) -> Self {
         let reservation = run
             .first_reservation()
             .expect("crypto owner run contains work");
@@ -233,6 +246,11 @@ impl CryptoReadySlot {
             lane,
             first_order,
             len,
+            cipher: Some(cipher),
+            is_open: run.is_open(),
+            next: AtomicUsize::new(0),
+            remaining: AtomicUsize::new(len),
+            subrun_packets,
             open_fsp_session_payload: AtomicBool::new(open_fsp_session_payload),
             ready: AtomicBool::new(false),
             items: CryptoReadyItems::new(run.items),
@@ -274,6 +292,11 @@ impl CryptoReadySlot {
             lane: reservation.lane,
             first_order: reservation.order,
             len: items.len(),
+            cipher: None,
+            is_open: false,
+            next: AtomicUsize::new(0),
+            remaining: AtomicUsize::new(0),
+            subrun_packets: 1,
             open_fsp_session_payload: AtomicBool::new(false),
             ready: AtomicBool::new(true),
             items: CryptoReadyItems::new(items),
@@ -281,12 +304,24 @@ impl CryptoReadySlot {
         })
     }
 
-    fn complete(&self) {
+    fn claim(&self) -> Range<usize> {
+        let start = self.next.fetch_add(self.subrun_packets, Relaxed);
+        assert!(start < self.len, "AEAD owner run over-claimed");
+        start..start.saturating_add(self.subrun_packets).min(self.len)
+    }
+
+    fn complete_subrun(&self, count: usize) -> bool {
+        let remaining = self.remaining.fetch_sub(count, AcqRel);
+        assert!(remaining >= count, "AEAD owner run completed twice");
+        if remaining != count {
+            return false;
+        }
         if let Some(counters) = &self.counters {
             counters.mark_ready(self.len());
         }
         crate::perf_profile::record_dataplane_aead_ready_slot(self.len());
         self.ready.store(true, Release);
+        true
     }
 
     pub(crate) fn is_ready(&self) -> bool {
@@ -336,17 +371,15 @@ impl CryptoReadySlot {
 }
 
 #[derive(Debug)]
-struct PreparedCryptoOwnerRun {
+struct PreparedCryptoTicket {
     slot: Arc<CryptoReadySlot>,
-    cipher: AeadKey,
-    is_open: bool,
     queued_at: Option<crate::perf_profile::TraceStamp>,
 }
 
 #[derive(Debug, Default)]
 struct CryptoOwnerRunQueue {
-    priority: VecDeque<PreparedCryptoOwnerRun>,
-    bulk: VecDeque<PreparedCryptoOwnerRun>,
+    priority: VecDeque<PreparedCryptoTicket>,
+    bulk: VecDeque<PreparedCryptoTicket>,
 }
 
 #[derive(Debug)]
@@ -363,18 +396,22 @@ impl CryptoWorkerQueue {
         }
     }
 
-    fn push(&self, run: PreparedCryptoOwnerRun) {
-        let lane = run.slot.lane();
+    fn push(&self, slot: Arc<CryptoReadySlot>) {
+        let lane = slot.lane();
+        let ticket = PreparedCryptoTicket {
+            slot,
+            queued_at: crate::perf_profile::stamp(),
+        };
         let mut runs = self.runs.lock().expect("AEAD worker queue poisoned");
         match lane {
-            Lane::Priority => runs.priority.push_back(run),
-            Lane::Bulk => runs.bulk.push_back(run),
+            Lane::Priority => runs.priority.push_back(ticket),
+            Lane::Bulk => runs.bulk.push_back(ticket),
         }
         drop(runs);
         self.available.add_permits(1);
     }
 
-    async fn pop(&self) -> PreparedCryptoOwnerRun {
+    async fn pop(&self) -> PreparedCryptoTicket {
         self.available
             .acquire()
             .await
@@ -395,6 +432,7 @@ pub(crate) struct DataplaneAeadWorkerPool {
     counters: DataplaneAeadWorkerCounters,
     max_in_flight: usize,
     worker_count: usize,
+    subrun_packets: usize,
     runtime: Option<tokio::runtime::Handle>,
     workers: tokio::task::JoinSet<()>,
 }
@@ -402,7 +440,7 @@ pub(crate) struct DataplaneAeadWorkerPool {
 impl DataplaneAeadWorkerPool {
     pub(crate) fn new(max_in_flight: usize) -> Self {
         let max_in_flight = max_in_flight.max(1);
-        let worker_count = dataplane_aead_worker_count(max_in_flight);
+        let (worker_count, subrun_packets) = dataplane_aead_worker_topology(max_in_flight);
 
         Self {
             readiness_notify: Arc::new(tokio::sync::Notify::new()),
@@ -410,6 +448,7 @@ impl DataplaneAeadWorkerPool {
             counters: DataplaneAeadWorkerCounters::new(),
             max_in_flight,
             worker_count,
+            subrun_packets,
             runtime: tokio::runtime::Handle::try_current().ok(),
             workers: tokio::task::JoinSet::new(),
         }
@@ -462,23 +501,21 @@ impl DataplaneAeadWorkerPool {
         &self,
         run: CryptoOwnerRun,
         cipher: AeadKey,
-    ) -> PreparedCryptoOwnerRun {
+    ) -> Arc<CryptoReadySlot> {
         let len = run.len();
         let bulk_count = run.bulk_count();
-        let is_open = run.is_open();
         self.counters.add(len, bulk_count);
-        let slot = Arc::new(CryptoReadySlot::new(run, self.counters.clone()));
-        PreparedCryptoOwnerRun {
-            slot,
+        Arc::new(CryptoReadySlot::new(
+            run,
             cipher,
-            is_open,
-            queued_at: crate::perf_profile::stamp(),
-        }
+            self.subrun_packets,
+            self.counters.clone(),
+        ))
     }
 
-    fn submit_owner_run(&mut self, run: PreparedCryptoOwnerRun) {
+    fn submit_owner_run(&mut self, run: Arc<CryptoReadySlot>) {
         self.reap_finished_tasks();
-        let run_len = run.slot.len();
+        let run_len = run.len();
         self.start_workers();
         self.worker_queue.push(run);
         crate::perf_profile::record_dataplane_aead_prepared_job(run_len);
@@ -538,25 +575,34 @@ async fn run_crypto_worker(
             crate::perf_profile::Stage::DataplaneAeadWorkerQueueWait,
             prepared.queued_at,
         );
-        // The queue gives one worker exclusive ownership until the run is ready.
+        let slot = prepared.slot;
+        let range = slot.claim();
+        let range_len = range.len();
+        if range.end < slot.len() {
+            // Keep one ticket resident. FIFO placement favors other owner runs
+            // before spare workers return to this container.
+            queue.push(Arc::clone(&slot));
+        }
         let crypto_succeeded = unsafe {
-            prepared
-                .slot
-                .items
-                .execute(&prepared.cipher, prepared.is_open)
+            slot.items.execute(
+                range,
+                slot.cipher.as_ref().expect("queued AEAD owner run has a key"),
+                slot.is_open,
+            )
         };
         if !crypto_succeeded {
-            prepared.slot.open_fsp_session_payload.store(false, Relaxed);
+            slot.open_fsp_session_payload.store(false, Relaxed);
         }
-        prepared.slot.complete();
-        readiness_notify.notify_one();
+        if slot.complete_subrun(range_len) {
+            readiness_notify.notify_one();
+        }
         if cooperative_yield {
             tokio::task::yield_now().await;
         }
     }
 }
 
-fn execute_crypto_owner_run(
+fn execute_crypto_owner_subrun(
     items: &[CryptoOwnerRunItem],
     cipher: &AeadKey,
     is_open: bool,
@@ -589,14 +635,20 @@ fn execute_crypto_owner_run(
     succeeded
 }
 
-fn dataplane_aead_worker_count(max_in_flight: usize) -> usize {
+fn dataplane_aead_worker_topology(max_in_flight: usize) -> (usize, usize) {
     let parallelism = std::thread::available_parallelism()
         .map_or(1, std::num::NonZeroUsize::get)
         .min(max_in_flight);
     if parallelism == 1 {
-        return 1;
+        return (1, DATAPLANE_AEAD_JOB_PACKETS);
     }
-    parallelism - 1
+    let worker_count = parallelism - 1;
+    (
+        worker_count,
+        DATAPLANE_AEAD_JOB_PACKETS
+            .div_ceil(worker_count)
+            .max(DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS),
+    )
 }
 
 fn dataplane_aead_worker_priority_reserve(max_in_flight: usize) -> usize {
