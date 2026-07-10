@@ -20,18 +20,27 @@ impl DataplaneOwnerShard {
 
     fn register_owner(&mut self, owner: OwnerId, config: OwnerConfig) -> Vec<OwnerRetireSlot> {
         self.retire_owners.retain(|queued| *queued != owner);
-        self.owners
+        let orphaned = self
+            .owners
             .insert(owner, OwnerState::new(owner, config))
             .map_or_else(Vec::new, |mut previous| {
                 previous.take_pending_retirements()
-            })
+            });
+        self.admission.wake_owner(owner);
+        self.outbound_admission.wake_owner(owner);
+        orphaned
     }
 
     fn unregister_owner(&mut self, owner: OwnerId) -> Option<Vec<OwnerRetireSlot>> {
         self.retire_owners.retain(|queued| *queued != owner);
-        self.owners.remove(&owner).map(|mut owner| {
+        let orphaned = self.owners.remove(&owner).map(|mut owner| {
             owner.take_pending_retirements()
-        })
+        });
+        if orphaned.is_some() {
+            self.admission.wake_owner(owner);
+            self.outbound_admission.wake_owner(owner);
+        }
+        orphaned
     }
 
     fn has_owner(&self, owner: OwnerId) -> bool {

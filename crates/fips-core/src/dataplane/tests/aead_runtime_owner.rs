@@ -173,6 +173,105 @@ fn aead_worker_pool_publishes_ordered_readiness_slots() {
 }
 
 #[test]
+fn owner_membership_changes_wake_deferred_lanes() {
+    let inbound_owner = fmp_owner(712);
+    let mut inbound = mover();
+    inbound.register_owner(inbound_owner, OwnerConfig::new(1, 1));
+    submit_fmp_inbound_range(
+        &mut inbound,
+        inbound_owner,
+        712,
+        12,
+        100..102,
+        b"inbound",
+    );
+    assert_eq!(dispatch_available(&mut inbound, 8).len(), 1);
+    assert!(!inbound.has_runnable_work());
+    inbound.register_owner(inbound_owner, OwnerConfig::new(1, 1));
+    assert!(inbound.has_runnable_work());
+    assert_eq!(dispatch_available(&mut inbound, 8).len(), 1);
+
+    let outbound_owner = fmp_owner(713);
+    let mut outbound = mover();
+    outbound.register_owner(
+        outbound_owner,
+        OwnerConfig::new(1, 1).with_next_send_counter(500),
+    );
+    for payload in [b"first".as_slice(), b"second".as_slice()] {
+        outbound
+            .submit_outbound_packet(outbound_packet(
+                outbound_owner,
+                1,
+                PacketClass::Bulk,
+                payload,
+            ))
+            .unwrap();
+    }
+    assert_eq!(dispatch_outbound_available(&mut outbound, 8).len(), 1);
+    assert!(!outbound.has_runnable_work());
+    assert!(outbound.unregister_owner(outbound_owner));
+    assert!(outbound.has_runnable_work());
+    assert!(dispatch_outbound_available(&mut outbound, 8).is_empty());
+    assert!(
+        outbound
+            .drain_drops()
+            .iter()
+            .any(|drop| drop.reason == PacketDropReason::UnknownOwner)
+    );
+}
+
+#[test]
+fn orphan_retirement_shares_the_registered_shard_round_robin() {
+    let registered_owner = fmp_owner(714);
+    let orphaned_owner = fmp_owner(715);
+    let key = 14;
+    let mut mover = mover();
+    register_owner_with_test_keys(&mut mover, registered_owner, key, key);
+    submit_fmp_inbound_range(
+        &mut mover,
+        registered_owner,
+        714,
+        key,
+        100..102,
+        b"registered",
+    );
+    let registered = dispatch_available(&mut mover, 8)
+        .into_iter()
+        .map(|work| complete_test_open_work(work, key))
+        .collect();
+    mover.stage_retire_slot(CryptoReadySlot::completed_run(registered));
+
+    register_owner_with_test_keys(&mut mover, orphaned_owner, key, key);
+    submit_fmp_inbound_range(
+        &mut mover,
+        orphaned_owner,
+        715,
+        key,
+        200..201,
+        b"orphaned",
+    );
+    let orphaned = complete_test_open_work(
+        dispatch_available(&mut mover, 8).pop().unwrap(),
+        key,
+    );
+    assert!(mover.unregister_owner(orphaned_owner));
+    mover.stage_retire_slot(CryptoReadySlot::completed(orphaned));
+
+    let mut outputs = Vec::new();
+    assert_eq!(retire_ready_slots_to_outputs(&mut mover, 1, &mut outputs), 1);
+    assert_eq!(outputs.len(), 1);
+    assert!(mover.drain_drops().is_empty());
+    assert_eq!(retire_ready_slots_to_outputs(&mut mover, 1, &mut outputs), 1);
+    assert_eq!(outputs.len(), 1);
+    assert!(
+        mover
+            .drain_drops()
+            .iter()
+            .any(|drop| drop.reason == PacketDropReason::UnknownOwner)
+    );
+}
+
+#[test]
 fn aead_worker_pool_uses_shared_open_and_seal_capacity() {
     let owner = fmp_owner(710);
     let open_key = 23;

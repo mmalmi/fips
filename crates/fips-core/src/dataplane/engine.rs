@@ -59,20 +59,30 @@ impl Dataplane {
             next_outbound_seq: 0,
             ingress_ready_shards: ReadyShardQueues::new(shard_count),
             outbound_ready_shards: ReadyShardQueues::new(shard_count),
-            pending_retire_shards: ReadyShardQueue::new(shard_count),
+            pending_retire_shards: ReadyShardQueue::new(shard_count.saturating_add(1)),
         }
     }
 
     pub(crate) fn register_owner(&mut self, owner: OwnerId, config: OwnerConfig) {
-        let mut orphaned = self.owner_shard_mut(owner).register_owner(owner, config);
-        self.orphaned_slots.extend(orphaned.drain(..));
+        let shard = self.owner_shard_index(owner);
+        let orphaned = self.shards[shard].register_owner(owner, config);
+        if !orphaned.is_empty() {
+            self.orphaned_slots.extend(orphaned);
+            self.pending_retire_shards.mark(self.shards.len());
+        }
+        self.mark_admission_ready_shard(shard);
     }
 
     pub(crate) fn unregister_owner(&mut self, owner: OwnerId) -> bool {
-        let Some(mut orphaned) = self.owner_shard_mut(owner).unregister_owner(owner) else {
+        let shard = self.owner_shard_index(owner);
+        let Some(orphaned) = self.shards[shard].unregister_owner(owner) else {
             return false;
         };
-        self.orphaned_slots.extend(orphaned.drain(..));
+        if !orphaned.is_empty() {
+            self.orphaned_slots.extend(orphaned);
+            self.pending_retire_shards.mark(self.shards.len());
+        }
+        self.mark_admission_ready_shard(shard);
         true
     }
 
@@ -497,11 +507,15 @@ impl Dataplane {
         debug_assert_eq!(shard, self.owner_shard_index(slot.owner()));
         let Some(owner_shard) = self.shards.get_mut(shard) else {
             self.orphaned_slots.push_back(OwnerRetireSlot::new(slot));
+            self.pending_retire_shards.mark(self.shards.len());
             return;
         };
         match owner_shard.stage_retire_slot(slot) {
             Ok(()) => self.pending_retire_shards.mark(shard),
-            Err(slot) => self.orphaned_slots.push_back(OwnerRetireSlot::new(slot)),
+            Err(slot) => {
+                self.orphaned_slots.push_back(OwnerRetireSlot::new(slot));
+                self.pending_retire_shards.mark(self.shards.len());
+            }
         }
     }
 
@@ -516,40 +530,47 @@ impl Dataplane {
         }
 
         let mut retired_count = 0usize;
-        let shards_to_scan = self.pending_retire_shards.len();
-        for remaining_shards in (1..=shards_to_scan).rev() {
+        let sources_to_scan = self.pending_retire_shards.len();
+        let orphan_source = self.shards.len();
+        for remaining_sources in (1..=sources_to_scan).rev() {
             if retired_count >= limit {
                 break;
             }
-            let Some(shard) = self.pending_retire_shards.pop() else {
+            let Some(source) = self.pending_retire_shards.pop() else {
                 break;
             };
-            let Some(owner_shard) = self.shards.get_mut(shard) else {
+            let source_limit = limit
+                .saturating_sub(retired_count)
+                .div_ceil(remaining_sources);
+            if source == orphan_source {
+                let got = self.retire_ready_orphan_slots_into(source_limit);
+                retired_count = retired_count.saturating_add(got);
+                if !self.orphaned_slots.is_empty() {
+                    self.pending_retire_shards.mark(orphan_source);
+                }
+                continue;
+            }
+            let Some(owner_shard) = self.shards.get_mut(source) else {
                 continue;
             };
-            let shard_limit = limit
-                .saturating_sub(retired_count)
-                .div_ceil(remaining_shards);
             let got = owner_shard.retire_ready_slots_into(
-                shard_limit,
+                source_limit,
                 retired,
                 &mut self.drops,
                 compact_endpoint_data,
             );
+            let has_pending = owner_shard.has_pending_retirements();
             retired_count = retired_count.saturating_add(got);
-            self.ingress_ready_shards.mark_from_lens(
-                shard,
-                LaneLens::from_tuple(owner_shard.admission_ready_lens()),
-            );
-            self.outbound_ready_shards.mark_from_lens(
-                shard,
-                LaneLens::from_tuple(owner_shard.outbound_admission_ready_lens()),
-            );
-            if owner_shard.has_pending_retirements() {
-                self.pending_retire_shards.mark(shard);
+            self.mark_admission_ready_shard(source);
+            if has_pending {
+                self.pending_retire_shards.mark(source);
             }
         }
+        retired_count
+    }
 
+    fn retire_ready_orphan_slots_into(&mut self, limit: usize) -> usize {
+        let mut retired_count = 0usize;
         let orphans_to_scan = self.orphaned_slots.len();
         for _ in 0..orphans_to_scan {
             if retired_count >= limit {
@@ -750,6 +771,13 @@ impl Dataplane {
 
     fn owner_shard_index(&self, owner: OwnerId) -> usize {
         dataplane_owner_shard_index(owner, self.shards.len())
+    }
+
+    fn mark_admission_ready_shard(&mut self, shard: usize) {
+        let ingress = LaneLens::from_tuple(self.shards[shard].admission_ready_lens());
+        let outbound = LaneLens::from_tuple(self.shards[shard].outbound_admission_ready_lens());
+        self.ingress_ready_shards.mark_from_lens(shard, ingress);
+        self.outbound_ready_shards.mark_from_lens(shard, outbound);
     }
 
     fn owner_shard(&self, owner: OwnerId) -> &DataplaneOwnerShard {
