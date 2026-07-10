@@ -1772,96 +1772,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn direct_fsp_source_map_includes_configured_static_udp_addr() {
-        let mut node = Node::new(Config::new()).unwrap();
-        let transport_id = TransportId::new(7);
-        insert_started_udp_transport(&mut node, transport_id).await;
-
-        let peer_identity_full = Identity::generate();
-        let peer_identity = PeerIdentity::from_pubkey_full(peer_identity_full.pubkey_full());
-        let observed_addr = TransportAddr::from_string("127.0.0.1:7000");
-        let static_addr = TransportAddr::from_string("127.0.0.1:7001");
-        let peer_addr = insert_test_active_peer(
-            &mut node,
-            &peer_identity_full,
-            transport_id,
-            observed_addr.clone(),
-            7,
-            20,
-            0x03,
-        );
-        node.config.peers = vec![crate::config::PeerConfig::new(
-            peer_identity.npub(),
-            "udp",
-            "127.0.0.1:7001",
-        )];
-        node.configured_peer_send_weights = ConfiguredPeerSendWeights::from_config(&node.config);
-
-        let sources = node.dataplane_direct_fsp_sources();
-        assert_eq!(
-            sources
-                .get(&transport_id)
-                .and_then(|sources| sources.get(&observed_addr))
-                .map(|source| source.source_addr),
-            Some(peer_addr)
-        );
-        assert_eq!(
-            sources
-                .get(&transport_id)
-                .and_then(|sources| sources.get(&static_addr))
-                .map(|source| source.source_addr),
-            Some(peer_addr),
-            "direct FSP ingress must admit the configured static UDP tuple for an active peer"
-        );
-
-        for transport in node.transports.values_mut() {
-            transport.stop().await.ok();
-        }
-    }
-
-    #[tokio::test]
-    async fn direct_fsp_source_map_includes_configured_static_udp_hostname_port() {
-        let mut node = Node::new(Config::new()).unwrap();
-        let transport_id = TransportId::new(7);
-        insert_started_udp_transport(&mut node, transport_id).await;
-
-        let peer_identity_full = Identity::generate();
-        let peer_identity = PeerIdentity::from_pubkey_full(peer_identity_full.pubkey_full());
-        let observed_addr = TransportAddr::from_string("127.0.0.1:7000");
-        let wildcard_addr = TransportAddr::from_string("0.0.0.0:7001");
-        let peer_addr = insert_test_active_peer(
-            &mut node,
-            &peer_identity_full,
-            transport_id,
-            observed_addr,
-            7,
-            20,
-            0x03,
-        );
-        node.config.peers = vec![crate::config::PeerConfig::new(
-            peer_identity.npub(),
-            "udp",
-            "nvpn-macos-utm-peer.local:7001",
-        )];
-        node.configured_peer_send_weights = ConfiguredPeerSendWeights::from_config(&node.config);
-
-        let sources = node.dataplane_direct_fsp_sources();
-        assert_eq!(
-            sources
-                .get(&transport_id)
-                .and_then(|sources| sources.get(&wildcard_addr))
-                .map(|source| source.source_addr),
-            Some(peer_addr),
-            "unresolved configured static UDP hostnames should admit packets from the configured source port"
-        );
-
-        for transport in node.transports.values_mut() {
-            transport.stop().await.ok();
-        }
-    }
-
-    #[tokio::test]
-    async fn direct_fsp_source_map_drops_ambiguous_static_udp_addr() {
+    async fn direct_fsp_source_map_admits_unique_static_udp_and_rejects_ambiguity() {
         let mut node = Node::new(Config::new()).unwrap();
         let transport_id = TransportId::new(7);
         insert_started_udp_transport(&mut node, transport_id).await;
@@ -1872,6 +1783,8 @@ mod tests {
         let peer_two = PeerIdentity::from_pubkey_full(peer_two_full.pubkey_full());
         let observed_one = TransportAddr::from_string("127.0.0.1:7100");
         let observed_two = TransportAddr::from_string("127.0.0.1:7200");
+        let unique_static = TransportAddr::from_string("127.0.0.1:7001");
+        let unique_hostname_wildcard = TransportAddr::from_string("0.0.0.0:7002");
         let shared_static = TransportAddr::from_string("127.0.0.1:7300");
         let shared_hostname_wildcard = TransportAddr::from_string("0.0.0.0:7301");
         let peer_one_addr = insert_test_active_peer(
@@ -1893,9 +1806,16 @@ mod tests {
             0x05,
         );
         node.config.peers = vec![
-            crate::config::PeerConfig::new(peer_one.npub(), "udp", "127.0.0.1:7300").with_address(
-                crate::config::PeerAddress::new("udp", "peer-one.local:7301"),
-            ),
+            crate::config::PeerConfig::new(peer_one.npub(), "udp", "127.0.0.1:7001")
+                .with_address(crate::config::PeerAddress::new(
+                    "udp",
+                    "peer-one.local:7002",
+                ))
+                .with_address(crate::config::PeerAddress::new("udp", "127.0.0.1:7300"))
+                .with_address(crate::config::PeerAddress::new(
+                    "udp",
+                    "peer-one.local:7301",
+                )),
             crate::config::PeerConfig::new(peer_two.npub(), "udp", "127.0.0.1:7300").with_address(
                 crate::config::PeerAddress::new("udp", "peer-two.local:7301"),
             ),
@@ -1903,30 +1823,33 @@ mod tests {
         node.configured_peer_send_weights = ConfiguredPeerSendWeights::from_config(&node.config);
 
         let sources = node.dataplane_direct_fsp_sources();
+        let sources = sources.get(&transport_id).expect("UDP source map");
         assert_eq!(
-            sources
-                .get(&transport_id)
-                .and_then(|sources| sources.get(&observed_one))
-                .map(|source| source.source_addr),
+            sources.get(&observed_one).map(|source| source.source_addr),
             Some(peer_one_addr)
         );
         assert_eq!(
-            sources
-                .get(&transport_id)
-                .and_then(|sources| sources.get(&observed_two))
-                .map(|source| source.source_addr),
+            sources.get(&observed_two).map(|source| source.source_addr),
             Some(peer_two_addr)
         );
+        assert_eq!(
+            sources.get(&unique_static).map(|source| source.source_addr),
+            Some(peer_one_addr),
+            "configured numeric static source should be admitted"
+        );
+        assert_eq!(
+            sources
+                .get(&unique_hostname_wildcard)
+                .map(|source| source.source_addr),
+            Some(peer_one_addr),
+            "unresolved hostname source port should be admitted when unique"
+        );
         assert!(
-            !sources
-                .get(&transport_id)
-                .is_some_and(|sources| sources.contains_key(&shared_static)),
+            !sources.contains_key(&shared_static),
             "ambiguous configured static UDP tuples must not be assigned to an arbitrary peer"
         );
         assert!(
-            !sources
-                .get(&transport_id)
-                .is_some_and(|sources| sources.contains_key(&shared_hostname_wildcard)),
+            !sources.contains_key(&shared_hostname_wildcard),
             "ambiguous configured static UDP hostname ports must not be assigned to an arbitrary peer"
         );
 
