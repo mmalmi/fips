@@ -117,6 +117,9 @@ pub struct PeerConnection {
     /// Current source address (updated on packet receipt).
     source_addr: Option<TransportAddr>,
 
+    /// Preferred outbound send address learned during handshake.
+    preferred_send_addr: Option<TransportAddr>,
+
     // === Epoch (Restart Detection) ===
     /// Remote peer's startup epoch (learned from handshake).
     remote_epoch: Option<[u8; 8]>,
@@ -160,6 +163,7 @@ impl PeerConnection {
             their_index: None,
             transport_id: None,
             source_addr: None,
+            preferred_send_addr: None,
             remote_epoch: None,
             handshake_msg1: None,
             handshake_msg2: None,
@@ -188,6 +192,7 @@ impl PeerConnection {
             their_index: None,
             transport_id: None,
             source_addr: None,
+            preferred_send_addr: None,
             remote_epoch: None,
             handshake_msg1: None,
             handshake_msg2: None,
@@ -220,6 +225,7 @@ impl PeerConnection {
             their_index: None,
             transport_id: Some(transport_id),
             source_addr: Some(source_addr),
+            preferred_send_addr: None,
             remote_epoch: None,
             handshake_msg1: None,
             handshake_msg2: None,
@@ -345,6 +351,16 @@ impl PeerConnection {
     /// Set the source address.
     pub fn set_source_addr(&mut self, addr: TransportAddr) {
         self.source_addr = Some(addr);
+    }
+
+    /// Get the preferred outbound send address, if one was learned.
+    pub fn preferred_send_addr(&self) -> Option<&TransportAddr> {
+        self.preferred_send_addr.as_ref()
+    }
+
+    /// Set the preferred outbound send address.
+    pub fn set_preferred_send_addr(&mut self, addr: TransportAddr) {
+        self.preferred_send_addr = Some(addr);
     }
 
     // === Epoch Accessors ===

@@ -51,6 +51,148 @@ async fn promotion_keeps_authenticated_observed_path_over_configured_static_hint
 }
 
 #[tokio::test]
+async fn handle_msg2_preserves_static_send_addr_when_alternate_path_is_discarded() {
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_node_addr = *peer_identity.node_addr();
+
+    let transport_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let old_link_id = LinkId::new(10);
+    let old_addr = TransportAddr::from_string("127.0.0.1:8000");
+    let old_our_index = SessionIndex::new(11);
+    let old_their_index = SessionIndex::new(12);
+    let old_session =
+        make_test_fmp_session(&node.identity, &peer_full, node.startup_epoch, [0x11; 8]);
+    let old_peer = ActivePeer::with_session(
+        peer_identity,
+        old_link_id,
+        1_000,
+        ActivePeerSession {
+            session: old_session,
+            our_index: old_our_index,
+            their_index: old_their_index,
+            transport_id,
+            current_addr: old_addr.clone(),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: Some([0x11; 8]),
+        },
+    );
+    assert!(old_peer.can_send());
+    node.peers.insert(peer_node_addr, old_peer);
+    node.peers
+        .insert_session_index((transport_id, old_our_index.as_u32()), peer_node_addr);
+    node.links.insert(
+        old_link_id,
+        Link::connectionless(
+            old_link_id,
+            transport_id,
+            old_addr.clone(),
+            LinkDirection::Outbound,
+            Duration::from_millis(100),
+        ),
+    );
+    node.links
+        .insert_addr((transport_id, old_addr.clone()), old_link_id);
+
+    let link_id = LinkId::new(11);
+    let configured_addr = TransportAddr::from_string("127.0.0.1:52528");
+    let observed_reply_addr = TransportAddr::from_string("127.0.0.1:51830");
+    node.config.peers = vec![auto_connect_peer(
+        peer_identity.npub().to_string(),
+        configured_addr.as_str().unwrap(),
+    )];
+
+    let mut conn = PeerConnection::outbound(link_id, peer_identity, 2_000);
+    let msg1 = conn
+        .start_handshake(node.identity.keypair(), node.startup_epoch, 2_000)
+        .unwrap();
+    let our_index = node.index_allocator.allocate().unwrap();
+    conn.set_our_index(our_index);
+    conn.set_transport_id(transport_id);
+    conn.set_source_addr(configured_addr.clone());
+    node.links.insert(
+        link_id,
+        Link::connectionless(
+            link_id,
+            transport_id,
+            configured_addr.clone(),
+            LinkDirection::Outbound,
+            Duration::from_millis(100),
+        ),
+    );
+    node.links
+        .insert_addr((transport_id, configured_addr.clone()), link_id);
+    node.peers.insert_connection(link_id, conn);
+    node.pending_outbound
+        .insert((transport_id, our_index.as_u32()), link_id);
+
+    let mut responder = PeerConnection::inbound(LinkId::new(99), 2_000);
+    let noise_msg2 = responder
+        .receive_handshake_init(peer_full.keypair(), [0x11; 8], &msg1, 2_000)
+        .unwrap();
+    let their_index = SessionIndex::new(77);
+    let wire_msg2 = build_msg2(their_index, our_index, &noise_msg2);
+    let packet = ReceivedPacket::with_timestamp(
+        transport_id,
+        observed_reply_addr.clone(),
+        crate::transport::PacketBuffer::new(wire_msg2),
+        2_100,
+    );
+
+    node.handle_msg2(packet).await;
+
+    assert_eq!(node.connection_count(), 0);
+    assert!(node.pending_outbound.is_empty());
+    assert!(
+        node.links.contains_key(&old_link_id),
+        "the existing healthy peer should remain active"
+    );
+    assert!(
+        !node.links.contains_key(&link_id),
+        "the completed alternate handshake should be discarded"
+    );
+
+    let active = node.get_peer(&peer_node_addr).unwrap();
+    assert_eq!(active.link_id(), old_link_id);
+    assert_eq!(active.transport_id(), Some(transport_id));
+    assert_eq!(
+        active.current_addr(),
+        Some(&old_addr),
+        "receive/auth routing should stay on the established observed peer path"
+    );
+    assert_eq!(
+        active.preferred_send_addr(),
+        Some(&configured_addr),
+        "the authenticated static dial target must survive even when its session is not promoted"
+    );
+    assert_eq!(active.send_addr(), Some(&configured_addr));
+    assert_eq!(active.our_index(), Some(old_our_index));
+    assert_eq!(active.their_index(), Some(old_their_index));
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
 async fn fresh_handshake_replaces_reconnecting_peer_even_if_tie_breaker_would_lose() {
     let mut node = make_node();
     let peer_full = loop {
@@ -948,14 +1090,29 @@ async fn handle_msg2_matches_pending_outbound_by_index_when_reply_transport_id_c
 #[tokio::test]
 async fn handle_msg2_uses_authenticated_reply_source_when_static_destination_differs() {
     let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
     let peer_full = Identity::generate();
     let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
     let peer_node_addr = *peer_identity.node_addr();
 
     let transport_id = TransportId::new(1);
     let link_id = LinkId::new(11);
-    let configured_addr = TransportAddr::from_string("192.0.2.5:52528");
-    let observed_reply_addr = TransportAddr::from_string("198.51.100.91:51830");
+    let configured_addr = TransportAddr::from_string("127.0.0.1:52528");
+    let observed_reply_addr = TransportAddr::from_string("127.0.0.1:51830");
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
     node.config.peers = vec![auto_connect_peer(
         peer_identity.npub().to_string(),
         configured_addr.as_str().unwrap(),
@@ -1007,9 +1164,19 @@ async fn handle_msg2_uses_authenticated_reply_source_when_static_destination_dif
     assert_eq!(
         active.current_addr(),
         Some(&observed_reply_addr),
-        "the authenticated msg2 source is the live send path even when the dial target came from static config"
+        "the authenticated msg2 source remains the live receive path even when the dial target came from static config"
     );
     assert_ne!(active.current_addr(), Some(&configured_addr));
+    assert_eq!(
+        active.preferred_send_addr(),
+        Some(&configured_addr),
+        "the completed static dial remains the preferred outbound send path"
+    );
+    assert_eq!(active.send_addr(), Some(&configured_addr));
     assert_eq!(active.our_index(), Some(our_index));
     assert_eq!(active.their_index(), Some(their_index));
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
 }

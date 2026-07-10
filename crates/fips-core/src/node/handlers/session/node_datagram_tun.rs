@@ -133,7 +133,7 @@ impl Node {
             && let Some(tid) = peer.transport_id()
             && let Some(transport) = self.transports.get(&tid)
         {
-            path_mtu = if let Some(addr) = peer.current_addr() {
+            path_mtu = if let Some(addr) = peer.send_addr() {
                 path_mtu.min(transport.link_mtu(addr))
             } else {
                 path_mtu.min(transport.mtu())

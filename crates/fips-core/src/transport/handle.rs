@@ -216,6 +216,20 @@ impl TransportHandle {
         }
     }
 
+    /// Resolve a UDP target only if doing so cannot block on DNS.
+    ///
+    /// Numeric UDP addresses are returned directly; hostnames are returned
+    /// only when the UDP transport already has a fresh cached resolution.
+    pub(crate) fn resolved_udp_socket_addr_if_cached(
+        &self,
+        addr: &TransportAddr,
+    ) -> Option<std::net::SocketAddr> {
+        match self {
+            TransportHandle::Udp(t) => t.resolved_socket_addr_if_cached(addr),
+            _ => None,
+        }
+    }
+
     /// Get the interface name (Ethernet only, returns None for other transports).
     pub fn interface_name(&self) -> Option<&str> {
         match self {

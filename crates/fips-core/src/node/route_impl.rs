@@ -57,15 +57,20 @@ impl Node {
             self.session_direct_path_is_degraded(dest_node_addr, now_ms);
         let direct_path_soft_degraded = !direct_path_hard_degraded
             && self.session_direct_discovered_endpoint_trust_expired(dest_node_addr, now_ms);
-        let direct_session_degraded = direct_path_hard_degraded
-            || (direct_path_soft_degraded
-                && self.has_sendable_fallback_lookup_peer(dest_node_addr));
+        let fallback_peer_available = self.has_sendable_fallback_lookup_peer(dest_node_addr);
+        let direct_session_degraded =
+            fallback_peer_available && (direct_path_hard_degraded || direct_path_soft_degraded);
         let direct_session_untrusted = !direct_session_degraded
             && self.session_direct_path_exclusive_trust_expired(dest_node_addr, now_ms);
         let stale_traversal_direct_route = self
             .peers
             .get(dest_node_addr)
-            .filter(|peer| !direct_session_degraded && !peer.is_healthy() && peer.can_send())
+            .filter(|peer| {
+                !direct_path_hard_degraded
+                    && !direct_session_degraded
+                    && !peer.is_healthy()
+                    && peer.can_send()
+            })
             .and_then(|_| {
                 self.configured_peer(dest_node_addr)
                     .and_then(|peer_config| {

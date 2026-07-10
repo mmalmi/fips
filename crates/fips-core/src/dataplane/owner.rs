@@ -1129,7 +1129,9 @@ impl OwnerState {
         if self.owner.protocol() != PacketProtocol::Fsp {
             return None;
         }
-        self.fsp_wrap_route.map(DataplaneFspWrapRoute::next_hop_addr)
+        self.fsp_wrap_route
+            .map(DataplaneFspWrapRoute::next_hop_addr)
+            .or_else(|| self.active_path.as_ref().map(|_| self.owner.node_addr()))
     }
 
     pub(crate) fn fmp_send_context(&self) -> Option<DataplaneFmpSendContext> {

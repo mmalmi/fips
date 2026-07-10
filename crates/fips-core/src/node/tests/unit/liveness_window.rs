@@ -820,7 +820,7 @@ async fn fresh_control_with_unreturned_endpoint_data_warms_fallback_lookup() {
     );
     assert!(
         node.find_next_hop(&peer_addr).is_none(),
-        "without a learned fallback, payload should queue instead of continuing into the suspect direct tuple"
+        "with a fallback peer available, payload should queue while fallback discovery warms a route"
     );
 }
 

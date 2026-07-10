@@ -374,6 +374,26 @@ impl UdpTransport {
         self.resolve_cached(addr).await
     }
 
+    /// Return a numeric socket address without doing DNS on the caller's task.
+    ///
+    /// Numeric addresses resolve immediately. Hostnames are returned only when
+    /// a recent send path has already populated this transport's DNS cache.
+    pub(crate) fn resolved_socket_addr_if_cached(
+        &self,
+        addr: &TransportAddr,
+    ) -> Option<SocketAddr> {
+        if let Some(s) = addr.as_str()
+            && let Ok(sock_addr) = s.parse::<SocketAddr>()
+        {
+            return Some(sock_addr);
+        }
+
+        let cache = self.dns_cache.lock().unwrap_or_else(|e| e.into_inner());
+        cache.get(addr).and_then(|(resolved, cached_at)| {
+            (cached_at.elapsed() < DNS_CACHE_TTL).then_some(*resolved)
+        })
+    }
+
     pub(crate) fn send_snapshot(&self) -> Result<UdpSendSnapshot, TransportError> {
         if !self.state.is_operational() {
             return Err(TransportError::NotStarted);

@@ -53,6 +53,7 @@ impl Node {
             .clone();
         let link_stats = connection.link_stats().clone();
         let remote_epoch = connection.remote_epoch();
+        let preferred_send_addr = connection.preferred_send_addr().cloned();
 
         let peer_node_addr = *verified_identity.node_addr();
         let is_outbound = connection.is_outbound();
@@ -162,6 +163,9 @@ impl Node {
                             remote_epoch,
                         },
                     );
+                    if let Some(addr) = preferred_send_addr.clone() {
+                        new_peer.set_preferred_send_addr(addr);
+                    }
                     new_peer.set_tree_announce_min_interval_ms(
                         self.config.node.tree.announce_min_interval_ms,
                     );
@@ -225,6 +229,11 @@ impl Node {
                         &replacement,
                         "cross_connection_won",
                     );
+                    if let Some(addr) = preferred_send_addr.clone()
+                        && let Some(peer) = self.peers.get_mut(&peer_node_addr)
+                    {
+                        peer.set_preferred_send_addr(addr);
+                    }
                     self.sync_dataplane_fmp_owner(&peer_node_addr);
                     self.clear_session_direct_path_degraded_after_promotion(
                         &peer_node_addr,
@@ -327,6 +336,9 @@ impl Node {
                     remote_epoch,
                 },
             );
+            if let Some(addr) = preferred_send_addr {
+                new_peer.set_preferred_send_addr(addr);
+            }
             new_peer
                 .set_tree_announce_min_interval_ms(self.config.node.tree.announce_min_interval_ms);
             if let Some(ts) = old_announce_ts {

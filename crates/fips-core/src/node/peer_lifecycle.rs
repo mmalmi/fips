@@ -327,6 +327,7 @@ impl PeerLifecycleRegistry {
             );
             peer.set_link_id(link_id);
             peer.set_current_addr(transport_id, addr);
+            peer.clear_preferred_send_addr();
             peer.set_fmp_mmp_is_initiator(is_initiator);
             if remote_epoch_update.is_some() {
                 peer.set_remote_epoch(remote_epoch_update);

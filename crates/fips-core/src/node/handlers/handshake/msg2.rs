@@ -2,6 +2,32 @@ use super::*;
 use crate::node::ActivePeerCurrentSessionReplacement;
 
 impl Node {
+    fn preserve_completed_static_send_addr(
+        &mut self,
+        peer_node_addr: &crate::NodeAddr,
+        preferred_send_addr: Option<crate::transport::TransportAddr>,
+        reason: &'static str,
+    ) -> bool {
+        let Some(addr) = preferred_send_addr else {
+            return false;
+        };
+        let Some(peer) = self.peers.get_mut(peer_node_addr) else {
+            return false;
+        };
+        let changed = peer.set_preferred_send_addr(addr.clone());
+        if changed {
+            let _ = self.sync_dataplane_fmp_owner(peer_node_addr);
+        }
+        debug!(
+            peer = %self.peer_display_name(peer_node_addr),
+            preferred_send_addr = %addr,
+            changed,
+            reason,
+            "Preserved authenticated static UDP send address on active peer"
+        );
+        changed
+    }
+
     /// Handle handshake message 2 (phase 0x2).
     ///
     /// This completes an outbound handshake we initiated.
@@ -190,8 +216,10 @@ impl Node {
             return;
         }
 
-        let (peer_identity, our_index) = {
+        let (peer_identity, our_index, dial_transport_id, dial_addr) = {
             let conn = self.peers.get_connection_mut(&link_id).unwrap();
+            let dial_transport_id = conn.transport_id();
+            let dial_addr = conn.source_addr().cloned();
 
             let noise_msg2 = &packet.data.as_slice()[header.noise_msg2_offset..];
             if let Err(e) = conn.complete_handshake(noise_msg2, packet.timestamp_ms) {
@@ -215,7 +243,12 @@ impl Node {
                 }
             };
 
-            (peer_identity, conn.our_index())
+            (
+                peer_identity,
+                conn.our_index(),
+                dial_transport_id,
+                dial_addr,
+            )
         };
 
         if self
@@ -244,6 +277,48 @@ impl Node {
         }
 
         let peer_node_addr = *peer_identity.node_addr();
+        let peer_npub = peer_identity.npub();
+        let preferred_send_addr =
+            dial_transport_id
+                .zip(dial_addr)
+                .and_then(|(transport_id, addr)| {
+                    if addr == packet.remote_addr {
+                        return None;
+                    }
+                    let indexed_static_match = self
+                        .configured_static_udp_path_for_peer(&peer_node_addr, transport_id)
+                        .as_ref()
+                        == Some(&addr);
+                    let transport_is_udp = self
+                        .transports
+                        .get(&transport_id)
+                        .is_some_and(|transport| transport.transport_type().name == "udp");
+                    let direct_static_match = transport_is_udp
+                        && self
+                            .config
+                            .peers
+                            .iter()
+                            .filter(|peer| peer.npub == peer_npub)
+                            .flat_map(|peer| peer.addresses.iter())
+                            .any(|candidate| {
+                                candidate.seen_at_ms.is_none()
+                                    && candidate.transport.eq_ignore_ascii_case("udp")
+                                    && crate::transport::TransportAddr::from_string(&candidate.addr)
+                                        == addr
+                            });
+                    (indexed_static_match || direct_static_match).then_some(addr)
+                });
+        if let Some(addr) = preferred_send_addr {
+            if let Some(conn) = self.peers.get_connection_mut(&link_id) {
+                conn.set_preferred_send_addr(addr.clone());
+            }
+            debug!(
+                peer = %self.peer_display_name(&peer_node_addr),
+                observed_addr = %packet.remote_addr,
+                preferred_send_addr = %addr,
+                "Preserved asymmetric UDP send address from completed static dial"
+            );
+        }
 
         debug!(
             peer = %self.peer_display_name(&peer_node_addr),
@@ -277,6 +352,7 @@ impl Node {
                     return;
                 }
             };
+            let preferred_send_addr = conn.preferred_send_addr().cloned();
 
             let outbound_transport_id = conn.transport_id().unwrap_or(packet.transport_id);
             let outbound_addr = conn
@@ -319,6 +395,11 @@ impl Node {
                     )
                 {
                     let outbound_our_index = conn.our_index();
+                    self.preserve_completed_static_send_addr(
+                        &peer_node_addr,
+                        preferred_send_addr,
+                        "discarded_outbound_alternate_path",
+                    );
                     self.pending_outbound.remove(&key);
                     if let Some(idx) = outbound_our_index {
                         let _ = self.index_allocator.free(idx);
@@ -386,6 +467,11 @@ impl Node {
                     &replacement,
                     "outbound_alternate_path_refresh",
                 );
+                if let Some(addr) = preferred_send_addr.clone()
+                    && let Some(peer) = self.peers.get_mut(&peer_node_addr)
+                {
+                    peer.set_preferred_send_addr(addr);
+                }
                 self.sync_dataplane_fmp_owner(&peer_node_addr);
 
                 self.seed_path_mtu_for_link_peer(
@@ -495,6 +581,11 @@ impl Node {
                     &replacement,
                     "outbound_cross_connection_swap",
                 );
+                if let Some(addr) = preferred_send_addr
+                    && let Some(peer) = self.peers.get_mut(&peer_node_addr)
+                {
+                    peer.set_preferred_send_addr(addr);
+                }
                 self.sync_dataplane_fmp_owner(&peer_node_addr);
                 self.links
                     .insert_addr((outbound_transport_id, outbound_addr.clone()), link_id);
@@ -545,6 +636,12 @@ impl Node {
                 if let Some(idx) = outbound_our_index {
                     let _ = self.index_allocator.free(idx);
                 }
+
+                self.preserve_completed_static_send_addr(
+                    &peer_node_addr,
+                    preferred_send_addr,
+                    "outbound_cross_connection_lost",
+                );
 
                 self.pending_outbound.remove(&key);
                 // Close the losing TCP connection (no-op for connectionless)

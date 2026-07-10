@@ -325,6 +325,33 @@ fn aead_worker_pool_capacity_blocks_reservation_until_completion_drain() {
 }
 
 #[test]
+fn direct_fsp_owner_reports_destination_as_next_hop() {
+    let dest = NodeAddr::from_bytes([0x1d; 16]);
+    let next_hop = NodeAddr::from_bytes([0x1e; 16]);
+    let fsp_owner = OwnerId::fsp_node(dest);
+    let fmp_owner = OwnerId::fmp_node(next_hop);
+    let direct_path = live_path(1900);
+
+    let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
+    driver.register_owner(fsp_owner, OwnerConfig::new(1, 8));
+    assert_eq!(driver.owner_fsp_next_hop(fsp_owner), None);
+
+    driver
+        .owner_mut(fsp_owner)
+        .unwrap()
+        .set_active_path(direct_path);
+    assert_eq!(driver.owner_fsp_next_hop(fsp_owner), Some(dest));
+
+    let wrap =
+        DataplaneFspWrapRoute::new(fmp_owner, 1, 4242, NodeAddr::from_bytes([0x1c; 16]), dest);
+    driver
+        .owner_mut(fsp_owner)
+        .unwrap()
+        .set_fsp_wrap_route(Some(wrap));
+    assert_eq!(driver.owner_fsp_next_hop(fsp_owner), Some(next_hop));
+}
+
+#[test]
 fn aead_turn_runner_wraps_owner_routed_fsp_into_next_hop_fmp() {
     let source = NodeAddr::from_bytes([0x21; 16]);
     let dest = NodeAddr::from_bytes([0x22; 16]);
@@ -489,7 +516,11 @@ fn direct_fsp_endpoint_data_seals_payloads_to_transport() {
         assert_eq!(output.counter(), 90 + idx as u64);
         assert_eq!(output.target(), OutputTarget::Transport);
         assert_eq!(output.path.clone(), Some(path.clone()));
-        assert!(output.fsp_send_receipt.is_none());
+        let receipt = output
+            .fsp_send_receipt
+            .expect("direct FSP transport output should carry a local send receipt");
+        assert_eq!(receipt.owner, owner);
+        assert_eq!(receipt.counter, 90 + idx as u64);
 
         let header = FspWireHeader::parse(output.payload()).unwrap();
         assert_eq!(header.counter(), 90 + idx as u64);

@@ -10,7 +10,7 @@ use crate::dataplane::{
 };
 use crate::node::session_wire::{FSP_PHASE_MSG2, FSP_PHASE_MSG3, FspCommonPrefix};
 use crate::protocol::SessionMessageType;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const DATAPLANE_PENDING_OUTBOUND_FAST_CONTINUATION_TURNS: usize = 2;
@@ -19,6 +19,59 @@ const DATAPLANE_PENDING_OUTBOUND_COMPLETION_TIMEOUT: std::time::Duration =
     std::time::Duration::from_millis(100);
 const DATAPLANE_DEFERRED_CONTROL_TURN_DRAIN_LIMIT: usize = 64;
 static DATAPLANE_FMP_LINK_SEND_TOKEN: AtomicU64 = AtomicU64::new(1);
+
+fn insert_dataplane_direct_fsp_source(
+    sources: &mut HashMap<
+        crate::transport::TransportId,
+        HashMap<crate::transport::TransportAddr, DataplaneDirectFspSource>,
+    >,
+    ambiguous: &mut HashSet<(
+        crate::transport::TransportId,
+        crate::transport::TransportAddr,
+    )>,
+    transport_id: crate::transport::TransportId,
+    remote_addr: crate::transport::TransportAddr,
+    source: DataplaneDirectFspSource,
+) {
+    let key = (transport_id, remote_addr.clone());
+    if ambiguous.contains(&key) {
+        return;
+    }
+
+    match sources.entry(transport_id).or_default().entry(remote_addr) {
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(source);
+        }
+        std::collections::hash_map::Entry::Occupied(mut entry)
+            if entry.get().source_addr == source.source_addr =>
+        {
+            let existing = entry.get_mut();
+            existing.path_mtu = existing.path_mtu.min(source.path_mtu);
+        }
+        std::collections::hash_map::Entry::Occupied(entry) => {
+            entry.remove();
+            ambiguous.insert(key);
+        }
+    }
+}
+
+fn dataplane_static_udp_port_wildcard_addrs(
+    addr: &str,
+) -> Option<[crate::transport::TransportAddr; 2]> {
+    if addr.parse::<std::net::SocketAddr>().is_ok() {
+        return None;
+    }
+    let (host, port) = addr.rsplit_once(':')?;
+    if host.is_empty() {
+        return None;
+    }
+    let port = port.parse::<u16>().ok()?;
+
+    Some([
+        crate::transport::TransportAddr::from_string(&format!("0.0.0.0:{port}")),
+        crate::transport::TransportAddr::from_string(&format!("[::]:{port}")),
+    ])
+}
 struct DataplaneFmpOwnerSeed {
     owner: OwnerId,
     config: OwnerConfig,
@@ -733,8 +786,7 @@ impl Node {
             processed += 1;
         }
         for batch in self.dataplane.take_deferred_endpoint_data_batches() {
-            self.handle_endpoint_data_batch_no_established_flush(batch)
-                .await;
+            self.requeue_deferred_endpoint_data_batch(batch);
             processed += 1;
         }
         processed
@@ -1008,6 +1060,7 @@ impl Node {
         HashMap<crate::transport::TransportAddr, DataplaneDirectFspSource>,
     > {
         let mut sources = HashMap::new();
+        let mut ambiguous = HashSet::new();
         for (node_addr, peer) in &self.peers {
             let (Some(transport_id), Some(remote_addr)) =
                 (peer.transport_id(), peer.current_addr().cloned())
@@ -1019,18 +1072,94 @@ impl Node {
                 .get(&transport_id)
                 .map(|transport| transport.link_mtu(&remote_addr))
                 .unwrap_or_else(|| self.transport_mtu());
-            sources
-                .entry(transport_id)
-                .or_insert_with(HashMap::new)
-                .insert(
-                    remote_addr,
+            insert_dataplane_direct_fsp_source(
+                &mut sources,
+                &mut ambiguous,
+                transport_id,
+                remote_addr,
+                DataplaneDirectFspSource {
+                    source_addr: *node_addr,
+                    path_mtu,
+                },
+            );
+
+            for static_addr in
+                self.dataplane_configured_static_udp_source_addrs(node_addr, transport_id)
+            {
+                let path_mtu = self
+                    .transports
+                    .get(&transport_id)
+                    .map(|transport| transport.link_mtu(&static_addr))
+                    .unwrap_or(path_mtu);
+                insert_dataplane_direct_fsp_source(
+                    &mut sources,
+                    &mut ambiguous,
+                    transport_id,
+                    static_addr,
                     DataplaneDirectFspSource {
                         source_addr: *node_addr,
                         path_mtu,
                     },
                 );
+            }
         }
         sources
+    }
+
+    fn dataplane_configured_static_udp_source_addrs(
+        &self,
+        peer_node_addr: &NodeAddr,
+        transport_id: crate::transport::TransportId,
+    ) -> Vec<crate::transport::TransportAddr> {
+        let Some(peer_config) = self.configured_peer(peer_node_addr) else {
+            return Vec::new();
+        };
+        let Some(transport) = self.transports.get(&transport_id) else {
+            return Vec::new();
+        };
+        if transport.transport_type().name != "udp" {
+            return Vec::new();
+        }
+
+        let mut addrs = Vec::new();
+        for candidate in &peer_config.addresses {
+            if candidate.seen_at_ms.is_some()
+                || !candidate.transport.eq_ignore_ascii_case("udp")
+                || candidate.addr.eq_ignore_ascii_case("nat")
+            {
+                continue;
+            }
+
+            let candidate_addr = crate::transport::TransportAddr::from_string(&candidate.addr);
+            let mut added_resolved_addr = false;
+            if let Some(socket_addr) = transport.resolved_udp_socket_addr_if_cached(&candidate_addr)
+            {
+                if let Some((candidate_transport_id, _)) =
+                    self.find_udp_transport_for_remote_addr(socket_addr)
+                    && candidate_transport_id == transport_id
+                {
+                    let resolved_addr =
+                        crate::transport::TransportAddr::from_socket_addr(socket_addr);
+                    if !addrs.iter().any(|existing| existing == &resolved_addr) {
+                        addrs.push(resolved_addr);
+                    }
+                    added_resolved_addr = true;
+                }
+            }
+            if added_resolved_addr {
+                continue;
+            }
+
+            if let Some(wildcard_addrs) = dataplane_static_udp_port_wildcard_addrs(&candidate.addr)
+            {
+                for wildcard_addr in wildcard_addrs {
+                    if !addrs.iter().any(|existing| existing == &wildcard_addr) {
+                        addrs.push(wildcard_addr);
+                    }
+                }
+            }
+        }
+        addrs
     }
 
     pub(in crate::node) fn sync_dataplane_fsp_owner_from_current_session(
@@ -1354,7 +1483,7 @@ impl Node {
     fn dataplane_direct_fsp_path(&self, dest_addr: &NodeAddr) -> Option<(TransportPath, u16)> {
         let peer = self.peers.get(dest_addr)?;
         let transport_id = peer.transport_id()?;
-        let remote_addr = peer.current_addr()?.clone();
+        let remote_addr = peer.send_addr()?.clone();
         let path_mtu = self
             .transports
             .get(&transport_id)
@@ -1534,6 +1663,278 @@ mod tests {
         plaintext
     }
 
+    async fn insert_started_udp_transport(node: &mut Node, transport_id: TransportId) {
+        let (packet_tx, packet_rx) = crate::transport::packet_channel(64);
+        node.packet_tx = Some(packet_tx.clone());
+        node.packet_rx = Some(packet_rx);
+        let mut udp = UdpTransport::new(
+            transport_id,
+            Some("test-udp".to_string()),
+            crate::config::UdpConfig {
+                bind_addr: Some("127.0.0.1:0".to_string()),
+                ..Default::default()
+            },
+            packet_tx,
+        );
+        udp.start_async().await.unwrap();
+        node.transports
+            .insert(transport_id, TransportHandle::Udp(udp));
+    }
+
+    fn insert_test_active_peer(
+        node: &mut Node,
+        peer_identity_full: &Identity,
+        transport_id: TransportId,
+        remote_addr: TransportAddr,
+        link_id: u64,
+        index_base: u32,
+        epoch_byte: u8,
+    ) -> NodeAddr {
+        let peer_identity = PeerIdentity::from_pubkey_full(peer_identity_full.pubkey_full());
+        let peer_addr = *peer_identity.node_addr();
+        let session = test_fmp_session(
+            &node.identity,
+            peer_identity_full,
+            node.startup_epoch,
+            [epoch_byte; 8],
+        );
+        let peer = ActivePeer::with_session(
+            peer_identity,
+            LinkId::new(link_id),
+            1_000,
+            ActivePeerSession {
+                session,
+                our_index: SessionIndex::new(index_base),
+                their_index: SessionIndex::new(index_base + 1),
+                transport_id,
+                current_addr: remote_addr,
+                link_stats: LinkStats::new(),
+                is_initiator: true,
+                remote_epoch: Some([epoch_byte; 8]),
+            },
+        );
+        node.peers.insert(peer_addr, peer);
+        peer_addr
+    }
+
+    #[test]
+    fn direct_fsp_send_path_uses_preferred_addr_but_source_map_stays_observed() {
+        let mut node = Node::new(Config::new()).unwrap();
+        let peer_identity_full = Identity::generate();
+        let peer_identity = PeerIdentity::from_pubkey_full(peer_identity_full.pubkey_full());
+        let peer_addr = *peer_identity.node_addr();
+        let transport_id = TransportId::new(7);
+        let observed_addr = TransportAddr::from_string("127.0.0.1:7000");
+        let preferred_send_addr = TransportAddr::from_string("127.0.0.1:7001");
+        let session = test_fmp_session(
+            &node.identity,
+            &peer_identity_full,
+            node.startup_epoch,
+            [0x02; 8],
+        );
+        let mut peer = ActivePeer::with_session(
+            peer_identity,
+            LinkId::new(7),
+            1_000,
+            ActivePeerSession {
+                session,
+                our_index: SessionIndex::new(10),
+                their_index: SessionIndex::new(11),
+                transport_id,
+                current_addr: observed_addr.clone(),
+                link_stats: LinkStats::new(),
+                is_initiator: true,
+                remote_epoch: Some([0x02; 8]),
+            },
+        );
+        peer.set_preferred_send_addr(preferred_send_addr.clone());
+        node.peers.insert(peer_addr, peer);
+
+        let (path, _) = node.dataplane_direct_fsp_path(&peer_addr).unwrap();
+        assert_eq!(
+            path,
+            TransportPath::live(transport_id, preferred_send_addr.clone())
+        );
+
+        let sources = node.dataplane_direct_fsp_sources();
+        assert!(
+            sources
+                .get(&transport_id)
+                .is_some_and(|sources| sources.contains_key(&observed_addr)),
+            "direct FSP ingress classification should stay keyed by the authenticated observed source"
+        );
+        assert!(
+            !sources
+                .get(&transport_id)
+                .is_some_and(|sources| sources.contains_key(&preferred_send_addr)),
+            "preferred outbound target must not replace the receive-source classifier"
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_fsp_source_map_includes_configured_static_udp_addr() {
+        let mut node = Node::new(Config::new()).unwrap();
+        let transport_id = TransportId::new(7);
+        insert_started_udp_transport(&mut node, transport_id).await;
+
+        let peer_identity_full = Identity::generate();
+        let peer_identity = PeerIdentity::from_pubkey_full(peer_identity_full.pubkey_full());
+        let observed_addr = TransportAddr::from_string("127.0.0.1:7000");
+        let static_addr = TransportAddr::from_string("127.0.0.1:7001");
+        let peer_addr = insert_test_active_peer(
+            &mut node,
+            &peer_identity_full,
+            transport_id,
+            observed_addr.clone(),
+            7,
+            20,
+            0x03,
+        );
+        node.config.peers = vec![crate::config::PeerConfig::new(
+            peer_identity.npub(),
+            "udp",
+            "127.0.0.1:7001",
+        )];
+        node.configured_peer_send_weights = ConfiguredPeerSendWeights::from_config(&node.config);
+
+        let sources = node.dataplane_direct_fsp_sources();
+        assert_eq!(
+            sources
+                .get(&transport_id)
+                .and_then(|sources| sources.get(&observed_addr))
+                .map(|source| source.source_addr),
+            Some(peer_addr)
+        );
+        assert_eq!(
+            sources
+                .get(&transport_id)
+                .and_then(|sources| sources.get(&static_addr))
+                .map(|source| source.source_addr),
+            Some(peer_addr),
+            "direct FSP ingress must admit the configured static UDP tuple for an active peer"
+        );
+
+        for transport in node.transports.values_mut() {
+            transport.stop().await.ok();
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_fsp_source_map_includes_configured_static_udp_hostname_port() {
+        let mut node = Node::new(Config::new()).unwrap();
+        let transport_id = TransportId::new(7);
+        insert_started_udp_transport(&mut node, transport_id).await;
+
+        let peer_identity_full = Identity::generate();
+        let peer_identity = PeerIdentity::from_pubkey_full(peer_identity_full.pubkey_full());
+        let observed_addr = TransportAddr::from_string("127.0.0.1:7000");
+        let wildcard_addr = TransportAddr::from_string("0.0.0.0:7001");
+        let peer_addr = insert_test_active_peer(
+            &mut node,
+            &peer_identity_full,
+            transport_id,
+            observed_addr,
+            7,
+            20,
+            0x03,
+        );
+        node.config.peers = vec![crate::config::PeerConfig::new(
+            peer_identity.npub(),
+            "udp",
+            "nvpn-macos-utm-peer.local:7001",
+        )];
+        node.configured_peer_send_weights = ConfiguredPeerSendWeights::from_config(&node.config);
+
+        let sources = node.dataplane_direct_fsp_sources();
+        assert_eq!(
+            sources
+                .get(&transport_id)
+                .and_then(|sources| sources.get(&wildcard_addr))
+                .map(|source| source.source_addr),
+            Some(peer_addr),
+            "unresolved configured static UDP hostnames should admit packets from the configured source port"
+        );
+
+        for transport in node.transports.values_mut() {
+            transport.stop().await.ok();
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_fsp_source_map_drops_ambiguous_static_udp_addr() {
+        let mut node = Node::new(Config::new()).unwrap();
+        let transport_id = TransportId::new(7);
+        insert_started_udp_transport(&mut node, transport_id).await;
+
+        let peer_one_full = Identity::generate();
+        let peer_one = PeerIdentity::from_pubkey_full(peer_one_full.pubkey_full());
+        let peer_two_full = Identity::generate();
+        let peer_two = PeerIdentity::from_pubkey_full(peer_two_full.pubkey_full());
+        let observed_one = TransportAddr::from_string("127.0.0.1:7100");
+        let observed_two = TransportAddr::from_string("127.0.0.1:7200");
+        let shared_static = TransportAddr::from_string("127.0.0.1:7300");
+        let shared_hostname_wildcard = TransportAddr::from_string("0.0.0.0:7301");
+        let peer_one_addr = insert_test_active_peer(
+            &mut node,
+            &peer_one_full,
+            transport_id,
+            observed_one.clone(),
+            8,
+            30,
+            0x04,
+        );
+        let peer_two_addr = insert_test_active_peer(
+            &mut node,
+            &peer_two_full,
+            transport_id,
+            observed_two.clone(),
+            9,
+            40,
+            0x05,
+        );
+        node.config.peers = vec![
+            crate::config::PeerConfig::new(peer_one.npub(), "udp", "127.0.0.1:7300").with_address(
+                crate::config::PeerAddress::new("udp", "peer-one.local:7301"),
+            ),
+            crate::config::PeerConfig::new(peer_two.npub(), "udp", "127.0.0.1:7300").with_address(
+                crate::config::PeerAddress::new("udp", "peer-two.local:7301"),
+            ),
+        ];
+        node.configured_peer_send_weights = ConfiguredPeerSendWeights::from_config(&node.config);
+
+        let sources = node.dataplane_direct_fsp_sources();
+        assert_eq!(
+            sources
+                .get(&transport_id)
+                .and_then(|sources| sources.get(&observed_one))
+                .map(|source| source.source_addr),
+            Some(peer_one_addr)
+        );
+        assert_eq!(
+            sources
+                .get(&transport_id)
+                .and_then(|sources| sources.get(&observed_two))
+                .map(|source| source.source_addr),
+            Some(peer_two_addr)
+        );
+        assert!(
+            !sources
+                .get(&transport_id)
+                .is_some_and(|sources| sources.contains_key(&shared_static)),
+            "ambiguous configured static UDP tuples must not be assigned to an arbitrary peer"
+        );
+        assert!(
+            !sources
+                .get(&transport_id)
+                .is_some_and(|sources| sources.contains_key(&shared_hostname_wildcard)),
+            "ambiguous configured static UDP hostname ports must not be assigned to an arbitrary peer"
+        );
+
+        for transport in node.transports.values_mut() {
+            transport.stop().await.ok();
+        }
+    }
+
     #[test]
     fn fmp_pending_policy_is_patient_only_for_fsp_handshake_responses() {
         let msg1 = session_datagram_plaintext_with_fsp_prefix(
@@ -1587,6 +1988,7 @@ mod tests {
         let peer_addr = *peer_identity.node_addr();
         let transport_id = TransportId::new(77);
         let remote_addr = TransportAddr::from_string("127.0.0.1:7777");
+        let preferred_send_addr = TransportAddr::from_string("127.0.0.1:8888");
         let previous_index = SessionIndex::new(10);
         let current_index = SessionIndex::new(11);
         let pending_index = SessionIndex::new(12);
@@ -1615,12 +2017,19 @@ mod tests {
         let second_pending =
             test_fmp_session(&node.identity, &peer_identity_full, [0x05; 8], [0x06; 8]);
         peer.set_pending_session(second_pending, pending_index, SessionIndex::new(22), false);
+        peer.set_preferred_send_addr(preferred_send_addr.clone());
         assert_eq!(peer.our_index(), Some(current_index));
         assert_eq!(peer.previous_our_index(), Some(previous_index));
         assert_eq!(peer.pending_our_index(), Some(pending_index));
         node.peers.insert(peer_addr, peer);
 
         assert!(node.sync_dataplane_fmp_owner(&peer_addr));
+        assert_eq!(
+            node.dataplane
+                .owner_active_path(OwnerId::fmp_node(peer_addr)),
+            Ok(Some(TransportPath::live(transport_id, remote_addr.clone()))),
+            "outbound FMP control stays on the authenticated observed path; preferred_send_addr is only for direct endpoint data"
+        );
 
         let mut raw = VecDeque::from([
             DataplaneRawIngress::from_received(

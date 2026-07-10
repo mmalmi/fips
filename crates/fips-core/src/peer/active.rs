@@ -109,6 +109,14 @@ pub struct ActivePeer {
     transport_id: Option<TransportId>,
     /// Current transport address (for roaming support).
     current_addr: Option<TransportAddr>,
+    /// Preferred outbound transport address for asymmetric UDP paths.
+    ///
+    /// `current_addr` remains the authenticated observed inbound source for
+    /// admission, liveness, and roaming. When Docker/VM NAT replies from a
+    /// different tuple than the configured endpoint we dialed, high-volume
+    /// outbound dataplane sends can still prefer the configured target that
+    /// completed the handshake.
+    preferred_send_addr: Option<TransportAddr>,
 
     // === Spanning Tree ===
     /// Their latest parent declaration.
@@ -229,6 +237,7 @@ impl ActivePeer {
             their_index: None,
             transport_id: None,
             current_addr: None,
+            preferred_send_addr: None,
             declaration: None,
             ancestry: None,
             tree_announce_min_interval_ms: 500,
@@ -306,6 +315,7 @@ impl ActivePeer {
             their_index: Some(session.their_index),
             transport_id: Some(session.transport_id),
             current_addr: Some(session.current_addr),
+            preferred_send_addr: None,
             declaration: None,
             ancestry: None,
             tree_announce_min_interval_ms: 500,
@@ -478,6 +488,33 @@ impl ActivePeer {
     /// Get the current transport address.
     pub fn current_addr(&self) -> Option<&TransportAddr> {
         self.current_addr.as_ref()
+    }
+
+    /// Get the preferred outbound transport address, if one differs from the
+    /// authenticated observed receive path.
+    pub fn preferred_send_addr(&self) -> Option<&TransportAddr> {
+        self.preferred_send_addr.as_ref()
+    }
+
+    /// Get the address high-volume outbound dataplane sends should target.
+    pub fn send_addr(&self) -> Option<&TransportAddr> {
+        self.preferred_send_addr
+            .as_ref()
+            .or(self.current_addr.as_ref())
+    }
+
+    /// Prefer a specific outbound address for dataplane sends.
+    pub fn set_preferred_send_addr(&mut self, addr: TransportAddr) -> bool {
+        if self.preferred_send_addr.as_ref() == Some(&addr) {
+            return false;
+        }
+        self.preferred_send_addr = Some(addr);
+        true
+    }
+
+    /// Clear any asymmetric outbound send hint.
+    pub fn clear_preferred_send_addr(&mut self) -> bool {
+        self.preferred_send_addr.take().is_some()
     }
 
     /// Update the current address (for roaming support).
