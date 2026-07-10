@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.86] - 2026-07-10
+
+### Changed
+
+- Upgraded the optional Rust WebRTC transport to the maintained 0.17 line,
+  removing vulnerable legacy DTLS, TLS, and curve dependencies.
+
 ## [0.3.85] - 2026-07-10
 
 ### Fixed

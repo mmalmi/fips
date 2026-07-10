@@ -1,6 +1,6 @@
 [package]
 name = "fips-core"
-version = "0.3.85"
+version = "0.3.86"
 edition = "2024"
 description = "Reusable FIPS mesh, endpoint, transport, and protocol library"
 license = "MIT"
@@ -37,7 +37,7 @@ socket2 = { version = "0.6.2", features = ["all"] }
 tokio-socks = "0.5"
 portable-atomic = { version = "1", features = ["std"] }
 bytes = { version = "1", optional = true }
-webrtc = { version = "0.8", optional = true }
+webrtc = { version = "0.17", optional = true }
 
 nostr = { version = "0.44", features = ["std", "nip59"] }
 nostr-pubsub = "0.1.6"
