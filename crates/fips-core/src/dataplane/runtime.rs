@@ -430,12 +430,13 @@ impl DataplaneTurnDriver {
             crate::perf_profile::Stage::DataplaneCompletionDrain,
         );
         let completion_limit = self.completion_drain_limit(completion_limit);
-        let queued = completions.drain_completion_batches_into_sink(
+        self.mover
+            .activate_ready_completion_shards(completions.take_ready_shards());
+        let retired = self.retire_queued_completed_aead_outputs(
             completion_limit,
-            &mut self.mover,
+            compact_endpoint_data,
         );
-        summary.completions = summary.completions.saturating_add(queued);
-        self.retire_queued_completed_aead_outputs(completion_limit, compact_endpoint_data);
+        summary.completions = summary.completions.saturating_add(retired);
         self.admit_retired_outbound_packets(summary)
     }
 
@@ -1093,7 +1094,7 @@ impl DataplaneTurnDriver {
         &mut self,
         limit: usize,
         compact_endpoint_data: bool,
-    ) {
+    ) -> usize {
         let retired_completions = self
             .mover
             .retire_queued_completions_into(
@@ -1108,6 +1109,7 @@ impl DataplaneTurnDriver {
         crate::perf_profile::record_dataplane_live_completions_retired(retired_completions);
         let mut mover_drops = self.mover.drain_drops();
         self.drops.append(&mut mover_drops);
+        retired_completions
     }
 
     fn collect_live_session_outputs<R>(

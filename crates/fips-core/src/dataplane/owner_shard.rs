@@ -1,22 +1,19 @@
 #[derive(Debug)]
 struct DataplaneOwnerShardRetireWorker {
-    completed: VecDeque<CryptoCompletionBatch>,
+    pending: VecDeque<CryptoCompletionSlot>,
 }
 
 impl DataplaneOwnerShardRetireWorker {
     fn new() -> Self {
         Self {
-            completed: VecDeque::new(),
+            pending: VecDeque::new(),
         }
     }
 
-    fn queue_completion_batch(&mut self, batch: CryptoCompletionBatch) -> bool {
-        if batch.is_empty() {
-            return false;
-        }
-        let was_empty = self.completed.is_empty();
-        self.completed.push_back(batch);
-        was_empty
+    fn queue_completion_slot(&mut self, slot: CryptoCompletionSlot) -> bool {
+        let ready = slot.is_ready();
+        self.pending.push_back(slot);
+        ready
     }
 
     fn retire_queued_completions_into(
@@ -28,13 +25,31 @@ impl DataplaneOwnerShardRetireWorker {
         compact_endpoint_data: bool,
     ) -> usize {
         let mut retired_count = 0usize;
-        while retired_count < limit {
-            let Some(mut batch) = self.completed.pop_front() else {
+        let mut slots_remaining = self.pending.len();
+        while retired_count < limit && slots_remaining > 0 {
+            slots_remaining -= 1;
+            let Some(slot) = self.pending.pop_front() else {
                 break;
             };
+            let (mut batch, mut in_flight) = match slot.take() {
+                Ok(ready) => ready,
+                Err(slot) => {
+                    self.pending.push_back(slot);
+                    continue;
+                }
+            };
+            crate::perf_profile::record_dataplane_aead_completion_batch(batch.len());
             let batch_limit = limit.saturating_sub(retired_count);
             let pending = if batch.len() > batch_limit {
-                Some(batch.split_off(batch_limit))
+                let pending = batch.split_off(batch_limit);
+                crate::perf_profile::record_dataplane_aead_completion_split(pending.len());
+                let pending_in_flight = in_flight
+                    .as_mut()
+                    .map(|in_flight| in_flight.split_off(batch_limit));
+                Some(CryptoCompletionSlot::completed_with_in_flight(
+                    pending,
+                    pending_in_flight,
+                ))
             } else {
                 None
             };
@@ -47,15 +62,15 @@ impl DataplaneOwnerShardRetireWorker {
             );
             retired_count = retired_count.saturating_add(batch_len);
             if let Some(pending) = pending {
-                self.completed.push_front(pending);
+                self.pending.push_front(pending);
                 break;
             }
         }
         retired_count
     }
 
-    fn has_queued_completions(&self) -> bool {
-        !self.completed.is_empty()
+    fn has_ready_completions(&self) -> bool {
+        self.pending.iter().any(CryptoCompletionSlot::is_ready)
     }
 }
 

@@ -1420,50 +1420,12 @@ pub(crate) fn record_dataplane_aead_completion_batch(packets: usize) {
 }
 
 #[inline]
-pub(crate) fn record_dataplane_aead_completion_send(
-    messages: usize,
-    batches: usize,
-    packets: usize,
-) {
-    if !enabled() || messages == 0 {
-        return;
-    }
-    record_event_count_sample(Event::DataplaneAeadCompletionSendJobs, 1);
-    record_event_count_sample(Event::DataplaneAeadCompletionMessages, messages as u64);
-    record_event_count_sample(Event::DataplaneAeadCompletionMessageBatches, batches as u64);
-    record_event_count_sample(Event::DataplaneAeadCompletionMessagePackets, packets as u64);
-}
-
-#[inline]
 pub(crate) fn record_dataplane_aead_completion_split(packets: usize) {
     if !enabled() || packets == 0 {
         return;
     }
     record_event_count_sample(Event::DataplaneAeadCompletionSplitBatches, 1);
     record_event_count_sample(Event::DataplaneAeadCompletionSplitPackets, packets as u64);
-}
-
-#[inline]
-pub(crate) fn record_dataplane_aead_completion_backlog(
-    rx_queued_messages: usize,
-    pending_batches: usize,
-    pending_packets: usize,
-) {
-    if !enabled() {
-        return;
-    }
-    record_event_count_sample(
-        Event::DataplaneAeadCompletionRxQueuedMessages,
-        rx_queued_messages as u64,
-    );
-    record_event_count_sample(
-        Event::DataplaneAeadCompletionPendingBatches,
-        pending_batches as u64,
-    );
-    record_event_count_sample(
-        Event::DataplaneAeadCompletionPendingPackets,
-        pending_packets as u64,
-    );
 }
 
 #[inline]

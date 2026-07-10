@@ -139,7 +139,7 @@ fn take_driver_endpoint_batches(
 }
 
 #[test]
-fn aead_worker_pool_returns_completion_batches() {
+fn aead_worker_pool_retires_shared_completion_slots() {
     let owner = fmp_owner(706);
     let open_key = 20;
     let mut mover = mover();
@@ -155,18 +155,12 @@ fn aead_worker_pool_returns_completion_batches() {
     assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 4);
 
     let mut retired = Vec::new();
-    let completions = drain_worker_pool_completions(&mut pool, 2);
-    assert_eq!(completions.len(), 2);
+    let completions = drain_worker_pool_into_mover(&mut mover, &mut pool, 2, 2);
     assert_eq!(pool.available_capacity(), 6);
-    for completion in completions {
-        retired.extend(retire_completion(&mut mover, completion));
-    }
+    retired.extend(completions);
 
-    let completions = drain_worker_pool_completions(&mut pool, 2);
-    assert_eq!(completions.len(), 2);
-    for completion in completions {
-        retired.extend(retire_completion(&mut mover, completion));
-    }
+    let completions = drain_worker_pool_into_mover(&mut mover, &mut pool, 2, 2);
+    retired.extend(completions);
     let outputs = retired;
     assert_eq!(
         outputs
@@ -297,11 +291,8 @@ fn aead_worker_pool_capacity_blocks_reservation_until_completion_drain() {
     assert!(drops.is_empty());
     assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 2);
 
-    let completions = drain_worker_pool_completions(&mut pool, 2);
+    let completions = drain_worker_pool_into_mover(&mut mover, &mut pool, 2, 2);
     assert_eq!(completions.len(), 2);
-    for completion in completions {
-        retire_completion(&mut mover, completion);
-    }
     assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
     assert_eq!(pool.available_capacity(), 2);
 
@@ -311,11 +302,8 @@ fn aead_worker_pool_capacity_blocks_reservation_until_completion_drain() {
     assert!(drops.is_empty());
     assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 2);
 
-    let completions = drain_worker_pool_completions(&mut pool, 2);
+    let completions = drain_worker_pool_into_mover(&mut mover, &mut pool, 2, 2);
     assert_eq!(completions.len(), 2);
-    for completion in completions {
-        retire_completion(&mut mover, completion);
-    }
     assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
 
     let (dispatched, retired, drops) = run_with_worker_pool(&mut mover, &mut pool);

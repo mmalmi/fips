@@ -23,6 +23,98 @@ pub(crate) struct CryptoCompletion {
     result: CryptoResult,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct CryptoCompletionSlot {
+    owner_shard: usize,
+    state: Arc<CryptoCompletionSlotState>,
+}
+
+#[derive(Debug)]
+struct CryptoCompletionSlotState {
+    completion: std::sync::OnceLock<CryptoCompletionBatch>,
+    _in_flight: Option<DataplaneAeadInFlight>,
+}
+
+impl CryptoCompletionSlot {
+    fn pending(
+        run: &CryptoOwnerRun,
+        counters: DataplaneAeadWorkerCounters,
+        count: usize,
+        bulk_count: usize,
+    ) -> Self {
+        let reservation = run
+            .first_reservation()
+            .expect("crypto owner run contains work");
+        Self {
+            owner_shard: reservation.owner_shard(),
+            state: Arc::new(CryptoCompletionSlotState {
+                completion: std::sync::OnceLock::new(),
+                _in_flight: Some(DataplaneAeadInFlight {
+                    counters,
+                    count,
+                    bulk_count,
+                }),
+            }),
+        }
+    }
+
+    fn completed(batch: CryptoCompletionBatch) -> Self {
+        Self::completed_with_in_flight(batch, None)
+    }
+
+    fn completed_with_in_flight(
+        batch: CryptoCompletionBatch,
+        in_flight: Option<DataplaneAeadInFlight>,
+    ) -> Self {
+        let owner_shard = batch.owner_shard();
+        let completion = std::sync::OnceLock::new();
+        completion
+            .set(batch)
+            .expect("new crypto completion slot is empty");
+        Self {
+            owner_shard,
+            state: Arc::new(CryptoCompletionSlotState {
+                completion,
+                _in_flight: in_flight,
+            }),
+        }
+    }
+
+    fn complete(self, batch: CryptoCompletionBatch) -> usize {
+        self.state
+            .completion
+            .set(batch)
+            .expect("crypto completion slot completes once");
+        self.owner_shard
+    }
+
+    fn take(
+        self,
+    ) -> Result<(CryptoCompletionBatch, Option<DataplaneAeadInFlight>), Self> {
+        if !self.is_ready() {
+            return Err(self);
+        }
+        let state = Arc::try_unwrap(self.state)
+            .expect("ready crypto completion slot has no worker reference");
+        let CryptoCompletionSlotState {
+            completion,
+            _in_flight,
+        } = state;
+        let completion = completion
+            .into_inner()
+            .expect("ready crypto completion slot contains a batch");
+        Ok((completion, _in_flight))
+    }
+
+    fn is_ready(&self) -> bool {
+        self.state.completion.get().is_some()
+    }
+
+    fn owner_shard(&self) -> usize {
+        self.owner_shard
+    }
+}
+
 #[derive(Debug)]
 struct CryptoOwnerRun {
     next_order: OrderToken,

@@ -492,21 +492,25 @@ impl Dataplane {
         if batch.is_empty() {
             return;
         }
-        let shard = batch.owner_shard();
-        #[cfg(debug_assertions)]
-        let expected_shard = self.owner_shard_index(batch.owner());
-        let Some(retire_worker) = self.retire_workers.get_mut(shard) else {
-            for completion in batch.into_completions() {
-                let drop =
-                    PacketDrop::from_completion(&completion, PacketDropReason::UnknownOwner, None);
-                self.drops.push(drop);
-            }
-            return;
-        };
-        #[cfg(debug_assertions)]
-        debug_assert_eq!(shard, expected_shard);
-        if retire_worker.queue_completion_batch(batch) {
+        self.queue_completion_slot(CryptoCompletionSlot::completed(batch));
+    }
+
+    fn queue_completion_slot(&mut self, slot: CryptoCompletionSlot) {
+        let shard = slot.owner_shard();
+        let retire_worker = self
+            .retire_workers
+            .get_mut(shard)
+            .expect("crypto completion slot references an owner shard");
+        if retire_worker.queue_completion_slot(slot) {
             self.completion_ready_shards.mark(shard);
+        }
+    }
+
+    fn activate_ready_completion_shards(&mut self, ready_shards: usize) {
+        for shard in 0..self.shards.len() {
+            if ready_shards & (1usize << shard) != 0 {
+                self.completion_ready_shards.mark(shard);
+            }
         }
     }
 
@@ -538,7 +542,7 @@ impl Dataplane {
                 let Some(shard) = self.completion_ready_shards.pop() else {
                     break;
                 };
-                let (got, ingress_ready_after, outbound_ready_after, has_queued_completions) = {
+                let (got, ingress_ready_after, outbound_ready_after, has_ready_completions) = {
                     let Some(owner_shard) = self.shards.get_mut(shard) else {
                         continue;
                     };
@@ -556,7 +560,7 @@ impl Dataplane {
                         got,
                         LaneLens::from_tuple(owner_shard.admission_ready_lens()),
                         LaneLens::from_tuple(owner_shard.outbound_admission_ready_lens()),
-                        retire_worker.has_queued_completions(),
+                        retire_worker.has_ready_completions(),
                     )
                 };
                 retired_count = retired_count.saturating_add(got);
@@ -565,7 +569,7 @@ impl Dataplane {
                     .mark_from_lens(shard, ingress_ready_after);
                 self.outbound_ready_shards
                     .mark_from_lens(shard, outbound_ready_after);
-                if has_queued_completions {
+                if has_ready_completions {
                     self.completion_ready_shards.mark(shard);
                 }
             }
@@ -602,13 +606,16 @@ impl Dataplane {
             let _executor_submit_timer = crate::perf_profile::Timer::start(
                 crate::perf_profile::Stage::DataplaneExecutorSubmit,
             );
-            worker_pool.submit_prepared_chunk(prepared_work);
+            worker_pool.submit_prepared_chunk(prepared_work, |slot| {
+                self.queue_completion_slot(slot);
+            });
         }
         {
             let _completion_queue_timer = crate::perf_profile::Timer::start(
                 crate::perf_profile::Stage::DataplaneCompletionQueue,
             );
             self.queue_completion_batches(completion_batches);
+            self.activate_ready_completion_shards(worker_pool.take_ready_shards());
             let mut retired = DataplaneRetiredOutputSink::new(
                 outputs,
                 outbound_packets,
@@ -902,12 +909,6 @@ impl Dataplane {
         dispatched.min(limit)
     }
 
-}
-
-impl DataplaneCompletionSink for Dataplane {
-    fn push_completion_batch(&mut self, batch: CryptoCompletionBatch) {
-        self.queue_completion_run(batch);
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
