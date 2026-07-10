@@ -433,22 +433,22 @@ impl Node {
                 occupied.insert(*peer_addr);
             }
         }
-        for (peer_addr, state) in self.retry_pending.iter() {
-            if !configured_npubs.contains(&state.peer_config.npub) {
-                occupied.insert(*peer_addr);
-            }
-        }
-        for identity in self
+        let mut unknown_inbound = 0usize;
+        for connection in self
             .peers
             .connection_values()
-            .filter_map(|conn| conn.expected_identity())
+            .filter(|conn| conn.is_inbound())
         {
-            if !configured_npubs.contains(&identity.npub()) {
-                occupied.insert(*identity.node_addr());
+            if let Some(identity) = connection.expected_identity() {
+                if !configured_npubs.contains(&identity.npub()) {
+                    occupied.insert(*identity.node_addr());
+                }
+            } else {
+                unknown_inbound = unknown_inbound.saturating_add(1);
             }
         }
 
-        occupied.len()
+        occupied.len().saturating_add(unknown_inbound)
     }
 
     fn admits_open_discovery_peer(&self, peer_identity: &PeerIdentity) -> bool {
