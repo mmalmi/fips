@@ -86,12 +86,21 @@ fn dataplane_crypto_batch_buckets_classify_worker_chunks() {
 
 #[test]
 fn stage_table_exposes_current_dataplane_transport_and_output_stages() {
-    assert_eq!(N_STAGES, 69);
+    assert_eq!(N_STAGES, 75);
 
     for (stage, name) in [
         (Stage::UdpRecv, "udp_recv"),
+        (
+            Stage::SessionDatagramDecode,
+            "session_datagram_decode",
+        ),
+        (Stage::CoordCacheWarm, "coord_cache_warm"),
+        (Stage::TransitRoute, "transit_route"),
         (Stage::TunWrite, "tun_write"),
+        (Stage::TransitEncode, "transit_encode"),
+        (Stage::TransitSubmit, "transit_submit"),
         (Stage::UdpSend, "udp_send"),
+        (Stage::TransitTotal, "transit_total"),
         (Stage::EndpointDeliver, "endpoint_deliver"),
         (Stage::EndpointEventWait, "endpoint_event_wait"),
         (Stage::ReservedStage18, "reserved_stage_18"),

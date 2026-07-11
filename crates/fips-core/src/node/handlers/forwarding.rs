@@ -71,7 +71,12 @@ impl Node {
         let payload = datagram.payload;
         match self.prepare_session_datagram(datagram).await {
             PreparedSessionDatagram::Forward(route) => {
-                let plaintext = copy_forwarded_session_datagram(payload, route.ttl, route.path_mtu);
+                let plaintext = {
+                    let _timer = crate::perf_profile::Timer::start(
+                        crate::perf_profile::Stage::TransitEncode,
+                    );
+                    copy_forwarded_session_datagram(payload, route.ttl, route.path_mtu)
+                };
                 let forward = route.with_plaintext(PacketBuffer::new(plaintext));
                 let result = self
                     .send_dataplane_fmp_link_plaintext(
@@ -119,14 +124,20 @@ impl Node {
                 if self.session_datagram_is_transit_candidate(&datagram) {
                     match self.prepare_session_datagram(datagram).await {
                         PreparedSessionDatagram::Forward(route) => {
-                            let mut plaintext = ingress
-                                .into_link_plaintext()
-                                .expect("opened FMP ingress must retain its plaintext owner");
-                            let rewritten = rewrite_forwarded_session_datagram(
-                                &mut plaintext,
-                                route.ttl,
-                                route.path_mtu,
-                            );
+                            let (plaintext, rewritten) = {
+                                let _timer = crate::perf_profile::Timer::start(
+                                    crate::perf_profile::Stage::TransitEncode,
+                                );
+                                let mut plaintext = ingress
+                                    .into_link_plaintext()
+                                    .expect("opened FMP ingress must retain its plaintext owner");
+                                let rewritten = rewrite_forwarded_session_datagram(
+                                    &mut plaintext,
+                                    route.ttl,
+                                    route.path_mtu,
+                                );
+                                (plaintext, rewritten)
+                            };
                             debug_assert!(
                                 rewritten,
                                 "validated transit datagram must be rewriteable"
@@ -198,6 +209,11 @@ impl Node {
         if forwards.is_empty() {
             return;
         }
+        // These two stages are intentionally one sample per forwarding run,
+        // not one sample per packet. `TransitTotal` covers the complete flush
+        // and receipt accounting; `TransitSubmit` covers the dataplane pump.
+        let _total_timer =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::TransitTotal);
 
         let outbound = forwards
             .iter_mut()
@@ -209,7 +225,11 @@ impl Node {
                 )
             })
             .collect();
-        let results = self.send_dataplane_fmp_link_plaintext_batch(outbound).await;
+        let results = {
+            let _submit_timer =
+                crate::perf_profile::Timer::start(crate::perf_profile::Stage::TransitSubmit);
+            self.send_dataplane_fmp_link_plaintext_batch(outbound).await
+        };
         let mut failed_routes = std::collections::HashSet::new();
         for (forward, result) in std::mem::take(forwards).into_iter().zip(results) {
             let record_route_failure = claim_route_failure_once(
@@ -236,7 +256,13 @@ impl Node {
 
         self.stats_mut().forwarding.record_received(payload.len());
 
-        let datagram_ref = match SessionDatagramRef::decode(payload) {
+        let decode_result = {
+            let _timer = crate::perf_profile::Timer::start(
+                crate::perf_profile::Stage::SessionDatagramDecode,
+            );
+            SessionDatagramRef::decode(payload)
+        };
+        let datagram_ref = match decode_result {
             Ok(dg) => dg,
             Err(e) => {
                 self.stats_mut()
@@ -264,7 +290,11 @@ impl Node {
 
         // Coordinate cache warming from plaintext session-layer headers
         // — works directly on the ref, no allocation.
-        self.try_warm_coord_cache_ref(&datagram_ref);
+        {
+            let _timer =
+                crate::perf_profile::Timer::start(crate::perf_profile::Stage::CoordCacheWarm);
+            self.try_warm_coord_cache_ref(&datagram_ref);
+        }
 
         // Local delivery: dispatch to session layer handlers. No alloc,
         // no copy — `handle_session_payload` takes `payload` by borrow.
@@ -282,8 +312,12 @@ impl Node {
         // Find next hop toward destination. Transit forwarding must not send
         // a non-local datagram back to the hop it arrived from; learned
         // reverse routes are observations, not loop-free source routes.
-        let next_hop_addr = match self.plan_transit_next_hop(&datagram_ref.dest_addr, &previous_hop)
-        {
+        let next_hop_plan = {
+            let _timer =
+                crate::perf_profile::Timer::start(crate::perf_profile::Stage::TransitRoute);
+            self.plan_transit_next_hop(&datagram_ref.dest_addr, &previous_hop)
+        };
+        let next_hop_addr = match next_hop_plan {
             TransitNextHopPlan::Route(next_hop_addr) => next_hop_addr,
             plan @ (TransitNextHopPlan::Loop(_) | TransitNextHopPlan::NoRoute) => {
                 let loop_failure = match plan {

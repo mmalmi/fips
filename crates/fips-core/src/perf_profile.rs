@@ -31,7 +31,7 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 69;
+const N_STAGES: usize = 75;
 const N_EVENTS: usize = 269;
 const HIST_BUCKETS: usize = 48;
 
@@ -108,6 +108,12 @@ pub enum Stage {
     DataplaneCompletionQueue = 66,
     DataplaneAeadWorkerQueueWait = 67,
     ReservedStage68 = 68,
+    SessionDatagramDecode = 69,
+    CoordCacheWarm = 70,
+    TransitRoute = 71,
+    TransitEncode = 72,
+    TransitSubmit = 73,
+    TransitTotal = 74,
 }
 
 impl Stage {
@@ -182,6 +188,12 @@ impl Stage {
             Stage::DataplaneCompletionQueue => "dataplane_completion_queue",
             Stage::DataplaneAeadWorkerQueueWait => "dataplane_aead_worker_queue_wait",
             Stage::ReservedStage68 => "reserved_stage_68",
+            Stage::SessionDatagramDecode => "session_datagram_decode",
+            Stage::CoordCacheWarm => "coord_cache_warm",
+            Stage::TransitRoute => "transit_route",
+            Stage::TransitEncode => "transit_encode",
+            Stage::TransitSubmit => "transit_submit",
+            Stage::TransitTotal => "transit_total",
         }
     }
 }
@@ -257,6 +269,12 @@ fn stage_from_index(idx: usize) -> Stage {
         66 => Stage::DataplaneCompletionQueue,
         67 => Stage::DataplaneAeadWorkerQueueWait,
         68 => Stage::ReservedStage68,
+        69 => Stage::SessionDatagramDecode,
+        70 => Stage::CoordCacheWarm,
+        71 => Stage::TransitRoute,
+        72 => Stage::TransitEncode,
+        73 => Stage::TransitSubmit,
+        74 => Stage::TransitTotal,
         _ => unreachable!(),
     }
 }

@@ -1,0 +1,64 @@
+name: fips-forwarding
+
+x-fips-common: &fips-common
+  image: fips-test:latest
+  cap_add:
+    - NET_ADMIN
+  devices:
+    - /dev/net/tun:/dev/net/tun
+  environment:
+    - RUST_LOG=${RUST_LOG:-info}
+    - FIPS_PERF=${FIPS_PERF:-0}
+    - FIPS_PERF_INTERVAL_SECS=${FIPS_PERF_INTERVAL_SECS:-1}
+    - FIPS_LINUX_TUN_VNET=${FIPS_LINUX_TUN_VNET:-1}
+  restart: "no"
+
+services:
+  node-a:
+    <<: *fips-common
+    container_name: fips-forward-a
+    hostname: node-a
+    volumes:
+      - ../docker/resolv.conf:/etc/resolv.conf:ro
+      - ./generated-configs/node-a.yaml:/etc/fips/fips.yaml:ro
+    networks:
+      ab:
+        ipv4_address: 172.31.10.10
+
+  node-b:
+    <<: *fips-common
+    container_name: fips-forward-b
+    hostname: node-b
+    volumes:
+      - ../docker/resolv.conf:/etc/resolv.conf:ro
+      - ./generated-configs/node-b.yaml:/etc/fips/fips.yaml:ro
+    networks:
+      ab:
+        ipv4_address: 172.31.10.11
+      bc:
+        ipv4_address: 172.31.20.11
+
+  node-c:
+    <<: *fips-common
+    container_name: fips-forward-c
+    hostname: node-c
+    volumes:
+      - ../docker/resolv.conf:/etc/resolv.conf:ro
+      - ./generated-configs/node-c.yaml:/etc/fips/fips.yaml:ro
+    networks:
+      bc:
+        ipv4_address: 172.31.20.12
+
+networks:
+  ab:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.31.10.0/24
+  bc:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.31.20.0/24
