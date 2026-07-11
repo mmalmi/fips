@@ -418,7 +418,7 @@ impl NostrDiscovery {
             return Ok(());
         }
 
-        let mut advert = match self.local_advert.read().await.clone() {
+        let advert = match self.local_advert.read().await.clone() {
             Some(advert) => advert,
             // Transient absence (e.g., a single tick during startup where
             // build_overlay_advert briefly returns None). Don't proactively
@@ -428,38 +428,7 @@ impl NostrDiscovery {
             None => return Ok(()),
         };
 
-        advert.identifier = ADVERT_IDENTIFIER.to_string();
-        advert.version = ADVERT_VERSION;
-        advert.endpoints.retain(endpoint_advert_is_publicly_usable);
-        // Defensive: build_overlay_advert returns None on empty endpoints,
-        // so this is only reachable from non-lifecycle callers.
-        if advert.endpoints.is_empty() {
-            return Ok(());
-        }
-
-        if advert.has_udp_nat_endpoint() {
-            if advert
-                .signal_relays
-                .as_ref()
-                .is_none_or(|relays| relays.is_empty())
-            {
-                return Err(BootstrapError::InvalidAdvert(
-                    "udp:nat endpoint requires non-empty signalRelays".to_string(),
-                ));
-            }
-            if advert
-                .stun_servers
-                .as_ref()
-                .is_none_or(|servers| servers.is_empty())
-            {
-                return Err(BootstrapError::InvalidAdvert(
-                    "udp:nat endpoint requires non-empty stunServers".to_string(),
-                ));
-            }
-        } else {
-            advert.signal_relays = None;
-            advert.stun_servers = None;
-        }
+        let advert = sanitize_advert_for_publish(advert)?;
 
         let expires_at = now_ms() + self.config.advert_ttl_secs * 1000;
         let tags = vec![
@@ -728,4 +697,50 @@ impl NostrDiscovery {
 
         (valid_until_ms > now_ms).then_some(valid_until_ms)
     }
+}
+
+pub(super) fn sanitize_advert_for_publish(
+    mut advert: OverlayAdvert,
+) -> Result<OverlayAdvert, BootstrapError> {
+    advert.identifier = ADVERT_IDENTIFIER.to_string();
+    advert.version = ADVERT_VERSION;
+    advert.endpoints.retain(endpoint_advert_is_publicly_usable);
+    if advert.endpoints.is_empty() {
+        return Err(BootstrapError::InvalidAdvert(
+            "missing publicly routable endpoints".to_string(),
+        ));
+    }
+
+    let has_nat = advert.has_udp_nat_endpoint();
+    let has_webrtc = advert
+        .endpoints
+        .iter()
+        .any(|endpoint| endpoint.transport == OverlayTransportKind::WebRtc);
+    if has_nat || has_webrtc {
+        if advert
+            .signal_relays
+            .as_ref()
+            .is_none_or(|relays| relays.is_empty())
+        {
+            let endpoint = if has_nat { "udp:nat" } else { "webrtc" };
+            return Err(BootstrapError::InvalidAdvert(format!(
+                "{endpoint} endpoint requires non-empty signalRelays"
+            )));
+        }
+        if has_nat
+            && advert
+                .stun_servers
+                .as_ref()
+                .is_none_or(|servers| servers.is_empty())
+        {
+            return Err(BootstrapError::InvalidAdvert(
+                "udp:nat endpoint requires non-empty stunServers".to_string(),
+            ));
+        }
+    } else {
+        advert.signal_relays = None;
+        advert.stun_servers = None;
+    }
+
+    Ok(advert)
 }

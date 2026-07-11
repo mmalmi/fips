@@ -40,6 +40,27 @@ fn advert_publish_retry_delay_backs_off_to_short_cap() {
 }
 
 #[test]
+fn webrtc_only_advert_keeps_signaling_metadata_when_published() {
+    let advert = OverlayAdvert {
+        identifier: crate::discovery::nostr::ADVERT_IDENTIFIER.to_string(),
+        version: crate::discovery::nostr::ADVERT_VERSION,
+        endpoints: vec![OverlayEndpointAdvert {
+            transport: OverlayTransportKind::WebRtc,
+            addr: format!("02{}", "11".repeat(32)),
+        }],
+        signal_relays: Some(vec!["wss://relay.example".to_string()]),
+        stun_servers: Some(vec!["stun:stun.example.org:3478".to_string()]),
+    };
+
+    let published = super::advert::sanitize_advert_for_publish(advert)
+        .expect("WebRTC-only adverts must remain publishable");
+    assert_eq!(
+        published.signal_relays,
+        Some(vec!["wss://relay.example".to_string()])
+    );
+}
+
+#[test]
 fn signal_answer_wait_is_bounded_by_attempt_timeout() {
     let config = NostrDiscoveryConfig {
         signal_ttl_secs: 120,
