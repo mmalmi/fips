@@ -34,6 +34,9 @@ impl PreparedCryptoRun {
         }
     }
 
+    // Returning the owned work item avoids a clone when a prepared run is full
+    // or belongs to a different key epoch.
+    #[allow(clippy::result_large_err)]
     fn try_push_open(&mut self, work: CryptoWork) -> Result<(), CryptoWork> {
         if self.run.len() >= DATAPLANE_AEAD_JOB_PACKETS
             || !self.run.matches(
@@ -48,6 +51,8 @@ impl PreparedCryptoRun {
         Ok(())
     }
 
+    // As above, the large error value intentionally returns packet ownership.
+    #[allow(clippy::result_large_err)]
     fn try_push_seal(&mut self, work: OutboundCryptoWork) -> Result<(), OutboundCryptoWork> {
         if self.run.len() >= DATAPLANE_AEAD_JOB_PACKETS
             || !self.run.matches(&work.reservation, false, false)

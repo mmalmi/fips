@@ -46,8 +46,8 @@ impl WebRtcRuntime {
             .try_reserve_pending(&remote_addr, session_id.clone(), Arc::clone(&pc))
             .await
         {
-            let _ = data_channel.close().await;
-            let _ = pc.close().await;
+            close_data_channel_bounded(data_channel).await;
+            close_peer_connection_bounded(pc).await;
             return Ok(());
         }
         self.spawn_connect_timeout(remote_addr.clone(), session_id.clone());
@@ -179,7 +179,7 @@ impl WebRtcRuntime {
             .try_reserve_pending(&remote_addr, session_id.clone(), Arc::clone(&pc))
             .await
         {
-            let _ = pc.close().await;
+            close_peer_connection_bounded(pc).await;
             let _ = self
                 .send_reject(&signal.sender, sender_xonly, session_id)
                 .await;
@@ -380,7 +380,7 @@ impl WebRtcRuntime {
     async fn mark_failed(&self, addr: TransportAddr, reason: String) {
         let pending = self.pending.lock().await.remove(&addr);
         if let Some(pending) = pending {
-            let _ = pending.pc.close().await;
+            close_peer_connection_bounded(pending.pc).await;
         }
         self.ready.lock().await.remove(&addr);
         self.failed
@@ -410,7 +410,7 @@ impl WebRtcRuntime {
         let Some(pending) = pending else {
             return;
         };
-        let _ = pending.pc.close().await;
+        close_peer_connection_bounded(pending.pc).await;
         self.ready.lock().await.remove(&addr);
         self.failed
             .lock()
@@ -439,7 +439,7 @@ impl WebRtcRuntime {
                 }
             };
             if let Some(dial) = maybe_pending {
-                let _ = dial.pc.close().await;
+                close_peer_connection_bounded(dial.pc).await;
                 let reason = "WebRTC connect timed out".to_string();
                 failed.lock().await.insert(addr.clone(), reason.clone());
                 warn!(
@@ -573,8 +573,8 @@ fn wire_data_channel(
                 }
             };
             if !is_active_session {
-                let _ = open_dc.close().await;
-                let _ = open_pc.close().await;
+                close_data_channel_bounded(open_dc).await;
+                close_peer_connection_bounded(open_pc).await;
                 return;
             }
             open_failed.lock().await.remove(&open_addr);
@@ -587,8 +587,8 @@ fn wire_data_channel(
                 },
             );
             if let Some(previous) = previous {
-                let _ = previous.data_channel.close().await;
-                let _ = previous.pc.close().await;
+                close_data_channel_bounded(previous.data_channel).await;
+                close_peer_connection_bounded(previous.pc).await;
             }
             if let Err(err) = ready_dc
                 .send(&Bytes::copy_from_slice(WEBRTC_READY_FRAME))

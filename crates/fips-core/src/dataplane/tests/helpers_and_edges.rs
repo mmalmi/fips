@@ -150,7 +150,7 @@
             .flat_map(|prepared| {
                 let PreparedCryptoRun { run, cipher } = prepared;
                 run.items.into_iter().map(move |item| {
-                    let work = match item.state.into_inner() {
+                    match item.state.into_inner() {
                         CryptoOwnerRunItemState::Open(packet) => CapturedCryptoWork::Open(
                             CryptoWork {
                                 reservation: item.reservation,
@@ -168,8 +168,7 @@
                         CryptoOwnerRunItemState::Completed(_) => {
                             panic!("captured crypto run was already completed")
                         }
-                    };
-                    work
+                    }
                 })
             })
             .collect()
@@ -754,8 +753,10 @@
         driver.reset_turn_buffers();
         let completion_limit = driver.completion_drain_limit(completion_limit);
         let queued = drain_test_completions_into_mover(driver, completions, completion_limit);
-        let mut summary = DataplaneRuntimeSummary::default();
-        summary.completions = queued;
+        let summary = DataplaneRuntimeSummary {
+            completions: queued,
+            ..Default::default()
+        };
         driver.retire_ready_aead_outputs(completion_limit, compact_endpoint_data);
         driver.admit_retired_outbound_packets(summary)
     }

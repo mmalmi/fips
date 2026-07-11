@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[test]
 fn validates_compressed_pubkey_addresses() {
@@ -31,4 +32,25 @@ fn webrtc_signal_serializes_like_ts_transport() {
     assert!(json.contains(r#""sessionId":"abc""#));
     assert!(json.contains(r#""createdAtMs":1"#));
     assert!(json.contains(r#""expiresAtMs":2"#));
+}
+
+#[tokio::test]
+async fn stalled_webrtc_send_times_out_and_starts_cleanup() {
+    let cleanup_started = Arc::new(AtomicBool::new(false));
+    let cleanup_flag = Arc::clone(&cleanup_started);
+    let started = tokio::time::Instant::now();
+
+    let result = bounded_webrtc_send(
+        Duration::from_millis(10),
+        std::future::pending::<Result<usize, std::io::Error>>(),
+        move || async move {
+            cleanup_flag.store(true, Ordering::SeqCst);
+            std::future::pending::<()>().await;
+        },
+    )
+    .await;
+
+    assert!(matches!(result, Err(TransportError::Timeout)));
+    assert!(cleanup_started.load(Ordering::SeqCst));
+    assert!(started.elapsed() < Duration::from_millis(100));
 }

@@ -397,9 +397,7 @@ impl FipsEndpointDirectSink for FipsEndpointDirectReceiverSink {
 }
 
 fn direct_receiver_packet_limit(limit: usize) -> usize {
-    limit
-        .max(1)
-        .min(FIPS_ENDPOINT_DIRECT_PACKET_RUN_MAX_PACKETS)
+    limit.clamp(1, FIPS_ENDPOINT_DIRECT_PACKET_RUN_MAX_PACKETS)
 }
 
 fn take_direct_source_runs(

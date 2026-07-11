@@ -21,9 +21,12 @@ use ::webrtc::peer_connection::configuration::RTCConfiguration;
 use ::webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use ::webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use bytes::Bytes;
+use futures::future::join_all;
 use nostr::prelude::PublicKey;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::fmt::Display;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex, mpsc};
@@ -35,6 +38,7 @@ const WEBRTC_SIGNAL_VERSION: u32 = 1;
 const SIGNAL_TTL_MS: u64 = 60_000;
 const WEBRTC_READY_FRAME: &[u8] = &[0xff, 0x46, 0x57, 0x52, 0x31]; // FWR1
 const WEBRTC_READY_FALLBACK_MS: u64 = 250;
+const WEBRTC_IO_TIMEOUT: Duration = Duration::from_secs(1);
 
 mod signaling;
 
@@ -245,9 +249,12 @@ impl WebRtcTransport {
             .drain()
             .map(|(_, pending)| pending)
             .collect::<Vec<_>>();
-        for pending in pending {
-            let _ = pending.pc.close().await;
-        }
+        join_all(
+            pending
+                .into_iter()
+                .map(|pending| close_peer_connection_bounded(pending.pc)),
+        )
+        .await;
         self.ready.lock().await.clear();
         let connections = self
             .pool
@@ -256,10 +263,11 @@ impl WebRtcTransport {
             .drain()
             .map(|(_, connection)| connection)
             .collect::<Vec<_>>();
-        for conn in connections {
-            let _ = conn.data_channel.close().await;
-            let _ = conn.pc.close().await;
-        }
+        join_all(connections.into_iter().map(|connection| async move {
+            close_data_channel_bounded(connection.data_channel).await;
+            close_peer_connection_bounded(connection.pc).await;
+        }))
+        .await;
         self.state = TransportState::Down;
         Ok(())
     }
@@ -282,10 +290,12 @@ impl WebRtcTransport {
         }
         .ok_or_else(|| TransportError::SendFailed(format!("no WebRTC connection to {addr}")))?;
 
-        data_channel
-            .send(&Bytes::copy_from_slice(data))
-            .await
-            .map_err(|e| TransportError::SendFailed(e.to_string()))
+        bounded_webrtc_send(
+            WEBRTC_IO_TIMEOUT,
+            data_channel.send(&Bytes::copy_from_slice(data)),
+            || self.close_connection_async(addr),
+        )
+        .await
     }
 
     /// Initiate a non-blocking WebRTC dial.
@@ -361,17 +371,52 @@ impl WebRtcTransport {
     /// Close a WebRTC connection.
     pub async fn close_connection_async(&self, addr: &TransportAddr) {
         let pending = self.pending.lock().await.remove(addr);
-        if let Some(pending) = pending {
-            let _ = pending.pc.close().await;
-        }
         let conn = self.pool.lock().await.remove(addr);
-        if let Some(conn) = conn {
-            let _ = conn.data_channel.close().await;
-            let _ = conn.pc.close().await;
-        }
         self.failed.lock().await.remove(addr);
         self.ready.lock().await.remove(addr);
+
+        // Logical eviction happens before potentially slow library cleanup so
+        // a canceled close future cannot leave the address reserved forever.
+        if let Some(pending) = pending {
+            close_peer_connection_bounded(pending.pc).await;
+        }
+        if let Some(conn) = conn {
+            close_data_channel_bounded(conn.data_channel).await;
+            close_peer_connection_bounded(conn.pc).await;
+        }
     }
+}
+
+async fn bounded_webrtc_send<F, E, C, CF>(
+    timeout: Duration,
+    send: F,
+    cleanup: C,
+) -> Result<usize, TransportError>
+where
+    F: Future<Output = Result<usize, E>>,
+    E: Display,
+    C: FnOnce() -> CF,
+    CF: Future<Output = ()>,
+{
+    match tokio::time::timeout(timeout, send).await {
+        Ok(Ok(bytes)) => Ok(bytes),
+        Ok(Err(error)) => Err(TransportError::SendFailed(error.to_string())),
+        Err(_) => {
+            // Removing the connection is more important than completing the
+            // underlying WebRTC close handshake. A dead SCTP association must
+            // never hold the node's single event loop indefinitely.
+            let _ = tokio::time::timeout(timeout, cleanup()).await;
+            Err(TransportError::Timeout)
+        }
+    }
+}
+
+async fn close_data_channel_bounded(data_channel: Arc<RTCDataChannel>) {
+    let _ = tokio::time::timeout(WEBRTC_IO_TIMEOUT, data_channel.close()).await;
+}
+
+async fn close_peer_connection_bounded(peer_connection: Arc<RTCPeerConnection>) {
+    let _ = tokio::time::timeout(WEBRTC_IO_TIMEOUT, peer_connection.close()).await;
 }
 
 include!("webrtc_runtime.rs");

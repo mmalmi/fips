@@ -332,10 +332,7 @@ impl DataplaneOwnerShard {
                         };
                         let work = match prepared_run.as_mut() {
                             Some(run) if prepared_epoch == Some(receive_epoch) => {
-                                match run.try_push_open(work) {
-                                    Ok(()) => None,
-                                    Err(work) => Some(work),
-                                }
+                                run.try_push_open(work).err()
                             }
                             Some(_) => Some(work),
                             None => Some(work),
@@ -466,10 +463,7 @@ impl DataplaneOwnerShard {
                             packet,
                         };
                         let work = match prepared_run.as_mut() {
-                            Some(run) => match run.try_push_seal(work) {
-                                Ok(()) => None,
-                                Err(work) => Some(work),
-                            },
+                            Some(run) => run.try_push_seal(work).err(),
                             None => Some(work),
                         };
                         if let Some(work) = work {
