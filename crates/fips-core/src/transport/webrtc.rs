@@ -536,16 +536,18 @@ impl WebRtcRuntime {
         let pc = Arc::new(self.new_peer_connection().await?);
         wire_peer_connection_state(self.transport_id, remote_addr.clone(), Arc::clone(&pc));
         let runtime = self.clone();
-        let pc_for_data_channel = Arc::clone(&pc);
+        let pc_for_data_channel = Arc::downgrade(&pc);
         let session_for_data_channel = session_id.clone();
         let addr_for_data_channel = remote_addr.clone();
         pc.on_data_channel(Box::new(move |data_channel: Arc<RTCDataChannel>| {
             let runtime = runtime.clone();
             let remote_addr = addr_for_data_channel.clone();
             let session_id = session_for_data_channel.clone();
-            let pc = Arc::clone(&pc_for_data_channel);
+            let pc = pc_for_data_channel.upgrade();
             Box::pin(async move {
-                wire_data_channel(&runtime, remote_addr, session_id, pc, data_channel);
+                if let Some(pc) = pc {
+                    wire_data_channel(&runtime, remote_addr, session_id, pc, data_channel);
+                }
             })
         }));
 
@@ -912,8 +914,10 @@ fn wire_data_channel(
 
     let open_addr = remote_addr.clone();
     let open_session = session_id.clone();
-    let open_pc = Arc::clone(&pc);
-    let open_dc = Arc::clone(&data_channel);
+    // Callbacks live on these objects, so strong back-references would keep
+    // failed ICE agents and their sockets alive after close.
+    let open_pc = Arc::downgrade(&pc);
+    let open_dc = Arc::downgrade(&data_channel);
     let open_pool = Arc::clone(&runtime.pool);
     let open_pending = Arc::clone(&runtime.pending);
     let open_failed = Arc::clone(&runtime.failed);
@@ -921,13 +925,16 @@ fn wire_data_channel(
     data_channel.on_open(Box::new(move || {
         let open_addr = open_addr.clone();
         let open_session = open_session.clone();
-        let open_pc = Arc::clone(&open_pc);
-        let open_dc = Arc::clone(&open_dc);
+        let open_pc = open_pc.clone();
+        let open_dc = open_dc.clone();
         let open_pool = Arc::clone(&open_pool);
         let open_pending = Arc::clone(&open_pending);
         let open_failed = Arc::clone(&open_failed);
         let open_ready = Arc::clone(&open_ready);
         Box::pin(async move {
+            let (Some(open_pc), Some(open_dc)) = (open_pc.upgrade(), open_dc.upgrade()) else {
+                return;
+            };
             let ready_dc = Arc::clone(&open_dc);
             let is_active_session = {
                 let mut pending = open_pending.lock().await;
