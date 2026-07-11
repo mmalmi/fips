@@ -60,3 +60,6 @@ For a smoke run:
 ```sh
 testing/forwarding/benchmark.sh --quick
 ```
+
+For multi-peer saturation and control-liveness fairness, use the
+[`multipeer`](multipeer/README.md) A/D→B→C lab.

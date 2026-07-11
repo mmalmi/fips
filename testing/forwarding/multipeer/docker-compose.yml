@@ -1,0 +1,83 @@
+name: fips-forwarding-fairness
+
+x-fips-common: &fips-common
+  image: fips-test:latest
+  cap_add:
+    - NET_ADMIN
+  devices:
+    - /dev/net/tun:/dev/net/tun
+  environment:
+    - RUST_LOG=${RUST_LOG:-info}
+    - FIPS_PERF=${FIPS_PERF:-0}
+    - FIPS_PERF_INTERVAL_SECS=${FIPS_PERF_INTERVAL_SECS:-1}
+    - FIPS_LINUX_TUN_VNET=${FIPS_LINUX_TUN_VNET:-1}
+  restart: "no"
+
+services:
+  node-a:
+    <<: *fips-common
+    container_name: fips-fair-a
+    hostname: node-a
+    volumes:
+      - ../../docker/resolv.conf:/etc/resolv.conf:ro
+      - ./generated-configs/node-a.yaml:/etc/fips/fips.yaml:ro
+    networks:
+      ab:
+        ipv4_address: 172.28.110.10
+
+  node-b:
+    <<: *fips-common
+    container_name: fips-fair-b
+    hostname: node-b
+    volumes:
+      - ../../docker/resolv.conf:/etc/resolv.conf:ro
+      - ./generated-configs/node-b.yaml:/etc/fips/fips.yaml:ro
+    networks:
+      ab:
+        ipv4_address: 172.28.110.11
+      bc:
+        ipv4_address: 172.28.120.11
+      db:
+        ipv4_address: 172.28.130.11
+
+  node-c:
+    <<: *fips-common
+    container_name: fips-fair-c
+    hostname: node-c
+    volumes:
+      - ../../docker/resolv.conf:/etc/resolv.conf:ro
+      - ./generated-configs/node-c.yaml:/etc/fips/fips.yaml:ro
+    networks:
+      bc:
+        ipv4_address: 172.28.120.12
+
+  node-d:
+    <<: *fips-common
+    container_name: fips-fair-d
+    hostname: node-d
+    volumes:
+      - ../../docker/resolv.conf:/etc/resolv.conf:ro
+      - ./generated-configs/node-d.yaml:/etc/fips/fips.yaml:ro
+    networks:
+      db:
+        ipv4_address: 172.28.130.13
+
+networks:
+  ab:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.28.110.0/24
+  bc:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.28.120.0/24
+  db:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.28.130.0/24
