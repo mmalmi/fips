@@ -677,28 +677,18 @@ impl Node {
     }
 
     async fn run_rx_loop_maintenance_tick(&mut self, plan: RxLoopMaintenancePlan) -> bool {
-        self.check_timeouts();
-        let now_ms = Self::now_ms();
-        // Link/session liveness must run before slower retry/discovery work:
-        // under bulk send pressure a late heartbeat or MMP report is
-        // indistinguishable from a dead direct path on the remote peer.
-        self.check_link_heartbeats().await;
-        self.reload_peer_acl();
-        self.resend_pending_handshakes(now_ms).await;
-        self.resend_pending_rekeys(now_ms).await;
-        self.resend_pending_session_handshakes(now_ms).await;
-        self.resend_pending_session_msg3(now_ms).await;
-        self.purge_idle_sessions(now_ms);
-        self.purge_learned_routes(now_ms);
-        self.check_mmp_reports().await;
-        self.check_session_mmp_reports().await;
-        self.check_rekey().await;
-        self.check_session_rekey().await;
-        self.check_pending_lookups(now_ms).await;
-        self.poll_pending_connects().await;
-        self.process_pending_retries(now_ms).await;
-        self.poll_transport_discovery().await;
-        self.sample_transport_congestion();
+        if !rx_loop_fast_maintenance_within_budget(self.run_rx_loop_fast_maintenance_tick()).await {
+            crate::perf_profile::record_event(
+                crate::perf_profile::Event::RxLoopSlowMaintenanceTimeout,
+            );
+            self.mark_rx_loop_maintenance_timeout();
+            warn!(
+                timeout_ms = RX_LOOP_FAST_MAINTENANCE_TIMEOUT.as_millis() as u64,
+                data_pressure = plan.data_pressure(),
+                "RX loop liveness maintenance timed out; continuing packet processing"
+            );
+            return true;
+        }
 
         let Some(slow_timeout) = plan.slow_timeout() else {
             crate::perf_profile::record_event(
@@ -725,6 +715,31 @@ impl Node {
         false
     }
 
+    async fn run_rx_loop_fast_maintenance_tick(&mut self) {
+        self.check_timeouts();
+        let now_ms = Self::now_ms();
+        // Link/session liveness must run before slower retry/discovery work:
+        // under bulk send pressure a late heartbeat or MMP report is
+        // indistinguishable from a dead direct path on the remote peer.
+        self.check_link_heartbeats().await;
+        self.reload_peer_acl();
+        self.resend_pending_handshakes(now_ms).await;
+        self.resend_pending_rekeys(now_ms).await;
+        self.resend_pending_session_handshakes(now_ms).await;
+        self.resend_pending_session_msg3(now_ms).await;
+        self.purge_idle_sessions(now_ms);
+        self.purge_learned_routes(now_ms);
+        self.check_mmp_reports().await;
+        self.check_session_mmp_reports().await;
+        self.check_rekey().await;
+        self.check_session_rekey().await;
+        self.check_pending_lookups(now_ms).await;
+        self.poll_pending_connects().await;
+        self.process_pending_retries(now_ms).await;
+        self.poll_transport_discovery().await;
+        self.sample_transport_congestion();
+    }
+
     async fn run_rx_loop_slow_maintenance_tick(&mut self) {
         if let Some(delay) = rx_loop_slow_maintenance_fault_delay() {
             tokio::time::sleep(delay).await;
@@ -742,6 +757,15 @@ impl Node {
         self.compute_mesh_size();
         self.record_stats_history();
     }
+}
+
+async fn rx_loop_fast_maintenance_within_budget<F>(maintenance: F) -> bool
+where
+    F: std::future::Future<Output = ()>,
+{
+    tokio::time::timeout(RX_LOOP_FAST_MAINTENANCE_TIMEOUT, maintenance)
+        .await
+        .is_ok()
 }
 
 fn bulk_admission_pressure_relief_due(

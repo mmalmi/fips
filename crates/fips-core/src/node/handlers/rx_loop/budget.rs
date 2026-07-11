@@ -23,6 +23,11 @@ pub(super) const TUN_DRAIN_BUDGET: usize = LATENCY_PACKET_DRAIN_BUDGET;
 /// gets a regular select boundary even under a continuously ready receive lane.
 pub(super) const RX_LOOP_BULK_SERVICE_MAX_TURNS: usize = 8;
 pub(super) const RX_LOOP_BULK_SERVICE_MAX_ELAPSED: Duration = Duration::from_millis(2);
+/// Heartbeats and path repair are latency-sensitive, but every await in that
+/// lane must still share a hard deadline. A transport or traversal future that
+/// loses its wakeup must not make packet handling and the control socket
+/// disappear with it.
+pub(super) const RX_LOOP_FAST_MAINTENANCE_TIMEOUT: Duration = Duration::from_secs(2);
 pub(super) const RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT: Duration = Duration::from_millis(100);
 pub(super) const RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT: Duration = Duration::from_millis(10);
 pub(super) const RX_LOOP_RECENT_DATA_ACTIVITY_WINDOW: Duration = Duration::from_secs(2);

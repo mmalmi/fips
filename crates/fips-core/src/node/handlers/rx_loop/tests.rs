@@ -1,12 +1,23 @@
 use super::budget::{
-    ENDPOINT_DRAIN_BUDGET, LATENCY_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, TUN_DRAIN_BUDGET,
-    endpoint_drain_budget, mixed_dataplane_crypto_budget, tun_drain_budget,
+    ENDPOINT_DRAIN_BUDGET, LATENCY_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET,
+    RX_LOOP_FAST_MAINTENANCE_TIMEOUT, TUN_DRAIN_BUDGET, endpoint_drain_budget,
+    mixed_dataplane_crypto_budget, tun_drain_budget,
 };
 use super::drain::{
     RxLoopDataDrainStats, RxLoopMaintenancePlan, RxLoopMaintenanceState, SingleLaneDrainCursor,
 };
+use super::rx_loop_fast_maintenance_within_budget;
 use crate::control::protocol::Request;
 use std::time::{Duration, Instant};
+
+#[tokio::test(start_paused = true)]
+async fn fast_maintenance_loses_no_more_than_its_total_budget() {
+    let started = tokio::time::Instant::now();
+    let completed = rx_loop_fast_maintenance_within_budget(std::future::pending::<()>()).await;
+
+    assert!(!completed);
+    assert_eq!(started.elapsed(), RX_LOOP_FAST_MAINTENANCE_TIMEOUT);
+}
 
 #[test]
 fn endpoint_drain_budget_caps_large_packet_turns() {
