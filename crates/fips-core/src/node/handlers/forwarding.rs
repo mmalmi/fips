@@ -6,6 +6,7 @@
 //! locally, and generates error signals on routing failure.
 
 use crate::NodeAddr;
+use crate::node::route_impl::TransitNextHopPlan;
 use crate::node::session_wire::{
     FSP_COMMON_PREFIX_SIZE, FSP_HEADER_SIZE, FSP_PHASE_ESTABLISHED, FSP_PHASE_MSG1, FSP_PHASE_MSG2,
     FspCommonPrefix, parse_encrypted_coords,
@@ -31,6 +32,16 @@ struct PreparedSessionForward {
     encoded: Vec<u8>,
 }
 
+enum PreparedSessionDatagram {
+    Forward(PreparedSessionForward),
+    NoRoute {
+        datagram: SessionDatagram,
+        received_len: usize,
+        loop_failure: Option<NodeAddr>,
+    },
+    Done,
+}
+
 impl Node {
     /// Handle an incoming SessionDatagram from a peer.
     ///
@@ -46,17 +57,28 @@ impl Node {
         &mut self,
         datagram: AuthenticatedSessionDatagram<'_>,
     ) {
-        let Some(forward) = self.prepare_session_datagram_forward(datagram).await else {
-            return;
-        };
-        let result = self
-            .send_dataplane_fmp_link_plaintext(
-                &forward.next_hop_addr,
-                &forward.encoded,
-                forward.outgoing_ce,
-            )
-            .await;
-        self.finish_prepared_session_forward(forward, result).await;
+        match self.prepare_session_datagram(datagram).await {
+            PreparedSessionDatagram::Forward(forward) => {
+                let result = self
+                    .send_dataplane_fmp_link_plaintext(
+                        &forward.next_hop_addr,
+                        &forward.encoded,
+                        forward.outgoing_ce,
+                    )
+                    .await;
+                self.finish_prepared_session_forward(forward, result, true)
+                    .await;
+            }
+            PreparedSessionDatagram::NoRoute {
+                datagram,
+                received_len,
+                loop_failure,
+            } => {
+                self.finish_session_datagram_no_route(datagram, received_len, loop_failure)
+                    .await;
+            }
+            PreparedSessionDatagram::Done => {}
+        }
     }
 
     pub(in crate::node) async fn handle_dataplane_fmp_link_ingress_batch(
@@ -64,7 +86,8 @@ impl Node {
         ingresses: Vec<crate::dataplane::DataplaneFmpLinkIngress>,
     ) -> usize {
         let mut processed = 0usize;
-        let mut forwards = Vec::with_capacity(ingresses.len());
+        let flush_limit = self.dataplane_transport_send_batch_packets.max(1);
+        let mut forwards = Vec::with_capacity(ingresses.len().min(flush_limit));
         for ingress in ingresses {
             let receipt = ingress.receipt();
             let fmp = AuthenticatedFmpReceiveFacts::from_dataplane_receipt(receipt);
@@ -74,15 +97,37 @@ impl Node {
                 continue;
             };
             if msg_type == LinkMessageType::SessionDatagram.to_byte() {
-                if let Some(forward) = self
-                    .prepare_session_datagram_forward(AuthenticatedSessionDatagram::new(
-                        fmp.source_peer,
-                        ingress.payload(),
-                        fmp.fmp_flags & FLAG_CE != 0,
-                    ))
-                    .await
-                {
-                    forwards.push(forward);
+                let datagram = AuthenticatedSessionDatagram::new(
+                    fmp.source_peer,
+                    ingress.payload(),
+                    fmp.fmp_flags & FLAG_CE != 0,
+                );
+                if self.session_datagram_is_transit_candidate(&datagram) {
+                    match self.prepare_session_datagram(datagram).await {
+                        PreparedSessionDatagram::Forward(forward) => {
+                            forwards.push(forward);
+                            if forward_run_reached_limit(forwards.len(), flush_limit) {
+                                self.flush_prepared_session_forwards(&mut forwards).await;
+                            }
+                        }
+                        PreparedSessionDatagram::NoRoute {
+                            datagram,
+                            received_len,
+                            loop_failure,
+                        } => {
+                            self.flush_prepared_session_forwards(&mut forwards).await;
+                            self.finish_session_datagram_no_route(
+                                datagram,
+                                received_len,
+                                loop_failure,
+                            )
+                            .await;
+                        }
+                        PreparedSessionDatagram::Done => {}
+                    }
+                } else {
+                    self.flush_prepared_session_forwards(&mut forwards).await;
+                    self.handle_session_datagram(datagram).await;
                 }
             } else {
                 self.flush_prepared_session_forwards(&mut forwards).await;
@@ -98,6 +143,23 @@ impl Node {
         }
         self.flush_prepared_session_forwards(&mut forwards).await;
         processed
+    }
+
+    /// Pure preflight for the batching decision. Valid non-local traffic goes
+    /// to the transit planner; local delivery, malformed input, and TTL drops
+    /// stay scalar after earlier runs finish. The planner returns no-route as
+    /// a deferred action so that action also runs only after the prior flush.
+    fn session_datagram_is_transit_candidate(
+        &self,
+        datagram: &AuthenticatedSessionDatagram<'_>,
+    ) -> bool {
+        let Ok(decoded) = SessionDatagramRef::decode(datagram.payload) else {
+            return false;
+        };
+        if decoded.ttl == 0 || decoded.dest_addr == *self.node_addr() {
+            return false;
+        }
+        true
     }
 
     async fn flush_prepared_session_forwards(
@@ -119,15 +181,23 @@ impl Node {
             })
             .collect();
         let results = self.send_dataplane_fmp_link_plaintext_batch(outbound).await;
+        let mut failed_routes = std::collections::HashSet::new();
         for (forward, result) in std::mem::take(forwards).into_iter().zip(results) {
-            self.finish_prepared_session_forward(forward, result).await;
+            let record_route_failure = claim_route_failure_once(
+                &mut failed_routes,
+                forward.dest_addr,
+                forward.next_hop_addr,
+                result.is_err(),
+            );
+            self.finish_prepared_session_forward(forward, result, record_route_failure)
+                .await;
         }
     }
 
-    async fn prepare_session_datagram_forward(
+    async fn prepare_session_datagram(
         &mut self,
         datagram: AuthenticatedSessionDatagram<'_>,
-    ) -> Option<PreparedSessionForward> {
+    ) -> PreparedSessionDatagram {
         let AuthenticatedSessionDatagram {
             previous_hop_peer,
             payload,
@@ -144,7 +214,7 @@ impl Node {
                     .forwarding
                     .record_decode_error(payload.len());
                 debug!(error = %e, "Malformed SessionDatagram");
-                return None;
+                return PreparedSessionDatagram::Done;
             }
         };
 
@@ -159,7 +229,7 @@ impl Node {
                 dest = %datagram_ref.dest_addr,
                 "SessionDatagram TTL exhausted, dropping"
             );
-            return None;
+            return PreparedSessionDatagram::Done;
         }
         let new_ttl = datagram_ref.ttl - 1;
 
@@ -177,29 +247,29 @@ impl Node {
                 datagram_ref.payload,
             ))
             .await;
-            return None;
+            return PreparedSessionDatagram::Done;
         }
 
         // Find next hop toward destination. Transit forwarding must not send
         // a non-local datagram back to the hop it arrived from; learned
         // reverse routes are observations, not loop-free source routes.
-        let next_hop_addr = match self.find_transit_next_hop(&datagram_ref.dest_addr, &previous_hop)
+        let next_hop_addr = match self.plan_transit_next_hop(&datagram_ref.dest_addr, &previous_hop)
         {
-            Some(next_hop_addr) => next_hop_addr,
-            None => {
-                self.stats_mut()
-                    .forwarding
-                    .record_drop_no_route(payload.len());
-                debug!(
-                    src = %self.peer_display_name(&datagram_ref.src_addr),
-                    dest = %self.peer_display_name(&datagram_ref.dest_addr),
-                    bytes = payload.len(),
-                    "Dropping transit SessionDatagram: no route to destination"
-                );
-                let datagram =
-                    owned_session_datagram_from_ref(&datagram_ref, new_ttl, datagram_ref.path_mtu);
-                self.send_routing_error(&datagram).await;
-                return None;
+            TransitNextHopPlan::Route(next_hop_addr) => next_hop_addr,
+            plan @ (TransitNextHopPlan::Loop(_) | TransitNextHopPlan::NoRoute) => {
+                let loop_failure = match plan {
+                    TransitNextHopPlan::Loop(next_hop_addr) => Some(next_hop_addr),
+                    _ => None,
+                };
+                return PreparedSessionDatagram::NoRoute {
+                    datagram: owned_session_datagram_from_ref(
+                        &datagram_ref,
+                        new_ttl,
+                        datagram_ref.path_mtu,
+                    ),
+                    received_len: payload.len(),
+                    loop_failure,
+                };
             }
         };
 
@@ -247,7 +317,7 @@ impl Node {
         // The caller preserves runs of these owned buffers through outbound
         // admission, sealing, and transport batching.
         let encoded = encode_forwarded_session_datagram(&datagram_ref, new_ttl, path_mtu);
-        Some(PreparedSessionForward {
+        PreparedSessionDatagram::Forward(PreparedSessionForward {
             next_hop_addr,
             src_addr: datagram_ref.src_addr,
             dest_addr: datagram_ref.dest_addr,
@@ -258,10 +328,32 @@ impl Node {
         })
     }
 
+    async fn finish_session_datagram_no_route(
+        &mut self,
+        datagram: SessionDatagram,
+        received_len: usize,
+        loop_failure: Option<NodeAddr>,
+    ) {
+        if let Some(next_hop_addr) = loop_failure {
+            self.record_route_failure(datagram.dest_addr, next_hop_addr);
+        }
+        self.stats_mut()
+            .forwarding
+            .record_drop_no_route(received_len);
+        debug!(
+            src = %self.peer_display_name(&datagram.src_addr),
+            dest = %self.peer_display_name(&datagram.dest_addr),
+            bytes = received_len,
+            "Dropping transit SessionDatagram: no route to destination"
+        );
+        self.send_routing_error(&datagram).await;
+    }
+
     async fn finish_prepared_session_forward(
         &mut self,
         forward: PreparedSessionForward,
         result: Result<(), NodeError>,
+        record_route_failure: bool,
     ) {
         let PreparedSessionForward {
             next_hop_addr,
@@ -273,7 +365,9 @@ impl Node {
             encoded: _,
         } = forward;
         if let Err(e) = result {
-            self.record_route_failure(dest_addr, next_hop_addr);
+            if record_route_failure {
+                self.record_route_failure(dest_addr, next_hop_addr);
+            }
             match e {
                 NodeError::MtuExceeded { mtu, .. } => {
                     self.stats_mut()
@@ -607,6 +701,19 @@ fn owned_session_datagram_from_ref(
     }
 }
 
+fn claim_route_failure_once(
+    failed_routes: &mut std::collections::HashSet<(NodeAddr, NodeAddr)>,
+    dest_addr: NodeAddr,
+    next_hop_addr: NodeAddr,
+    failed: bool,
+) -> bool {
+    failed && failed_routes.insert((dest_addr, next_hop_addr))
+}
+
+fn forward_run_reached_limit(run_len: usize, configured_limit: usize) -> bool {
+    run_len >= configured_limit.max(1)
+}
+
 #[cfg(test)]
 mod forwarding_fast_path_tests {
     use super::*;
@@ -634,5 +741,102 @@ mod forwarding_fast_path_tests {
         .encode();
 
         assert_eq!(borrowed, owned);
+    }
+
+    #[test]
+    fn route_failure_is_claimed_once_per_pair_and_flush() {
+        let dest = NodeAddr::from_bytes([0x11; 16]);
+        let next_hop = NodeAddr::from_bytes([0x22; 16]);
+        let other_hop = NodeAddr::from_bytes([0x33; 16]);
+        let mut failed_routes = std::collections::HashSet::new();
+
+        assert!(claim_route_failure_once(
+            &mut failed_routes,
+            dest,
+            next_hop,
+            true
+        ));
+        assert!(!claim_route_failure_once(
+            &mut failed_routes,
+            dest,
+            next_hop,
+            true
+        ));
+        assert!(!claim_route_failure_once(
+            &mut failed_routes,
+            dest,
+            next_hop,
+            false
+        ));
+        assert!(claim_route_failure_once(
+            &mut failed_routes,
+            dest,
+            other_hop,
+            true
+        ));
+
+        let mut next_flush = std::collections::HashSet::new();
+        assert!(claim_route_failure_once(
+            &mut next_flush,
+            dest,
+            next_hop,
+            true
+        ));
+    }
+
+    #[test]
+    fn forwarding_run_flushes_at_transport_batch_limit() {
+        assert!(!forward_run_reached_limit(63, 64));
+        assert!(forward_run_reached_limit(64, 64));
+        assert!(forward_run_reached_limit(1, 0));
+    }
+
+    #[test]
+    fn only_valid_nonlocal_datagrams_are_transit_candidates() {
+        let node = Node::new(crate::Config::new()).expect("test node");
+        let peer_identity_full = fips_identity::Identity::generate();
+        let previous_hop = crate::PeerIdentity::from_pubkey_full(peer_identity_full.pubkey_full());
+        let source = *previous_hop.node_addr();
+
+        let local = SessionDatagram::new(source, *node.node_addr(), vec![1, 2, 3]).encode();
+        let local = AuthenticatedSessionDatagram::new(previous_hop, &local[1..], false);
+        assert!(!node.session_datagram_is_transit_candidate(&local));
+
+        let unknown_dest = NodeAddr::from_bytes([0x55; 16]);
+        let no_route = SessionDatagram::new(source, unknown_dest, vec![4, 5, 6]).encode();
+        let no_route = AuthenticatedSessionDatagram::new(previous_hop, &no_route[1..], false);
+        assert!(node.session_datagram_is_transit_candidate(&no_route));
+
+        let ttl_zero = SessionDatagram::new(source, unknown_dest, vec![7, 8, 9])
+            .with_ttl(0)
+            .encode();
+        let ttl_zero = AuthenticatedSessionDatagram::new(previous_hop, &ttl_zero[1..], false);
+        assert!(!node.session_datagram_is_transit_candidate(&ttl_zero));
+    }
+
+    #[tokio::test]
+    async fn no_route_drop_action_is_deferred_until_after_planning() {
+        let mut node = Node::new(crate::Config::new()).expect("test node");
+        let peer_identity_full = fips_identity::Identity::generate();
+        let previous_hop = crate::PeerIdentity::from_pubkey_full(peer_identity_full.pubkey_full());
+        let source = *previous_hop.node_addr();
+        let unknown_dest = NodeAddr::from_bytes([0x66; 16]);
+        let encoded = SessionDatagram::new(source, unknown_dest, vec![1, 2, 3]).encode();
+        let datagram = AuthenticatedSessionDatagram::new(previous_hop, &encoded[1..], false);
+
+        let PreparedSessionDatagram::NoRoute {
+            datagram,
+            received_len,
+            loop_failure,
+        } = node.prepare_session_datagram(datagram).await
+        else {
+            panic!("unknown destination should produce deferred no-route action");
+        };
+        assert_eq!(node.stats().forwarding.received_packets, 1);
+        assert_eq!(node.stats().forwarding.drop_no_route_packets, 0);
+
+        node.finish_session_datagram_no_route(datagram, received_len, loop_failure)
+            .await;
+        assert_eq!(node.stats().forwarding.drop_no_route_packets, 1);
     }
 }

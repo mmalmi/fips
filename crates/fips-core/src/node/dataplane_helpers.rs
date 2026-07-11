@@ -22,16 +22,6 @@ fn dataplane_fmp_link_pending_policy(plaintext: &[u8]) -> DataplanePendingOutbou
     }
 }
 
-fn dataplane_fmp_link_batch_continuation_turns<'a>(
-    plaintexts: impl IntoIterator<Item = &'a [u8]>,
-) -> usize {
-    plaintexts
-        .into_iter()
-        .map(|plaintext| dataplane_fmp_link_pending_policy(plaintext).continuation_turns)
-        .max()
-        .unwrap_or(DATAPLANE_PENDING_OUTBOUND_FAST_POLICY.continuation_turns)
-}
-
 fn fmp_plaintext_is_fsp_handshake_response_datagram(plaintext: &[u8]) -> bool {
     if plaintext
         .first()
@@ -361,31 +351,21 @@ mod tests {
     }
 
     #[test]
-    fn mixed_bulk_and_handshake_response_batch_keeps_patient_budget() {
-        let established = session_datagram_plaintext_with_fsp_prefix([
-            crate::node::session_wire::FSP_VERSION << 4,
-            0,
-            0,
-            0,
+    fn fmp_batch_tokens_map_out_of_order_receipts_and_drops_to_input_slots() {
+        let first = NodeAddr::from_bytes([0x11; 16]);
+        let second = NodeAddr::from_bytes([0x22; 16]);
+        let third = NodeAddr::from_bytes([0x33; 16]);
+        let mut pending = std::collections::HashMap::from([
+            (101, (0, first)),
+            (102, (1, second)),
+            (103, (2, third)),
         ]);
-        let msg2 = session_datagram_plaintext_with_fsp_prefix(
-            crate::node::session_wire::build_fsp_handshake_prefix(
-                crate::node::session_wire::FSP_PHASE_MSG2,
-                0,
-            ),
-        );
 
-        assert_eq!(
-            dataplane_fmp_link_batch_continuation_turns([
-                established.as_slice(),
-                msg2.as_slice(),
-            ]),
-            DATAPLANE_PENDING_OUTBOUND_CONTROL_CONTINUATION_TURNS
-        );
-        assert_eq!(
-            dataplane_fmp_link_batch_continuation_turns([established.as_slice()]),
-            DATAPLANE_PENDING_OUTBOUND_FAST_CONTINUATION_TURNS
-        );
+        assert_eq!(take_fmp_batch_pending(&mut pending, 103), Some((2, third)));
+        assert_eq!(take_fmp_batch_pending(&mut pending, 101), Some((0, first)));
+        assert_eq!(take_fmp_batch_pending(&mut pending, 999), None);
+        assert_eq!(take_fmp_batch_pending(&mut pending, 102), Some((1, second)));
+        assert!(pending.is_empty());
     }
 
     #[tokio::test]

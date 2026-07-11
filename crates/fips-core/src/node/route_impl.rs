@@ -1,5 +1,11 @@
 use super::*;
 
+pub(in crate::node) enum TransitNextHopPlan {
+    Route(NodeAddr),
+    Loop(NodeAddr),
+    NoRoute,
+}
+
 impl Node {
     // === Routing ===
 
@@ -274,13 +280,13 @@ impl Node {
         None
     }
 
-    pub(in crate::node) fn find_transit_next_hop(
+    pub(in crate::node) fn plan_transit_next_hop(
         &mut self,
         dest_node_addr: &NodeAddr,
         previous_hop: &NodeAddr,
-    ) -> Option<NodeAddr> {
+    ) -> TransitNextHopPlan {
         if dest_node_addr == self.node_addr() {
-            return None;
+            return TransitNextHopPlan::NoRoute;
         }
 
         if dest_node_addr != previous_hop
@@ -289,15 +295,35 @@ impl Node {
                 .get(dest_node_addr)
                 .is_some_and(|peer| peer.is_healthy())
         {
-            return Some(*dest_node_addr);
+            return TransitNextHopPlan::Route(*dest_node_addr);
         }
 
-        let next_hop_addr = *self.find_next_hop(dest_node_addr)?.node_addr();
+        let Some(next_hop_addr) = self
+            .find_next_hop(dest_node_addr)
+            .map(|peer| *peer.node_addr())
+        else {
+            return TransitNextHopPlan::NoRoute;
+        };
         if &next_hop_addr == previous_hop {
-            self.record_route_failure(*dest_node_addr, next_hop_addr);
-            return None;
+            return TransitNextHopPlan::Loop(next_hop_addr);
         }
-        Some(next_hop_addr)
+        TransitNextHopPlan::Route(next_hop_addr)
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn find_transit_next_hop(
+        &mut self,
+        dest_node_addr: &NodeAddr,
+        previous_hop: &NodeAddr,
+    ) -> Option<NodeAddr> {
+        match self.plan_transit_next_hop(dest_node_addr, previous_hop) {
+            TransitNextHopPlan::Route(next_hop_addr) => Some(next_hop_addr),
+            TransitNextHopPlan::Loop(next_hop_addr) => {
+                self.record_route_failure(*dest_node_addr, next_hop_addr);
+                None
+            }
+            TransitNextHopPlan::NoRoute => None,
+        }
     }
 
     pub(super) fn route_candidate_beats_direct(

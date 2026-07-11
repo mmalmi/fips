@@ -19,6 +19,13 @@ const DATAPLANE_PENDING_OUTBOUND_COMPLETION_TIMEOUT: std::time::Duration =
 const DATAPLANE_DEFERRED_CONTROL_TURN_DRAIN_LIMIT: usize = 64;
 static DATAPLANE_FMP_LINK_SEND_TOKEN: AtomicU64 = AtomicU64::new(1);
 
+fn take_fmp_batch_pending(
+    pending: &mut std::collections::HashMap<u64, (usize, NodeAddr)>,
+    send_token: u64,
+) -> Option<(usize, NodeAddr)> {
+    pending.remove(&send_token)
+}
+
 fn dataplane_static_udp_port_wildcard_addrs(
     addr: &str,
 ) -> Option<[crate::transport::TransportAddr; 2]> {
@@ -212,11 +219,6 @@ impl Node {
             .take(plaintexts.len())
             .collect();
         let mut outbound = Vec::with_capacity(plaintexts.len());
-        let continuation_turns = dataplane_fmp_link_batch_continuation_turns(
-            plaintexts
-                .iter()
-                .map(|(_, plaintext, _)| plaintext.as_slice()),
-        );
         let mut pending = std::collections::HashMap::<u64, (usize, NodeAddr)>::new();
         let activity_tick = ActivityTick::new(Self::now_ms());
 
@@ -281,18 +283,20 @@ impl Node {
                     crypto_limit,
                 )
                 .await;
-            let mut idle_turns = 0usize;
+            // Once admitted, a packet remains pending until dataplane returns
+            // its token in a send receipt or an explicit drop. Unlike the
+            // scalar compatibility path, an idle completion poll is never
+            // converted into a synthetic failure: the admitted work may still
+            // complete and must not be reported failed before it sends.
             while !pending.is_empty() {
                 let summary = turn.summary();
-                let made_progress = summary.has_activity()
-                    || turn.transport_sent() > 0
-                    || turn.transport_dropped() > 0;
 
                 for receipt in turn.take_transport_sent_receipts() {
                     let Some(send_token) = receipt.send_token else {
                         continue;
                     };
-                    let Some((index, node_addr)) = pending.remove(&send_token) else {
+                    let Some((index, node_addr)) = take_fmp_batch_pending(&mut pending, send_token)
+                    else {
                         continue;
                     };
                     let sent = if let Some(timestamp_ms) = receipt.fmp_timestamp_ms {
@@ -322,7 +326,8 @@ impl Node {
                     let Some(send_token) = drop.send_token() else {
                         continue;
                     };
-                    let Some((index, node_addr)) = pending.remove(&send_token) else {
+                    let Some((index, node_addr)) = take_fmp_batch_pending(&mut pending, send_token)
+                    else {
                         continue;
                     };
                     results[index] =
@@ -332,7 +337,8 @@ impl Node {
                     let Some(send_token) = drop.send_token() else {
                         continue;
                     };
-                    let Some((index, node_addr)) = pending.remove(&send_token) else {
+                    let Some((index, node_addr)) = take_fmp_batch_pending(&mut pending, send_token)
+                    else {
                         continue;
                     };
                     results[index] = Some(Err(NodeError::SendFailed {
@@ -342,23 +348,6 @@ impl Node {
                 }
 
                 if pending.is_empty() {
-                    self.defer_dataplane_control_turn(turn);
-                    break;
-                }
-                if made_progress {
-                    idle_turns = 0;
-                } else {
-                    idle_turns = idle_turns.saturating_add(1);
-                }
-                if idle_turns > continuation_turns {
-                    for (_, (index, node_addr)) in pending.drain() {
-                        results[index] = Some(Err(NodeError::SendFailed {
-                            node_addr,
-                            reason:
-                                "dataplane FMP batch exhausted pending outbound continuation turns"
-                                    .into(),
-                        }));
-                    }
                     self.defer_dataplane_control_turn(turn);
                     break;
                 }
