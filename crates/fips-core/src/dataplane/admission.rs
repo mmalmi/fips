@@ -147,6 +147,7 @@ struct OwnerAdmissionQueues<T> {
     bulk_len: usize,
     priority_ready: VecDeque<OwnerId>,
     bulk_ready: VecDeque<OwnerId>,
+    bulk_cut_in_debt: u8,
     owners: HashMap<OwnerId, OwnerLaneQueues<T>>,
 }
 
@@ -173,6 +174,7 @@ where
             bulk_len: 0,
             priority_ready: VecDeque::new(),
             bulk_ready: VecDeque::new(),
+            bulk_cut_in_debt: 0,
             owners: HashMap::new(),
         }
     }
@@ -206,7 +208,7 @@ where
         }
         self.increment_lane_len_by(lane, pushed);
         if was_empty {
-            self.push_ready_back(lane, owner);
+            self.push_ready(lane, owner, dataplane_local_bulk(owner, lane));
         }
         was_empty
     }
@@ -226,7 +228,7 @@ where
         };
         self.increment_lane_len_by(lane, 1);
         if was_empty {
-            self.push_ready_back(lane, owner);
+            self.push_ready(lane, owner, dataplane_local_bulk(owner, lane));
         }
         was_empty
     }
@@ -332,18 +334,28 @@ where
     }
 
     fn pop_ready_front(&mut self, lane: Lane) -> Option<OwnerId> {
-        match lane {
+        let owner = match lane {
             Lane::Priority => self.priority_ready.pop_front(),
             Lane::Bulk => self.bulk_ready.pop_front(),
+        }?;
+        if lane == Lane::Bulk {
+            self.bulk_cut_in_debt = self.bulk_cut_in_debt.saturating_sub(1);
         }
+        Some(owner)
     }
 
-    fn push_ready_back(&mut self, lane: Lane, owner: OwnerId) {
+    fn push_ready(&mut self, lane: Lane, owner: OwnerId, front: bool) {
         let ready = match lane {
             Lane::Priority => &mut self.priority_ready,
             Lane::Bulk => &mut self.bulk_ready,
         };
-        if !ready.contains(&owner) {
+        if ready.contains(&owner) {
+            return;
+        }
+        if front && !ready.is_empty() && self.bulk_cut_in_debt == 0 {
+            ready.push_front(owner);
+            self.bulk_cut_in_debt = 2;
+        } else {
             ready.push_back(owner);
         }
     }
@@ -354,7 +366,7 @@ where
 
     fn continue_owner_lane(&mut self, cursor: OwnerAdmissionCursor) {
         if cursor.owner_has_more {
-            self.push_ready_back(cursor.lane, cursor.owner);
+            self.push_ready(cursor.lane, cursor.owner, false);
         }
     }
 
@@ -381,10 +393,10 @@ where
         let priority_ready = !queues.priority.is_empty();
         let bulk_ready = !queues.bulk.is_empty();
         if priority_ready {
-            self.push_ready_back(Lane::Priority, owner);
+            self.push_ready(Lane::Priority, owner, false);
         }
         if bulk_ready {
-            self.push_ready_back(Lane::Bulk, owner);
+            self.push_ready(Lane::Bulk, owner, dataplane_local_bulk(owner, Lane::Bulk));
         }
     }
 }

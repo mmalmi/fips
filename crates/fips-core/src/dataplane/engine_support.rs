@@ -43,10 +43,15 @@ impl LaneLens {
     }
 }
 
+fn dataplane_local_bulk(owner: OwnerId, lane: Lane) -> bool {
+    lane == Lane::Bulk && owner.protocol() == PacketProtocol::Fsp
+}
+
 #[derive(Clone, Debug)]
 struct ReadyShardQueue {
     queue: VecDeque<usize>,
     ready: Vec<bool>,
+    cut_in_debt: u8,
 }
 
 impl ReadyShardQueue {
@@ -54,10 +59,11 @@ impl ReadyShardQueue {
         Self {
             queue: VecDeque::new(),
             ready: vec![false; shards],
+            cut_in_debt: 0,
         }
     }
 
-    fn mark(&mut self, shard: usize) {
+    fn mark(&mut self, shard: usize, front: bool) {
         let Some(is_ready) = self.ready.get_mut(shard) else {
             return;
         };
@@ -65,7 +71,12 @@ impl ReadyShardQueue {
             return;
         }
         *is_ready = true;
-        self.queue.push_back(shard);
+        if front && !self.queue.is_empty() && self.cut_in_debt == 0 {
+            self.queue.push_front(shard);
+            self.cut_in_debt = 2;
+        } else {
+            self.queue.push_back(shard);
+        }
     }
 
     fn pop(&mut self) -> Option<usize> {
@@ -78,6 +89,7 @@ impl ReadyShardQueue {
                 continue;
             }
             *is_ready = false;
+            self.cut_in_debt = self.cut_in_debt.saturating_sub(1);
             return Some(shard);
         }
     }
@@ -106,7 +118,12 @@ impl ReadyShardQueues {
     }
 
     fn mark(&mut self, shard: usize, lane: Lane) {
-        self.lane_mut(lane).mark(shard);
+        self.lane_mut(lane).mark(shard, false);
+    }
+
+    fn mark_owner(&mut self, shard: usize, lane: Lane, owner: OwnerId) {
+        let front = dataplane_local_bulk(owner, lane);
+        self.lane_mut(lane).mark(shard, front);
     }
 
     fn mark_from_lens(&mut self, shard: usize, lens: LaneLens) {

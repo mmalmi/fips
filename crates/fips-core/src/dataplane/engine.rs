@@ -68,7 +68,7 @@ impl Dataplane {
         let orphaned = self.shards[shard].register_owner(owner, config);
         if !orphaned.is_empty() {
             self.orphaned_slots.extend(orphaned);
-            self.pending_retire_shards.mark(self.shards.len());
+            self.pending_retire_shards.mark(self.shards.len(), false);
         }
         self.mark_admission_ready_shard(shard);
     }
@@ -80,7 +80,7 @@ impl Dataplane {
         };
         if !orphaned.is_empty() {
             self.orphaned_slots.extend(orphaned);
-            self.pending_retire_shards.mark(self.shards.len());
+            self.pending_retire_shards.mark(self.shards.len(), false);
         }
         self.mark_admission_ready_shard(shard);
         true
@@ -312,11 +312,12 @@ impl Dataplane {
         }
 
         let ingress_seq = self.next_ingress_seq();
-        let shard = self.owner_shard_index(packet.owner);
+        let owner = packet.owner;
+        let shard = self.owner_shard_index(owner);
         let lane_ready = self.shards[shard].submit_socket_packet_with_seq(packet, ingress_seq);
         self.admission_lens.increment(lane);
         if lane_ready {
-            self.ingress_ready_shards.mark(shard, lane);
+            self.ingress_ready_shards.mark_owner(shard, lane, owner);
         }
         Ok(ingress_seq)
     }
@@ -391,7 +392,7 @@ impl Dataplane {
         let lane_ready = self.shards[shard].submit_socket_packet_run_with_seq(packets, first_seq);
         self.admission_lens.increment_by(lane, admitted);
         if lane_ready {
-            self.ingress_ready_shards.mark(shard, lane);
+            self.ingress_ready_shards.mark_owner(shard, lane, owner);
         }
         (admitted, dropped)
     }
@@ -408,11 +409,12 @@ impl Dataplane {
         }
 
         let ingress_seq = self.next_outbound_seq();
-        let shard = self.owner_shard_index(packet.owner);
+        let owner = packet.owner;
+        let shard = self.owner_shard_index(owner);
         let lane_ready = self.shards[shard].submit_outbound_packet_with_seq(packet, ingress_seq);
         self.outbound_admission_lens.increment(lane);
         if lane_ready {
-            self.outbound_ready_shards.mark(shard, lane);
+            self.outbound_ready_shards.mark_owner(shard, lane, owner);
         }
         Ok(ingress_seq)
     }
@@ -490,7 +492,7 @@ impl Dataplane {
         let lane_ready = self.shards[shard].submit_outbound_packet_run_with_seq(packets, first_seq);
         self.outbound_admission_lens.increment_by(lane, admitted);
         if lane_ready {
-            self.outbound_ready_shards.mark(shard, lane);
+            self.outbound_ready_shards.mark_owner(shard, lane, owner);
         }
         (admitted, dropped)
     }
@@ -507,14 +509,14 @@ impl Dataplane {
         debug_assert_eq!(shard, self.owner_shard_index(slot.owner()));
         let Some(owner_shard) = self.shards.get_mut(shard) else {
             self.orphaned_slots.push_back(OwnerRetireSlot::new(slot));
-            self.pending_retire_shards.mark(self.shards.len());
+            self.pending_retire_shards.mark(self.shards.len(), false);
             return;
         };
         match owner_shard.stage_retire_slot(slot) {
-            Ok(()) => self.pending_retire_shards.mark(shard),
+            Ok(()) => self.pending_retire_shards.mark(shard, false),
             Err(slot) => {
                 self.orphaned_slots.push_back(OwnerRetireSlot::new(slot));
-                self.pending_retire_shards.mark(self.shards.len());
+                self.pending_retire_shards.mark(self.shards.len(), false);
             }
         }
     }
@@ -546,7 +548,7 @@ impl Dataplane {
                 let got = self.retire_ready_orphan_slots_into(source_limit);
                 retired_count = retired_count.saturating_add(got);
                 if !self.orphaned_slots.is_empty() {
-                    self.pending_retire_shards.mark(orphan_source);
+                    self.pending_retire_shards.mark(orphan_source, false);
                 }
                 continue;
             }
@@ -563,7 +565,7 @@ impl Dataplane {
             retired_count = retired_count.saturating_add(got);
             self.mark_admission_ready_shard(source);
             if has_pending {
-                self.pending_retire_shards.mark(source);
+                self.pending_retire_shards.mark(source, false);
             }
         }
         retired_count

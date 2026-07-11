@@ -213,6 +213,50 @@ fn dataplane_owner_fairness_favors_priority_owner_under_saturated_bulk() {
     );
 }
 
+#[test]
+fn inbound_local_session_cuts_in_once_then_transit_progresses() {
+    let mut mover = Dataplane::new(AdmissionConfig::new(8, 64));
+    let transit = fmp_owner(21_000);
+    let transit_shard = mover.owner_shard_index(transit);
+    let mut local_owners = (21_001..30_000)
+        .map(fsp_owner)
+        .filter(|owner| mover.owner_shard_index(*owner) == transit_shard);
+    let local = local_owners.next().expect("same-shard local owner");
+    let newer_local = local_owners.next().expect("second same-shard local owner");
+    for owner in [transit, local, newer_local] {
+        mover.register_owner(owner, OwnerConfig::new(1, 64));
+    }
+
+    for owner in [transit, local, newer_local] {
+        mover
+            .submit_socket_packet(packet(
+                owner,
+                1,
+                1,
+                PacketClass::Bulk,
+                OutputTarget::Transport,
+            ))
+            .unwrap();
+    }
+
+    let local_first = dispatch_available(&mut mover, 1);
+    assert_eq!(local_first[0].reservation.owner, local);
+    let transit_next = dispatch_available(&mut mover, 1);
+    assert_eq!(transit_next[0].reservation.owner, transit);
+}
+
+#[test]
+fn ready_shard_local_cut_in_debt_forces_waiting_transit_progress() {
+    let mut ready = ReadyShardQueue::new(3);
+    ready.mark(0, false);
+    ready.mark(1, true);
+    ready.mark(2, true);
+
+    assert_eq!(ready.pop(), Some(1), "one local shard should cut in");
+    assert_eq!(ready.pop(), Some(0), "waiting transit must be next");
+    assert_eq!(ready.pop(), Some(2));
+}
+
 fn driver_endpoint_batches(driver: &DataplaneTurnDriver) -> Vec<&DataplaneEndpointDataBatch> {
     driver
         .fsp_authenticated_ingress

@@ -71,3 +71,62 @@ fn outbound_priority_peer_precedes_saturated_bulk_peer() {
     assert_eq!(dispatched[0].reservation.owner, priority);
     assert_eq!(dispatched[0].reservation.lane, Lane::Priority);
 }
+
+#[test]
+fn outbound_local_session_cuts_in_once_then_transit_progresses() {
+    let mut mover = Dataplane::new(AdmissionConfig::new(16, 512));
+    let transit = fmp_owner(8_400);
+    let local = fsp_owner(8_401);
+    let newer_local = fsp_owner(8_402);
+    for owner in [transit, local, newer_local] {
+        mover.register_owner(owner, OwnerConfig::new(1, 512));
+    }
+
+    for owner in [transit, local, newer_local] {
+        mover
+            .submit_outbound_packet(outbound_packet(owner, 1, PacketClass::Bulk, b"data"))
+            .unwrap();
+    }
+
+    let local_first = dispatch_outbound_available(&mut mover, 1);
+    assert_eq!(local_first[0].reservation.owner, local);
+    let transit_next = dispatch_outbound_available(&mut mover, 1);
+    assert_eq!(
+        transit_next[0].reservation.owner, transit,
+        "another newly runnable local owner must not indefinitely push transit back"
+    );
+}
+
+#[test]
+fn outbound_control_stays_ahead_of_local_and_transit_data() {
+    let mut mover = Dataplane::new(AdmissionConfig::new(16, 512));
+    let transit = fmp_owner(8_600);
+    let local = fsp_owner(8_601);
+    let control = fmp_owner(8_602);
+    for owner in [transit, local, control] {
+        mover.register_owner(owner, OwnerConfig::new(1, 512));
+    }
+    mover
+        .submit_outbound_packet(outbound_packet(
+            transit,
+            1,
+            PacketClass::Bulk,
+            b"transit",
+        ))
+        .unwrap();
+    mover
+        .submit_outbound_packet(outbound_packet(local, 1, PacketClass::Bulk, b"local"))
+        .unwrap();
+    mover
+        .submit_outbound_packet(outbound_packet(
+            control,
+            1,
+            PacketClass::Control,
+            b"control",
+        ))
+        .unwrap();
+
+    let dispatched = dispatch_outbound_available(&mut mover, 1);
+    assert_eq!(dispatched[0].reservation.owner, control);
+    assert_eq!(dispatched[0].reservation.lane, Lane::Priority);
+}
