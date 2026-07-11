@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.89] - 2026-07-11
+
+### Added
+
+- Added IPv6 UDP GSO support to Linux TUN reads for higher-throughput batched
+  UDP forwarding.
+
+### Changed
+
+- Improved protocol-preserving transit forwarding throughput and fairness with
+  batched, pipelined submissions, bounded per-source capacity, and fair service
+  between local sessions and transit traffic.
+- Split oversized runtime, dataplane, transport, discovery, CLI, and simulation
+  modules into focused components and removed redundant forwarding work.
+
+### Fixed
+
+- Bounded shutdown, transport, traversal, and liveness waits, and preserved
+  authenticated UDP paths across peer restarts for faster, reliable recovery.
+- Bumped `fips-endpoint` to 0.3.58 so app-facing consumers pick up the
+  `fips-core` 0.3.89 forwarding, liveness, and UDP GSO improvements.
+
 ## [0.3.87] - 2026-07-10
 
 ### Fixed

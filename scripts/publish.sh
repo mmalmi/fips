@@ -56,13 +56,24 @@ ALL_CRATES=(
 publish_crate() {
     local crate="$1"
     local output
+    local cargo_args=(-p "$crate")
+
+    if [[ -n "$DRY_RUN" ]]; then
+        cargo_args+=("$DRY_RUN")
+    fi
+    if [[ -n "$ALLOW_DIRTY" ]]; then
+        cargo_args+=("$ALLOW_DIRTY")
+    fi
+    if [[ -n "$DRY_RUN" && "$crate" == "fips-endpoint" ]]; then
+        cargo_args+=(--config 'patch.crates-io.fips-core.path="crates/fips-core"')
+    fi
 
     echo ""
     echo "=========================================="
     echo "Publishing: ${crate}"
     echo "=========================================="
 
-    if output=$(cargo publish -p "$crate" $DRY_RUN $ALLOW_DIRTY 2>&1); then
+    if output=$(cargo publish "${cargo_args[@]}" 2>&1); then
         echo "$output"
         echo "[ok] ${crate} published successfully"
     elif echo "$output" | grep -q "already exists"; then
