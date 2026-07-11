@@ -160,9 +160,10 @@ impl UdpSendSnapshot {
                 }
                 Ok(sent) => {
                     let end = offset.saturating_add(sent).min(packet_count);
-                    for batch_index in offset..end {
-                        self.stats.record_send(payloads.payload_len(batch_index));
-                    }
+                    let bytes = (offset..end)
+                        .map(|batch_index| payloads.payload_len(batch_index))
+                        .sum();
+                    self.stats.record_send_batch(end - offset, bytes);
                     offset = end;
                 }
                 Err(_) => {
@@ -450,10 +451,7 @@ impl UdpTransport {
 
     /// Query transport-local congestion indicators.
     pub fn congestion(&self) -> super::TransportCongestion {
-        let socket_drops = self
-            .stats
-            .kernel_drops
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let socket_drops = self.stats.kernel_drops();
         #[cfg(target_os = "linux")]
         let namespace_drops = linux_udp_rcvbuf_errors()
             .unwrap_or(self.udp_rcvbuf_error_baseline)

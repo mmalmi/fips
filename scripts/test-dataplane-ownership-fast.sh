@@ -171,7 +171,7 @@ else
   fi
   if [[ "${#LINUX_FILTERS[@]}" -eq 0 ]]; then
     if [[ "$BATCH_DEFAULTS" -eq 1 ]]; then
-      LINUX_FILTERS=("_own" "fair_dispatch_does_not_block_rx_loop_on_full_bulk_queue")
+      LINUX_FILTERS=("_own" "dataplane_owner_fairness_")
     else
       LINUX_FILTERS=("${DEFAULT_LINUX_FILTERS[@]}")
     fi
