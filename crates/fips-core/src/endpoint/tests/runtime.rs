@@ -57,6 +57,85 @@ async fn endpoint_starts_without_system_tun() {
     endpoint.shutdown().await.expect("shutdown should succeed");
 }
 
+#[tokio::test(start_paused = true)]
+async fn endpoint_control_times_out_for_wedged_node() {
+    let mut endpoint = FipsEndpoint::builder()
+        .without_system_tun()
+        .bind()
+        .await
+        .expect("endpoint should bind");
+    let (control_tx, mut control_rx) = mpsc::channel(1);
+    endpoint.endpoint_control_tx = control_tx;
+    let wedged_node = tokio::spawn(async move {
+        let _command = control_rx.recv().await.expect("control command");
+        std::future::pending::<()>().await;
+    });
+
+    let endpoint = Arc::new(endpoint);
+    let call = {
+        let endpoint = Arc::clone(&endpoint);
+        tokio::spawn(async move { endpoint.peers().await })
+    };
+    tokio::task::yield_now().await;
+    tokio::time::advance(ENDPOINT_OPERATION_TIMEOUT).await;
+    let error = call
+        .await
+        .expect("control call task")
+        .expect_err("wedged control response should time out");
+    assert!(matches!(
+        error,
+        FipsEndpointError::Timeout {
+            operation: "peer snapshot"
+        }
+    ));
+
+    wedged_node.abort();
+    let _ = wedged_node.await;
+    endpoint.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test(start_paused = true)]
+async fn endpoint_shutdown_aborts_wedged_node_after_graceful_budget() {
+    let endpoint = FipsEndpoint::builder()
+        .without_system_tun()
+        .bind()
+        .await
+        .expect("endpoint should bind");
+    let (task_drop_tx, task_drop_rx) = oneshot::channel::<()>();
+    let wedged_task = tokio::spawn(async move {
+        let _task_drop_tx = task_drop_tx;
+        std::future::pending::<()>().await;
+        Ok(())
+    });
+    let node_task = endpoint
+        .task
+        .lock()
+        .expect("endpoint task lock")
+        .replace(wedged_task)
+        .expect("running node task");
+    node_task.abort();
+    let _ = node_task.await;
+
+    let endpoint = Arc::new(endpoint);
+    let shutdown = {
+        let endpoint = Arc::clone(&endpoint);
+        tokio::spawn(async move { endpoint.shutdown().await })
+    };
+    tokio::task::yield_now().await;
+    tokio::time::advance(ENDPOINT_OPERATION_TIMEOUT).await;
+    let error = shutdown
+        .await
+        .expect("shutdown call task")
+        .expect_err("wedged node shutdown should time out");
+    assert!(matches!(
+        error,
+        FipsEndpointError::Timeout {
+            operation: "shutdown"
+        }
+    ));
+    assert!(task_drop_rx.await.is_err(), "wedged task should be aborted");
+}
+
 #[tokio::test]
 async fn endpoint_rejects_external_nostr_event_when_discovery_is_disabled() {
     let endpoint = FipsEndpoint::builder()

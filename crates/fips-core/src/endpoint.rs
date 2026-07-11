@@ -18,12 +18,14 @@ use crate::{
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
+use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 const ENDPOINT_DATA_BATCH_MAX: usize = 128;
 const ENDPOINT_RECV_BATCH_MAX: usize = 128;
+const ENDPOINT_OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
 
 mod builder;
 mod receive;
@@ -58,6 +60,9 @@ pub enum FipsEndpointError {
 
     #[error("endpoint is closed")]
     Closed,
+
+    #[error("endpoint {operation} timed out")]
+    Timeout { operation: &'static str },
 
     #[error("endpoint data payload is too large: {len} bytes exceeds max {max} bytes")]
     EndpointDataTooLarge { len: usize, max: usize },
@@ -352,6 +357,23 @@ impl FipsEndpoint {
         FipsEndpointBuilder::default()
     }
 
+    async fn control<T>(
+        &self,
+        operation: &'static str,
+        command: NodeEndpointControlCommand,
+        response_rx: oneshot::Receiver<T>,
+    ) -> Result<T, FipsEndpointError> {
+        tokio::time::timeout(ENDPOINT_OPERATION_TIMEOUT, async {
+            self.endpoint_control_tx
+                .send(command)
+                .await
+                .map_err(|_| FipsEndpointError::Closed)?;
+            response_rx.await.map_err(|_| FipsEndpointError::Closed)
+        })
+        .await
+        .map_err(|_| FipsEndpointError::Timeout { operation })?
+    }
+
     /// Local endpoint npub.
     pub fn npub(&self) -> &str {
         &self.npub
@@ -418,15 +440,18 @@ impl FipsEndpoint {
         }
 
         let (response_tx, response_rx) = oneshot::channel();
-        self.endpoint_control_tx
-            .send(NodeEndpointControlCommand::RegisterService {
-                port,
-                sender: sender.clone(),
-                response_tx,
-            })
-            .await
-            .map_err(|_| FipsEndpointError::Closed)?;
-        if !response_rx.await.map_err(|_| FipsEndpointError::Closed)? {
+        if !self
+            .control(
+                "service registration",
+                NodeEndpointControlCommand::RegisterService {
+                    port,
+                    sender: sender.clone(),
+                    response_tx,
+                },
+                response_rx,
+            )
+            .await?
+        {
             return Err(FipsEndpointError::ServicePortAlreadyRegistered { port });
         }
         self.registered_services
@@ -763,12 +788,14 @@ impl FipsEndpoint {
         peers: Vec<crate::config::PeerConfig>,
     ) -> Result<UpdatePeersOutcome, FipsEndpointError> {
         let (response_tx, response_rx) = oneshot::channel();
-        self.endpoint_control_tx
-            .send(NodeEndpointControlCommand::UpdatePeers { peers, response_tx })
-            .await
-            .map_err(|_| FipsEndpointError::Closed)?;
-
-        match response_rx.await.map_err(|_| FipsEndpointError::Closed)? {
+        match self
+            .control(
+                "peer update",
+                NodeEndpointControlCommand::UpdatePeers { peers, response_tx },
+                response_rx,
+            )
+            .await?
+        {
             Ok(outcome) => Ok(UpdatePeersOutcome::from(outcome)),
             Err(error) => Err(FipsEndpointError::Node(error)),
         }
@@ -787,12 +814,14 @@ impl FipsEndpoint {
     ) -> Result<usize, FipsEndpointError> {
         let (response_tx, response_rx) = oneshot::channel();
         let npubs = peers.into_iter().map(|peer| peer.npub()).collect();
-        self.endpoint_control_tx
-            .send(NodeEndpointControlCommand::RefreshPeerPaths { npubs, response_tx })
-            .await
-            .map_err(|_| FipsEndpointError::Closed)?;
-
-        match response_rx.await.map_err(|_| FipsEndpointError::Closed)? {
+        match self
+            .control(
+                "peer path refresh",
+                NodeEndpointControlCommand::RefreshPeerPaths { npubs, response_tx },
+                response_rx,
+            )
+            .await?
+        {
             Ok(refreshed) => Ok(refreshed),
             Err(error) => Err(FipsEndpointError::Node(error)),
         }
@@ -801,15 +830,13 @@ impl FipsEndpoint {
     /// Snapshot authenticated peers known by the endpoint.
     pub async fn peers(&self) -> Result<Vec<FipsEndpointPeer>, FipsEndpointError> {
         let (response_tx, response_rx) = oneshot::channel();
-        self.endpoint_control_tx
-            .send(NodeEndpointControlCommand::PeerSnapshot { response_tx })
-            .await
-            .map_err(|_| FipsEndpointError::Closed)?;
-
-        response_rx
-            .await
-            .map(|peers| peers.into_iter().map(FipsEndpointPeer::from).collect())
-            .map_err(|_| FipsEndpointError::Closed)
+        self.control(
+            "peer snapshot",
+            NodeEndpointControlCommand::PeerSnapshot { response_tx },
+            response_rx,
+        )
+        .await
+        .map(|peers| peers.into_iter().map(FipsEndpointPeer::from).collect())
     }
 
     /// Snapshot signed machine-rating events for peers with enough local
@@ -819,17 +846,16 @@ impl FipsEndpoint {
         scope: impl Into<String>,
     ) -> Result<Vec<nostr::Event>, FipsEndpointError> {
         let (response_tx, response_rx) = oneshot::channel();
-        self.endpoint_control_tx
-            .send(NodeEndpointControlCommand::PeerRatingEvents {
+        self.control(
+            "peer rating snapshot",
+            NodeEndpointControlCommand::PeerRatingEvents {
                 scope: scope.into(),
                 response_tx,
-            })
-            .await
-            .map_err(|_| FipsEndpointError::Closed)?;
-        response_rx
-            .await
-            .map_err(|_| FipsEndpointError::Closed)?
-            .map_err(FipsEndpointError::Node)
+            },
+            response_rx,
+        )
+        .await?
+        .map_err(FipsEndpointError::Node)
     }
 
     /// Feed a signed Nostr discovery event received outside the endpoint's
@@ -844,11 +870,12 @@ impl FipsEndpoint {
         event: nostr::Event,
     ) -> Result<bool, FipsEndpointError> {
         let (response_tx, response_rx) = oneshot::channel();
-        self.endpoint_control_tx
-            .send(NodeEndpointControlCommand::IngestNostrPubsubEvent { event, response_tx })
-            .await
-            .map_err(|_| FipsEndpointError::Closed)?;
-        response_rx.await.map_err(|_| FipsEndpointError::Closed)
+        self.control(
+            "Nostr event ingest",
+            NodeEndpointControlCommand::IngestNostrPubsubEvent { event, response_tx },
+            response_rx,
+        )
+        .await
     }
 
     /// Snapshot the endpoint addresses this node is currently advertising via
@@ -857,31 +884,29 @@ impl FipsEndpoint {
         &self,
     ) -> Result<Vec<crate::discovery::nostr::OverlayEndpointAdvert>, FipsEndpointError> {
         let (response_tx, response_rx) = oneshot::channel();
-        self.endpoint_control_tx
-            .send(NodeEndpointControlCommand::LocalAdvertSnapshot { response_tx })
-            .await
-            .map_err(|_| FipsEndpointError::Closed)?;
-
-        response_rx.await.map_err(|_| FipsEndpointError::Closed)
+        self.control(
+            "local advert snapshot",
+            NodeEndpointControlCommand::LocalAdvertSnapshot { response_tx },
+            response_rx,
+        )
+        .await
     }
 
     /// Snapshot live Nostr relay states used by the embedded endpoint.
     pub async fn relay_statuses(&self) -> Result<Vec<FipsEndpointRelayStatus>, FipsEndpointError> {
         let (response_tx, response_rx) = oneshot::channel();
-        self.endpoint_control_tx
-            .send(NodeEndpointControlCommand::RelaySnapshot { response_tx })
-            .await
-            .map_err(|_| FipsEndpointError::Closed)?;
-
-        response_rx
-            .await
-            .map(|relays| {
-                relays
-                    .into_iter()
-                    .map(FipsEndpointRelayStatus::from)
-                    .collect()
-            })
-            .map_err(|_| FipsEndpointError::Closed)
+        self.control(
+            "relay snapshot",
+            NodeEndpointControlCommand::RelaySnapshot { response_tx },
+            response_rx,
+        )
+        .await
+        .map(|relays| {
+            relays
+                .into_iter()
+                .map(FipsEndpointRelayStatus::from)
+                .collect()
+        })
     }
 
     /// Replace Nostr discovery relays without rebuilding the endpoint.
@@ -891,19 +916,17 @@ impl FipsEndpoint {
         dm_relays: Vec<String>,
     ) -> Result<(), FipsEndpointError> {
         let (response_tx, response_rx) = oneshot::channel();
-        self.endpoint_control_tx
-            .send(NodeEndpointControlCommand::UpdateRelays {
+        self.control(
+            "relay update",
+            NodeEndpointControlCommand::UpdateRelays {
                 advert_relays,
                 dm_relays,
                 response_tx,
-            })
-            .await
-            .map_err(|_| FipsEndpointError::Closed)?;
-
-        response_rx
-            .await
-            .map_err(|_| FipsEndpointError::Closed)?
-            .map_err(FipsEndpointError::Node)
+            },
+            response_rx,
+        )
+        .await?
+        .map_err(FipsEndpointError::Node)
     }
 
     /// Send an outbound IPv6 packet into the FIPS session pipeline.
@@ -937,8 +960,17 @@ impl FipsEndpoint {
             .lock()
             .map_err(|_| FipsEndpointError::Closed)?
             .take();
-        if let Some(task) = task {
-            task.await??;
+        if let Some(mut task) = task {
+            match tokio::time::timeout(ENDPOINT_OPERATION_TIMEOUT, &mut task).await {
+                Ok(result) => result??,
+                Err(_) => {
+                    task.abort();
+                    let _ = task.await;
+                    return Err(FipsEndpointError::Timeout {
+                        operation: "shutdown",
+                    });
+                }
+            }
         }
         Ok(())
     }
