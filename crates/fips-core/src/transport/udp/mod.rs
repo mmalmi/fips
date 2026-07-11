@@ -37,6 +37,7 @@ pub(crate) const UDP_RECV_BATCH_SIZE: usize = 128;
 #[cfg(target_os = "linux")]
 const UDP_GRO_RECV_BUFFER_SIZE: usize = u16::MAX as usize;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn debug_udp_fmp_batch(
     stage: &'static str,
     transport_id: TransportId,

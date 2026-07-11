@@ -698,6 +698,7 @@ impl PacketBatch {
         self.packets.is_empty()
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn as_slice(&self) -> &[ReceivedPacket] {
         &self.packets
     }
