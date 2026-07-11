@@ -38,16 +38,17 @@ struct LinkDeadPeerPlan {
 }
 
 impl crate::node::PeerLifecycleRegistry {
-    fn plan_link_heartbeat_tick<F, G>(
+    fn plan_link_heartbeat_tick<D, F, G>(
         &self,
         now: Instant,
         heartbeat_interval: Duration,
         max_rekey_resends: u32,
-        defer_dead_peer_removal: bool,
+        mut defer_dead_peer_removal_for: D,
         mut effective_dead_timeout_for: F,
         mut quiet_for: G,
     ) -> LinkHeartbeatPlan
     where
+        D: FnMut(&NodeAddr, &ActivePeer) -> bool,
         F: FnMut(&NodeAddr) -> Duration,
         G: FnMut(&NodeAddr, &ActivePeer) -> Duration,
     {
@@ -73,7 +74,7 @@ impl crate::node::PeerLifecycleRegistry {
                     node_addr: *node_addr,
                     effective_dead_timeout,
                 };
-                if defer_dead_peer_removal {
+                if defer_dead_peer_removal_for(node_addr, peer) {
                     plan.deferred_dead_peers.push(dead_peer);
                     plan.heartbeats.push(*node_addr);
                 } else {
@@ -566,11 +567,30 @@ impl Node {
                 )
             })
             .collect();
+        let definitively_closed_paths: std::collections::HashSet<NodeAddr> = self
+            .peers
+            .iter()
+            .filter_map(|(node_addr, peer)| {
+                let transport_id = peer.transport_id()?;
+                let remote_addr = peer.current_addr()?;
+                let state = self
+                    .get_transport(&transport_id)
+                    .map(|transport| transport.connection_state(remote_addr));
+                matches!(
+                    state,
+                    None | Some(crate::transport::ConnectionState::None)
+                        | Some(crate::transport::ConnectionState::Failed(_))
+                )
+                .then_some(*node_addr)
+            })
+            .collect();
         let heartbeat_plan = self.peers.plan_link_heartbeat_tick(
             now,
             heartbeat_interval,
             max_rekey_resends,
-            defer_dead_peer_removal,
+            |node_addr, _| {
+                defer_dead_peer_removal && !definitively_closed_paths.contains(node_addr)
+            },
             |node_addr| {
                 effective_dead_timeouts
                     .get(node_addr)

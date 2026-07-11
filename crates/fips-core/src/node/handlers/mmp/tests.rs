@@ -66,7 +66,7 @@ fn peer_lifecycle_registry_owns_link_heartbeat_planning_and_sent_bookkeeping() {
         now,
         Duration::from_secs(10),
         3,
-        false,
+        |_, _| false,
         |_| Duration::from_secs(30),
         |_, peer| link_mmp_quiet_for(now, peer),
     );
@@ -79,7 +79,7 @@ fn peer_lifecycle_registry_owns_link_heartbeat_planning_and_sent_bookkeeping() {
         now + Duration::from_secs(5),
         Duration::from_secs(10),
         3,
-        false,
+        |_, _| false,
         |_| Duration::from_secs(30),
         |_, peer| link_mmp_quiet_for(now + Duration::from_secs(5), peer),
     );
@@ -90,7 +90,7 @@ fn peer_lifecycle_registry_owns_link_heartbeat_planning_and_sent_bookkeeping() {
         now + Duration::from_secs(10),
         Duration::from_secs(10),
         3,
-        false,
+        |_, _| false,
         |_| Duration::from_secs(30),
         |_, peer| link_mmp_quiet_for(now + Duration::from_secs(10), peer),
     );
@@ -112,7 +112,7 @@ fn peer_lifecycle_registry_owns_link_dead_and_deferred_heartbeat_planning() {
         now,
         Duration::from_secs(10),
         3,
-        false,
+        |_, _| false,
         |_| Duration::from_secs(30),
         |_, _| Duration::from_secs(31),
     );
@@ -130,7 +130,7 @@ fn peer_lifecycle_registry_owns_link_dead_and_deferred_heartbeat_planning() {
         now,
         Duration::from_secs(10),
         3,
-        true,
+        |_, _| true,
         |_| Duration::from_secs(30),
         |_, _| Duration::from_secs(31),
     );
@@ -143,4 +143,15 @@ fn peer_lifecycle_registry_owns_link_dead_and_deferred_heartbeat_planning() {
             effective_dead_timeout: Duration::from_secs(30)
         }]
     );
+
+    let transport_closed = peers.plan_link_heartbeat_tick(
+        now,
+        Duration::from_secs(10),
+        3,
+        |_, _| false,
+        |_| Duration::from_secs(30),
+        |_, _| Duration::from_secs(31),
+    );
+    assert_eq!(transport_closed.dead_peers.len(), 1);
+    assert!(transport_closed.deferred_dead_peers.is_empty());
 }

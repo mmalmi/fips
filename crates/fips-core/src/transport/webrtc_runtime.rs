@@ -21,7 +21,6 @@ impl WebRtcRuntime {
         let session_id = random_session_id();
 
         let pc = Arc::new(self.new_peer_connection().await?);
-        wire_peer_connection_state(self.transport_id, remote_addr.clone(), Arc::clone(&pc));
         let data_channel = pc
             .create_data_channel(
                 self.config.data_channel_label(),
@@ -50,6 +49,12 @@ impl WebRtcRuntime {
             close_peer_connection_bounded(pc).await;
             return Ok(());
         }
+        wire_peer_connection_state(
+            self,
+            remote_addr.clone(),
+            session_id.clone(),
+            Arc::clone(&pc),
+        );
         self.spawn_connect_timeout(remote_addr.clone(), session_id.clone());
 
         let offer = pc
@@ -158,7 +163,6 @@ impl WebRtcRuntime {
 
         let session_id = signal.session_id.clone();
         let pc = Arc::new(self.new_peer_connection().await?);
-        wire_peer_connection_state(self.transport_id, remote_addr.clone(), Arc::clone(&pc));
         let runtime = self.clone();
         let pc_for_data_channel = Arc::downgrade(&pc);
         let session_for_data_channel = session_id.clone();
@@ -185,6 +189,12 @@ impl WebRtcRuntime {
                 .await;
             return Err(TransportError::ConnectionRefused);
         }
+        wire_peer_connection_state(
+            self,
+            remote_addr.clone(),
+            session_id.clone(),
+            Arc::clone(&pc),
+        );
         self.spawn_connect_timeout(remote_addr.clone(), session_id.clone());
 
         let result = async {
@@ -454,13 +464,25 @@ impl WebRtcRuntime {
 }
 
 fn wire_peer_connection_state(
-    transport_id: TransportId,
+    runtime: &WebRtcRuntime,
     remote_addr: TransportAddr,
+    session_id: String,
     pc: Arc<RTCPeerConnection>,
 ) {
+    let transport_id = runtime.transport_id;
     let peer_addr = remote_addr.clone();
+    let peer_session = session_id;
+    let pool = Arc::clone(&runtime.pool);
+    let pending = Arc::clone(&runtime.pending);
+    let ready = Arc::clone(&runtime.ready);
+    let failed = Arc::clone(&runtime.failed);
     pc.on_peer_connection_state_change(Box::new(move |state: RTCPeerConnectionState| {
         let peer_addr = peer_addr.clone();
+        let peer_session = peer_session.clone();
+        let pool = Arc::clone(&pool);
+        let pending = Arc::clone(&pending);
+        let ready = Arc::clone(&ready);
+        let failed = Arc::clone(&failed);
         Box::pin(async move {
             debug!(
                 transport_id = %transport_id,
@@ -468,8 +490,52 @@ fn wire_peer_connection_state(
                 state = %state,
                 "WebRTC peer connection state changed"
             );
+            if !webrtc_peer_state_is_terminal(state) {
+                return;
+            }
+
+            let removed_connection = {
+                let mut pool = pool.lock().await;
+                if pool
+                    .get(&peer_addr)
+                    .is_some_and(|connection| connection.session_id == peer_session)
+                {
+                    pool.remove(&peer_addr);
+                    true
+                } else {
+                    false
+                }
+            };
+            let removed_pending = {
+                let mut pending = pending.lock().await;
+                if pending
+                    .get(&peer_addr)
+                    .is_some_and(|dial| dial.session_id == peer_session)
+                {
+                    pending.remove(&peer_addr);
+                    true
+                } else {
+                    false
+                }
+            };
+            if removed_connection || removed_pending {
+                ready.lock().await.remove(&peer_addr);
+                failed.lock().await.insert(
+                    peer_addr.clone(),
+                    format!("WebRTC peer connection became {state}"),
+                );
+            }
         })
     }));
+}
+
+fn webrtc_peer_state_is_terminal(state: RTCPeerConnectionState) -> bool {
+    matches!(
+        state,
+        RTCPeerConnectionState::Disconnected
+            | RTCPeerConnectionState::Failed
+            | RTCPeerConnectionState::Closed
+    )
 }
 
 fn wire_data_channel(

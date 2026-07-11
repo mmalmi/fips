@@ -345,27 +345,32 @@ impl WebRtcTransport {
 
     /// Query connection state synchronously.
     pub fn connection_state_sync(&self, addr: &TransportAddr) -> ConnectionState {
-        if let Ok(pool) = self.pool.try_lock()
-            && pool.contains_key(addr)
-        {
-            if let Ok(ready) = self.ready.try_lock()
-                && ready.contains(addr)
-            {
-                return ConnectionState::Connected;
-            }
-            return ConnectionState::Connecting;
+        let pool = match self.pool.try_lock() {
+            Ok(pool) => pool,
+            Err(_) => return ConnectionState::Connecting,
+        };
+        if pool.contains_key(addr) {
+            return match self.ready.try_lock() {
+                Ok(ready) if ready.contains(addr) => ConnectionState::Connected,
+                _ => ConnectionState::Connecting,
+            };
         }
-        if let Ok(failed) = self.failed.try_lock()
-            && let Some(reason) = failed.get(addr)
-        {
+        drop(pool);
+
+        let failed = match self.failed.try_lock() {
+            Ok(failed) => failed,
+            Err(_) => return ConnectionState::Connecting,
+        };
+        if let Some(reason) = failed.get(addr) {
             return ConnectionState::Failed(reason.clone());
         }
-        if let Ok(pending) = self.pending.try_lock()
-            && pending.contains_key(addr)
-        {
-            return ConnectionState::Connecting;
+        drop(failed);
+
+        match self.pending.try_lock() {
+            Ok(pending) if pending.contains_key(addr) => ConnectionState::Connecting,
+            Ok(_) => ConnectionState::None,
+            Err(_) => ConnectionState::Connecting,
         }
-        ConnectionState::None
     }
 
     /// Close a WebRTC connection.

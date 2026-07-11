@@ -1,4 +1,5 @@
 use super::*;
+use crate::packet_channel;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[test]
@@ -32,6 +33,48 @@ fn webrtc_signal_serializes_like_ts_transport() {
     assert!(json.contains(r#""sessionId":"abc""#));
     assert!(json.contains(r#""createdAtMs":1"#));
     assert!(json.contains(r#""expiresAtMs":2"#));
+}
+
+#[test]
+fn disconnected_webrtc_sessions_are_terminal_for_fips() {
+    for state in [
+        RTCPeerConnectionState::Disconnected,
+        RTCPeerConnectionState::Failed,
+        RTCPeerConnectionState::Closed,
+    ] {
+        assert!(webrtc_peer_state_is_terminal(state));
+    }
+    for state in [
+        RTCPeerConnectionState::New,
+        RTCPeerConnectionState::Connecting,
+        RTCPeerConnectionState::Connected,
+    ] {
+        assert!(!webrtc_peer_state_is_terminal(state));
+    }
+}
+
+#[tokio::test]
+async fn connection_state_does_not_report_none_during_pool_contention() {
+    let identity = crate::Identity::generate();
+    let (packet_tx, _packet_rx) = packet_channel(1);
+    let transport = WebRtcTransport::new(
+        TransportId::new(1),
+        None,
+        WebRtcConfig::default(),
+        packet_tx,
+        &identity,
+        &NostrDiscoveryConfig::default(),
+    )
+    .expect("WebRTC transport");
+    let _pool_guard = transport.pool.lock().await;
+    let addr = TransportAddr::from_string(
+        "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+
+    assert_eq!(
+        transport.connection_state_sync(&addr),
+        ConnectionState::Connecting
+    );
 }
 
 #[tokio::test]
