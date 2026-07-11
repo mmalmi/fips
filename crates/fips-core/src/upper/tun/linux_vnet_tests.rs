@@ -79,6 +79,72 @@ mod tests {
     }
 
     #[test]
+    fn linux_vnet_udpv6_gso_read_splits_into_checked_datagrams() {
+        let packet = ipv6_udp_packet(2500);
+        let mut frame = vec![0u8; LINUX_VIRTIO_NET_HDR_LEN + packet.len()];
+        LinuxVirtioNetHdr {
+            flags: LINUX_VIRTIO_NET_HDR_F_NEEDS_CSUM,
+            gso_type: LINUX_VIRTIO_NET_HDR_GSO_UDP_L4,
+            hdr_len: 48,
+            gso_size: 1200,
+            csum_start: 40,
+            csum_offset: 6,
+        }
+        .encode(&mut frame[..LINUX_VIRTIO_NET_HDR_LEN]);
+        frame[LINUX_VIRTIO_NET_HDR_LEN..].copy_from_slice(&packet);
+
+        let mut packets = Vec::new();
+        collect_linux_vnet_packets(&mut frame, &mut packets).expect("udpv6 gso frame");
+        assert_eq!(packets.len(), 3);
+        let [first, second, third] = packets.as_slice() else {
+            unreachable!("checked packet count")
+        };
+
+        assert_eq!(first.len(), 40 + 8 + 1200);
+        assert_eq!(second.len(), 40 + 8 + 1200);
+        assert_eq!(third.len(), 40 + 8 + 100);
+        for datagram in [first, second, third] {
+            let transport_len = datagram.len() - 40;
+            assert!(
+                datagram.capacity()
+                    >= datagram.len() + super::super::TUN_OUTBOUND_PACKET_TAIL_RESERVE
+            );
+            assert_eq!(
+                u16::from_be_bytes([datagram[4], datagram[5]]) as usize,
+                transport_len
+            );
+            assert_eq!(
+                u16::from_be_bytes([datagram[44], datagram[45]]) as usize,
+                transport_len
+            );
+            assert_eq!(ipv6_transport_sum(datagram), 0xffff);
+        }
+        assert_eq!(&first[48..], &packet[48..1248]);
+        assert_eq!(&second[48..], &packet[1248..2448]);
+        assert_eq!(&third[48..], &packet[2448..]);
+    }
+
+    #[test]
+    fn linux_vnet_udpv6_gso_read_rejects_wrong_checksum_offset() {
+        let packet = ipv6_udp_packet(1200);
+        let mut frame = vec![0u8; LINUX_VIRTIO_NET_HDR_LEN + packet.len()];
+        LinuxVirtioNetHdr {
+            flags: LINUX_VIRTIO_NET_HDR_F_NEEDS_CSUM,
+            gso_type: LINUX_VIRTIO_NET_HDR_GSO_UDP_L4,
+            hdr_len: 48,
+            gso_size: 1200,
+            csum_start: 40,
+            csum_offset: 4,
+        }
+        .encode(&mut frame[..LINUX_VIRTIO_NET_HDR_LEN]);
+        frame[LINUX_VIRTIO_NET_HDR_LEN..].copy_from_slice(&packet);
+
+        let error = collect_linux_vnet_packets(&mut frame, &mut VecDeque::new())
+            .expect_err("invalid UDP checksum offset must be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
     fn linux_vnet_tcpv6_gro_write_coalesces_adjacent_segments() {
         let first = ipv6_tcp_packet(1000, 800, LINUX_TCP_FLAG_ACK);
         let second = ipv6_tcp_packet(1800, 600, LINUX_TCP_FLAG_ACK | LINUX_TCP_FLAG_PSH);
@@ -175,6 +241,24 @@ mod tests {
         );
         let checksum = !linux_vnet_checksum(&packet[40..], pseudo);
         packet[56..58].copy_from_slice(&checksum.to_be_bytes());
+        packet
+    }
+
+    fn ipv6_udp_packet(payload_len: usize) -> Vec<u8> {
+        let transport_len = 8 + payload_len;
+        let mut packet = vec![0u8; 40 + transport_len];
+        packet[0] = 0x60;
+        packet[4..6].copy_from_slice(&(transport_len as u16).to_be_bytes());
+        packet[6] = LINUX_IPPROTO_UDP;
+        packet[7] = 64;
+        packet[8..24].copy_from_slice(&[0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        packet[24..40].copy_from_slice(&[0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        packet[40..42].copy_from_slice(&443u16.to_be_bytes());
+        packet[42..44].copy_from_slice(&45172u16.to_be_bytes());
+        packet[44..46].copy_from_slice(&(transport_len as u16).to_be_bytes());
+        for (index, byte) in packet[48..].iter_mut().enumerate() {
+            *byte = (index & 0xff) as u8;
+        }
         packet
     }
 
