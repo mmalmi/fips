@@ -4,19 +4,14 @@ impl Node {
         turn: &mut crate::dataplane::DataplaneLiveNodeTurn,
     ) -> usize {
         let mut completed = 0usize;
-        let receipts = turn.extract_transport_sent_receipts(|receipt| {
-            receipt
-                .send_token
-                .is_some_and(|token| self.deferred_session_forwards.contains(token))
-        });
-        for receipt in receipts {
+        turn.consume_transport_sent_receipts(|receipt| {
             let Some(send_token) = receipt.send_token else {
-                continue;
+                return false;
             };
-            let Some(next_hop_addr) = self.deferred_session_forwards.pending_next_hop(send_token)
-            else {
-                continue;
+            let Some(forward) = self.deferred_session_forwards.take_pending(send_token) else {
+                return false;
             };
+            let next_hop_addr = forward.next_hop_addr;
             let result = if let Some(timestamp_ms) = receipt.fmp_timestamp_ms {
                 let bytes_sent = receipt.payload_len;
                 self.dataplane.record_fmp_mmp_send_result(
@@ -37,70 +32,59 @@ impl Node {
                     reason: "dataplane FMP timestamp missing".into(),
                 })
             };
-            completed = completed.saturating_add(usize::from(
-                self.deferred_session_forwards.complete(send_token, result),
-            ));
-        }
-
-        let output_drops = turn.extract_output_drops(|drop| {
-            drop.send_token()
-                .is_some_and(|token| self.deferred_session_forwards.contains(token))
+            self.deferred_session_forwards
+                .push_completed(forward, result);
+            completed = completed.saturating_add(1);
+            true
         });
-        for drop in output_drops {
-            let Some(send_token) = drop.send_token() else {
-                continue;
-            };
-            let Some(next_hop_addr) = self.deferred_session_forwards.pending_next_hop(send_token)
-            else {
-                continue;
-            };
-            let error = self.dataplane_fmp_output_drop_error(next_hop_addr, &drop);
-            completed = completed.saturating_add(usize::from(
-                self.deferred_session_forwards
-                    .complete(send_token, Err(error)),
-            ));
-        }
 
-        let drops = turn.extract_drops(|drop| {
-            drop.send_token()
-                .is_some_and(|token| self.deferred_session_forwards.contains(token))
-        });
-        for drop in drops {
+        turn.consume_output_drops(|drop| {
             let Some(send_token) = drop.send_token() else {
-                continue;
+                return false;
             };
-            let Some(next_hop_addr) = self.deferred_session_forwards.pending_next_hop(send_token)
-            else {
-                continue;
+            let Some(forward) = self.deferred_session_forwards.take_pending(send_token) else {
+                return false;
             };
+            let next_hop_addr = forward.next_hop_addr;
+            let error = self.dataplane_fmp_output_drop_error(next_hop_addr, drop);
+            self.deferred_session_forwards
+                .push_completed(forward, Err(error));
+            completed = completed.saturating_add(1);
+            true
+        });
+
+        turn.consume_drops(|drop| {
+            let Some(send_token) = drop.send_token() else {
+                return false;
+            };
+            let Some(forward) = self.deferred_session_forwards.take_pending(send_token) else {
+                return false;
+            };
+            let next_hop_addr = forward.next_hop_addr;
             let error = NodeError::SendFailed {
                 node_addr: next_hop_addr,
                 reason: format!("dataplane FMP packet dropped: {:?}", drop.reason()),
             };
-            completed = completed.saturating_add(usize::from(
-                self.deferred_session_forwards
-                    .complete(send_token, Err(error)),
-            ));
-        }
+            self.deferred_session_forwards
+                .push_completed(forward, Err(error));
+            completed = completed.saturating_add(1);
+            true
+        });
         completed
     }
 
     pub(in crate::node) async fn finish_completed_session_forwards(&mut self) -> usize {
         let mut processed = 0usize;
         let mut failed_routes = std::collections::HashSet::new();
-        while let Some(completed) = self.deferred_session_forwards.pop_completed() {
+        while let Some((forward, result)) = self.deferred_session_forwards.pop_completed() {
             let record_route_failure = claim_route_failure_once(
                 &mut failed_routes,
-                completed.forward.dest_addr,
-                completed.forward.next_hop_addr,
-                completed.result.is_err(),
+                forward.dest_addr,
+                forward.next_hop_addr,
+                result.is_err(),
             );
-            self.finish_prepared_session_forward(
-                completed.forward,
-                completed.result,
-                record_route_failure,
-            )
-            .await;
+            self.finish_prepared_session_forward(forward, result, record_route_failure)
+                .await;
             processed = processed.saturating_add(1);
         }
         processed

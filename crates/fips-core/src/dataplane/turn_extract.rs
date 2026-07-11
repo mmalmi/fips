@@ -1,36 +1,38 @@
 impl DataplaneLiveNodeTurn {
-    pub(crate) fn extract_transport_sent_receipts(
+    pub(crate) fn consume_transport_sent_receipts(
         &mut self,
-        mut take: impl FnMut(&DataplaneTransportSentReceipt) -> bool,
-    ) -> Vec<DataplaneTransportSentReceipt> {
-        extract_matching(&mut self.transport_sent_receipts, &mut take)
+        consume: impl FnMut(&DataplaneTransportSentReceipt) -> bool,
+    ) {
+        consume_matching(&mut self.transport_sent_receipts, consume);
     }
 
-    pub(crate) fn extract_output_drops(
+    pub(crate) fn consume_output_drops(
         &mut self,
-        mut take: impl FnMut(&DataplaneOutputDrop) -> bool,
-    ) -> Vec<DataplaneOutputDrop> {
-        extract_matching(&mut self.output_drops, &mut take)
+        consume: impl FnMut(&DataplaneOutputDrop) -> bool,
+    ) {
+        consume_matching(&mut self.output_drops, consume);
     }
 
-    pub(crate) fn extract_drops(
+    pub(crate) fn consume_drops(
         &mut self,
-        mut take: impl FnMut(&PacketDrop) -> bool,
-    ) -> Vec<PacketDrop> {
-        extract_matching(&mut self.drops, &mut take)
+        consume: impl FnMut(&PacketDrop) -> bool,
+    ) {
+        consume_matching(&mut self.drops, consume);
     }
 }
 
-fn extract_matching<T>(items: &mut Vec<T>, take: &mut impl FnMut(&T) -> bool) -> Vec<T> {
-    let mut matched = Vec::new();
-    let mut retained = Vec::with_capacity(items.len());
-    for item in std::mem::take(items) {
-        if take(&item) {
-            matched.push(item);
-        } else {
-            retained.push(item);
-        }
+fn consume_matching<T>(items: &mut Vec<T>, mut consume: impl FnMut(&T) -> bool) {
+    items.retain(|item| !consume(item));
+}
+
+#[cfg(test)]
+mod turn_extract_tests {
+    use super::consume_matching;
+
+    #[test]
+    fn consume_matching_preserves_unmatched_order() {
+        let mut items = vec![1, 2, 3, 4];
+        consume_matching(&mut items, |item| item % 2 == 0);
+        assert_eq!(items, [1, 3]);
     }
-    *items = retained;
-    matched
 }

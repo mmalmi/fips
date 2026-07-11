@@ -7,47 +7,33 @@ const FORWARDING_PRIORITY_OWNER_IN_FLIGHT: usize = 8;
 const FORWARDING_BULK_SOURCE_IN_FLIGHT: usize = 256;
 const FORWARDING_PRIORITY_SOURCE_IN_FLIGHT: usize = 8;
 
-struct CompletedSessionForward {
-    forward: PreparedSessionForward,
-    result: Result<(), NodeError>,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(usize)]
 enum ForwardingLane {
     Priority,
     Bulk,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct ForwardingLaneCounts {
-    priority: usize,
-    bulk: usize,
-}
+struct ForwardingLaneCounts([usize; 2]);
 
 impl ForwardingLaneCounts {
     fn get(self, lane: ForwardingLane) -> usize {
-        match lane {
-            ForwardingLane::Priority => self.priority,
-            ForwardingLane::Bulk => self.bulk,
-        }
+        self.0[lane as usize]
     }
 
     fn increment(&mut self, lane: ForwardingLane) {
-        match lane {
-            ForwardingLane::Priority => self.priority = self.priority.saturating_add(1),
-            ForwardingLane::Bulk => self.bulk = self.bulk.saturating_add(1),
-        }
+        let count = &mut self.0[lane as usize];
+        *count = count.saturating_add(1);
     }
 
     fn decrement(&mut self, lane: ForwardingLane) {
-        match lane {
-            ForwardingLane::Priority => self.priority = self.priority.saturating_sub(1),
-            ForwardingLane::Bulk => self.bulk = self.bulk.saturating_sub(1),
-        }
+        let count = &mut self.0[lane as usize];
+        *count = count.saturating_sub(1);
     }
 
     fn is_empty(self) -> bool {
-        self.priority == 0 && self.bulk == 0
+        self.0 == [0; 2]
     }
 }
 
@@ -121,7 +107,7 @@ struct PendingSessionForward {
 pub(in crate::node) struct DeferredSessionForwards {
     window: ForwardingInFlightWindow,
     pending: HashMap<u64, PendingSessionForward>,
-    completed: VecDeque<CompletedSessionForward>,
+    completed: VecDeque<(PreparedSessionForward, Result<(), NodeError>)>,
 }
 
 impl DeferredSessionForwards {
@@ -149,58 +135,41 @@ impl DeferredSessionForwards {
         true
     }
 
-    fn complete(&mut self, send_token: u64, result: Result<(), NodeError>) -> bool {
-        let Some(pending) = self.pending.remove(&send_token) else {
-            return false;
-        };
+    fn take_pending(&mut self, send_token: u64) -> Option<PreparedSessionForward> {
+        let pending = self.pending.remove(&send_token)?;
         self.window.release(
             pending.forward.next_hop_addr,
             pending.forward.src_addr,
             pending.lane,
         );
-        self.completed.push_back(CompletedSessionForward {
-            forward: pending.forward,
-            result,
-        });
-        true
+        Some(pending.forward)
     }
 
     fn abort_pending(&mut self, reason: &'static str) {
-        for (_, pending) in std::mem::take(&mut self.pending) {
+        for (_, pending) in self.pending.drain() {
             let next_hop_addr = pending.forward.next_hop_addr;
             self.window
                 .release(next_hop_addr, pending.forward.src_addr, pending.lane);
-            self.completed.push_back(CompletedSessionForward {
-                forward: pending.forward,
-                result: Err(NodeError::SendFailed {
+            self.completed.push_back((
+                pending.forward,
+                Err(NodeError::SendFailed {
                     node_addr: next_hop_addr,
                     reason: reason.into(),
                 }),
-            });
+            ));
         }
         debug_assert!(self.window.is_empty());
-    }
-
-    fn contains(&self, send_token: u64) -> bool {
-        self.pending.contains_key(&send_token)
     }
 
     fn pending_len(&self) -> usize {
         self.pending.len()
     }
 
-    fn pending_next_hop(&self, send_token: u64) -> Option<NodeAddr> {
-        self.pending
-            .get(&send_token)
-            .map(|pending| pending.forward.next_hop_addr)
-    }
-
     fn push_completed(&mut self, forward: PreparedSessionForward, result: Result<(), NodeError>) {
-        self.completed
-            .push_back(CompletedSessionForward { forward, result });
+        self.completed.push_back((forward, result));
     }
 
-    fn pop_completed(&mut self) -> Option<CompletedSessionForward> {
+    fn pop_completed(&mut self) -> Option<(PreparedSessionForward, Result<(), NodeError>)> {
         self.completed.pop_front()
     }
 }

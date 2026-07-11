@@ -40,14 +40,15 @@ fn deferred_forward_receipts_complete_out_of_order_without_count_leaks() {
             ForwardingLane::Bulk,
         ));
     }
-    assert!(deferred.complete(3, Ok(())));
-    assert!(deferred.complete(1, Ok(())));
-    assert!(!deferred.complete(999, Ok(())));
-    assert!(deferred.complete(2, Ok(())));
+    for token in [3, 1, 2] {
+        let forward = deferred.take_pending(token).expect("pending forward");
+        deferred.push_completed(forward, Ok(()));
+    }
+    assert!(deferred.take_pending(999).is_none());
     assert_eq!(deferred.pending_len(), 0);
     assert!(deferred.window.is_empty());
     let completed_owners: Vec<_> = std::iter::from_fn(|| deferred.pop_completed())
-        .map(|completed| completed.forward.next_hop_addr)
+        .map(|(forward, _)| forward.next_hop_addr)
         .collect();
     assert_eq!(
         completed_owners,
