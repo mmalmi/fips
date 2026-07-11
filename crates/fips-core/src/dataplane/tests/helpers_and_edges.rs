@@ -65,9 +65,14 @@
         }
     }
 
-    fn execute_test_prepared_crypto_work(work: PreparedCryptoWork) -> CryptoCompletion {
+    enum CapturedCryptoWork {
+        Open(CryptoWork, AeadKey),
+        Seal(OutboundCryptoWork, AeadKey),
+    }
+
+    fn execute_test_prepared_crypto_run(run: PreparedCryptoRun) -> CryptoCompletion {
         let mut pool = test_aead_worker_pool(1);
-        let mut prepared = vec![work];
+        let mut prepared = vec![run];
         let mut slots = Vec::new();
         pool.submit_prepared_chunk(&mut prepared, |slot| slots.push(slot));
         let mut completions = drain_ready_slots(&mut pool, &slots, 1);
@@ -75,20 +80,34 @@
         completions.pop().unwrap()
     }
 
+    fn execute_test_prepared_crypto_work(work: CapturedCryptoWork) -> CryptoCompletion {
+        match work {
+            CapturedCryptoWork::Open(work, key) => {
+                execute_test_prepared_crypto_run(PreparedCryptoRun::open(work, key))
+            }
+            CapturedCryptoWork::Seal(work, key) => {
+                execute_test_prepared_crypto_run(PreparedCryptoRun::seal(work, key))
+            }
+        }
+    }
+
     fn complete_test_open_work(work: CryptoWork, key: u8) -> CryptoCompletion {
-        execute_test_prepared_crypto_work(PreparedCryptoWork::open(work, test_key(key)))
+        execute_test_prepared_crypto_run(PreparedCryptoRun::open(
+            work,
+            test_key(key),
+        ))
     }
 
     fn complete_test_seal_work(work: OutboundCryptoWork, key: u8) -> CryptoCompletion {
-        execute_test_prepared_crypto_work(PreparedCryptoWork::seal(work, test_key(key)))
+        execute_test_prepared_crypto_run(PreparedCryptoRun::seal(work, test_key(key)))
     }
 
     fn dispatch_available(mover: &mut Dataplane, limit: usize) -> Vec<CryptoWork> {
         capture_prepared_work(mover, limit)
             .into_iter()
             .map(|prepared| match prepared {
-                PreparedCryptoWork::Open { work, .. } => work,
-                PreparedCryptoWork::Seal { work, .. } => {
+                CapturedCryptoWork::Open(work, ..) => work,
+                CapturedCryptoWork::Seal(work, ..) => {
                     panic!("unexpected outbound work while capturing inbound: {work:?}")
                 }
             })
@@ -102,15 +121,15 @@
         capture_prepared_work(mover, limit)
             .into_iter()
             .map(|prepared| match prepared {
-                PreparedCryptoWork::Seal { work, .. } => work,
-                PreparedCryptoWork::Open { work, .. } => {
+                CapturedCryptoWork::Seal(work, ..) => work,
+                CapturedCryptoWork::Open(work, ..) => {
                     panic!("unexpected inbound work while capturing outbound: {work:?}")
                 }
             })
             .collect()
     }
 
-    fn capture_prepared_work(mover: &mut Dataplane, limit: usize) -> Vec<PreparedCryptoWork> {
+    fn capture_prepared_work(mover: &mut Dataplane, limit: usize) -> Vec<CapturedCryptoWork> {
         seed_missing_test_owner_keys(mover);
         let mut prepared_work = Vec::new();
         let mut ready_slots = Vec::new();
@@ -127,6 +146,33 @@
         );
         assert!(ready_slots.is_empty());
         prepared_work
+            .into_iter()
+            .flat_map(|prepared| {
+                let PreparedCryptoRun { run, cipher } = prepared;
+                run.items.into_iter().map(move |item| {
+                    let work = match item.state.into_inner() {
+                        CryptoOwnerRunItemState::Open(packet) => CapturedCryptoWork::Open(
+                            CryptoWork {
+                                reservation: item.reservation,
+                                packet,
+                            },
+                            cipher.clone(),
+                        ),
+                        CryptoOwnerRunItemState::Seal(packet) => CapturedCryptoWork::Seal(
+                            OutboundCryptoWork {
+                                reservation: item.reservation,
+                                packet,
+                            },
+                            cipher.clone(),
+                        ),
+                        CryptoOwnerRunItemState::Completed(_) => {
+                            panic!("captured crypto run was already completed")
+                        }
+                    };
+                    work
+                })
+            })
+            .collect()
     }
 
     fn seed_missing_test_owner_keys(mover: &mut Dataplane) {
@@ -141,7 +187,7 @@
     }
 
     fn drain_ready_slots(
-        pool: &mut DataplaneAeadWorkerPool,
+        _pool: &mut DataplaneAeadWorkerPool,
         slots: &[Arc<CryptoReadySlot>],
         expected: usize,
     ) -> Vec<CryptoCompletion> {
@@ -164,7 +210,7 @@
     }
 
     fn wait_for_owner_readiness(
-        pool: &mut DataplaneAeadWorkerPool,
+        _pool: &mut DataplaneAeadWorkerPool,
         mover: &Dataplane,
     ) {
         for _ in 0..100 {

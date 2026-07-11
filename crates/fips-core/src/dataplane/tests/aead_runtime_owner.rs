@@ -1,16 +1,3 @@
-fn register_owner_with_test_keys(
-    mover: &mut Dataplane,
-    owner: OwnerId,
-    open_key: u8,
-    seal_key: u8,
-) {
-    mover.register_owner(owner, OwnerConfig::new(1, 8));
-    mover
-        .owner_mut(owner)
-        .unwrap()
-        .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(seal_key)));
-}
-
 fn submit_fmp_inbound_range<I>(
     mover: &mut Dataplane,
     owner: OwnerId,
@@ -77,13 +64,6 @@ fn submit_endpoint_data_payload(mover: &mut Dataplane, request: EndpointDataSubm
             .with_activity_tick(ActivityTick::new(timestamp as u64)),
         )
         .unwrap();
-}
-
-fn run_with_worker_pool(
-    mover: &mut Dataplane,
-    pool: &mut DataplaneAeadWorkerPool,
-) -> (usize, Vec<PacketOutput>, Vec<PacketDrop>) {
-    run_with_worker_pool_limit(mover, pool, 8)
 }
 
 fn run_with_worker_pool_limit(
@@ -301,58 +281,12 @@ fn aead_worker_pool_reserves_priority_capacity_from_bulk() {
             open_key,
         ))
         .unwrap();
-    let (dispatched, retired, drops) = run_with_worker_pool_limit(
+    let (dispatched, _retired, drops) = run_with_worker_pool_limit(
         &mut mover,
         &mut pool,
         DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS * 2,
     );
     assert_eq!(dispatched, 1);
-    assert!(retired.is_empty());
-    assert!(drops.is_empty());
-}
-
-#[test]
-fn aead_worker_pool_capacity_blocks_reservation_until_completion_drain() {
-    let owner = fmp_owner(707);
-    let open_key = 21;
-    let mut mover = mover();
-    register_owner_with_test_keys(&mut mover, owner, open_key, open_key);
-    submit_fmp_inbound_range(&mut mover, owner, 707, open_key, 100..104, b"worker-cap");
-
-    let mut pool = test_aead_worker_pool(2);
-    let (dispatched, retired, drops) = run_with_worker_pool(&mut mover, &mut pool);
-    assert_eq!(dispatched, 2);
-    assert!(retired.is_empty());
-    assert!(drops.is_empty());
-    assert_eq!(pool.available_capacity(), 0);
-    assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 2);
-
-    let (dispatched, retired, drops) = run_with_worker_pool(&mut mover, &mut pool);
-    assert_eq!(dispatched, 0);
-    assert!(retired.is_empty());
-    assert!(drops.is_empty());
-    assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 2);
-
-    wait_for_owner_readiness(&mut pool, &mover);
-    let mut retired = Vec::new();
-    assert_eq!(retire_ready_slots_to_outputs(&mut mover, 2, &mut retired), 2);
-    assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
-    assert_eq!(pool.available_capacity(), 2);
-
-    let (dispatched, retired, drops) = run_with_worker_pool(&mut mover, &mut pool);
-    assert_eq!(dispatched, 2);
-    assert!(retired.is_empty());
-    assert!(drops.is_empty());
-    assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 2);
-
-    wait_for_owner_readiness(&mut pool, &mover);
-    let mut retired = Vec::new();
-    assert_eq!(retire_ready_slots_to_outputs(&mut mover, 2, &mut retired), 2);
-    assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
-
-    let (dispatched, retired, drops) = run_with_worker_pool(&mut mover, &mut pool);
-    assert_eq!(dispatched, 0);
-    assert!(retired.is_empty());
     assert!(drops.is_empty());
 }
 

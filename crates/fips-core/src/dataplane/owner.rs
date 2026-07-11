@@ -1132,6 +1132,26 @@ impl OwnerState {
         self.crypto_keys.as_ref().map(|keys| keys.seal.clone())
     }
 
+    fn open_key(&self, epoch: DataplaneReceiveEpoch) -> Option<AeadKey> {
+        match (self.owner.protocol(), epoch) {
+            (PacketProtocol::Fmp, DataplaneReceiveEpoch::Previous) => {
+                self.previous_fmp_open.clone()
+            }
+            (PacketProtocol::Fmp, DataplaneReceiveEpoch::Pending) => {
+                self.pending_fmp_open.clone()
+            }
+            (PacketProtocol::Fsp, DataplaneReceiveEpoch::Previous) => {
+                self.previous_fsp_open.clone()
+            }
+            (PacketProtocol::Fsp, DataplaneReceiveEpoch::Pending) => {
+                self.pending_fsp_open.clone()
+            }
+            (_, DataplaneReceiveEpoch::Current) => {
+                self.crypto_keys.as_ref().map(|keys| keys.open.clone())
+            }
+        }
+    }
+
     fn uses_previous_fmp_receive_epoch(&self, packet: &SocketPacket) -> bool {
         if self.owner.protocol() != PacketProtocol::Fmp {
             return false;
@@ -1394,7 +1414,7 @@ impl OwnerState {
         &mut self,
         packet: &SocketPacket,
         ingress_seq: u64,
-    ) -> Result<(OwnerReservation, Option<AeadKey>), OwnerReserveError> {
+    ) -> Result<(OwnerReservation, DataplaneReceiveEpoch), OwnerReserveError> {
         if packet.generation != self.generation {
             return Err(OwnerReserveError::StaleGeneration);
         }
@@ -1429,16 +1449,12 @@ impl OwnerState {
         if !replay_window.accept(packet.counter) {
             return Err(OwnerReserveError::Replay);
         }
-        let open_key = if use_previous_fmp_epoch {
-            self.previous_fmp_open.clone()
-        } else if use_pending_fmp_epoch {
-            self.pending_fmp_open.clone()
-        } else if use_previous_fsp_epoch {
-            self.previous_fsp_open.clone()
-        } else if use_pending_fsp_epoch {
-            self.pending_fsp_open.clone()
+        let receive_epoch = if use_previous_fmp_epoch || use_previous_fsp_epoch {
+            DataplaneReceiveEpoch::Previous
+        } else if use_pending_fmp_epoch || use_pending_fsp_epoch {
+            DataplaneReceiveEpoch::Pending
         } else {
-            self.crypto_keys.as_ref().map(|keys| keys.open.clone())
+            DataplaneReceiveEpoch::Current
         };
         if let Some(path) = packet.source_path.clone() {
             self.active_path = Some(path);
@@ -1471,7 +1487,7 @@ impl OwnerState {
                 fsp_timestamp_ms: None,
                 send_token: None,
             },
-            open_key,
+            receive_epoch,
         ))
     }
 

@@ -14,7 +14,7 @@ pub(crate) struct Dataplane {
 }
 
 pub(crate) struct DataplaneAeadRunBuffers<'a> {
-    prepared_work: &'a mut Vec<PreparedCryptoWork>,
+    prepared_work: &'a mut Vec<PreparedCryptoRun>,
     ready_slots: &'a mut Vec<Arc<CryptoReadySlot>>,
     outputs: &'a mut Vec<PacketOutput>,
     outbound_packets: &'a mut Vec<OutboundPacket>,
@@ -24,7 +24,7 @@ pub(crate) struct DataplaneAeadRunBuffers<'a> {
 
 impl<'a> DataplaneAeadRunBuffers<'a> {
     pub(crate) fn new(
-        prepared_work: &'a mut Vec<PreparedCryptoWork>,
+        prepared_work: &'a mut Vec<PreparedCryptoRun>,
         ready_slots: &'a mut Vec<Arc<CryptoReadySlot>>,
         outputs: &'a mut Vec<PacketOutput>,
         outbound_packets: &'a mut Vec<OutboundPacket>,
@@ -651,7 +651,7 @@ impl Dataplane {
     fn prepare_aead_available_into(
         &mut self,
         limit: usize,
-        prepared_work: &mut Vec<PreparedCryptoWork>,
+        prepared_work: &mut Vec<PreparedCryptoRun>,
         ready_slots: &mut Vec<Arc<CryptoReadySlot>>,
         worker_pool: &DataplaneAeadWorkerPool,
     ) -> usize {
@@ -810,7 +810,7 @@ impl Dataplane {
     fn dispatch_prepared_ingress_shards_into(
         &mut self,
         limit: usize,
-        prepared: &mut Vec<PreparedCryptoWork>,
+        prepared: &mut Vec<PreparedCryptoRun>,
         ready_slots: &mut Vec<Arc<CryptoReadySlot>>,
         priority_only: bool,
         fsp_path_open: &mut FspPathOpenDispatch,
@@ -868,7 +868,7 @@ impl Dataplane {
     fn dispatch_outbound_prepared_shards_into(
         &mut self,
         limit: usize,
-        prepared: &mut Vec<PreparedCryptoWork>,
+        prepared: &mut Vec<PreparedCryptoRun>,
         ready_slots: &mut Vec<Arc<CryptoReadySlot>>,
         priority_only: bool,
     ) -> usize {

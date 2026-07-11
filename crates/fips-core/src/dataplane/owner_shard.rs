@@ -265,7 +265,7 @@ impl DataplaneOwnerShard {
     fn dispatch_ingress_prepared_into(
         &mut self,
         limit: usize,
-        prepared: &mut Vec<PreparedCryptoWork>,
+        prepared: &mut Vec<PreparedCryptoRun>,
         ready_slots: &mut Vec<Arc<CryptoReadySlot>>,
         priority_only: bool,
         fsp_path_open: &mut FspPathOpenDispatch,
@@ -273,6 +273,8 @@ impl DataplaneOwnerShard {
     ) -> usize {
         let mut dispatched = 0usize;
         let mut attempts_remaining = self.admission.len();
+        let mut prepared_run: Option<PreparedCryptoRun> = None;
+        let mut prepared_epoch = None;
         while dispatched < limit && attempts_remaining > 0 {
             let run_limit = limit.saturating_sub(dispatched);
             let Some(cursor) = self.admission.pop_next_run_into(
@@ -318,23 +320,43 @@ impl DataplaneOwnerShard {
                 }
 
                 match owner.reserve(&queued.packet, queued.ingress_seq) {
-                    Ok((reservation, open_key)) => {
+                    Ok((reservation, receive_epoch)) => {
                         let packet_owner = queued.packet.owner;
                         let packet_counter = queued.packet.counter;
                         let packet_lane = queued.packet.lane();
                         let reservation = reservation.with_owner_shard(self.index);
                         fsp_path_open.count(&reservation);
-                        match open_key {
-                            Some(open_key) => prepared.push(PreparedCryptoWork::open(
-                                CryptoWork {
-                                    reservation,
-                                    packet: queued.packet,
-                                },
-                                open_key,
-                            )),
-                            None => ready_slots.push(CryptoReadySlot::completed(
-                                failed_crypto_completion(reservation, CryptoFailureKind::Open),
-                            )),
+                        let work = CryptoWork {
+                            reservation,
+                            packet: queued.packet,
+                        };
+                        let work = match prepared_run.as_mut() {
+                            Some(run) if prepared_epoch == Some(receive_epoch) => {
+                                match run.try_push_open(work) {
+                                    Ok(()) => None,
+                                    Err(work) => Some(work),
+                                }
+                            }
+                            Some(_) => Some(work),
+                            None => Some(work),
+                        };
+                        if let Some(work) = work {
+                            if let Some(run) = prepared_run.take() {
+                                prepared.push(run);
+                            }
+                            prepared_epoch = None;
+                            match owner.open_key(receive_epoch) {
+                                Some(open_key) => {
+                                    prepared_run = Some(PreparedCryptoRun::open(work, open_key));
+                                    prepared_epoch = Some(receive_epoch);
+                                }
+                                None => ready_slots.push(CryptoReadySlot::completed(
+                                    failed_crypto_completion(
+                                        work.reservation,
+                                        CryptoFailureKind::Open,
+                                    ),
+                                )),
+                            }
                         }
                         tracing::debug!(
                             owner = ?packet_owner,
@@ -362,13 +384,15 @@ impl DataplaneOwnerShard {
                     }
                 }
             }
-
             if self.admission_run.is_empty() {
                 self.admission.continue_owner_lane(cursor);
             } else {
                 self.admission
                     .defer_owner_run(cursor, &mut self.admission_run);
             }
+        }
+        if let Some(run) = prepared_run {
+            prepared.push(run);
         }
 
         if !priority_only && limit > 0 && dispatched >= limit {
@@ -382,13 +406,14 @@ impl DataplaneOwnerShard {
     fn dispatch_outbound_prepared_into(
         &mut self,
         limit: usize,
-        prepared: &mut Vec<PreparedCryptoWork>,
+        prepared: &mut Vec<PreparedCryptoRun>,
         ready_slots: &mut Vec<Arc<CryptoReadySlot>>,
         priority_only: bool,
         drops: &mut Vec<PacketDrop>,
     ) -> usize {
         let mut dispatched = 0usize;
         let mut attempts_remaining = self.outbound_admission.len();
+        let mut prepared_run: Option<PreparedCryptoRun> = None;
         while dispatched < limit && attempts_remaining > 0 {
             let run_limit = limit.saturating_sub(dispatched);
             let Some(cursor) = self.outbound_admission.pop_next_run_into(
@@ -436,17 +461,32 @@ impl DataplaneOwnerShard {
                 match owner.reserve_outbound(queued.packet, ingress_seq) {
                     Ok((reservation, packet)) => {
                         let reservation = reservation.with_owner_shard(self.index);
-                        match owner.seal_key() {
-                            Some(seal_key) => prepared.push(PreparedCryptoWork::seal(
-                                OutboundCryptoWork {
-                                    reservation,
-                                    packet,
-                                },
-                                seal_key,
-                            )),
-                            None => ready_slots.push(CryptoReadySlot::completed(
-                                failed_crypto_completion(reservation, CryptoFailureKind::Seal),
-                            )),
+                        let work = OutboundCryptoWork {
+                            reservation,
+                            packet,
+                        };
+                        let work = match prepared_run.as_mut() {
+                            Some(run) => match run.try_push_seal(work) {
+                                Ok(()) => None,
+                                Err(work) => Some(work),
+                            },
+                            None => Some(work),
+                        };
+                        if let Some(work) = work {
+                            if let Some(run) = prepared_run.take() {
+                                prepared.push(run);
+                            }
+                            match owner.seal_key() {
+                                Some(seal_key) => {
+                                    prepared_run = Some(PreparedCryptoRun::seal(work, seal_key));
+                                }
+                                None => ready_slots.push(CryptoReadySlot::completed(
+                                    failed_crypto_completion(
+                                        work.reservation,
+                                        CryptoFailureKind::Seal,
+                                    ),
+                                )),
+                            }
                         }
                         dispatched = dispatched.saturating_add(1);
                     }
@@ -464,13 +504,15 @@ impl DataplaneOwnerShard {
                 }
                 attempts_remaining = self.outbound_admission.len();
             }
-
             if self.outbound_admission_run.is_empty() {
                 self.outbound_admission.continue_owner_lane(cursor);
             } else {
                 self.outbound_admission
                     .defer_owner_run(cursor, &mut self.outbound_admission_run);
             }
+        }
+        if let Some(run) = prepared_run {
+            prepared.push(run);
         }
         dispatched
     }

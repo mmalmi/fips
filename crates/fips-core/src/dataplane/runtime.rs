@@ -3,7 +3,7 @@ const DATAPLANE_DEFERRED_RAW_INGRESS_MAX_RETRIES: u8 = 8;
 #[derive(Debug)]
 pub(crate) struct DataplaneTurnDriver {
     mover: Dataplane,
-    prepared_work: Vec<PreparedCryptoWork>,
+    prepared_work: Vec<PreparedCryptoRun>,
     ready_slots: Vec<Arc<CryptoReadySlot>>,
     raw_ingress_drops: Vec<DataplaneRawIngressDrop>,
     output_drops: Vec<DataplaneOutputDrop>,

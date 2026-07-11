@@ -4,130 +4,69 @@ use std::sync::atomic::{
     AtomicBool, AtomicUsize, Ordering::Acquire, Ordering::Relaxed, Ordering::Release,
 };
 
-pub(crate) enum PreparedCryptoWork {
-    Open { work: CryptoWork, cipher: AeadKey },
-    Seal { work: OutboundCryptoWork, cipher: AeadKey },
-}
-
 const DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS: usize = 8;
 const DATAPLANE_AEAD_JOB_PACKETS: usize =
     crate::node::FIPS_ENDPOINT_DIRECT_PACKET_RUN_MAX_PACKETS;
 
-impl PreparedCryptoWork {
-    pub(crate) fn open(work: CryptoWork, cipher: AeadKey) -> Self {
-        Self::Open { work, cipher }
+pub(crate) struct PreparedCryptoRun {
+    run: CryptoOwnerRun,
+    cipher: AeadKey,
+}
+
+impl PreparedCryptoRun {
+    fn open(work: CryptoWork, cipher: AeadKey) -> Self {
+        Self {
+            run: CryptoOwnerRun::new(
+                CryptoOwnerRunItem::open(work),
+                DATAPLANE_AEAD_JOB_PACKETS,
+            ),
+            cipher,
+        }
     }
 
-    pub(crate) fn seal(work: OutboundCryptoWork, cipher: AeadKey) -> Self {
-        Self::Seal { work, cipher }
+    fn seal(work: OutboundCryptoWork, cipher: AeadKey) -> Self {
+        Self {
+            run: CryptoOwnerRun::new(
+                CryptoOwnerRunItem::seal(work),
+                DATAPLANE_AEAD_JOB_PACKETS,
+            ),
+            cipher,
+        }
+    }
+
+    fn try_push_open(&mut self, work: CryptoWork) -> Result<(), CryptoWork> {
+        if self.run.len() >= DATAPLANE_AEAD_JOB_PACKETS
+            || !self.run.matches(
+                &work.reservation,
+                true,
+                work.is_open_fsp_session_payload(),
+            )
+        {
+            return Err(work);
+        }
+        self.run.push(CryptoOwnerRunItem::open(work));
+        Ok(())
+    }
+
+    fn try_push_seal(&mut self, work: OutboundCryptoWork) -> Result<(), OutboundCryptoWork> {
+        if self.run.len() >= DATAPLANE_AEAD_JOB_PACKETS
+            || !self.run.matches(&work.reservation, false, false)
+        {
+            return Err(work);
+        }
+        self.run.push(CryptoOwnerRunItem::seal(work));
+        Ok(())
     }
 
     fn lane(&self) -> Lane {
-        match self {
-            Self::Open { work, .. } => work.reservation.lane,
-            Self::Seal { work, .. } => work.reservation.lane,
-        }
+        self.run
+            .first_reservation()
+            .expect("prepared crypto owner run contains work")
+            .lane
     }
 
-    fn reservation(&self) -> &OwnerReservation {
-        match self {
-            Self::Open { work, .. } => &work.reservation,
-            Self::Seal { work, .. } => &work.reservation,
-        }
-    }
-
-    fn cipher(&self) -> &AeadKey {
-        match self {
-            Self::Open { cipher, .. } | Self::Seal { cipher, .. } => cipher,
-        }
-    }
-
-    fn is_open(&self) -> bool {
-        matches!(self, Self::Open { .. })
-    }
-
-    fn is_open_fsp_session_payload(&self) -> bool {
-        match self {
-            Self::Open { work, .. } => work.is_open_fsp_session_payload(),
-            Self::Seal { .. } => false,
-        }
-    }
-
-    fn into_owner_item(self) -> (CryptoOwnerRunItem, AeadKey) {
-        match self {
-            Self::Open { work, cipher } => (CryptoOwnerRunItem::open(work), cipher),
-            Self::Seal { work, cipher } => (CryptoOwnerRunItem::seal(work), cipher),
-        }
-    }
-}
-
-struct CryptoOwnerRunBuilder {
-    cipher: Option<AeadKey>,
-    run: Option<CryptoOwnerRun>,
-}
-
-impl CryptoOwnerRunBuilder {
-    fn new() -> Self {
-        Self {
-            cipher: None,
-            run: None,
-        }
-    }
-
-    fn push(
-        &mut self,
-        pool: &mut DataplaneAeadWorkerPool,
-        work: PreparedCryptoWork,
-        stage: &mut impl FnMut(Arc<CryptoReadySlot>),
-    ) {
-        if !self.matches_run(&work)
-            || self
-                .run
-                .as_ref()
-                .is_some_and(|run| run.len() >= DATAPLANE_AEAD_JOB_PACKETS)
-        {
-            self.flush(pool, stage);
-        }
-        let (work, cipher) = work.into_owner_item();
-        match &mut self.run {
-            Some(run) => run.push(work),
-            None => {
-                self.run = Some(CryptoOwnerRun::new(work, DATAPLANE_AEAD_JOB_PACKETS));
-                self.cipher = Some(cipher);
-            }
-        }
-    }
-
-    fn flush(
-        &mut self,
-        pool: &mut DataplaneAeadWorkerPool,
-        stage: &mut impl FnMut(Arc<CryptoReadySlot>),
-    ) {
-        let Some(run) = self.run.take() else {
-            return;
-        };
-        let cipher = self
-            .cipher
-            .take()
-            .expect("crypto run cipher exists when work is non-empty");
-        let run = pool.prepare_owner_run(run, cipher);
-        stage(Arc::clone(&run.slot));
-        pool.submit_owner_run(run);
-    }
-
-    fn matches_run(&self, work: &PreparedCryptoWork) -> bool {
-        let Some(run) = self.run.as_ref() else {
-            return true;
-        };
-        let Some(current_cipher) = self.cipher.as_ref() else {
-            return true;
-        };
-        Arc::ptr_eq(current_cipher, work.cipher())
-            && run.matches(
-                work.reservation(),
-                work.is_open(),
-                work.is_open_fsp_session_payload(),
-            )
+    fn into_parts(self) -> (CryptoOwnerRun, AeadKey) {
+        (self.run, self.cipher)
     }
 }
 
@@ -606,18 +545,15 @@ impl DataplaneAeadWorkerPool {
 
     fn submit_prepared_chunk(
         &mut self,
-        prepared: &mut Vec<PreparedCryptoWork>,
+        prepared: &mut Vec<PreparedCryptoRun>,
         mut stage: impl FnMut(Arc<CryptoReadySlot>),
     ) {
-        if prepared.is_empty() {
-            return;
+        for prepared in prepared.drain(..) {
+            let (run, cipher) = prepared.into_parts();
+            let run = self.prepare_owner_run(run, cipher);
+            stage(Arc::clone(&run.slot));
+            self.submit_owner_run(run);
         }
-
-        let mut runs = CryptoOwnerRunBuilder::new();
-        for work in prepared.drain(..) {
-            runs.push(self, work, &mut stage);
-        }
-        runs.flush(self, &mut stage);
     }
 }
 
@@ -687,18 +623,11 @@ fn dataplane_aead_worker_priority_reserve(max_in_flight: usize) -> usize {
         .min(DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS)
 }
 
-impl std::fmt::Debug for PreparedCryptoWork {
+impl std::fmt::Debug for PreparedCryptoRun {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Open { work, .. } => f
-                .debug_struct("PreparedCryptoWork::Open")
-                .field("reservation", &work.reservation)
-                .finish_non_exhaustive(),
-            Self::Seal { work, .. } => f
-                .debug_struct("PreparedCryptoWork::Seal")
-                .field("reservation", &work.reservation)
-                .finish_non_exhaustive(),
-        }
+        f.debug_struct("PreparedCryptoRun")
+            .field("len", &self.run.len())
+            .finish_non_exhaustive()
     }
 }
 
