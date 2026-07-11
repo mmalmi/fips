@@ -1,0 +1,65 @@
+name: fips-tun-performance
+
+x-fips-node: &fips-node
+  image: fips-test:latest
+  cap_add:
+    - NET_ADMIN
+  devices:
+    - /dev/net/tun:/dev/net/tun
+  environment:
+    - FIPS_TEST_MODE=fips-only
+    - RUST_LOG=${RUST_LOG:-info}
+    - FIPS_PERF=${FIPS_PERF:-0}
+    - FIPS_PERF_INTERVAL_SECS=${FIPS_PERF_INTERVAL_SECS:-1}
+    - FIPS_LINUX_TUN_VNET=${FIPS_LINUX_TUN_VNET:-1}
+  restart: "no"
+
+x-loadgen: &loadgen
+  image: fips-test:latest
+  entrypoint: ["sleep", "infinity"]
+  restart: "no"
+
+services:
+  node-a:
+    <<: *fips-node
+    container_name: fips-tun-a
+    hostname: node-a
+    volumes:
+      - ../docker/resolv.conf:/etc/resolv.conf:ro
+      - ./generated-configs/node-a.yaml:/etc/fips/fips.yaml:ro
+    networks:
+      underlay:
+        ipv4_address: 172.31.30.10
+
+  node-b:
+    <<: *fips-node
+    container_name: fips-tun-b
+    hostname: node-b
+    volumes:
+      - ../docker/resolv.conf:/etc/resolv.conf:ro
+      - ./generated-configs/node-b.yaml:/etc/fips/fips.yaml:ro
+    networks:
+      underlay:
+        ipv4_address: 172.31.30.11
+
+  load-a:
+    <<: *loadgen
+    container_name: fips-tun-load-a
+    network_mode: service:node-a
+    depends_on:
+      - node-a
+
+  load-b:
+    <<: *loadgen
+    container_name: fips-tun-load-b
+    network_mode: service:node-b
+    depends_on:
+      - node-b
+
+networks:
+  underlay:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.31.30.0/24

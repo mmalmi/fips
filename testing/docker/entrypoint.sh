@@ -3,6 +3,7 @@
 #
 # Mode is selected via FIPS_TEST_MODE environment variable:
 #   default        — dnsmasq + sshd + iperf3 + http server + fips
+#   fips-only      — dnsmasq + fips; load generators use a separate cgroup
 #   chaos          — above + TCP ECN + ethernet interface wait
 #   sidecar        — generate config from env + iptables isolation + fips
 #   tor-socks5     — dnsmasq + sshd + fips (tor daemon is separate)
@@ -181,6 +182,10 @@ case "$MODE" in
         start_services
         exec fips --config "$CONFIG"
         ;;
+    fips-only)
+        start_dnsmasq
+        exec fips --config "$CONFIG"
+        ;;
     chaos)
         enable_ecn
         start_dnsmasq
@@ -259,7 +264,7 @@ case "$MODE" in
         ;;
     *)
         echo "Unknown FIPS_TEST_MODE: $MODE"
-        echo "Valid modes: default, chaos, sidecar, tor-socks5, tor-directory, gateway"
+        echo "Valid modes: default, fips-only, chaos, sidecar, tor-socks5, tor-directory, gateway"
         exit 1
         ;;
 esac
