@@ -294,16 +294,20 @@ async fn stale_udp_peer_reuses_current_addr_after_traversal_transport_removed() 
     let mut active = ActivePeer::new(peer, LinkId::new(7), now_ms);
     active.set_current_addr(
         old_traversal_transport_id,
-        &TransportAddr::from_string("127.0.0.1:51820"),
+        &TransportAddr::from_string("10.254.253.252:51820"),
     );
     active.mark_stale();
     node.peers.insert(peer_addr, active);
 
     let candidate = node
         .active_peer_current_udp_candidate(&peer_addr)
-        .expect("stale UDP path should remain directly re-probeable");
+        .expect("authenticated off-subnet UDP path should remain directly re-probeable");
     assert_eq!(candidate.transport, "udp");
-    assert_eq!(candidate.addr, "127.0.0.1:51820");
+    assert_eq!(candidate.addr, "10.254.253.252:51820");
+    assert_eq!(
+        candidate.provenance,
+        crate::config::PeerAddressProvenance::Authenticated
+    );
     assert_eq!(
         candidate.priority,
         u8::MAX,
@@ -312,6 +316,24 @@ async fn stale_udp_peer_reuses_current_addr_after_traversal_transport_removed() 
     assert_eq!(
         candidate.seen_at_ms, None,
         "stale current endpoints must not be restamped as fresh"
+    );
+
+    node.schedule_reconnect(peer_addr, now_ms);
+    node.remove_active_peer(&peer_addr);
+    let remembered = node
+        .retry_pending
+        .get(&peer_addr)
+        .and_then(|state| {
+            state
+                .peer_config
+                .addresses
+                .iter()
+                .find(|address| address.addr == "10.254.253.252:51820")
+        })
+        .expect("peer removal must not discard its authenticated UDP route");
+    assert_eq!(
+        remembered.provenance,
+        crate::config::PeerAddressProvenance::Authenticated
     );
 
     for transport in node.transports.values_mut() {

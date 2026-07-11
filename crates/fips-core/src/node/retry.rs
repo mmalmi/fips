@@ -415,6 +415,8 @@ impl Node {
     /// exponential backoff accumulates across repeated link-dead events instead
     /// of resetting to the base interval on every peer removal.
     pub(super) fn schedule_reconnect(&mut self, node_addr: NodeAddr, now_ms: u64) {
+        let authenticated_address = self.active_peer_current_udp_candidate(&node_addr);
+
         // Find peer in auto-connect config
         let peer_config = self
             .config
@@ -424,7 +426,17 @@ impl Node {
                     .map(|id| *id.node_addr() == node_addr)
                     .unwrap_or(false)
             })
-            .cloned();
+            .cloned()
+            .map(|mut peer_config| {
+                if let Some(address) = authenticated_address.clone()
+                    && !peer_config.addresses.iter().any(|existing| {
+                        existing.transport == address.transport && existing.addr == address.addr
+                    })
+                {
+                    peer_config.addresses.push(address);
+                }
+                peer_config
+            });
 
         let Some(pc) = peer_config else {
             return; // Not an auto-connect peer, no reconnect
@@ -446,6 +458,13 @@ impl Node {
         // preserve and bump it rather than resetting to zero. This prevents the
         // exponential backoff from being discarded on each link-dead cycle.
         if let Some(state) = self.retry_pending.get_mut(&node_addr) {
+            if let Some(address) = authenticated_address
+                && !state.peer_config.addresses.iter().any(|existing| {
+                    existing.transport == address.transport && existing.addr == address.addr
+                })
+            {
+                state.peer_config.addresses.push(address);
+            }
             state.reconnect = true;
             state.retry_count += 1;
             let delay = state.backoff_ms(base_interval_ms, max_backoff_ms);
@@ -523,6 +542,7 @@ impl Node {
             return;
         }
 
+        let authenticated_address = self.active_peer_current_udp_candidate(&node_addr);
         let peer_config = self
             .retry_pending
             .get(&node_addr)
@@ -536,6 +556,16 @@ impl Node {
                             .unwrap_or(false)
                     })
                     .cloned()
+            })
+            .map(|mut peer_config| {
+                if let Some(address) = authenticated_address
+                    && !peer_config.addresses.iter().any(|existing| {
+                        existing.transport == address.transport && existing.addr == address.addr
+                    })
+                {
+                    peer_config.addresses.push(address);
+                }
+                peer_config
             });
 
         let Some(peer_config) = peer_config else {

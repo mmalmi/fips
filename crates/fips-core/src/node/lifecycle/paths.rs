@@ -433,7 +433,7 @@ impl Node {
         let provenance = if current_is_configured {
             PeerAddressProvenance::Configured
         } else {
-            PeerAddressProvenance::Learned
+            PeerAddressProvenance::Authenticated
         };
         self.find_udp_transport_for_remote_addr(socket_addr, provenance)?;
         let has_configured_static_udp = self
@@ -449,7 +449,7 @@ impl Node {
         Some(if current_is_configured {
             candidate
         } else {
-            candidate.learned()
+            candidate.authenticated()
         })
     }
 

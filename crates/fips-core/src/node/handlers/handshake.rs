@@ -257,9 +257,9 @@ impl Node {
                         peer = %self.peer_display_name(&peer_node_addr),
                         "Peer restart detected (epoch mismatch), removing stale session"
                     );
-                    self.remove_active_peer(&peer_node_addr);
                     let now_ms = Self::now_ms();
                     self.schedule_reconnect(peer_node_addr, now_ms);
+                    self.remove_active_peer(&peer_node_addr);
                     // Fall through to process as new connection
                 }
                 _ => {

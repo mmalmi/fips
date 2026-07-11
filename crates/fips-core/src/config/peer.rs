@@ -22,13 +22,15 @@ pub enum ConnectPolicy {
     Manual,
 }
 
-/// Whether a peer address came from operator configuration or discovery.
+/// How a peer address became trusted for dialing.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PeerAddressProvenance {
     /// The operator explicitly configured this address.
     #[default]
     Configured,
+    /// The exact address previously authenticated as this peer's active path.
+    Authenticated,
     /// The address was learned from a peer, advert, or active socket.
     Learned,
 }
@@ -139,6 +141,12 @@ impl PeerAddress {
     /// Mark this address as learned from discovery or an active path.
     pub fn learned(mut self) -> Self {
         self.provenance = PeerAddressProvenance::Learned;
+        self
+    }
+
+    /// Mark this address as a previously authenticated active path.
+    pub fn authenticated(mut self) -> Self {
+        self.provenance = PeerAddressProvenance::Authenticated;
         self
     }
 

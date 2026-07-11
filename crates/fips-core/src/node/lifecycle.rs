@@ -125,7 +125,7 @@ fn udp_remote_addr_locally_plausible(
     if udp_remote_addr_invalid(remote_addr.ip()) {
         return false;
     }
-    if provenance == PeerAddressProvenance::Configured {
+    if provenance != PeerAddressProvenance::Learned {
         return true;
     }
     udp_remote_addr_locally_plausible_with_evidence(
