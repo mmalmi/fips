@@ -200,6 +200,199 @@ impl Node {
         Ok(())
     }
 
+    /// Seal and send a run of independent FMP link plaintexts in one
+    /// dataplane turn. Transit forwarding receives packets in batches; keeping
+    /// that shape here lets owner admission, AEAD workers, and UDP sendmmsg all
+    /// operate on runs instead of forcing one complete turn per packet.
+    pub(in crate::node) async fn send_dataplane_fmp_link_plaintext_batch(
+        &mut self,
+        plaintexts: Vec<(NodeAddr, Vec<u8>, bool)>,
+    ) -> Vec<Result<(), NodeError>> {
+        let mut results: Vec<Option<Result<(), NodeError>>> = std::iter::repeat_with(|| None)
+            .take(plaintexts.len())
+            .collect();
+        let mut outbound = Vec::with_capacity(plaintexts.len());
+        let continuation_turns = dataplane_fmp_link_batch_continuation_turns(
+            plaintexts
+                .iter()
+                .map(|(_, plaintext, _)| plaintext.as_slice()),
+        );
+        let mut pending = std::collections::HashMap::<u64, (usize, NodeAddr)>::new();
+        let activity_tick = ActivityTick::new(Self::now_ms());
+
+        for (index, (node_addr, plaintext, ce_flag)) in plaintexts.into_iter().enumerate() {
+            if !self.dataplane_has_fmp_owner(&node_addr) {
+                let error = if self.peers.get(&node_addr).is_none() {
+                    NodeError::PeerNotFound(node_addr)
+                } else {
+                    NodeError::SendFailed {
+                        node_addr,
+                        reason: "dataplane FMP owner not registered".into(),
+                    }
+                };
+                results[index] = Some(Err(error));
+                continue;
+            }
+            let Some(send_context) = self.dataplane.fmp_owner_send_context(&node_addr) else {
+                results[index] = Some(Err(NodeError::SendFailed {
+                    node_addr,
+                    reason: "dataplane FMP send context unavailable".into(),
+                }));
+                continue;
+            };
+            if self.peers.get(&node_addr).is_none() {
+                results[index] = Some(Err(NodeError::PeerNotFound(node_addr)));
+                continue;
+            }
+
+            let mut flags = send_context.flags();
+            if ce_flag {
+                flags |= FLAG_CE;
+            }
+            let send_token = DATAPLANE_FMP_LINK_SEND_TOKEN.fetch_add(1, Ordering::Relaxed);
+            let owner = OwnerId::fmp_node(node_addr);
+            let class = dataplane_fmp_link_class(&plaintext);
+            outbound.push(
+                OutboundPacket::fmp(
+                    owner,
+                    send_context.generation(),
+                    class,
+                    send_context.receiver_idx(),
+                    flags,
+                    crate::transport::PacketBuffer::new(plaintext),
+                )
+                .with_activity_tick(activity_tick)
+                .with_send_token(send_token),
+            );
+            pending.insert(send_token, (index, node_addr));
+        }
+
+        if !outbound.is_empty() {
+            let crypto_limit = outbound.len();
+            let mut turn = self
+                .pump_dataplane_pending_outbound_firsts(
+                    DataplaneLiveOutboundFirsts {
+                        initial_outbound_batch: outbound,
+                        collect_transport_sent_receipts: true,
+                        ..Default::default()
+                    },
+                    0,
+                    0,
+                    crypto_limit,
+                )
+                .await;
+            let mut idle_turns = 0usize;
+            while !pending.is_empty() {
+                let summary = turn.summary();
+                let made_progress = summary.has_activity()
+                    || turn.transport_sent() > 0
+                    || turn.transport_dropped() > 0;
+
+                for receipt in turn.take_transport_sent_receipts() {
+                    let Some(send_token) = receipt.send_token else {
+                        continue;
+                    };
+                    let Some((index, node_addr)) = pending.remove(&send_token) else {
+                        continue;
+                    };
+                    let sent = if let Some(timestamp_ms) = receipt.fmp_timestamp_ms {
+                        let bytes_sent = receipt.payload_len;
+                        self.dataplane.record_fmp_mmp_send_result(
+                            &node_addr,
+                            receipt.counter,
+                            timestamp_ms,
+                            bytes_sent,
+                        );
+                        let _ = self
+                            .peers
+                            .record_fmp_send_bookkeeping(&node_addr, bytes_sent);
+                        let send_result: Result<usize, TransportError> = Ok(bytes_sent);
+                        self.note_local_send_outcome(&node_addr, &send_result);
+                        Ok(())
+                    } else {
+                        Err(NodeError::SendFailed {
+                            node_addr,
+                            reason: "dataplane FMP timestamp missing".into(),
+                        })
+                    };
+                    results[index] = Some(sent);
+                }
+
+                for drop in turn.output_drops() {
+                    let Some(send_token) = drop.send_token() else {
+                        continue;
+                    };
+                    let Some((index, node_addr)) = pending.remove(&send_token) else {
+                        continue;
+                    };
+                    results[index] =
+                        Some(Err(self.dataplane_fmp_output_drop_error(node_addr, drop)));
+                }
+                for drop in turn.drops() {
+                    let Some(send_token) = drop.send_token() else {
+                        continue;
+                    };
+                    let Some((index, node_addr)) = pending.remove(&send_token) else {
+                        continue;
+                    };
+                    results[index] = Some(Err(NodeError::SendFailed {
+                        node_addr,
+                        reason: format!("dataplane FMP packet dropped: {:?}", drop.reason()),
+                    }));
+                }
+
+                if pending.is_empty() {
+                    self.defer_dataplane_control_turn(turn);
+                    break;
+                }
+                if made_progress {
+                    idle_turns = 0;
+                } else {
+                    idle_turns = idle_turns.saturating_add(1);
+                }
+                if idle_turns > continuation_turns {
+                    for (_, (index, node_addr)) in pending.drain() {
+                        results[index] = Some(Err(NodeError::SendFailed {
+                            node_addr,
+                            reason:
+                                "dataplane FMP batch exhausted pending outbound continuation turns"
+                                    .into(),
+                        }));
+                    }
+                    self.defer_dataplane_control_turn(turn);
+                    break;
+                }
+
+                if summary.outputs() == 0 {
+                    self.wait_for_dataplane_completion().await;
+                }
+                self.defer_dataplane_control_turn(turn);
+                turn = self
+                    .pump_dataplane_pending_outbound_firsts(
+                        DataplaneLiveOutboundFirsts {
+                            collect_transport_sent_receipts: true,
+                            ..Default::default()
+                        },
+                        0,
+                        0,
+                        pending.len(),
+                    )
+                    .await;
+            }
+        }
+
+        results
+            .into_iter()
+            .map(|result| {
+                result.unwrap_or_else(|| {
+                    Err(NodeError::LocalRouteUnavailable(
+                        "dataplane FMP batch packet was not admitted".into(),
+                    ))
+                })
+            })
+            .collect()
+    }
+
     pub(in crate::node) async fn send_dataplane_cached_tun_packet(
         &mut self,
         dest_addr: &NodeAddr,

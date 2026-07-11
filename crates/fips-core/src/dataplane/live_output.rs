@@ -2,6 +2,7 @@
 #[derive(Debug, Default)]
 pub(crate) struct DataplaneLiveOutboundFirsts {
     pub(crate) initial_outbound: Option<OutboundPacket>,
+    pub(crate) initial_outbound_batch: Vec<OutboundPacket>,
     pub(crate) endpoint_data_batch: Option<NodeEndpointDataBatch>,
     pub(crate) tun_packet: Option<Vec<u8>>,
     pub(crate) collect_transport_sent_receipts: bool,

@@ -3,9 +3,7 @@ use crate::discovery::is_punch_packet;
 use crate::node::wire::{
     COMMON_PREFIX_SIZE, CommonPrefix, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1, PHASE_MSG2,
 };
-use crate::node::{
-    AuthenticatedFmpReceiveFacts, AuthenticatedLinkMessage, FLAG_CE, LocalSessionPayload, Node,
-};
+use crate::node::{AuthenticatedFmpReceiveFacts, LocalSessionPayload, Node};
 use crate::transport::ReceivedPacket;
 use crate::{NodeAddr, PeerIdentity};
 use tracing::{debug, trace, warn};
@@ -88,11 +86,10 @@ impl Node {
                 processed += 1;
             }
         }
-        for ingress in turn.take_fmp_link_ingress() {
-            if self.process_dataplane_fmp_link_ingress(ingress).await {
-                processed += 1;
-            }
-        }
+        processed = processed.saturating_add(
+            self.handle_dataplane_fmp_link_ingress_batch(turn.take_fmp_link_ingress())
+                .await,
+        );
         for warmup in turn.take_fsp_coord_warmups() {
             warmup.apply_to(self.coord_cache_mut(), Self::now_ms());
             processed += 1;
@@ -287,36 +284,6 @@ impl Node {
             }
             crate::dataplane::DataplaneTunOutboundDropReason::InvalidPacket => false,
         }
-    }
-
-    async fn process_dataplane_fmp_link_ingress(
-        &mut self,
-        ingress: crate::dataplane::DataplaneFmpLinkIngress,
-    ) -> bool {
-        let receipt = ingress.receipt();
-        let fmp = AuthenticatedFmpReceiveFacts::from_dataplane_receipt(receipt);
-        debug!(
-            source = %fmp.source_node_addr(),
-            counter = fmp.fmp_counter,
-            flags = fmp.fmp_flags,
-            inner_timestamp_ms = fmp.inner_timestamp_ms,
-            packet_len = fmp.packet_len,
-            msg_type = ?ingress.msg_type(),
-            payload_len = ingress.payload().len(),
-            "dataplane FMP link ingress"
-        );
-        self.record_authenticated_fmp_receive_facts(fmp, Some(receipt.source_addr()));
-        let Some(msg_type) = ingress.msg_type() else {
-            return true;
-        };
-        self.dispatch_link_message(AuthenticatedLinkMessage::new(
-            fmp.source_peer,
-            msg_type,
-            ingress.payload(),
-            fmp.fmp_flags & FLAG_CE != 0,
-        ))
-        .await;
-        true
     }
 
     pub(in crate::node) fn dataplane_peer_identity(&self, addr: &NodeAddr) -> Option<PeerIdentity> {

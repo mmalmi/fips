@@ -26,6 +26,10 @@ impl DataplaneTurnDriver {
         if let Some(packet) = outbound_firsts.initial_outbound.take() {
             self.admit_outbound_packet(packet, &mut summary);
         }
+        self.admit_outbound_packets(
+            &mut outbound_firsts.initial_outbound_batch,
+            &mut summary,
+        );
 
         let routed_outbound_limit = endpoint_limit.saturating_add(tun_limit);
         let reserved_outbound_limit =

@@ -10,13 +10,26 @@ use crate::node::session_wire::{
     FSP_COMMON_PREFIX_SIZE, FSP_HEADER_SIZE, FSP_PHASE_ESTABLISHED, FSP_PHASE_MSG1, FSP_PHASE_MSG2,
     FspCommonPrefix, parse_encrypted_coords,
 };
-use crate::node::{AuthenticatedSessionDatagram, LocalSessionPayload, Node, NodeError};
+use crate::node::{
+    AuthenticatedFmpReceiveFacts, AuthenticatedLinkMessage, AuthenticatedSessionDatagram, FLAG_CE,
+    LocalSessionPayload, Node, NodeError,
+};
 use crate::protocol::{
     CoordsRequired, LinkMessageType, MtuExceeded, PathBroken, SessionAck, SessionDatagram,
     SessionDatagramRef, SessionSetup,
 };
 use std::time::{Duration, Instant};
 use tracing::{debug, warn};
+
+struct PreparedSessionForward {
+    next_hop_addr: NodeAddr,
+    src_addr: NodeAddr,
+    dest_addr: NodeAddr,
+    outgoing_ce: bool,
+    received_len: usize,
+    encoded_len: usize,
+    encoded: Vec<u8>,
+}
 
 impl Node {
     /// Handle an incoming SessionDatagram from a peer.
@@ -33,6 +46,88 @@ impl Node {
         &mut self,
         datagram: AuthenticatedSessionDatagram<'_>,
     ) {
+        let Some(forward) = self.prepare_session_datagram_forward(datagram).await else {
+            return;
+        };
+        let result = self
+            .send_dataplane_fmp_link_plaintext(
+                &forward.next_hop_addr,
+                &forward.encoded,
+                forward.outgoing_ce,
+            )
+            .await;
+        self.finish_prepared_session_forward(forward, result).await;
+    }
+
+    pub(in crate::node) async fn handle_dataplane_fmp_link_ingress_batch(
+        &mut self,
+        ingresses: Vec<crate::dataplane::DataplaneFmpLinkIngress>,
+    ) -> usize {
+        let mut processed = 0usize;
+        let mut forwards = Vec::with_capacity(ingresses.len());
+        for ingress in ingresses {
+            let receipt = ingress.receipt();
+            let fmp = AuthenticatedFmpReceiveFacts::from_dataplane_receipt(receipt);
+            self.record_authenticated_fmp_receive_facts(fmp, Some(receipt.source_addr()));
+            let Some(msg_type) = ingress.msg_type() else {
+                processed = processed.saturating_add(1);
+                continue;
+            };
+            if msg_type == LinkMessageType::SessionDatagram.to_byte() {
+                if let Some(forward) = self
+                    .prepare_session_datagram_forward(AuthenticatedSessionDatagram::new(
+                        fmp.source_peer,
+                        ingress.payload(),
+                        fmp.fmp_flags & FLAG_CE != 0,
+                    ))
+                    .await
+                {
+                    forwards.push(forward);
+                }
+            } else {
+                self.flush_prepared_session_forwards(&mut forwards).await;
+                self.dispatch_link_message(AuthenticatedLinkMessage::new(
+                    fmp.source_peer,
+                    msg_type,
+                    ingress.payload(),
+                    fmp.fmp_flags & FLAG_CE != 0,
+                ))
+                .await;
+            }
+            processed = processed.saturating_add(1);
+        }
+        self.flush_prepared_session_forwards(&mut forwards).await;
+        processed
+    }
+
+    async fn flush_prepared_session_forwards(
+        &mut self,
+        forwards: &mut Vec<PreparedSessionForward>,
+    ) {
+        if forwards.is_empty() {
+            return;
+        }
+
+        let outbound = forwards
+            .iter_mut()
+            .map(|forward| {
+                (
+                    forward.next_hop_addr,
+                    std::mem::take(&mut forward.encoded),
+                    forward.outgoing_ce,
+                )
+            })
+            .collect();
+        let results = self.send_dataplane_fmp_link_plaintext_batch(outbound).await;
+        for (forward, result) in std::mem::take(forwards).into_iter().zip(results) {
+            self.finish_prepared_session_forward(forward, result).await;
+        }
+    }
+
+    async fn prepare_session_datagram_forward(
+        &mut self,
+        datagram: AuthenticatedSessionDatagram<'_>,
+    ) -> Option<PreparedSessionForward> {
         let AuthenticatedSessionDatagram {
             previous_hop_peer,
             payload,
@@ -49,7 +144,7 @@ impl Node {
                     .forwarding
                     .record_decode_error(payload.len());
                 debug!(error = %e, "Malformed SessionDatagram");
-                return;
+                return None;
             }
         };
 
@@ -64,7 +159,7 @@ impl Node {
                 dest = %datagram_ref.dest_addr,
                 "SessionDatagram TTL exhausted, dropping"
             );
-            return;
+            return None;
         }
         let new_ttl = datagram_ref.ttl - 1;
 
@@ -82,7 +177,7 @@ impl Node {
                 datagram_ref.payload,
             ))
             .await;
-            return;
+            return None;
         }
 
         // Find next hop toward destination. Transit forwarding must not send
@@ -104,7 +199,7 @@ impl Node {
                 let datagram =
                     owned_session_datagram_from_ref(&datagram_ref, new_ttl, datagram_ref.path_mtu);
                 self.send_routing_error(&datagram).await;
-                return;
+                return None;
             }
         };
 
@@ -148,38 +243,59 @@ impl Node {
             }
         }
 
-        // Forward: re-encode from the borrowed datagram view (includes 0x00
-        // type byte) and send. Keep the owned `SessionDatagram` allocation on
-        // rare error paths only.
+        // Re-encode from the borrowed datagram view (includes 0x00 type byte).
+        // The caller preserves runs of these owned buffers through outbound
+        // admission, sealing, and transport batching.
         let encoded = encode_forwarded_session_datagram(&datagram_ref, new_ttl, path_mtu);
-        if let Err(e) = self
-            .send_dataplane_fmp_link_plaintext(&next_hop_addr, &encoded, outgoing_ce)
-            .await
-        {
-            self.record_route_failure(datagram_ref.dest_addr, next_hop_addr);
+        Some(PreparedSessionForward {
+            next_hop_addr,
+            src_addr: datagram_ref.src_addr,
+            dest_addr: datagram_ref.dest_addr,
+            outgoing_ce,
+            received_len: payload.len(),
+            encoded_len: encoded.len(),
+            encoded,
+        })
+    }
+
+    async fn finish_prepared_session_forward(
+        &mut self,
+        forward: PreparedSessionForward,
+        result: Result<(), NodeError>,
+    ) {
+        let PreparedSessionForward {
+            next_hop_addr,
+            src_addr,
+            dest_addr,
+            outgoing_ce,
+            received_len,
+            encoded_len,
+            encoded: _,
+        } = forward;
+        if let Err(e) = result {
+            self.record_route_failure(dest_addr, next_hop_addr);
             match e {
                 NodeError::MtuExceeded { mtu, .. } => {
                     self.stats_mut()
                         .forwarding
-                        .record_drop_mtu_exceeded(payload.len());
-                    let datagram =
-                        owned_session_datagram_from_ref(&datagram_ref, new_ttl, path_mtu);
+                        .record_drop_mtu_exceeded(received_len);
+                    let datagram = SessionDatagram::new(src_addr, dest_addr, Vec::new());
                     self.send_mtu_exceeded_error(&datagram, mtu).await;
                 }
                 _ => {
                     self.stats_mut()
                         .forwarding
-                        .record_drop_send_error(payload.len());
+                        .record_drop_send_error(received_len);
                     debug!(
                         next_hop = %next_hop_addr,
-                        dest = %datagram_ref.dest_addr,
+                        dest = %dest_addr,
                         error = %e,
                         "Failed to forward SessionDatagram"
                     );
                 }
             }
         } else {
-            self.stats_mut().forwarding.record_forwarded(encoded.len());
+            self.stats_mut().forwarding.record_forwarded(encoded_len);
             if outgoing_ce {
                 self.stats_mut().congestion.record_ce_forwarded();
             }
