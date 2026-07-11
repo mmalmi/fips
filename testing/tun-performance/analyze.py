@@ -84,6 +84,33 @@ def iperf_summary(path: Path) -> dict:
     }
 
 
+def udp_gso_summary(sender_path: Path, receiver_path: Path) -> dict:
+    sent = json.loads(sender_path.read_text())
+    received = json.loads(receiver_path.read_text())
+    sent_datagrams = int(sent.get("sent_datagrams", 0))
+    received_datagrams = int(received.get("received_datagrams", 0))
+    delivered_bytes = int(received.get("delivered_bytes", 0))
+    elapsed = float(sent.get("elapsed_seconds", 0))
+    lost = max(0, sent_datagrams - received_datagrams)
+    return {
+        "throughput_mbps": delivered_bytes * 8 / elapsed / 1_000_000 if elapsed else 0,
+        "delivered_bytes": delivered_bytes,
+        "seconds": elapsed or None,
+        "loss_percent": 100 * lost / sent_datagrams if sent_datagrams else None,
+        "jitter_ms": None,
+        "retransmits": None,
+        "udp_segment_supported": sent.get("udp_segment_supported"),
+        "sent_datagrams": sent_datagrams,
+        "received_datagrams": received_datagrams,
+        "lost_datagrams": lost,
+        "send_syscalls": sent.get("send_syscalls"),
+        "datagrams_per_send_syscall": sent.get("datagrams_per_syscall"),
+        "highest_received_sequence": received.get("highest_sequence"),
+        "out_of_order_or_duplicate": received.get("out_of_order_or_duplicate"),
+        "malformed_datagrams": received.get("malformed_datagrams"),
+    }
+
+
 def forwarding_value(path: Path, key: str) -> int | None:
     if not path.exists():
         return None
@@ -118,15 +145,19 @@ def main() -> None:
     }
     for case in manifest["cases"]:
         name = case["name"]
-        iperf = iperf_summary(root / f"{name}.iperf.json")
+        traffic = (
+            udp_gso_summary(root / f"{name}.sender.json", root / f"{name}.receiver.json")
+            if case["protocol"] == "udp-gso"
+            else iperf_summary(root / f"{name}.iperf.json")
+        )
         cpu_a = float((root / f"{name}.a.cpu-seconds").read_text().strip())
         cpu_b = float((root / f"{name}.b.cpu-seconds").read_text().strip())
-        delivered_gbit = iperf["delivered_bytes"] * 8 / 1_000_000_000
+        delivered_gbit = traffic["delivered_bytes"] * 8 / 1_000_000_000
         per_gbit = lambda value: value / delivered_gbit if delivered_gbit else None
         summary["cases"].append(
             {
                 **case,
-                **iperf,
+                **traffic,
                 "latency": ping_summary(root / f"{name}.ping"),
                 "cpu_seconds": {"a": cpu_a, "b": cpu_b, "combined": cpu_a + cpu_b},
                 "cpu_seconds_per_gbit": {

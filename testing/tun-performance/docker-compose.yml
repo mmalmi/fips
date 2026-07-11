@@ -17,6 +17,8 @@ x-fips-node: &fips-node
 x-loadgen: &loadgen
   image: fips-test:latest
   entrypoint: ["sleep", "infinity"]
+  volumes:
+    - ./udp_gso.py:/opt/fips-bench/udp_gso.py:ro
   restart: "no"
 
 services:

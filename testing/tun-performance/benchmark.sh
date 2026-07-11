@@ -11,7 +11,9 @@ COMPOSE=(docker compose -f "$SCRIPT_DIR/docker-compose.yml")
 DURATION="${FIPS_TUN_DURATION:-10}"
 TCP_STREAMS="${FIPS_TUN_TCP_STREAMS:-1 4 8}"
 UDP_RATES="${FIPS_TUN_UDP_RATES:-100M 250M 500M 1G 2G 5G 10G}"
+UDP_GSO_RATES="${FIPS_TUN_UDP_GSO_RATES:-2G}"
 UDP_LENGTH="${FIPS_TUN_UDP_LENGTH:-1100}"
+UDP_GSO_SEGMENTS="${FIPS_TUN_UDP_GSO_SEGMENTS:-32}"
 PING_INTERVAL="${FIPS_TUN_PING_INTERVAL:-0.01}"
 IDLE_PINGS="${FIPS_TUN_IDLE_PINGS:-500}"
 PERF=0
@@ -40,6 +42,7 @@ if [ "$QUICK" -eq 1 ]; then
     DURATION=5
     TCP_STREAMS="4"
     UDP_RATES="500M"
+    UDP_GSO_RATES="500M"
     IDLE_PINGS=200
 fi
 
@@ -155,12 +158,64 @@ run_case() {
         >"$RESULT_DIR/$name.b.pipe.log" || true
 }
 
+run_udp_gso_case() {
+    local name="$1"
+    local rate="$2"
+    local ping_pid receiver_pid a_start a_end b_start b_end a_log_lines b_log_lines
+
+    printf '{"name":"%s","protocol":"udp-gso","offered_rate":"%s","segment_bytes":%s,"segments_per_send":%s}\n' \
+        "$name" "$rate" "$UDP_LENGTH" "$UDP_GSO_SEGMENTS" >>"$CASE_FILE"
+    echo "running $name with Linux UDP_SEGMENT..."
+    a_log_lines=$(docker logs fips-tun-a 2>&1 | wc -l | tr -d ' ')
+    b_log_lines=$(docker logs fips-tun-b 2>&1 | wc -l | tr -d ' ')
+    docker exec fips-tun-load-b python3 /opt/fips-bench/udp_gso.py receive \
+        --duration "$((DURATION + 3))" >"$RESULT_DIR/$name.receiver.json" \
+        2>"$RESULT_DIR/$name.receiver.stderr" &
+    receiver_pid=$!
+    docker exec fips-tun-load-a ping -6 -n -i "$PING_INTERVAL" -w "$((DURATION + 2))" "$DEST" \
+        >"$RESULT_DIR/$name.ping" 2>&1 &
+    ping_pid=$!
+    sleep 1
+    a_start=$(cpu_usage_ns fips-tun-a)
+    b_start=$(cpu_usage_ns fips-tun-b)
+    if ! docker exec fips-tun-load-a python3 /opt/fips-bench/udp_gso.py send "$DEST" \
+        --duration "$DURATION" --rate "$rate" --segment-size "$UDP_LENGTH" \
+        --segments "$UDP_GSO_SEGMENTS" >"$RESULT_DIR/$name.sender.json" \
+        2>"$RESULT_DIR/$name.sender.stderr"; then
+        echo "warning: $name UDP_SEGMENT sender failed or is unsupported" >&2
+        FAILED=1
+    fi
+    # Include the short pipeline drain after the final aggregate send.
+    sleep 0.1
+    a_end=$(cpu_usage_ns fips-tun-a)
+    b_end=$(cpu_usage_ns fips-tun-b)
+    wait "$ping_pid" || true
+    if ! wait "$receiver_pid"; then
+        echo "warning: $name receiver failed" >&2
+        FAILED=1
+    fi
+    sleep 1
+
+    awk -v start="$a_start" -v end="$a_end" \
+        'BEGIN { printf "%.9f\n", (end - start) / 1000000000 }' >"$RESULT_DIR/$name.a.cpu-seconds"
+    awk -v start="$b_start" -v end="$b_end" \
+        'BEGIN { printf "%.9f\n", (end - start) / 1000000000 }' >"$RESULT_DIR/$name.b.cpu-seconds"
+    docker logs fips-tun-a 2>&1 | tail -n "+$((a_log_lines + 1))" | grep '^\[pipe ' \
+        >"$RESULT_DIR/$name.a.pipe.log" || true
+    docker logs fips-tun-b 2>&1 | tail -n "+$((b_log_lines + 1))" | grep '^\[pipe ' \
+        >"$RESULT_DIR/$name.b.pipe.log" || true
+}
+
 for streams in $TCP_STREAMS; do
     run_case "tcp-$streams" tcp "$streams"
 done
 for rate in $UDP_RATES; do
     name_rate=$(printf '%s' "$rate" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-')
     run_case "udp-${name_rate%-}" udp "$rate"
+done
+for rate in $UDP_GSO_RATES; do
+    name_rate=$(printf '%s' "$rate" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-')
+    run_udp_gso_case "udp-gso-${name_rate%-}" "$rate"
 done
 
 docker exec fips-tun-a fipsctl show routing >"$RESULT_DIR/a-after.json"
