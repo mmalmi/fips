@@ -248,10 +248,8 @@ impl Node {
                     activity_tick,
                 ) {
                     Ok((packet, send_token)) => {
-                        let inserted = self
-                            .deferred_session_forwards
+                        self.deferred_session_forwards
                             .insert(send_token, forward, lane);
-                        debug_assert!(inserted, "forwarding capacity changed without an await");
                         outbound.push(packet);
                     }
                     Err(error) => self

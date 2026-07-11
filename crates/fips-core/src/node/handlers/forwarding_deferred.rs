@@ -63,14 +63,11 @@ impl ForwardingInFlightWindow {
             && self.sources.get(&source).copied().unwrap_or_default().get(lane) < source_limit
     }
 
-    fn reserve(&mut self, owner: NodeAddr, source: NodeAddr, lane: ForwardingLane) -> bool {
-        if !self.has_capacity(owner, source, lane) {
-            return false;
-        }
+    fn reserve(&mut self, owner: NodeAddr, source: NodeAddr, lane: ForwardingLane) {
+        debug_assert!(self.has_capacity(owner, source, lane));
         self.global.increment(lane);
         self.owners.entry(owner).or_default().increment(lane);
         self.sources.entry(source).or_default().increment(lane);
-        true
     }
 
     fn release(&mut self, owner: NodeAddr, source: NodeAddr, lane: ForwardingLane) {
@@ -121,18 +118,13 @@ impl DeferredSessionForwards {
         send_token: u64,
         forward: PreparedSessionForward,
         lane: ForwardingLane,
-    ) -> bool {
-        if !self
-            .window
-            .reserve(forward.next_hop_addr, forward.src_addr, lane)
-        {
-            return false;
-        }
+    ) {
+        self.window
+            .reserve(forward.next_hop_addr, forward.src_addr, lane);
         let replaced = self
             .pending
             .insert(send_token, PendingSessionForward { forward, lane });
         debug_assert!(replaced.is_none(), "forwarding send tokens must be unique");
-        true
     }
 
     fn take_pending(&mut self, send_token: u64) -> Option<PreparedSessionForward> {
