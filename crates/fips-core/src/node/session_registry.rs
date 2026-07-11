@@ -55,12 +55,12 @@ impl<'a> IntoIterator for &'a SessionRegistry {
 
 /// Configured peer lookup cache derived from the peer roster.
 #[derive(Debug, Default)]
-pub(in crate::node) struct ConfiguredPeerSendWeights {
+pub(in crate::node) struct ConfiguredPeerLookup {
     peer_configs: HashMap<NodeAddr, PeerConfig>,
     peer_addrs_by_npub: HashMap<String, NodeAddr>,
 }
 
-impl ConfiguredPeerSendWeights {
+impl ConfiguredPeerLookup {
     pub(in crate::node) fn from_config(config: &Config) -> Self {
         let mut peer_configs = HashMap::with_capacity(config.peers().len());
         let mut peer_addrs_by_npub = HashMap::with_capacity(config.peers().len());

@@ -237,8 +237,7 @@ fn test_stale_discovered_direct_session_trust_without_fallback_queues_payload() 
         auto_reconnect: true,
         discovery_fallback_transit: true,
     });
-    node.configured_peer_send_weights =
-        crate::node::ConfiguredPeerSendWeights::from_config(&node.config);
+    node.configured_peers = crate::node::ConfiguredPeerLookup::from_config(&node.config);
     add_direct_peer_for_identity(&mut node, &remote);
     node.peers
         .get_mut(&remote_addr)
@@ -665,8 +664,7 @@ async fn test_stale_direct_session_trust_does_not_reprobe_healthy_link() {
         auto_reconnect: true,
         discovery_fallback_transit: true,
     });
-    node.configured_peer_send_weights =
-        crate::node::ConfiguredPeerSendWeights::from_config(&node.config);
+    node.configured_peers = crate::node::ConfiguredPeerLookup::from_config(&node.config);
     add_direct_peer_for_identity(&mut node, &remote);
     install_established_session_with_mmp(&mut node, &remote);
     node.learn_reverse_route(remote_addr, fallback_next_hop);

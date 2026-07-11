@@ -153,7 +153,7 @@ impl Node {
         &self,
         peer_config: &PeerConfig,
     ) -> bool {
-        self.configured_peer_send_weights
+        self.configured_peers
             .peer_addr_for_npub(&peer_config.npub)
             .is_some()
     }
@@ -355,7 +355,7 @@ impl Node {
     pub(in crate::node) fn queue_active_fallback_direct_retries(&mut self) {
         let now_ms = Self::now_ms();
         let peer_configs = self
-            .configured_peer_send_weights
+            .configured_peers
             .auto_connect_peer_configs()
             .map(|(node_addr, peer_config)| (*node_addr, peer_config.clone()))
             .collect::<Vec<_>>();

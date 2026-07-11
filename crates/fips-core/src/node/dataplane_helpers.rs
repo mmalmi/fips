@@ -257,7 +257,7 @@ mod tests {
                 crate::config::PeerAddress::new("udp", "peer-two.local:7301"),
             ),
         ];
-        node.configured_peer_send_weights = ConfiguredPeerSendWeights::from_config(&node.config);
+        node.configured_peers = ConfiguredPeerLookup::from_config(&node.config);
 
         let sources = node.dataplane_direct_fsp_sources();
         let sources = sources.get(&transport_id).expect("UDP source map");

@@ -818,7 +818,7 @@ impl Node {
     }
 
     pub(crate) fn configured_peer(&self, peer_addr: &NodeAddr) -> Option<&PeerConfig> {
-        self.configured_peer_send_weights.peer_config(peer_addr)
+        self.configured_peers.peer_config(peer_addr)
     }
 
     pub(in crate::node) fn active_peer_uses_configured_static_udp_path(

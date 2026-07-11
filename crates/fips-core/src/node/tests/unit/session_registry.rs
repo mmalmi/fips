@@ -55,7 +55,7 @@ fn session_registry_owns_endpoint_session_storage() {
 }
 
 #[test]
-fn configured_peer_send_weights_own_identity_parse_and_default_policy() {
+fn configured_peers_own_identity_parse_and_default_policy() {
     let configured = Identity::generate();
     let configured_npub = configured.npub();
     let configured_addr = *PeerIdentity::from_npub(&configured_npub)
@@ -82,24 +82,24 @@ fn configured_peer_send_weights_own_identity_parse_and_default_policy() {
         "127.0.0.1:2",
     ));
 
-    let weights = ConfiguredPeerSendWeights::from_config(&config);
+    let peers = ConfiguredPeerLookup::from_config(&config);
 
     assert_eq!(
-        weights.peer_addr_for_npub(&configured_npub),
+        peers.peer_addr_for_npub(&configured_npub),
         Some(configured_addr),
         "configured peer npubs are parsed once into a reverse address lookup"
     );
     assert_eq!(
-        weights.peer_addr_for_npub(&on_demand_npub),
+        peers.peer_addr_for_npub(&on_demand_npub),
         Some(on_demand_addr),
         "non-auto configured peers should still be addressable by npub"
     );
     assert!(
-        weights.peer_addr_for_npub("not-a-valid-peer-id").is_none(),
+        peers.peer_addr_for_npub("not-a-valid-peer-id").is_none(),
         "invalid peer identities must not create phantom scheduling policy"
     );
     assert_eq!(
-        weights
+        peers
             .peer_config(&configured_addr)
             .expect("configured peer metadata")
             .addresses[0]
@@ -107,7 +107,7 @@ fn configured_peer_send_weights_own_identity_parse_and_default_policy() {
         "127.0.0.1:1",
         "configured peer metadata is parsed once into the runtime lookup cache"
     );
-    let auto_connect_addrs = weights
+    let auto_connect_addrs = peers
         .auto_connect_peer_configs()
         .map(|(addr, _)| *addr)
         .collect::<Vec<_>>();
@@ -117,7 +117,7 @@ fn configured_peer_send_weights_own_identity_parse_and_default_policy() {
         "runtime auto-connect iteration must preserve Config::auto_connect_peers semantics"
     );
     assert!(
-        weights
+        peers
             .peer_config(
                 PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full()).node_addr()
             )
