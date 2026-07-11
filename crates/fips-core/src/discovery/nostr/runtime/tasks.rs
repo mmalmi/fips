@@ -2,15 +2,34 @@ use super::*;
 
 impl NostrDiscovery {
     pub async fn shutdown(&self) -> Result<(), BootstrapError> {
-        if let Some(handle) = self.advertise_task.lock().await.take() {
-            handle.abort();
+        self.shutting_down.store(true, Ordering::Release);
+
+        let tasks = [
+            self.advertise_task.lock().await.take(),
+            self.relay_task.lock().await.take(),
+            self.publish_task.lock().await.take(),
+            self.notify_task.lock().await.take(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        for task in &tasks {
+            task.abort();
         }
-        if let Some(handle) = self.relay_task.lock().await.take() {
-            handle.abort();
+        for task in tasks {
+            let _ = task.await;
         }
-        if let Some(handle) = self.publish_task.lock().await.take() {
-            handle.abort();
+
+        let tasks = std::mem::take(&mut *self.child_tasks.lock().await);
+        for task in &tasks {
+            task.abort();
         }
+        for task in tasks {
+            let _ = task.await;
+        }
+        self.pending_answers.lock().await.clear();
+        self.active_initiators.lock().await.clear();
+        self.active_refetches.lock().await.clear();
 
         // Don't proactively retract the advert via NIP-09 on shutdown.
         // Parameterized-replaceable semantics handle restart supersedence,
@@ -20,11 +39,22 @@ impl NostrDiscovery {
         // burst, leaving the advert deleted and never restored).
         let _ = self.current_advert_event_id.write().await.take();
 
-        if let Some(handle) = self.notify_task.lock().await.take() {
-            handle.abort();
-        }
+        self.client.shutdown().await;
 
         Ok(())
+    }
+
+    pub(super) async fn spawn_child_task(
+        &self,
+        task: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> bool {
+        let mut tasks = self.child_tasks.lock().await;
+        tasks.retain(|task| !task.is_finished());
+        if self.shutting_down.load(Ordering::Acquire) {
+            return false;
+        }
+        tasks.push(tokio::spawn(task));
+        true
     }
 
     pub(super) fn spawn_advertise_loop(self: Arc<Self>) -> JoinHandle<()> {

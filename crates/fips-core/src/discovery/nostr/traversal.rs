@@ -1,5 +1,5 @@
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tokio::net::UdpSocket;
@@ -297,50 +297,51 @@ async fn run_punch_attempt_once(
         return Err(BootstrapError::Protocol("no-punch-targets".to_string()));
     }
 
-    let udp = Arc::new(UdpSocket::from_std(socket.try_clone()?)?);
+    let udp = UdpSocket::from_std(socket.try_clone()?)?;
     let started_at = tokio::time::Instant::now();
     let finish_at = started_at + timeout;
     let delay = Duration::from_millis(punch.start_at_ms.saturating_sub(now_ms()));
-    let send_socket = Arc::clone(&udp);
-    let send_targets = targets.to_vec();
-    let send_session = session_id.to_string();
-    let send_handle = tokio::spawn(async move {
+    let send = async {
         tokio::time::sleep(delay).await;
         let end = Instant::now() + Duration::from_millis(punch.duration_ms.max(1));
         let mut sequence = 0u32;
         while Instant::now() < end {
-            let packet = build_punch_packet(PunchPacketKind::Probe, sequence, &send_session);
-            for target in &send_targets {
-                let _ = send_socket.send_to(&packet, target).await;
+            let packet = build_punch_packet(PunchPacketKind::Probe, sequence, session_id);
+            for target in targets {
+                let _ = udp.send_to(&packet, target).await;
             }
             sequence = sequence.wrapping_add(1);
             tokio::time::sleep(Duration::from_millis(punch.interval_ms.max(20))).await;
         }
-    });
+    };
 
     let expected_hash = session_hash(session_id);
-    let mut buf = [0u8; 2048];
-    let result = loop {
-        let recv = tokio::time::timeout_at(finish_at, udp.recv_from(&mut buf)).await;
-        let Ok(Ok((len, remote))) = recv else {
-            break Err(BootstrapError::PunchTimeout(session_id.to_string()));
-        };
-        let Ok(packet) = parse_punch_packet(&buf[..len]) else {
-            continue;
-        };
-        if packet.session_hash != expected_hash {
-            continue;
+    let receive = async {
+        let mut buf = [0u8; 2048];
+        loop {
+            let recv = tokio::time::timeout_at(finish_at, udp.recv_from(&mut buf)).await;
+            let Ok(Ok((len, remote))) = recv else {
+                break Err(BootstrapError::PunchTimeout(session_id.to_string()));
+            };
+            let Ok(packet) = parse_punch_packet(&buf[..len]) else {
+                continue;
+            };
+            if packet.session_hash != expected_hash {
+                continue;
+            }
+            if packet.kind == PunchPacketKind::Probe {
+                let ack = build_punch_packet(PunchPacketKind::Ack, packet.sequence, session_id);
+                let _ = udp.send_to(&ack, remote).await;
+            }
+            break Ok(remote);
         }
-        if packet.kind == PunchPacketKind::Probe {
-            let ack = build_punch_packet(PunchPacketKind::Ack, packet.sequence, session_id);
-            let _ = udp.send_to(&ack, remote).await;
-        }
-        break Ok(remote);
     };
-    if result.is_err() {
-        send_handle.abort();
+
+    tokio::pin!(send, receive);
+    tokio::select! {
+        result = &mut receive => result,
+        () = &mut send => receive.await,
     }
-    result
 }
 
 pub(super) fn nonce() -> String {

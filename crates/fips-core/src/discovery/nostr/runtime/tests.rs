@@ -77,6 +77,42 @@ fn signal_answer_wait_is_bounded_by_attempt_timeout() {
     assert_eq!(signal_answer_timeout(&config), Duration::from_secs(5));
 }
 
+#[tokio::test]
+async fn shutdown_awaits_tasks_and_clears_pending_answers() {
+    let discovery = Arc::new(NostrDiscovery::new_for_test());
+    let top_task_hold = Arc::new(());
+    let top_task_capture = Arc::clone(&top_task_hold);
+    *discovery.notify_task.lock().await = Some(tokio::spawn(async move {
+        std::future::pending::<()>().await;
+        drop(top_task_capture);
+    }));
+
+    let child_task_hold = Arc::new(());
+    let child_task_capture = Arc::clone(&child_task_hold);
+    assert!(
+        discovery
+            .spawn_child_task(async move {
+                std::future::pending::<()>().await;
+                drop(child_task_capture);
+            })
+            .await
+    );
+
+    let (answer_tx, answer_rx) = oneshot::channel::<SignalEnvelope<TraversalAnswer>>();
+    discovery
+        .pending_answers
+        .lock()
+        .await
+        .insert("pending".to_string(), answer_tx);
+
+    discovery.shutdown().await.expect("shutdown");
+
+    assert_eq!(Arc::strong_count(&top_task_hold), 1);
+    assert_eq!(Arc::strong_count(&child_task_hold), 1);
+    assert!(answer_rx.await.is_err());
+    assert!(discovery.child_tasks.lock().await.is_empty());
+}
+
 #[test]
 fn mesh_signaled_initiators_use_direct_refresh_admission() {
     let discovery = NostrDiscovery::new_for_test();

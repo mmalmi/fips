@@ -284,6 +284,8 @@ pub struct NostrDiscovery {
     publish_notify: Notify,
     notify_task: Mutex<Option<JoinHandle<()>>>,
     advertise_task: Mutex<Option<JoinHandle<()>>>,
+    child_tasks: Mutex<Vec<JoinHandle<()>>>,
+    shutting_down: AtomicBool,
     failure_state: FailureState,
     /// STUN-derived public address per advert-eligible UDP transport
     /// (keyed by `TransportId.as_u32()`). Populated on demand by
@@ -393,6 +395,8 @@ impl NostrDiscovery {
             publish_notify: Notify::new(),
             notify_task: Mutex::new(None),
             advertise_task: Mutex::new(None),
+            child_tasks: Mutex::new(Vec::new()),
+            shutting_down: AtomicBool::new(false),
             failure_state,
             public_udp_addr_cache: RwLock::new(HashMap::new()),
             outbound_admission: AtomicBool::new(true),

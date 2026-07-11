@@ -100,7 +100,7 @@ impl NostrDiscovery {
                             continue;
                         };
                         let runtime = Arc::clone(&self);
-                        tokio::spawn(async move {
+                        self.spawn_child_task(async move {
                             let _permit = permit;
                             if let Err(err) = runtime
                                 .handle_incoming_offer(offer, unwrapped.sender, sender_npub)
@@ -108,7 +108,8 @@ impl NostrDiscovery {
                             {
                                 debug!(error = %err, "failed to handle traversal offer");
                             }
-                        });
+                        })
+                        .await;
                     }
                 }
             }

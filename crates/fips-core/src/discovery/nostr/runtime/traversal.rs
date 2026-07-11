@@ -21,22 +21,30 @@ impl NostrDiscovery {
         }
 
         let runtime = Arc::clone(self);
-        tokio::spawn(async move {
-            let event = match runtime
-                .connect_peer(peer_config.clone(), mesh_signaling_allowed)
-                .await
-            {
-                Ok(traversal) => BootstrapEvent::Established { traversal },
-                Err(err) => BootstrapEvent::Failed {
-                    peer_config,
-                    reason: err.to_string(),
-                },
-            };
-            runtime.emit_event(event).await;
+        if !self
+            .spawn_child_task(async move {
+                let event = match runtime
+                    .connect_peer(peer_config.clone(), mesh_signaling_allowed)
+                    .await
+                {
+                    Ok(traversal) => BootstrapEvent::Established { traversal },
+                    Err(err) => BootstrapEvent::Failed {
+                        peer_config,
+                        reason: err.to_string(),
+                    },
+                };
+                runtime.emit_event(event).await;
+                if let Some(peer_key) = peer_key {
+                    runtime.active_initiators.lock().await.remove(&peer_key);
+                }
+            })
+            .await
+        {
             if let Some(peer_key) = peer_key {
-                runtime.active_initiators.lock().await.remove(&peer_key);
+                self.active_initiators.lock().await.remove(&peer_key);
             }
-        });
+            return false;
+        }
         true
     }
 
@@ -368,12 +376,13 @@ impl NostrDiscovery {
         };
 
         let runtime = Arc::clone(self);
-        tokio::spawn(async move {
+        self.spawn_child_task(async move {
             let _permit = permit;
             if let Err(err) = runtime.handle_incoming_mesh_offer(offer, sender_npub).await {
                 debug!(error = %err, "failed to handle mesh traversal offer");
             }
-        });
+        })
+        .await;
     }
 
     async fn handle_incoming_mesh_offer(
@@ -465,7 +474,7 @@ impl NostrDiscovery {
             let answer_for_nostr = answer.clone();
             let sender_for_nostr = sender_npub.clone();
             let peer_short_for_nostr = peer_short.clone();
-            tokio::spawn(async move {
+            self.spawn_child_task(async move {
                 let sender = match PublicKey::parse(&sender_for_nostr) {
                     Ok(sender) => sender,
                     Err(error) => {
@@ -511,7 +520,8 @@ impl NostrDiscovery {
                         );
                     }
                 }
-            });
+            })
+            .await;
         }
         if !accepted {
             return Ok(());

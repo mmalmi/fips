@@ -10,8 +10,8 @@ use super::stun::{
     compatible_stun_targets, parse_stun_binding_success, parse_stun_url, perform_stun_any,
 };
 use super::traversal::{
-    PunchStrategy, build_punch_packet, parse_punch_packet, plan_punch_targets,
-    planned_remote_endpoints, session_hash,
+    PunchStrategy, build_punch_packet, now_ms, parse_punch_packet, plan_punch_targets,
+    planned_remote_endpoints, run_punch_attempt, session_hash,
 };
 use super::types::TraversalAddressObservation;
 use super::{
@@ -447,6 +447,65 @@ fn builds_and_parses_probe_packets() {
     assert_eq!(parsed.kind, PunchPacketKind::Probe);
     assert_eq!(parsed.sequence, 7);
     assert_eq!(parsed.session_hash, session_hash("sess-1"));
+}
+
+#[tokio::test]
+async fn successful_punch_stops_delayed_probe_sender() {
+    let local = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind local socket");
+    local
+        .set_nonblocking(true)
+        .expect("tokio requires nonblocking socket");
+    let local_addr = local.local_addr().expect("local addr");
+    let remote = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind remote socket");
+    let remote_addr = remote.local_addr().expect("remote addr");
+    let session = "successful-punch";
+
+    remote
+        .send_to(
+            &build_punch_packet(PunchPacketKind::Probe, 7, session),
+            local_addr,
+        )
+        .await
+        .expect("send peer probe");
+    let observed = run_punch_attempt(
+        &local,
+        session,
+        &[remote_addr],
+        PunchHint {
+            start_at_ms: now_ms() + 60,
+            interval_ms: 20,
+            duration_ms: 1_000,
+        },
+        std::time::Duration::from_millis(500),
+        0,
+    )
+    .await
+    .expect("peer probe should complete punch");
+    assert_eq!(observed, remote_addr);
+
+    let mut buf = [0u8; 2048];
+    let (len, _) = tokio::time::timeout(
+        std::time::Duration::from_millis(50),
+        remote.recv_from(&mut buf),
+    )
+    .await
+    .expect("ack timeout")
+    .expect("receive ack");
+    assert_eq!(
+        parse_punch_packet(&buf[..len]).expect("valid ack").kind,
+        PunchPacketKind::Ack
+    );
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(120),
+            remote.recv_from(&mut buf),
+        )
+        .await
+        .is_err(),
+        "probe sender outlived the successful local attempt"
+    );
 }
 
 #[test]

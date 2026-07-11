@@ -291,28 +291,34 @@ impl NostrDiscovery {
         }
 
         let runtime = Arc::clone(self);
-        tokio::spawn(async move {
-            let outcome = runtime.refetch_advert_for_stale_check(&peer_npub).await;
-            match outcome {
-                NostrRefetchOutcome::Evicted => info!(
-                    npub = %peer_npub,
-                    "stale-advert sweep: peer evicted from advert cache"
-                ),
-                NostrRefetchOutcome::Refreshed => info!(
-                    npub = %peer_npub,
-                    "stale-advert sweep: peer republished, cache refreshed and streak reset"
-                ),
-                NostrRefetchOutcome::SameAdvert => debug!(
-                    npub = %peer_npub,
-                    "stale-advert sweep: relay still has same advert"
-                ),
-                NostrRefetchOutcome::Skipped => debug!(
-                    npub = %peer_npub,
-                    "stale-advert sweep: skipped"
-                ),
-            }
-            runtime.active_refetches.lock().await.remove(&peer_key);
-        });
+        if !self
+            .spawn_child_task(async move {
+                let outcome = runtime.refetch_advert_for_stale_check(&peer_npub).await;
+                match outcome {
+                    NostrRefetchOutcome::Evicted => info!(
+                        npub = %peer_npub,
+                        "stale-advert sweep: peer evicted from advert cache"
+                    ),
+                    NostrRefetchOutcome::Refreshed => info!(
+                        npub = %peer_npub,
+                        "stale-advert sweep: peer republished, cache refreshed and streak reset"
+                    ),
+                    NostrRefetchOutcome::SameAdvert => debug!(
+                        npub = %peer_npub,
+                        "stale-advert sweep: relay still has same advert"
+                    ),
+                    NostrRefetchOutcome::Skipped => debug!(
+                        npub = %peer_npub,
+                        "stale-advert sweep: skipped"
+                    ),
+                }
+                runtime.active_refetches.lock().await.remove(&peer_key);
+            })
+            .await
+        {
+            self.active_refetches.lock().await.remove(&peer_key);
+            return false;
+        }
         true
     }
 

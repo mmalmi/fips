@@ -64,6 +64,8 @@ impl NostrDiscovery {
             publish_notify: Notify::new(),
             notify_task: Mutex::new(None),
             advertise_task: Mutex::new(None),
+            child_tasks: Mutex::new(Vec::new()),
+            shutting_down: AtomicBool::new(false),
             failure_state,
             public_udp_addr_cache: RwLock::new(HashMap::new()),
             outbound_admission: AtomicBool::new(true),
