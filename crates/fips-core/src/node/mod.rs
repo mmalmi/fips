@@ -58,7 +58,7 @@ pub(crate) use endpoint_event::{
 pub use endpoint_event::{
     FIPS_ENDPOINT_DIRECT_PACKET_QUEUE_MAX_PACKETS, FIPS_ENDPOINT_DIRECT_PACKET_RUN_MAX_PACKETS,
     FipsEndpointDirectDeliveryError, FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun,
-    FipsEndpointDirectSink,
+    FipsEndpointDirectReceiver, FipsEndpointDirectSink,
 };
 pub(in crate::node) use endpoint_service::EndpointServiceRuntime;
 pub(crate) use endpoint_service::{
@@ -113,7 +113,7 @@ use rand::Rng;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
-use std::sync::{Arc, Condvar, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::thread::JoinHandle;
 use thiserror::Error;
 use tracing::{debug, warn};

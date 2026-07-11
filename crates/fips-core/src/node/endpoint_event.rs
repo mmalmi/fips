@@ -1,6 +1,8 @@
 use super::*;
 use crate::transport::PacketBuffer;
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 /// Maximum endpoint packets in one authenticated direct packet run.
 pub const FIPS_ENDPOINT_DIRECT_PACKET_RUN_MAX_PACKETS: usize = 128;
@@ -266,6 +268,166 @@ impl EndpointDirectSink {
     ) -> Result<(), FipsEndpointDirectDeliveryError> {
         self.sink.deliver_endpoint_packet_batch(batch)
     }
+}
+
+struct FipsEndpointDirectReceiverSink {
+    shared: Arc<FipsEndpointDirectReceiverShared>,
+}
+
+/// Blocking bounded receiver for authenticated direct endpoint packet runs.
+#[derive(Debug)]
+pub struct FipsEndpointDirectReceiver {
+    shared: Arc<FipsEndpointDirectReceiverShared>,
+}
+
+#[derive(Debug)]
+struct FipsEndpointDirectReceiverShared {
+    state: Mutex<FipsEndpointDirectReceiverState>,
+    ready: Condvar,
+}
+
+#[derive(Debug, Default)]
+struct FipsEndpointDirectReceiverState {
+    runs: VecDeque<FipsEndpointDirectPacketRun>,
+    packets: usize,
+    interrupted: bool,
+}
+
+impl FipsEndpointDirectReceiver {
+    pub(crate) fn channel() -> (impl FipsEndpointDirectSink, Self) {
+        let shared = Arc::new(FipsEndpointDirectReceiverShared {
+            state: Mutex::new(FipsEndpointDirectReceiverState::default()),
+            ready: Condvar::new(),
+        });
+        (
+            FipsEndpointDirectReceiverSink {
+                shared: Arc::clone(&shared),
+            },
+            Self { shared },
+        )
+    }
+
+    /// Wait for a source-contiguous packet run batch bounded by `packet_limit`.
+    pub fn recv_timeout(
+        &self,
+        timeout: Duration,
+        packet_limit: usize,
+    ) -> Result<Vec<FipsEndpointDirectPacketRun>, std::sync::mpsc::RecvTimeoutError> {
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected)?;
+        if state.runs.is_empty() {
+            let (next, wait) = self
+                .shared
+                .ready
+                .wait_timeout_while(state, timeout, |state| {
+                    state.runs.is_empty() && !state.interrupted
+                })
+                .map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected)?;
+            state = next;
+            let interrupted = std::mem::take(&mut state.interrupted);
+            if state.runs.is_empty() && (interrupted || wait.timed_out()) {
+                return Err(std::sync::mpsc::RecvTimeoutError::Timeout);
+            }
+        }
+        take_direct_source_runs(&mut state, packet_limit)
+            .ok_or(std::sync::mpsc::RecvTimeoutError::Timeout)
+    }
+
+    /// Receive a ready source-contiguous packet run batch without blocking.
+    pub fn try_recv(
+        &self,
+        packet_limit: usize,
+    ) -> Result<Vec<FipsEndpointDirectPacketRun>, std::sync::mpsc::TryRecvError> {
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .map_err(|_| std::sync::mpsc::TryRecvError::Disconnected)?;
+        let limit = direct_receiver_packet_limit(packet_limit);
+        if state.runs.front().is_some_and(|run| run.len() > limit) {
+            return Err(std::sync::mpsc::TryRecvError::Empty);
+        }
+        take_direct_source_runs(&mut state, limit).ok_or(std::sync::mpsc::TryRecvError::Empty)
+    }
+
+    /// Wake a blocking receive, for example during application shutdown.
+    pub fn interrupt(&self) {
+        if let Ok(mut state) = self.shared.state.lock() {
+            state.interrupted = true;
+        }
+        self.shared.ready.notify_all();
+    }
+}
+
+impl FipsEndpointDirectSink for FipsEndpointDirectReceiverSink {
+    fn deliver_endpoint_packet_batch(
+        &self,
+        batch: FipsEndpointDirectPacketBatch,
+    ) -> Result<(), FipsEndpointDirectDeliveryError> {
+        let runs = batch.into_packet_runs();
+        if runs.is_empty() {
+            return Ok(());
+        }
+        let packets = runs
+            .iter()
+            .map(FipsEndpointDirectPacketRun::len)
+            .sum::<usize>();
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .map_err(|_| FipsEndpointDirectDeliveryError::Unavailable)?;
+        let queued = state
+            .packets
+            .checked_add(packets)
+            .filter(|queued| *queued <= FIPS_ENDPOINT_DIRECT_PACKET_QUEUE_MAX_PACKETS)
+            .ok_or(FipsEndpointDirectDeliveryError::Unavailable)?;
+        let wake = state.runs.is_empty();
+        state.packets = queued;
+        state.runs.extend(runs);
+        drop(state);
+        if wake {
+            self.shared.ready.notify_one();
+        }
+        Ok(())
+    }
+}
+
+fn direct_receiver_packet_limit(limit: usize) -> usize {
+    limit
+        .max(1)
+        .min(FIPS_ENDPOINT_DIRECT_PACKET_RUN_MAX_PACKETS)
+}
+
+fn take_direct_source_runs(
+    state: &mut FipsEndpointDirectReceiverState,
+    packet_limit: usize,
+) -> Option<Vec<FipsEndpointDirectPacketRun>> {
+    let first = state.runs.pop_front()?;
+    let source = *first.source_peer().node_addr();
+    let mut packets = first.len();
+    let mut runs = vec![first];
+    let limit = direct_receiver_packet_limit(packet_limit);
+    while packets < limit {
+        let Some(next) = state.runs.front() else {
+            break;
+        };
+        let next_packets = next.len();
+        if next.source_peer().node_addr() != &source || packets.saturating_add(next_packets) > limit
+        {
+            break;
+        }
+        packets = packets.saturating_add(next_packets);
+        runs.push(state.runs.pop_front().expect("front direct run must exist"));
+    }
+    state.packets = state
+        .packets
+        .checked_sub(packets)
+        .expect("direct receiver packet backlog must cover removed runs");
+    Some(runs)
 }
 
 /// App-owned packet channels for embedding FIPS without a system TUN.

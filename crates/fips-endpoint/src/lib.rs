@@ -8,9 +8,9 @@ pub use fips_core::config::{
 pub use fips_core::endpoint::{
     FIPS_ENDPOINT_DIRECT_PACKET_QUEUE_MAX_PACKETS, FIPS_ENDPOINT_DIRECT_PACKET_RUN_MAX_PACKETS,
     FipsEndpoint, FipsEndpointBuilder, FipsEndpointData, FipsEndpointDirectDeliveryError,
-    FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun, FipsEndpointDirectSink,
-    FipsEndpointError, FipsEndpointMessage, FipsEndpointPeer, FipsEndpointRelayStatus,
-    UpdatePeersOutcome,
+    FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun, FipsEndpointDirectReceiver,
+    FipsEndpointDirectSink, FipsEndpointError, FipsEndpointMessage, FipsEndpointPeer,
+    FipsEndpointRelayStatus, UpdatePeersOutcome,
 };
 pub use fips_core::identity::{
     FipsAddress, Identity, IdentityError, NodeAddr, PeerIdentity, decode_npub, decode_nsec,

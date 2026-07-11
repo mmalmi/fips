@@ -107,6 +107,15 @@ impl FipsEndpointBuilder {
         self.bind_inner(None).await
     }
 
+    /// Bind with a bounded receiver for direct dataplane endpoint packet runs.
+    pub async fn bind_with_direct_receiver(
+        self,
+    ) -> Result<(FipsEndpoint, FipsEndpointDirectReceiver), FipsEndpointError> {
+        let (sink, receiver) = FipsEndpointDirectReceiver::channel();
+        let endpoint = self.bind_with_direct_sink(sink).await?;
+        Ok((endpoint, receiver))
+    }
+
     /// Bind and start the endpoint with a direct dataplane endpoint-data sink.
     ///
     /// Decrypted dataplane endpoint output is delivered to `sink` synchronously from
