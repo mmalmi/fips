@@ -191,7 +191,15 @@ impl Node {
     }
 
     pub(in crate::node) fn mark_rx_loop_maintenance_timeout(&mut self) {
-        self.last_rx_loop_maintenance_timeout_at = Some(std::time::Instant::now());
+        let now = std::time::Instant::now();
+        let grace = std::time::Duration::from_secs(self.config.node.link_dead_timeout_secs.max(1));
+        if self
+            .last_rx_loop_maintenance_timeout_at
+            .is_some_and(|started| now.duration_since(started) <= grace)
+        {
+            return;
+        }
+        self.last_rx_loop_maintenance_timeout_at = Some(now);
     }
 
     pub(in crate::node) fn rx_loop_maintenance_timed_out_recently(&self) -> bool {

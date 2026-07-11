@@ -1,5 +1,22 @@
 use super::*;
 
+#[test]
+fn repeated_rx_loop_timeouts_do_not_extend_dead_peer_grace_forever() {
+    let mut node = Node::new(Config::new()).expect("node");
+    node.config.node.link_dead_timeout_secs = 30;
+
+    node.mark_rx_loop_maintenance_timeout();
+    let first = node.last_rx_loop_maintenance_timeout_at;
+    node.mark_rx_loop_maintenance_timeout();
+    assert_eq!(node.last_rx_loop_maintenance_timeout_at, first);
+
+    node.last_rx_loop_maintenance_timeout_at =
+        Some(std::time::Instant::now() - std::time::Duration::from_secs(31));
+    let expired = node.last_rx_loop_maintenance_timeout_at;
+    node.mark_rx_loop_maintenance_timeout();
+    assert_ne!(node.last_rx_loop_maintenance_timeout_at, expired);
+}
+
 #[tokio::test]
 async fn link_dead_after_recent_rx_loop_timeout_defers_peer_removal() {
     let local_identity = Identity::generate();
