@@ -583,10 +583,20 @@ async fn session_100_nodes() {
             .await
             .expect("initiate_session failed");
 
-        drain_to_quiescence(&mut nodes).await;
+        let src_addr = all_info[src].0;
+        let context = format!("session {src}->{dst} initiator");
+        wait_for_session_established(
+            &mut nodes,
+            src,
+            &dest_addr,
+            Duration::from_secs(2),
+            &context,
+        )
+        .await;
+        let context = format!("session {src}->{dst} responder");
+        wait_for_session_established(&mut nodes, dst, &src_addr, Duration::from_secs(2), &context)
+            .await;
     }
-
-    drain_to_quiescence(&mut nodes).await;
     let session_time = session_start.elapsed();
 
     // Verify all initiator sessions reached Established before data phase
@@ -636,13 +646,15 @@ async fn session_100_nodes() {
     //   1. Initiator sends one datagram to responder
     //   2. Responder sends one datagram back to initiator
     //
-    // Batched per pair with draining between each.
+    // Verify each delivery before advancing to the next direction.
 
     let data_start = Instant::now();
     let mut send_forward_ok = 0usize;
     let mut send_reverse_ok = 0usize;
     let send_forward_err = 0usize;
     let send_reverse_err = 0usize;
+    let mut fwd_delivered = 0usize;
+    let mut rev_delivered = 0usize;
 
     for (pair_idx, &(src, dst)) in session_pairs.iter().enumerate() {
         let dest_addr = all_info[dst].0;
@@ -657,8 +669,20 @@ async fn session_100_nodes() {
         let fwd_ipv6 = build_ipv6_packet(&src_fips, &dst_fips, &fwd_payload);
         send_tun_packet_via_dataplane(&mut nodes, src, fwd_ipv6).await;
         send_forward_ok += 1;
-
-        drain_to_quiescence(&mut nodes).await;
+        let context = format!("forward TUN delivery {src}->{dst}");
+        let delivered = recv_tun_packet_while_draining(
+            &mut nodes,
+            &tun_receivers[dst],
+            Duration::from_secs(2),
+            &context,
+        )
+        .await;
+        assert_eq!(
+            delivered.get(40..),
+            Some(fwd_payload.as_slice()),
+            "{context}"
+        );
+        fwd_delivered += 1;
 
         // Reverse: responder → initiator
         // (Responder should already be Established after XK msg3)
@@ -666,57 +690,26 @@ async fn session_100_nodes() {
         let rev_ipv6 = build_ipv6_packet(&dst_fips, &src_fips, &rev_payload);
         send_tun_packet_via_dataplane(&mut nodes, dst, rev_ipv6).await;
         send_reverse_ok += 1;
-
-        drain_to_quiescence(&mut nodes).await;
+        let context = format!("reverse TUN delivery {dst}->{src}");
+        let delivered = recv_tun_packet_while_draining(
+            &mut nodes,
+            &tun_receivers[src],
+            Duration::from_secs(2),
+            &context,
+        )
+        .await;
+        assert_eq!(
+            delivered.get(40..),
+            Some(rev_payload.as_slice()),
+            "{context}"
+        );
+        rev_delivered += 1;
     }
 
     let data_time = data_start.elapsed();
+    let total_delivered = fwd_delivered + rev_delivered;
 
-    // === Phase 4: Collect delivered datagrams from TUN receivers ===
-
-    let mut delivered_per_node: Vec<Vec<Vec<u8>>> = Vec::with_capacity(NUM_NODES);
-    for rx in tun_receivers.iter_mut() {
-        let mut packets = Vec::new();
-        while let Ok(pkt) = rx.try_recv_packet() {
-            packets.push(pkt.as_slice().to_vec());
-        }
-        delivered_per_node.push(packets);
-    }
-
-    let total_delivered: usize = delivered_per_node.iter().map(|v| v.len()).sum();
-
-    // Verify each pair's forward and reverse datagrams arrived
-    let mut fwd_delivered = 0usize;
-    let mut rev_delivered = 0usize;
-    let mut fwd_missing: Vec<(usize, usize)> = Vec::new();
-    let mut rev_missing: Vec<(usize, usize)> = Vec::new();
-
-    for (pair_idx, &(src, dst)) in session_pairs.iter().enumerate() {
-        let fwd_payload = format!("fwd-{}", pair_idx).into_bytes();
-        let rev_payload = format!("rev-{}", pair_idx).into_bytes();
-
-        // After decompression, TUN receives full IPv6 packets.
-        // Check that delivered packet's upper-layer payload matches.
-        let fwd_found = delivered_per_node[dst]
-            .iter()
-            .any(|pkt| pkt.len() >= 40 && pkt[40..] == fwd_payload);
-        if fwd_found {
-            fwd_delivered += 1;
-        } else if fwd_missing.len() < 20 {
-            fwd_missing.push((src, dst));
-        }
-
-        let rev_found = delivered_per_node[src]
-            .iter()
-            .any(|pkt| pkt.len() >= 40 && pkt[40..] == rev_payload);
-        if rev_found {
-            rev_delivered += 1;
-        } else if rev_missing.len() < 20 {
-            rev_missing.push((src, dst));
-        }
-    }
-
-    // === Phase 5: Final session state ===
+    // === Phase 4: Final session state ===
 
     let mut total_established = 0usize;
     let mut total_responding = 0usize;
@@ -875,25 +868,6 @@ async fn session_100_nodes() {
         data_time.as_secs_f64(),
         start.elapsed().as_secs_f64()
     );
-
-    if !fwd_missing.is_empty() {
-        eprintln!(
-            "\n  First {} undelivered forward datagrams:",
-            fwd_missing.len()
-        );
-        for &(src, dst) in &fwd_missing {
-            eprintln!("    node {} -> node {}", src, dst);
-        }
-    }
-    if !rev_missing.is_empty() {
-        eprintln!(
-            "\n  First {} undelivered reverse datagrams:",
-            rev_missing.len()
-        );
-        for &(src, dst) in &rev_missing {
-            eprintln!("    node {} <- node {}", src, dst);
-        }
-    }
 
     // === Assertions ===
 

@@ -88,13 +88,40 @@ impl Node {
             .await
     }
 
-    pub(in crate::node) async fn send_session_datagram_via_next_hop(
+    pub(in crate::node) async fn send_session_datagram_reply(
         &mut self,
         datagram: &mut SessionDatagram,
-        next_hop_addr: &NodeAddr,
+        previous_hop_addr: &NodeAddr,
+        dest_coords: &crate::tree::TreeCoordinate,
     ) -> Result<(), NodeError> {
-        let runtime_route =
-            self.prepare_session_datagram_runtime_route(datagram, *next_hop_addr);
+        let dest_addr = datagram.dest_addr;
+        // Before msg3 authenticates the source, admit only one strict tree-progress
+        // hop derived from this setup; never consult learned or cached routes.
+        let coordinate_route = if dest_coords.node_addr() == &dest_addr {
+            let my_distance = self.tree_state.my_coords().distance_to(dest_coords);
+            let previous_distance = self
+                .tree_state
+                .peer_coords(previous_hop_addr)
+                .map_or(usize::MAX, |coords| coords.distance_to(dest_coords));
+            if previous_distance < my_distance {
+                Some(*previous_hop_addr)
+            } else {
+                let direct_payload_eligible = self
+                    .peers
+                    .get(&dest_addr)
+                    .is_some_and(|peer| peer.is_healthy());
+                self.select_tree_payload_candidate(
+                    dest_coords,
+                    &dest_addr,
+                    direct_payload_eligible,
+                )
+            }
+        } else {
+            None
+        };
+
+        let next_hop_addr = coordinate_route.unwrap_or(*previous_hop_addr);
+        let runtime_route = self.prepare_session_datagram_runtime_route(datagram, next_hop_addr);
         self.send_session_datagram_on_runtime_route(datagram, runtime_route)
             .await
     }

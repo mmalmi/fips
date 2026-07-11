@@ -65,6 +65,12 @@ async fn wait_for_session_established(
                 return;
             }
 
+            let now_ms = Node::now_ms();
+            nodes[index]
+                .node
+                .resend_pending_session_handshakes(now_ms)
+                .await;
+            nodes[index].node.resend_pending_session_msg3(now_ms).await;
             process_available_packets(nodes).await;
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

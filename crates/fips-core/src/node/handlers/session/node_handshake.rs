@@ -60,7 +60,11 @@ impl Node {
                     let mut datagram = SessionDatagram::new(my_addr, *src_addr, payload.to_vec())
                         .with_ttl(self.config.node.session.default_ttl);
                     if let Err(e) = self
-                        .send_session_datagram_via_next_hop(&mut datagram, previous_hop_addr)
+                        .send_session_datagram_reply(
+                            &mut datagram,
+                            previous_hop_addr,
+                            &setup.src_coords,
+                        )
                         .await
                     {
                         debug!(error = %e, dest = %self.peer_display_name(src_addr), "Failed to resend SessionAck");
@@ -100,9 +104,10 @@ impl Node {
                             let mut datagram = SessionDatagram::new(my_addr, *src_addr, payload)
                                 .with_ttl(self.config.node.session.default_ttl);
                             let sent = match self
-                                .send_session_datagram_via_next_hop(
+                                .send_session_datagram_reply(
                                     &mut datagram,
                                     previous_hop_addr,
+                                    &setup.src_coords,
                                 )
                                 .await
                             {
@@ -175,7 +180,8 @@ impl Node {
 
                     // Build and send SessionAck
                     let our_coords = self.tree_state.my_coords().clone();
-                    let ack = SessionAck::new(our_coords, setup.src_coords).with_handshake(msg2);
+                    let ack = SessionAck::new(our_coords, setup.src_coords.clone())
+                        .with_handshake(msg2);
                     let ack_payload = ack.encode();
                     let my_addr = *self.node_addr();
                     let mut datagram =
@@ -183,7 +189,11 @@ impl Node {
                             .with_ttl(self.config.node.session.default_ttl);
 
                     if let Err(e) = self
-                        .send_session_datagram_via_next_hop(&mut datagram, previous_hop_addr)
+                        .send_session_datagram_reply(
+                            &mut datagram,
+                            previous_hop_addr,
+                            &setup.src_coords,
+                        )
                         .await
                     {
                         debug!(error = %e, dest = %self.peer_display_name(src_addr), "Failed to send rekey SessionAck");
@@ -238,17 +248,21 @@ impl Node {
 
         // Build and send SessionAck (include initiator's coords for return-path warming)
         let our_coords = self.tree_state.my_coords().clone();
-        let ack = SessionAck::new(our_coords, setup.src_coords).with_handshake(msg2);
+        let ack = SessionAck::new(our_coords, setup.src_coords.clone()).with_handshake(msg2);
         let ack_payload = ack.encode();
         let my_addr = *self.node_addr();
         let mut datagram = SessionDatagram::new(my_addr, *src_addr, ack_payload.clone())
             .with_ttl(self.config.node.session.default_ttl);
 
-        // Return msg2 through the authenticated hop that delivered msg1. The
-        // initiator identity is not authenticated until msg3, so this is a
-        // bounded response path rather than a learned route.
+        // Keep the reply on the authenticated ingress hop while it makes tree
+        // progress. Otherwise use one strictly closer tree peer; if coordinates
+        // cannot provide one, remain bounded to the ingress hop.
         if let Err(e) = self
-            .send_session_datagram_via_next_hop(&mut datagram, previous_hop_addr)
+            .send_session_datagram_reply(
+                &mut datagram,
+                previous_hop_addr,
+                &setup.src_coords,
+            )
             .await
         {
             debug!(error = %e, dest = %self.peer_display_name(src_addr), "Failed to send SessionAck");
