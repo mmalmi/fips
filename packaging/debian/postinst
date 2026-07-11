@@ -30,6 +30,7 @@ case "$1" in
             systemctl daemon-reload
             systemctl enable fips.service 2>/dev/null || true
             systemctl enable fips-dns.service 2>/dev/null || true
+            systemctl enable --now fips-healthcheck.timer 2>/dev/null || true
 
             # On upgrade, restart services that were running before
             if [ -n "$2" ]; then

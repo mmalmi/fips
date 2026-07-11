@@ -1,0 +1,31 @@
+#!/bin/sh
+set -eu
+
+FIPSCTL=${FIPSCTL:-$(command -v fipsctl || true)}
+TIMEOUT_SECONDS=${FIPS_HEALTH_TIMEOUT_SECONDS:-8}
+
+if [ -z "$FIPSCTL" ]; then
+    echo "fips-healthcheck: fipsctl not found" >&2
+    exit 1
+fi
+
+status=$(timeout "$TIMEOUT_SECONDS" "$FIPSCTL" show status) || {
+    echo "fips-healthcheck: control query failed" >&2
+    exit 1
+}
+
+case "$status" in
+    *'"state": "running"'*) ;;
+    *)
+        echo "fips-healthcheck: daemon did not report running state" >&2
+        exit 1
+        ;;
+esac
+
+case "$status" in
+    *'"control_socket"'*) ;;
+    *)
+        echo "fips-healthcheck: status response is incomplete" >&2
+        exit 1
+        ;;
+esac

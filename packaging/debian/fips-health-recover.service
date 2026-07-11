@@ -1,0 +1,8 @@
+[Unit]
+Description=Recover an unresponsive FIPS daemon
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl try-restart fips.service

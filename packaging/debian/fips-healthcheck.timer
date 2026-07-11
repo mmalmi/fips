@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the functional FIPS health check
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+RandomizedDelaySec=5s
+AccuracySec=1s
+Persistent=true
+Unit=fips-healthcheck.service
+
+[Install]
+WantedBy=timers.target

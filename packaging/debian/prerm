@@ -7,6 +7,8 @@ case "$1" in
         if [ -d /run/systemd/system ]; then
             systemctl stop fips-dns.service 2>/dev/null || true
             systemctl disable fips-dns.service 2>/dev/null || true
+            systemctl stop fips-healthcheck.timer 2>/dev/null || true
+            systemctl disable fips-healthcheck.timer 2>/dev/null || true
             systemctl stop fips.service 2>/dev/null || true
             systemctl disable fips.service 2>/dev/null || true
             systemctl stop fips-firewall.service 2>/dev/null || true
@@ -18,6 +20,7 @@ case "$1" in
         # Stop services before upgrade; postinst will restart them
         if [ -d /run/systemd/system ]; then
             systemctl stop fips-dns.service 2>/dev/null || true
+            systemctl stop fips-healthcheck.timer 2>/dev/null || true
             systemctl stop fips.service 2>/dev/null || true
         fi
         ;;
