@@ -16,9 +16,12 @@ testing/tun-performance/benchmark.sh --build
 
 The default sweep runs TCP with 1/4/8 streams, ordinary iperf UDP at
 100M/250M/500M/1G/2G/5G/10G, and a focused `udp-gso-2g` case. UDP uses
-explicit 1100-byte datagrams below the 1280-byte TUN MTU. Each case records throughput, loss, loaded latency tails,
-endpoint A/B/combined cgroup CPU-sec/Gbit, raw iperf3 JSON, ping samples, FIPS
-counters, daemon logs, `summary.json`, and `summary.md`. Tune the sweep with:
+explicit 1100-byte datagrams below the 1280-byte TUN MTU. Each case records
+throughput, loss, loaded latency tails, endpoint A/B/combined cgroup
+CPU-sec/Gbit, raw iperf3 JSON, ping samples, FIPS counters, daemon logs,
+`summary.json`, and `summary.md`. The counter deltas are
+diagnostic only: established direct dataplane traffic bypasses the legacy
+forwarding counters. Tune the sweep with:
 
 ```sh
 FIPS_TUN_DURATION=20 \

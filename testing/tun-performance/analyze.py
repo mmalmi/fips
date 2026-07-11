@@ -176,8 +176,9 @@ def main() -> None:
     lines = [
         "# FIPS direct system-TUN benchmark",
         "",
-        f"FIPS counters: A originated `{summary['a_originated_packets_delta']}`, "
-        f"B delivered `{summary['b_delivered_packets_delta']}` packets.",
+        "Legacy forwarding-counter deltas (direct fast-path data bypasses these): "
+        f"A originated `{summary['a_originated_packets_delta']}`, "
+        f"B delivered `{summary['b_delivered_packets_delta']}`.",
         "",
         "| case | Mbps | loss % | ping avg/p95/p99 ms | CPU-sec/Gbit A/B/sum | A read pkt/frame | B write pkt/frame |",
         "|---|---:|---:|---:|---:|---:|---:|",
