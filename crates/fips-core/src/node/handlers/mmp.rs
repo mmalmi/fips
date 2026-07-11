@@ -723,12 +723,21 @@ impl Node {
         }
 
         for dead_peer in &heartbeat_plan.dead_peers {
+            let preserve_for_configured_reconnect = self
+                .configured_peer(&dead_peer.node_addr)
+                .is_some_and(|peer| peer.auto_reconnect);
             warn!(
                 peer = %self.peer_display_name(&dead_peer.node_addr),
                 timeout_secs = dead_peer.effective_dead_timeout.as_secs(),
                 fast = dead_peer.effective_dead_timeout < dead_timeout,
+                preserve_for_configured_reconnect,
                 "Marking direct path stale after link-dead timeout"
             );
+            if !preserve_for_configured_reconnect {
+                self.abandon_fmp_rekey_for_peer(&dead_peer.node_addr, "link-dead direct path");
+                self.remove_active_peer(&dead_peer.node_addr);
+                continue;
+            }
             self.record_link_dead_path_failure(&dead_peer.node_addr, now_ms)
                 .await;
             self.abandon_fmp_rekey_for_peer(&dead_peer.node_addr, "link-dead direct path");

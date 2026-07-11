@@ -42,6 +42,16 @@ async fn link_dead_after_recent_rx_loop_timeout_defers_peer_removal() {
     node.config.node.heartbeat_interval_secs = 2;
     node.config.node.link_dead_timeout_secs = 30;
     node.config.node.fast_link_dead_timeout_secs = 5;
+    let (packet_tx, _packet_rx) = packet_channel(8);
+    node.transports.insert(
+        TransportId::new(1),
+        TransportHandle::Udp(UdpTransport::new(
+            TransportId::new(1),
+            None,
+            crate::config::UdpConfig::default(),
+            packet_tx,
+        )),
+    );
 
     let active = ActivePeer::with_session(
         peer,
@@ -75,6 +85,49 @@ async fn link_dead_after_recent_rx_loop_timeout_defers_peer_removal() {
     assert!(
         !node.retry_pending.contains_key(&peer_addr),
         "deferring a locally suspect link-dead timeout should not schedule a direct reconnect"
+    );
+}
+
+#[tokio::test]
+async fn link_dead_unconfigured_browser_peer_is_fully_evicted() {
+    let local_identity = Identity::generate();
+    let peer_identity = Identity::generate();
+    let peer = PeerIdentity::from_pubkey_full(peer_identity.pubkey_full());
+    let peer_addr = *peer.node_addr();
+    let session = make_test_fmp_session(&local_identity, &peer_identity, [1; 8], [2; 8]);
+    let mut node = Node::with_identity(local_identity, Config::new()).expect("node");
+    node.config.node.link_dead_timeout_secs = 30;
+    node.peers.insert(
+        peer_addr,
+        ActivePeer::with_session(
+            peer,
+            LinkId::new(7),
+            0,
+            ActivePeerSession {
+                session,
+                our_index: crate::utils::index::SessionIndex::new(11),
+                their_index: crate::utils::index::SessionIndex::new(12),
+                transport_id: TransportId::new(1),
+                current_addr: crate::transport::TransportAddr::from_string(
+                    "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
+                link_stats: crate::transport::LinkStats::new(),
+                is_initiator: false,
+                remote_epoch: None,
+            },
+        ),
+    );
+    super::super::seed_dataplane_fmp_rx_for_test(
+        &mut node,
+        peer_addr,
+        std::time::Duration::from_secs(31),
+    );
+
+    node.check_link_heartbeats().await;
+
+    assert!(
+        !node.peers.contains_key(&peer_addr),
+        "an unconfigured ambient peer has no reconnect state to preserve"
     );
 }
 
