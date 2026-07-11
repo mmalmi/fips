@@ -18,6 +18,8 @@ fn forwarding_window_bounds_saturated_owner_and_source_but_admits_peer() {
     }
     let saturated = pending_test_forward(1, 2, 3);
     assert!(!deferred.has_capacity(&saturated, ForwardingLane::Bulk));
+    assert!(!deferred.has_capacity(&pending_test_forward(1, 5, 6), ForwardingLane::Bulk));
+    assert!(!deferred.has_capacity(&pending_test_forward(4, 2, 6), ForwardingLane::Bulk));
     assert!(deferred.has_capacity(&pending_test_forward(4, 5, 6), ForwardingLane::Bulk,));
     assert!(deferred.has_capacity(&saturated, ForwardingLane::Priority));
     for token in 1_000..1_000 + FORWARDING_PRIORITY_OWNER_IN_FLIGHT as u64 {
