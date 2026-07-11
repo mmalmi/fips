@@ -534,5 +534,15 @@
                 fmp_flags,
             },
         );
+        let plaintext = turn
+            .take_fmp_link_ingress()
+            .pop()
+            .expect("link ingress")
+            .into_link_plaintext()
+            .expect("opened link plaintext");
+        assert_eq!(
+            plaintext.as_slice(),
+            &[crate::protocol::LinkMessageType::Heartbeat.to_byte()]
+        );
         assert!(turn.output_drops().is_empty());
     }

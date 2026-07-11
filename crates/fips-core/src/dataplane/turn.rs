@@ -269,6 +269,20 @@ impl DataplaneFmpLinkIngress {
             &[]
         }
     }
+
+    /// Take ownership of the opened link plaintext, dropping the incoming
+    /// per-link timestamp while retaining the receive buffer's headroom.
+    ///
+    /// The visible result starts at the link message type byte. Transit
+    /// forwarding can therefore mutate the session envelope in place and
+    /// hand the same allocation back to the FMP sealing path.
+    pub(crate) fn into_link_plaintext(mut self) -> Option<crate::transport::PacketBuffer> {
+        let mut plaintext = self.output.take_opened_payload()?;
+        if !plaintext.trim_front(4) {
+            return None;
+        }
+        Some(plaintext)
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

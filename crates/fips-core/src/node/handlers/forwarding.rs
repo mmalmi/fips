@@ -19,6 +19,7 @@ use crate::protocol::{
     CoordsRequired, LinkMessageType, MtuExceeded, PathBroken, SessionAck, SessionDatagram,
     SessionDatagramRef, SessionSetup,
 };
+use crate::transport::PacketBuffer;
 use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
@@ -29,11 +30,21 @@ struct PreparedSessionForward {
     outgoing_ce: bool,
     received_len: usize,
     encoded_len: usize,
-    encoded: Vec<u8>,
+    plaintext: PacketBuffer,
+}
+
+struct PreparedSessionForwardRoute {
+    next_hop_addr: NodeAddr,
+    src_addr: NodeAddr,
+    dest_addr: NodeAddr,
+    outgoing_ce: bool,
+    received_len: usize,
+    ttl: u8,
+    path_mtu: u16,
 }
 
 enum PreparedSessionDatagram {
-    Forward(PreparedSessionForward),
+    Forward(PreparedSessionForwardRoute),
     NoRoute {
         datagram: SessionDatagram,
         received_len: usize,
@@ -57,12 +68,15 @@ impl Node {
         &mut self,
         datagram: AuthenticatedSessionDatagram<'_>,
     ) {
+        let payload = datagram.payload;
         match self.prepare_session_datagram(datagram).await {
-            PreparedSessionDatagram::Forward(forward) => {
+            PreparedSessionDatagram::Forward(route) => {
+                let plaintext = copy_forwarded_session_datagram(payload, route.ttl, route.path_mtu);
+                let forward = route.with_plaintext(PacketBuffer::new(plaintext));
                 let result = self
                     .send_dataplane_fmp_link_plaintext(
                         &forward.next_hop_addr,
-                        &forward.encoded,
+                        forward.plaintext.as_slice(),
                         forward.outgoing_ce,
                     )
                     .await;
@@ -104,10 +118,25 @@ impl Node {
                 );
                 if self.session_datagram_is_transit_candidate(&datagram) {
                     match self.prepare_session_datagram(datagram).await {
-                        PreparedSessionDatagram::Forward(forward) => {
-                            forwards.push(forward);
-                            if forward_run_reached_limit(forwards.len(), flush_limit) {
-                                self.flush_prepared_session_forwards(&mut forwards).await;
+                        PreparedSessionDatagram::Forward(route) => {
+                            let mut plaintext = ingress
+                                .into_link_plaintext()
+                                .expect("opened FMP ingress must retain its plaintext owner");
+                            let rewritten = rewrite_forwarded_session_datagram(
+                                &mut plaintext,
+                                route.ttl,
+                                route.path_mtu,
+                            );
+                            debug_assert!(
+                                rewritten,
+                                "validated transit datagram must be rewriteable"
+                            );
+                            if rewritten {
+                                let forward = route.with_plaintext(plaintext);
+                                forwards.push(forward);
+                                if forward_run_reached_limit(forwards.len(), flush_limit) {
+                                    self.flush_prepared_session_forwards(&mut forwards).await;
+                                }
                             }
                         }
                         PreparedSessionDatagram::NoRoute {
@@ -175,7 +204,7 @@ impl Node {
             .map(|forward| {
                 (
                     forward.next_hop_addr,
-                    std::mem::take(&mut forward.encoded),
+                    std::mem::take(&mut forward.plaintext),
                     forward.outgoing_ce,
                 )
             })
@@ -313,18 +342,14 @@ impl Node {
             }
         }
 
-        // Re-encode from the borrowed datagram view (includes 0x00 type byte).
-        // The caller preserves runs of these owned buffers through outbound
-        // admission, sealing, and transport batching.
-        let encoded = encode_forwarded_session_datagram(&datagram_ref, new_ttl, path_mtu);
-        PreparedSessionDatagram::Forward(PreparedSessionForward {
+        PreparedSessionDatagram::Forward(PreparedSessionForwardRoute {
             next_hop_addr,
             src_addr: datagram_ref.src_addr,
             dest_addr: datagram_ref.dest_addr,
             outgoing_ce,
             received_len: payload.len(),
-            encoded_len: encoded.len(),
-            encoded,
+            ttl: new_ttl,
+            path_mtu,
         })
     }
 
@@ -362,7 +387,7 @@ impl Node {
             outgoing_ce,
             received_len,
             encoded_len,
-            encoded: _,
+            plaintext: _,
         } = forward;
         if let Err(e) = result {
             if record_route_failure {
@@ -672,19 +697,51 @@ impl Node {
     }
 }
 
-fn encode_forwarded_session_datagram(
-    datagram: &SessionDatagramRef<'_>,
+impl PreparedSessionForwardRoute {
+    fn with_plaintext(self, plaintext: PacketBuffer) -> PreparedSessionForward {
+        let encoded_len = plaintext.len();
+        PreparedSessionForward {
+            next_hop_addr: self.next_hop_addr,
+            src_addr: self.src_addr,
+            dest_addr: self.dest_addr,
+            outgoing_ce: self.outgoing_ce,
+            received_len: self.received_len,
+            encoded_len,
+            plaintext,
+        }
+    }
+}
+
+fn copy_forwarded_session_datagram(payload: &[u8], ttl: u8, path_mtu: u16) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(1 + payload.len());
+    buf.push(LinkMessageType::SessionDatagram.to_byte());
+    buf.extend_from_slice(payload);
+    let rewritten = rewrite_forwarded_session_datagram_bytes(&mut buf, ttl, path_mtu);
+    debug_assert!(
+        rewritten,
+        "decoded session datagram must remain rewriteable"
+    );
+    buf
+}
+
+fn rewrite_forwarded_session_datagram(
+    plaintext: &mut PacketBuffer,
     ttl: u8,
     path_mtu: u16,
-) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(1 + SessionDatagramRef::HEADER_LEN + datagram.payload.len());
-    buf.push(LinkMessageType::SessionDatagram.to_byte());
-    buf.push(ttl);
-    buf.extend_from_slice(&path_mtu.to_le_bytes());
-    buf.extend_from_slice(datagram.src_addr.as_bytes());
-    buf.extend_from_slice(datagram.dest_addr.as_bytes());
-    buf.extend_from_slice(datagram.payload);
-    buf
+) -> bool {
+    rewrite_forwarded_session_datagram_bytes(plaintext.as_mut_slice(), ttl, path_mtu)
+}
+
+fn rewrite_forwarded_session_datagram_bytes(plaintext: &mut [u8], ttl: u8, path_mtu: u16) -> bool {
+    let Some(header) = plaintext.get_mut(..4) else {
+        return false;
+    };
+    if header[0] != LinkMessageType::SessionDatagram.to_byte() {
+        return false;
+    }
+    header[1] = ttl;
+    header[2..4].copy_from_slice(&path_mtu.to_le_bytes());
+    true
 }
 
 fn owned_session_datagram_from_ref(
@@ -730,7 +787,7 @@ mod forwarding_fast_path_tests {
 
         let forwarded_ttl = 11;
         let forwarded_mtu = 1280;
-        let borrowed = encode_forwarded_session_datagram(&decoded, forwarded_ttl, forwarded_mtu);
+        let borrowed = copy_forwarded_session_datagram(&encoded[1..], forwarded_ttl, forwarded_mtu);
         let owned = SessionDatagram {
             src_addr: decoded.src_addr,
             dest_addr: decoded.dest_addr,
@@ -741,6 +798,29 @@ mod forwarding_fast_path_tests {
         .encode();
 
         assert_eq!(borrowed, owned);
+    }
+
+    #[test]
+    fn owned_forward_rewrite_preserves_packet_allocation_and_payload() {
+        let datagram = SessionDatagram::new(
+            NodeAddr::from_bytes([0x33; 16]),
+            NodeAddr::from_bytes([0x44; 16]),
+            vec![9, 8, 7, 6, 5],
+        )
+        .with_ttl(20)
+        .with_path_mtu(1450);
+        let mut plaintext = PacketBuffer::new(datagram.encode());
+        let allocation = plaintext.as_slice().as_ptr();
+
+        assert!(rewrite_forwarded_session_datagram(&mut plaintext, 19, 1280));
+        assert_eq!(plaintext.as_slice().as_ptr(), allocation);
+
+        let decoded = SessionDatagramRef::decode(&plaintext.as_slice()[1..]).expect("decode");
+        assert_eq!(decoded.ttl, 19);
+        assert_eq!(decoded.path_mtu, 1280);
+        assert_eq!(decoded.src_addr, datagram.src_addr);
+        assert_eq!(decoded.dest_addr, datagram.dest_addr);
+        assert_eq!(decoded.payload, datagram.payload);
     }
 
     #[test]

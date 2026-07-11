@@ -213,7 +213,7 @@ impl Node {
     /// operate on runs instead of forcing one complete turn per packet.
     pub(in crate::node) async fn send_dataplane_fmp_link_plaintext_batch(
         &mut self,
-        plaintexts: Vec<(NodeAddr, Vec<u8>, bool)>,
+        plaintexts: Vec<(NodeAddr, crate::transport::PacketBuffer, bool)>,
     ) -> Vec<Result<(), NodeError>> {
         let mut results: Vec<Option<Result<(), NodeError>>> = std::iter::repeat_with(|| None)
             .take(plaintexts.len())
@@ -253,7 +253,7 @@ impl Node {
             }
             let send_token = DATAPLANE_FMP_LINK_SEND_TOKEN.fetch_add(1, Ordering::Relaxed);
             let owner = OwnerId::fmp_node(node_addr);
-            let class = dataplane_fmp_link_class(&plaintext);
+            let class = dataplane_fmp_link_class(plaintext.as_slice());
             outbound.push(
                 OutboundPacket::fmp(
                     owner,
@@ -261,7 +261,7 @@ impl Node {
                     class,
                     send_context.receiver_idx(),
                     flags,
-                    crate::transport::PacketBuffer::new(plaintext),
+                    plaintext,
                 )
                 .with_activity_tick(activity_tick)
                 .with_send_token(send_token),
