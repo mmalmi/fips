@@ -481,20 +481,31 @@
         assert_eq!(second.transport_dropped(), 0);
         assert!(second.take_transport_sent_receipts().is_empty());
 
+        let (_ordinary_packet_tx, mut ordinary_packet_rx) = crate::transport::packet_channel(1);
+        let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
+        let (_tun_outbound_tx, mut tun_outbound_rx) =
+            crate::upper::tun::tun_outbound_channel(1);
         let mut third = None;
         for _ in 0..50 {
-            let turn = pump_live_node_outbound_firsts(
-                &mut live_node,
-                DataplaneLiveOutboundFirsts {
-                    collect_transport_sent_receipts: true,
-                    ..Default::default()
-                },
-                &endpoint_io.event_tx,
-                &transports,
-                1,
-                transport_send_batch_packets,
-            )
-            .await;
+            let turn = live_node
+                .pump_packet_rx_turn_with_firsts_direct_fsp_sources_and_transport_batch(
+                    &mut ordinary_packet_rx,
+                    DataplaneLiveTurnFirsts::default(),
+                    0,
+                    Default::default(),
+                    true,
+                    DataplaneLiveTurnIo {
+                        endpoint_data_rx: &mut endpoint_data_rx,
+                        endpoint_limit: 0,
+                        tun_outbound_rx: &mut tun_outbound_rx,
+                        tun_limit: 0,
+                        endpoint_tx: &endpoint_io.event_tx,
+                        transports: &transports,
+                        crypto_limit: 1,
+                        transport_send_batch_packets,
+                    },
+                )
+                .await;
             if turn.transport_sent() > 0 {
                 third = Some(turn);
                 break;
