@@ -39,6 +39,8 @@ struct PreparedSessionForward {
     plaintext: PacketBuffer,
 }
 
+include!("forwarding_deferred.rs");
+
 struct PreparedSessionForwardRoute {
     next_hop_addr: NodeAddr,
     src_addr: NodeAddr,
@@ -162,6 +164,7 @@ impl Node {
                             loop_failure,
                         } => {
                             self.flush_prepared_session_forwards(&mut forwards).await;
+                            self.drain_deferred_session_forwards().await;
                             self.finish_session_datagram_no_route(
                                 datagram,
                                 received_len,
@@ -173,10 +176,12 @@ impl Node {
                     }
                 } else {
                     self.flush_prepared_session_forwards(&mut forwards).await;
+                    self.drain_deferred_session_forwards().await;
                     self.handle_session_datagram(datagram).await;
                 }
             } else {
                 self.flush_prepared_session_forwards(&mut forwards).await;
+                self.drain_deferred_session_forwards().await;
                 self.dispatch_link_message(AuthenticatedLinkMessage::new(
                     fmp.source_peer,
                     msg_type,
@@ -216,37 +221,224 @@ impl Node {
             return;
         }
         // These two stages are intentionally one sample per forwarding run,
-        // not one sample per packet. `TransitTotal` covers the complete flush
-        // and receipt accounting; `TransitSubmit` covers the dataplane pump.
+        // not one sample per packet. Receipt accounting may finish on a later
+        // RX-loop turn; this timer covers bounded admission and the first pump.
         let _total_timer =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::TransitTotal);
+        let mut waiting = std::mem::take(forwards);
+        while !waiting.is_empty() {
+            let waiting_len = waiting.len();
+            let mut outbound = Vec::with_capacity(waiting.len());
+            let mut blocked = Vec::new();
+            let activity_tick = crate::dataplane::ActivityTick::new(Self::now_ms());
+            for mut forward in waiting {
+                let lane = forwarding_lane(&forward);
+                if !self.deferred_session_forwards.has_capacity(&forward, lane) {
+                    blocked.push(forward);
+                    continue;
+                }
+                let next_hop_addr = forward.next_hop_addr;
+                let outgoing_ce = forward.outgoing_ce;
+                let plaintext = std::mem::take(&mut forward.plaintext);
+                match self.prepare_dataplane_fmp_link_outbound(
+                    next_hop_addr,
+                    plaintext,
+                    outgoing_ce,
+                    activity_tick,
+                ) {
+                    Ok((packet, send_token)) => {
+                        let inserted = self
+                            .deferred_session_forwards
+                            .insert(send_token, forward, lane);
+                        debug_assert!(inserted, "forwarding capacity changed without an await");
+                        outbound.push(packet);
+                    }
+                    Err(error) => self
+                        .deferred_session_forwards
+                        .push_completed(forward, Err(error)),
+                }
+            }
 
-        let outbound = forwards
-            .iter_mut()
-            .map(|forward| {
-                (
-                    forward.next_hop_addr,
-                    std::mem::take(&mut forward.plaintext),
-                    forward.outgoing_ce,
-                )
-            })
-            .collect();
-        let results = {
-            let _submit_timer =
-                crate::perf_profile::Timer::start(crate::perf_profile::Stage::TransitSubmit);
-            self.send_dataplane_fmp_link_plaintext_batch(outbound).await
-        };
+            if !outbound.is_empty() {
+                let crypto_limit = outbound.len();
+                let turn = {
+                    let _submit_timer = crate::perf_profile::Timer::start(
+                        crate::perf_profile::Stage::TransitSubmit,
+                    );
+                    self.pump_dataplane_pending_outbound_firsts(
+                        crate::dataplane::DataplaneLiveOutboundFirsts {
+                            initial_outbound_batch: outbound,
+                            collect_transport_sent_receipts: true,
+                            ..Default::default()
+                        },
+                        0,
+                        0,
+                        crypto_limit,
+                    )
+                    .await
+                };
+                self.defer_dataplane_control_turn(turn);
+            }
+            self.finish_completed_session_forwards().await;
+
+            if blocked.is_empty() {
+                break;
+            }
+            if blocked.len() == waiting_len {
+                self.drain_one_deferred_session_forward_turn().await;
+            }
+            waiting = blocked;
+        }
+    }
+
+    pub(in crate::node) fn collect_deferred_session_forward_terminals(
+        &mut self,
+        turn: &mut crate::dataplane::DataplaneLiveNodeTurn,
+    ) -> usize {
+        let mut completed = 0usize;
+        let receipts = turn.extract_transport_sent_receipts(|receipt| {
+            receipt
+                .send_token
+                .is_some_and(|token| self.deferred_session_forwards.contains(token))
+        });
+        for receipt in receipts {
+            let Some(send_token) = receipt.send_token else {
+                continue;
+            };
+            let Some(next_hop_addr) = self.deferred_session_forwards.pending_next_hop(send_token)
+            else {
+                continue;
+            };
+            let result = if let Some(timestamp_ms) = receipt.fmp_timestamp_ms {
+                let bytes_sent = receipt.payload_len;
+                self.dataplane.record_fmp_mmp_send_result(
+                    &next_hop_addr,
+                    receipt.counter,
+                    timestamp_ms,
+                    bytes_sent,
+                );
+                let _ = self
+                    .peers
+                    .record_fmp_send_bookkeeping(&next_hop_addr, bytes_sent);
+                let send_result: Result<usize, crate::transport::TransportError> = Ok(bytes_sent);
+                self.note_local_send_outcome(&next_hop_addr, &send_result);
+                Ok(())
+            } else {
+                Err(NodeError::SendFailed {
+                    node_addr: next_hop_addr,
+                    reason: "dataplane FMP timestamp missing".into(),
+                })
+            };
+            completed = completed.saturating_add(usize::from(
+                self.deferred_session_forwards.complete(send_token, result),
+            ));
+        }
+
+        let output_drops = turn.extract_output_drops(|drop| {
+            drop.send_token()
+                .is_some_and(|token| self.deferred_session_forwards.contains(token))
+        });
+        for drop in output_drops {
+            let Some(send_token) = drop.send_token() else {
+                continue;
+            };
+            let Some(next_hop_addr) = self.deferred_session_forwards.pending_next_hop(send_token)
+            else {
+                continue;
+            };
+            let error = self.dataplane_fmp_output_drop_error(next_hop_addr, &drop);
+            completed = completed.saturating_add(usize::from(
+                self.deferred_session_forwards
+                    .complete(send_token, Err(error)),
+            ));
+        }
+
+        let drops = turn.extract_drops(|drop| {
+            drop.send_token()
+                .is_some_and(|token| self.deferred_session_forwards.contains(token))
+        });
+        for drop in drops {
+            let Some(send_token) = drop.send_token() else {
+                continue;
+            };
+            let Some(next_hop_addr) = self.deferred_session_forwards.pending_next_hop(send_token)
+            else {
+                continue;
+            };
+            let error = NodeError::SendFailed {
+                node_addr: next_hop_addr,
+                reason: format!("dataplane FMP packet dropped: {:?}", drop.reason()),
+            };
+            completed = completed.saturating_add(usize::from(
+                self.deferred_session_forwards
+                    .complete(send_token, Err(error)),
+            ));
+        }
+        completed
+    }
+
+    pub(in crate::node) async fn finish_completed_session_forwards(&mut self) -> usize {
+        let mut processed = 0usize;
         let mut failed_routes = std::collections::HashSet::new();
-        for (forward, result) in std::mem::take(forwards).into_iter().zip(results) {
+        while let Some(completed) = self.deferred_session_forwards.pop_completed() {
             let record_route_failure = claim_route_failure_once(
                 &mut failed_routes,
-                forward.dest_addr,
-                forward.next_hop_addr,
-                result.is_err(),
+                completed.forward.dest_addr,
+                completed.forward.next_hop_addr,
+                completed.result.is_err(),
             );
-            self.finish_prepared_session_forward(forward, result, record_route_failure)
-                .await;
+            self.finish_prepared_session_forward(
+                completed.forward,
+                completed.result,
+                record_route_failure,
+            )
+            .await;
+            processed = processed.saturating_add(1);
         }
+        processed
+    }
+
+    async fn drain_one_deferred_session_forward_turn(&mut self) -> usize {
+        let pending_before = self.deferred_session_forwards.pending_len();
+        if pending_before == 0 {
+            return self.finish_completed_session_forwards().await;
+        }
+        let turn = self
+            .pump_dataplane_pending_outbound_firsts(
+                crate::dataplane::DataplaneLiveOutboundFirsts {
+                    collect_transport_sent_receipts: true,
+                    ..Default::default()
+                },
+                0,
+                0,
+                pending_before.min(forwarding_submission_limit(
+                    self.dataplane_transport_send_batch_packets,
+                )),
+            )
+            .await;
+        self.defer_dataplane_control_turn(turn);
+        let processed = self.finish_completed_session_forwards().await;
+        if self.deferred_session_forwards.pending_len() >= pending_before {
+            self.wait_for_dataplane_completion().await;
+        }
+        processed
+    }
+
+    pub(in crate::node) async fn drain_deferred_session_forwards(&mut self) -> usize {
+        let mut processed = self.finish_completed_session_forwards().await;
+        while self.deferred_session_forwards.pending_len() > 0 {
+            processed =
+                processed.saturating_add(self.drain_one_deferred_session_forward_turn().await);
+        }
+        processed
+    }
+
+    pub(in crate::node) async fn abort_deferred_session_forwards(
+        &mut self,
+        reason: &'static str,
+    ) -> usize {
+        self.deferred_session_forwards.abort_pending(reason);
+        self.finish_completed_session_forwards().await
     }
 
     async fn prepare_session_datagram(
@@ -811,6 +1003,16 @@ fn forward_run_reached_limit(run_len: usize, configured_limit: usize) -> bool {
     run_len >= configured_limit.max(1)
 }
 
+fn forwarding_lane(forward: &PreparedSessionForward) -> ForwardingLane {
+    if crate::node::endpoint_traffic::fmp_plaintext_is_bulk_session_datagram(
+        forward.plaintext.as_slice(),
+    ) {
+        ForwardingLane::Bulk
+    } else {
+        ForwardingLane::Priority
+    }
+}
+
 fn forwarding_submission_limit(transport_batch_packets: usize) -> usize {
     transport_batch_packets
         .clamp(1, crate::dataplane::DATAPLANE_TRANSPORT_SEND_BATCH_PACKETS)
@@ -820,6 +1022,91 @@ fn forwarding_submission_limit(transport_batch_packets: usize) -> usize {
 #[cfg(test)]
 mod forwarding_fast_path_tests {
     use super::*;
+
+    fn pending_test_forward(owner: u8, source: u8, dest: u8) -> PreparedSessionForward {
+        PreparedSessionForward {
+            next_hop_addr: NodeAddr::from_bytes([owner; 16]),
+            src_addr: NodeAddr::from_bytes([source; 16]),
+            dest_addr: NodeAddr::from_bytes([dest; 16]),
+            outgoing_ce: false,
+            received_len: 100,
+            encoded_len: 101,
+            plaintext: PacketBuffer::default(),
+        }
+    }
+
+    #[test]
+    fn forwarding_window_bounds_saturated_owner_and_source_but_admits_peer() {
+        let mut deferred = DeferredSessionForwards::default();
+        for token in 0..FORWARDING_BULK_OWNER_IN_FLIGHT as u64 {
+            assert!(deferred.insert(token, pending_test_forward(1, 2, 3), ForwardingLane::Bulk,));
+        }
+        let saturated = pending_test_forward(1, 2, 3);
+        assert!(!deferred.has_capacity(&saturated, ForwardingLane::Bulk));
+        assert!(deferred.has_capacity(&pending_test_forward(4, 5, 6), ForwardingLane::Bulk,));
+        assert!(deferred.has_capacity(&saturated, ForwardingLane::Priority));
+        for token in 1_000..1_000 + FORWARDING_PRIORITY_OWNER_IN_FLIGHT as u64 {
+            assert!(deferred.insert(
+                token,
+                pending_test_forward(1, 2, 3),
+                ForwardingLane::Priority,
+            ));
+        }
+        assert!(!deferred.has_capacity(&saturated, ForwardingLane::Priority));
+    }
+
+    #[test]
+    fn deferred_forward_receipts_complete_out_of_order_without_count_leaks() {
+        let mut deferred = DeferredSessionForwards::default();
+        for token in 1..=3 {
+            assert!(deferred.insert(
+                token,
+                pending_test_forward(token as u8, token as u8, 9),
+                ForwardingLane::Bulk,
+            ));
+        }
+        assert!(deferred.complete(3, Ok(())));
+        assert!(deferred.complete(1, Ok(())));
+        assert!(!deferred.complete(999, Ok(())));
+        assert!(deferred.complete(2, Ok(())));
+        assert_eq!(deferred.pending_len(), 0);
+        assert!(deferred.window.is_empty());
+        let completed_owners: Vec<_> = std::iter::from_fn(|| deferred.pop_completed())
+            .map(|completed| completed.forward.next_hop_addr)
+            .collect();
+        assert_eq!(
+            completed_owners,
+            vec![
+                NodeAddr::from_bytes([3; 16]),
+                NodeAddr::from_bytes([1; 16]),
+                NodeAddr::from_bytes([2; 16]),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_abort_finishes_every_forward_and_matches_stats() {
+        let mut node = Node::new(crate::Config::new()).expect("test node");
+        assert!(node.deferred_session_forwards.insert(
+            1,
+            pending_test_forward(1, 2, 3),
+            ForwardingLane::Bulk,
+        ));
+        assert!(node.deferred_session_forwards.insert(
+            2,
+            pending_test_forward(4, 5, 6),
+            ForwardingLane::Priority,
+        ));
+
+        assert_eq!(
+            node.abort_deferred_session_forwards("test shutdown").await,
+            2
+        );
+        assert_eq!(node.deferred_session_forwards.pending_len(), 0);
+        assert!(node.deferred_session_forwards.window.is_empty());
+        assert!(node.deferred_session_forwards.completed.is_empty());
+        assert_eq!(node.stats().forwarding.drop_send_error_packets, 2);
+    }
 
     #[test]
     fn borrowed_forward_encoder_matches_owned_session_datagram_encode() {

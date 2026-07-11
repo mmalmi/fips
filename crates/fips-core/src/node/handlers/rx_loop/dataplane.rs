@@ -68,6 +68,8 @@ impl Node {
         turn: &mut crate::dataplane::DataplaneLiveNodeTurn,
     ) -> usize {
         let mut processed = 0usize;
+        self.collect_deferred_session_forward_terminals(turn);
+        processed = processed.saturating_add(self.finish_completed_session_forwards().await);
         let fmp_crypto_failures: Vec<_> = turn
             .drops()
             .iter()

@@ -223,6 +223,9 @@ pub struct Node {
     dataplane: DataplaneNode,
     /// Control ingress surfaced while a synchronous dataplane send is waiting.
     deferred_dataplane_control_turns: VecDeque<DataplaneLiveNodeTurn>,
+    /// Transit sends admitted to dataplane whose terminal receipts may arrive
+    /// on a later receive-loop turn.
+    deferred_session_forwards: handlers::forwarding::DeferredSessionForwards,
     /// Pre-routed established FMP packets accepted directly from UDP receive.
     dataplane_fast_ingress_rx: Option<DataplaneFastIngressRx>,
     /// Direct-FSP transport-address classifier published to packet ingress.

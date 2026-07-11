@@ -350,24 +350,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn fmp_batch_tokens_map_out_of_order_receipts_and_drops_to_input_slots() {
-        let first = NodeAddr::from_bytes([0x11; 16]);
-        let second = NodeAddr::from_bytes([0x22; 16]);
-        let third = NodeAddr::from_bytes([0x33; 16]);
-        let mut pending = std::collections::HashMap::from([
-            (101, (0, first)),
-            (102, (1, second)),
-            (103, (2, third)),
-        ]);
-
-        assert_eq!(take_fmp_batch_pending(&mut pending, 103), Some((2, third)));
-        assert_eq!(take_fmp_batch_pending(&mut pending, 101), Some((0, first)));
-        assert_eq!(take_fmp_batch_pending(&mut pending, 999), None);
-        assert_eq!(take_fmp_batch_pending(&mut pending, 102), Some((1, second)));
-        assert!(pending.is_empty());
-    }
-
     #[tokio::test]
     async fn fmp_owner_sync_routes_current_pending_and_previous_receive_indices() {
         let mut node = Node::new(Config::new()).unwrap();

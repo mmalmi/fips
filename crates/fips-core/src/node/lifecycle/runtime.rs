@@ -1,6 +1,7 @@
 use super::*;
 
 const SHUTDOWN_DISCONNECT_BUDGET: Duration = Duration::from_millis(100);
+const SHUTDOWN_FORWARDING_DRAIN_BUDGET: Duration = Duration::from_millis(100);
 
 async fn disconnect_notifications_within_shutdown_budget<F>(notifications: F) -> bool
 where
@@ -379,6 +380,19 @@ impl Node {
         }
         self.state = NodeState::Stopping;
         info!(state = %self.state, "Node stopping");
+
+        if tokio::time::timeout(
+            SHUTDOWN_FORWARDING_DRAIN_BUDGET,
+            self.drain_deferred_session_forwards(),
+        )
+        .await
+        .is_err()
+        {
+            let aborted = self
+                .abort_deferred_session_forwards("node stopped before forwarding receipt")
+                .await;
+            warn!(aborted, "Forwarding drain budget expired during shutdown");
+        }
 
         // Stop DNS responder
         if let Some(handle) = self.dns_task.take() {

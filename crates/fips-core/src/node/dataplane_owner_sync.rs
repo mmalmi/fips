@@ -429,7 +429,7 @@ impl Node {
         OwnerConfig::new(generation, in_flight_limit)
     }
 
-    fn dataplane_fmp_output_drop_error(
+    pub(in crate::node) fn dataplane_fmp_output_drop_error(
         &self,
         node_addr: NodeAddr,
         drop: &DataplaneOutputDrop,
