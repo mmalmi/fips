@@ -1,6 +1,12 @@
 include!("helpers_and_edges.rs");
+include!("helpers_wire.rs");
 include!("aead_runtime_owner.rs");
+include!("aead_owner_inbound.rs");
+include!("aead_owner_activity.rs");
+include!("aead_completion.rs");
+include!("aead_completion_tail.rs");
 include!("live_routes_and_outputs.rs");
 include!("live_node_runtime.rs");
+include!("live_node_runtime_tail.rs");
 include!("live_node_session_ingress.rs");
 include!("live_node_runtime_output.rs");
