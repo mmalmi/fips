@@ -168,6 +168,14 @@ async fn test_async_udp_socket_send_recv() {
     assert_eq!(*gro_segment_size, 0);
 }
 
+#[cfg(unix)]
+#[tokio::test(start_paused = true)]
+async fn stalled_control_send_hits_total_deadline() {
+    let result = super::platform::bounded_control_send(std::future::pending()).await;
+
+    assert!(matches!(result, Err(TransportError::Timeout)));
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn send_batch_to_sends_vectored_payloads() {

@@ -1,5 +1,16 @@
 use super::*;
 
+const SHUTDOWN_DISCONNECT_BUDGET: Duration = Duration::from_millis(100);
+
+async fn disconnect_notifications_within_shutdown_budget<F>(notifications: F) -> bool
+where
+    F: std::future::Future<Output = ()>,
+{
+    tokio::time::timeout(SHUTDOWN_DISCONNECT_BUDGET, notifications)
+        .await
+        .is_ok()
+}
+
 impl Node {
     // === State Transitions ===
 
@@ -376,8 +387,16 @@ impl Node {
         }
 
         // Send disconnect notifications to all active peers before closing transports
-        self.send_disconnect_to_all_peers(DisconnectReason::Shutdown)
-            .await;
+        if !disconnect_notifications_within_shutdown_budget(
+            self.send_disconnect_to_all_peers(DisconnectReason::Shutdown),
+        )
+        .await
+        {
+            warn!(
+                budget_ms = SHUTDOWN_DISCONNECT_BUDGET.as_millis(),
+                "Disconnect notification budget expired; continuing shutdown"
+            );
+        }
 
         // Stop Nostr overlay discovery background work and withdraw any advert.
         if let Some(bootstrap) = self.nostr_discovery.take()
@@ -514,5 +533,20 @@ impl Node {
                 false
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn disconnect_notifications_share_one_shutdown_budget() {
+        let started = tokio::time::Instant::now();
+        let completed =
+            disconnect_notifications_within_shutdown_budget(std::future::pending::<()>()).await;
+
+        assert!(!completed);
+        assert_eq!(started.elapsed(), SHUTDOWN_DISCONNECT_BUDGET);
     }
 }

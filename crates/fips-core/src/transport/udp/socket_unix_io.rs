@@ -83,19 +83,22 @@
             data: &[u8],
             dest: &SocketAddr,
         ) -> Result<usize, TransportError> {
-            loop {
-                let mut guard = self
-                    .inner
-                    .writable()
-                    .await
-                    .map_err(|e| TransportError::SendFailed(format!("writable wait: {}", e)))?;
+            bounded_control_send(async {
+                loop {
+                    let mut guard = self.inner.writable().await.map_err(|e| {
+                        TransportError::SendFailed(format!("writable wait: {}", e))
+                    })?;
 
-                match guard.try_io(|inner| inner.get_ref().send_to(data, dest)) {
-                    Ok(Ok(n)) => return Ok(n),
-                    Ok(Err(e)) => return Err(TransportError::SendFailed(format!("{}", e))),
-                    Err(_would_block) => continue,
+                    match guard.try_io(|inner| inner.get_ref().send_to(data, dest)) {
+                        Ok(Ok(n)) => return Ok(n),
+                        Ok(Err(e)) => {
+                            return Err(TransportError::SendFailed(format!("{}", e)));
+                        }
+                        Err(_would_block) => continue,
+                    }
                 }
-            }
+            })
+            .await
         }
 
         /// Receive a payload, source address, kernel drop counter, and
@@ -183,6 +186,21 @@
                     Err(_would_block) => continue,
                 }
             }
+        }
+    }
+
+    const UDP_CONTROL_SEND_TIMEOUT: std::time::Duration =
+        std::time::Duration::from_millis(100);
+
+    pub(super) async fn bounded_control_send<F>(
+        send: F,
+    ) -> Result<usize, TransportError>
+    where
+        F: std::future::Future<Output = Result<usize, TransportError>>,
+    {
+        match tokio::time::timeout(UDP_CONTROL_SEND_TIMEOUT, send).await {
+            Ok(result) => result,
+            Err(_) => Err(TransportError::Timeout),
         }
     }
 

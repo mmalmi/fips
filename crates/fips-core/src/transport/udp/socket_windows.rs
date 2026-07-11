@@ -2,6 +2,9 @@
 mod platform {
     use super::*;
 
+    const UDP_CONTROL_SEND_TIMEOUT: std::time::Duration =
+        std::time::Duration::from_millis(100);
+
     /// UDP socket wrapper (Windows).
     ///
     /// Uses `socket2::Socket` for configuration and `tokio::net::UdpSocket`
@@ -140,10 +143,14 @@ mod platform {
             data: &[u8],
             dest: &SocketAddr,
         ) -> Result<usize, TransportError> {
-            self.inner
-                .send_to(data, dest)
+            match tokio::time::timeout(UDP_CONTROL_SEND_TIMEOUT, self.inner.send_to(data, dest))
                 .await
-                .map_err(|e| TransportError::SendFailed(format!("{}", e)))
+            {
+                Ok(result) => {
+                    result.map_err(|e| TransportError::SendFailed(format!("{}", e)))
+                }
+                Err(_) => Err(TransportError::Timeout),
+            }
         }
 
         /// Receive a payload, source address, kernel drop counter, and
