@@ -195,6 +195,7 @@
 
         let turn = live_node
             .pump_completion_output_turn_with_transport_batch(
+                false,
                 DataplaneLiveTurnIo {
                     endpoint_data_rx: &mut endpoint_data_rx,
                     endpoint_limit: 0,
@@ -322,6 +323,7 @@
             .unwrap();
         let completion_turn = live_node
             .pump_completion_output_turn_with_transport_batch(
+                false,
                 DataplaneLiveTurnIo {
                     endpoint_data_rx: &mut endpoint_data_rx,
                     endpoint_limit: 0,
@@ -356,6 +358,7 @@
         wait_for_live_worker_completion(&live_node).await;
         let second_turn = live_node
             .pump_completion_output_turn_with_transport_batch(
+                false,
                 DataplaneLiveTurnIo {
                     endpoint_data_rx: &mut endpoint_data_rx,
                     endpoint_limit: 0,

@@ -25,6 +25,7 @@ impl Node {
                 firsts,
                 limits.packet,
                 direct_fsp_sources,
+                self.has_deferred_session_forwards(),
                 DataplaneLiveTurnIo {
                     endpoint_data_rx: &mut *io.endpoint_data_rx,
                     endpoint_limit: limits.endpoint,
@@ -48,16 +49,19 @@ impl Node {
     ) -> crate::dataplane::DataplaneLiveNodeTurn {
         let turn = self
             .dataplane
-            .pump_completion_output_turn_with_transport_batch(DataplaneLiveTurnIo {
-                endpoint_data_rx: &mut *io.endpoint_data_rx,
-                endpoint_limit: 0,
-                tun_outbound_rx: &mut *io.tun_outbound_rx,
-                tun_limit: 0,
-                endpoint_tx: io.endpoint_tx,
-                transports: &self.transports,
-                crypto_limit,
-                transport_send_batch_packets: self.dataplane_transport_send_batch_packets,
-            })
+            .pump_completion_output_turn_with_transport_batch(
+                self.has_deferred_session_forwards(),
+                DataplaneLiveTurnIo {
+                    endpoint_data_rx: &mut *io.endpoint_data_rx,
+                    endpoint_limit: 0,
+                    tun_outbound_rx: &mut *io.tun_outbound_rx,
+                    tun_limit: 0,
+                    endpoint_tx: io.endpoint_tx,
+                    transports: &self.transports,
+                    crypto_limit,
+                    transport_send_batch_packets: self.dataplane_transport_send_batch_packets,
+                },
+            )
             .await;
         Self::observe_dataplane_turn(&turn);
         turn

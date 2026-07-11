@@ -71,6 +71,7 @@ include!("session_handoff.rs");
 include!("live_output.rs");
 include!("live_transport.rs");
 include!("turn.rs");
+include!("turn_extract.rs");
 include!("runtime.rs");
 include!("runtime_io.rs");
 include!("live_node.rs");

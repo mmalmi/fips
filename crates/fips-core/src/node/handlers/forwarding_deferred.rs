@@ -204,3 +204,9 @@ impl DeferredSessionForwards {
         self.completed.pop_front()
     }
 }
+
+impl Node {
+    pub(in crate::node) fn has_deferred_session_forwards(&self) -> bool {
+        self.deferred_session_forwards.pending_len() > 0
+    }
+}

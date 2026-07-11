@@ -705,6 +705,7 @@ impl DataplaneLiveNode {
 
     pub(crate) async fn pump_completion_output_turn_with_transport_batch(
         &mut self,
+        collect_transport_sent_receipts: bool,
         io: DataplaneLiveTurnIo<'_>,
     ) -> DataplaneLiveNodeTurn {
         let crypto_limit = io.crypto_limit;
@@ -720,7 +721,10 @@ impl DataplaneLiveNode {
                 None,
                 &mut empty_raw_ingress,
                 raw_ingress_limit,
-                DataplaneLiveOutboundFirsts::default(),
+                DataplaneLiveOutboundFirsts {
+                    collect_transport_sent_receipts,
+                    ..Default::default()
+                },
                 DataplaneLiveTurnIo {
                     endpoint_limit: 0,
                     tun_limit: 0,
@@ -738,6 +742,7 @@ impl DataplaneLiveNode {
         firsts: DataplaneLiveTurnFirsts,
         packet_limit: usize,
         direct_fsp_sources: DataplaneDirectFspSources,
+        collect_transport_sent_receipts: bool,
         io: DataplaneLiveTurnIo<'_>,
     ) -> DataplaneLiveNodeTurn {
         let DataplaneLiveTurnFirsts {
@@ -750,6 +755,7 @@ impl DataplaneLiveNode {
         let outbound_firsts = DataplaneLiveOutboundFirsts {
             endpoint_data_batch,
             tun_packet,
+            collect_transport_sent_receipts,
             ..Default::default()
         };
         let mut direct_fsp_reassembler = std::mem::take(&mut self.direct_fsp_reassembler);
