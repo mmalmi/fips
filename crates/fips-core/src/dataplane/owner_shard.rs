@@ -1,3 +1,8 @@
+/// Bound one owner's dispatch share while another owner in the same shard is
+/// runnable. Eight packets is the dataplane's existing AEAD fairness quantum;
+/// a lone owner still receives the caller's complete run limit.
+const DATAPLANE_OUTBOUND_OWNER_FAIRNESS_PACKETS: usize = 8;
+
 #[derive(Debug)]
 struct DataplaneOwnerShard {
     index: usize,
@@ -412,7 +417,18 @@ impl DataplaneOwnerShard {
         let mut attempts_remaining = self.outbound_admission.len();
         let mut prepared_run: Option<PreparedCryptoRun> = None;
         while dispatched < limit && attempts_remaining > 0 {
-            let run_limit = limit.saturating_sub(dispatched);
+            let remaining = limit.saturating_sub(dispatched);
+            let ready_lens = self.outbound_admission.ready_lens();
+            let ready_owners = if priority_only {
+                ready_lens.0
+            } else {
+                ready_lens.0.saturating_add(ready_lens.1)
+            };
+            let run_limit = if ready_owners > 1 {
+                remaining.min(DATAPLANE_OUTBOUND_OWNER_FAIRNESS_PACKETS)
+            } else {
+                remaining
+            };
             let Some(cursor) = self.outbound_admission.pop_next_run_into(
                 priority_only,
                 run_limit,

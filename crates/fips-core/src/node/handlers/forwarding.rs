@@ -23,6 +23,12 @@ use crate::transport::PacketBuffer;
 use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
+/// Keep several transport-sized sends admitted while AEAD workers and the
+/// socket lane make progress. The receive loop bounds an ingress turn at 512
+/// packets; half of that budget is a deep enough pipeline without letting a
+/// single forwarding flush monopolize the node loop.
+const FORWARDING_IN_FLIGHT_TRANSPORT_BATCHES: usize = 4;
+
 struct PreparedSessionForward {
     next_hop_addr: NodeAddr,
     src_addr: NodeAddr,
@@ -105,7 +111,7 @@ impl Node {
         ingresses: Vec<crate::dataplane::DataplaneFmpLinkIngress>,
     ) -> usize {
         let mut processed = 0usize;
-        let flush_limit = self.dataplane_transport_send_batch_packets.max(1);
+        let flush_limit = forwarding_submission_limit(self.dataplane_transport_send_batch_packets);
         let mut forwards = Vec::with_capacity(ingresses.len().min(flush_limit));
         for ingress in ingresses {
             let receipt = ingress.receipt();
@@ -805,6 +811,12 @@ fn forward_run_reached_limit(run_len: usize, configured_limit: usize) -> bool {
     run_len >= configured_limit.max(1)
 }
 
+fn forwarding_submission_limit(transport_batch_packets: usize) -> usize {
+    transport_batch_packets
+        .clamp(1, crate::dataplane::DATAPLANE_TRANSPORT_SEND_BATCH_PACKETS)
+        .saturating_mul(FORWARDING_IN_FLIGHT_TRANSPORT_BATCHES)
+}
+
 #[cfg(test)]
 mod forwarding_fast_path_tests {
     use super::*;
@@ -899,10 +911,16 @@ mod forwarding_fast_path_tests {
     }
 
     #[test]
-    fn forwarding_run_flushes_at_transport_batch_limit() {
-        assert!(!forward_run_reached_limit(63, 64));
-        assert!(forward_run_reached_limit(64, 64));
-        assert!(forward_run_reached_limit(1, 0));
+    fn forwarding_submission_window_pipelines_four_transport_batches() {
+        let limit = forwarding_submission_limit(64);
+        assert_eq!(limit, 256);
+        assert!(!forward_run_reached_limit(255, limit));
+        assert!(forward_run_reached_limit(256, limit));
+
+        let minimum = forwarding_submission_limit(0);
+        assert_eq!(minimum, 4);
+        assert!(forward_run_reached_limit(4, minimum));
+        assert_eq!(forwarding_submission_limit(usize::MAX), 256);
     }
 
     #[test]

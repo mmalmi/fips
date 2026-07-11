@@ -1,0 +1,73 @@
+#[test]
+fn outbound_dispatch_gives_same_shard_peer_progress_under_saturated_bulk() {
+    let mut mover = Dataplane::new(AdmissionConfig::new(16, 512));
+    let saturated = fmp_owner(7_200);
+    let saturated_shard = mover.owner_shard_index(saturated);
+    let other = (7_201..8_000)
+        .map(fmp_owner)
+        .find(|owner| mover.owner_shard_index(*owner) == saturated_shard)
+        .expect("same-shard test owner");
+    mover.register_owner(saturated, OwnerConfig::new(1, 512));
+    mover.register_owner(other, OwnerConfig::new(1, 512));
+
+    let saturated_run = (0..256)
+        .map(|_| outbound_packet(saturated, 1, PacketClass::Bulk, b"saturated"))
+        .collect();
+    assert_eq!(mover.submit_outbound_packet_batch(saturated_run), (256, 0));
+    mover
+        .submit_outbound_packet(outbound_packet(other, 1, PacketClass::Bulk, b"other"))
+        .unwrap();
+
+    let dispatched = dispatch_outbound_available(&mut mover, 16);
+    assert!(
+        dispatched
+            .iter()
+            .any(|work| work.reservation.owner == other),
+        "a saturated owner must yield a bounded dispatch quantum to another peer in the same shard"
+    );
+}
+
+#[test]
+fn outbound_dispatch_keeps_full_quantum_for_a_lone_peer() {
+    let mut mover = Dataplane::new(AdmissionConfig::new(16, 512));
+    let owner = fmp_owner(8_000);
+    mover.register_owner(owner, OwnerConfig::new(1, 512));
+    let run = (0..256)
+        .map(|_| outbound_packet(owner, 1, PacketClass::Bulk, b"single-peer"))
+        .collect();
+    assert_eq!(mover.submit_outbound_packet_batch(run), (256, 0));
+
+    let dispatched = dispatch_outbound_available(&mut mover, 64);
+    assert_eq!(dispatched.len(), 64);
+    assert!(
+        dispatched
+            .iter()
+            .all(|work| work.reservation.owner == owner)
+    );
+}
+
+#[test]
+fn outbound_priority_peer_precedes_saturated_bulk_peer() {
+    let mut mover = Dataplane::new(AdmissionConfig::new(16, 512));
+    let saturated = fmp_owner(8_200);
+    let priority = fmp_owner(8_201);
+    mover.register_owner(saturated, OwnerConfig::new(1, 512));
+    mover.register_owner(priority, OwnerConfig::new(1, 512));
+
+    let saturated_run = (0..256)
+        .map(|_| outbound_packet(saturated, 1, PacketClass::Bulk, b"saturated"))
+        .collect();
+    assert_eq!(mover.submit_outbound_packet_batch(saturated_run), (256, 0));
+    mover
+        .submit_outbound_packet(outbound_packet(
+            priority,
+            1,
+            PacketClass::Liveness,
+            b"priority",
+        ))
+        .unwrap();
+
+    let dispatched = dispatch_outbound_available(&mut mover, 8);
+    assert_eq!(dispatched[0].reservation.owner, priority);
+    assert_eq!(dispatched[0].reservation.lane, Lane::Priority);
+}
