@@ -718,6 +718,89 @@ fn aead_turn_runner_missing_keys_retires_failed_work_and_releases_in_flight() {
 }
 
 #[test]
+fn failed_fsp_authentication_does_not_advance_replay_window() {
+    let owner = fsp_owner(714);
+    let open_key = 41;
+    let mut mover = mover();
+    mover.register_owner(owner, OwnerConfig::new(1, 8));
+    mover
+        .owner_mut(owner)
+        .unwrap()
+        .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(open_key)));
+
+    mover
+        .submit_socket_packet(SocketPacket::new(
+            owner,
+            1,
+            9_000,
+            FSP_HEADER_SIZE as u16,
+            PacketClass::Bulk,
+            OutputTarget::Transport,
+            PacketBuffer::new(fsp_encrypted_wire(9_000, 0, b"sibling", open_key + 1)),
+        ))
+        .unwrap();
+    let failed = run_aead_available(&mut mover, 8);
+    assert_eq!(failed.drops().len(), 1);
+    assert_eq!(failed.drops()[0].reason(), PacketDropReason::CryptoFailed);
+
+    mover
+        .submit_socket_packet(SocketPacket::new(
+            owner,
+            1,
+            0,
+            FSP_HEADER_SIZE as u16,
+            PacketClass::Bulk,
+            OutputTarget::Transport,
+            PacketBuffer::new(fsp_encrypted_wire(0, 0, b"approval", open_key)),
+        ))
+        .unwrap();
+    let accepted = run_aead_available(&mut mover, 8);
+    assert!(accepted.drops().is_empty(), "{:?}", accepted.drops());
+    assert_eq!(
+        &accepted.outputs()[0].payload.as_slice()[FSP_HEADER_SIZE..],
+        b"approval"
+    );
+}
+
+#[test]
+fn authenticated_fsp_counter_still_rejects_a_later_reserved_old_counter() {
+    let owner = fsp_owner(715);
+    let open_key = 42;
+    let mut mover = mover();
+    mover.register_owner(owner, OwnerConfig::new(1, 8));
+    mover
+        .owner_mut(owner)
+        .unwrap()
+        .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(open_key)));
+
+    for (counter, payload) in [(9_000, b"new".as_slice()), (0, b"old".as_slice())] {
+        mover
+            .submit_socket_packet(SocketPacket::new(
+                owner,
+                1,
+                counter,
+                FSP_HEADER_SIZE as u16,
+                PacketClass::Bulk,
+                OutputTarget::Transport,
+                PacketBuffer::new(fsp_encrypted_wire(counter, 0, payload, open_key)),
+            ))
+            .unwrap();
+    }
+
+    let turn = run_aead_available(&mut mover, 8);
+    assert_eq!(turn.outputs().len(), 1);
+    assert_eq!(
+        &turn.outputs()[0].payload.as_slice()[FSP_HEADER_SIZE..],
+        b"new"
+    );
+    assert!(
+        turn.drops()
+            .iter()
+            .any(|drop| drop.reason() == PacketDropReason::Replay && drop.counter() == Some(0))
+    );
+}
+
+#[test]
 fn rekey_clears_owner_crypto_keys_and_restarts_send_counter() {
     let owner = fmp_owner(72);
     let mut mover = mover();

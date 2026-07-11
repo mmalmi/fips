@@ -443,6 +443,7 @@ pub(crate) struct OwnerReservation {
     ce_flag: bool,
     path_mtu: u16,
     wire_flags: u8,
+    receive_k_bit: Option<bool>,
     source_peer: Option<crate::PeerIdentity>,
     output_path: Option<TransportPath>,
     activity_tick: Option<ActivityTick>,
@@ -753,6 +754,7 @@ pub(crate) struct OwnerState {
     consecutive_decrypt_failures: u32,
     authenticated_counter_highest: u64,
     replay_window: ReplayWindow,
+    pending_replay_counters: std::collections::HashSet<(bool, u64)>,
     previous_fmp_replay_window: Option<ReplayWindow>,
     previous_fsp_replay_window: Option<ReplayWindow>,
     pending: VecDeque<OwnerRetireSlot>,
@@ -818,6 +820,7 @@ impl OwnerState {
             consecutive_decrypt_failures: 0,
             authenticated_counter_highest: 0,
             replay_window: ReplayWindow::default(),
+            pending_replay_counters: std::collections::HashSet::new(),
             previous_fmp_replay_window: None,
             previous_fsp_replay_window: None,
             pending: VecDeque::new(),
@@ -827,6 +830,7 @@ impl OwnerState {
     pub(crate) fn rekey(&mut self, generation: u64) {
         self.generation = generation;
         self.replay_window.clear();
+        self.pending_replay_counters.clear();
         self.next_send_counter = 0;
         self.send_counter_authority = None;
         self.crypto_keys = None;
@@ -1152,6 +1156,50 @@ impl OwnerState {
         }
     }
 
+    fn complete_replay_reservation(
+        &mut self,
+        reservation: &OwnerReservation,
+        authenticated: bool,
+    ) -> bool {
+        let Some(receive_k_bit) = reservation.receive_k_bit else {
+            return true;
+        };
+        let was_pending = self
+            .pending_replay_counters
+            .remove(&(receive_k_bit, reservation.counter));
+        if !authenticated {
+            return true;
+        }
+        was_pending
+            && self
+                .replay_window_for_k_bit_mut(receive_k_bit)
+                .is_some_and(|window| window.accept(reservation.counter))
+    }
+
+    fn replay_window_for_k_bit_mut(&mut self, receive_k_bit: bool) -> Option<&mut ReplayWindow> {
+        match self.owner.protocol() {
+            PacketProtocol::Fmp if self.fmp_current_k_bit == receive_k_bit => {
+                Some(&mut self.replay_window)
+            }
+            PacketProtocol::Fmp if self.pending_fmp_k_bit == Some(receive_k_bit) => {
+                self.pending_fmp_replay_window.as_mut()
+            }
+            PacketProtocol::Fmp if self.fmp_previous_draining_k_bit == Some(receive_k_bit) => {
+                self.previous_fmp_replay_window.as_mut()
+            }
+            PacketProtocol::Fsp if self.fsp_current_k_bit == receive_k_bit => {
+                Some(&mut self.replay_window)
+            }
+            PacketProtocol::Fsp if self.pending_fsp_k_bit == Some(receive_k_bit) => {
+                self.pending_fsp_replay_window.as_mut()
+            }
+            PacketProtocol::Fsp if self.fsp_previous_draining_k_bit == Some(receive_k_bit) => {
+                self.previous_fsp_replay_window.as_mut()
+            }
+            _ => None,
+        }
+    }
+
     fn uses_previous_fmp_receive_epoch(&self, packet: &SocketPacket) -> bool {
         if self.owner.protocol() != PacketProtocol::Fmp {
             return false;
@@ -1446,7 +1494,7 @@ impl OwnerState {
             &mut self.replay_window
         };
 
-        if !replay_window.accept(packet.counter) {
+        if !replay_window.can_accept(packet.counter) {
             return Err(OwnerReserveError::Replay);
         }
         let receive_epoch = if use_previous_fmp_epoch || use_previous_fsp_epoch {
@@ -1456,6 +1504,16 @@ impl OwnerState {
         } else {
             DataplaneReceiveEpoch::Current
         };
+        let receive_k_bit = match self.owner.protocol() {
+            PacketProtocol::Fmp => packet.wire_flags & crate::node::wire::FLAG_KEY_EPOCH != 0,
+            PacketProtocol::Fsp => packet.wire_flags & crate::node::session_wire::FSP_FLAG_K != 0,
+        };
+        if !self
+            .pending_replay_counters
+            .insert((receive_k_bit, packet.counter))
+        {
+            return Err(OwnerReserveError::Replay);
+        }
         if let Some(path) = packet.source_path.clone() {
             self.active_path = Some(path);
         }
@@ -1480,6 +1538,7 @@ impl OwnerState {
                 ce_flag: packet.ce_flag,
                 path_mtu: packet.path_mtu,
                 wire_flags: packet.wire_flags,
+                receive_k_bit: Some(receive_k_bit),
                 source_peer: self.source_peer,
                 output_path: None,
                 activity_tick: packet.activity_tick,
@@ -1563,6 +1622,7 @@ impl OwnerState {
             ce_flag: false,
             path_mtu,
             wire_flags: 0,
+            receive_k_bit: None,
             source_peer: self.source_peer,
             output_path,
             activity_tick: packet.activity_tick,
@@ -2143,6 +2203,7 @@ impl OwnerState {
                     &mut slot,
                     slot_limit,
                     retired,
+                    drops,
                     compact_endpoint_data,
                 )
             } else {
@@ -2175,6 +2236,7 @@ impl OwnerState {
         slot: &mut OwnerRetireSlot,
         limit: usize,
         retired: &mut DataplaneRetiredOutputSink<'_>,
+        drops: &mut Vec<PacketDrop>,
         compact_endpoint_data: bool,
     ) -> usize {
         let mut endpoint_data_batch: Option<DataplaneEndpointDataBatch> = None;
@@ -2183,6 +2245,14 @@ impl OwnerState {
         let mut direct_enqueued_at_ms = None;
         let received_at = std::time::Instant::now();
         let drained = slot.drain_results(limit, |completion| {
+            if !self.complete_replay_reservation(&completion.reservation, true) {
+                drops.push(PacketDrop::from_completion(
+                    &completion,
+                    PacketDropReason::Replay,
+                    None,
+                ));
+                return;
+            }
             let CryptoResult::Opened(output) = completion.result else {
                 unreachable!("open FSP session payload slot contains only opened outputs");
             };
@@ -2228,6 +2298,18 @@ impl OwnerState {
         drops: &mut Vec<PacketDrop>,
         compact_endpoint_data: bool,
     ) {
+        let replay_accepted = self.complete_replay_reservation(
+            &completion.reservation,
+            matches!(&completion.result, CryptoResult::Opened(_)),
+        );
+        if matches!(&completion.result, CryptoResult::Opened(_)) && !replay_accepted {
+            drops.push(PacketDrop::from_completion(
+                &completion,
+                PacketDropReason::Replay,
+                None,
+            ));
+            return;
+        }
         match completion.result {
             CryptoResult::Opened(output) => {
                 self.authenticated_counter_highest = self
@@ -2363,6 +2445,17 @@ impl ReplayWindow {
         }
 
         self.set_counter_bit(counter)
+    }
+
+    fn can_accept(&self, counter: u64) -> bool {
+        let Some(highest) = self.highest else {
+            return true;
+        };
+        if counter > highest {
+            return true;
+        }
+        let behind = highest - counter;
+        behind <= REPLAY_WINDOW_SIZE && self.ring[ring_index(counter)] & counter_bit(counter) == 0
     }
 
     fn advance(&mut self, highest: u64, counter: u64) {
