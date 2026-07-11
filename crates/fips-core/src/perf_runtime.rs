@@ -351,7 +351,6 @@ fn record_wait_threshold(event: Event, elapsed_ns: u64, count: u64, threshold_ns
 }
 
 /// Record Linux `sendmmsg(2)` UDP batches submitted by the dataplane send side.
-
 #[inline]
 #[cfg(target_os = "linux")]
 pub(crate) fn record_udp_send_sendmmsg_batch(packets: usize) {

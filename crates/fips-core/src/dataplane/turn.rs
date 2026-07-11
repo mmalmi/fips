@@ -961,10 +961,8 @@ impl DataplaneLiveNodeTurn {
 
     fn absorb(&mut self, mut other: Self) {
         self.summary.absorb(other.summary);
-        self.fmp_control_ingress
-            .append(&mut other.fmp_control_ingress);
-        self.fmp_ingress_receipts
-            .append(&mut other.fmp_ingress_receipts);
+        self.fmp_control_ingress.append(&mut other.fmp_control_ingress);
+        self.fmp_ingress_receipts.append(&mut other.fmp_ingress_receipts);
         self.fmp_link_ingress.append(&mut other.fmp_link_ingress);
         self.fsp_coord_warmups.append(&mut other.fsp_coord_warmups);
         self.fsp_local_session_ingress
@@ -972,10 +970,8 @@ impl DataplaneLiveNodeTurn {
         self.fsp_authenticated_ingress
             .append(&mut other.fsp_authenticated_ingress);
         self.raw_ingress_drops.append(&mut other.raw_ingress_drops);
-        self.tun_outbound_drops
-            .append(&mut other.tun_outbound_drops);
-        self.endpoint_data_drops
-            .append(&mut other.endpoint_data_drops);
+        self.tun_outbound_drops.append(&mut other.tun_outbound_drops);
+        self.endpoint_data_drops.append(&mut other.endpoint_data_drops);
         self.tun_source_drained = self
             .tun_source_drained
             .saturating_add(other.tun_source_drained);

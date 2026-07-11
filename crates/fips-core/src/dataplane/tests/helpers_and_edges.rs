@@ -212,7 +212,8 @@
         _pool: &mut DataplaneAeadWorkerPool,
         mover: &Dataplane,
     ) {
-        for _ in 0..100 {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
             if mover
                 .shards
                 .iter()
@@ -318,13 +319,15 @@
             if dispatched == 0 {
                 break;
             }
-            summary = drain_worker_pool_into_driver(
-                driver,
-                summary,
-                &mut pool,
-                worker_dispatched,
-                compact_endpoint_data,
-            );
+            if worker_dispatched > 0 {
+                summary = drain_worker_pool_into_driver(
+                    driver,
+                    summary,
+                    &mut pool,
+                    worker_dispatched,
+                    compact_endpoint_data,
+                );
+            }
         }
         summary.outputs = driver.outputs.len();
         summary.drops = driver.drops.len();
@@ -365,13 +368,15 @@
             if dispatched == 0 {
                 break;
             }
-            summary = drain_worker_pool_into_driver(
-                driver,
-                summary,
-                &mut pool,
-                worker_dispatched,
-                compact_endpoint_data,
-            );
+            if worker_dispatched > 0 {
+                summary = drain_worker_pool_into_driver(
+                    driver,
+                    summary,
+                    &mut pool,
+                    worker_dispatched,
+                    compact_endpoint_data,
+                );
+            }
         }
         summary.outputs = driver.outputs.len();
         summary.drops = driver.drops.len();

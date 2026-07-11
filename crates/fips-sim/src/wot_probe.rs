@@ -146,12 +146,16 @@ impl WotProbeRuntime {
         let network_delta = self.network.stats().delta_since(&before);
         let timed_out = received_payload.is_empty();
         let valid_payload = !timed_out && received_payload == expected_payload;
-        let useful_bytes = valid_payload
-            .then_some(received_payload.len())
-            .unwrap_or_default();
-        let junk_bytes = (!valid_payload && !timed_out)
-            .then_some(received_payload.len())
-            .unwrap_or_default();
+        let useful_bytes = if valid_payload {
+            received_payload.len()
+        } else {
+            0
+        };
+        let junk_bytes = if !valid_payload && !timed_out {
+            received_payload.len()
+        } else {
+            0
+        };
         let metrics = probe_metrics_for_profile(peer.profile);
         let transfer = WotProbeTransfer {
             received_payload,
@@ -575,6 +579,7 @@ fn signed_peer_advert_event(keys: &nostr::Keys, node_index: usize, app: &str) ->
     .expect("sim advert event signs")
 }
 
+#[allow(clippy::too_many_arguments)]
 fn signed_rating_fact_event(
     keys: &nostr::Keys,
     rater_npub: &str,

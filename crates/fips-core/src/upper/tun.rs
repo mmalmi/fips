@@ -389,7 +389,7 @@ impl TunDevice {
     pub fn read_packet(&mut self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
         #[cfg(target_os = "linux")]
         {
-            return self.device.read_packet(buf);
+            self.device.read_packet(buf)
         }
 
         #[cfg(target_os = "macos")]
@@ -419,7 +419,7 @@ impl TunDevice {
     fn as_raw_fd(&self) -> std::os::unix::io::RawFd {
         #[cfg(target_os = "linux")]
         {
-            return self.device.as_raw_fd();
+            self.device.as_raw_fd()
         }
 
         #[cfg(target_os = "macos")]
