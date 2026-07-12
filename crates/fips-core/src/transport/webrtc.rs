@@ -412,20 +412,29 @@ impl WebRtcTransport {
 
     /// Close a WebRTC connection.
     pub async fn close_connection_async(&self, addr: &TransportAddr) {
-        let pending = self.pending.lock().await.remove(addr);
-        let conn = self.pool.lock().await.remove(addr);
-        self.failed.lock().await.remove(addr);
-        self.ready.lock().await.remove(addr);
+        cleanup_webrtc_session(
+            &self.pool,
+            &self.pending,
+            &self.failed,
+            &self.ready,
+            addr,
+            None,
+            None,
+        )
+        .await;
+    }
 
-        // Logical eviction happens before potentially slow library cleanup so
-        // a canceled close future cannot leave the address reserved forever.
-        if let Some(pending) = pending {
-            close_peer_connection_bounded(pending.pc).await;
-        }
-        if let Some(conn) = conn {
-            close_data_channel_bounded(conn.data_channel).await;
-            close_peer_connection_bounded(conn.pc).await;
-        }
+    /// Schedule connection cleanup from synchronous node-lifecycle paths.
+    pub fn close_connection_detached(&self, addr: &TransportAddr) {
+        spawn_webrtc_session_cleanup(
+            Arc::clone(&self.pool),
+            Arc::clone(&self.pending),
+            Arc::clone(&self.failed),
+            Arc::clone(&self.ready),
+            addr.clone(),
+            None,
+            None,
+        );
     }
 }
 
@@ -459,6 +468,81 @@ async fn close_data_channel_bounded(data_channel: Arc<RTCDataChannel>) {
 
 async fn close_peer_connection_bounded(peer_connection: Arc<RTCPeerConnection>) {
     let _ = tokio::time::timeout(WEBRTC_IO_TIMEOUT, peer_connection.close()).await;
+}
+
+async fn cleanup_webrtc_session(
+    pool: &ConnectionPool,
+    pending: &PendingPool,
+    failed: &FailedPool,
+    ready: &ReadyPool,
+    addr: &TransportAddr,
+    expected_session: Option<&str>,
+    failure: Option<String>,
+) -> bool {
+    let connection = {
+        let mut pool = pool.lock().await;
+        if pool.get(addr).is_some_and(|connection| {
+            expected_session.is_none_or(|session| connection.session_id == session)
+        }) {
+            pool.remove(addr)
+        } else {
+            None
+        }
+    };
+    let pending_dial = {
+        let mut pending = pending.lock().await;
+        if pending
+            .get(addr)
+            .is_some_and(|dial| expected_session.is_none_or(|session| dial.session_id == session))
+        {
+            pending.remove(addr)
+        } else {
+            None
+        }
+    };
+    let removed = connection.is_some() || pending_dial.is_some();
+    if removed || expected_session.is_none() {
+        ready.lock().await.remove(addr);
+        let mut failed = failed.lock().await;
+        failed.remove(addr);
+        if let Some(reason) = failure {
+            failed.insert(addr.clone(), reason);
+        }
+    }
+
+    // Logical eviction happens before potentially slow library cleanup so a
+    // canceled close future cannot leave the address or its ICE sockets alive.
+    if let Some(pending) = pending_dial {
+        close_peer_connection_bounded(pending.pc).await;
+    }
+    if let Some(connection) = connection {
+        close_data_channel_bounded(connection.data_channel).await;
+        close_peer_connection_bounded(connection.pc).await;
+    }
+    removed
+}
+
+fn spawn_webrtc_session_cleanup(
+    pool: ConnectionPool,
+    pending: PendingPool,
+    failed: FailedPool,
+    ready: ReadyPool,
+    addr: TransportAddr,
+    expected_session: Option<String>,
+    failure: Option<String>,
+) {
+    tokio::spawn(async move {
+        cleanup_webrtc_session(
+            &pool,
+            &pending,
+            &failed,
+            &ready,
+            &addr,
+            expected_session.as_deref(),
+            failure,
+        )
+        .await;
+    });
 }
 
 include!("webrtc_runtime.rs");

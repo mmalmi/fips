@@ -97,3 +97,61 @@ async fn stalled_webrtc_send_times_out_and_starts_cleanup() {
     assert!(cleanup_started.load(Ordering::SeqCst));
     assert!(started.elapsed() < Duration::from_millis(100));
 }
+
+#[tokio::test]
+async fn terminal_session_cleanup_closes_the_peer_connection() {
+    let identity = crate::Identity::generate();
+    let (packet_tx, _packet_rx) = packet_channel(1);
+    let transport = WebRtcTransport::new(
+        TransportId::new(1),
+        None,
+        WebRtcConfig::default(),
+        packet_tx,
+        &identity,
+        &NostrDiscoveryConfig::default(),
+    )
+    .expect("WebRTC transport");
+    let pc = Arc::new(
+        transport
+            .api
+            .new_peer_connection(RTCConfiguration::default())
+            .await
+            .expect("peer connection"),
+    );
+    let data_channel = pc
+        .create_data_channel("cleanup-test", None)
+        .await
+        .expect("data channel");
+    let addr = TransportAddr::from_string(
+        "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    transport.pool.lock().await.insert(
+        addr.clone(),
+        WebRtcConnection {
+            session_id: "cleanup-session".to_string(),
+            pc: Arc::clone(&pc),
+            data_channel,
+        },
+    );
+    transport.ready.lock().await.insert(addr.clone());
+
+    let removed = cleanup_webrtc_session(
+        &transport.pool,
+        &transport.pending,
+        &transport.failed,
+        &transport.ready,
+        &addr,
+        Some("cleanup-session"),
+        Some("peer disconnected".to_string()),
+    )
+    .await;
+
+    assert!(removed);
+    assert!(!transport.pool.lock().await.contains_key(&addr));
+    assert!(!transport.ready.lock().await.contains(&addr));
+    assert_eq!(
+        transport.failed.lock().await.get(&addr).map(String::as_str),
+        Some("peer disconnected")
+    );
+    assert_eq!(pc.connection_state(), RTCPeerConnectionState::Closed);
+}

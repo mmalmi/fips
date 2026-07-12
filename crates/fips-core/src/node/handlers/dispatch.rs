@@ -217,8 +217,14 @@ impl Node {
             let _ = self.index_allocator.free(session_index.index);
         }
 
-        // Remove link and address mapping
-        self.remove_link(&link_id);
+        // Remove the link before scheduling physical transport cleanup. WebRTC
+        // peers otherwise disappear logically while their ICE sockets remain
+        // open until the process reaches its file-descriptor limit.
+        if let Some(link) = self.remove_link(&link_id)
+            && let Some(transport) = self.transports.get(&link.transport_id())
+        {
+            transport.close_connection_detached(link.remote_addr());
+        }
         if let Some(transport_id) = transport_id {
             self.cleanup_bootstrap_transport_if_unused(transport_id);
         }

@@ -392,6 +392,14 @@ impl TransportHandle {
         }
     }
 
+    /// Schedule cleanup for a connection removed by a synchronous node path.
+    pub fn close_connection_detached(&self, _addr: &TransportAddr) {
+        #[cfg(feature = "webrtc-transport")]
+        if let TransportHandle::WebRtc(transport) = self {
+            transport.close_connection_detached(_addr);
+        }
+    }
+
     /// Check if transport is operational.
     pub fn is_operational(&self) -> bool {
         self.state().is_operational()

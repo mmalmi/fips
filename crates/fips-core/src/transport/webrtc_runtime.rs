@@ -493,38 +493,15 @@ fn wire_peer_connection_state(
             if !webrtc_peer_state_is_terminal(state) {
                 return;
             }
-
-            let removed_connection = {
-                let mut pool = pool.lock().await;
-                if pool
-                    .get(&peer_addr)
-                    .is_some_and(|connection| connection.session_id == peer_session)
-                {
-                    pool.remove(&peer_addr);
-                    true
-                } else {
-                    false
-                }
-            };
-            let removed_pending = {
-                let mut pending = pending.lock().await;
-                if pending
-                    .get(&peer_addr)
-                    .is_some_and(|dial| dial.session_id == peer_session)
-                {
-                    pending.remove(&peer_addr);
-                    true
-                } else {
-                    false
-                }
-            };
-            if removed_connection || removed_pending {
-                ready.lock().await.remove(&peer_addr);
-                failed.lock().await.insert(
-                    peer_addr.clone(),
-                    format!("WebRTC peer connection became {state}"),
-                );
-            }
+            spawn_webrtc_session_cleanup(
+                pool,
+                pending,
+                failed,
+                ready,
+                peer_addr,
+                Some(peer_session),
+                Some(format!("WebRTC peer connection became {state}")),
+            );
         })
     }));
 }
@@ -681,41 +658,25 @@ fn wire_data_channel(
     let close_session = session_id;
     let close_pool = Arc::clone(&runtime.pool);
     let close_pending = Arc::clone(&runtime.pending);
+    let close_failed = Arc::clone(&runtime.failed);
     let close_ready = Arc::clone(&runtime.ready);
     data_channel.on_close(Box::new(move || {
         let close_addr = close_addr.clone();
         let close_session = close_session.clone();
         let close_pool = Arc::clone(&close_pool);
         let close_pending = Arc::clone(&close_pending);
+        let close_failed = Arc::clone(&close_failed);
         let close_ready = Arc::clone(&close_ready);
         Box::pin(async move {
-            let removed_connection = {
-                let mut pool = close_pool.lock().await;
-                if pool
-                    .get(&close_addr)
-                    .is_some_and(|connection| connection.session_id == close_session)
-                {
-                    pool.remove(&close_addr);
-                    true
-                } else {
-                    false
-                }
-            };
-            let removed_pending = {
-                let mut pending = close_pending.lock().await;
-                if pending
-                    .get(&close_addr)
-                    .is_some_and(|pending| pending.session_id == close_session)
-                {
-                    pending.remove(&close_addr);
-                    true
-                } else {
-                    false
-                }
-            };
-            if removed_connection || removed_pending {
-                close_ready.lock().await.remove(&close_addr);
-            }
+            spawn_webrtc_session_cleanup(
+                close_pool,
+                close_pending,
+                close_failed,
+                close_ready,
+                close_addr,
+                Some(close_session),
+                None,
+            );
         })
     }));
 }
