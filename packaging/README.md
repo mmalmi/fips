@@ -151,3 +151,16 @@ and maintainer guide.
 
 - `fips.yaml` — default configuration (ephemeral identity, UDP/TCP/TUN/DNS)
 - `hosts` — static hostname-to-npub mappings for `.fips` DNS resolution
+
+## Functional health probe
+
+Debian packages include `fips-health-probe`, which creates a fresh ephemeral
+endpoint and requires a configured target to complete Nostr discovery,
+authenticated WebRTC/FMP setup, and a target-attributed ICMPv6 echo over FSP.
+It never contains a built-in gateway identity and does not restart the daemon.
+
+To opt in, copy
+`/usr/share/doc/fips/fips-health-probe.env.example` to
+`/etc/fips/fips-health-probe.env`, set `FIPS_HEALTH_TARGET_NPUB`, and enable
+`fips-healthcheck.timer`. Without that file the packaged timer is safely
+skipped.

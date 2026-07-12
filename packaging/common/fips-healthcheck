@@ -1,31 +1,25 @@
 #!/bin/sh
 set -eu
 
-FIPSCTL=${FIPSCTL:-$(command -v fipsctl || true)}
-TIMEOUT_SECONDS=${FIPS_HEALTH_TIMEOUT_SECONDS:-8}
+PROBE=${FIPS_HEALTH_PROBE:-$(command -v fips-health-probe || true)}
+TARGET_NPUB=${FIPS_HEALTH_TARGET_NPUB:-}
+TIMEOUT_SECONDS=${FIPS_HEALTH_TIMEOUT_SECONDS:-25}
+APP=${FIPS_HEALTH_APP:-fips-overlay-v1}
 
-if [ -z "$FIPSCTL" ]; then
-    echo "fips-healthcheck: fipsctl not found" >&2
+if [ -z "$PROBE" ]; then
+    echo "fips-healthcheck: fips-health-probe not found" >&2
     exit 1
 fi
 
-status=$(timeout "$TIMEOUT_SECONDS" "$FIPSCTL" show status) || {
-    echo "fips-healthcheck: control query failed" >&2
+if [ -z "$TARGET_NPUB" ]; then
+    echo "fips-healthcheck: FIPS_HEALTH_TARGET_NPUB is not configured" >&2
     exit 1
-}
+fi
 
-case "$status" in
-    *'"state": "running"'*) ;;
-    *)
-        echo "fips-healthcheck: daemon did not report running state" >&2
-        exit 1
-        ;;
-esac
+set -- --target-npub "$TARGET_NPUB" --timeout-seconds "$TIMEOUT_SECONDS" --app "$APP"
+for relay in ${FIPS_HEALTH_RELAYS:-}; do
+    set -- "$@" --relay "$relay"
+done
 
-case "$status" in
-    *'"control_socket"'*) ;;
-    *)
-        echo "fips-healthcheck: status response is incomplete" >&2
-        exit 1
-        ;;
-esac
+outer_timeout=$((TIMEOUT_SECONDS + 8))
+timeout "$outer_timeout" "$PROBE" "$@"

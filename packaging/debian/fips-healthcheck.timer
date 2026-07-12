@@ -1,11 +1,11 @@
 [Unit]
-Description=Run the functional FIPS health check
+Description=Run the end-to-end FIPS WebRTC and FSP health probe
 
 [Timer]
 OnBootSec=30s
-OnUnitActiveSec=30s
-RandomizedDelaySec=5s
-AccuracySec=1s
+OnUnitInactiveSec=60s
+RandomizedDelaySec=10s
+AccuracySec=5s
 Persistent=true
 Unit=fips-healthcheck.service
 

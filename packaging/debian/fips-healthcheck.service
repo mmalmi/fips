@@ -1,11 +1,17 @@
 [Unit]
-Description=Functional FIPS control-plane health check
-After=fips.service
-OnFailure=fips-health-recover.service
+Description=End-to-end FIPS WebRTC and FSP health probe
+After=network-online.target fips.service
+Wants=network-online.target
+ConditionPathExists=/etc/fips/fips-health-probe.env
 
 [Service]
 Type=oneshot
-User=fips
-Group=fips
+DynamicUser=yes
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+EnvironmentFile=/etc/fips/fips-health-probe.env
 ExecStart=/usr/lib/fips/fips-healthcheck
+TimeoutStartSec=35s
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+NoNewPrivileges=yes
