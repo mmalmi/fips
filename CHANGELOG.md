@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.93] - 2026-07-12
+
+### Changed
+
+- Paced LAN discovery scans and reduced idle LAN and Nostr discovery work.
+
+### Fixed
+
+- Closed native WebRTC peer connections when their logical FIPS peers are
+  removed or the data channel becomes terminal, releasing ICE UDP sockets
+  instead of exhausting the daemon's file descriptors under repeated
+  short-lived browser and health-probe sessions.
+- Bumped `fips-endpoint` to 0.3.60 so app-facing consumers select
+  `fips-core` 0.3.93.
+
 ## [0.3.92] - 2026-07-12
 
 ### Fixed
