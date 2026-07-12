@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [0.3.92] - 2026-07-12
 
 ### Fixed
 
@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   window instead of consuming its retry budget on unrelated dataplane turns,
   preventing busy relays from dropping the first application packet before
   session ownership is installed.
+- Bumped `fips-endpoint` to 0.3.59 so app-facing consumers select
+  `fips-core` 0.3.92.
 
 ## [0.3.89] - 2026-07-11
 
