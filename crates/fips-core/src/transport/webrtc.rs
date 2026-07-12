@@ -30,7 +30,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex, mpsc};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, info, trace, warn};
 
 const WEBRTC_PROTOCOL: &str = "fips-webrtc-v1";
@@ -39,6 +39,7 @@ const SIGNAL_TTL_MS: u64 = 60_000;
 const WEBRTC_READY_FRAME: &[u8] = &[0xff, 0x46, 0x57, 0x52, 0x31]; // FWR1
 const WEBRTC_READY_FALLBACK_MS: u64 = 250;
 const WEBRTC_IO_TIMEOUT: Duration = Duration::from_secs(1);
+const MAX_WEBRTC_SIGNAL_TASKS: usize = 32;
 
 mod signaling;
 
@@ -212,11 +213,35 @@ impl WebRtcTransport {
             signaling: signaling.sender(),
         };
         self.signal_task = Some(tokio::spawn(async move {
-            while let Some(incoming) = signal_rx.recv().await {
-                if let Err(err) = runtime.handle_incoming_signal(incoming).await {
-                    trace!(error = %err, "failed to handle WebRTC signal");
+            let max_tasks = runtime
+                .config
+                .max_connections()
+                .clamp(1, MAX_WEBRTC_SIGNAL_TASKS);
+            let mut tasks = JoinSet::new();
+            loop {
+                tokio::select! {
+                    completed = tasks.join_next(), if !tasks.is_empty() => {
+                        if let Some(Err(err)) = completed {
+                            warn!(error = %err, "WebRTC signal task failed");
+                        }
+                    }
+                    incoming = signal_rx.recv() => {
+                        let Some(incoming) = incoming else { break };
+                        if tasks.len() >= max_tasks {
+                            warn!(max_tasks, "WebRTC signal dropped at handler limit");
+                            continue;
+                        }
+                        let runtime = runtime.clone();
+                        tasks.spawn(async move {
+                            if let Err(err) = runtime.handle_incoming_signal(incoming).await {
+                                trace!(error = %err, "failed to handle WebRTC signal");
+                            }
+                        });
+                    }
                 }
             }
+            tasks.abort_all();
+            while tasks.join_next().await.is_some() {}
         }));
 
         self.state = TransportState::Up;
