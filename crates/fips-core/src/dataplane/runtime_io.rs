@@ -86,7 +86,7 @@ impl DataplaneTurnDriver {
                         &mut summary,
                         raw_ingress_drops,
                         deferred_raw_ingress,
-                        0,
+                        None,
                     )
                 {
                     raw_socket_packets.push(socket_packet);
@@ -96,7 +96,7 @@ impl DataplaneTurnDriver {
                 .saturating_sub(fresh_drained)
                 .min(deferred_available);
             for _ in 0..deferred_limit {
-                let Some((packet, retry_count)) = deferred_raw_ingress.pop_front() else {
+                let Some((packet, deferred_at_ms)) = deferred_raw_ingress.pop_front() else {
                     break;
                 };
                 if let Some(socket_packet) = Self::raw_ingress_socket_packet(
@@ -105,7 +105,7 @@ impl DataplaneTurnDriver {
                     &mut summary,
                     raw_ingress_drops,
                     deferred_raw_ingress,
-                    retry_count,
+                    Some(deferred_at_ms),
                 ) {
                     raw_socket_packets.push(socket_packet);
                 }
@@ -236,8 +236,8 @@ impl DataplaneTurnDriver {
         router: &mut R,
         summary: &mut DataplaneRuntimeSummary,
         raw_ingress_drops: &mut Vec<DataplaneRawIngressDrop>,
-        deferred_raw_ingress: &mut std::collections::VecDeque<(DataplaneRawIngress, u8)>,
-        retry_count: u8,
+        deferred_raw_ingress: &mut std::collections::VecDeque<DataplaneDeferredRawIngress>,
+        deferred_at_ms: Option<u64>,
     ) -> Option<SocketPacket>
     where
         R: DataplaneIngressRouter,
@@ -269,12 +269,15 @@ impl DataplaneTurnDriver {
 
         let (counter, ciphertext_offset, wire_flags) = header.open_metadata();
         let Some(route) = router.route(&packet, header) else {
-            if packet.protocol == PacketProtocol::Fsp
-                && packet.fsp_source.is_some()
-                && retry_count < DATAPLANE_DEFERRED_RAW_INGRESS_MAX_RETRIES
-            {
-                deferred_raw_ingress.push_back((packet, retry_count.saturating_add(1)));
-                return None;
+            if packet.protocol == PacketProtocol::Fsp && packet.fsp_source.is_some() {
+                let now_ms = crate::time::now_ms();
+                let deferred_at_ms = deferred_at_ms.unwrap_or(now_ms);
+                if now_ms.saturating_sub(deferred_at_ms)
+                    <= DATAPLANE_DEFERRED_RAW_INGRESS_MAX_AGE_MS
+                {
+                    deferred_raw_ingress.push_back((packet, deferred_at_ms));
+                    return None;
+                }
             }
             summary.raw_ingress_dropped += 1;
             raw_ingress_drops.push(DataplaneRawIngressDrop::from_packet(
@@ -444,7 +447,7 @@ impl DataplaneTurnDriver {
         &mut self,
         router: &mut R,
         summary: &mut DataplaneRuntimeSummary,
-        deferred_raw_ingress: &mut std::collections::VecDeque<(DataplaneRawIngress, u8)>,
+        deferred_raw_ingress: &mut std::collections::VecDeque<DataplaneDeferredRawIngress>,
     ) -> usize
     where
         R: DataplaneIngressRouter,
@@ -472,7 +475,7 @@ impl DataplaneTurnDriver {
                                 summary,
                                 &mut self.raw_ingress_drops,
                                 deferred_raw_ingress,
-                                1,
+                                None,
                             ) {
                                 raw_socket_packets.push(socket_packet);
                             }
@@ -561,7 +564,7 @@ impl DataplaneTurnDriver {
         crypto_limit: usize,
         crypto_worker: &mut DataplaneAeadWorkerPool,
         compact_endpoint_data: bool,
-        deferred_raw_ingress: &mut std::collections::VecDeque<(DataplaneRawIngress, u8)>,
+        deferred_raw_ingress: &mut std::collections::VecDeque<DataplaneDeferredRawIngress>,
     ) -> DataplaneRuntimeSummary
     where
         R: DataplaneIngressRouter,

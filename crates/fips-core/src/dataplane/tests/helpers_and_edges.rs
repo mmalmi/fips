@@ -340,7 +340,7 @@
         router: &mut R,
         limit: usize,
         compact_endpoint_data: bool,
-        deferred_raw_ingress: &mut std::collections::VecDeque<(DataplaneRawIngress, u8)>,
+        deferred_raw_ingress: &mut std::collections::VecDeque<DataplaneDeferredRawIngress>,
     ) -> DataplaneRuntimeSummary
     where
         R: DataplaneIngressRouter,
@@ -485,7 +485,7 @@
             summary,
             &mut driver.raw_ingress_drops,
             &mut deferred_raw_ingress,
-            0,
+            None,
         ) else {
             return;
         };

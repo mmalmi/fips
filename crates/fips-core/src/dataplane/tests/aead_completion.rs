@@ -315,11 +315,11 @@ fn session_ingress_raw_handoff_defers_unrouted_fsp() {
     assert_eq!(summary.raw_ingress_dropped(), 0);
     assert_eq!(summary.inbound_admitted(), 0);
     assert!(driver.raw_ingress_drops.is_empty());
-    let (raw, retry_count) = deferred_raw_ingress
+    let (raw, deferred_at_ms) = deferred_raw_ingress
         .pop_front()
         .expect("unrouted sourced FSP packet should defer");
     assert!(deferred_raw_ingress.is_empty());
-    assert_eq!(retry_count, 2);
+    assert!(deferred_at_ms > 0);
     assert_eq!(raw.protocol, PacketProtocol::Fsp);
     assert_eq!(raw.fsp_source, Some(source_addr));
     assert_eq!(raw.previous_hop, Some(previous_hop));

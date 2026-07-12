@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+
+- Retained authenticated first-session FSP ingress for a bounded handshake
+  window instead of consuming its retry budget on unrelated dataplane turns,
+  preventing busy relays from dropping the first application packet before
+  session ownership is installed.
+
 ## [0.3.89] - 2026-07-11
 
 ### Added

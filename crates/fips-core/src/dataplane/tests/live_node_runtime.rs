@@ -229,10 +229,112 @@
         )
         .with_fsp_source(source);
         let mut live_node = DataplaneLiveNode::new(AdmissionConfig::new(4, 8));
-        live_node.deferred_raw_ingress.push_back((raw, 1));
+        live_node
+            .deferred_raw_ingress
+            .push_back((raw, crate::time::now_ms()));
 
         assert!(live_node.has_deferred_raw_ingress());
         assert!(!live_node.has_runnable_work());
+    }
+
+    #[tokio::test]
+    async fn deferred_first_session_ingress_survives_unrelated_completion_turns() {
+        let source = NodeAddr::from_bytes([0x76; 16]);
+        let raw = DataplaneRawIngress::from_live_received(
+            PacketProtocol::Fsp,
+            ReceivedPacket::with_timestamp(
+                TransportId::new(176),
+                TransportAddr::from_string("198.51.100.176:9000"),
+                PacketBuffer::new(fsp_wire(
+                    176,
+                    crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT,
+                )),
+                176_000,
+            ),
+        )
+        .with_fsp_source(source);
+        let mut node = crate::Node::new(crate::Config::new()).expect("node");
+        let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
+        let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
+        let (_tun_outbound_tx, mut tun_outbound_rx) =
+            crate::upper::tun::tun_outbound_channel(1);
+        let transports = HashMap::<TransportId, TransportHandle>::new();
+        let mut live_node = DataplaneLiveNode::new(AdmissionConfig::new(4, 8));
+        live_node
+            .deferred_raw_ingress
+            .push_back((raw, crate::time::now_ms()));
+
+        for _ in 0..16 {
+            let _turn = live_node
+                .pump_completion_output_turn_with_transport_batch(
+                    false,
+                    DataplaneLiveTurnIo {
+                        endpoint_data_rx: &mut endpoint_data_rx,
+                        endpoint_limit: 0,
+                        tun_outbound_rx: &mut tun_outbound_rx,
+                        tun_limit: 0,
+                        endpoint_tx: &endpoint_io.event_tx,
+                        transports: &transports,
+                        crypto_limit: 8,
+                        transport_send_batch_packets: 8,
+                    },
+                )
+                .await;
+        }
+
+        assert!(
+            live_node.has_deferred_raw_ingress(),
+            "first session data must remain queued until its handshake installs an owner",
+        );
+    }
+
+    #[tokio::test]
+    async fn deferred_first_session_ingress_expires_after_handshake_window() {
+        let source = NodeAddr::from_bytes([0x77; 16]);
+        let raw = DataplaneRawIngress::from_live_received(
+            PacketProtocol::Fsp,
+            ReceivedPacket::with_timestamp(
+                TransportId::new(177),
+                TransportAddr::from_string("198.51.100.177:9000"),
+                PacketBuffer::new(fsp_wire(
+                    177,
+                    crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT,
+                )),
+                177_000,
+            ),
+        )
+        .with_fsp_source(source);
+        let mut node = crate::Node::new(crate::Config::new()).expect("node");
+        let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
+        let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
+        let (_tun_outbound_tx, mut tun_outbound_rx) =
+            crate::upper::tun::tun_outbound_channel(1);
+        let transports = HashMap::<TransportId, TransportHandle>::new();
+        let mut live_node = DataplaneLiveNode::new(AdmissionConfig::new(4, 8));
+        live_node.deferred_raw_ingress.push_back((
+            raw,
+            crate::time::now_ms()
+                .saturating_sub(DATAPLANE_DEFERRED_RAW_INGRESS_MAX_AGE_MS + 1),
+        ));
+
+        let turn = live_node
+            .pump_completion_output_turn_with_transport_batch(
+                false,
+                DataplaneLiveTurnIo {
+                    endpoint_data_rx: &mut endpoint_data_rx,
+                    endpoint_limit: 0,
+                    tun_outbound_rx: &mut tun_outbound_rx,
+                    tun_limit: 0,
+                    endpoint_tx: &endpoint_io.event_tx,
+                    transports: &transports,
+                    crypto_limit: 8,
+                    transport_send_batch_packets: 8,
+                },
+            )
+            .await;
+
+        assert!(!live_node.has_deferred_raw_ingress());
+        assert_eq!(turn.summary.raw_ingress_dropped(), 1);
     }
 
     #[tokio::test]

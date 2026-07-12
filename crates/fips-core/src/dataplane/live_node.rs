@@ -148,7 +148,7 @@ pub(crate) struct DataplaneLiveNode {
     fast_ingress_capacity: usize,
     deferred_endpoint_data_batches: Vec<NodeEndpointDataBatch>,
     deferred_tun_packets: Vec<Vec<u8>>,
-    deferred_raw_ingress: VecDeque<(DataplaneRawIngress, u8)>,
+    deferred_raw_ingress: VecDeque<DataplaneDeferredRawIngress>,
     empty_raw_ingress: VecDeque<DataplaneRawIngress>,
     direct_fsp_reassembler: DataplaneDirectFspReassembler,
 }

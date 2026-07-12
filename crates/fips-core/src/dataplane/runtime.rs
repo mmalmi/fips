@@ -1,4 +1,6 @@
-const DATAPLANE_DEFERRED_RAW_INGRESS_MAX_RETRIES: u8 = 8;
+const DATAPLANE_DEFERRED_RAW_INGRESS_MAX_AGE_MS: u64 = 5_000;
+
+type DataplaneDeferredRawIngress = (DataplaneRawIngress, u64);
 
 #[derive(Debug)]
 pub(crate) struct DataplaneTurnDriver {
@@ -47,7 +49,7 @@ struct DataplaneLiveAdmissionRequest<'a, RI> {
     tun_outbound_rx: &'a mut TunOutboundRx,
     tun_limit: usize,
     outbound_firsts: DataplaneLiveOutboundFirsts,
-    deferred_raw_ingress: &'a mut std::collections::VecDeque<(DataplaneRawIngress, u8)>,
+    deferred_raw_ingress: &'a mut std::collections::VecDeque<DataplaneDeferredRawIngress>,
 }
 
 struct DataplaneLiveOutputRequest<'a> {
@@ -55,7 +57,7 @@ struct DataplaneLiveOutputRequest<'a> {
     routes: &'a mut DataplaneLiveRouteTable,
     endpoint_tx: &'a EndpointEventSender,
     transports: &'a HashMap<TransportId, TransportHandle>,
-    deferred_raw_ingress: &'a mut std::collections::VecDeque<(DataplaneRawIngress, u8)>,
+    deferred_raw_ingress: &'a mut std::collections::VecDeque<DataplaneDeferredRawIngress>,
     crypto_limit: usize,
     collect_transport_sent_receipts: bool,
     crypto_worker: &'a mut DataplaneAeadWorkerPool,
@@ -71,7 +73,7 @@ struct DataplaneLiveFinishRequest<'a> {
     collect_transport_sent_receipts: bool,
     crypto_worker: &'a mut DataplaneAeadWorkerPool,
     transport_send_batch_packets: usize,
-    deferred_raw_ingress: &'a mut std::collections::VecDeque<(DataplaneRawIngress, u8)>,
+    deferred_raw_ingress: &'a mut std::collections::VecDeque<DataplaneDeferredRawIngress>,
     deferred_endpoint_data_batches: &'a mut Vec<NodeEndpointDataBatch>,
     deferred_tun_packets: &'a mut Vec<Vec<u8>>,
 }
@@ -90,7 +92,7 @@ struct DataplaneLivePumpRequest<'a, RI> {
     outbound_firsts: DataplaneLiveOutboundFirsts,
     deferred_endpoint_data_batches: &'a mut Vec<NodeEndpointDataBatch>,
     deferred_tun_packets: &'a mut Vec<Vec<u8>>,
-    deferred_raw_ingress: &'a mut std::collections::VecDeque<(DataplaneRawIngress, u8)>,
+    deferred_raw_ingress: &'a mut std::collections::VecDeque<DataplaneDeferredRawIngress>,
     endpoint_tx: &'a EndpointEventSender,
     transports: &'a HashMap<TransportId, TransportHandle>,
     crypto_limit: usize,
