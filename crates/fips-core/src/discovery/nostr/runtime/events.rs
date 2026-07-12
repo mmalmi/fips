@@ -19,23 +19,6 @@ impl NostrDiscovery {
         out
     }
 
-    pub(crate) fn requeue_mesh_signal(&self, signal: MeshTraversalSignal) -> bool {
-        let (kind, peer_npub) = match &signal {
-            MeshTraversalSignal::Offer { peer_npub, .. } => ("offer", peer_npub.clone()),
-            MeshTraversalSignal::Answer { peer_npub, .. } => ("answer", peer_npub.clone()),
-        };
-        if let Err(error) = self.mesh_signal_tx.try_send(signal) {
-            debug!(
-                kind,
-                peer = %short_npub(&peer_npub),
-                error = %error,
-                "dropping deferred mesh traversal signal because node signal channel is full"
-            );
-            return false;
-        }
-        true
-    }
-
     pub(super) async fn emit_event(&self, event: BootstrapEvent) {
         let (kind, peer_npub) = match &event {
             BootstrapEvent::Established { traversal } => {

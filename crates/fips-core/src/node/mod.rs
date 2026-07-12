@@ -348,6 +348,9 @@ pub struct Node {
 
     /// Optional Nostr/STUN overlay discovery coordinator for `udp:nat` peers.
     nostr_discovery: Option<Arc<crate::discovery::nostr::NostrDiscovery>>,
+    /// Parsed traversal signals waiting for their end-to-end session. Keeping
+    /// them here avoids requeueing and reparsing npubs on every maintenance tick.
+    pending_mesh_signals: HashMap<NodeAddr, Vec<lifecycle::PendingMeshSignal>>,
     /// mDNS / DNS-SD responder + browser for local-link peer discovery.
     /// Identity is unverified at this layer — the Noise XX handshake
     /// initiated against an mDNS-observed endpoint is what proves the

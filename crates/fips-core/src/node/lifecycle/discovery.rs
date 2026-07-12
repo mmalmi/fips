@@ -334,7 +334,7 @@ impl Node {
         &mut self,
         bootstrap: &std::sync::Arc<NostrDiscovery>,
     ) {
-        let mut deferred = Vec::new();
+        self.flush_pending_mesh_signals().await;
 
         for signal in bootstrap.drain_mesh_signals().await {
             let (peer_npub, msg_type, payload) = match &signal {
@@ -394,7 +394,10 @@ impl Node {
             {
                 MeshSignalSessionAction::Send => {}
                 MeshSignalSessionAction::Defer => {
-                    deferred.push(signal);
+                    self.pending_mesh_signals
+                        .entry(peer_addr)
+                        .or_default()
+                        .push(super::PendingMeshSignal { msg_type, payload });
                     continue;
                 }
                 MeshSignalSessionAction::Drop => continue,
@@ -408,9 +411,36 @@ impl Node {
                 );
             }
         }
+    }
 
-        for signal in deferred {
-            bootstrap.requeue_mesh_signal(signal);
+    async fn flush_pending_mesh_signals(&mut self) {
+        let ready = self
+            .pending_mesh_signals
+            .keys()
+            .copied()
+            .filter(|peer_addr| {
+                self.sessions
+                    .get(peer_addr)
+                    .is_some_and(|entry| entry.is_established())
+            })
+            .collect::<Vec<_>>();
+        for peer_addr in ready {
+            let Some(signals) = self.pending_mesh_signals.remove(&peer_addr) else {
+                continue;
+            };
+            let mut failed = Vec::new();
+            for signal in signals {
+                if self
+                    .send_session_msg(&peer_addr, signal.msg_type, &signal.payload)
+                    .await
+                    .is_err()
+                {
+                    failed.push(signal);
+                }
+            }
+            if !failed.is_empty() {
+                self.pending_mesh_signals.insert(peer_addr, failed);
+            }
         }
     }
 

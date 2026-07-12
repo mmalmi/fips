@@ -6,6 +6,18 @@ use mdns_sd::ScopedIp;
 
 use super::{LanDiscovery, LanDiscoveryConfig, LanEvent};
 
+#[test]
+fn browse_windows_align_across_independent_processes() {
+    assert_eq!(
+        super::browse_window_delay_at(61_500),
+        Duration::from_millis(58_500)
+    );
+    assert_eq!(
+        super::browse_window_delay_at(120_000),
+        Duration::from_secs(60)
+    );
+}
+
 /// Distinct service type per test run so concurrent cargo-test workers
 /// on the same machine don't cross-feed each other's adverts via the
 /// shared 224.0.0.251 multicast group. The trailing `.local.` is

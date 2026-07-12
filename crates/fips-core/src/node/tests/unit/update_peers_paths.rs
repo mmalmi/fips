@@ -643,11 +643,14 @@ async fn configured_direct_refresh_ignores_traversal_cooldown_for_mesh_signal() 
     let mut node = Node::new(config).expect("node");
 
     let bootstrap = Arc::new(NostrDiscovery::new_for_test());
+    let now_ms = Node::now_ms();
     for i in 0..5 {
-        bootstrap.record_traversal_failure(&peer_config.npub, 1_000 + i * 1_000);
+        bootstrap.record_traversal_failure(&peer_config.npub, now_ms + i * 1_000);
     }
     assert!(
-        bootstrap.cooldown_until(&peer_config.npub, 6_000).is_some(),
+        bootstrap
+            .cooldown_until(&peer_config.npub, now_ms + 5_000)
+            .is_some(),
         "fixture should put the peer in traversal cooldown"
     );
     node.nostr_discovery = Some(bootstrap.clone());
@@ -660,6 +663,13 @@ async fn configured_direct_refresh_ignores_traversal_cooldown_for_mesh_signal() 
         bootstrap.active_initiator_count_for_test().await,
         1,
         "cooldown must not suppress immediate direct refresh probing for configured peers"
+    );
+
+    let mut mobile_peer = peer_config;
+    mobile_peer.auto_reconnect = false;
+    assert!(
+        !node.request_nostr_bootstrap(&mobile_peer).await,
+        "bounded mobile peers should stay quiet during traversal cooldown"
     );
 }
 
@@ -712,10 +722,17 @@ async fn mesh_signal_warms_session_instead_of_dropping_without_established_sessi
             .is_some_and(|entry| entry.is_initiating()),
         "mesh signal delivery should warm an end-to-end session over the existing mesh route"
     );
+    assert!(
+        bootstrap.drain_mesh_signals().await.is_empty(),
+        "deferred mesh signals must not be requeued into the per-tick discovery channel"
+    );
+    assert_eq!(nodes[0].node.pending_mesh_signals.len(), 1);
+
+    nodes[0].node.poll_nostr_discovery().await;
     assert_eq!(
-        bootstrap.drain_mesh_signals().await.len(),
+        nodes[0].node.pending_mesh_signals.len(),
         1,
-        "mesh signal should be deferred until the warmed session is established"
+        "waiting for session readiness must retain one parsed signal without duplicating it"
     );
 }
 

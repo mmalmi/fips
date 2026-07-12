@@ -12,9 +12,11 @@ use super::{
 use crate::config::{NostrDiscoveryConfig, WebRtcConfig};
 use ::webrtc::api::APIBuilder;
 use ::webrtc::api::media_engine::MediaEngine;
+use ::webrtc::api::setting_engine::SettingEngine;
 use ::webrtc::data_channel::RTCDataChannel;
 use ::webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use ::webrtc::data_channel::data_channel_message::DataChannelMessage;
+use ::webrtc::ice::mdns::MulticastDnsMode;
 use ::webrtc::ice_transport::ice_server::RTCIceServer;
 use ::webrtc::peer_connection::RTCPeerConnection;
 use ::webrtc::peer_connection::configuration::RTCConfiguration;
@@ -146,7 +148,17 @@ impl WebRtcTransport {
         media_engine
             .register_default_codecs()
             .map_err(|e| TransportError::StartFailed(e.to_string()))?;
-        let api = Arc::new(APIBuilder::new().with_media_engine(media_engine).build());
+        // Native FIPS LAN discovery is handled by the bounded `_fips._udp`
+        // browser. ICE mDNS creates one multicast listener per connection and
+        // can leak hundreds of sockets while retrying unreachable peers.
+        let mut setting_engine = SettingEngine::default();
+        setting_engine.set_ice_multicast_dns_mode(MulticastDnsMode::Disabled);
+        let api = Arc::new(
+            APIBuilder::new()
+                .with_media_engine(media_engine)
+                .with_setting_engine(setting_engine)
+                .build(),
+        );
 
         Ok(Self {
             transport_id,

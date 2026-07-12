@@ -146,7 +146,7 @@ impl Node {
     }
 
     pub(super) fn nostr_cooldown_applies_to_peer_config(&self, peer_config: &PeerConfig) -> bool {
-        !self.mesh_signaling_allowed_for_peer(peer_config)
+        !peer_config.auto_reconnect || !self.mesh_signaling_allowed_for_peer(peer_config)
     }
 
     pub(in crate::node) fn mesh_signaling_allowed_for_peer(
@@ -496,6 +496,7 @@ impl Node {
                         continue;
                     }
                     if let Some(state) = self.retry_pending.get_mut(&configured_addr)
+                        && state.peer_config.auto_reconnect
                         && state.retry_after_ms > now_ms
                     {
                         state.retry_after_ms = now_ms;

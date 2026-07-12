@@ -444,6 +444,23 @@ async fn duplicate_connect_request_reports_already_active() {
     assert_eq!(discovery.active_initiator_count_for_test().await, 1);
 }
 
+#[tokio::test]
+async fn repeated_incoming_offers_are_paced_per_peer() {
+    let discovery = NostrDiscovery::new_for_test();
+    let peer = nostr::Keys::generate()
+        .public_key()
+        .to_bech32()
+        .expect("peer npub");
+
+    assert!(discovery.accept_incoming_offer_for_test(&peer, 1_000).await);
+    assert!(!discovery.accept_incoming_offer_for_test(&peer, 2_000).await);
+    assert!(
+        discovery
+            .accept_incoming_offer_for_test(&peer, 61_000)
+            .await
+    );
+}
+
 fn signed_rating_fact_event(
     keys: &nostr::Keys,
     subject_npub: &str,

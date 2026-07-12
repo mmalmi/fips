@@ -361,6 +361,23 @@ async fn test_open_discovery_sweep_expedites_configured_peer_retry() {
     // it must not mutate the configured peer's address list or alias.
     assert_eq!(state.peer_config.npub, configured_npub);
     assert_eq!(state.peer_config.alias.as_deref(), Some("test-peer"));
+
+    // Battery-sensitive callers disable auto-reconnect and rearm peers from
+    // network/candidate events plus a sparse fallback. A cached advert must
+    // not defeat their bounded retry backoff on every discovery poll.
+    let scheduled_at_ms = crate::Node::now_ms() + 60_000;
+    let state = node.retry_pending.get_mut(&configured_node_addr).unwrap();
+    state.peer_config.auto_reconnect = false;
+    state.retry_after_ms = scheduled_at_ms;
+    node.run_open_discovery_sweep(&bootstrap, Some(3_600), "test")
+        .await;
+    assert_eq!(
+        node.retry_pending
+            .get(&configured_node_addr)
+            .unwrap()
+            .retry_after_ms,
+        scheduled_at_ms
+    );
 }
 
 fn open_sweep_now_secs() -> u64 {

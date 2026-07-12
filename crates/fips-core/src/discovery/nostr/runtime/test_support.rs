@@ -53,6 +53,7 @@ impl NostrDiscovery {
             active_initiators: Mutex::new(HashSet::new()),
             active_refetches: Mutex::new(HashSet::new()),
             seen_sessions: Mutex::new(HashMap::new()),
+            last_incoming_offer_ms: Mutex::new(HashMap::new()),
             offer_slots,
             event_tx,
             event_rx: Mutex::new(event_rx),
@@ -133,5 +134,10 @@ impl NostrDiscovery {
     #[cfg(test)]
     pub(crate) async fn active_initiator_count_for_test(&self) -> usize {
         self.active_initiators.lock().await.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn accept_incoming_offer_for_test(&self, peer: &str, now_ms: u64) -> bool {
+        self.accept_incoming_offer_at(peer, now_ms).await
     }
 }

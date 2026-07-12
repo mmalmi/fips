@@ -1,6 +1,32 @@
 use super::*;
 
 impl NostrDiscovery {
+    const INCOMING_OFFER_MIN_INTERVAL_MS: u64 = 60_000;
+
+    pub(super) async fn accept_incoming_offer_at(&self, sender_npub: &str, now_ms: u64) -> bool {
+        let Ok(peer) = NostrPeerKey::parse(sender_npub) else {
+            return false;
+        };
+        let mut last = self.last_incoming_offer_ms.lock().await;
+        if last
+            .get(&peer)
+            .is_some_and(|seen| now_ms.saturating_sub(*seen) < Self::INCOMING_OFFER_MIN_INTERVAL_MS)
+        {
+            return false;
+        }
+        if last.len() >= self.config.failure_state_max_entries && !last.contains_key(&peer) {
+            let oldest = last
+                .iter()
+                .min_by_key(|(_, seen)| **seen)
+                .map(|(peer, _)| *peer);
+            if let Some(oldest) = oldest {
+                last.remove(&oldest);
+            }
+        }
+        last.insert(peer, now_ms);
+        true
+    }
+
     pub async fn request_connect(self: &Arc<Self>, peer_config: PeerConfig) {
         let _ = self
             .request_connect_with_mesh_signaling(peer_config, false)
@@ -366,6 +392,14 @@ impl NostrDiscovery {
             return;
         }
 
+        if !self.accept_incoming_offer_at(&sender_npub, now_ms()).await {
+            debug!(
+                peer = %short_npub(&sender_npub),
+                "rate-limited repeated inbound mesh traversal offer"
+            );
+            return;
+        }
+
         let Ok(permit) = self.offer_slots.clone().try_acquire_owned() else {
             debug!(
                 sender_npub = %sender_npub,
@@ -391,6 +425,18 @@ impl NostrDiscovery {
         sender_npub: String,
     ) -> Result<(), BootstrapError> {
         let peer_short = short_npub(&sender_npub);
+        let offer_received_at = now_ms();
+        if self
+            .cooldown_until(&sender_npub, offer_received_at)
+            .is_some()
+        {
+            debug!(
+                peer = %peer_short,
+                session = %short_id(&offer.session_id),
+                "traversal: incoming mesh offer dropped during peer cooldown"
+            );
+            return Ok(());
+        }
         if !self.direct_refresh_admission_allowed() {
             debug!(
                 peer = %peer_short,
@@ -399,7 +445,6 @@ impl NostrDiscovery {
             );
             return Ok(());
         }
-        let offer_received_at = now_ms();
         debug!(
             peer = %peer_short,
             session = %short_id(&offer.session_id),

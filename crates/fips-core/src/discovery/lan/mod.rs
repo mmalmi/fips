@@ -28,9 +28,9 @@
 use std::collections::HashMap;
 use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use mdns_sd::{ScopedIp, ServiceDaemon, ServiceEvent, ServiceInfo};
+use mdns_sd::{IfKind, ScopedIp, ServiceDaemon, ServiceEvent, ServiceInfo};
 use thiserror::Error;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
@@ -47,10 +47,10 @@ pub const SERVICE_TYPE: &str = "_fips._udp.local.";
 // Keep address-auto adverts responsive to interface changes without mdns-sd's
 // five-second network scan keeping mobile packet tunnels awake.
 const IP_CHECK_INTERVAL_SECS: u32 = 30;
-// mdns-sd queries at 0, 1, and 3 seconds within this window. Advertising stays
-// active during the pause, so another peer's scan can still find this node.
+// mdns-sd queries at 0, 1, and 3 seconds within this window. All nodes then
+// close their multicast sockets and reconvene on the next wall-clock minute.
 const BROWSE_WINDOW: Duration = Duration::from_secs(5);
-const BROWSE_PAUSE: Duration = Duration::from_secs(55);
+const BROWSE_PERIOD_MS: u128 = 60_000;
 
 /// TXT key carrying the bech32-encoded npub of the publishing node.
 pub const TXT_KEY_NPUB: &str = "npub";
@@ -316,7 +316,15 @@ impl LanDiscovery {
                     warn!(%error, "lan: stop mDNS browse failed");
                     return;
                 }
-                tokio::time::sleep(BROWSE_PAUSE).await;
+                if let Err(error) = browse_daemon.disable_interface(IfKind::All) {
+                    warn!(%error, "lan: suspend mDNS interfaces failed");
+                    return;
+                }
+                tokio::time::sleep(next_browse_window_delay()).await;
+                if let Err(error) = browse_daemon.enable_interface(IfKind::All) {
+                    warn!(%error, "lan: resume mDNS interfaces failed");
+                    return;
+                }
                 browse_rx = match browse_daemon.browse(&service_type) {
                     Ok(receiver) => receiver,
                     Err(error) => {
@@ -367,6 +375,18 @@ impl LanDiscovery {
         }
         self.event_pump.abort();
     }
+}
+
+fn next_browse_window_delay() -> Duration {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    browse_window_delay_at(now_ms)
+}
+
+fn browse_window_delay_at(now_ms: u128) -> Duration {
+    Duration::from_millis((BROWSE_PERIOD_MS - now_ms % BROWSE_PERIOD_MS) as u64)
 }
 
 fn short(npub: &str) -> &str {

@@ -32,6 +32,11 @@ enum MeshSignalSessionAction {
     Drop,
 }
 
+pub(super) struct PendingMeshSignal {
+    msg_type: u8,
+    payload: Vec<u8>,
+}
+
 /// True if `ip` is not a viable canonical advert endpoint for peers off
 /// the publisher's own LAN. Covers RFC1918, loopback, link-local, IPv4
 /// CGNAT (100.64/10), unspecified, multicast/benchmark, and IPv6
