@@ -904,7 +904,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn production_sim_uses_real_endpoints_over_sim_transport() {
-        let report = Simulation::new(SimConfig {
+        let simulation = Simulation::new(SimConfig {
             node_count: 18,
             target_edges: 44,
             route_probe_count: 6,
@@ -923,10 +923,10 @@ mod tests {
                 churned_link_fraction: 0.10,
             },
             ..SimConfig::default()
-        })
-        .run()
-        .await
-        .expect("production simulation should run");
+        });
+        let report = Box::pin(simulation.run())
+            .await
+            .expect("production simulation should run");
 
         assert_eq!(report.topology.node_count, 18);
         assert!(report.topology.edge_count >= 17);

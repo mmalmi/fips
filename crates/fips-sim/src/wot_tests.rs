@@ -4,7 +4,7 @@ mod tests {
 
     #[tokio::test]
     async fn wot_admission_prioritizes_good_probes_newcomer_and_penalizes_degraded() {
-        let report = run_default_wot_admission_sim().await;
+        let report = Box::pin(run_default_wot_admission_sim()).await;
         assert_eq!(report.trusted_rating_author_count, 1);
         assert!(report.peer_discovery.node_count >= 100);
         assert!((1..=3).contains(&report.peer_discovery.known_entry_nodes));
@@ -148,7 +148,7 @@ mod tests {
 
     #[tokio::test]
     async fn local_rating_publish_uses_inv_want_pubsub_before_history_lookup() {
-        let report = run_default_wot_admission_sim().await;
+        let report = Box::pin(run_default_wot_admission_sim()).await;
         let spam_publish_count = report.exchange.local_published_events
             * report.config.rating_pubsub.spam_events_per_publish;
         let expected_pubsub_published = report.peer_discovery.advert_events_published
@@ -187,7 +187,7 @@ mod tests {
 
     #[tokio::test]
     async fn untrusted_rating_spam_is_not_indexed_into_history() {
-        let report = run_default_wot_admission_sim().await;
+        let report = Box::pin(run_default_wot_admission_sim()).await;
         let spam_per_publish = report.config.rating_pubsub.spam_events_per_publish;
 
         assert_eq!(

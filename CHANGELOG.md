@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Bounded debug-build stack use in synthetic topology and WoT simulation
+  tests by boxing deeply nested network futures at test-harness boundaries.
 - Closed native WebRTC peer connections when their logical FIPS peers are
   removed or the data channel becomes terminal, releasing ICE UDP sockets
   instead of exhausting the daemon's file descriptors under repeated

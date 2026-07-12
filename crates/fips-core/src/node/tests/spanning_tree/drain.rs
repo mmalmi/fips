@@ -15,11 +15,14 @@ pub(in crate::node::tests) async fn process_available_packets(nodes: &mut [TestN
 }
 
 async fn process_dataplane_packet(node: &mut TestNode, packet: ReceivedPacket) -> usize {
-    process_dataplane_turn(node, Some(packet), 64).await
+    // Keep the synthetic topology harness from embedding the complete live
+    // dataplane future in every caller. In unoptimized test builds that
+    // future's nested poll frames can exhaust libtest's 2 MiB thread stack.
+    Box::pin(process_dataplane_turn(node, Some(packet), 64)).await
 }
 
 async fn process_dataplane_side_queues(node: &mut TestNode) -> usize {
-    process_dataplane_turn(node, None, 0).await
+    Box::pin(process_dataplane_turn(node, None, 0)).await
 }
 
 async fn process_dataplane_turn(
