@@ -3,9 +3,9 @@
 //! Publishes a `_fips._udp.local.` service advert carrying our `npub` and
 //! optional discovery scope on the local link, and concurrently browses for the
 //! same service type to learn peers reachable on the same broadcast
-//! domain. The result is sub-second peer pairing without any Nostr-relay
-//! roundtrip, STUN observation, or NAT traversal — the observed
-//! endpoint is by construction routable from the consumer's LAN.
+//! domain. Active scans resolve peers in a few seconds without any Nostr-relay
+//! roundtrip, STUN observation, or NAT traversal; scans repeat every minute so
+//! discovery remains available offline without a permanent mobile CPU tax.
 //!
 //! ## Trust model
 //!
@@ -28,7 +28,7 @@
 use std::collections::HashMap;
 use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use mdns_sd::{ScopedIp, ServiceDaemon, ServiceEvent, ServiceInfo};
 use thiserror::Error;
@@ -43,6 +43,14 @@ use crate::Identity;
 /// service type because the link-layer punch/handshake travels over UDP
 /// either way.
 pub const SERVICE_TYPE: &str = "_fips._udp.local.";
+
+// Keep address-auto adverts responsive to interface changes without mdns-sd's
+// five-second network scan keeping mobile packet tunnels awake.
+const IP_CHECK_INTERVAL_SECS: u32 = 30;
+// mdns-sd queries at 0, 1, and 3 seconds within this window. Advertising stays
+// active during the pause, so another peer's scan can still find this node.
+const BROWSE_WINDOW: Duration = Duration::from_secs(5);
+const BROWSE_PAUSE: Duration = Duration::from_secs(55);
 
 /// TXT key carrying the bech32-encoded npub of the publishing node.
 pub const TXT_KEY_NPUB: &str = "npub";
@@ -156,6 +164,9 @@ impl LanDiscovery {
         }
 
         let daemon = ServiceDaemon::new().map_err(|e| LanDiscoveryError::Daemon(e.to_string()))?;
+        daemon
+            .set_ip_check_interval(IP_CHECK_INTERVAL_SECS)
+            .map_err(|e| LanDiscoveryError::Daemon(e.to_string()))?;
 
         let npub = identity.npub();
         // mDNS DNS labels are capped at 63 bytes. 16 bech32 chars of npub
@@ -207,92 +218,112 @@ impl LanDiscovery {
         let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel();
         let own_npub = npub.clone();
         let scope_filter = scope.clone().filter(|s| !s.is_empty());
+        let browse_daemon = daemon.clone();
+        let service_type = config.service_type.clone();
         let event_pump = tokio::spawn(async move {
-            // mdns-sd browse returns a flume::Receiver; pump until the
-            // daemon shuts down and the channel closes.
+            let mut browse_rx = browse_rx;
             loop {
-                let event = match browse_rx.recv_async().await {
-                    Ok(e) => e,
-                    Err(_) => break,
-                };
-                match event {
-                    ServiceEvent::ServiceResolved(info) => {
-                        let mut peer_npub: Option<String> = None;
-                        let mut peer_scope: Option<String> = None;
-                        for prop in info.get_properties().iter() {
-                            match prop.key() {
-                                TXT_KEY_NPUB => {
-                                    peer_npub = Some(prop.val_str().to_string());
+                let window = tokio::time::sleep(BROWSE_WINDOW);
+                tokio::pin!(window);
+                loop {
+                    let event = tokio::select! {
+                        event = browse_rx.recv_async() => match event {
+                            Ok(event) => event,
+                            Err(_) => return,
+                        },
+                        () = &mut window => break,
+                    };
+                    match event {
+                        ServiceEvent::ServiceResolved(info) => {
+                            let mut peer_npub: Option<String> = None;
+                            let mut peer_scope: Option<String> = None;
+                            for prop in info.get_properties().iter() {
+                                match prop.key() {
+                                    TXT_KEY_NPUB => {
+                                        peer_npub = Some(prop.val_str().to_string());
+                                    }
+                                    TXT_KEY_SCOPE => {
+                                        peer_scope = Some(prop.val_str().to_string());
+                                    }
+                                    _ => {}
                                 }
-                                TXT_KEY_SCOPE => {
-                                    peer_scope = Some(prop.val_str().to_string());
-                                }
-                                _ => {}
                             }
-                        }
-                        let Some(peer_npub) = peer_npub else {
-                            debug!(
-                                instance = info.get_fullname(),
-                                "lan: skip advert without npub TXT"
-                            );
-                            continue;
-                        };
-                        if peer_npub == own_npub {
-                            // Our own advert echoed back on a loopback
-                            // or multi-homed interface.
-                            continue;
-                        }
-                        if scope_filter.is_some() && scope_filter != peer_scope {
-                            debug!(
-                                npub = %short(&peer_npub),
-                                their_scope = ?peer_scope,
-                                our_scope = ?scope_filter,
-                                "lan: skip cross-scope advert"
-                            );
-                            continue;
-                        }
-                        let port = info.get_port();
-                        if port == 0 {
-                            continue;
-                        }
-                        let observed_at = Instant::now();
-                        // mdns-sd may report multiple interface IPs for
-                        // a multi-homed responder. Surface all routable
-                        // candidates — the Node side filters/dedups and
-                        // only dials addresses compatible with an active
-                        // UDP socket family. IPv6 link-local addresses
-                        // require an interface scope; preserve it when
-                        // mdns-sd provides one, and skip unusable
-                        // scope-less link-local records.
-                        for scoped in info.get_addresses() {
-                            let Some(addr) = socket_addr_from_scoped_ip(scoped, port) else {
+                            let Some(peer_npub) = peer_npub else {
                                 debug!(
-                                    npub = %short(&peer_npub),
-                                    addr = %scoped.to_ip_addr(),
-                                    "lan: skip scope-less IPv6 link-local advert"
+                                    instance = info.get_fullname(),
+                                    "lan: skip advert without npub TXT"
                                 );
                                 continue;
                             };
-                            if events_tx
-                                .send(LanEvent::Discovered(LanDiscoveredPeer {
-                                    npub: peer_npub.clone(),
-                                    scope: peer_scope.clone(),
-                                    addr,
-                                    observed_at,
-                                }))
-                                .is_err()
-                            {
-                                return;
+                            if peer_npub == own_npub {
+                                // Our own advert echoed back on a loopback
+                                // or multi-homed interface.
+                                continue;
+                            }
+                            if scope_filter.is_some() && scope_filter != peer_scope {
+                                debug!(
+                                    npub = %short(&peer_npub),
+                                    their_scope = ?peer_scope,
+                                    our_scope = ?scope_filter,
+                                    "lan: skip cross-scope advert"
+                                );
+                                continue;
+                            }
+                            let port = info.get_port();
+                            if port == 0 {
+                                continue;
+                            }
+                            let observed_at = Instant::now();
+                            // mdns-sd may report multiple interface IPs for
+                            // a multi-homed responder. Surface all routable
+                            // candidates — the Node side filters/dedups and
+                            // only dials addresses compatible with an active
+                            // UDP socket family. IPv6 link-local addresses
+                            // require an interface scope; preserve it when
+                            // mdns-sd provides one, and skip unusable
+                            // scope-less link-local records.
+                            for scoped in info.get_addresses() {
+                                let Some(addr) = socket_addr_from_scoped_ip(scoped, port) else {
+                                    debug!(
+                                        npub = %short(&peer_npub),
+                                        addr = %scoped.to_ip_addr(),
+                                        "lan: skip scope-less IPv6 link-local advert"
+                                    );
+                                    continue;
+                                };
+                                if events_tx
+                                    .send(LanEvent::Discovered(LanDiscoveredPeer {
+                                        npub: peer_npub.clone(),
+                                        scope: peer_scope.clone(),
+                                        addr,
+                                        observed_at,
+                                    }))
+                                    .is_err()
+                                {
+                                    return;
+                                }
                             }
                         }
-                    }
-                    ServiceEvent::ServiceRemoved(_, fullname) => {
-                        debug!(fullname = %fullname, "lan: service removed");
-                    }
-                    other => {
-                        debug!(?other, "lan: mDNS event");
+                        ServiceEvent::ServiceRemoved(_, fullname) => {
+                            debug!(fullname = %fullname, "lan: service removed");
+                        }
+                        other => {
+                            debug!(?other, "lan: mDNS event");
+                        }
                     }
                 }
+                if let Err(error) = browse_daemon.stop_browse(&service_type) {
+                    warn!(%error, "lan: stop mDNS browse failed");
+                    return;
+                }
+                tokio::time::sleep(BROWSE_PAUSE).await;
+                browse_rx = match browse_daemon.browse(&service_type) {
+                    Ok(receiver) => receiver,
+                    Err(error) => {
+                        warn!(%error, "lan: restart mDNS browse failed");
+                        return;
+                    }
+                };
             }
         });
 

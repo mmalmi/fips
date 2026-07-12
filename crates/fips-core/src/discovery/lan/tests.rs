@@ -23,6 +23,54 @@ fn config_for(service_type: String) -> LanDiscoveryConfig {
     }
 }
 
+#[tokio::test]
+async fn lan_discovery_uses_low_wakeup_interface_refresh() {
+    let discovery = LanDiscovery::start(
+        &Identity::generate(),
+        None,
+        61000,
+        config_for(isolated_service_type("refresh-cadence")),
+    )
+    .await
+    .expect("start LAN discovery");
+
+    assert_eq!(discovery.daemon.get_ip_check_interval().unwrap(), 30);
+    discovery.shutdown().await;
+}
+
+#[tokio::test]
+async fn lan_discovery_pauses_active_browse_between_scan_windows() {
+    let discovery = LanDiscovery::start(
+        &Identity::generate(),
+        None,
+        61000,
+        config_for(isolated_service_type("browse-cadence")),
+    )
+    .await
+    .expect("start LAN discovery");
+
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    let before = discovery
+        .daemon
+        .get_metrics()
+        .unwrap()
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap()["browse"];
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let after = discovery
+        .daemon
+        .get_metrics()
+        .unwrap()
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap()["browse"];
+
+    discovery.shutdown().await;
+    assert_eq!(
+        after, before,
+        "active mDNS queries should pause between scans"
+    );
+}
+
 #[test]
 fn scoped_ipv4_advert_becomes_socket_addr() {
     let scoped = ScopedIp::from(IpAddr::V4(Ipv4Addr::new(192, 168, 178, 91)));
