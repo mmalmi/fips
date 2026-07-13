@@ -154,6 +154,14 @@ where
     }
 }
 
+async fn run_session_retransmit_work(nodes: &mut [TestNode]) {
+    let now_ms = Node::now_ms();
+    for node in nodes {
+        node.node.resend_pending_session_handshakes(now_ms).await;
+        node.node.resend_pending_session_msg3(now_ms).await;
+    }
+}
+
 async fn recv_endpoint_event_while_draining(
     nodes: &mut [TestNode],
     rx: &mut EndpointEventReceiver,
@@ -167,6 +175,7 @@ async fn recv_endpoint_event_while_draining(
                     return event.unwrap_or_else(|| panic!("{context}: endpoint event channel closed"));
                 }
                 _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                    run_session_retransmit_work(nodes).await;
                     process_available_packets(nodes).await;
                 }
             }
@@ -189,6 +198,7 @@ async fn recv_service_event_while_draining(
                     return event.unwrap_or_else(|| panic!("{context}: service event channel closed"));
                 }
                 _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                    run_session_retransmit_work(nodes).await;
                     process_available_packets(nodes).await;
                 }
             }
@@ -300,6 +310,7 @@ async fn recv_tun_packet_while_draining(
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
 
+            run_session_retransmit_work(nodes).await;
             process_available_packets(nodes).await;
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
