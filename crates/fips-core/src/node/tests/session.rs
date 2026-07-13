@@ -158,7 +158,6 @@ async fn run_session_retransmit_work(nodes: &mut [TestNode]) {
     let now_ms = Node::now_ms();
     for node in nodes {
         node.node.resend_pending_session_handshakes(now_ms).await;
-        node.node.resend_pending_session_msg3(now_ms).await;
     }
 }
 

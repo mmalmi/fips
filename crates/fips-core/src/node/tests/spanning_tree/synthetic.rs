@@ -139,7 +139,7 @@ async fn repair_missing_edge_filters(
             .expect("synthetic FilterAnnounce should encode");
         nodes[receiver]
             .node
-            .handle_filter_announce(&sender_addr, &encoded)
+            .handle_filter_announce(&sender_addr, &encoded[1..])
             .await;
     }
 

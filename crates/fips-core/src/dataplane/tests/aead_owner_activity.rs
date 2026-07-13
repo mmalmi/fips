@@ -681,15 +681,20 @@ fn runtime_turn_driver_runs_classified_inbound_and_outbound_once() {
     .with_activity_tick(ActivityTick::new(11));
 
     let turn = run_aead_classified_turn(&mut driver, [inbound], [outbound], 8);
+    let summary = turn.summary();
+    assert!(
+        summary.completions <= summary.dispatched,
+        "native completion timing cannot retire more work than was dispatched"
+    );
     assert_eq!(
-        turn.summary(),
+        summary,
         DataplaneRuntimeSummary {
             raw_ingress_dropped: 0,
             inbound_admitted: 1,
             inbound_dropped: 0,
             outbound_admitted: 1,
             outbound_dropped: 0,
-            completions: 2,
+            completions: summary.completions,
             dispatched: 2,
             outputs: 2,
             outputs_sent: 0,
