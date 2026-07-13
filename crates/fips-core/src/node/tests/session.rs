@@ -79,7 +79,7 @@ async fn wait_for_session_established(
     .unwrap_or_else(|_| panic!("{context}: session did not establish"));
 }
 
-fn run_large_stack_async_test<F, Fut>(name: &'static str, test: F)
+pub(super) fn run_large_stack_async_test<F, Fut>(name: &'static str, test: F)
 where
     F: FnOnce() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + 'static,

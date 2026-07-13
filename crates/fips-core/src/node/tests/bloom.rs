@@ -169,8 +169,15 @@ async fn test_bloom_filter_star() {
 /// destination peer). This means entries propagate through the entire
 /// chain: node 1 merges node 2's filter, which contains node 3's
 /// entries, and so on. Both endpoints should see all other nodes.
-#[tokio::test]
-async fn test_bloom_filter_chain_propagation() {
+#[test]
+fn test_bloom_filter_chain_propagation() {
+    super::session::run_large_stack_async_test(
+        "fips-bloom-filter-chain-propagation",
+        bloom_filter_chain_propagation,
+    );
+}
+
+async fn bloom_filter_chain_propagation() {
     let edges: Vec<(usize, usize)> = vec![(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6), (6, 7)];
     let mut nodes = run_tree_test(8, &edges, false).await;
     verify_tree_convergence(&nodes);
