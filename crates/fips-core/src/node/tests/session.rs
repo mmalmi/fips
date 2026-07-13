@@ -79,6 +79,59 @@ async fn wait_for_session_established(
     .unwrap_or_else(|_| panic!("{context}: session did not establish"));
 }
 
+fn settle_session_handshake_retransmits(
+    nodes: &mut [TestNode],
+    left_index: usize,
+    left_peer: &NodeAddr,
+    right_index: usize,
+    right_peer: &NodeAddr,
+) {
+    nodes[left_index]
+        .node
+        .sessions
+        .get_mut(left_peer)
+        .expect("left session should exist")
+        .clear_handshake_payload();
+    nodes[right_index]
+        .node
+        .sessions
+        .get_mut(right_peer)
+        .expect("right session should exist")
+        .clear_handshake_payload();
+}
+
+async fn wait_for_session_state_for_node<F>(
+    nodes: &mut [TestNode],
+    index: usize,
+    peer: &NodeAddr,
+    context: &str,
+    predicate: F,
+) where
+    F: Fn(&crate::node::session::SessionEntry) -> bool,
+{
+    let mut processed_turns = 0usize;
+    for _ in 0..20 {
+        if nodes[index].node.get_session(peer).is_some_and(&predicate) {
+            return;
+        }
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        processed_turns = processed_turns
+            .saturating_add(process_available_packets_for_node(&mut nodes[index]).await);
+    }
+
+    let session = nodes[index].node.get_session(peer);
+    panic!(
+        "{context}: session state did not arrive (processed turns: {processed_turns}, established: {}, initiator: {}, handshake payload: {}, rekey enabled: {}, rekey: {}, pending: {})",
+        session.is_some_and(|entry| entry.is_established()),
+        session.is_some_and(|entry| entry.is_initiator()),
+        session.is_some_and(|entry| entry.handshake_payload().is_some()),
+        nodes[index].node.config.node.rekey.enabled,
+        session.is_some_and(|entry| entry.has_rekey_in_progress()),
+        session.is_some_and(|entry| entry.pending_new_session().is_some()),
+    );
+}
+
 pub(super) fn run_large_stack_async_test<F, Fut>(name: &'static str, test: F)
 where
     F: FnOnce() -> Fut + Send + 'static,

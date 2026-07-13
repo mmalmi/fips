@@ -152,6 +152,7 @@ async fn authenticated_fmp_heartbeat_on_observed_tuple_keeps_idle_direct_link_fr
         alias: None,
         addresses: vec![
             crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .learned()
                 .with_seen_at_ms(10),
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
@@ -236,6 +237,7 @@ async fn quiet_recent_endpoint_path_refresh_keeps_direct_payload_without_demotin
         alias: None,
         addresses: vec![
             crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .learned()
                 .with_seen_at_ms(10),
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
@@ -321,6 +323,7 @@ async fn active_endpoint_traffic_on_quiet_traversal_path_warms_fallback() {
         alias: None,
         addresses: vec![
             crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .learned()
                 .with_seen_at_ms(10),
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
@@ -416,6 +419,7 @@ async fn endpoint_session_traffic_keeps_traversal_liveness_fresh() {
         alias: None,
         addresses: vec![
             crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .learned()
                 .with_seen_at_ms(10),
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
@@ -498,6 +502,7 @@ async fn endpoint_session_traffic_from_direct_peer_keeps_liveness_fresh_without_
         alias: None,
         addresses: vec![
             crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .learned()
                 .with_seen_at_ms(10),
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
@@ -576,6 +581,7 @@ async fn direct_endpoint_data_refreshes_static_peer_after_fallback_send() {
         alias: None,
         addresses: vec![
             crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .learned()
                 .with_seen_at_ms(10),
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
@@ -648,6 +654,7 @@ async fn authenticated_control_return_does_not_keep_direct_payload_route_trusted
         alias: None,
         addresses: vec![
             crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .learned()
                 .with_seen_at_ms(10),
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
@@ -737,6 +744,7 @@ async fn fresh_control_with_unreturned_endpoint_data_warms_fallback_lookup() {
         alias: None,
         addresses: vec![
             crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .learned()
                 .with_seen_at_ms(10),
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
@@ -833,6 +841,7 @@ async fn fresh_bootstrap_path_keeps_static_direct_refresh_pending() {
         alias: None,
         addresses: vec![
             crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .learned()
                 .with_seen_at_ms(10),
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
@@ -896,6 +905,7 @@ async fn fresh_bootstrap_endpoint_data_clears_static_direct_refresh_pending() {
         alias: None,
         addresses: vec![
             crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .learned()
                 .with_seen_at_ms(10),
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,

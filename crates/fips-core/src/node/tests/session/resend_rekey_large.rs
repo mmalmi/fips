@@ -171,6 +171,8 @@ async fn rekey_initiator_resends_final_msg3_until_responder_has_pending_session(
         "initial rekey msg3 fixture responder",
     )
     .await;
+    drain_to_quiescence(&mut nodes).await;
+    settle_session_handshake_retransmits(&mut nodes, 0, &node1_addr, 1, &node0_addr);
 
     assert!(
         nodes[0]
@@ -192,11 +194,22 @@ async fn rekey_initiator_resends_final_msg3_until_responder_has_pending_session(
         "rekey should start"
     );
 
-    let count = wait_process_packets_for_node(&mut nodes, 1).await;
-    assert!(count > 0, "rekey msg1 should reach responder");
-
-    let count = wait_process_packets_for_node(&mut nodes, 0).await;
-    assert!(count > 0, "rekey msg2 should reach initiator");
+    wait_for_session_state_for_node(
+        &mut nodes,
+        1,
+        &node0_addr,
+        "rekey msg1 responder state",
+        |entry| entry.has_rekey_in_progress() && !entry.is_rekey_initiator(),
+    )
+    .await;
+    wait_for_session_state_for_node(
+        &mut nodes,
+        0,
+        &node1_addr,
+        "rekey msg2 initiator state",
+        |entry| entry.pending_new_session().is_some(),
+    )
+    .await;
     assert!(
         nodes[0]
             .node
@@ -282,11 +295,14 @@ async fn rekey_initiator_resends_final_msg3_until_responder_has_pending_session(
         "rekey msg3 resend should be recorded"
     );
 
-    let count = wait_process_packets_for_node(&mut nodes, 1).await;
-    assert!(
-        count > 0,
-        "resender should deliver a replacement rekey msg3"
-    );
+    wait_for_session_state_for_node(
+        &mut nodes,
+        1,
+        &node0_addr,
+        "replacement rekey msg3 responder state",
+        |entry| entry.pending_new_session().is_some(),
+    )
+    .await;
     assert!(
         nodes[1]
             .node
@@ -346,6 +362,8 @@ async fn rekey_initiator_resends_msg1_when_first_setup_lost() {
         "initial rekey exhaustion fixture responder",
     )
     .await;
+    drain_to_quiescence(&mut nodes).await;
+    settle_session_handshake_retransmits(&mut nodes, 0, &node1_addr, 1, &node0_addr);
 
     assert!(
         nodes[0].node.initiate_session_rekey(&node1_addr).await,
@@ -370,8 +388,14 @@ async fn rekey_initiator_resends_msg1_when_first_setup_lost() {
         .resend_pending_session_handshakes(Node::now_ms())
         .await;
 
-    let count = wait_process_packets_for_node(&mut nodes, 1).await;
-    assert!(count > 0, "resender should deliver replacement rekey msg1");
+    wait_for_session_state_for_node(
+        &mut nodes,
+        1,
+        &node0_addr,
+        "replacement rekey msg1 responder state",
+        |entry| entry.has_rekey_in_progress() && !entry.is_rekey_initiator(),
+    )
+    .await;
     assert!(
         nodes[1]
             .node
@@ -389,8 +413,14 @@ async fn rekey_initiator_resends_msg1_when_first_setup_lost() {
         "responder side should not become a competing initiator"
     );
 
-    let count = wait_process_packets_for_node(&mut nodes, 0).await;
-    assert!(count > 0, "rekey msg2 should reach initiator");
+    wait_for_session_state_for_node(
+        &mut nodes,
+        0,
+        &node1_addr,
+        "replacement rekey msg2 initiator state",
+        |entry| entry.pending_new_session().is_some(),
+    )
+    .await;
     let entry = nodes[0].node.get_session(&node1_addr).unwrap();
     assert!(
         entry.pending_new_session().is_some(),

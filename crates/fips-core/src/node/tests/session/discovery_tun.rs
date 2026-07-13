@@ -180,7 +180,7 @@ async fn test_tun_packet_for_established_session_with_stale_direct_queues_and_di
 }
 
 #[tokio::test]
-async fn test_discovery_restarts_stale_pending_session_with_fresh_coords() {
+async fn test_discovery_preserves_inflight_session_when_coords_refresh() {
     let edges = vec![(0, 1), (1, 2)];
     let mut nodes = run_tree_test(3, &edges, false).await;
     verify_tree_convergence(&nodes);
@@ -200,7 +200,17 @@ async fn test_discovery_restarts_stale_pending_session_with_fresh_coords() {
         .node
         .coord_cache_mut()
         .insert(dest_addr, stale_coords.clone(), now_ms);
-    insert_initiating_session_for(&mut nodes[0].node, dest_addr, dest_pubkey);
+    nodes[0]
+        .node
+        .initiate_session(dest_addr, dest_pubkey)
+        .await
+        .expect("initial session should start over stale coordinates");
+    let setup_before_refresh = nodes[0]
+        .node
+        .get_session(&dest_addr)
+        .and_then(|entry| entry.handshake_payload())
+        .expect("in-flight session should retain SessionSetup for resend")
+        .to_vec();
     nodes[0]
         .node
         .pending_session_traffic
@@ -226,20 +236,24 @@ async fn test_discovery_restarts_stale_pending_session_with_fresh_coords() {
     let entry = nodes[0]
         .node
         .get_session(&dest_addr)
-        .expect("retry should install a fresh initiating session");
+        .expect("discovery refresh should preserve the in-flight session");
     assert!(entry.is_initiating());
     let setup_payload = entry
         .handshake_payload()
-        .expect("fresh session should store SessionSetup for resend");
+        .expect("preserved session should retain SessionSetup for resend");
+    assert_eq!(
+        setup_payload, setup_before_refresh,
+        "discovery must not reset an in-flight Noise handshake"
+    );
     let setup = SessionSetup::decode(&setup_payload[FSP_COMMON_PREFIX_SIZE..])
         .expect("stored setup should decode");
     let setup_dest_path: Vec<NodeAddr> = setup.dest_coords.node_addrs().copied().collect();
     let fresh_path: Vec<NodeAddr> = fresh_coords.node_addrs().copied().collect();
     let stale_path: Vec<NodeAddr> = stale_coords.node_addrs().copied().collect();
-    assert_eq!(setup_dest_path, fresh_path);
+    assert_eq!(setup_dest_path, stale_path);
     assert_ne!(
-        setup_dest_path, stale_path,
-        "discovery retry must not keep stale destination coordinates"
+        setup_dest_path, fresh_path,
+        "the preserved handshake payload must remain byte-stable while fresh coordinates are cached for subsequent traffic"
     );
 
     cleanup_nodes(&mut nodes).await;

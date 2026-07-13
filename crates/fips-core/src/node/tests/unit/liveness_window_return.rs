@@ -8,6 +8,7 @@ async fn endpoint_return_via_direct_next_hop_keeps_link_liveness_fresh() {
         alias: None,
         addresses: vec![
             crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .learned()
                 .with_seen_at_ms(10),
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
@@ -87,6 +88,7 @@ async fn authenticated_endpoint_return_clears_static_retry_on_fresh_discovered_u
         alias: None,
         addresses: vec![
             crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .learned()
                 .with_seen_at_ms(10),
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
@@ -331,6 +333,7 @@ async fn link_dead_recent_endpoint_path_reprobes_without_traversal_cooldown() {
         alias: None,
         addresses: vec![
             crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .learned()
                 .with_seen_at_ms(10),
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
@@ -448,6 +451,7 @@ async fn quiet_recent_endpoint_path_stays_alive_within_mobile_window() {
         alias: None,
         addresses: vec![
             crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .learned()
                 .with_seen_at_ms(10),
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
@@ -525,6 +529,7 @@ fn degraded_recent_endpoint_path_without_fallback_queues_payload() {
         alias: None,
         addresses: vec![
             crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .learned()
                 .with_seen_at_ms(10),
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,

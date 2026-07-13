@@ -231,6 +231,7 @@ fn test_stale_discovered_direct_session_trust_without_fallback_queues_payload() 
         alias: Some("quiet-discovered-no-fallback".to_string()),
         addresses: vec![
             crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .learned()
                 .with_seen_at_ms(10),
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,

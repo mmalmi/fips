@@ -26,6 +26,7 @@ async fn link_dead_after_recent_rx_loop_timeout_defers_peer_removal() {
         alias: None,
         addresses: vec![
             crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .learned()
                 .with_seen_at_ms(10),
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,

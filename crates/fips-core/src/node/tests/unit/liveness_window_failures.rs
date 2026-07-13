@@ -7,6 +7,7 @@ async fn local_route_payload_failure_degrades_direct_and_warms_retry() {
         alias: None,
         addresses: vec![
             crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .learned()
                 .with_seen_at_ms(10),
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
@@ -72,6 +73,7 @@ async fn local_route_failure_does_not_collapse_recent_endpoint_liveness_window()
         alias: None,
         addresses: vec![
             crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .learned()
                 .with_seen_at_ms(10),
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
@@ -133,6 +135,7 @@ async fn recent_authenticated_fmp_receive_prevents_traversal_link_dead() {
         alias: None,
         addresses: vec![
             crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .learned()
                 .with_seen_at_ms(10),
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
@@ -193,6 +196,7 @@ async fn outbound_fmp_send_does_not_refresh_direct_path_liveness() {
         alias: None,
         addresses: vec![
             crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .learned()
                 .with_seen_at_ms(10),
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
@@ -263,6 +267,7 @@ async fn link_dead_after_rx_loop_timeout_does_not_cool_down_traversal_path() {
         alias: None,
         addresses: vec![
             crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .learned()
                 .with_seen_at_ms(10),
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,

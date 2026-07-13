@@ -6,8 +6,15 @@ use super::*;
 /// directly, this test exercises the full rx loop dispatch path:
 /// UDP socket → packet channel → run_rx_loop → process_packet →
 /// discriminator dispatch → handler.
-#[tokio::test]
-async fn test_run_rx_loop_handshake() {
+#[test]
+fn test_run_rx_loop_handshake() {
+    super::super::session::run_large_stack_async_test(
+        "fips-run-rx-loop-handshake",
+        run_rx_loop_handshake,
+    );
+}
+
+async fn run_rx_loop_handshake() {
     use crate::config::UdpConfig;
     use crate::node::wire::build_msg1;
     use crate::transport::udp::UdpTransport;

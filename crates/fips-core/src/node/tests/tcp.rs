@@ -6,7 +6,7 @@
 //! All tests use 127.0.0.1:0 (ephemeral ports) and need no privileges.
 
 use super::*;
-use crate::config::TcpConfig;
+use crate::config::{ConnectPolicy, TcpConfig};
 use crate::transport::tcp::TcpTransport;
 use crate::transport::{TransportAddr, TransportHandle, TransportId, packet_channel};
 use spanning_tree::{
@@ -51,6 +51,22 @@ async fn make_test_node_tcp() -> TestNode {
         tun_outbound_tx,
         addr,
     }
+}
+
+async fn configure_tcp_reconnect_pair(nodes: &mut [TestNode]) {
+    assert_eq!(
+        nodes.len(),
+        2,
+        "TCP reconnect fixture requires one peer pair"
+    );
+    let mut node_0 =
+        crate::config::PeerConfig::new(nodes[0].node.npub(), "tcp", nodes[0].addr.to_string());
+    let mut node_1 =
+        crate::config::PeerConfig::new(nodes[1].node.npub(), "tcp", nodes[1].addr.to_string());
+    node_0.connect_policy = ConnectPolicy::Manual;
+    node_1.connect_policy = ConnectPolicy::Manual;
+    nodes[0].node.update_peers(vec![node_1]).await.unwrap();
+    nodes[1].node.update_peers(vec![node_0]).await.unwrap();
 }
 
 /// Two TCP nodes complete a Noise handshake and establish bidirectional peering.
@@ -172,6 +188,7 @@ async fn test_tcp_mixed_transport_coexistence() {
 #[tokio::test]
 async fn test_tcp_connection_loss_detection() {
     let mut nodes = vec![make_test_node_tcp().await, make_test_node_tcp().await];
+    configure_tcp_reconnect_pair(&mut nodes).await;
 
     // Short heartbeat/link-dead timeouts for faster test execution
     for tn in nodes.iter_mut() {
@@ -228,6 +245,7 @@ async fn test_tcp_connection_loss_detection() {
 #[tokio::test]
 async fn test_tcp_reconnection_after_link_death() {
     let mut nodes = vec![make_test_node_tcp().await, make_test_node_tcp().await];
+    configure_tcp_reconnect_pair(&mut nodes).await;
 
     // Short timeouts
     for tn in nodes.iter_mut() {

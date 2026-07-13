@@ -9,8 +9,15 @@ use crate::utils::index::IndexAllocator;
 use std::collections::HashMap;
 use tokio::time::{Duration, timeout, timeout_at};
 
-#[tokio::test]
-async fn test_adopted_udp_traversal_completes_handshake() {
+#[test]
+fn test_adopted_udp_traversal_completes_handshake() {
+    super::session::run_large_stack_async_test(
+        "fips-adopted-udp-traversal-handshake",
+        adopted_udp_traversal_completes_handshake,
+    );
+}
+
+async fn adopted_udp_traversal_completes_handshake() {
     let mut node_a = make_node();
     let mut node_b = make_node();
 

@@ -10,8 +10,15 @@ use super::*;
 /// persisted recent-peers cache). `initiate_peer_connections` then drives
 /// the handshake via `try_peer_addresses` → static dial — proving that the
 /// relay-less reconnect path works end-to-end, not just on paper.
-#[tokio::test]
-async fn test_static_address_handshake_without_nostr_discovery() {
+#[test]
+fn test_static_address_handshake_without_nostr_discovery() {
+    super::super::session::run_large_stack_async_test(
+        "fips-static-address-handshake",
+        static_address_handshake_without_nostr_discovery,
+    );
+}
+
+async fn static_address_handshake_without_nostr_discovery() {
     use crate::Identity;
     use crate::config::{ConnectPolicy, PeerAddress, PeerConfig, UdpConfig};
     use crate::transport::udp::UdpTransport;
