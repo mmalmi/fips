@@ -150,8 +150,8 @@ impl PendingTunPacket {
         now_ms.saturating_sub(self.queued_at_ms) > max_age_ms
     }
 
-    pub(crate) fn into_packet(self) -> Vec<u8> {
-        self.packet
+    pub(crate) fn packet(&self) -> &[u8] {
+        &self.packet
     }
 }
 
@@ -381,6 +381,10 @@ impl PendingSessionTrafficQueues {
 
     pub(crate) fn has_traffic_for(&self, dest_addr: &NodeAddr) -> bool {
         self.pending_destinations.contains(dest_addr)
+    }
+
+    pub(crate) fn destinations(&self) -> impl Iterator<Item = NodeAddr> + '_ {
+        self.pending_destinations.iter().copied()
     }
 
     pub(crate) fn tun_packets_for(&self, dest_addr: &NodeAddr) -> Option<&PendingTunPacketQueue> {

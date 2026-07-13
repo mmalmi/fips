@@ -1,4 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use crate::Identity;
@@ -61,7 +62,13 @@ async fn lan_discovery_pauses_active_browse_between_scan_windows() {
     .await
     .expect("start LAN discovery");
 
-    tokio::time::sleep(Duration::from_secs(6)).await;
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while !discovery.browse_paused.load(Ordering::Acquire) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("mDNS browse should enter its paused phase");
     let before = discovery
         .daemon
         .get_metrics()

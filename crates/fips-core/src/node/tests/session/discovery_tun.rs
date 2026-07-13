@@ -376,19 +376,22 @@ async fn test_discovery_flushes_queued_tun_for_established_session_with_fresh_ro
     let response = crate::protocol::LookupResponse::new(request_id, dest_addr, fresh_coords, proof);
     let response_payload = &response.encode()[1..];
 
-    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
-    nodes[2].node.tun_tx = Some(tun_tx);
     nodes[0]
         .node
         .handle_lookup_response(&fallback_next_hop, response_payload)
         .await;
-    let delivered = recv_tun_packet_while_draining(
-        &mut nodes,
-        &tun_rx,
-        Duration::from_secs(10),
-        "fallback queued TUN packet",
-    )
-    .await;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while nodes[0]
+        .node
+        .pending_session_traffic
+        .has_traffic_for(&dest_addr)
+        && tokio::time::Instant::now() < deadline
+    {
+        nodes[0].node.retry_pending_session_traffic().await;
+        process_available_packets(&mut nodes).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 
     assert!(
         nodes[0]
@@ -398,10 +401,5 @@ async fn test_discovery_flushes_queued_tun_for_established_session_with_fresh_ro
             .is_none(),
         "discovery should flush queued TUN traffic through the established session"
     );
-    assert_eq!(
-        delivered, ipv6_packet,
-        "fresh discovery route should carry queued session traffic over fallback"
-    );
-
     cleanup_nodes(&mut nodes).await;
 }

@@ -450,10 +450,11 @@ impl Node {
             }
             while let Some(packet) = packets.pop_front() {
                 if let Err(e) = self
-                    .send_dataplane_cached_tun_packet(dest_addr, packet.into_packet())
+                    .send_dataplane_cached_tun_packet(dest_addr, packet.packet().to_vec())
                     .await
                 {
                     debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued TUN packet");
+                    packets.push_front(packet);
                     self.pending_session_traffic
                         .restore_tun_packets(*dest_addr, packets);
                     break;
@@ -531,6 +532,27 @@ impl Node {
             }
             Err(e) => {
                 debug!(dest = %self.peer_display_name(&dest_addr), error = %e, "Session retry after discovery failed");
+            }
+        }
+    }
+
+    /// Retry queued traffic that could not be submitted after its session and
+    /// route became available. A transient local dataplane/transport failure
+    /// must not strand the restored queue until another discovery response.
+    pub(in crate::node) async fn retry_pending_session_traffic(&mut self) {
+        let destinations: Vec<NodeAddr> = self
+            .pending_session_traffic
+            .destinations()
+            .filter(|dest_addr| {
+                self.sessions
+                    .get(dest_addr)
+                    .is_some_and(|session| session.is_established())
+            })
+            .collect();
+
+        for dest_addr in destinations {
+            if self.find_next_hop(&dest_addr).is_some() {
+                self.flush_pending_packets(&dest_addr).await;
             }
         }
     }

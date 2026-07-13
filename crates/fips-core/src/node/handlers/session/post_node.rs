@@ -185,7 +185,7 @@ mod pending_queue_tests {
         assert_eq!(
             packets
                 .into_iter()
-                .map(|packet| packet.into_packet())
+                .map(|packet| packet.packet().to_vec())
                 .collect::<Vec<_>>(),
             vec![vec![2]]
         );
@@ -317,7 +317,10 @@ mod pending_queue_tests {
             .expect("tun packets")
             .into_fresh_packets(2_000, 2_000);
         assert_eq!(stale, 0);
-        assert_eq!(packets.pop_front().map(|packet| packet.into_packet()), Some(vec![1]));
+        assert_eq!(
+            packets.pop_front().map(|packet| packet.packet().to_vec()),
+            Some(vec![1])
+        );
         queues.restore_tun_packets(dest, packets);
         let restored_tun: Vec<Vec<u8>> = queues
             .take_tun_packets(&dest)

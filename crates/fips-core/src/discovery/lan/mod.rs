@@ -28,6 +28,8 @@
 use std::collections::HashMap;
 use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use mdns_sd::{IfKind, ScopedIp, ServiceDaemon, ServiceEvent, ServiceInfo};
@@ -141,6 +143,8 @@ pub struct LanDiscovery {
     instance_fullname: String,
     events_rx: Mutex<tokio::sync::mpsc::UnboundedReceiver<LanEvent>>,
     event_pump: tokio::task::JoinHandle<()>,
+    #[cfg(test)]
+    browse_paused: Arc<AtomicBool>,
 }
 
 impl LanDiscovery {
@@ -220,6 +224,10 @@ impl LanDiscovery {
         let scope_filter = scope.clone().filter(|s| !s.is_empty());
         let browse_daemon = daemon.clone();
         let service_type = config.service_type.clone();
+        #[cfg(test)]
+        let browse_paused = Arc::new(AtomicBool::new(false));
+        #[cfg(test)]
+        let event_pump_browse_paused = Arc::clone(&browse_paused);
         let event_pump = tokio::spawn(async move {
             let mut browse_rx = browse_rx;
             loop {
@@ -320,7 +328,11 @@ impl LanDiscovery {
                     warn!(%error, "lan: suspend mDNS interfaces failed");
                     return;
                 }
+                #[cfg(test)]
+                event_pump_browse_paused.store(true, Ordering::Release);
                 tokio::time::sleep(next_browse_window_delay()).await;
+                #[cfg(test)]
+                event_pump_browse_paused.store(false, Ordering::Release);
                 if let Err(error) = browse_daemon.enable_interface(IfKind::All) {
                     warn!(%error, "lan: resume mDNS interfaces failed");
                     return;
@@ -347,6 +359,8 @@ impl LanDiscovery {
             instance_fullname,
             events_rx: Mutex::new(events_rx),
             event_pump,
+            #[cfg(test)]
+            browse_paused,
         }))
     }
 

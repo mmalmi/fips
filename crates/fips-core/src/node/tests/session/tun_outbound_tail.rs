@@ -169,6 +169,49 @@ async fn test_tun_outbound_pending_queue_flush() {
     cleanup_nodes(&mut nodes).await;
 }
 
+#[tokio::test]
+async fn test_pending_tun_flush_restores_packet_that_failed_to_send() {
+    let mut nodes = run_tree_test(2, &[(0, 1)], false).await;
+    populate_all_coord_caches(&mut nodes);
+
+    let node1_addr = *nodes[1].node.node_addr();
+    let node1_pubkey = nodes[1].node.identity().pubkey_full();
+    nodes[0]
+        .node
+        .initiate_session(node1_addr, node1_pubkey)
+        .await
+        .expect("session should initiate");
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &node1_addr,
+        Duration::from_secs(10),
+        "failed queued TUN send fixture",
+    )
+    .await;
+
+    let invalid_ipv6_packet = vec![0xff];
+    nodes[0].node.pending_session_traffic.push_tun_packet(
+        node1_addr,
+        invalid_ipv6_packet.clone(),
+        usize::MAX,
+        usize::MAX,
+    );
+    nodes[0].node.flush_pending_packets(&node1_addr).await;
+
+    let restored: Vec<Vec<u8>> = nodes[0]
+        .node
+        .pending_session_traffic
+        .take_tun_packets(&node1_addr)
+        .expect("failed packet should remain queued")
+        .into_packets()
+        .into_iter()
+        .collect();
+    assert_eq!(restored, vec![invalid_ipv6_packet]);
+
+    cleanup_nodes(&mut nodes).await;
+}
+
 // ============================================================================
 // Unit tests: Session idle timeout
 // ============================================================================

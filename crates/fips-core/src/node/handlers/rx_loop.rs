@@ -727,6 +727,7 @@ impl Node {
         self.resend_pending_rekeys(now_ms).await;
         self.resend_pending_session_handshakes(now_ms).await;
         self.resend_pending_session_msg3(now_ms).await;
+        self.retry_pending_session_traffic().await;
         self.purge_idle_sessions(now_ms);
         self.purge_learned_routes(now_ms);
         self.check_mmp_reports().await;
