@@ -1,11 +1,52 @@
 use super::*;
 
-fn synthetic_tree_converged(nodes: &[TestNode]) -> bool {
-    let Some(expected_root) = nodes.iter().map(|node| *node.node.node_addr()).min() else {
-        return false;
-    };
+fn synthetic_component_roots(nodes: &[TestNode], edges: &[(usize, usize)]) -> Vec<NodeAddr> {
+    let mut adjacency = vec![Vec::new(); nodes.len()];
+    for &(left, right) in edges {
+        adjacency[left].push(right);
+        adjacency[right].push(left);
+    }
 
-    nodes.iter().all(|node| {
+    let mut roots = nodes
+        .iter()
+        .map(|node| *node.node.node_addr())
+        .collect::<Vec<_>>();
+    let mut visited = vec![false; nodes.len()];
+    for start in 0..nodes.len() {
+        if visited[start] {
+            continue;
+        }
+        let mut stack = vec![start];
+        let mut component = Vec::new();
+        visited[start] = true;
+        while let Some(index) = stack.pop() {
+            component.push(index);
+            for &neighbor in &adjacency[index] {
+                if !visited[neighbor] {
+                    visited[neighbor] = true;
+                    stack.push(neighbor);
+                }
+            }
+        }
+        let root = component
+            .iter()
+            .map(|&index| *nodes[index].node.node_addr())
+            .min()
+            .expect("synthetic component contains its start node");
+        for index in component {
+            roots[index] = root;
+        }
+    }
+    roots
+}
+
+fn synthetic_tree_converged(nodes: &[TestNode], expected_roots: &[NodeAddr]) -> bool {
+    if nodes.len() != expected_roots.len() {
+        return false;
+    }
+
+    nodes.iter().enumerate().all(|(index, node)| {
+        let expected_root = expected_roots[index];
         let tree = node.node.tree_state();
         *tree.root() == expected_root
             && *tree.my_coords().root_id() == expected_root
@@ -27,8 +68,9 @@ pub(in crate::node::tests) async fn repair_synthetic_tree_announces(
     edges: &[(usize, usize)],
     verbose: bool,
 ) {
+    let expected_roots = synthetic_component_roots(nodes, edges);
     for round in 0..nodes.len().saturating_mul(2).max(8) {
-        if synthetic_tree_converged(nodes) {
+        if synthetic_tree_converged(nodes, &expected_roots) {
             return;
         }
         if verbose {
@@ -53,7 +95,7 @@ pub(in crate::node::tests) async fn repair_synthetic_tree_announces(
     }
 
     assert!(
-        synthetic_tree_converged(nodes),
+        synthetic_tree_converged(nodes, &expected_roots),
         "synthetic topology did not converge after direct TreeAnnounce repair"
     );
 }

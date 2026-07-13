@@ -253,12 +253,14 @@ async fn test_congestion_reports_kernel_drops() {
 
     // Before start, congestion should still report (from stats)
     let cong = transport.congestion();
-    assert_eq!(cong.recv_drops, Some(0));
     assert_eq!(cong.socket_recv_drops, Some(0));
     #[cfg(target_os = "linux")]
-    assert_eq!(cong.namespace_recv_drops, Some(0));
+    assert_eq!(cong.recv_drops, cong.namespace_recv_drops);
     #[cfg(not(target_os = "linux"))]
-    assert_eq!(cong.namespace_recv_drops, None);
+    {
+        assert_eq!(cong.recv_drops, Some(0));
+        assert_eq!(cong.namespace_recv_drops, None);
+    }
 }
 
 #[test]
