@@ -793,7 +793,7 @@ const DEFAULT_WEBRTC_MTU: u16 = 1200;
 const DEFAULT_WEBRTC_CONNECT_TIMEOUT_MS: u64 = 30_000;
 
 /// Default non-trickle ICE gathering timeout in milliseconds.
-const DEFAULT_WEBRTC_ICE_GATHER_TIMEOUT_MS: u64 = 10_000;
+const DEFAULT_WEBRTC_ICE_GATHER_TIMEOUT_MS: u64 = 2_000;
 
 /// Default maximum simultaneous WebRTC peer connections.
 const DEFAULT_WEBRTC_MAX_CONNECTIONS: usize = 32;
@@ -834,7 +834,7 @@ pub struct WebRtcConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connect_timeout_ms: Option<u64>,
 
-    /// Non-trickle ICE gathering timeout in milliseconds. Defaults to 10000.
+    /// Non-trickle ICE gathering timeout in milliseconds. Defaults to 2000.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ice_gather_timeout_ms: Option<u64>,
 
@@ -851,8 +851,9 @@ pub struct WebRtcConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_retransmits: Option<u16>,
 
-    /// Override signaling relays for this transport. When unset,
-    /// `node.discovery.nostr.dm_relays` is used.
+    /// Signaling relays for this transport. When unset,
+    /// `node.discovery.nostr.dm_relays` is used. Discovery advert relays are
+    /// always included so an observed advert has a working rendezvous path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signal_relays: Option<Vec<String>>,
 

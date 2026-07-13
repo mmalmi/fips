@@ -95,9 +95,17 @@ struct WebRtcConnection {
     data_channel: Arc<RTCDataChannel>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PendingDialOrigin {
+    Local,
+    Remote,
+}
+
 struct PendingDial {
     session_id: String,
     pc: Arc<RTCPeerConnection>,
+    created_at_ms: u64,
+    origin: PendingDialOrigin,
 }
 
 type ConnectionPool = Arc<Mutex<HashMap<TransportAddr, WebRtcConnection>>>;
@@ -142,7 +150,12 @@ impl WebRtcTransport {
             .map_err(|e| TransportError::StartFailed(e.to_string()))?;
         let local_xonly = keys.public_key();
         let local_pubkey_hex = hex::encode(identity.pubkey_full().serialize());
-        let signal_relays = config.signal_relays(&nostr_config.dm_relays);
+        let mut signal_relays = config.signal_relays(&nostr_config.dm_relays);
+        for relay in &nostr_config.advert_relays {
+            if !signal_relays.contains(relay) {
+                signal_relays.push(relay.clone());
+            }
+        }
         let stun_servers = config.stun_servers(&nostr_config.stun_servers);
         let (signal_tx, signal_rx) = mpsc::unbounded_channel();
         let signaling = NostrWebRtcSignaling::new(keys, signal_relays.clone(), signal_tx);
@@ -578,6 +591,65 @@ async fn cleanup_webrtc_session(
         close_peer_connection_bounded(connection.pc).await;
     }
     removed
+}
+
+async fn evict_established_webrtc_session_for_offer(
+    pool: &ConnectionPool,
+    failed: &FailedPool,
+    ready: &ReadyPool,
+    addr: &TransportAddr,
+) -> bool {
+    let connection = pool.lock().await.remove(addr);
+    let Some(connection) = connection else {
+        return false;
+    };
+    ready.lock().await.remove(addr);
+    failed.lock().await.remove(addr);
+    tokio::spawn(async move {
+        close_data_channel_bounded(connection.data_channel).await;
+        close_peer_connection_bounded(connection.pc).await;
+    });
+    true
+}
+
+fn incoming_offer_replaces_pending(
+    local_pubkey_hex: &str,
+    remote_pubkey_hex: &str,
+    pending_origin: PendingDialOrigin,
+    pending_created_at_ms: u64,
+    incoming_created_at_ms: u64,
+) -> bool {
+    match pending_origin {
+        PendingDialOrigin::Remote => incoming_created_at_ms > pending_created_at_ms,
+        PendingDialOrigin::Local => local_pubkey_hex > remote_pubkey_hex,
+    }
+}
+
+async fn evict_pending_webrtc_session_for_offer(
+    pending: &PendingPool,
+    failed: &FailedPool,
+    ready: &ReadyPool,
+    addr: &TransportAddr,
+    expected_session: &str,
+) -> bool {
+    let pending_dial = {
+        let mut pending = pending.lock().await;
+        if pending
+            .get(addr)
+            .is_some_and(|dial| dial.session_id == expected_session)
+        {
+            pending.remove(addr)
+        } else {
+            None
+        }
+    };
+    let Some(pending_dial) = pending_dial else {
+        return false;
+    };
+    ready.lock().await.remove(addr);
+    failed.lock().await.remove(addr);
+    tokio::spawn(close_peer_connection_bounded(pending_dial.pc));
+    true
 }
 
 fn spawn_webrtc_session_cleanup(
