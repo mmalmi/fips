@@ -462,12 +462,27 @@ where
     }
 }
 
+async fn finish_webrtc_cleanup_bounded<F, O>(timeout: Duration, cleanup: F)
+where
+    F: Future<Output = O> + Send + 'static,
+    O: Send + 'static,
+{
+    let mut cleanup_task = tokio::spawn(cleanup);
+    let _ = tokio::time::timeout(timeout, &mut cleanup_task).await;
+}
+
 async fn close_data_channel_bounded(data_channel: Arc<RTCDataChannel>) {
-    let _ = tokio::time::timeout(WEBRTC_IO_TIMEOUT, data_channel.close()).await;
+    finish_webrtc_cleanup_bounded(WEBRTC_IO_TIMEOUT, async move {
+        let _ = data_channel.close().await;
+    })
+    .await;
 }
 
 async fn close_peer_connection_bounded(peer_connection: Arc<RTCPeerConnection>) {
-    let _ = tokio::time::timeout(WEBRTC_IO_TIMEOUT, peer_connection.close()).await;
+    finish_webrtc_cleanup_bounded(WEBRTC_IO_TIMEOUT, async move {
+        let _ = peer_connection.close().await;
+    })
+    .await;
 }
 
 async fn cleanup_webrtc_session(
@@ -510,8 +525,10 @@ async fn cleanup_webrtc_session(
         }
     }
 
-    // Logical eviction happens before potentially slow library cleanup so a
-    // canceled close future cannot leave the address or its ICE sockets alive.
+    // Logical eviction happens before potentially slow library cleanup. The
+    // bounded wait must not cancel physical SCTP/DTLS/ICE teardown: a timed-out
+    // close continues detached so repeated short-lived sessions cannot retain
+    // transport resources.
     if let Some(pending) = pending_dial {
         close_peer_connection_bounded(pending.pc).await;
     }

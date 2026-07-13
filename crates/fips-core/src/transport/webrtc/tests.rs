@@ -99,6 +99,29 @@ async fn stalled_webrtc_send_times_out_and_starts_cleanup() {
 }
 
 #[tokio::test]
+async fn slow_physical_cleanup_finishes_after_bounded_wait_returns() {
+    let cleanup_finished = Arc::new(AtomicBool::new(false));
+    let cleanup_flag = Arc::clone(&cleanup_finished);
+    let started = tokio::time::Instant::now();
+
+    finish_webrtc_cleanup_bounded(Duration::from_millis(10), async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        cleanup_flag.store(true, Ordering::SeqCst);
+    })
+    .await;
+
+    assert!(started.elapsed() < Duration::from_millis(100));
+    assert!(!cleanup_finished.load(Ordering::SeqCst));
+    tokio::time::timeout(Duration::from_millis(200), async {
+        while !cleanup_finished.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("detached WebRTC cleanup must run to completion");
+}
+
+#[tokio::test]
 async fn terminal_session_cleanup_closes_the_peer_connection() {
     let identity = crate::Identity::generate();
     let (packet_tx, _packet_rx) = packet_channel(1);
