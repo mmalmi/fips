@@ -11,7 +11,8 @@ use crate::transport::ble::addr::BleAddr;
 use crate::transport::ble::io::{MockBleIo, MockBleStream};
 use crate::transport::{Transport, TransportHandle, TransportId, packet_channel};
 use spanning_tree::{
-    TestNode, cleanup_nodes, drain_all_packets, initiate_handshake, verify_tree_convergence,
+    TestNode, cleanup_nodes, drain_all_packets, initiate_handshake,
+    refresh_synthetic_filter_announces, verify_tree_convergence,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -204,6 +205,7 @@ async fn test_ble_three_node_chain() {
 
     let total = drain_all_packets(&mut nodes, false).await;
     assert!(total > 0, "should have processed packets");
+    refresh_synthetic_filter_announces(&mut nodes, &[(0, 1), (1, 2)], false).await;
 
     // Verify spanning tree convergence
     verify_tree_convergence(&nodes);

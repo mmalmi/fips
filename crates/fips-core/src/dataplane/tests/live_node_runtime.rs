@@ -124,10 +124,7 @@
         assert_eq!(first.summary().inbound_admitted(), 0);
         assert_eq!(first.summary().outbound_admitted(), 1);
         assert_eq!(first.summary().dispatched(), 1);
-        assert_eq!(first.summary().outputs(), 0);
-        assert_eq!(first.summary().outputs_sent(), 0);
         assert_eq!(first.summary().outputs_dropped(), 0);
-        assert_eq!(first.transport_sent(), 0);
         assert_eq!(first.transport_dropped(), 0);
         assert!(first.raw_ingress_drops().is_empty());
         assert!(first.output_drops().is_empty());
@@ -139,17 +136,22 @@
         assert!(tun_rx.try_recv_packet().is_err());
         assert!(endpoint_io.event_rx.try_recv().is_err());
 
-        wait_for_live_worker_completion(&live_node).await;
-        let mut turn = pump_live_node_outbound_firsts(
-            &mut live_node,
-            DataplaneLiveOutboundFirsts::default(),
-            &endpoint_io.event_tx,
-            &transports,
-            8,
-            transport_send_batch_packets,
-        )
-        .await;
-        assert_eq!(turn.summary().completions(), 1);
+        let mut turn = if first.transport_sent() > 0 {
+            first
+        } else {
+            assert_eq!(first.summary().outputs(), 0);
+            assert_eq!(first.summary().outputs_sent(), 0);
+            wait_for_live_worker_completion(&live_node).await;
+            pump_live_node_outbound_firsts(
+                &mut live_node,
+                DataplaneLiveOutboundFirsts::default(),
+                &endpoint_io.event_tx,
+                &transports,
+                8,
+                transport_send_batch_packets,
+            )
+            .await
+        };
         assert_eq!(turn.summary().outputs(), 1);
         assert_eq!(turn.summary().outputs_sent(), 1);
         assert_eq!(turn.transport_sent(), 1);

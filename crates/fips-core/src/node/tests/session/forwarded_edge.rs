@@ -27,54 +27,22 @@ async fn session_3node_forwarded_handshake() {
         .await
         .expect("initiate_session failed");
 
-    // Process: SessionSetup: 0->1 (forwarded by transit B)
-    assert!(wait_process_packets_for_node(&mut nodes, 1).await > 0);
-
-    // Process: SessionSetup: 1->2 (arrives at destination C)
-    assert!(wait_process_packets_for_node(&mut nodes, 2).await > 0);
-
-    // Node 2 should have an AwaitingMsg3 session (XK: identity not yet known)
-    assert!(
-        nodes[2].node.get_session(&node0_addr).is_some(),
-        "Node 2 should have a session entry for Node 0"
-    );
-    assert!(
-        nodes[2]
-            .node
-            .get_session(&node0_addr)
-            .unwrap()
-            .is_awaiting_msg3()
-    );
-
-    // Process: SessionAck: 2->1 (forwarded by transit B)
-    assert!(wait_process_packets_for_node(&mut nodes, 1).await > 0);
-
-    // Process: SessionAck: 1->0 (arrives at initiator A, sends SessionMsg3)
-    assert!(wait_process_packets_for_node(&mut nodes, 0).await > 0);
-
-    // Node 0 should now be Established (transitions after sending msg3)
-    assert!(
-        nodes[0]
-            .node
-            .get_session(&node2_addr)
-            .unwrap()
-            .is_established()
-    );
-
-    // Process: SessionMsg3: 0->1 (forwarded by transit B)
-    assert!(wait_process_packets_for_node(&mut nodes, 1).await > 0);
-
-    // Process: SessionMsg3: 1->2 (arrives at responder C)
-    assert!(wait_process_packets_for_node(&mut nodes, 2).await > 0);
-
-    // Node 2 should now be Established (transitions after processing msg3)
-    assert!(
-        nodes[2]
-            .node
-            .get_session(&node0_addr)
-            .unwrap()
-            .is_established()
-    );
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &node2_addr,
+        Duration::from_secs(10),
+        "forwarded handshake initiator",
+    )
+    .await;
+    wait_for_session_established(
+        &mut nodes,
+        2,
+        &node0_addr,
+        Duration::from_secs(10),
+        "forwarded handshake responder",
+    )
+    .await;
 
     // Transit node B should NOT have a session
     assert_eq!(

@@ -27,6 +27,7 @@ mod topology;
 
 pub(super) use drain::{drain_all_packets, process_available_packets};
 pub(super) use fixture::{TestNode, initiate_handshake, make_test_node, make_test_node_with_mtu};
+pub(super) use synthetic::refresh_synthetic_filter_announces;
 pub(super) use topology::{
     cleanup_nodes, generate_random_edges, run_tree_test, run_tree_test_with_mtus,
     verify_tree_convergence, verify_tree_convergence_components,
@@ -37,6 +38,5 @@ use fixture::complete_direct_handshake;
 use repair::repair_missing_edge_handshakes;
 use snapshot::print_tree_snapshot;
 use synthetic::{
-    drain_synthetic_packets_until_idle, has_synthetic_pending_work,
-    refresh_synthetic_filter_announces, run_synthetic_node_work,
+    drain_synthetic_packets_until_idle, has_synthetic_pending_work, run_synthetic_node_work,
 };

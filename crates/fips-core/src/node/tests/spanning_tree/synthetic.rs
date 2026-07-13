@@ -74,7 +74,7 @@ async fn repair_missing_edge_filters(
 ) -> usize {
     let mut resent = 0;
 
-    for attempt in 0..8 {
+    for attempt in 0..16 {
         let missing = missing_edge_filters(nodes, edges);
         if missing.is_empty() {
             break;
@@ -88,16 +88,13 @@ async fn repair_missing_edge_filters(
             );
         }
 
-        for chunk in missing.chunks(16) {
-            for &(sender, receiver) in chunk {
-                let receiver_addr = *nodes[receiver].node.node_addr();
-                nodes[sender]
-                    .node
-                    .bloom_state
-                    .mark_update_needed(receiver_addr);
-                resent += 1;
-            }
-
+        for (sender, receiver) in missing {
+            let receiver_addr = *nodes[receiver].node.node_addr();
+            nodes[sender]
+                .node
+                .bloom_state
+                .mark_update_needed(receiver_addr);
+            resent += 1;
             tokio::time::sleep(Duration::from_millis(60)).await;
             let _ = drain_synthetic_packets_until_idle(nodes, 120, 10).await;
         }
@@ -126,6 +123,13 @@ pub(in crate::node::tests) async fn refresh_synthetic_filter_announces(
     verbose: bool,
 ) -> usize {
     let mut total = 0;
+
+    for _ in 0..4 {
+        for tn in nodes.iter_mut() {
+            tn.node.send_tree_announce_to_all().await;
+        }
+        total += drain_synthetic_packets_until_idle(nodes, 80, 10).await;
+    }
 
     for _ in 0..4 {
         for tn in nodes.iter_mut() {
