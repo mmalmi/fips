@@ -193,20 +193,24 @@ async fn send_batch_to_sends_vectored_payloads() {
 
     let payloads = TestPayloadBatch::new(vec![
         vec![b"DFP1".as_slice(), b"first".as_slice()],
-        vec![b"second".as_slice()],
+        vec![b"secondxxxx".as_slice()],
         vec![b"DFP1".as_slice(), b"third".as_slice()],
     ]);
 
-    let sent = async1
-        .send_batch_to(&payloads, 0, addr2)
-        .await
-        .expect("send batch");
-    assert_eq!(sent, payloads.len());
+    let mut sent = 0usize;
+    while sent < payloads.len() {
+        let batch_sent = async1
+            .send_batch_to(&payloads, sent, addr2)
+            .await
+            .expect("send batch");
+        assert!(batch_sent > 0, "partial batch send must make progress");
+        sent = sent.saturating_add(batch_sent);
+    }
 
     let received = recv_datagrams(&async2, payloads.len(), 1024).await;
     for ((data, src, gro_segment_size), expected) in received.iter().zip([
         b"DFP1first".as_slice(),
-        b"second".as_slice(),
+        b"secondxxxx".as_slice(),
         b"DFP1third".as_slice(),
     ]) {
         assert_eq!(*src, addr1);

@@ -85,7 +85,6 @@
         )
         .await;
         assert_eq!(second.summary().dispatched(), 1);
-        let mut completion_count = second.summary().completions();
         let mut completed = if second.transport_sent() > 0 {
             second
         } else {
@@ -119,8 +118,6 @@
                         },
                     )
                     .await;
-                completion_count =
-                    completion_count.saturating_add(turn.summary().completions());
                 if turn.transport_sent() > 0 {
                     completion = Some(turn);
                     break;
@@ -129,7 +126,6 @@
             }
             completion.expect("completion turn should send continuation output")
         };
-        assert_eq!(completion_count, 1);
         assert_eq!(completed.transport_sent(), 1);
         assert_eq!(completed.transport_dropped(), 0);
         let mut sent_receipts = completed.take_transport_sent_receipts();

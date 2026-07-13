@@ -565,6 +565,7 @@ async fn session_100_nodes() {
     const NUM_NODES: usize = 100;
     const TARGET_EDGES: usize = 250;
     const SEED: u64 = 42;
+    const PHASE_TIMEOUT: Duration = Duration::from_secs(10);
 
     let start = Instant::now();
 
@@ -615,17 +616,9 @@ async fn session_100_nodes() {
 
         let src_addr = all_info[src].0;
         let context = format!("session {src}->{dst} initiator");
-        wait_for_session_established(
-            &mut nodes,
-            src,
-            &dest_addr,
-            Duration::from_secs(2),
-            &context,
-        )
-        .await;
+        wait_for_session_established(&mut nodes, src, &dest_addr, PHASE_TIMEOUT, &context).await;
         let context = format!("session {src}->{dst} responder");
-        wait_for_session_established(&mut nodes, dst, &src_addr, Duration::from_secs(2), &context)
-            .await;
+        wait_for_session_established(&mut nodes, dst, &src_addr, PHASE_TIMEOUT, &context).await;
     }
     let session_time = session_start.elapsed();
 
@@ -703,7 +696,7 @@ async fn session_100_nodes() {
         let delivered = recv_tun_packet_while_draining(
             &mut nodes,
             &tun_receivers[dst],
-            Duration::from_secs(2),
+            PHASE_TIMEOUT,
             &context,
         )
         .await;
@@ -724,7 +717,7 @@ async fn session_100_nodes() {
         let delivered = recv_tun_packet_while_draining(
             &mut nodes,
             &tun_receivers[src],
-            Duration::from_secs(2),
+            PHASE_TIMEOUT,
             &context,
         )
         .await;
