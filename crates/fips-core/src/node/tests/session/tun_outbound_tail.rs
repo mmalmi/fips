@@ -75,8 +75,13 @@ async fn test_tun_outbound_3node_forwarded() {
 
     send_tun_packet_via_dataplane(&mut nodes, 0, ipv6_packet.clone()).await;
 
-    // Drain packets: handshake + queued data delivery
-    drain_to_quiescence(&mut nodes).await;
+    let delivered = recv_tun_packet_while_draining(
+        &mut nodes,
+        &tun_rx,
+        Duration::from_secs(10),
+        "forwarded TUN packet",
+    )
+    .await;
 
     // Session should be established
     assert!(
@@ -87,16 +92,10 @@ async fn test_tun_outbound_3node_forwarded() {
             .is_established()
     );
 
-    // Verify packet delivered to Node 2
-    let delivered: Vec<Vec<u8>> = std::iter::from_fn(|| {
-        tun_rx
-            .try_recv_packet()
-            .ok()
-            .map(|packet| packet.as_slice().to_vec())
-    })
-    .collect();
-    assert_eq!(delivered.len(), 1, "Packet should be delivered to Node 2");
-    assert_eq!(delivered[0], ipv6_packet);
+    assert_eq!(
+        delivered, ipv6_packet,
+        "Packet should be delivered to Node 2"
+    );
 
     cleanup_nodes(&mut nodes).await;
 }

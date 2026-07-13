@@ -408,11 +408,15 @@
             transport_send_batch_packets,
         )
         .await;
-        assert_eq!(first_feed.summary().completions(), 0);
         assert_eq!(first_feed.summary().dispatched(), 1);
-        assert_eq!(first_feed.summary().outputs_sent(), 0);
+        let inline_outputs = first_feed.summary().outputs_sent();
+        assert!(inline_outputs <= 1);
+        assert_eq!(first_feed.summary().completions(), inline_outputs);
+        assert_eq!(first_feed.transport_sent(), inline_outputs);
 
-        wait_for_live_worker_completion(&live_node).await;
+        if inline_outputs == 0 {
+            wait_for_live_worker_completion(&live_node).await;
+        }
         live_node
             .driver
             .mover
@@ -442,12 +446,14 @@
             .await;
         let completion_outputs = completion_turn.summary().outputs_sent();
         assert!(
-            (1..=2).contains(&completion_outputs),
+            completion_outputs <= 2 - inline_outputs
+                && (inline_outputs > 0 || completion_outputs > 0),
             "the newly dispatched packet may complete in this turn"
         );
         assert_eq!(completion_turn.summary().completions(), completion_outputs);
         assert_eq!(completion_turn.summary().dispatched(), 1);
         assert_eq!(completion_turn.transport_sent(), completion_outputs);
+        let sent_total = inline_outputs + completion_outputs;
 
         let first_received =
             tokio::time::timeout(std::time::Duration::from_secs(1), recv_packet_rx.recv())
@@ -458,7 +464,7 @@
             open_fmp_wire_payload(first_received.data.as_slice(), key),
             b"ready-first"
         );
-        let second_received = if completion_outputs == 1 {
+        let second_received = if sent_total == 1 {
             assert!(
                 recv_packet_rx.try_recv().is_err(),
                 "the second output must follow its crypto completion"

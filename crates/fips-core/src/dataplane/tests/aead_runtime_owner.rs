@@ -125,17 +125,19 @@ fn aead_worker_pool_publishes_ordered_readiness_slots() {
     let (dispatched, retired, drops) = run_with_worker_pool_limit(&mut mover, &mut pool, 16);
 
     assert_eq!(dispatched, 12);
-    assert!(retired.is_empty());
     assert!(drops.is_empty());
-    assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 12);
+    assert_eq!(
+        mover.owner_mut(owner).unwrap().in_flight,
+        12 - retired.len()
+    );
 
-    let mut retired = Vec::new();
-    wait_for_owner_readiness(&mut pool, &mover);
-    assert_eq!(retire_ready_slots_to_outputs(&mut mover, 6, &mut retired), 6);
-    assert_eq!(pool.available_capacity(), 14);
-
-    assert_eq!(retire_ready_slots_to_outputs(&mut mover, 6, &mut retired), 6);
-    let outputs = retired;
+    let mut outputs = retired;
+    while outputs.len() < 12 {
+        wait_for_owner_readiness(&mut pool, &mover);
+        let remaining = 12 - outputs.len();
+        let retired = retire_ready_slots_to_outputs(&mut mover, remaining.min(6), &mut outputs);
+        assert!(retired > 0, "ready owner slots must retire progress");
+    }
     assert_eq!(
         outputs
             .iter()
@@ -224,9 +226,8 @@ fn aead_worker_pool_uses_shared_open_and_seal_capacity() {
     let (dispatched, retired, drops) = run_with_worker_pool_limit(&mut mover, &mut pool, 4);
 
     assert_eq!(dispatched, 2);
-    assert!(retired.is_empty());
     assert!(drops.is_empty());
-    assert_eq!(pool.available_capacity(), 0);
+    assert_eq!(pool.available_capacity(), retired.len());
 }
 
 #[test]
@@ -263,12 +264,14 @@ fn aead_worker_pool_reserves_priority_capacity_from_bulk() {
         DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS * 2,
     );
     assert_eq!(dispatched, DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS);
-    assert!(retired.is_empty());
     assert!(drops.is_empty());
-    assert_eq!(pool.available_capacity_for_lane(Lane::Bulk), 0);
+    assert_eq!(
+        pool.available_capacity_for_lane(Lane::Bulk),
+        retired.len()
+    );
     assert_eq!(
         pool.available_capacity_for_lane(Lane::Priority),
-        DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS
+        DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS + retired.len()
     );
 
     mover

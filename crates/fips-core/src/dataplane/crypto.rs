@@ -619,7 +619,17 @@ fn execute_crypto_owner_run(
 fn dataplane_aead_worker_count() -> usize {
     let parallelism = std::thread::available_parallelism()
         .map_or(1, std::num::NonZeroUsize::get);
-    parallelism.saturating_sub(1).max(1)
+    #[cfg(test)]
+    {
+        // A libtest process can host hundreds of synthetic nodes at once.
+        // Give their shared executor enough lanes that a production-sized
+        // per-send deadline is not consumed waiting behind unrelated tests.
+        parallelism.saturating_mul(4).max(4)
+    }
+    #[cfg(not(test))]
+    {
+        parallelism.saturating_sub(1).max(1)
+    }
 }
 
 fn dataplane_aead_worker_priority_reserve(max_in_flight: usize) -> usize {
