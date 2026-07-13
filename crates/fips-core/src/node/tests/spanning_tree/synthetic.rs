@@ -1,5 +1,63 @@
 use super::*;
 
+fn synthetic_tree_converged(nodes: &[TestNode]) -> bool {
+    let Some(expected_root) = nodes.iter().map(|node| *node.node.node_addr()).min() else {
+        return false;
+    };
+
+    nodes.iter().all(|node| {
+        let tree = node.node.tree_state();
+        *tree.root() == expected_root
+            && *tree.my_coords().root_id() == expected_root
+            && if *node.node.node_addr() == expected_root {
+                tree.is_root() && tree.my_coords().depth() == 0
+            } else {
+                !tree.is_root()
+                    && tree.my_coords().depth() > 0
+                    && node
+                        .node
+                        .get_peer(tree.my_declaration().parent_id())
+                        .is_some()
+            }
+    })
+}
+
+pub(in crate::node::tests) async fn repair_synthetic_tree_announces(
+    nodes: &mut [TestNode],
+    edges: &[(usize, usize)],
+    verbose: bool,
+) {
+    for round in 0..nodes.len().saturating_mul(2).max(8) {
+        if synthetic_tree_converged(nodes) {
+            return;
+        }
+        if verbose {
+            eprintln!("  Direct synthetic TreeAnnounce repair round {}", round + 1);
+        }
+
+        for &(left, right) in edges {
+            for (sender, receiver) in [(left, right), (right, left)] {
+                let sender_addr = *nodes[sender].node.node_addr();
+                let encoded = nodes[sender]
+                    .node
+                    .build_tree_announce()
+                    .expect("synthetic TreeAnnounce should build")
+                    .encode()
+                    .expect("synthetic TreeAnnounce should encode");
+                nodes[receiver]
+                    .node
+                    .handle_tree_announce(&sender_addr, &encoded[1..])
+                    .await;
+            }
+        }
+    }
+
+    assert!(
+        synthetic_tree_converged(nodes),
+        "synthetic topology did not converge after direct TreeAnnounce repair"
+    );
+}
+
 pub(in crate::node::tests) async fn run_synthetic_node_work(nodes: &mut [TestNode]) {
     let now_ms = Node::now_ms();
     for tn in nodes.iter_mut() {

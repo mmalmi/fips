@@ -266,6 +266,7 @@ pub(in crate::node::tests) async fn run_tree_test(
     let total = initial_total + drain_all_packets(&mut nodes, verbose).await;
     assert!(total > 0, "Should have processed at least some packets");
     let repaired = repair_missing_edge_handshakes(&mut nodes, edges, verbose).await;
+    repair_synthetic_tree_announces(&mut nodes, edges, verbose).await;
     let refreshed = refresh_synthetic_filter_announces(&mut nodes, edges, verbose).await;
 
     if verbose {
@@ -327,6 +328,7 @@ pub(in crate::node::tests) async fn run_tree_test_with_mtus(
     let total = initial_total + drain_all_packets(&mut nodes, false).await;
     assert!(total > 0, "Should have processed at least some packets");
     let _ = repair_missing_edge_handshakes(&mut nodes, edges, false).await;
+    repair_synthetic_tree_announces(&mut nodes, edges, false).await;
     let _ = refresh_synthetic_filter_announces(&mut nodes, edges, false).await;
 
     for &(i, j) in edges {

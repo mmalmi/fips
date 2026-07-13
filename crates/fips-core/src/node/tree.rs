@@ -13,7 +13,7 @@ use tracing::{debug, info, trace, warn};
 
 impl Node {
     /// Build a TreeAnnounce from our current tree state.
-    fn build_tree_announce(&self) -> Result<TreeAnnounce, NodeError> {
+    pub(super) fn build_tree_announce(&self) -> Result<TreeAnnounce, NodeError> {
         let decl = self.tree_state.my_declaration().clone();
         let ancestry = self.tree_state.my_coords().clone();
 

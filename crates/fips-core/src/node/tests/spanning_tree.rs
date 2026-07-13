@@ -28,6 +28,7 @@ mod topology;
 pub(super) use drain::{drain_all_packets, process_available_packets};
 pub(super) use fixture::{TestNode, initiate_handshake, make_test_node, make_test_node_with_mtu};
 pub(super) use synthetic::refresh_synthetic_filter_announces;
+pub(super) use synthetic::repair_synthetic_tree_announces;
 pub(super) use topology::{
     cleanup_nodes, generate_random_edges, run_tree_test, run_tree_test_with_mtus,
     verify_tree_convergence, verify_tree_convergence_components,
