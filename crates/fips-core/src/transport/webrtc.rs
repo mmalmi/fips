@@ -475,13 +475,12 @@ where
     O: Send + 'static,
 {
     let mut cleanup_task = tokio::spawn(cleanup);
-    if tokio::time::timeout(timeout, &mut cleanup_task)
-        .await
-        .is_err()
-    {
-        cleanup_task.abort();
-        let _ = cleanup_task.await;
-    }
+    // RTCPeerConnection::close marks the peer closed before it awaits SCTP,
+    // DTLS, and ICE teardown. Canceling that future can therefore strand the
+    // peer in a half-closed state whose UDP sockets can never be released by a
+    // later close call. Bound only the caller's wait; dropping the JoinHandle
+    // detaches the non-cancellation-safe physical cleanup to finish.
+    let _ = tokio::time::timeout(timeout, &mut cleanup_task).await;
 }
 
 async fn close_data_channel_bounded(data_channel: Arc<RTCDataChannel>) {
@@ -538,10 +537,8 @@ async fn cleanup_webrtc_session(
         }
     }
 
-    // Logical eviction happens before potentially slow library cleanup. Keep
-    // the physical close bounded as well: a library close future can stall,
-    // and leaving it detached would retain the peer connection and ICE sockets
-    // forever.
+    // Logical eviction happens before potentially slow library cleanup. The
+    // bounded caller wait must not cancel physical SCTP/DTLS/ICE teardown.
     if let Some(pending) = pending_dial {
         close_peer_connection_bounded(pending.pc).await;
     }

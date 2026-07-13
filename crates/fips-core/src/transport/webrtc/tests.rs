@@ -2,14 +2,6 @@ use super::*;
 use crate::packet_channel;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-struct DropSignal(Arc<AtomicBool>);
-
-impl Drop for DropSignal {
-    fn drop(&mut self) {
-        self.0.store(true, Ordering::SeqCst);
-    }
-}
-
 #[test]
 fn validates_compressed_pubkey_addresses() {
     let good = "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -143,20 +135,53 @@ async fn physical_cleanup_finishes_within_bounded_wait() {
 }
 
 #[tokio::test]
-async fn stalled_physical_cleanup_drops_owned_transport_after_timeout() {
-    let cleanup_dropped = Arc::new(AtomicBool::new(false));
-    let cleanup_drop_flag = Arc::clone(&cleanup_dropped);
+async fn timed_out_physical_cleanup_still_closes_gathered_ice_peer() {
+    let identity = crate::Identity::generate();
+    let (packet_tx, _packet_rx) = packet_channel(1);
+    let transport = WebRtcTransport::new(
+        TransportId::new(1),
+        None,
+        WebRtcConfig::default(),
+        packet_tx,
+        &identity,
+        &NostrDiscoveryConfig::default(),
+    )
+    .expect("WebRTC transport");
+    let pc = Arc::new(
+        transport
+            .api
+            .new_peer_connection(RTCConfiguration::default())
+            .await
+            .expect("peer connection"),
+    );
+    pc.create_data_channel("cleanup-test", None)
+        .await
+        .expect("data channel");
+    let offer = pc.create_offer(None).await.expect("offer");
+    let mut gathering = pc.gathering_complete_promise().await;
+    pc.set_local_description(offer)
+        .await
+        .expect("local description");
+    tokio::time::timeout(Duration::from_secs(1), gathering.recv())
+        .await
+        .expect("ICE gathering timeout");
 
+    let pc_for_cleanup = Arc::clone(&pc);
     finish_webrtc_cleanup_bounded(Duration::from_millis(10), async move {
-        let _drop_signal = DropSignal(cleanup_drop_flag);
-        std::future::pending::<()>().await;
+        // Model the production close path reaching an awaited library stage
+        // after the caller's bounded wait has elapsed.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let _ = pc_for_cleanup.close().await;
     })
     .await;
 
-    assert!(
-        cleanup_dropped.load(Ordering::SeqCst),
-        "a permanently stalled close must not retain its WebRTC transport"
-    );
+    tokio::time::timeout(Duration::from_millis(500), async {
+        while pc.connection_state() != RTCPeerConnectionState::Closed {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("timed-out cleanup must finish closing the ICE peer");
 }
 
 #[tokio::test]
