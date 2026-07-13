@@ -168,21 +168,24 @@ async fn recv_endpoint_event_while_draining(
     timeout: Duration,
     context: &str,
 ) -> NodeEndpointEvent {
-    tokio::time::timeout(timeout, async {
-        loop {
-            tokio::select! {
-                event = rx.recv() => {
-                    return event.unwrap_or_else(|| panic!("{context}: endpoint event channel closed"));
-                }
-                _ = tokio::time::sleep(Duration::from_millis(10)) => {
-                    run_session_retransmit_work(nodes).await;
-                    process_available_packets(nodes).await;
-                }
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        match rx.try_recv() {
+            Ok(event) => return event,
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                panic!("{context}: endpoint event channel closed");
             }
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
         }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("{context}: endpoint data should not time out"))
+
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{context}: endpoint data should not time out"
+        );
+        run_session_retransmit_work(nodes).await;
+        process_available_packets(nodes).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 async fn recv_service_event_while_draining(
@@ -191,21 +194,24 @@ async fn recv_service_event_while_draining(
     timeout: Duration,
     context: &str,
 ) -> NodeEndpointServiceEvent {
-    tokio::time::timeout(timeout, async {
-        loop {
-            tokio::select! {
-                event = rx.recv() => {
-                    return event.unwrap_or_else(|| panic!("{context}: service event channel closed"));
-                }
-                _ = tokio::time::sleep(Duration::from_millis(10)) => {
-                    run_session_retransmit_work(nodes).await;
-                    process_available_packets(nodes).await;
-                }
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        match rx.try_recv() {
+            Ok(event) => return event,
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                panic!("{context}: service event channel closed");
             }
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
         }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("{context}: service datagram should not time out"))
+
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{context}: service datagram should not time out"
+        );
+        run_session_retransmit_work(nodes).await;
+        process_available_packets(nodes).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 fn expect_single_endpoint_data_event(
@@ -310,23 +316,23 @@ async fn try_recv_tun_packet_while_draining(
     rx: &crate::upper::tun::TunRx,
     timeout: Duration,
 ) -> Option<Vec<u8>> {
-    tokio::time::timeout(timeout, async {
-        loop {
-            match rx.try_recv_packet() {
-                Ok(packet) => return packet.as_slice().to_vec(),
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    panic!("TUN receiver disconnected");
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        match rx.try_recv_packet() {
+            Ok(packet) => return Some(packet.as_slice().to_vec()),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                panic!("TUN receiver disconnected");
             }
-
-            run_session_retransmit_work(nodes).await;
-            process_available_packets(nodes).await;
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
-    })
-    .await
-    .ok()
+
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        run_session_retransmit_work(nodes).await;
+        process_available_packets(nodes).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 async fn process_available_packets_for_node(node: &mut TestNode) -> usize {
