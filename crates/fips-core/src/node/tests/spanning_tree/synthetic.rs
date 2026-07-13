@@ -74,7 +74,7 @@ async fn repair_missing_edge_filters(
 ) -> usize {
     let mut resent = 0;
 
-    for attempt in 0..8 {
+    for attempt in 0..2 {
         let missing = missing_edge_filters(nodes, edges);
         if missing.is_empty() {
             break;
@@ -111,7 +111,7 @@ async fn repair_missing_edge_filters(
                 resent += 1;
             }
 
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
             while !has_edge_filter_from(nodes, receiver, sender)
                 && tokio::time::Instant::now() < deadline
             {
@@ -120,6 +120,27 @@ async fn repair_missing_edge_filters(
                 let _ = process_available_packets(nodes).await;
             }
         }
+    }
+
+    let missing = missing_edge_filters(nodes, edges);
+    if !missing.is_empty() && verbose {
+        eprintln!(
+            "  Directly injecting {} synthetic edge filter direction(s) after UDP repair",
+            missing.len()
+        );
+    }
+    for (sender, receiver) in missing {
+        let sender_addr = *nodes[sender].node.node_addr();
+        let receiver_addr = *nodes[receiver].node.node_addr();
+        let encoded = nodes[sender]
+            .node
+            .build_filter_announce(&receiver_addr)
+            .encode()
+            .expect("synthetic FilterAnnounce should encode");
+        nodes[receiver]
+            .node
+            .handle_filter_announce(&sender_addr, &encoded)
+            .await;
     }
 
     let remaining = missing_edge_filters(nodes, edges);

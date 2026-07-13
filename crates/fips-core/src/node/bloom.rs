@@ -33,7 +33,7 @@ impl Node {
     /// The outgoing filter excludes the destination peer's own filter
     /// to prevent routing loops (don't tell a peer about destinations
     /// reachable only through them).
-    fn build_filter_announce(&mut self, exclude_peer: &NodeAddr) -> FilterAnnounce {
+    pub(super) fn build_filter_announce(&mut self, exclude_peer: &NodeAddr) -> FilterAnnounce {
         let peer_filters = self.peer_inbound_filters();
         let filter = self
             .bloom_state
