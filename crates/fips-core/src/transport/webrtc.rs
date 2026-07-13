@@ -42,6 +42,7 @@ const WEBRTC_READY_FRAME: &[u8] = &[0xff, 0x46, 0x57, 0x52, 0x31]; // FWR1
 const WEBRTC_READY_FALLBACK_MS: u64 = 250;
 const WEBRTC_IO_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_WEBRTC_SIGNAL_TASKS: usize = 32;
+const MAX_WEBRTC_SEEN_SESSIONS: usize = 1024;
 
 mod signaling;
 
@@ -103,6 +104,7 @@ type ConnectionPool = Arc<Mutex<HashMap<TransportAddr, WebRtcConnection>>>;
 type PendingPool = Arc<Mutex<HashMap<TransportAddr, PendingDial>>>;
 type FailedPool = Arc<Mutex<HashMap<TransportAddr, String>>>;
 type ReadyPool = Arc<Mutex<HashSet<TransportAddr>>>;
+type SeenSessionPool = Arc<Mutex<HashMap<(TransportAddr, String), u64>>>;
 
 /// WebRTC transport for FIPS.
 pub struct WebRtcTransport {
@@ -116,6 +118,7 @@ pub struct WebRtcTransport {
     pending: PendingPool,
     failed: FailedPool,
     ready: ReadyPool,
+    seen_sessions: SeenSessionPool,
     signal_rx: Option<mpsc::UnboundedReceiver<IncomingSignal>>,
     signal_task: Option<JoinHandle<()>>,
     signaling: Option<NostrWebRtcSignaling>,
@@ -171,6 +174,7 @@ impl WebRtcTransport {
             pending: Arc::new(Mutex::new(HashMap::new())),
             failed: Arc::new(Mutex::new(HashMap::new())),
             ready: Arc::new(Mutex::new(HashSet::new())),
+            seen_sessions: Arc::new(Mutex::new(HashMap::new())),
             signal_rx: Some(signal_rx),
             signal_task: None,
             signaling: Some(signaling),
@@ -219,6 +223,7 @@ impl WebRtcTransport {
             pending: Arc::clone(&self.pending),
             failed: Arc::clone(&self.failed),
             ready: Arc::clone(&self.ready),
+            seen_sessions: Arc::clone(&self.seen_sessions),
             local_pubkey_hex: self.local_pubkey_hex.clone(),
             signal_relays: self.signal_relays.clone(),
             stun_servers: self.stun_servers.clone(),
@@ -279,6 +284,7 @@ impl WebRtcTransport {
             signaling.stop().await;
         }
         self.failed.lock().await.clear();
+        self.seen_sessions.lock().await.clear();
         let pending = self
             .pending
             .lock()
@@ -360,6 +366,7 @@ impl WebRtcTransport {
             pending: Arc::clone(&self.pending),
             failed: Arc::clone(&self.failed),
             ready: Arc::clone(&self.ready),
+            seen_sessions: Arc::clone(&self.seen_sessions),
             local_pubkey_hex: self.local_pubkey_hex.clone(),
             signal_relays: self.signal_relays.clone(),
             stun_servers: self.stun_servers.clone(),
@@ -566,6 +573,34 @@ fn spawn_webrtc_session_cleanup(
         )
         .await;
     });
+}
+
+async fn accept_webrtc_offer_once(
+    seen_sessions: &SeenSessionPool,
+    remote_addr: &TransportAddr,
+    session_id: &str,
+    expires_at_ms: u64,
+    now_ms: u64,
+) -> bool {
+    let mut seen = seen_sessions.lock().await;
+    seen.retain(|_, expires_at| *expires_at > now_ms);
+
+    let key = (remote_addr.clone(), session_id.to_string());
+    if seen.contains_key(&key) {
+        return false;
+    }
+
+    if seen.len() >= MAX_WEBRTC_SEEN_SESSIONS {
+        if let Some(oldest) = seen
+            .iter()
+            .min_by_key(|(_, expires_at)| **expires_at)
+            .map(|(key, _)| key.clone())
+        {
+            seen.remove(&oldest);
+        }
+    }
+    seen.insert(key, expires_at_ms);
+    true
 }
 
 include!("webrtc_runtime.rs");

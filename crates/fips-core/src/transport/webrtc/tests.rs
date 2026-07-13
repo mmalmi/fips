@@ -43,6 +43,26 @@ fn webrtc_signal_serializes_like_ts_transport() {
     assert!(json.contains(r#""expiresAtMs":2"#));
 }
 
+#[tokio::test]
+async fn accepted_webrtc_offer_cannot_be_replayed_before_expiry() {
+    let seen_sessions = SeenSessionPool::default();
+    let remote_addr = TransportAddr::from_string(
+        "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+
+    assert!(
+        accept_webrtc_offer_once(&seen_sessions, &remote_addr, "session-a", 200, 100).await
+    );
+    assert!(
+        !accept_webrtc_offer_once(&seen_sessions, &remote_addr, "session-a", 200, 150).await,
+        "a delayed copy of an accepted offer must not recreate its ICE peer"
+    );
+    assert!(
+        accept_webrtc_offer_once(&seen_sessions, &remote_addr, "session-a", 300, 201).await,
+        "expired replay entries must not block a later offer"
+    );
+}
+
 #[test]
 fn disconnected_webrtc_sessions_are_terminal_for_fips() {
     for state in [

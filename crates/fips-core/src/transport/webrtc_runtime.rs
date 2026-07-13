@@ -8,6 +8,7 @@ struct WebRtcRuntime {
     pending: PendingPool,
     failed: FailedPool,
     ready: ReadyPool,
+    seen_sessions: SeenSessionPool,
     local_pubkey_hex: String,
     signal_relays: Vec<String>,
     stun_servers: Vec<String>,
@@ -159,6 +160,23 @@ impl WebRtcRuntime {
                 .send_reject(&signal.sender, sender_xonly, signal.session_id)
                 .await;
             return Err(TransportError::ConnectionRefused);
+        }
+        if !accept_webrtc_offer_once(
+            &self.seen_sessions,
+            &remote_addr,
+            &signal.session_id,
+            signal.expires_at_ms,
+            now_ms(),
+        )
+        .await
+        {
+            debug!(
+                transport_id = %self.transport_id,
+                remote_addr = %remote_addr,
+                session = %signal.session_id,
+                "duplicate WebRTC offer ignored"
+            );
+            return Ok(());
         }
 
         let session_id = signal.session_id.clone();
