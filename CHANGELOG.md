@@ -5,16 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.94] - 2026-07-13
-
-### Fixed
-
-- Allowed physical WebRTC SCTP, DTLS, and ICE cleanup to finish in a detached
-  task after the bounded caller wait expires, preventing repeated short-lived
-  browser and health-probe sessions from retaining memory after teardown.
-- Bumped `fips-endpoint` to 0.3.61 so app-facing consumers select
-  `fips-core` 0.3.94.
-
 ## [0.3.93] - 2026-07-12
 
 ### Changed
