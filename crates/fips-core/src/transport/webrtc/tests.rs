@@ -2,6 +2,14 @@ use super::*;
 use crate::packet_channel;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+struct DropSignal(Arc<AtomicBool>);
+
+impl Drop for DropSignal {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
 #[test]
 fn validates_compressed_pubkey_addresses() {
     let good = "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -99,26 +107,36 @@ async fn stalled_webrtc_send_times_out_and_starts_cleanup() {
 }
 
 #[tokio::test]
-async fn slow_physical_cleanup_finishes_after_bounded_wait_returns() {
+async fn physical_cleanup_finishes_within_bounded_wait() {
     let cleanup_finished = Arc::new(AtomicBool::new(false));
     let cleanup_flag = Arc::clone(&cleanup_finished);
     let started = tokio::time::Instant::now();
 
-    finish_webrtc_cleanup_bounded(Duration::from_millis(10), async move {
-        tokio::time::sleep(Duration::from_millis(50)).await;
+    finish_webrtc_cleanup_bounded(Duration::from_millis(50), async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
         cleanup_flag.store(true, Ordering::SeqCst);
     })
     .await;
 
     assert!(started.elapsed() < Duration::from_millis(100));
-    assert!(!cleanup_finished.load(Ordering::SeqCst));
-    tokio::time::timeout(Duration::from_millis(200), async {
-        while !cleanup_finished.load(Ordering::SeqCst) {
-            tokio::task::yield_now().await;
-        }
+    assert!(cleanup_finished.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn stalled_physical_cleanup_drops_owned_transport_after_timeout() {
+    let cleanup_dropped = Arc::new(AtomicBool::new(false));
+    let cleanup_drop_flag = Arc::clone(&cleanup_dropped);
+
+    finish_webrtc_cleanup_bounded(Duration::from_millis(10), async move {
+        let _drop_signal = DropSignal(cleanup_drop_flag);
+        std::future::pending::<()>().await;
     })
-    .await
-    .expect("detached WebRTC cleanup must run to completion");
+    .await;
+
+    assert!(
+        cleanup_dropped.load(Ordering::SeqCst),
+        "a permanently stalled close must not retain its WebRTC transport"
+    );
 }
 
 #[tokio::test]

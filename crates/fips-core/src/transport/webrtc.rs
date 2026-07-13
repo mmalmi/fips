@@ -468,7 +468,13 @@ where
     O: Send + 'static,
 {
     let mut cleanup_task = tokio::spawn(cleanup);
-    let _ = tokio::time::timeout(timeout, &mut cleanup_task).await;
+    if tokio::time::timeout(timeout, &mut cleanup_task)
+        .await
+        .is_err()
+    {
+        cleanup_task.abort();
+        let _ = cleanup_task.await;
+    }
 }
 
 async fn close_data_channel_bounded(data_channel: Arc<RTCDataChannel>) {
@@ -525,10 +531,10 @@ async fn cleanup_webrtc_session(
         }
     }
 
-    // Logical eviction happens before potentially slow library cleanup. The
-    // bounded wait must not cancel physical SCTP/DTLS/ICE teardown: a timed-out
-    // close continues detached so repeated short-lived sessions cannot retain
-    // transport resources.
+    // Logical eviction happens before potentially slow library cleanup. Keep
+    // the physical close bounded as well: a library close future can stall,
+    // and leaving it detached would retain the peer connection and ICE sockets
+    // forever.
     if let Some(pending) = pending_dial {
         close_peer_connection_bounded(pending.pc).await;
     }
