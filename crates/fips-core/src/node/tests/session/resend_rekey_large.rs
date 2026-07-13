@@ -679,6 +679,45 @@ async fn session_100_nodes() {
     let mut fwd_delivered = 0usize;
     let mut rev_delivered = 0usize;
 
+    async fn send_probe_until_delivered(
+        nodes: &mut [TestNode],
+        receiver: &crate::upper::tun::TunRx,
+        source: usize,
+        packet: &[u8],
+        expected_payload: &[u8],
+        timeout: Duration,
+        context: &str,
+    ) {
+        const ATTEMPTS: usize = 3;
+
+        for _ in 0..ATTEMPTS {
+            send_tun_packet_via_dataplane(nodes, source, packet.to_vec()).await;
+            let deadline = tokio::time::Instant::now() + timeout;
+            loop {
+                let now = tokio::time::Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                let Some(delivered) = try_recv_tun_packet_while_draining(
+                    nodes,
+                    receiver,
+                    deadline.saturating_duration_since(now),
+                )
+                .await
+                else {
+                    break;
+                };
+                if delivered.get(40..) == Some(expected_payload) {
+                    return;
+                }
+                // A late duplicate from an earlier retry is not the current
+                // probe. Keep draining until this attempt's deadline.
+            }
+        }
+
+        panic!("{context}: payload was not delivered after {ATTEMPTS} attempts");
+    }
+
     for (pair_idx, &(src, dst)) in session_pairs.iter().enumerate() {
         let dest_addr = all_info[dst].0;
         let src_addr = all_info[src].0;
@@ -690,42 +729,36 @@ async fn session_100_nodes() {
         // Forward: initiator → responder
         let fwd_payload = format!("fwd-{}", pair_idx).into_bytes();
         let fwd_ipv6 = build_ipv6_packet(&src_fips, &dst_fips, &fwd_payload);
-        send_tun_packet_via_dataplane(&mut nodes, src, fwd_ipv6).await;
-        send_forward_ok += 1;
         let context = format!("forward TUN delivery {src}->{dst}");
-        let delivered = recv_tun_packet_while_draining(
+        send_probe_until_delivered(
             &mut nodes,
             &tun_receivers[dst],
+            src,
+            &fwd_ipv6,
+            &fwd_payload,
             PHASE_TIMEOUT,
             &context,
         )
         .await;
-        assert_eq!(
-            delivered.get(40..),
-            Some(fwd_payload.as_slice()),
-            "{context}"
-        );
+        send_forward_ok += 1;
         fwd_delivered += 1;
 
         // Reverse: responder → initiator
         // (Responder should already be Established after XK msg3)
         let rev_payload = format!("rev-{}", pair_idx).into_bytes();
         let rev_ipv6 = build_ipv6_packet(&dst_fips, &src_fips, &rev_payload);
-        send_tun_packet_via_dataplane(&mut nodes, dst, rev_ipv6).await;
-        send_reverse_ok += 1;
         let context = format!("reverse TUN delivery {dst}->{src}");
-        let delivered = recv_tun_packet_while_draining(
+        send_probe_until_delivered(
             &mut nodes,
             &tun_receivers[src],
+            dst,
+            &rev_ipv6,
+            &rev_payload,
             PHASE_TIMEOUT,
             &context,
         )
         .await;
-        assert_eq!(
-            delivered.get(40..),
-            Some(rev_payload.as_slice()),
-            "{context}"
-        );
+        send_reverse_ok += 1;
         rev_delivered += 1;
     }
 

@@ -300,12 +300,22 @@ async fn recv_tun_packet_while_draining(
     timeout: Duration,
     context: &str,
 ) -> Vec<u8> {
+    try_recv_tun_packet_while_draining(nodes, rx, timeout)
+        .await
+        .unwrap_or_else(|| panic!("{context}: TUN packet should not time out"))
+}
+
+async fn try_recv_tun_packet_while_draining(
+    nodes: &mut [TestNode],
+    rx: &crate::upper::tun::TunRx,
+    timeout: Duration,
+) -> Option<Vec<u8>> {
     tokio::time::timeout(timeout, async {
         loop {
             match rx.try_recv_packet() {
                 Ok(packet) => return packet.as_slice().to_vec(),
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    panic!("{context}: TUN receiver disconnected");
+                    panic!("TUN receiver disconnected");
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
@@ -316,7 +326,7 @@ async fn recv_tun_packet_while_draining(
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("{context}: TUN packet should not time out"))
+    .ok()
 }
 
 async fn process_available_packets_for_node(node: &mut TestNode) -> usize {
