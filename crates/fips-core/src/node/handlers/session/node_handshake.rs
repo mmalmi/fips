@@ -46,13 +46,7 @@ impl Node {
                     src = %self.peer_display_name(src_addr),
                     "Simultaneous session initiation: we lose, becoming responder"
                 );
-            } else if existing.is_awaiting_msg3()
-                || (existing.is_established()
-                    && !existing.is_initiator()
-                    && !existing.has_rekey_in_progress()
-                    && existing.pending_new_session().is_none()
-                    && existing.handshake_payload().is_some())
-            {
+            } else if existing.is_awaiting_msg3() {
                 // Duplicate setup while we already sent msg2 — resend stored ack
                 if let Some(payload) = existing.handshake_payload() {
                     debug!(src = %self.peer_display_name(src_addr), "Duplicate SessionSetup, resending SessionAck");
