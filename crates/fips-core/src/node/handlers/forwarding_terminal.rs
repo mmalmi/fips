@@ -1,3 +1,9 @@
+// A deferred transit send normally completes in the next AEAD/transport turn.
+// Keep enough continuation turns for a busy crypto worker, but never let one
+// missing terminal receipt monopolize the node RX loop and starve endpoint
+// control commands.
+const DEFERRED_SESSION_FORWARD_DRAIN_TURN_LIMIT: usize = 8;
+
 impl Node {
     pub(in crate::node) fn collect_deferred_session_forward_terminals(
         &mut self,
@@ -118,9 +124,24 @@ impl Node {
 
     pub(in crate::node) async fn drain_deferred_session_forwards(&mut self) -> usize {
         let mut processed = self.finish_completed_session_forwards().await;
-        while self.deferred_session_forwards.pending_len() > 0 {
+        let mut turns = 0usize;
+        while self.deferred_session_forwards.pending_len() > 0
+            && turns < DEFERRED_SESSION_FORWARD_DRAIN_TURN_LIMIT
+        {
             processed =
                 processed.saturating_add(self.drain_one_deferred_session_forward_turn().await);
+            turns = turns.saturating_add(1);
+        }
+        let pending = self.deferred_session_forwards.pending_len();
+        if pending > 0 {
+            warn!(
+                pending,
+                turns, "Aborting deferred session forwards after receipt drain budget expired"
+            );
+            processed = processed.saturating_add(
+                self.abort_deferred_session_forwards("dataplane forwarding receipt timed out")
+                    .await,
+            );
         }
         processed
     }

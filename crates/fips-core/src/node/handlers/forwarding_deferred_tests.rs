@@ -85,3 +85,51 @@ async fn shutdown_abort_finishes_every_forward_and_matches_stats() {
     assert!(node.deferred_session_forwards.completed.is_empty());
     assert_eq!(node.stats().forwarding.drop_send_error_packets, 2);
 }
+
+#[tokio::test(start_paused = true)]
+async fn orphan_forward_receipt_does_not_block_queued_endpoint_peer_snapshot() {
+    let mut node = Node::new(crate::Config::new()).expect("test node");
+    let endpoint_io = node
+        .attach_endpoint_data_io(1)
+        .expect("endpoint I/O should attach");
+    let mut endpoint_control_rx = node
+        .endpoint_control_rx
+        .take()
+        .expect("endpoint control receiver should attach");
+    node.deferred_session_forwards.insert(
+        1,
+        pending_test_forward(1, 2, 3),
+        ForwardingLane::Priority,
+    );
+
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+    endpoint_io
+        .control_tx
+        .send(crate::node::NodeEndpointControlCommand::PeerSnapshot { response_tx })
+        .await
+        .expect("peer snapshot should queue behind forwarding drain");
+
+    let queued_snapshot = async move {
+        let drained = node.drain_deferred_session_forwards().await;
+        let command = endpoint_control_rx
+            .recv()
+            .await
+            .expect("queued endpoint control command");
+        node.handle_endpoint_control(command).await;
+        let peers = response_rx.await.expect("peer snapshot response");
+        (node, drained, peers)
+    };
+    let (node, drained, peers) = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        queued_snapshot,
+    )
+    .await
+    .expect("orphan forwarding receipt must not starve endpoint control");
+
+    assert_eq!(drained, 1);
+    assert!(peers.is_empty());
+    assert_eq!(node.deferred_session_forwards.pending_len(), 0);
+    assert!(node.deferred_session_forwards.window.is_empty());
+    assert!(node.deferred_session_forwards.completed.is_empty());
+    assert_eq!(node.stats().forwarding.drop_send_error_packets, 1);
+}
