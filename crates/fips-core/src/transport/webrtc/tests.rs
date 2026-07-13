@@ -73,6 +73,80 @@ fn disconnected_webrtc_sessions_are_terminal_for_fips() {
     }
 }
 
+#[test]
+fn pending_offer_conflicts_choose_the_newest_offer_or_stable_initiator() {
+    let lower = "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let higher = "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    assert!(incoming_offer_replaces_pending(
+        higher,
+        lower,
+        PendingDialOrigin::Remote,
+        100,
+        101,
+    ));
+    assert!(!incoming_offer_replaces_pending(
+        higher,
+        lower,
+        PendingDialOrigin::Remote,
+        101,
+        100,
+    ));
+    assert!(incoming_offer_replaces_pending(
+        higher,
+        lower,
+        PendingDialOrigin::Local,
+        100,
+        100,
+    ));
+    assert!(!incoming_offer_replaces_pending(
+        lower,
+        higher,
+        PendingDialOrigin::Local,
+        100,
+        100,
+    ));
+}
+
+#[test]
+fn default_ice_gather_timeout_keeps_signaling_interactive() {
+    assert_eq!(WebRtcConfig::default().ice_gather_timeout_ms(), 2_000);
+}
+
+#[test]
+fn webrtc_listens_for_signaling_on_every_advert_relay() {
+    let identity = crate::Identity::generate();
+    let (packet_tx, _packet_rx) = packet_channel(1);
+    let config = WebRtcConfig {
+        signal_relays: Some(vec!["wss://signals.example".to_string()]),
+        ..WebRtcConfig::default()
+    };
+    let discovery = NostrDiscoveryConfig {
+        advert_relays: vec![
+            "wss://adverts.example".to_string(),
+            "wss://signals.example".to_string(),
+        ],
+        ..NostrDiscoveryConfig::default()
+    };
+    let transport = WebRtcTransport::new(
+        TransportId::new(1),
+        None,
+        config,
+        packet_tx,
+        &identity,
+        &discovery,
+    )
+    .expect("WebRTC transport");
+
+    assert_eq!(
+        transport.signal_relays,
+        vec![
+            "wss://signals.example".to_string(),
+            "wss://adverts.example".to_string(),
+        ]
+    );
+}
+
 #[tokio::test]
 async fn connection_state_does_not_report_none_during_pool_contention() {
     let identity = crate::Identity::generate();
@@ -286,4 +360,54 @@ async fn terminal_session_cleanup_closes_the_peer_connection() {
         Some("peer disconnected")
     );
     assert_eq!(pc.connection_state(), RTCPeerConnectionState::Closed);
+}
+
+#[tokio::test]
+async fn fresh_offer_evicts_an_established_session_immediately() {
+    let identity = crate::Identity::generate();
+    let (packet_tx, _packet_rx) = packet_channel(1);
+    let transport = WebRtcTransport::new(
+        TransportId::new(1),
+        None,
+        WebRtcConfig::default(),
+        packet_tx,
+        &identity,
+        &NostrDiscoveryConfig::default(),
+    )
+    .expect("WebRTC transport");
+    let pc = Arc::new(
+        transport
+            .api
+            .new_peer_connection(RTCConfiguration::default())
+            .await
+            .expect("peer connection"),
+    );
+    let data_channel = pc
+        .create_data_channel("replacement-test", None)
+        .await
+        .expect("data channel");
+    let addr = TransportAddr::from_string(
+        "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    transport.pool.lock().await.insert(
+        addr.clone(),
+        WebRtcConnection {
+            session_id: "stale-session".to_string(),
+            pc,
+            data_channel,
+        },
+    );
+    transport.ready.lock().await.insert(addr.clone());
+
+    assert!(
+        evict_established_webrtc_session_for_offer(
+            &transport.pool,
+            &transport.failed,
+            &transport.ready,
+            &addr,
+        )
+        .await
+    );
+    assert!(!transport.pool.lock().await.contains_key(&addr));
+    assert!(!transport.ready.lock().await.contains(&addr));
 }
