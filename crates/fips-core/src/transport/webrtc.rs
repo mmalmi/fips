@@ -590,14 +590,13 @@ async fn accept_webrtc_offer_once(
         return false;
     }
 
-    if seen.len() >= MAX_WEBRTC_SEEN_SESSIONS {
-        if let Some(oldest) = seen
+    if seen.len() >= MAX_WEBRTC_SEEN_SESSIONS
+        && let Some(oldest) = seen
             .iter()
             .min_by_key(|(_, expires_at)| **expires_at)
             .map(|(key, _)| key.clone())
-        {
-            seen.remove(&oldest);
-        }
+    {
+        seen.remove(&oldest);
     }
     seen.insert(key, expires_at_ms);
     true
