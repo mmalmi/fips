@@ -397,8 +397,13 @@ async fn test_disconnect_all_reason_codes() {
             .await
             .expect("Failed to send disconnect");
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        process_available_packets(&mut nodes).await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while nodes[1].node.get_peer(&node0_addr).is_some()
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            process_available_packets(&mut nodes).await;
+        }
 
         assert!(
             nodes[1].node.get_peer(&node0_addr).is_none(),

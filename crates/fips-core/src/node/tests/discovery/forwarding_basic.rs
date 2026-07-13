@@ -91,10 +91,19 @@ async fn test_request_three_node_chain() {
     // Node0 initiates lookup (doesn't record in recent_requests)
     nodes[0].node.initiate_lookup(&node2_addr, 8).await;
 
-    // Process packets in rounds to allow multi-hop propagation + response
-    // Chain: node0→node1→node2 (request), node2→node1→node0 (response)
-    for _ in 0..10 {
-        tokio::time::sleep(Duration::from_millis(100)).await;
+    // Wait for the observable end state rather than assuming a fixed number
+    // of packet turns. Native crypto completions may be delayed by other
+    // parallel full-suite tests.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while (nodes[1].node.recent_requests.is_empty()
+        || nodes[2].node.recent_requests.is_empty()
+        || !nodes[0]
+            .node
+            .coord_cache()
+            .contains(&node2_addr, Node::now_ms()))
+        && tokio::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(Duration::from_millis(10)).await;
         process_available_packets(&mut nodes).await;
     }
 

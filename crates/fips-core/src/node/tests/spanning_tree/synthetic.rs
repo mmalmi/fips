@@ -74,7 +74,7 @@ async fn repair_missing_edge_filters(
 ) -> usize {
     let mut resent = 0;
 
-    for attempt in 0..16 {
+    for attempt in 0..8 {
         let missing = missing_edge_filters(nodes, edges);
         if missing.is_empty() {
             break;
@@ -94,9 +94,31 @@ async fn repair_missing_edge_filters(
                 .node
                 .bloom_state
                 .mark_update_needed(receiver_addr);
-            resent += 1;
+
+            // The synthetic transport uses the real native crypto executor and
+            // localhost UDP. Under the parallel full suite, both can stay busy
+            // after packet_rx is momentarily empty, so an idle-round count is
+            // not evidence that this particular announce reached its peer.
+            // Send after the test debounce and wait for the receiver's actual
+            // accepted filter state before moving to the next missing edge.
             tokio::time::sleep(Duration::from_millis(60)).await;
-            let _ = drain_synthetic_packets_until_idle(nodes, 120, 10).await;
+            if nodes[sender]
+                .node
+                .send_filter_announce_to_peer(&receiver_addr)
+                .await
+                .is_ok()
+            {
+                resent += 1;
+            }
+
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+            while !has_edge_filter_from(nodes, receiver, sender)
+                && tokio::time::Instant::now() < deadline
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                run_synthetic_node_work(nodes).await;
+                let _ = process_available_packets(nodes).await;
+            }
         }
     }
 
@@ -113,6 +135,15 @@ async fn repair_missing_edge_filters(
             examples.join(", ")
         );
     }
+    assert!(
+        remaining.is_empty(),
+        "synthetic topology did not establish every edge filter: {}",
+        remaining
+            .iter()
+            .map(|(sender, receiver)| format!("{}->{}", sender, receiver))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 
     resent
 }
