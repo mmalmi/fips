@@ -185,6 +185,52 @@ async fn timed_out_physical_cleanup_still_closes_gathered_ice_peer() {
 }
 
 #[tokio::test]
+async fn stalled_full_close_still_stops_gathered_ice_transport() {
+    let identity = crate::Identity::generate();
+    let (packet_tx, _packet_rx) = packet_channel(1);
+    let transport = WebRtcTransport::new(
+        TransportId::new(1),
+        None,
+        WebRtcConfig::default(),
+        packet_tx,
+        &identity,
+        &NostrDiscoveryConfig::default(),
+    )
+    .expect("WebRTC transport");
+    let pc = Arc::new(
+        transport
+            .api
+            .new_peer_connection(RTCConfiguration::default())
+            .await
+            .expect("peer connection"),
+    );
+    pc.create_data_channel("cleanup-test", None)
+        .await
+        .expect("data channel");
+    let offer = pc.create_offer(None).await.expect("offer");
+    let mut gathering = pc.gathering_complete_promise().await;
+    pc.set_local_description(offer)
+        .await
+        .expect("local description");
+    tokio::time::timeout(Duration::from_secs(1), gathering.recv())
+        .await
+        .expect("ICE gathering timeout");
+
+    close_peer_connection_with_bounded_full_close(
+        Duration::from_millis(10),
+        Arc::clone(&pc),
+        std::future::pending::<()>(),
+    )
+    .await;
+
+    assert_eq!(
+        pc.dtls_transport().ice_transport().state(),
+        ::webrtc::ice_transport::ice_transport_state::RTCIceTransportState::Closed,
+        "ICE teardown must not wait behind a stalled SCTP/DTLS/full close"
+    );
+}
+
+#[tokio::test]
 async fn terminal_session_cleanup_closes_the_peer_connection() {
     let identity = crate::Identity::generate();
     let (packet_tx, _packet_rx) = packet_channel(1);

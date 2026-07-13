@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.96] - 2026-07-13
+
+### Fixed
+
+- Stopped terminal WebRTC ICE transports independently before graceful
+  SCTP/DTLS teardown, ensuring stalled upper-layer close futures cannot retain
+  gathered UDP sockets after short-lived browser and health-probe sessions.
+
 ## [0.3.94] - 2026-07-13
 
 ### Fixed
