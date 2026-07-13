@@ -1,7 +1,7 @@
 //! Active end-to-end health probe for a Nostr-discovered FIPS WebRTC peer.
 
 use clap::Parser;
-use fips::config::{NostrDiscoveryPolicy, PeerConfig, TransportInstances};
+use fips::config::{NostrDiscoveryPolicy, PeerAddress, PeerConfig, TransportInstances};
 use fips::{Config, FipsEndpoint, PeerIdentity, WebRtcConfig};
 use std::net::Ipv6Addr;
 use std::time::{Duration, Instant};
@@ -73,9 +73,9 @@ async fn run(args: Args) -> Result<ProbeSuccess, String> {
     }
     let target = PeerIdentity::from_npub(args.target_npub.trim())
         .map_err(|error| format!("invalid target npub: {error}"))?;
-    let target_npub = target.npub();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(args.timeout_seconds);
-    let config = probe_config(&target_npub, &args.relay, &args.app, args.timeout_seconds);
+    let config = probe_config(&target, &args.relay, &args.app, args.timeout_seconds);
+    let target_npub = target.npub();
 
     let endpoint = timeout_at(
         deadline,
@@ -105,7 +105,7 @@ async fn run(args: Args) -> Result<ProbeSuccess, String> {
     probe_result.map(|rtt| ProbeSuccess { target_npub, rtt })
 }
 
-fn probe_config(target_npub: &str, relays: &[String], app: &str, timeout_secs: u64) -> Config {
+fn probe_config(target: &PeerIdentity, relays: &[String], app: &str, timeout_secs: u64) -> Config {
     let mut config = Config::new();
     config.node.identity.persistent = false;
     config.node.discovery.nostr.enabled = true;
@@ -134,7 +134,11 @@ fn probe_config(target_npub: &str, relays: &[String], app: &str, timeout_secs: u
         ..Default::default()
     });
     config.peers = vec![PeerConfig {
-        npub: target_npub.to_string(),
+        npub: target.npub(),
+        addresses: vec![PeerAddress::new(
+            "webrtc",
+            hex::encode(target.pubkey_full().serialize()),
+        )],
         auto_reconnect: false,
         discovery_fallback_transit: false,
         ..Default::default()
@@ -340,7 +344,10 @@ mod tests {
 
     #[test]
     fn probe_config_is_ephemeral_targeted_and_webrtc_only() {
-        let target = fips::Identity::generate().npub();
+        let target_identity = fips::Identity::generate();
+        let target = PeerIdentity::from_pubkey_full(target_identity.pubkey_full());
+        let target_npub = target.npub();
+        let target_webrtc_addr = hex::encode(target_identity.pubkey_full().serialize());
         let relay = "wss://relay.example".to_string();
         let config = probe_config(&target, std::slice::from_ref(&relay), "health", 20);
 
@@ -352,8 +359,10 @@ mod tests {
         );
         assert_eq!(config.node.discovery.nostr.advert_relays, vec![relay]);
         assert_eq!(config.peers.len(), 1);
-        assert_eq!(config.peers[0].npub, target);
-        assert!(config.peers[0].addresses.is_empty());
+        assert_eq!(config.peers[0].npub, target_npub);
+        assert_eq!(config.peers[0].addresses.len(), 1);
+        assert_eq!(config.peers[0].addresses[0].transport, "webrtc");
+        assert_eq!(config.peers[0].addresses[0].addr, target_webrtc_addr);
         assert!(config.transports.udp.is_empty());
         let TransportInstances::Single(webrtc) = config.transports.webrtc else {
             panic!("probe must configure exactly one WebRTC transport");
