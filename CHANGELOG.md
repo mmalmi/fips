@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Re-established FSP sessions when a restarted initiator reconnects to a
+  surviving responder that still retains its previous handshake reply.
 - Stopped terminal WebRTC ICE transports independently before graceful
   SCTP/DTLS teardown, ensuring stalled upper-layer close futures cannot retain
   gathered UDP sockets after short-lived browser and health-probe sessions.
