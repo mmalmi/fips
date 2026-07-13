@@ -231,6 +231,61 @@ async fn stalled_full_close_still_stops_gathered_ice_transport() {
 }
 
 #[tokio::test]
+async fn graceful_full_close_runs_before_ice_fallback() {
+    let identity = crate::Identity::generate();
+    let (packet_tx, _packet_rx) = packet_channel(1);
+    let transport = WebRtcTransport::new(
+        TransportId::new(1),
+        None,
+        WebRtcConfig::default(),
+        packet_tx,
+        &identity,
+        &NostrDiscoveryConfig::default(),
+    )
+    .expect("WebRTC transport");
+    let pc = Arc::new(
+        transport
+            .api
+            .new_peer_connection(RTCConfiguration::default())
+            .await
+            .expect("peer connection"),
+    );
+    pc.create_data_channel("cleanup-test", None)
+        .await
+        .expect("data channel");
+    let offer = pc.create_offer(None).await.expect("offer");
+    let mut gathering = pc.gathering_complete_promise().await;
+    pc.set_local_description(offer)
+        .await
+        .expect("local description");
+    tokio::time::timeout(Duration::from_secs(1), gathering.recv())
+        .await
+        .expect("ICE gathering timeout");
+
+    let graceful_started_while_ice_open = Arc::new(AtomicBool::new(false));
+    let graceful_flag = Arc::clone(&graceful_started_while_ice_open);
+    let pc_for_close = Arc::clone(&pc);
+    close_peer_connection_with_bounded_full_close(
+        Duration::from_millis(100),
+        Arc::clone(&pc),
+        async move {
+            graceful_flag.store(
+                pc_for_close.dtls_transport().ice_transport().state()
+                    != ::webrtc::ice_transport::ice_transport_state::RTCIceTransportState::Closed,
+                Ordering::SeqCst,
+            );
+            let _ = pc_for_close.close().await;
+        },
+    )
+    .await;
+
+    assert!(
+        graceful_started_while_ice_open.load(Ordering::SeqCst),
+        "graceful SCTP/DTLS close must run before the terminal ICE fallback"
+    );
+}
+
+#[tokio::test]
 async fn terminal_session_cleanup_closes_the_peer_connection() {
     let identity = crate::Identity::generate();
     let (packet_tx, _packet_rx) = packet_channel(1);

@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.97] - 2026-07-13
+
+### Fixed
+
+- Allowed graceful WebRTC SCTP/DTLS shutdown to notify remote peers before
+  falling back to independent ICE teardown, preventing repeated short-lived
+  health probes from retaining remote UDP sockets while preserving bounded
+  cleanup for stalled close futures.
+
 ## [0.3.96] - 2026-07-13
 
 ### Fixed

@@ -506,17 +506,26 @@ async fn close_peer_connection_with_bounded_full_close<F, O>(
     F: Future<Output = O> + Send + 'static,
     O: Send + 'static,
 {
-    // RTCPeerConnection::close tears SCTP and DTLS down before ICE. Either of
-    // those upper layers can stall indefinitely, preventing the library from
-    // ever reaching the step that closes gathered UDP candidates. Stop ICE in
-    // its own non-cancelled task first so terminal peers release their sockets
-    // even when the remaining graceful close cannot finish promptly.
+    // Give the normal close path a bounded chance to notify the remote SCTP,
+    // DTLS, and ICE stacks. Stopping local ICE first makes a short-lived peer
+    // disappear without that terminal handshake, so the remote side can retain
+    // the connection and all of its gathered UDP sockets until exhaustion.
+    let mut full_close_task = tokio::spawn(full_close);
+    if tokio::time::timeout(timeout, &mut full_close_task)
+        .await
+        .is_ok()
+    {
+        return;
+    }
+
+    // RTCPeerConnection::close may still stall in SCTP or DTLS before the
+    // library reaches ICE teardown. The full-close task remains detached and
+    // non-cancelled; independently stop ICE as the bounded terminal fallback.
     let dtls_transport = peer_connection.dtls_transport();
     finish_webrtc_cleanup_bounded(timeout, async move {
         let _ = dtls_transport.ice_transport().stop().await;
     })
     .await;
-    finish_webrtc_cleanup_bounded(timeout, full_close).await;
 }
 
 async fn cleanup_webrtc_session(
