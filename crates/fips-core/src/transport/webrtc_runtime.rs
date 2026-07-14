@@ -10,9 +10,8 @@ struct WebRtcRuntime {
     ready: ReadyPool,
     seen_sessions: SeenSessionPool,
     local_pubkey_hex: String,
-    signal_relays: Vec<String>,
     stun_servers: Vec<String>,
-    signaling: NostrSignalSender,
+    signaling: FipsSignalSender,
 }
 
 impl WebRtcRuntime {
@@ -96,9 +95,7 @@ impl WebRtcRuntime {
             created_at_ms: now,
             expires_at_ms: now.saturating_add(SIGNAL_TTL_MS),
         };
-        self.signaling
-            .send_signal(&self.signal_relays, remote_xonly, &signal)
-            .await?;
+        self.signaling.send_signal(remote_xonly, &signal).await?;
         debug!(
             transport_id = %self.transport_id,
             remote_addr = %remote_addr,
@@ -171,9 +168,7 @@ impl WebRtcRuntime {
             )
             .await
             {
-                let _ = self
-                    .send_reject(&signal.sender, sender_xonly, signal.session_id)
-                    .await;
+                let _ = self.send_reject(&signal.sender, sender_xonly, signal.session_id).await;
                 return Err(TransportError::ConnectionRefused);
             }
         }
@@ -210,18 +205,14 @@ impl WebRtcRuntime {
             PooledOfferDisposition::Accept => {}
             PooledOfferDisposition::IgnoreReplay => return Ok(()),
             PooledOfferDisposition::Redial => {
-                let _ = self
-                    .send_reject(&signal.sender, sender_xonly, signal.session_id)
-                    .await;
+                let _ = self.send_reject(&signal.sender, sender_xonly, signal.session_id).await;
                 return self.start_outbound(remote_addr).await;
             }
         }
         if self.pool.lock().await.len() + self.pending.lock().await.len()
             >= self.config.max_connections()
         {
-            let _ = self
-                .send_reject(&signal.sender, sender_xonly, signal.session_id)
-                .await;
+            let _ = self.send_reject(&signal.sender, sender_xonly, signal.session_id).await;
             return Err(TransportError::ConnectionRefused);
         }
 
@@ -254,9 +245,7 @@ impl WebRtcRuntime {
             .await
         {
             close_peer_connection_bounded(pc).await;
-            let _ = self
-                .send_reject(&signal.sender, sender_xonly, session_id)
-                .await;
+            let _ = self.send_reject(&signal.sender, sender_xonly, session_id).await;
             return Err(TransportError::ConnectionRefused);
         }
         wire_peer_connection_state(
@@ -303,9 +292,7 @@ impl WebRtcRuntime {
                 created_at_ms: now,
                 expires_at_ms: now.saturating_add(SIGNAL_TTL_MS),
             };
-            self.signaling
-                .send_signal(&self.signal_relays, sender_xonly, &reply)
-                .await?;
+            self.signaling.send_signal(sender_xonly, &reply).await?;
             debug!(
                 transport_id = %self.transport_id,
                 remote_addr = %remote_addr,
@@ -403,9 +390,7 @@ impl WebRtcRuntime {
             created_at_ms: now,
             expires_at_ms: now.saturating_add(SIGNAL_TTL_MS),
         };
-        self.signaling
-            .send_signal(&self.signal_relays, recipient_xonly, &reject)
-            .await
+        self.signaling.send_signal(recipient_xonly, &reject).await
     }
 
     async fn new_peer_connection(&self) -> Result<RTCPeerConnection, TransportError> {
@@ -446,7 +431,7 @@ impl WebRtcRuntime {
         let sender_xonly = xonly_from_compressed_hex(&signal.sender)?;
         if sender_xonly != outer_sender {
             return Err(TransportError::InvalidAddress(
-                "WebRTC signal sender does not match gift-wrap sender".into(),
+                "WebRTC signal sender does not match FIPS session sender".into(),
             ));
         }
         let now = now_ms();

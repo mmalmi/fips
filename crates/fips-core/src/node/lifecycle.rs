@@ -343,8 +343,10 @@ mod candidate_connect;
 mod control;
 mod discovery;
 mod nostr;
+mod nostr_advert;
 mod paths;
 mod peer_config;
+mod pending_connects;
 mod runtime;
 
 const OPEN_DISCOVERY_RETRY_LIFETIME_MULTIPLIER: u64 = 2;

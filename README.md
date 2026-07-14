@@ -51,10 +51,10 @@ endpoints.
   `fd00::/8` address, so unmodified IPv6 software reaches mesh
   peers as `<npub>.fips`. Built-in `.fips` DNS resolver, with
   optional static name mapping via `/etc/fips/hosts`.
-- **Nostr-mediated discovery and NAT traversal.** Peers publish
-  endpoint adverts on public Nostr relays, exchange candidates via
-  NIP-59 gift-wrapped offers and answers, and establish direct
-  paths through NATs using STUN-assisted hole punching.
+- **Nostr-mediated discovery and fallback.** Public endpoint adverts find
+  peers. Applications may carry already-encrypted FIPS datagrams through
+  configured Nostr relays as a low-priority bootstrap path; authenticated FIPS
+  sessions then negotiate direct UDP, WebRTC, or TCP paths when possible.
 - **LAN gateway.** Optional `fips-gateway` service folds an entire
   unmodified LAN into the mesh: outbound (LAN clients reach mesh
   destinations through a DNS-allocated virtual IPv6 pool and
@@ -423,11 +423,9 @@ Ethernet, Tor, and Bluetooth (BLE) with a small live mesh of deployed nodes.
 - Reproducible builds with toolchain pinning and SOURCE_DATE_EPOCH
 - Linux (Debian, systemd tarball, OpenWrt, AUR), macOS (`.pkg`), and Windows (ZIP, service) packaging
 - Docker-based integration and chaos testing
-- Nostr-mediated overlay endpoint discovery and UDP hole punching for
-  NAT traversal — peers publish endpoint adverts on public Nostr
-  relays, exchange candidates via NIP-59 gift-wrapped offers/answers,
-  and establish direct paths through NATs using STUN-assisted
-  punching when enabled in config
+- Nostr-mediated overlay endpoint discovery, optional encrypted-datagram relay
+  fallback, and authenticated in-session negotiation of direct UDP, WebRTC,
+  or TCP paths
 
 ### Near-term priorities
 

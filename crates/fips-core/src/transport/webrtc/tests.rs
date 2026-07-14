@@ -135,38 +135,48 @@ fn default_ice_gather_timeout_keeps_signaling_interactive() {
     assert_eq!(WebRtcConfig::default().ice_gather_timeout_ms(), 2_000);
 }
 
-#[test]
-fn webrtc_listens_for_signaling_on_every_advert_relay() {
+#[tokio::test]
+async fn webrtc_queues_negotiation_for_fips_session_without_relay_client() {
     let identity = crate::Identity::generate();
+    let remote = crate::Identity::generate();
     let (packet_tx, _packet_rx) = packet_channel(1);
-    let config = WebRtcConfig {
-        signal_relays: Some(vec!["wss://signals.example".to_string()]),
-        ..WebRtcConfig::default()
-    };
     let discovery = NostrDiscoveryConfig {
-        advert_relays: vec![
-            "wss://adverts.example".to_string(),
-            "wss://signals.example".to_string(),
-        ],
+        advert_relays: vec!["wss://adverts.example".to_string()],
         ..NostrDiscoveryConfig::default()
     };
-    let transport = WebRtcTransport::new(
+    let mut transport = WebRtcTransport::new(
         TransportId::new(1),
         None,
-        config,
+        WebRtcConfig::default(),
         packet_tx,
         &identity,
         &discovery,
     )
     .expect("WebRTC transport");
 
-    assert_eq!(
-        transport.signal_relays,
-        vec![
-            "wss://signals.example".to_string(),
-            "wss://adverts.example".to_string(),
-        ]
-    );
+    let remote_nostr = nostr::PublicKey::from_slice(&remote.pubkey().serialize())
+        .expect("remote Nostr pubkey");
+    let now = now_ms();
+    let signal = WebRtcSignal {
+        protocol: WEBRTC_PROTOCOL.to_string(),
+        version: WEBRTC_SIGNAL_VERSION,
+        session_id: "test-session".to_string(),
+        kind: WebRtcSignalKind::Offer,
+        sender: hex::encode(identity.pubkey_full().serialize()),
+        recipient: hex::encode(remote.pubkey_full().serialize()),
+        sdp: Some("v=0".to_string()),
+        candidates: None,
+        created_at_ms: now,
+        expires_at_ms: now + SIGNAL_TTL_MS,
+    };
+    transport
+        .signaling
+        .send_signal(remote_nostr, &signal)
+        .await
+        .expect("queue FIPS session signal");
+    let queued = transport.drain_session_signals(1);
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].recipient, *remote.node_addr());
 }
 
 #[tokio::test]

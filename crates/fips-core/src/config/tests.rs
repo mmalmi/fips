@@ -641,8 +641,6 @@ node:
       signal_ttl_secs: 45
       advert_relays:
         - "wss://relay-a.example"
-      dm_relays:
-        - "wss://relay-b.example"
       stun_servers:
         - "stun:stun.example.org:3478"
 peers:
@@ -668,10 +666,6 @@ peers:
     assert_eq!(
         config.node.discovery.nostr.advert_relays,
         vec!["wss://relay-a.example".to_string()]
-    );
-    assert_eq!(
-        config.node.discovery.nostr.dm_relays,
-        vec!["wss://relay-b.example".to_string()]
     );
     assert_eq!(
         config.node.discovery.nostr.stun_servers,
@@ -741,44 +735,46 @@ fn test_validate_peer_addresses_optional_with_nostr_enabled() {
 }
 
 #[test]
-fn test_validate_nat_udp_advert_requires_relays_and_stun() {
+fn test_validate_nat_udp_advert_requires_stun() {
     let mut config = Config::default();
     config.node.discovery.nostr.enabled = true;
-    config.node.discovery.nostr.dm_relays.clear();
     config.transports.udp = TransportInstances::Single(UdpConfig {
         advertise_on_nostr: Some(true),
         public: Some(false),
         ..Default::default()
     });
 
-    let err = config.validate().expect_err("validation should fail");
-    assert!(err.to_string().contains("dm_relays"));
-
-    config.node.discovery.nostr.dm_relays = vec!["wss://relay.example".to_string()];
     config.node.discovery.nostr.stun_servers.clear();
     let err = config.validate().expect_err("validation should fail");
     assert!(err.to_string().contains("stun_servers"));
 }
 
 #[test]
-fn test_validate_webrtc_advert_requires_relays() {
+fn test_webrtc_advert_uses_fips_session_signaling_without_relay_config() {
     let mut config = Config::default();
     config.node.discovery.nostr.enabled = true;
-    config.node.discovery.nostr.dm_relays.clear();
     config.transports.webrtc = TransportInstances::Single(WebRtcConfig {
         advertise_on_nostr: Some(true),
         ..Default::default()
     });
 
-    let err = config.validate().expect_err("validation should fail");
-    assert!(err.to_string().contains("dm_relays"));
-
-    if let TransportInstances::Single(cfg) = &mut config.transports.webrtc {
-        cfg.signal_relays = Some(vec!["wss://relay.example".to_string()]);
-    }
     config
         .validate()
-        .expect("WebRTC transport-specific relays should satisfy validation");
+        .expect("WebRTC signaling should not require a relay set");
+}
+
+#[test]
+fn deprecated_dm_and_webrtc_signal_relay_fields_are_rejected() {
+    let dm_error = serde_yaml::from_str::<Config>(
+        "node:\n  discovery:\n    nostr:\n      dm_relays: [wss://relay.example]\n",
+    )
+    .expect_err("dm_relays should no longer be a configuration concept");
+    assert!(dm_error.to_string().contains("dm_relays"));
+
+    let signal_error =
+        serde_yaml::from_str::<WebRtcConfig>("signal_relays: [wss://relay.example]\n")
+            .expect_err("WebRTC signal_relays should no longer be configurable");
+    assert!(signal_error.to_string().contains("signal_relays"));
 }
 
 #[test]

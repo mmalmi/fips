@@ -61,6 +61,9 @@ impl Node {
         // endpoints look fresh forever after a peer roams.
         let seen_at_ms = created_at_secs.saturating_mul(1000);
         for endpoint in endpoints {
+            if !self.overlay_endpoint_auto_connect_allowed(&endpoint) {
+                continue;
+            }
             let Some(candidate) =
                 Self::overlay_endpoint_to_peer_address(&endpoint, fallback_priority, seen_at_ms)
             else {
@@ -156,6 +159,10 @@ impl Node {
         self.configured_peers
             .peer_addr_for_npub(&peer_config.npub)
             .is_some()
+            || PeerIdentity::from_npub(&peer_config.npub).is_ok_and(|identity| {
+                self.peers.contains_key(identity.node_addr())
+                    && self.dataplane_has_fsp_owner(identity.node_addr())
+            })
     }
 
     pub(super) fn overlay_endpoint_to_peer_address(
@@ -168,12 +175,39 @@ impl Node {
             OverlayTransportKind::Tcp => "tcp",
             OverlayTransportKind::Tor => "tor",
             OverlayTransportKind::WebRtc => "webrtc",
+            OverlayTransportKind::NostrRelay => "nostr_relay",
+        };
+        let priority = if endpoint.transport == OverlayTransportKind::NostrRelay {
+            250
+        } else {
+            priority
         };
         Some(
             PeerAddress::with_priority(transport, endpoint.addr.clone(), priority)
                 .learned()
                 .with_seen_at_ms(seen_at_ms),
         )
+    }
+
+    pub(crate) fn overlay_endpoint_auto_connect_allowed(
+        &self,
+        endpoint: &OverlayEndpointAdvert,
+    ) -> bool {
+        match endpoint.transport {
+            OverlayTransportKind::WebRtc => self
+                .config
+                .transports
+                .webrtc
+                .iter()
+                .any(|(_, config)| config.auto_connect()),
+            OverlayTransportKind::NostrRelay => self
+                .config
+                .transports
+                .nostr_relay
+                .iter()
+                .any(|(_, config)| config.auto_connect()),
+            _ => true,
+        }
     }
 
     pub(super) async fn attempt_peer_address_list(
@@ -524,7 +558,13 @@ impl Node {
                 skipped_self = skipped_self.saturating_add(1);
                 continue;
             }
-            if self.peers.contains_key(&node_addr) {
+            let active_relay_fallback = self
+                .peers
+                .get(&node_addr)
+                .and_then(|peer| peer.transport_id())
+                .and_then(|transport_id| self.transports.get(&transport_id))
+                .is_some_and(|transport| transport.transport_type().name == "nostr_relay");
+            if self.peers.contains_key(&node_addr) && !active_relay_fallback {
                 skipped_connected = skipped_connected.saturating_add(1);
                 continue;
             }
@@ -553,6 +593,9 @@ impl Node {
             let mut priority = 120u8;
             let seen_at_ms = Self::now_ms();
             for endpoint in endpoints {
+                if !self.overlay_endpoint_auto_connect_allowed(&endpoint) {
+                    continue;
+                }
                 let Some(candidate) =
                     Self::overlay_endpoint_to_peer_address(&endpoint, priority, seen_at_ms)
                 else {
@@ -584,7 +627,7 @@ impl Node {
                 auto_reconnect: true,
                 discovery_fallback_transit: false,
             });
-            state.reconnect = false;
+            state.reconnect = active_relay_fallback;
             state.retry_after_ms = now_ms;
             state.expires_at_ms = Some(self.open_discovery_retry_expires_at_ms(now_ms));
             self.retry_pending.insert(node_addr, state);
@@ -592,6 +635,7 @@ impl Node {
                 caller = %caller,
                 peer = %peer_identity.short_npub(),
                 advert_age_secs = now_secs.saturating_sub(created_at_secs),
+                relay_upgrade = active_relay_fallback,
                 "open-discovery sweep: queued retry for cached advert"
             );
             enqueue_budget = enqueue_budget.saturating_sub(1);
@@ -736,237 +780,6 @@ impl Node {
                 .saturating_mul(1000)
                 .saturating_mul(OPEN_DISCOVERY_RETRY_LIFETIME_MULTIPLIER),
         )
-    }
-
-    pub(super) async fn build_overlay_advert(
-        &self,
-        bootstrap: &std::sync::Arc<NostrDiscovery>,
-    ) -> Option<OverlayAdvert> {
-        if !self.config.node.discovery.nostr.enabled {
-            return None;
-        }
-
-        let mut endpoints = Vec::new();
-        let mut has_udp_nat = false;
-        let mut has_webrtc = false;
-
-        for handle in self.transports.values() {
-            if !handle.is_operational() {
-                continue;
-            }
-
-            match handle.transport_type().name {
-                "udp" => {
-                    let Some(cfg) = self.lookup_udp_config(handle.name()) else {
-                        continue;
-                    };
-                    if !cfg.advertise_on_nostr() {
-                        continue;
-                    }
-                    if cfg.is_public() {
-                        // Precedence:
-                        // 1. operator-supplied `external_addr` (skips STUN)
-                        // 2. non-wildcard *public* `local_addr` (operator
-                        //    bound to a specific public IP directly)
-                        // 3. STUN auto-discovery against ephemeral socket
-                        //    (also taken when bind is wildcard *or* private —
-                        //    a private bind is not peer-reachable, so we
-                        //    must publish the public reflexive instead)
-                        // 4. loud warn + omit endpoint
-                        if let Some(explicit) = cfg.external_advert_addr() {
-                            endpoints.push(OverlayEndpointAdvert {
-                                transport: OverlayTransportKind::Udp,
-                                addr: explicit.to_string(),
-                            });
-                        } else {
-                            match handle.local_addr() {
-                                Some(addr)
-                                    if !addr.ip().is_unspecified()
-                                        && !is_unroutable_advert_ip(addr.ip()) =>
-                                {
-                                    endpoints.push(OverlayEndpointAdvert {
-                                        transport: OverlayTransportKind::Udp,
-                                        addr: addr.to_string(),
-                                    });
-                                }
-                                Some(addr) => {
-                                    let key = handle.transport_id().as_u32();
-                                    let port = addr.port();
-                                    if let Some(public) =
-                                        bootstrap.learn_public_udp_addr(key, port).await
-                                    {
-                                        endpoints.push(OverlayEndpointAdvert {
-                                            transport: OverlayTransportKind::Udp,
-                                            addr: public.to_string(),
-                                        });
-                                    } else {
-                                        warn!(
-                                            transport_id = key,
-                                            bind_addr = %addr,
-                                            "advert: udp public=true but bind is wildcard \
-                                            or private and STUN observation failed; \
-                                            advertising no UDP endpoint. Either set \
-                                            transports.udp.external_addr, bind to a \
-                                            specific *public* IP, or ensure \
-                                            node.discovery.nostr.stun_servers is reachable"
-                                        );
-                                    }
-                                }
-                                None => {}
-                            }
-                        }
-                    } else {
-                        endpoints.push(OverlayEndpointAdvert {
-                            transport: OverlayTransportKind::Udp,
-                            addr: "nat".to_string(),
-                        });
-                        has_udp_nat = true;
-                    }
-                }
-                "webrtc" => {
-                    let Some(cfg) = self.lookup_webrtc_config(handle.name()) else {
-                        continue;
-                    };
-                    if !cfg.advertise_on_nostr() {
-                        continue;
-                    }
-                    endpoints.push(OverlayEndpointAdvert {
-                        transport: OverlayTransportKind::WebRtc,
-                        addr: hex::encode(self.identity.pubkey_full().serialize()),
-                    });
-                    has_webrtc = true;
-                }
-                "tcp" => {
-                    let Some(cfg) = self.lookup_tcp_config(handle.name()) else {
-                        continue;
-                    };
-                    if !cfg.advertise_on_nostr() {
-                        continue;
-                    }
-                    // Precedence:
-                    // 1. operator-supplied `external_addr` (only path that
-                    //    works on cloud-NAT setups where the public IP is
-                    //    not on a host interface).
-                    // 2. non-wildcard *public* `local_addr` (operator bound
-                    //    to a specific public IP directly).
-                    // 3. loud warn + omit endpoint (no TCP STUN equivalent).
-                    //
-                    // A wildcard *or* private bind is never advertised as-is
-                    // — peers off-LAN can't reach a private bind, and there
-                    // is no TCP STUN to discover a public reflexive.
-                    if let Some(explicit) = cfg.external_advert_addr() {
-                        endpoints.push(OverlayEndpointAdvert {
-                            transport: OverlayTransportKind::Tcp,
-                            addr: explicit.to_string(),
-                        });
-                    } else {
-                        match handle.local_addr() {
-                            Some(addr)
-                                if !addr.ip().is_unspecified()
-                                    && !is_unroutable_advert_ip(addr.ip()) =>
-                            {
-                                endpoints.push(OverlayEndpointAdvert {
-                                    transport: OverlayTransportKind::Tcp,
-                                    addr: addr.to_string(),
-                                });
-                            }
-                            Some(addr) => {
-                                warn!(
-                                    bind_addr = %addr,
-                                    "advert: tcp advertise_on_nostr=true bound to wildcard \
-                                    or private IP and no transports.tcp.external_addr set; \
-                                    advertising no TCP endpoint. Either set external_addr \
-                                    to the public IP (recommended for cloud 1:1-NAT setups) \
-                                    or bind explicitly to the public IP"
-                                );
-                            }
-                            None => {}
-                        }
-                    }
-                }
-                "tor" => {
-                    let Some(cfg) = self.lookup_tor_config(handle.name()) else {
-                        continue;
-                    };
-                    if !cfg.advertise_on_nostr() {
-                        continue;
-                    }
-                    if let Some(addr) = handle.onion_address() {
-                        endpoints.push(OverlayEndpointAdvert {
-                            transport: OverlayTransportKind::Tor,
-                            addr: format!("{}:{}", addr, cfg.advertised_port()),
-                        });
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        if endpoints.is_empty() {
-            return None;
-        }
-
-        Some(OverlayAdvert {
-            identifier: ADVERT_IDENTIFIER.to_string(),
-            version: ADVERT_VERSION,
-            endpoints,
-            signal_relays: (has_udp_nat || has_webrtc)
-                .then(|| self.config.node.discovery.nostr.dm_relays.clone()),
-            stun_servers: (has_udp_nat || has_webrtc)
-                .then(|| self.config.node.discovery.nostr.stun_servers.clone()),
-        })
-    }
-
-    pub(super) async fn refresh_overlay_advert(
-        &self,
-        bootstrap: &std::sync::Arc<NostrDiscovery>,
-    ) -> Result<(), crate::discovery::nostr::BootstrapError> {
-        let advert = self.build_overlay_advert(bootstrap).await;
-        bootstrap.update_local_advert(advert).await
-    }
-
-    pub(super) fn lookup_udp_config(
-        &self,
-        transport_name: Option<&str>,
-    ) -> Option<&crate::config::UdpConfig> {
-        match (&self.config.transports.udp, transport_name) {
-            (crate::config::TransportInstances::Single(cfg), None) => Some(cfg),
-            (crate::config::TransportInstances::Named(configs), Some(name)) => configs.get(name),
-            _ => None,
-        }
-    }
-
-    pub(super) fn lookup_tcp_config(
-        &self,
-        transport_name: Option<&str>,
-    ) -> Option<&crate::config::TcpConfig> {
-        match (&self.config.transports.tcp, transport_name) {
-            (crate::config::TransportInstances::Single(cfg), None) => Some(cfg),
-            (crate::config::TransportInstances::Named(configs), Some(name)) => configs.get(name),
-            _ => None,
-        }
-    }
-
-    pub(super) fn lookup_tor_config(
-        &self,
-        transport_name: Option<&str>,
-    ) -> Option<&crate::config::TorConfig> {
-        match (&self.config.transports.tor, transport_name) {
-            (crate::config::TransportInstances::Single(cfg), None) => Some(cfg),
-            (crate::config::TransportInstances::Named(configs), Some(name)) => configs.get(name),
-            _ => None,
-        }
-    }
-
-    pub(super) fn lookup_webrtc_config(
-        &self,
-        transport_name: Option<&str>,
-    ) -> Option<&crate::config::WebRtcConfig> {
-        match (&self.config.transports.webrtc, transport_name) {
-            (crate::config::TransportInstances::Single(cfg), None) => Some(cfg),
-            (crate::config::TransportInstances::Named(configs), Some(name)) => configs.get(name),
-            _ => None,
-        }
     }
 }
 

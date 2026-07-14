@@ -35,6 +35,56 @@ const DEFAULT_UDP_BIND_ADDR: &str = "0.0.0.0:2121";
 /// Default UDP MTU (IPv6 minimum).
 const DEFAULT_UDP_MTU: u16 = 1280;
 
+/// Default MTU for FIPS datagrams carried by ephemeral Nostr relay events.
+const DEFAULT_NOSTR_RELAY_MTU: u16 = 1280;
+
+/// Default number of signed relay events waiting for the application adapter.
+const DEFAULT_NOSTR_RELAY_PENDING_EVENTS: usize = 1024;
+
+/// Ephemeral Nostr relay fallback transport configuration.
+///
+/// Relay URLs deliberately do not live here. The embedding application owns
+/// relay selection and delivery through the external Nostr relay adapter.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NostrRelayConfig {
+    /// Maximum FIPS wire datagram size before base64 encoding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mtu: Option<u16>,
+
+    /// Whether public Nostr adverts should auto-connect over this fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_connect: Option<bool>,
+
+    /// Accept inbound FIPS handshakes received through relay events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accept_connections: Option<bool>,
+
+    /// Maximum signed events waiting for the external relay adapter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_pending_events: Option<usize>,
+}
+
+impl NostrRelayConfig {
+    pub fn mtu(&self) -> u16 {
+        self.mtu.unwrap_or(DEFAULT_NOSTR_RELAY_MTU)
+    }
+
+    pub fn auto_connect(&self) -> bool {
+        self.auto_connect.unwrap_or(true)
+    }
+
+    pub fn accept_connections(&self) -> bool {
+        self.accept_connections.unwrap_or(true)
+    }
+
+    pub fn max_pending_events(&self) -> usize {
+        self.max_pending_events
+            .unwrap_or(DEFAULT_NOSTR_RELAY_PENDING_EVENTS)
+            .max(1)
+    }
+}
+
 /// Default UDP receive buffer size (16 MiB).
 ///
 /// At sustained multi-Gbps single-stream the kernel UDP queue
@@ -803,8 +853,8 @@ const DEFAULT_WEBRTC_DATA_CHANNEL_LABEL: &str = "fips";
 
 /// WebRTC transport instance configuration.
 ///
-/// WebRTC uses Nostr gift-wrapped signaling from `node.discovery.nostr` and
-/// carries ordinary FIPS datagrams over an SCTP data channel.
+/// WebRTC negotiates over an existing authenticated FIPS session and carries
+/// ordinary FIPS datagrams over an SCTP data channel.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WebRtcConfig {
@@ -850,12 +900,6 @@ pub struct WebRtcConfig {
     /// WebRTC's reliable data-channel mode. Set to 0 for datagram-like delivery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_retransmits: Option<u16>,
-
-    /// Signaling relays for this transport. When unset,
-    /// `node.discovery.nostr.dm_relays` is used. Peerfinding/advert relays are
-    /// never added implicitly; traversal signaling is a separate relay plane.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub signal_relays: Option<Vec<String>>,
 
     /// Override STUN servers for this transport. When unset,
     /// `node.discovery.nostr.stun_servers` is used.
@@ -917,15 +961,6 @@ impl WebRtcConfig {
     /// Get the configured max retransmits. None uses WebRTC's reliable mode.
     pub fn max_retransmits(&self) -> Option<u16> {
         self.max_retransmits
-    }
-
-    /// Resolve signaling relays, falling back to node discovery relays.
-    pub fn signal_relays<'a>(&'a self, fallback: &'a [String]) -> Vec<String> {
-        self.signal_relays
-            .as_ref()
-            .filter(|relays| !relays.is_empty())
-            .cloned()
-            .unwrap_or_else(|| fallback.to_vec())
     }
 
     /// Resolve STUN servers, falling back to node discovery STUN servers.

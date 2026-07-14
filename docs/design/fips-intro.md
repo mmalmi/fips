@@ -520,13 +520,15 @@ consume transport addresses through public relays — available behind the
 `nostr-discovery` cargo feature.
 
 NAT traversal for internet-connected nodes is supported via STUN-assisted
-UDP hole punching, with offer/answer signaling carried over Nostr gift-wrap
-events. Once a direct UDP path is established, the punched socket is handed
-into the standard FIPS transport/session stack. Nodes that cannot establish
-a direct path remain reachable through port forwarding, a publicly addressed
-peer, or relay through other mesh nodes. The Nostr-mediated discovery and
-NAT traversal paths are gated by the `nostr-discovery` cargo feature and
-configured under `node.discovery.nostr.*`.
+UDP hole punching. Offer/answer negotiation travels inside an authenticated
+FIPS session, which may initially use the low-priority ephemeral Nostr relay
+transport. Once a direct UDP path is established, the punched socket is
+handed into the standard FIPS transport/session stack. Nodes that cannot
+establish a direct path can retain the relay-carried session, use port
+forwarding, a publicly addressed peer, or relay through other mesh nodes. The
+Nostr-mediated discovery and NAT traversal paths are gated by the
+`nostr-discovery` cargo feature and configured under
+`node.discovery.nostr.*`.
 
 > **Implementation status**: UDP/IP, TCP/IP, Ethernet, Tor
 > (SOCKS5 outbound + directory-mode inbound via onion service),

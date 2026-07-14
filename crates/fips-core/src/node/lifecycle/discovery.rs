@@ -135,6 +135,10 @@ impl Node {
     }
 
     pub(in crate::node) async fn poll_nostr_discovery(&mut self) {
+        #[cfg(feature = "webrtc-transport")]
+        self.drain_webrtc_session_signals().await;
+        self.flush_pending_mesh_signals().await;
+
         let Some(bootstrap) = self.nostr_discovery.clone() else {
             return;
         };
@@ -330,12 +334,64 @@ impl Node {
         }
     }
 
+    #[cfg(feature = "webrtc-transport")]
+    async fn drain_webrtc_session_signals(&mut self) {
+        const MAX_WEBRTC_SIGNALS_PER_TICK: usize = 64;
+        let mut signals = Vec::new();
+        for transport in self.transports.values_mut() {
+            let remaining = MAX_WEBRTC_SIGNALS_PER_TICK.saturating_sub(signals.len());
+            if remaining == 0 {
+                break;
+            }
+            signals.extend(transport.drain_webrtc_session_signals(remaining));
+        }
+
+        for signal in signals {
+            let Some(pubkey) = self.pubkey_for_node_addr(&signal.recipient) else {
+                debug!(
+                    peer = %self.peer_display_name(&signal.recipient),
+                    "Cannot send WebRTC signal without authenticated peer identity"
+                );
+                continue;
+            };
+            match self
+                .mesh_signal_session_action(signal.recipient, pubkey)
+                .await
+            {
+                MeshSignalSessionAction::Send => {}
+                MeshSignalSessionAction::Defer => {
+                    self.pending_mesh_signals
+                        .entry(signal.recipient)
+                        .or_default()
+                        .push(super::PendingMeshSignal {
+                            msg_type: SessionMessageType::WebRtcSignal.to_byte(),
+                            payload: signal.payload,
+                        });
+                    continue;
+                }
+                MeshSignalSessionAction::Drop => continue,
+            }
+            if let Err(error) = self
+                .send_session_msg(
+                    &signal.recipient,
+                    SessionMessageType::WebRtcSignal.to_byte(),
+                    &signal.payload,
+                )
+                .await
+            {
+                debug!(
+                    peer = %self.peer_display_name(&signal.recipient),
+                    error = %error,
+                    "Failed to send WebRTC signal over FIPS session"
+                );
+            }
+        }
+    }
+
     pub(super) async fn drain_nostr_mesh_signals(
         &mut self,
         bootstrap: &std::sync::Arc<NostrDiscovery>,
     ) {
-        self.flush_pending_mesh_signals().await;
-
         for signal in bootstrap.drain_mesh_signals().await {
             let (peer_npub, msg_type, payload) = match &signal {
                 MeshTraversalSignal::Offer { peer_npub, offer } => {
@@ -889,98 +945,6 @@ impl Node {
                 skipped = skipped_budget,
                 "lan: discovery connect budget exhausted"
             );
-        }
-    }
-
-    /// Poll pending transport connects and initiate handshakes for ready ones.
-    ///
-    /// Called from the tick handler. For each pending connect, queries the
-    /// transport's connection state. When a connection is established,
-    /// marks the link as Connected and starts the Noise handshake.
-    /// Failed connections are cleaned up and scheduled for retry.
-    pub(in crate::node) async fn poll_pending_connects(&mut self) {
-        if self.pending_connects.is_empty() {
-            return;
-        }
-
-        let mut completed = Vec::new();
-
-        for (i, pending) in self.pending_connects.iter().enumerate() {
-            let state = if let Some(transport) = self.transports.get(&pending.transport_id) {
-                transport.connection_state(&pending.remote_addr)
-            } else {
-                crate::transport::ConnectionState::Failed("transport removed".into())
-            };
-
-            match state {
-                crate::transport::ConnectionState::Connected => {
-                    completed.push((i, true, None));
-                }
-                crate::transport::ConnectionState::Failed(reason) => {
-                    completed.push((i, false, Some(reason)));
-                }
-                crate::transport::ConnectionState::Connecting => {
-                    // Still in progress, check on next tick
-                }
-                crate::transport::ConnectionState::None => {
-                    // Shouldn't happen — treat as failure
-                    completed.push((i, false, Some("no connection attempt found".into())));
-                }
-            }
-        }
-
-        // Process completions in reverse order to preserve indices
-        for (i, success, reason) in completed.into_iter().rev() {
-            let pending = self.pending_connects.remove(i);
-
-            if success {
-                // Mark link as Connected
-                if let Some(link) = self.links.get_mut(&pending.link_id) {
-                    link.set_connected();
-                }
-
-                debug!(
-                    peer = %self.peer_display_name(pending.peer_identity.node_addr()),
-                    transport_id = %pending.transport_id,
-                    remote_addr = %pending.remote_addr,
-                    link_id = %pending.link_id,
-                    "Transport connected, starting handshake"
-                );
-
-                // Start the handshake now that the transport is connected
-                if let Err(e) = self
-                    .start_handshake(
-                        pending.link_id,
-                        pending.transport_id,
-                        pending.remote_addr.clone(),
-                        pending.peer_identity,
-                    )
-                    .await
-                {
-                    warn!(
-                        link_id = %pending.link_id,
-                        error = %e,
-                        "Failed to start handshake after transport connect"
-                    );
-                    // Clean up link on handshake failure
-                    self.remove_link(&pending.link_id);
-                }
-            } else {
-                let reason = reason.unwrap_or_default();
-                warn!(
-                    peer = %self.peer_display_name(pending.peer_identity.node_addr()),
-                    transport_id = %pending.transport_id,
-                    remote_addr = %pending.remote_addr,
-                    link_id = %pending.link_id,
-                    reason = %reason,
-                    "Transport connect failed"
-                );
-
-                // Clean up link and schedule retry
-                self.remove_link(&pending.link_id);
-                self.links.remove(&pending.link_id);
-                self.schedule_retry(*pending.peer_identity.node_addr(), Self::now_ms());
-            }
         }
     }
 }

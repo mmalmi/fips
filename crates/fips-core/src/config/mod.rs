@@ -43,8 +43,8 @@ pub use peer::{ConnectPolicy, PeerAddress, PeerAddressProvenance, PeerConfig};
 #[cfg(feature = "sim-transport")]
 pub use transport::SimTransportConfig;
 pub use transport::{
-    BleConfig, DirectoryServiceConfig, EthernetConfig, TcpConfig, TorConfig, TransportInstances,
-    TransportsConfig, UdpConfig, WebRtcConfig,
+    BleConfig, DirectoryServiceConfig, EthernetConfig, NostrRelayConfig, TcpConfig, TorConfig,
+    TransportInstances, TransportsConfig, UdpConfig, WebRtcConfig,
 };
 
 /// Default config filename.
@@ -652,26 +652,9 @@ impl Config {
             .iter()
             .any(|(_, cfg)| cfg.advertise_on_nostr() && !cfg.is_public());
 
-        if nostr.enabled && has_nat_udp_advert {
-            if nostr.dm_relays.is_empty() {
-                return Err(ConfigError::Validation(
-                    "NAT UDP advert publishing requires `node.discovery.nostr.dm_relays` to be non-empty".to_string(),
-                ));
-            }
-            if nostr.stun_servers.is_empty() {
-                return Err(ConfigError::Validation(
-                    "NAT UDP advert publishing requires `node.discovery.nostr.stun_servers` to be non-empty".to_string(),
-                ));
-            }
-        }
-
-        let has_webrtc_advert_without_relays = self.transports.webrtc.iter().any(|(_, cfg)| {
-            cfg.advertise_on_nostr() && cfg.signal_relays(&nostr.dm_relays).is_empty()
-        });
-
-        if nostr.enabled && has_webrtc_advert_without_relays {
+        if nostr.enabled && has_nat_udp_advert && nostr.stun_servers.is_empty() {
             return Err(ConfigError::Validation(
-                "WebRTC advert publishing requires `node.discovery.nostr.dm_relays` or `transports.webrtc.signal_relays` to be non-empty".to_string(),
+                "NAT UDP advert publishing requires `node.discovery.nostr.stun_servers` to be non-empty".to_string(),
             ));
         }
 

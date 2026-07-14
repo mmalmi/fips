@@ -9,5 +9,5 @@ superseded by dedicated design documents.
 
 | Document                                                             | Status      | Description                                                                            |
 |----------------------------------------------------------------------|-------------|----------------------------------------------------------------------------------------|
-| [nostr-udp-hole-punch-protocol.md](nostr-udp-hole-punch-protocol.md) | Implemented | Nostr-signaled UDP hole punching protocol (behind the `nostr-discovery` cargo feature) |
+| [nostr-udp-hole-punch-protocol.md](nostr-udp-hole-punch-protocol.md) | Implemented | FIPS-session-signaled UDP hole punching after Nostr bootstrap (behind the `nostr-discovery` cargo feature) |
 | [nostr-vpn-in-app-data-plane.md](nostr-vpn-in-app-data-plane.md)     | Proposed    | In-app FIPS data plane integration plan for `nostr-vpn`                                |

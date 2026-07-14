@@ -5,16 +5,18 @@
 //! back to the sender.
 
 use clap::Parser;
-use fips::config::{NostrDiscoveryPolicy, TransportInstances};
+use fips::config::{NostrDiscoveryPolicy, NostrRelayConfig, TransportInstances};
+use fips::nostr_relay_adapter::NostrRelayAdapter;
 use fips::{Config, FipsEndpoint, Identity, IdentityConfig, WebRtcConfig};
 use serde_json::json;
 use std::io::Write;
+use std::sync::Arc;
 use tracing_subscriber::{EnvFilter, fmt};
 
 #[derive(Parser, Debug)]
 #[command(name = "fips-webrtc-echo-fixture", about = "FIPS WebRTC echo fixture")]
 struct Args {
-    /// Nostr relay URL used for WebRTC adverts and gift-wrapped signals.
+    /// Nostr relay URL used for public WebRTC adverts.
     #[arg(long)]
     relay: String,
 
@@ -46,7 +48,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     config.node.discovery.nostr.enabled = true;
     config.node.discovery.nostr.advertise = true;
     config.node.discovery.nostr.advert_relays = vec![args.relay.clone()];
-    config.node.discovery.nostr.dm_relays = vec![args.relay.clone()];
     config.node.discovery.nostr.stun_servers = Vec::new();
     config.node.discovery.nostr.app = args.app.clone();
     config.node.discovery.nostr.policy = NostrDiscoveryPolicy::Open;
@@ -56,17 +57,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         accept_connections: Some(true),
         connect_timeout_ms: Some(15_000),
         ice_gather_timeout_ms: Some(1_500),
-        signal_relays: Some(vec![args.relay.clone()]),
         stun_servers: Some(Vec::new()),
         ..Default::default()
     });
+    config.transports.nostr_relay = TransportInstances::Single(NostrRelayConfig {
+        auto_connect: Some(false),
+        accept_connections: Some(true),
+        ..Default::default()
+    });
 
-    let endpoint = FipsEndpoint::builder()
-        .config(config)
-        .discovery_scope(args.app)
-        .without_system_tun()
-        .bind()
-        .await?;
+    let endpoint = Arc::new(
+        FipsEndpoint::builder()
+            .config(config)
+            .discovery_scope(args.app)
+            .without_system_tun()
+            .bind()
+            .await?,
+    );
+    let _relay_adapter = NostrRelayAdapter::start(Arc::clone(&endpoint), &[args.relay]).await?;
 
     println!(
         "{}",

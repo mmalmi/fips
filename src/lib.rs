@@ -4,3 +4,5 @@
 //! `fips::...` import path working for binaries and downstream users.
 
 pub use fips_core::*;
+
+pub mod nostr_relay_adapter;

@@ -92,6 +92,7 @@ use crate::proto::rate_limit::RoutingErrorRateLimiter;
 use crate::proto::routing::{LearnedRouteTable, LearnedRouteTableSnapshot};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::transport::ethernet::EthernetTransport;
+use crate::transport::nostr_relay::NostrRelayTransport;
 use crate::transport::tcp::TcpTransport;
 use crate::transport::tor::TorTransport;
 use crate::transport::udp::UdpTransport;

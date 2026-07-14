@@ -432,14 +432,14 @@ impl Node {
                             return;
                         }
 
-                        // Not a rekey. If this active peer was established
-                        // as a responder, we can replay the original msg2 for
-                        // a true duplicate msg1. If it was established as our
-                        // outbound initiator, there is no responder msg2 to
-                        // replay; the peer's msg1 is a late cross-connection
-                        // or direct-refresh attempt and needs a fresh msg2 so
-                        // their pending outbound can complete.
-                        if let Some(msg2) = existing_peer.handshake_msg2().map(|m| m.to_vec())
+                        // Not a rekey. A stored msg2 is reusable only when the
+                        // sender index matches the active handshake. A direct
+                        // path refresh has a fresh sender index even when the
+                        // node epoch is unchanged; replaying the bootstrap
+                        // path's msg2 would address the wrong pending handshake
+                        // and permanently stall the upgrade.
+                        if existing_peer.their_index() == Some(header.sender_idx)
+                            && let Some(msg2) = existing_peer.handshake_msg2().map(|m| m.to_vec())
                             && let Some(transport) = self.transports.get(&packet.transport_id)
                         {
                             match transport.send(&packet.remote_addr, &msg2).await {
@@ -458,7 +458,9 @@ impl Node {
                         }
                         debug!(
                             peer = %self.peer_display_name(&peer_node_addr),
-                            "Same-epoch msg1 from active peer has no stored msg2; processing as late cross-connection"
+                            sender_index = %header.sender_idx,
+                            active_sender_index = ?existing_peer.their_index(),
+                            "Same-epoch msg1 has a fresh sender index; processing as an alternate-path handshake"
                         );
                     }
                 }

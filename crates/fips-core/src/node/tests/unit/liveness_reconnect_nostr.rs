@@ -484,3 +484,105 @@ async fn handle_msg1_treats_same_epoch_stale_peer_as_recovery() {
         "stale duplicate handling must not keep the dead link"
     );
 }
+
+#[tokio::test]
+async fn handle_msg1_uses_fresh_msg2_for_same_epoch_alternate_path() {
+    use crate::config::NostrRelayConfig;
+    use crate::transport::nostr_relay::NostrRelayTransport;
+    use crate::Transport;
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+    let mut node = make_node();
+    let peer_identity_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_identity_full.pubkey_full());
+    let peer_node_addr = *peer_identity.node_addr();
+    let old_link_id = LinkId::new(7);
+    let transport_id = TransportId::new(1);
+    let old_addr = crate::transport::TransportAddr::from_string(&peer_identity.npub());
+    let remote_epoch = [0x51; 8];
+    let session = make_test_fmp_session(
+        &node.identity,
+        &peer_identity_full,
+        node.startup_epoch,
+        remote_epoch,
+    );
+    let mut active = ActivePeer::with_session(
+        peer_identity,
+        old_link_id,
+        1_000,
+        ActivePeerSession {
+            session,
+            our_index: crate::utils::index::SessionIndex::new(11),
+            their_index: crate::utils::index::SessionIndex::new(12),
+            transport_id,
+            current_addr: old_addr.clone(),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: false,
+            remote_epoch: Some(remote_epoch),
+        },
+    );
+    active.set_handshake_msg2(vec![0x02, 0x03, 0x04]);
+    node.peers.insert(peer_node_addr, active);
+    node.peers
+        .insert_session_index((transport_id, 11), peer_node_addr);
+    node.links.insert(
+        old_link_id,
+        Link::connectionless(
+            old_link_id,
+            transport_id,
+            old_addr.clone(),
+            LinkDirection::Inbound,
+            Duration::from_millis(100),
+        ),
+    );
+
+    let (packet_tx, _packet_rx) = packet_channel(8);
+    let mut relay = NostrRelayTransport::new(
+        transport_id,
+        None,
+        NostrRelayConfig::default(),
+        packet_tx,
+        &node.identity,
+    )
+    .expect("Nostr relay transport");
+    relay.start().expect("start Nostr relay transport");
+    node.transports
+        .insert(transport_id, TransportHandle::NostrRelay(Box::new(relay)));
+
+    let mut conn = PeerConnection::outbound(
+        LinkId::new(99),
+        PeerIdentity::from_pubkey_full(node.identity.pubkey_full()),
+        2_000,
+    );
+    let noise_msg1 = conn
+        .start_handshake(peer_identity_full.keypair(), remote_epoch, 2_000)
+        .expect("msg1");
+    let fresh_sender_index = crate::utils::index::SessionIndex::new(0x5151);
+    let packet = ReceivedPacket::with_timestamp(
+        transport_id,
+        old_addr,
+        crate::transport::PacketBuffer::new(crate::node::wire::build_msg1(
+            fresh_sender_index,
+            &noise_msg1,
+        )),
+        2_000,
+    );
+
+    node.handle_msg1(packet).await;
+
+    let TransportHandle::NostrRelay(relay) = node
+        .transports
+        .get(&transport_id)
+        .expect("relay transport")
+    else {
+        panic!("expected Nostr relay transport");
+    };
+    let event = relay
+        .drain_outbound_events(1)
+        .pop()
+        .expect("fresh msg2 response");
+    let response = URL_SAFE_NO_PAD.decode(event.content).expect("msg2 base64");
+    let header = crate::node::wire::Msg2Header::parse(&response).expect("msg2 header");
+    assert_eq!(header.receiver_idx, fresh_sender_index);
+}

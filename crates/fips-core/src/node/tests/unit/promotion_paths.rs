@@ -343,6 +343,228 @@ async fn same_tuple_late_inbound_refresh_uses_cross_connection_tie_breaker() {
 }
 
 #[tokio::test]
+async fn higher_priority_discovered_inbound_path_replaces_relay_fallback() {
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let (peer_full, peer_identity) = peer_identity_for_outbound_refresh_owner(&node);
+    let peer_node_addr = *peer_identity.node_addr();
+    assert!(
+        !crate::peer::cross_connection_winner(node.node_addr(), &peer_node_addr, false),
+        "fixture should make the inbound upgrade lose an ordinary initial-connection race"
+    );
+
+    let fallback_addr = TransportAddr::from_string("127.0.0.1:8000");
+    let upgrade_addr = TransportAddr::from_string("127.0.0.1:9000");
+    let retry_peer = crate::config::PeerConfig {
+        npub: peer_identity.npub().to_string(),
+        alias: None,
+        addresses: vec![
+            crate::config::PeerAddress::with_priority("udp", "127.0.0.1:9000", 100).learned(),
+            crate::config::PeerAddress::with_priority("udp", "127.0.0.1:8000", 250).learned(),
+        ],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: false,
+    };
+    node.retry_pending.insert(
+        peer_node_addr,
+        crate::node::retry::RetryState::new(retry_peer),
+    );
+
+    let old_link_id = LinkId::new(10);
+    let old_our_index = SessionIndex::new(11);
+    let old_their_index = SessionIndex::new(12);
+    let old_session =
+        make_test_fmp_session(&node.identity, &peer_full, node.startup_epoch, [0x11; 8]);
+    let old_peer = ActivePeer::with_session(
+        peer_identity,
+        old_link_id,
+        1_000,
+        ActivePeerSession {
+            session: old_session,
+            our_index: old_our_index,
+            their_index: old_their_index,
+            transport_id,
+            current_addr: fallback_addr,
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: false,
+            remote_epoch: Some([0x11; 8]),
+        },
+    );
+    node.peers.insert(peer_node_addr, old_peer);
+    node.peers
+        .insert_session_index((transport_id, old_our_index.as_u32()), peer_node_addr);
+
+    let new_link_id = LinkId::new(11);
+    let mut inbound = PeerConnection::inbound(new_link_id, 2_000);
+    let mut remote_outbound = PeerConnection::outbound(
+        LinkId::new(99),
+        PeerIdentity::from_pubkey_full(node.identity.pubkey_full()),
+        2_000,
+    );
+    let msg1 = remote_outbound
+        .start_handshake(peer_full.keypair(), [0x11; 8], 2_000)
+        .unwrap();
+    inbound
+        .receive_handshake_init(node.identity.keypair(), node.startup_epoch, &msg1, 2_000)
+        .unwrap();
+    let new_our_index = SessionIndex::new(77);
+    let new_their_index = SessionIndex::new(78);
+    inbound.set_our_index(new_our_index);
+    inbound.set_their_index(new_their_index);
+    inbound.set_transport_id(transport_id);
+    inbound.set_source_addr(upgrade_addr.clone());
+    node.peers.insert_connection(new_link_id, inbound);
+
+    let result = node
+        .promote_connection(new_link_id, peer_identity, 2_100)
+        .unwrap();
+
+    assert!(
+        matches!(result, PromotionResult::CrossConnectionWon { .. }),
+        "an authenticated higher-priority discovered path should replace the relay fallback"
+    );
+    let active = node.get_peer(&peer_node_addr).unwrap();
+    assert_eq!(active.link_id(), new_link_id);
+    assert_eq!(active.current_addr(), Some(&upgrade_addr));
+    assert_eq!(active.our_index(), Some(new_our_index));
+    assert_eq!(active.their_index(), Some(new_their_index));
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
+async fn direct_inbound_path_replaces_unconfigured_nostr_relay_fallback() {
+    use crate::Transport;
+    use crate::config::NostrRelayConfig;
+    use crate::transport::nostr_relay::NostrRelayTransport;
+
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let relay_transport_id = TransportId::new(1);
+    let mut relay = NostrRelayTransport::new(
+        relay_transport_id,
+        None,
+        NostrRelayConfig::default(),
+        packet_tx.clone(),
+        &node.identity,
+    )
+    .unwrap();
+    relay.start().unwrap();
+    node.transports.insert(
+        relay_transport_id,
+        TransportHandle::NostrRelay(Box::new(relay)),
+    );
+
+    let direct_transport_id = TransportId::new(2);
+    let mut udp = UdpTransport::new(
+        direct_transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(direct_transport_id, TransportHandle::Udp(udp));
+
+    let (peer_full, peer_identity) = peer_identity_for_outbound_refresh_owner(&node);
+    let peer_node_addr = *peer_identity.node_addr();
+    assert!(
+        !crate::peer::cross_connection_winner(node.node_addr(), &peer_node_addr, false),
+        "fixture should make the inbound upgrade lose an ordinary initial-connection race"
+    );
+
+    let relay_addr = TransportAddr::from_string(&peer_identity.npub());
+    let direct_addr = TransportAddr::from_string("127.0.0.1:9000");
+    let old_link_id = LinkId::new(10);
+    let old_our_index = SessionIndex::new(11);
+    let old_their_index = SessionIndex::new(12);
+    let old_session =
+        make_test_fmp_session(&node.identity, &peer_full, node.startup_epoch, [0x11; 8]);
+    let old_peer = ActivePeer::with_session(
+        peer_identity,
+        old_link_id,
+        1_000,
+        ActivePeerSession {
+            session: old_session,
+            our_index: old_our_index,
+            their_index: old_their_index,
+            transport_id: relay_transport_id,
+            current_addr: relay_addr,
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: false,
+            remote_epoch: Some([0x11; 8]),
+        },
+    );
+    node.peers.insert(peer_node_addr, old_peer);
+    node.peers
+        .insert_session_index((relay_transport_id, old_our_index.as_u32()), peer_node_addr);
+
+    let new_link_id = LinkId::new(11);
+    let mut inbound = PeerConnection::inbound(new_link_id, 2_000);
+    let mut remote_outbound = PeerConnection::outbound(
+        LinkId::new(99),
+        PeerIdentity::from_pubkey_full(node.identity.pubkey_full()),
+        2_000,
+    );
+    let msg1 = remote_outbound
+        .start_handshake(peer_full.keypair(), [0x11; 8], 2_000)
+        .unwrap();
+    inbound
+        .receive_handshake_init(node.identity.keypair(), node.startup_epoch, &msg1, 2_000)
+        .unwrap();
+    let new_our_index = SessionIndex::new(77);
+    let new_their_index = SessionIndex::new(78);
+    inbound.set_our_index(new_our_index);
+    inbound.set_their_index(new_their_index);
+    inbound.set_transport_id(direct_transport_id);
+    inbound.set_source_addr(direct_addr.clone());
+    node.peers.insert_connection(new_link_id, inbound);
+
+    let result = node
+        .promote_connection(new_link_id, peer_identity, 2_100)
+        .unwrap();
+
+    assert!(
+        matches!(result, PromotionResult::CrossConnectionWon { .. }),
+        "an authenticated direct path should replace relay fallback without a reciprocal advert"
+    );
+    let active = node.get_peer(&peer_node_addr).unwrap();
+    assert_eq!(active.link_id(), new_link_id);
+    assert_eq!(active.transport_id(), Some(direct_transport_id));
+    assert_eq!(active.current_addr(), Some(&direct_addr));
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
 async fn equal_priority_outbound_alternate_path_does_not_replace_healthy_peer() {
     let mut node = make_node();
     let peer_full = loop {

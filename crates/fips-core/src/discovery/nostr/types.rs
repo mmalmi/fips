@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 pub const ADVERT_KIND: u16 = 37195;
 pub const ADVERT_IDENTIFIER: &str = "fips-overlay-v1";
 pub const ADVERT_VERSION: u32 = 1;
-pub const SIGNAL_KIND: u16 = 21059;
 // Defined at the top-level `discovery` module; re-exported here so the
 // existing punch sender / receiver imports remain unchanged.
 pub use crate::discovery::{PUNCH_ACK_MAGIC, PUNCH_MAGIC};
@@ -28,8 +27,6 @@ pub enum BootstrapError {
     MissingAdvert(String),
     #[error("peer {0} advert does not contain udp:nat endpoint")]
     MissingNatEndpoint(String),
-    #[error("peer {0} has no usable traversal relays")]
-    MissingRelays(String),
     #[error("invalid overlay advert: {0}")]
     InvalidAdvert(String),
     #[error("invalid npub '{npub}': {reason}")]
@@ -120,6 +117,8 @@ pub enum OverlayTransportKind {
     Tcp,
     Tor,
     WebRtc,
+    #[serde(rename = "nostr_relay")]
+    NostrRelay,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,8 +132,6 @@ pub struct OverlayAdvert {
     pub identifier: String,
     pub version: u32,
     pub endpoints: Vec<OverlayEndpointAdvert>,
-    #[serde(rename = "signalRelays", skip_serializing_if = "Option::is_none")]
-    pub signal_relays: Option<Vec<String>>,
     #[serde(rename = "stunServers", skip_serializing_if = "Option::is_none")]
     pub stun_servers: Option<Vec<String>>,
 }

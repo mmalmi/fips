@@ -902,36 +902,51 @@ impl From<FipsEndpointError> for SimError {
 mod tests {
     use super::*;
 
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn production_sim_uses_real_endpoints_over_sim_transport() {
-        let simulation = Simulation::new(SimConfig {
-            node_count: 18,
-            target_edges: 44,
-            route_probe_count: 6,
-            stream_probe_count: 2,
-            stream_size_bytes: 8 * 1024,
-            chunk_size_bytes: 512,
-            convergence_wait_ms: 1_500,
-            reconvergence_wait_ms: 800,
-            delivery_timeout_ms: 3_000,
-            stream_timeout_ms: 4_000,
-            adversary: AdversaryConfig {
-                blackhole_fraction: 0.10,
-                flaky_fraction: 0.10,
-                flaky_drop_probability: 0.35,
-                churned_node_fraction: 0.05,
-                churned_link_fraction: 0.10,
-            },
-            ..SimConfig::default()
-        });
-        let report = Box::pin(simulation.run())
-            .await
-            .expect("production simulation should run");
+    #[test]
+    fn production_sim_uses_real_endpoints_over_sim_transport() {
+        std::thread::Builder::new()
+            .name("production-sim-test".to_string())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .start_paused(true)
+                    .build()
+                    .expect("build production simulation test runtime")
+                    .block_on(async {
+                        let simulation = Simulation::new(SimConfig {
+                            node_count: 18,
+                            target_edges: 44,
+                            route_probe_count: 6,
+                            stream_probe_count: 2,
+                            stream_size_bytes: 8 * 1024,
+                            chunk_size_bytes: 512,
+                            convergence_wait_ms: 1_500,
+                            reconvergence_wait_ms: 800,
+                            delivery_timeout_ms: 3_000,
+                            stream_timeout_ms: 4_000,
+                            adversary: AdversaryConfig {
+                                blackhole_fraction: 0.10,
+                                flaky_fraction: 0.10,
+                                flaky_drop_probability: 0.35,
+                                churned_node_fraction: 0.05,
+                                churned_link_fraction: 0.10,
+                            },
+                            ..SimConfig::default()
+                        });
+                        let report = Box::pin(simulation.run())
+                            .await
+                            .expect("production simulation should run");
 
-        assert_eq!(report.topology.node_count, 18);
-        assert!(report.topology.edge_count >= 17);
-        assert!(report.baseline.network.packets_sent > 0);
-        assert!(report.baseline.route_probes.delivered > 0);
-        assert!(report.impaired.network.packets_sent > 0);
+                        assert_eq!(report.topology.node_count, 18);
+                        assert!(report.topology.edge_count >= 17);
+                        assert!(report.baseline.network.packets_sent > 0);
+                        assert!(report.baseline.route_probes.delivered > 0);
+                        assert!(report.impaired.network.packets_sent > 0);
+                    });
+            })
+            .expect("spawn production simulation test thread")
+            .join()
+            .expect("production simulation test thread panicked");
     }
 }

@@ -112,8 +112,8 @@ pub enum NostrDiscoveryPolicy {
 /// `relays` keeps the built-in relay client as the peerfinding provider.
 /// `external` disables built-in advert relay publication, subscriptions, and
 /// cache-miss queries so an adapter can route ordinary signed advert events
-/// through a transport-neutral pubsub provider instead. Traversal signaling
-/// remains on the separately configured signaling relays.
+/// through a transport-neutral pubsub provider instead. Transport negotiation
+/// is carried by authenticated FIPS sessions, not by a second relay plane.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NostrPeerfindingSource {
@@ -126,7 +126,7 @@ pub enum NostrPeerfindingSource {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NostrDiscoveryConfig {
-    /// Enable Nostr-signaled traversal bootstrap.
+    /// Enable signed Nostr peer adverts and FIPS-session transport upgrades.
     #[serde(default)]
     pub enabled: bool,
     /// Publish service advertisements so remote peers can bootstrap inbound.
@@ -138,9 +138,6 @@ pub struct NostrDiscoveryConfig {
     /// Relay URLs used for service advertisements.
     #[serde(default = "NostrDiscoveryConfig::default_advert_relays")]
     pub advert_relays: Vec<String>,
-    /// Relay URLs used for encrypted signaling events.
-    #[serde(default = "NostrDiscoveryConfig::default_dm_relays")]
-    pub dm_relays: Vec<String>,
     /// STUN servers used for local reflexive address discovery.
     /// Outbound observation uses only this local list; peer-advertised STUN
     /// values are informational and are not treated as egress targets.
@@ -289,7 +286,6 @@ impl Default for NostrDiscoveryConfig {
             advertise: Self::default_advertise(),
             peerfinding_source: NostrPeerfindingSource::default(),
             advert_relays: Self::default_advert_relays(),
-            dm_relays: Self::default_dm_relays(),
             stun_servers: Self::default_stun_servers(),
             share_local_candidates: false,
             app: Self::default_app(),
@@ -335,15 +331,6 @@ impl NostrDiscoveryConfig {
     }
 
     fn default_advert_relays() -> Vec<String> {
-        vec![
-            "wss://relay.damus.io".to_string(),
-            "wss://nos.lol".to_string(),
-            "wss://offchain.pub".to_string(),
-            "wss://temp.iris.to".to_string(),
-        ]
-    }
-
-    fn default_dm_relays() -> Vec<String> {
         vec![
             "wss://relay.damus.io".to_string(),
             "wss://nos.lol".to_string(),

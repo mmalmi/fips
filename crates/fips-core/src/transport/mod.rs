@@ -4,6 +4,7 @@
 //! underlying communication mechanisms (UDP, Ethernet, Tor, etc.) over
 //! which FIPS links are established.
 
+pub mod nostr_relay;
 pub mod tcp;
 pub mod tor;
 pub mod udp;
@@ -237,6 +238,13 @@ impl TransportType {
     pub const WEBRTC: TransportType = TransportType {
         name: "webrtc",
         connection_oriented: true,
+        reliable: false,
+    };
+
+    /// Encrypted FIPS datagrams carried by ephemeral Nostr relay events.
+    pub const NOSTR_RELAY: TransportType = TransportType {
+        name: "nostr_relay",
+        connection_oriented: false,
         reliable: false,
     };
 

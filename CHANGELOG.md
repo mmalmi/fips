@@ -11,10 +11,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Added external peerfinding mode and a signed local-advert endpoint API so
   adapters such as `nostr-pubsub-fips` can own configured relay and
-  decentralized kind 37195 distribution without a direct FIPS advert-relay
-  fallback.
-- Kept traversal signaling on `dm_relays` only; advert relays are no longer
-  inherited as an implicit signaling relay set.
+  decentralized kind 37195 distribution without a built-in FIPS advert relay
+  client.
+- Added an application-driven Nostr relay fallback transport using ephemeral
+  kind 21060 events containing base64url-encoded, already-encrypted FIPS
+  datagrams. Relay URLs remain owned by the embedding application, allowing
+  it to prefer relays that delivered a peer's advert without creating a
+  second relay configuration inside FIPS.
+- Moved UDP traversal and WebRTC offer/answer negotiation into authenticated
+  FIPS sessions. Removed DM relay sets, NIP-59 gift-wrap signaling, NIP-65
+  inbox lookup, and relay metadata from public endpoint adverts.
+- Made the relay fallback deliberately low priority so an established FIPS
+  session can negotiate and move to UDP, WebRTC, or TCP when a better path is
+  available.
 
 ## [0.3.98] - 2026-07-14
 

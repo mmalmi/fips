@@ -1276,6 +1276,7 @@ dependencies = [
 name = "fips-core"
 version = "0.3.99"
 dependencies = [
+ "base64",
  "bluer",
  "bytes",
  "dirs",

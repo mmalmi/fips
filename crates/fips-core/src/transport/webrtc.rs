@@ -1,9 +1,9 @@
 //! WebRTC DataChannel transport.
 //!
-//! This transport uses the existing FIPS Nostr signaling envelope for SDP
-//! offer/answer exchange and carries ordinary FIPS packets as binary SCTP data
-//! channel messages. The data channel is configured as unordered and
-//! zero-retransmit by default so it behaves like a datagram-ish transport.
+//! SDP offer/answer exchange is carried over an existing authenticated FIPS
+//! session. Ordinary FIPS packets then travel as binary SCTP data-channel
+//! messages. The data channel is configured as unordered and zero-retransmit
+//! by default so it behaves like a datagram-ish transport.
 
 use super::{
     ConnectionState, DiscoveredPeer, PacketBuffer, PacketTx, ReceivedPacket, Transport,
@@ -46,7 +46,8 @@ const MAX_WEBRTC_SEEN_SESSIONS: usize = 1024;
 
 mod signaling;
 
-use signaling::{NostrSignalSender, NostrWebRtcSignaling};
+use signaling::FipsSignalSender;
+pub(crate) use signaling::OutboundWebRtcSignal;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -127,12 +128,12 @@ pub struct WebRtcTransport {
     failed: FailedPool,
     ready: ReadyPool,
     seen_sessions: SeenSessionPool,
+    signal_tx: mpsc::UnboundedSender<IncomingSignal>,
     signal_rx: Option<mpsc::UnboundedReceiver<IncomingSignal>>,
+    outgoing_signal_rx: mpsc::UnboundedReceiver<OutboundWebRtcSignal>,
     signal_task: Option<JoinHandle<()>>,
-    signaling: Option<NostrWebRtcSignaling>,
+    signaling: FipsSignalSender,
     local_pubkey_hex: String,
-    local_xonly: PublicKey,
-    signal_relays: Vec<String>,
     stun_servers: Vec<String>,
 }
 
@@ -146,19 +147,11 @@ impl WebRtcTransport {
         identity: &crate::Identity,
         nostr_config: &NostrDiscoveryConfig,
     ) -> Result<Self, TransportError> {
-        let keys = nostr::Keys::parse(&hex::encode(identity.keypair().secret_bytes()))
-            .map_err(|e| TransportError::StartFailed(e.to_string()))?;
-        let local_xonly = keys.public_key();
         let local_pubkey_hex = hex::encode(identity.pubkey_full().serialize());
-        let mut signal_relays = config.signal_relays(&nostr_config.dm_relays);
-        for relay in &nostr_config.advert_relays {
-            if !signal_relays.contains(relay) {
-                signal_relays.push(relay.clone());
-            }
-        }
         let stun_servers = config.stun_servers(&nostr_config.stun_servers);
         let (signal_tx, signal_rx) = mpsc::unbounded_channel();
-        let signaling = NostrWebRtcSignaling::new(keys, signal_relays.clone(), signal_tx);
+        let (outgoing_signal_tx, outgoing_signal_rx) = mpsc::unbounded_channel();
+        let signaling = FipsSignalSender::new(outgoing_signal_tx);
 
         let mut media_engine = MediaEngine::default();
         media_engine
@@ -189,12 +182,12 @@ impl WebRtcTransport {
             failed: Arc::new(Mutex::new(HashMap::new())),
             ready: Arc::new(Mutex::new(HashSet::new())),
             seen_sessions: Arc::new(Mutex::new(HashMap::new())),
+            signal_tx,
             signal_rx: Some(signal_rx),
+            outgoing_signal_rx,
             signal_task: None,
-            signaling: Some(signaling),
+            signaling,
             local_pubkey_hex,
-            local_xonly,
-            signal_relays,
             stun_servers,
         })
     }
@@ -211,19 +204,6 @@ impl WebRtcTransport {
         }
         self.state = TransportState::Starting;
 
-        if self.signal_relays.is_empty() {
-            self.state = TransportState::Failed;
-            return Err(TransportError::StartFailed(
-                "WebRTC transport requires Nostr signaling relays".into(),
-            ));
-        }
-
-        let signaling = self
-            .signaling
-            .as_mut()
-            .ok_or_else(|| TransportError::StartFailed("signaling already taken".into()))?;
-        signaling.start(self.local_xonly).await?;
-
         let mut signal_rx = self
             .signal_rx
             .take()
@@ -239,9 +219,8 @@ impl WebRtcTransport {
             ready: Arc::clone(&self.ready),
             seen_sessions: Arc::clone(&self.seen_sessions),
             local_pubkey_hex: self.local_pubkey_hex.clone(),
-            signal_relays: self.signal_relays.clone(),
             stun_servers: self.stun_servers.clone(),
-            signaling: signaling.sender(),
+            signaling: self.signaling.clone(),
         };
         self.signal_task = Some(tokio::spawn(async move {
             let max_tasks = runtime
@@ -278,10 +257,9 @@ impl WebRtcTransport {
         self.state = TransportState::Up;
         info!(
             transport_id = %self.transport_id,
-            relays = self.signal_relays.len(),
             stun_servers = self.stun_servers.len(),
             mtu = self.config.mtu(),
-            "WebRTC transport started"
+            "WebRTC transport started with FIPS session signaling"
         );
         Ok(())
     }
@@ -293,9 +271,6 @@ impl WebRtcTransport {
         }
         if let Some(task) = self.signal_task.take() {
             task.abort();
-        }
-        if let Some(signaling) = self.signaling.as_mut() {
-            signaling.stop().await;
         }
         self.failed.lock().await.clear();
         self.seen_sessions.lock().await.clear();
@@ -382,13 +357,8 @@ impl WebRtcTransport {
             ready: Arc::clone(&self.ready),
             seen_sessions: Arc::clone(&self.seen_sessions),
             local_pubkey_hex: self.local_pubkey_hex.clone(),
-            signal_relays: self.signal_relays.clone(),
             stun_servers: self.stun_servers.clone(),
-            signaling: self
-                .signaling
-                .as_ref()
-                .ok_or(TransportError::NotStarted)?
-                .sender(),
+            signaling: self.signaling.clone(),
         };
         let remote_addr = addr.clone();
         tokio::spawn(async move {
@@ -399,6 +369,44 @@ impl WebRtcTransport {
             }
         });
         Ok(())
+    }
+
+    /// Drain SDP negotiation messages for delivery over encrypted FIPS
+    /// sessions. Relay adapters must never consume or republish this queue.
+    pub(crate) fn drain_session_signals(&mut self, limit: usize) -> Vec<OutboundWebRtcSignal> {
+        let mut drained = Vec::with_capacity(limit.min(32));
+        while drained.len() < limit {
+            match self.outgoing_signal_rx.try_recv() {
+                Ok(signal) => drained.push(signal),
+                Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
+                    break;
+                }
+            }
+        }
+        drained
+    }
+
+    /// Deliver an authenticated FIPS-session SDP negotiation message to the
+    /// WebRTC runtime.
+    pub(crate) fn ingest_session_signal(
+        &self,
+        source: &crate::NodeAddr,
+        payload: &[u8],
+    ) -> Result<(), TransportError> {
+        let signal = serde_json::from_slice::<WebRtcSignal>(payload)
+            .map_err(|error| TransportError::InvalidAddress(error.to_string()))?;
+        let sender = xonly_from_compressed_hex(&signal.sender)?;
+        let sender_xonly = secp256k1::XOnlyPublicKey::from_slice(sender.as_bytes())
+            .map_err(|error| TransportError::InvalidAddress(error.to_string()))?;
+        let sender_addr = crate::NodeAddr::from_pubkey(&sender_xonly);
+        if &sender_addr != source {
+            return Err(TransportError::InvalidAddress(
+                "WebRTC signal sender does not match FIPS session source".into(),
+            ));
+        }
+        self.signal_tx
+            .send(IncomingSignal { signal, sender })
+            .map_err(|_| TransportError::NotStarted)
     }
 
     /// Query connection state synchronously.

@@ -23,6 +23,8 @@ use crate::protocol::{
     SessionMessageType, SessionMsg3, SessionReceiverReport, SessionSenderReport, SessionSetup,
 };
 use crate::transport::PacketBuffer;
+#[cfg(feature = "webrtc-transport")]
+use crate::transport::TransportHandle;
 use crate::{NodeAddr, PeerIdentity};
 use secp256k1::PublicKey;
 use std::time::Instant;
@@ -471,6 +473,10 @@ impl AuthenticatedSessionDispatch {
             Some(SessionMessageType::TraversalAnswer) => {
                 let rest = self.body();
                 node.handle_mesh_traversal_answer(&source_addr, rest).await;
+            }
+            Some(SessionMessageType::WebRtcSignal) => {
+                let rest = self.body();
+                node.handle_webrtc_session_signal(&source_addr, rest);
             }
             Some(SessionMessageType::SenderReport) => {
                 let rest = self.body();

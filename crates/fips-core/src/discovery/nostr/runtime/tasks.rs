@@ -94,21 +94,6 @@ impl NostrDiscovery {
                             false
                         }
                     };
-                match tokio::time::timeout(RELAY_STARTUP_OP_TIMEOUT, self.publish_inbox_relays())
-                    .await
-                {
-                    Ok(Ok(())) => {}
-                    Ok(Err(err)) => {
-                        warn!(error = %err, "failed to publish Nostr inbox relay list");
-                    }
-                    Err(_) => {
-                        warn!(
-                            timeout_ms = RELAY_STARTUP_OP_TIMEOUT.as_millis() as u64,
-                            "Nostr inbox relay publish timed out"
-                        );
-                    }
-                }
-
                 self.request_publish_advert();
 
                 if subscribed {
@@ -185,22 +170,6 @@ impl NostrDiscovery {
 
     pub(super) async fn subscribe(&self) -> Result<(), BootstrapError> {
         let relay_config = self.relay_config.read().await.clone();
-        let signal_relays = relay_config.signal_relays();
-        let signal_result = if signal_relays.is_empty() {
-            debug!("skipping Nostr traversal signal subscription without signaling relays");
-            Ok(())
-        } else {
-            self.subscribe_required(
-                signal_relays,
-                "fips-traversal-signals",
-                Filter::new()
-                    .kind(Kind::Custom(SIGNAL_KIND))
-                    .pubkey(self.pubkey)
-                    .limit(0),
-            )
-            .await
-        };
-
         let advert_result = if self.should_subscribe_ambient_adverts() {
             self.subscribe_required(
                 relay_config.advert_relays.clone(),
@@ -229,7 +198,6 @@ impl NostrDiscovery {
                 Ok(())
             };
 
-        signal_result?;
         advert_result?;
         rating_result
     }
@@ -261,34 +229,6 @@ impl NostrDiscovery {
                 "Nostr subscription active on a partial relay set"
             );
         }
-        Ok(())
-    }
-
-    pub(super) async fn publish_inbox_relays(&self) -> Result<(), BootstrapError> {
-        let relay_config = self.relay_config.read().await.clone();
-        let signal_relays = relay_config.signal_relays();
-        if signal_relays.is_empty() {
-            return Ok(());
-        }
-        let tags = signal_relays
-            .iter()
-            .filter_map(|relay| RelayUrl::parse(relay).ok())
-            .map(|relay| {
-                Tag::custom(
-                    TagKind::SingleLetter(SingleLetterTag::lowercase(Alphabet::R)),
-                    [relay.to_string()],
-                )
-            })
-            .collect::<Vec<_>>();
-
-        let event = EventBuilder::new(Kind::InboxRelays, "")
-            .tags(tags)
-            .sign_with_keys(&self.keys)
-            .map_err(|e| BootstrapError::Nostr(e.to_string()))?;
-        self.client
-            .send_event_to(signal_relays, &event)
-            .await
-            .map_err(|e| BootstrapError::Nostr(e.to_string()))?;
         Ok(())
     }
 }

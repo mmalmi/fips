@@ -25,19 +25,15 @@ fn event_channel_capacity_tracks_open_and_inbound_limits() {
 }
 
 #[test]
-fn traversal_signaling_does_not_inherit_peerfinding_relays() {
-    let relays = NostrRelayConfig {
+fn external_peerfinding_does_not_open_direct_relay_connections() {
+    let relays = AdvertRelayConfig {
         advert_relays: vec!["wss://peerfinding.example".to_string()],
-        dm_relays: vec!["wss://signaling.example".to_string()],
     };
 
+    assert!(relays.active_relays(false).is_empty());
     assert_eq!(
-        relays.signal_relays(),
-        vec!["wss://signaling.example".to_string()]
-    );
-    assert_eq!(
-        relays.union(false),
-        HashSet::from(["wss://signaling.example".to_string()])
+        relays.active_relays(true),
+        HashSet::from(["wss://peerfinding.example".to_string()])
     );
 }
 
@@ -58,7 +54,7 @@ fn advert_publish_retry_delay_backs_off_to_short_cap() {
 }
 
 #[test]
-fn webrtc_only_advert_keeps_signaling_metadata_when_published() {
+fn webrtc_only_advert_needs_no_relay_signaling_metadata() {
     let advert = OverlayAdvert {
         identifier: crate::discovery::nostr::ADVERT_IDENTIFIER.to_string(),
         version: crate::discovery::nostr::ADVERT_VERSION,
@@ -66,16 +62,12 @@ fn webrtc_only_advert_keeps_signaling_metadata_when_published() {
             transport: OverlayTransportKind::WebRtc,
             addr: format!("02{}", "11".repeat(32)),
         }],
-        signal_relays: Some(vec!["wss://relay.example".to_string()]),
         stun_servers: Some(vec!["stun:stun.example.org:3478".to_string()]),
     };
 
     let published = super::advert::sanitize_advert_for_publish(advert)
         .expect("WebRTC-only adverts must remain publishable");
-    assert_eq!(
-        published.signal_relays,
-        Some(vec!["wss://relay.example".to_string()])
-    );
+    assert_eq!(published.stun_servers, None);
 }
 
 #[test]
@@ -155,29 +147,18 @@ fn mesh_signaled_initiators_use_direct_refresh_admission() {
 }
 
 #[tokio::test]
-async fn traversal_replay_cache_is_scoped_by_signal_path() {
+async fn traversal_replay_cache_rejects_duplicate_session_signal() {
     let discovery = NostrDiscovery::new_for_test();
 
     discovery
         .mark_session_seen("session", TraversalSignalPath::Mesh)
         .await
         .expect("first mesh copy should be accepted");
-    discovery
-        .mark_session_seen("session", TraversalSignalPath::Nostr)
-        .await
-        .expect("Nostr fallback copy of the same offer should still be accepted");
-
     let duplicate_mesh = discovery
         .mark_session_seen("session", TraversalSignalPath::Mesh)
         .await
         .expect_err("duplicate mesh copy should still be rejected");
     assert!(matches!(duplicate_mesh, BootstrapError::Replay(_)));
-
-    let duplicate_nostr = discovery
-        .mark_session_seen("session", TraversalSignalPath::Nostr)
-        .await
-        .expect_err("duplicate Nostr copy should still be rejected");
-    assert!(matches!(duplicate_nostr, BootstrapError::Replay(_)));
 }
 
 #[test]
@@ -602,7 +583,6 @@ async fn external_peerfinding_signs_local_advert_without_relay_selection() {
             transport: OverlayTransportKind::Tcp,
             addr: "8.8.8.8:443".to_string(),
         }],
-        signal_relays: None,
         stun_servers: None,
     };
     discovery
@@ -732,7 +712,6 @@ fn signed_runtime_overlay_advert_event(
             transport,
             addr: addr.to_string(),
         }],
-        signal_relays: None,
         stun_servers: None,
     };
     EventBuilder::new(
@@ -826,6 +805,5 @@ async fn mesh_answer_resolves_pending_offer_without_nostr_event() {
 
     let envelope = rx.await.expect("pending answer should resolve");
     assert_eq!(envelope.payload, answer);
-    assert!(envelope.event_id.is_none());
     assert_eq!(envelope.sender_npub, "npub1peer");
 }

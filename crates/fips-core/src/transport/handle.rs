@@ -4,6 +4,7 @@
 use super::ble::DefaultBleTransport;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::ethernet::EthernetTransport;
+use super::nostr_relay::NostrRelayTransport;
 #[cfg(feature = "sim-transport")]
 use super::sim::SimTransport;
 use super::tcp::TcpTransport;
@@ -26,6 +27,8 @@ const TCP_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(5
 pub enum TransportHandle {
     /// UDP/IP transport.
     Udp(UdpTransport),
+    /// Encrypted FIPS datagrams carried by ephemeral Nostr relay events.
+    NostrRelay(Box<NostrRelayTransport>),
     /// In-memory simulated packet transport.
     #[cfg(feature = "sim-transport")]
     Sim(SimTransport),
@@ -45,10 +48,40 @@ pub enum TransportHandle {
 }
 
 impl TransportHandle {
+    /// Drain WebRTC negotiation messages that must travel over authenticated
+    /// FIPS sessions.
+    #[cfg(feature = "webrtc-transport")]
+    pub(crate) fn drain_webrtc_session_signals(
+        &mut self,
+        limit: usize,
+    ) -> Vec<super::webrtc::OutboundWebRtcSignal> {
+        match self {
+            TransportHandle::WebRtc(transport) => transport.drain_session_signals(limit),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Deliver a WebRTC negotiation message received over an authenticated
+    /// FIPS session.
+    #[cfg(feature = "webrtc-transport")]
+    pub(crate) fn ingest_webrtc_session_signal(
+        &self,
+        source: &crate::NodeAddr,
+        payload: &[u8],
+    ) -> Result<(), TransportError> {
+        match self {
+            TransportHandle::WebRtc(transport) => transport.ingest_session_signal(source, payload),
+            _ => Err(TransportError::NotSupported(
+                "transport is not WebRTC".into(),
+            )),
+        }
+    }
+
     /// Start the transport asynchronously.
     pub async fn start(&mut self) -> Result<(), TransportError> {
         match self {
             TransportHandle::Udp(t) => t.start_async().await,
+            TransportHandle::NostrRelay(t) => t.start(),
             #[cfg(feature = "sim-transport")]
             TransportHandle::Sim(t) => t.start_async().await,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -66,6 +99,7 @@ impl TransportHandle {
     pub async fn stop(&mut self) -> Result<(), TransportError> {
         match self {
             TransportHandle::Udp(t) => t.stop_async().await,
+            TransportHandle::NostrRelay(t) => t.stop(),
             #[cfg(feature = "sim-transport")]
             TransportHandle::Sim(t) => t.stop_async().await,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -83,6 +117,7 @@ impl TransportHandle {
     pub async fn send(&self, addr: &TransportAddr, data: &[u8]) -> Result<usize, TransportError> {
         match self {
             TransportHandle::Udp(t) => t.send_async(addr, data).await,
+            TransportHandle::NostrRelay(t) => t.send(addr, data).map(|()| data.len()),
             #[cfg(feature = "sim-transport")]
             TransportHandle::Sim(t) => t.send_async(addr, data).await,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -104,6 +139,7 @@ impl TransportHandle {
     pub fn transport_id(&self) -> TransportId {
         match self {
             TransportHandle::Udp(t) => t.transport_id(),
+            TransportHandle::NostrRelay(t) => t.transport_id(),
             #[cfg(feature = "sim-transport")]
             TransportHandle::Sim(t) => t.transport_id(),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -121,6 +157,7 @@ impl TransportHandle {
     pub fn name(&self) -> Option<&str> {
         match self {
             TransportHandle::Udp(t) => t.name(),
+            TransportHandle::NostrRelay(t) => t.name(),
             #[cfg(feature = "sim-transport")]
             TransportHandle::Sim(t) => t.name(),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -138,6 +175,7 @@ impl TransportHandle {
     pub fn transport_type(&self) -> &TransportType {
         match self {
             TransportHandle::Udp(t) => t.transport_type(),
+            TransportHandle::NostrRelay(t) => t.transport_type(),
             #[cfg(feature = "sim-transport")]
             TransportHandle::Sim(t) => t.transport_type(),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -155,6 +193,7 @@ impl TransportHandle {
     pub fn state(&self) -> TransportState {
         match self {
             TransportHandle::Udp(t) => t.state(),
+            TransportHandle::NostrRelay(t) => t.state(),
             #[cfg(feature = "sim-transport")]
             TransportHandle::Sim(t) => t.state(),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -172,6 +211,7 @@ impl TransportHandle {
     pub fn mtu(&self) -> u16 {
         match self {
             TransportHandle::Udp(t) => t.mtu(),
+            TransportHandle::NostrRelay(t) => t.mtu(),
             #[cfg(feature = "sim-transport")]
             TransportHandle::Sim(t) => t.mtu(),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -192,6 +232,7 @@ impl TransportHandle {
     pub fn link_mtu(&self, addr: &TransportAddr) -> u16 {
         match self {
             TransportHandle::Udp(t) => t.link_mtu(addr),
+            TransportHandle::NostrRelay(t) => t.link_mtu(addr),
             #[cfg(feature = "sim-transport")]
             TransportHandle::Sim(t) => t.link_mtu(addr),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -209,6 +250,7 @@ impl TransportHandle {
     pub fn local_addr(&self) -> Option<std::net::SocketAddr> {
         match self {
             TransportHandle::Udp(t) => t.local_addr(),
+            TransportHandle::NostrRelay(_) => None,
             #[cfg(feature = "sim-transport")]
             TransportHandle::Sim(_) => None,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -240,6 +282,7 @@ impl TransportHandle {
     pub fn interface_name(&self) -> Option<&str> {
         match self {
             TransportHandle::Udp(_) => None,
+            TransportHandle::NostrRelay(_) => None,
             #[cfg(feature = "sim-transport")]
             TransportHandle::Sim(_) => None,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -281,6 +324,7 @@ impl TransportHandle {
     pub fn discover(&self) -> Result<Vec<DiscoveredPeer>, TransportError> {
         match self {
             TransportHandle::Udp(t) => t.discover(),
+            TransportHandle::NostrRelay(t) => t.discover(),
             #[cfg(feature = "sim-transport")]
             TransportHandle::Sim(t) => t.discover(),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -298,6 +342,7 @@ impl TransportHandle {
     pub fn auto_connect(&self) -> bool {
         match self {
             TransportHandle::Udp(t) => t.auto_connect(),
+            TransportHandle::NostrRelay(t) => t.auto_connect(),
             #[cfg(feature = "sim-transport")]
             TransportHandle::Sim(t) => t.auto_connect(),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -315,6 +360,7 @@ impl TransportHandle {
     pub fn accept_connections(&self) -> bool {
         match self {
             TransportHandle::Udp(t) => t.accept_connections(),
+            TransportHandle::NostrRelay(t) => t.accept_connections(),
             #[cfg(feature = "sim-transport")]
             TransportHandle::Sim(t) => t.accept_connections(),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -337,7 +383,8 @@ impl TransportHandle {
     /// Poll `connection_state()` to check when the connection is ready.
     pub async fn connect(&self, addr: &TransportAddr) -> Result<(), TransportError> {
         match self {
-            TransportHandle::Udp(_) => Ok(()), // connectionless
+            TransportHandle::Udp(_) => Ok(()),        // connectionless
+            TransportHandle::NostrRelay(_) => Ok(()), // connectionless
             #[cfg(feature = "sim-transport")]
             TransportHandle::Sim(_) => Ok(()), // connectionless
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -359,6 +406,7 @@ impl TransportHandle {
     pub fn connection_state(&self, addr: &TransportAddr) -> ConnectionState {
         match self {
             TransportHandle::Udp(_) => ConnectionState::Connected,
+            TransportHandle::NostrRelay(_) => ConnectionState::Connected,
             #[cfg(feature = "sim-transport")]
             TransportHandle::Sim(_) => ConnectionState::Connected,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -379,6 +427,7 @@ impl TransportHandle {
     pub async fn close_connection(&self, addr: &TransportAddr) {
         match self {
             TransportHandle::Udp(t) => t.close_connection(addr),
+            TransportHandle::NostrRelay(t) => t.close_connection(addr),
             #[cfg(feature = "sim-transport")]
             TransportHandle::Sim(t) => t.close_connection(addr),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -413,6 +462,7 @@ impl TransportHandle {
     pub fn congestion(&self) -> TransportCongestion {
         match self {
             TransportHandle::Udp(t) => t.congestion(),
+            TransportHandle::NostrRelay(_) => TransportCongestion::default(),
             #[cfg(feature = "sim-transport")]
             TransportHandle::Sim(_) => TransportCongestion::default(),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -434,6 +484,10 @@ impl TransportHandle {
             TransportHandle::Udp(t) => {
                 serde_json::to_value(t.stats().snapshot()).unwrap_or_default()
             }
+            TransportHandle::NostrRelay(t) => serde_json::json!({
+                "mtu": t.mtu(),
+                "state": t.state().to_string(),
+            }),
             #[cfg(feature = "sim-transport")]
             TransportHandle::Sim(t) => serde_json::to_value(t.stats()).unwrap_or_default(),
             #[cfg(any(target_os = "linux", target_os = "macos"))]

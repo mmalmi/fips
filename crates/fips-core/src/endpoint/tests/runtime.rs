@@ -157,13 +157,12 @@ async fn endpoint_rejects_external_nostr_event_when_discovery_is_disabled() {
 }
 
 #[tokio::test]
-async fn external_peerfinding_endpoint_starts_without_advert_or_signal_relays() {
+async fn external_peerfinding_endpoint_starts_without_advert_relays() {
     let mut config = Config::new();
     config.node.discovery.nostr.enabled = true;
     config.node.discovery.nostr.peerfinding_source =
         crate::config::NostrPeerfindingSource::External;
     config.node.discovery.nostr.advert_relays.clear();
-    config.node.discovery.nostr.dm_relays.clear();
     let endpoint = FipsEndpoint::builder()
         .config(config)
         .without_system_tun()

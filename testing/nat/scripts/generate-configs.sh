@@ -99,8 +99,6 @@ node:
       app: "fips.nat.lab.v1"
       advert_relays:
         - "$relay_addr"
-      dm_relays:
-        - "$relay_addr"
       stun_servers:
         - "$stun_addr"
       share_local_candidates: $share_local_candidates
@@ -125,6 +123,7 @@ dns:
   port: 5354
 
 transports:
+  nostr_relay: {}
   udp:
     bind_addr: "0.0.0.0:2121"
     mtu: 1472

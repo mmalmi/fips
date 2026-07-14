@@ -4,23 +4,21 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use nostr::nips::nip17;
 use nostr::nips::nip19::ToBech32;
 use nostr::prelude::{
-    Alphabet, Event, EventBuilder, EventId, Filter, Kind, PublicKey, RelayUrl, SingleLetterTag,
+    Alphabet, Event, EventBuilder, EventId, Filter, Kind, PublicKey, SingleLetterTag,
     SubscriptionId, Tag, TagKind, Timestamp,
 };
 use nostr_sdk::{Client, ClientOptions, prelude::RelayPoolNotification};
-use serde::Serialize;
 use tokio::sync::{Mutex, Notify, RwLock, Semaphore, broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, trace, warn};
 
 use super::failure_state::{FailureDecision, FailureState, NostrPeerKey};
 use super::signal::{
-    FreshnessOutcome, SignalEnvelope, TraversalSignalTiming, build_signal_event,
-    create_traversal_answer, create_traversal_offer, estimate_clock_skew, unwrap_signal_event,
-    validate_offer_freshness, validate_traversal_answer_for_offer,
+    FreshnessOutcome, SignalEnvelope, TraversalSignalTiming, create_traversal_answer,
+    create_traversal_offer, estimate_clock_skew, validate_offer_freshness,
+    validate_traversal_answer_for_offer,
 };
 use super::stun::{ADVERT_STUN_TIMEOUT, TRAVERSAL_STUN_TIMEOUT, observe_traversal_addresses};
 use super::traversal::{nonce, now_ms, planned_remote_endpoints, run_punch_attempt};
@@ -28,8 +26,8 @@ use super::types::{
     ADVERT_IDENTIFIER, ADVERT_KIND, ADVERT_VERSION, BootstrapError, BootstrapEvent,
     CachedOverlayAdvert, MeshTraversalSignal, NostrAdvertIngestOutcome, NostrFailureDecision,
     NostrPeerFailureView, NostrRefetchOutcome, NostrRelayStatus, OverlayAdvert,
-    OverlayEndpointAdvert, OverlayTransportKind, PROTOCOL_VERSION, PunchHint, SIGNAL_KIND,
-    TraversalAnswer, TraversalOffer, advert_d_tag,
+    OverlayEndpointAdvert, PROTOCOL_VERSION, PunchHint, TraversalAnswer, TraversalOffer,
+    advert_d_tag,
 };
 use crate::config::{NostrDiscoveryConfig, PeerConfig};
 use crate::discovery::EstablishedTraversal;
@@ -39,7 +37,6 @@ mod advert;
 mod events;
 mod notifications;
 mod ratings;
-mod signals;
 mod tasks;
 mod traversal;
 mod verified_event;
@@ -93,16 +90,11 @@ fn short_id(id: &str) -> String {
 #[derive(Clone, Copy)]
 pub(super) enum TraversalSignalPath {
     Mesh,
-    Nostr,
 }
 
 impl TraversalSignalPath {
     fn cache_key(self, session_id: &str) -> String {
-        let prefix = match self {
-            Self::Mesh => "mesh",
-            Self::Nostr => "nostr",
-        };
-        format!("{prefix}:{session_id}")
+        format!("session:{session_id}")
     }
 }
 
@@ -188,6 +180,7 @@ fn endpoint_advert_is_publicly_usable(endpoint: &OverlayEndpointAdvert) -> bool 
         }
         super::types::OverlayTransportKind::Tor => true,
         super::types::OverlayTransportKind::WebRtc => is_compressed_pubkey_hex(addr),
+        super::types::OverlayTransportKind::NostrRelay => nostr::PublicKey::parse(addr).is_ok(),
     }
 }
 
@@ -234,31 +227,25 @@ fn signal_answer_timeout(config: &NostrDiscoveryConfig) -> Duration {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct NostrRelayConfig {
+struct AdvertRelayConfig {
     advert_relays: Vec<String>,
-    dm_relays: Vec<String>,
 }
 
-impl From<&NostrDiscoveryConfig> for NostrRelayConfig {
+impl From<&NostrDiscoveryConfig> for AdvertRelayConfig {
     fn from(config: &NostrDiscoveryConfig) -> Self {
         Self {
             advert_relays: config.advert_relays.clone(),
-            dm_relays: config.dm_relays.clone(),
         }
     }
 }
 
-impl NostrRelayConfig {
-    fn union(&self, include_advert_relays: bool) -> HashSet<String> {
-        let mut relays = self.dm_relays.iter().cloned().collect::<HashSet<_>>();
-        if include_advert_relays {
-            relays.extend(self.advert_relays.iter().cloned());
+impl AdvertRelayConfig {
+    fn active_relays(&self, uses_relay_peerfinding: bool) -> HashSet<String> {
+        if uses_relay_peerfinding {
+            self.advert_relays.iter().cloned().collect()
+        } else {
+            HashSet::new()
         }
-        relays
-    }
-
-    fn signal_relays(&self) -> Vec<String> {
-        self.dm_relays.clone()
     }
 }
 
@@ -268,7 +255,7 @@ pub struct NostrDiscovery {
     pubkey: PublicKey,
     npub: String,
     config: NostrDiscoveryConfig,
-    relay_config: RwLock<NostrRelayConfig>,
+    relay_config: RwLock<AdvertRelayConfig>,
     advert_cache: RwLock<HashMap<NostrPeerKey, CachedOverlayAdvert>>,
     peer_trust_scores: RwLock<HashMap<NostrPeerKey, NostrPeerTrustScore>>,
     local_advert: RwLock<Option<OverlayAdvert>>,
@@ -352,7 +339,8 @@ impl NostrDiscovery {
             .opts(ClientOptions::new().autoconnect(false))
             .build();
 
-        let relay_union = NostrRelayConfig::from(&config).union(config.uses_relay_peerfinding());
+        let relay_union =
+            AdvertRelayConfig::from(&config).active_relays(config.uses_relay_peerfinding());
         for relay in relay_union {
             client
                 .add_relay(&relay)
@@ -373,15 +361,13 @@ impl NostrDiscovery {
         );
 
         let uses_relay_peerfinding = config.uses_relay_peerfinding();
-        let has_signal_relays = !config.dm_relays.is_empty();
-        let has_runtime_relays =
-            has_signal_relays || (uses_relay_peerfinding && !config.advert_relays.is_empty());
+        let has_runtime_relays = uses_relay_peerfinding && !config.advert_relays.is_empty();
         let runtime = Arc::new(Self {
             client,
             keys,
             pubkey,
             npub,
-            relay_config: RwLock::new(NostrRelayConfig::from(&config)),
+            relay_config: RwLock::new(AdvertRelayConfig::from(&config)),
             config,
             advert_cache: RwLock::new(HashMap::new()),
             peer_trust_scores: RwLock::new(HashMap::new()),
@@ -539,7 +525,7 @@ impl NostrDiscovery {
     pub async fn relay_statuses(&self) -> Vec<NostrRelayStatus> {
         let relay_config = self.relay_config.read().await.clone();
         let mut statuses = relay_config
-            .union(self.config.uses_relay_peerfinding())
+            .active_relays(self.config.uses_relay_peerfinding())
             .into_iter()
             .map(|url| {
                 (
@@ -568,20 +554,13 @@ impl NostrDiscovery {
         statuses
     }
 
-    pub async fn update_relays(
-        &self,
-        advert_relays: Vec<String>,
-        dm_relays: Vec<String>,
-    ) -> Result<(), BootstrapError> {
-        let next = NostrRelayConfig {
-            advert_relays,
-            dm_relays,
-        };
+    pub async fn update_relays(&self, advert_relays: Vec<String>) -> Result<(), BootstrapError> {
+        let next = AdvertRelayConfig { advert_relays };
 
         let previous = self.relay_config.read().await.clone();
         let include_advert_relays = self.config.uses_relay_peerfinding();
-        let previous_union = previous.union(include_advert_relays);
-        let next_union = next.union(include_advert_relays);
+        let previous_union = previous.active_relays(include_advert_relays);
+        let next_union = next.active_relays(include_advert_relays);
 
         for relay in &next_union {
             self.client
@@ -603,6 +582,60 @@ impl NostrDiscovery {
         }
 
         self.relay_refresh.notify_one();
+        Ok(())
+    }
+
+    pub(super) async fn publish_delete<I>(
+        &self,
+        relays: &[String],
+        ids: I,
+    ) -> Result<(), BootstrapError>
+    where
+        I: IntoIterator<Item = EventId>,
+    {
+        let event = EventBuilder::delete(nostr::nips::nip09::EventDeletionRequest::new().ids(ids))
+            .sign_with_keys(&self.keys)
+            .map_err(|error| BootstrapError::Nostr(error.to_string()))?;
+        self.client
+            .send_event_to(relays.to_vec(), &event)
+            .await
+            .map_err(|error| BootstrapError::Nostr(error.to_string()))?;
+        Ok(())
+    }
+
+    pub(super) async fn mark_session_seen(
+        &self,
+        session_id: &str,
+        signal_path: TraversalSignalPath,
+    ) -> Result<(), BootstrapError> {
+        let now = now_ms();
+        let expiry = now + self.config.replay_window_secs * 1000;
+        let cache_key = signal_path.cache_key(session_id);
+        let mut seen = self.seen_sessions.lock().await;
+        seen.retain(|_, expires_at| *expires_at > now);
+        if seen.contains_key(&cache_key) {
+            return Err(BootstrapError::Replay(session_id.to_string()));
+        }
+        seen.insert(cache_key, expiry);
+        if seen.len() > self.config.seen_sessions_max_entries {
+            let mut oldest = seen
+                .iter()
+                .map(|(session, expires_at)| (session.clone(), *expires_at))
+                .collect::<Vec<_>>();
+            oldest.sort_by_key(|(_, expires_at)| *expires_at);
+            let overflow = seen
+                .len()
+                .saturating_sub(self.config.seen_sessions_max_entries);
+            for (session, _) in oldest.into_iter().take(overflow) {
+                seen.remove(&session);
+            }
+            debug!(
+                evicted = overflow,
+                retained = seen.len(),
+                cap = self.config.seen_sessions_max_entries,
+                "seen traversal sessions overflow; evicted oldest entries"
+            );
+        }
         Ok(())
     }
 

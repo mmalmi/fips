@@ -555,7 +555,6 @@ fn signed_peer_advert_event(keys: &nostr::Keys, node_index: usize, app: &str) ->
             transport: OverlayTransportKind::Tcp,
             addr: format!("node-{node_index}.fips.test:{}", 20_000 + node_index),
         }],
-        signal_relays: None,
         stun_servers: None,
     };
     let now_secs = std::time::SystemTime::now()

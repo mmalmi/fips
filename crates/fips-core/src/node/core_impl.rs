@@ -356,6 +356,31 @@ impl Node {
             transports.push(TransportHandle::Udp(udp));
         }
 
+        let nostr_relay_instances: Vec<_> = self
+            .config
+            .transports
+            .nostr_relay
+            .iter()
+            .map(|(name, config)| (name.map(str::to_string), config.clone()))
+            .collect();
+        for (name, relay_config) in nostr_relay_instances {
+            let transport_id = self.allocate_transport_id();
+            match NostrRelayTransport::new(
+                transport_id,
+                name,
+                relay_config,
+                packet_tx.clone(),
+                &self.identity,
+            ) {
+                Ok(transport) => transports.push(TransportHandle::NostrRelay(Box::new(transport))),
+                Err(error) => warn!(
+                    %transport_id,
+                    %error,
+                    "failed to initialize Nostr relay fallback transport"
+                ),
+            }
+        }
+
         #[cfg(feature = "sim-transport")]
         {
             let sim_instances: Vec<_> = self

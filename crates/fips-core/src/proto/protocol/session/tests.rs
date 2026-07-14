@@ -23,6 +23,7 @@ fn test_session_message_type_roundtrip() {
         SessionMessageType::EndpointData,
         SessionMessageType::TraversalOffer,
         SessionMessageType::TraversalAnswer,
+        SessionMessageType::WebRtcSignal,
         SessionMessageType::CoordsRequired,
         SessionMessageType::PathBroken,
         SessionMessageType::MtuExceeded,
@@ -328,7 +329,7 @@ fn test_session_message_type_new_values() {
     assert_eq!(SessionMessageType::EndpointData.to_byte(), 0x15);
     assert_eq!(SessionMessageType::TraversalOffer.to_byte(), 0x16);
     assert_eq!(SessionMessageType::TraversalAnswer.to_byte(), 0x17);
-    assert!(SessionMessageType::from_byte(0x18).is_none());
+    assert_eq!(SessionMessageType::WebRtcSignal.to_byte(), 0x18);
 }
 
 #[test]
@@ -352,6 +353,10 @@ fn test_session_message_type_display() {
     assert_eq!(
         format!("{}", SessionMessageType::EndpointData),
         "EndpointData"
+    );
+    assert_eq!(
+        format!("{}", SessionMessageType::WebRtcSignal),
+        "WebRtcSignal"
     );
 }
 

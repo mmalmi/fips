@@ -543,10 +543,12 @@ impl Node {
             );
             return;
         };
-        if self.configured_peer(src_addr).is_none() {
+        if self.configured_peer(src_addr).is_none()
+            && !(self.peers.contains_key(src_addr) && self.dataplane_has_fsp_owner(src_addr))
+        {
             debug!(
                 src = %self.peer_display_name(src_addr),
-                "Ignoring mesh traversal offer from unconfigured peer"
+                "Ignoring traversal offer without an authenticated active peer"
             );
             return;
         }
@@ -590,10 +592,12 @@ impl Node {
             );
             return;
         };
-        if self.configured_peer(src_addr).is_none() {
+        if self.configured_peer(src_addr).is_none()
+            && !(self.peers.contains_key(src_addr) && self.dataplane_has_fsp_owner(src_addr))
+        {
             debug!(
                 src = %self.peer_display_name(src_addr),
-                "Ignoring mesh traversal answer from unconfigured peer"
+                "Ignoring traversal answer without an authenticated active peer"
             );
             return;
         }
@@ -627,6 +631,35 @@ impl Node {
         bootstrap
             .receive_mesh_traversal_answer(answer, sender_npub)
             .await;
+    }
+
+    #[cfg(feature = "webrtc-transport")]
+    fn handle_webrtc_session_signal(&mut self, src_addr: &NodeAddr, body: &[u8]) {
+        let result = self
+            .transports
+            .values()
+            .find(|transport| matches!(transport, TransportHandle::WebRtc(_)))
+            .ok_or_else(|| "no WebRTC transport configured".to_string())
+            .and_then(|transport| {
+                transport
+                    .ingest_webrtc_session_signal(src_addr, body)
+                    .map_err(|error| error.to_string())
+            });
+        if let Err(error) = result {
+            debug!(
+                src = %self.peer_display_name(src_addr),
+                error = %error,
+                "Ignoring WebRTC FIPS-session signal"
+            );
+        }
+    }
+
+    #[cfg(not(feature = "webrtc-transport"))]
+    fn handle_webrtc_session_signal(&mut self, src_addr: &NodeAddr, _body: &[u8]) {
+        trace!(
+            src = %self.peer_display_name(src_addr),
+            "Ignoring WebRTC session signal without WebRTC transport support"
+        );
     }
 
 }

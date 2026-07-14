@@ -93,6 +93,11 @@ impl NostrDiscovery {
             mesh_signaling_allowed,
             "traversal: initiator starting"
         );
+        if !mesh_signaling_allowed {
+            return Err(BootstrapError::Protocol(
+                "NAT traversal requires an authenticated FIPS session".to_string(),
+            ));
+        }
         let target_pubkey =
             PublicKey::parse(&peer_config.npub).map_err(|e| BootstrapError::InvalidPeerNpub {
                 npub: peer_config.npub.clone(),
@@ -100,42 +105,15 @@ impl NostrDiscovery {
             })?;
         let peer_key = NostrPeerKey::from_public_key_ref(&target_pubkey);
 
-        let mut relays = Vec::new();
-        let mut nostr_setup_error = None;
+        let configured_nat = peer_config
+            .addresses
+            .iter()
+            .any(|address| address.transport == "udp" && address.addr.eq_ignore_ascii_case("nat"));
         match self.fetch_advert(&peer_config.npub, target_pubkey).await {
             Ok(advert) => {
-                if advert.has_udp_nat_endpoint() {
-                    match self
-                        .preferred_signal_relays(target_pubkey, Some(&advert))
-                        .await
-                    {
-                        Ok(preferred) => relays = preferred,
-                        Err(err) if mesh_signaling_allowed => {
-                            debug!(
-                                peer = %peer_short,
-                                error = %err,
-                                "traversal: continuing with mesh signaling after relay lookup failure"
-                            );
-                            nostr_setup_error = Some(err);
-                        }
-                        Err(err) => return Err(err),
-                    }
-                } else if mesh_signaling_allowed {
-                    debug!(
-                        peer = %peer_short,
-                        "traversal: peer advert has no udp:nat endpoint; trying mesh signaling"
-                    );
-                } else {
+                if !advert.has_udp_nat_endpoint() && !configured_nat {
                     return Err(BootstrapError::MissingNatEndpoint(peer_config.npub.clone()));
                 }
-            }
-            Err(err) if mesh_signaling_allowed => {
-                debug!(
-                    peer = %peer_short,
-                    error = %err,
-                    "traversal: continuing with mesh signaling after advert lookup failure"
-                );
-                nostr_setup_error = Some(err);
             }
             Err(err) => return Err(err),
         }
@@ -172,57 +150,23 @@ impl NostrDiscovery {
             .await
             .insert(offer.nonce.clone(), tx);
 
-        let mesh_offer_sent = mesh_signaling_allowed
-            && self
-                .emit_mesh_signal(MeshTraversalSignal::Offer {
-                    peer_npub: peer_config.npub.clone(),
-                    offer: offer.clone(),
-                })
-                .await;
-        if mesh_offer_sent {
-            debug!(
-                peer = %peer_short,
-                session = %short_id(&offer.session_id),
-                "traversal: offer queued for FIPS mesh signaling"
-            );
-        }
-
-        let offer_event = if relays.is_empty() {
-            None
-        } else {
-            match self.send_signal(&relays, target_pubkey, &offer).await {
-                Ok(event) => {
-                    debug!(
-                        peer = %peer_short,
-                        session = %short_id(&offer.session_id),
-                        relays = relays.len(),
-                        event = %short_id(&event.id.to_string()),
-                        "traversal: offer sent over Nostr"
-                    );
-                    Some(event)
-                }
-                Err(err) if mesh_offer_sent => {
-                    debug!(
-                        peer = %peer_short,
-                        session = %short_id(&offer.session_id),
-                        error = %err,
-                        "traversal: Nostr offer failed; waiting for mesh-signaled answer"
-                    );
-                    nostr_setup_error = Some(err);
-                    None
-                }
-                Err(err) => {
-                    let _ = self.pending_answers.lock().await.remove(&offer.nonce);
-                    return Err(err);
-                }
-            }
-        };
-
-        if !mesh_offer_sent && offer_event.is_none() {
+        if !self
+            .emit_mesh_signal(MeshTraversalSignal::Offer {
+                peer_npub: peer_config.npub.clone(),
+                offer: offer.clone(),
+            })
+            .await
+        {
             let _ = self.pending_answers.lock().await.remove(&offer.nonce);
-            return Err(nostr_setup_error
-                .unwrap_or_else(|| BootstrapError::MissingRelays(peer_config.npub.clone())));
+            return Err(BootstrapError::Protocol(
+                "FIPS traversal offer queue closed".to_string(),
+            ));
         }
+        debug!(
+            peer = %peer_short,
+            session = %short_id(&offer.session_id),
+            "traversal: offer queued on authenticated FIPS session"
+        );
 
         let answer = match tokio::time::timeout(signal_answer_timeout(&self.config), rx).await {
             Ok(Ok(answer)) => answer,
@@ -243,7 +187,7 @@ impl NostrDiscovery {
             peer = %peer_short,
             session = %short_id(&offer.session_id),
             accepted = answer.payload.accepted,
-            signal_path = if answer.event_id.is_some() { "nostr" } else { "fips-mesh" },
+            signal_path = "fips-session",
             reflexive = %answer.payload.reflexive_address.as_ref().map(|a| format!("{}:{}", a.ip, a.port)).unwrap_or_else(|| "-".into()),
             local = answer.payload.local_addresses.len(),
             "traversal: answer received"
@@ -320,27 +264,11 @@ impl NostrDiscovery {
             "traversal: initiator punch succeeded"
         );
 
-        let answer_via_nostr = answer.event_id.is_some();
-        let delete_ids = offer_event
-            .as_ref()
-            .map(|event| event.id)
-            .into_iter()
-            .chain(answer.event_id)
-            .collect::<Vec<_>>();
-        if !delete_ids.is_empty() {
-            let _ = self.publish_delete(&relays, delete_ids).await;
-        }
-
         self.failure_state.record_success(peer_key, now_ms());
 
-        let transport_name = if answer_via_nostr {
-            "nostr-nat"
-        } else {
-            "fips-mesh-nat"
-        };
         Ok(
             EstablishedTraversal::new(session_id, peer_config.npub, remote_addr, base_socket)
-                .with_transport_name(transport_name),
+                .with_transport_name("fips-session-nat"),
         )
     }
 
@@ -366,7 +294,6 @@ impl NostrDiscovery {
         {
             let _ = tx.send(SignalEnvelope {
                 payload: answer,
-                event_id: None,
                 sender_npub,
             });
         } else {
@@ -468,6 +395,25 @@ impl NostrDiscovery {
                 "traversal: mesh offer accepted within clock-skew tolerance"
             );
         }
+        let have_active_initiator = if let Ok(sender) = NostrPeerKey::parse(&sender_npub) {
+            self.active_initiators.lock().await.contains(&sender)
+        } else {
+            false
+        };
+        if have_active_initiator
+            && let (Ok(ours), Ok(theirs)) = (
+                PeerIdentity::from_npub(&self.npub),
+                PeerIdentity::from_npub(&sender_npub),
+            )
+            && suppress_responder_for_own_initiator(ours.node_addr(), theirs.node_addr(), true)
+        {
+            debug!(
+                peer = %peer_short,
+                session = %short_id(&offer.session_id),
+                "traversal: responder suppressed because our initiator wins"
+            );
+            return Ok(());
+        }
         self.mark_session_seen(&offer.session_id, TraversalSignalPath::Mesh)
             .await?;
 
@@ -514,60 +460,6 @@ impl NostrDiscovery {
             accepted = accepted,
             "traversal: answer queued for FIPS mesh signaling"
         );
-        if accepted {
-            let runtime = Arc::clone(&self);
-            let answer_for_nostr = answer.clone();
-            let sender_for_nostr = sender_npub.clone();
-            let peer_short_for_nostr = peer_short.clone();
-            self.spawn_child_task(async move {
-                let sender = match PublicKey::parse(&sender_for_nostr) {
-                    Ok(sender) => sender,
-                    Err(error) => {
-                        debug!(
-                            peer = %peer_short_for_nostr,
-                            error = %error,
-                            "traversal: cannot send Nostr safety answer for mesh offer"
-                        );
-                        return;
-                    }
-                };
-                let relays = match runtime.preferred_signal_relays(sender, None).await {
-                    Ok(relays) => relays,
-                    Err(error) => {
-                        debug!(
-                            peer = %peer_short_for_nostr,
-                            session = %short_id(&answer_for_nostr.session_id),
-                            error = %error,
-                            "traversal: Nostr safety answer relay lookup failed"
-                        );
-                        return;
-                    }
-                };
-                match runtime
-                    .send_signal(&relays, sender, &answer_for_nostr)
-                    .await
-                {
-                    Ok(event) => {
-                        debug!(
-                            peer = %peer_short_for_nostr,
-                            session = %short_id(&answer_for_nostr.session_id),
-                            relays = relays.len(),
-                            event = %short_id(&event.id.to_string()),
-                            "traversal: Nostr safety answer sent for mesh offer"
-                        );
-                    }
-                    Err(error) => {
-                        debug!(
-                            peer = %peer_short_for_nostr,
-                            session = %short_id(&answer_for_nostr.session_id),
-                            error = %error,
-                            "traversal: Nostr safety answer send failed"
-                        );
-                    }
-                }
-            })
-            .await;
-        }
         if !accepted {
             return Ok(());
         }
@@ -606,171 +498,11 @@ impl NostrDiscovery {
                     remote_addr,
                     base_socket,
                 )
-                .with_transport_name("fips-mesh-nat"),
+                .with_transport_name("fips-session-nat"),
             })
             .await;
         }
 
-        Ok(())
-    }
-
-    pub(super) async fn handle_incoming_offer(
-        self: Arc<Self>,
-        offer: TraversalOffer,
-        sender: PublicKey,
-        sender_npub: String,
-    ) -> Result<(), BootstrapError> {
-        let peer_short = short_npub(&sender_npub);
-        if !self.outbound_admission_allowed() {
-            debug!(
-                peer = %peer_short,
-                session = %short_id(&offer.session_id),
-                "traversal: incoming offer dropped, Node at capacity"
-            );
-            return Ok(());
-        }
-        let offer_received_at = now_ms();
-        debug!(
-            peer = %peer_short,
-            session = %short_id(&offer.session_id),
-            reflexive = %offer.reflexive_address.as_ref().map(|a| format!("{}:{}", a.ip, a.port)).unwrap_or_else(|| "-".into()),
-            local = offer.local_addresses.len(),
-            "traversal: offer received"
-        );
-        let outcome = validate_offer_freshness(
-            &offer,
-            offer_received_at,
-            self.config.signal_ttl_secs * 1000,
-            &sender_npub,
-            &self.npub,
-        )?;
-        if outcome == FreshnessOutcome::FreshWithinSkewTolerance {
-            debug!(
-                peer = %peer_short,
-                session = %short_id(&offer.session_id),
-                offer_issued_at = offer.issued_at,
-                offer_received_at = offer_received_at,
-                "traversal: offer accepted within clock-skew tolerance"
-            );
-        }
-
-        let have_active_initiator = if let Ok(sender_key) = NostrPeerKey::parse(&sender_npub) {
-            self.active_initiators.lock().await.contains(&sender_key)
-        } else {
-            false
-        };
-        if have_active_initiator {
-            match (
-                PeerIdentity::from_npub(&self.npub),
-                PeerIdentity::from_npub(&sender_npub),
-            ) {
-                (Ok(ours), Ok(theirs)) => {
-                    if suppress_responder_for_own_initiator(
-                        ours.node_addr(),
-                        theirs.node_addr(),
-                        true,
-                    ) {
-                        debug!(
-                            peer = %peer_short,
-                            session = %short_id(&offer.session_id),
-                            "traversal: responder session suppressed, our outbound initiator wins"
-                        );
-                        return Ok(());
-                    }
-                }
-                _ => {
-                    trace!(
-                        peer = %peer_short,
-                        "traversal: could not derive NodeAddr for dual-init election, answering offer"
-                    );
-                }
-            }
-        }
-
-        self.mark_session_seen(&offer.session_id, TraversalSignalPath::Nostr)
-            .await?;
-
-        let base_socket = bind_traversal_udp_socket()?;
-        let observation = observe_traversal_addresses(
-            &base_socket,
-            &self.config.stun_servers,
-            self.config.share_local_candidates,
-            TRAVERSAL_STUN_TIMEOUT,
-        )
-        .await?;
-        let accepted = observation.has_usable_address();
-        debug!(
-            peer = %peer_short,
-            session = %short_id(&offer.session_id),
-            accepted = accepted,
-            reflexive = %observation.reflexive_address.as_ref().map(|a| format!("{}:{}", a.ip, a.port)).unwrap_or_else(|| "-".into()),
-            local = observation.local_addresses.len(),
-            "traversal: responder STUN observed"
-        );
-        let answer = create_traversal_answer(
-            &offer,
-            TraversalSignalTiming::new(now_ms(), self.config.signal_ttl_secs * 1000),
-            nonce(),
-            self.npub.clone(),
-            observation,
-            accepted.then(|| self.punch_hint()),
-            Some(offer_received_at),
-        );
-        let relays = self.preferred_signal_relays(sender, None).await?;
-        let answer_event = self.send_signal(&relays, sender, &answer).await?;
-        debug!(
-            peer = %peer_short,
-            session = %short_id(&offer.session_id),
-            accepted = accepted,
-            relays = relays.len(),
-            event = %short_id(&answer_event.id.to_string()),
-            "traversal: answer sent"
-        );
-        if !accepted {
-            let _ = self.publish_delete(&relays, [answer_event.id]).await;
-            return Ok(());
-        }
-
-        let planned_remotes = planned_remote_endpoints(
-            &answer.local_addresses,
-            answer.reflexive_address.as_ref(),
-            &offer.local_addresses,
-            offer.reflexive_address.as_ref(),
-            true,
-        )?;
-
-        if let Ok(remote_addr) = run_punch_attempt(
-            &base_socket,
-            &offer.session_id,
-            &planned_remotes.remotes,
-            answer
-                .punch
-                .clone()
-                .expect("accepted answers always include a punch hint"),
-            Duration::from_secs(self.config.attempt_timeout_secs),
-            planned_remotes.preferred_count,
-        )
-        .await
-        {
-            debug!(
-                peer = %peer_short,
-                session = %short_id(&offer.session_id),
-                remote = %remote_addr,
-                "traversal: responder punch succeeded"
-            );
-            self.emit_event(BootstrapEvent::Established {
-                traversal: EstablishedTraversal::new(
-                    offer.session_id,
-                    offer.sender_npub,
-                    remote_addr,
-                    base_socket,
-                )
-                .with_transport_name("nostr-nat"),
-            })
-            .await;
-        }
-
-        let _ = self.publish_delete(&relays, [answer_event.id]).await;
         Ok(())
     }
 }

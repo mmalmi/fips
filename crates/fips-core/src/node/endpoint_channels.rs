@@ -238,12 +238,15 @@ pub(crate) enum NodeEndpointControlCommand {
     LocalNostrDiscoveryAdvertEvent {
         response_tx: tokio::sync::oneshot::Sender<Result<Option<nostr::Event>, NodeError>>,
     },
+    DrainNostrRelayEvents {
+        limit: usize,
+        response_tx: tokio::sync::oneshot::Sender<Vec<nostr::Event>>,
+    },
     RelaySnapshot {
         response_tx: tokio::sync::oneshot::Sender<Vec<NodeEndpointRelayStatus>>,
     },
     UpdateRelays {
         advert_relays: Vec<String>,
-        dm_relays: Vec<String>,
         response_tx: tokio::sync::oneshot::Sender<Result<(), NodeError>>,
     },
     UpdatePeers {
@@ -259,7 +262,7 @@ pub(crate) enum NodeEndpointControlCommand {
         sender: EndpointServiceEventSender,
         response_tx: tokio::sync::oneshot::Sender<bool>,
     },
-    IngestNostrDiscoveryEvent {
+    IngestNostrEvent {
         event: nostr::Event,
         response_tx: tokio::sync::oneshot::Sender<bool>,
     },

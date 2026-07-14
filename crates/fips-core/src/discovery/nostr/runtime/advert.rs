@@ -624,20 +624,7 @@ impl NostrDiscovery {
         }
 
         let has_nat = advert.has_udp_nat_endpoint();
-        let has_webrtc = advert
-            .endpoints
-            .iter()
-            .any(|endpoint| endpoint.transport == OverlayTransportKind::WebRtc);
         if has_nat {
-            if advert
-                .signal_relays
-                .as_ref()
-                .is_none_or(|relays| relays.is_empty())
-            {
-                return Err(BootstrapError::InvalidAdvert(
-                    "udp:nat endpoint requires signalRelays".to_string(),
-                ));
-            }
             if advert
                 .stun_servers
                 .as_ref()
@@ -647,18 +634,7 @@ impl NostrDiscovery {
                     "udp:nat endpoint requires stunServers".to_string(),
                 ));
             }
-        } else if has_webrtc {
-            if advert
-                .signal_relays
-                .as_ref()
-                .is_none_or(|relays| relays.is_empty())
-            {
-                return Err(BootstrapError::InvalidAdvert(
-                    "webrtc endpoint requires signalRelays".to_string(),
-                ));
-            }
         } else {
-            advert.signal_relays = None;
             advert.stun_servers = None;
         }
 
@@ -740,33 +716,17 @@ pub(super) fn sanitize_advert_for_publish(
     }
 
     let has_nat = advert.has_udp_nat_endpoint();
-    let has_webrtc = advert
-        .endpoints
-        .iter()
-        .any(|endpoint| endpoint.transport == OverlayTransportKind::WebRtc);
-    if has_nat || has_webrtc {
+    if has_nat {
         if advert
-            .signal_relays
+            .stun_servers
             .as_ref()
-            .is_none_or(|relays| relays.is_empty())
-        {
-            let endpoint = if has_nat { "udp:nat" } else { "webrtc" };
-            return Err(BootstrapError::InvalidAdvert(format!(
-                "{endpoint} endpoint requires non-empty signalRelays"
-            )));
-        }
-        if has_nat
-            && advert
-                .stun_servers
-                .as_ref()
-                .is_none_or(|servers| servers.is_empty())
+            .is_none_or(|servers| servers.is_empty())
         {
             return Err(BootstrapError::InvalidAdvert(
                 "udp:nat endpoint requires non-empty stunServers".to_string(),
             ));
         }
     } else {
-        advert.signal_relays = None;
         advert.stun_servers = None;
     }
 

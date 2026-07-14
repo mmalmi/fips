@@ -27,10 +27,6 @@ node:
     #     - "wss://relay.damus.io"
     #     - "wss://nos.lol"
     #     - "wss://offchain.pub"
-    #   dm_relays:
-    #     - "wss://relay.damus.io"
-    #     - "wss://nos.lol"
-    #     - "wss://offchain.pub"
     #   # Optional override. If omitted, FIPS uses the built-in STUN list.
     #   # Built-in relay/STUN defaults are best-effort and should be
     #   # overridden by operators for production use.
@@ -58,6 +54,10 @@ dns:
   port: 5354
 
 transports:
+  # Low-priority encrypted datagrams over the Nostr relays configured above.
+  # The standalone daemon owns the relay bridge; fips-core owns no relay URLs.
+  # nostr_relay: {}
+
   udp:
     bind_addr: "0.0.0.0:2121"
     # advertise_on_nostr: true

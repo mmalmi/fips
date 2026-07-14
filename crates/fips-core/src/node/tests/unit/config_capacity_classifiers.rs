@@ -190,6 +190,28 @@ fn overlay_adverts_outrank_lower_priority_static_hints() {
     );
 }
 
+#[test]
+fn disabled_webrtc_rejects_nostr_advert_candidates_but_not_other_transports() {
+    let mut config = Config::new();
+    config.transports.webrtc =
+        crate::config::TransportInstances::Single(crate::config::WebRtcConfig {
+            auto_connect: Some(false),
+            ..Default::default()
+        });
+    let node = Node::new(config).expect("node");
+    let webrtc = crate::discovery::nostr::OverlayEndpointAdvert {
+        transport: crate::discovery::nostr::OverlayTransportKind::WebRtc,
+        addr: "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+    };
+    let udp = crate::discovery::nostr::OverlayEndpointAdvert {
+        transport: crate::discovery::nostr::OverlayTransportKind::Udp,
+        addr: "203.0.113.10:51820".to_string(),
+    };
+
+    assert!(!node.overlay_endpoint_auto_connect_allowed(&webrtc));
+    assert!(node.overlay_endpoint_auto_connect_allowed(&udp));
+}
+
 #[tokio::test]
 async fn cached_overlay_candidates_preserve_advert_created_at() {
     let peer_identity = Identity::generate();

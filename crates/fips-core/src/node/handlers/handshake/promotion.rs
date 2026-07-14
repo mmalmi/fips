@@ -91,6 +91,12 @@ impl Node {
                     transport_id,
                     &current_addr,
                 );
+            let inbound_alternate_path_wins = inbound_alternate_path
+                && self.alternate_path_priority_allows_replace(
+                    &peer_node_addr,
+                    transport_id,
+                    &current_addr,
+                );
 
             // Determine which connection wins. A peer restart (different
             // startup epoch) is not a normal cross-connection: the old link
@@ -114,6 +120,8 @@ impl Node {
                 || late_inbound_refresh_for_active_outbound
                 || if outbound_alternate_path {
                     outbound_alternate_path_wins
+                } else if inbound_alternate_path {
+                    inbound_alternate_path_wins
                 } else {
                     cross_connection_winner(self.identity.node_addr(), &peer_node_addr, is_outbound)
                 };

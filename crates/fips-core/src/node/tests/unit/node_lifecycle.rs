@@ -435,7 +435,6 @@ async fn test_node_start_does_not_wait_for_nostr_relay_startup() {
     config.node.discovery.nostr.advertise = true;
     config.node.discovery.nostr.policy = crate::config::NostrDiscoveryPolicy::Open;
     config.node.discovery.nostr.advert_relays = vec!["wss://127.0.0.1:9".to_string()];
-    config.node.discovery.nostr.dm_relays = vec!["wss://127.0.0.1:9".to_string()];
     config.transports.udp = crate::config::TransportInstances::Single(crate::config::UdpConfig {
         bind_addr: Some("127.0.0.1:0".to_string()),
         advertise_on_nostr: Some(true),

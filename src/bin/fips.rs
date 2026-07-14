@@ -5,6 +5,7 @@
 
 use clap::Parser;
 use fips::config::{IdentitySource, resolve_identity};
+use fips::nostr_relay_adapter::NostrRelayAdapter;
 use fips::version;
 use fips::{Config, Node};
 use std::path::PathBuf;
@@ -130,9 +131,14 @@ async fn run_daemon(
         IdentitySource::Ephemeral => info!("Using ephemeral identity (new keypair each start)"),
     }
 
-    // Create node with resolved identity
+    // Create node with resolved identity. The standalone daemon is the
+    // application owner of relay connections, so its relay fallback shares
+    // the configured advert relays without putting URLs in fips-core's
+    // transport config.
     let mut config = config;
     config.node.identity.nsec = Some(resolved.nsec);
+    let relay_urls = config.node.discovery.nostr.advert_relays.clone();
+    let relay_fallback_enabled = !config.transports.nostr_relay.is_empty();
     debug!("Creating node");
     let mut node = match Node::new(config) {
         Ok(node) => node,
@@ -140,6 +146,17 @@ async fn run_daemon(
             error!("Failed to create node: {}", e);
             std::process::exit(1);
         }
+    };
+    let relay_io = if relay_fallback_enabled {
+        match node.attach_nostr_relay_io(256) {
+            Ok(io) => Some(io),
+            Err(error) => {
+                error!(%error, "Failed to attach Nostr relay fallback I/O");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
     };
 
     info!("Node created:");
@@ -154,6 +171,25 @@ async fn run_daemon(
         error!("Failed to start node: {}", e);
         std::process::exit(1);
     }
+
+    let relay_adapter = match relay_io {
+        Some(io) => match NostrRelayAdapter::start_for_node(io, &relay_urls).await {
+            Ok(adapter) => {
+                if adapter.is_none() {
+                    warn!(
+                        "Nostr relay fallback is enabled but no application relays are configured"
+                    );
+                }
+                adapter
+            }
+            Err(error) => {
+                error!(%error, "Failed to start Nostr relay fallback adapter");
+                let _ = node.stop().await;
+                std::process::exit(1);
+            }
+        },
+        None => None,
+    };
 
     info!("FIPS running");
 
@@ -172,6 +208,10 @@ async fn run_daemon(
     }
 
     info!("FIPS shutting down");
+
+    if let Some(adapter) = relay_adapter {
+        adapter.stop().await;
+    }
 
     // Stop the node (shuts down transports, TUN, I/O threads)
     if let Err(e) = node.stop().await {

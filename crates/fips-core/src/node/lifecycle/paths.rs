@@ -521,11 +521,21 @@ impl Node {
         transport_id: TransportId,
         remote_addr: &TransportAddr,
     ) -> Option<u8> {
-        self.configured_peer(peer_node_addr)?
-            .addresses
+        self.configured_peer(peer_node_addr)
+            .and_then(|peer| self.peer_config_path_priority(peer, transport_id, remote_addr, true))
+    }
+
+    fn peer_config_path_priority(
+        &self,
+        peer: &PeerConfig,
+        transport_id: TransportId,
+        remote_addr: &TransportAddr,
+        configured_only: bool,
+    ) -> Option<u8> {
+        peer.addresses
             .iter()
             .filter_map(|candidate| {
-                if !candidate.is_configured() {
+                if configured_only && !candidate.is_configured() {
                     return None;
                 }
                 let (candidate_transport_id, candidate_addr) =
@@ -534,6 +544,33 @@ impl Node {
                     .then_some(candidate.priority)
             })
             .min()
+    }
+
+    fn known_path_priority(
+        &self,
+        peer_node_addr: &NodeAddr,
+        transport_id: TransportId,
+        remote_addr: &TransportAddr,
+    ) -> Option<u8> {
+        self.retry_pending
+            .get(peer_node_addr)
+            .and_then(|state| {
+                self.peer_config_path_priority(&state.peer_config, transport_id, remote_addr, false)
+            })
+            .or_else(|| {
+                self.configured_peer(peer_node_addr).and_then(|peer| {
+                    self.peer_config_path_priority(peer, transport_id, remote_addr, false)
+                })
+            })
+            .or_else(|| {
+                self.transports.get(&transport_id).map(|transport| {
+                    if transport.transport_type().name == "nostr_relay" {
+                        250
+                    } else {
+                        100
+                    }
+                })
+            })
     }
 
     pub(in crate::node) fn configured_static_udp_path_for_peer(
@@ -576,11 +613,11 @@ impl Node {
         };
 
         let current_priority = self
-            .configured_path_priority(peer_node_addr, current_transport_id, current_addr)
+            .known_path_priority(peer_node_addr, current_transport_id, current_addr)
             .map(u16::from)
             .unwrap_or(UNKNOWN_PATH_PRIORITY);
         let candidate_priority = self
-            .configured_path_priority(peer_node_addr, candidate_transport_id, candidate_addr)
+            .known_path_priority(peer_node_addr, candidate_transport_id, candidate_addr)
             .map(u16::from)
             .unwrap_or(UNKNOWN_PATH_PRIORITY);
 

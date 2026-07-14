@@ -176,16 +176,17 @@ Controls bloom-guided node discovery (LookupRequest/LookupResponse).
 Optional Nostr-mediated overlay discovery. This layer publishes replaceable
 endpoint adverts (`fips-overlay-v1`), consumes advert-derived endpoint
 fallbacks for configured peers, and can optionally discover non-configured
-peers (`policy: open`). `udp:nat` remains the trigger for NAT traversal
-offer/answer + punch-through, after which the established UDP socket is handed
-into the normal FIPS transport/session stack.
+peers (`policy: open`). `udp:nat` remains the trigger for NAT traversal.
+Offer/answer messages travel inside an authenticated FIPS session, after
+which the established UDP socket is handed into the normal FIPS
+transport/session stack.
 Peer adverts can either use FIPS's built-in relay client
 (`peerfinding_source: relays`) or an external provider such as
 `nostr-pubsub` (`peerfinding_source: external`). In external mode FIPS signs,
 validates, and caches adverts but opens no advert-relay connections; the
-provider owns configured relay and decentralized pubsub sources.
-Inbox-relay discovery falls back to the local DM relay list if remote relay
-metadata cannot be fetched.
+provider owns configured relay and decentralized pubsub sources. An embedding
+application can also carry encrypted FIPS datagrams over those configured
+relays with `transports.nostr_relay`; FIPS itself never owns that relay list.
 This support is compiled behind the crate feature `nostr-discovery`; builds
 without that feature ignore `udp:nat` bootstrap configuration.
 
@@ -200,10 +201,9 @@ without that feature ignore `udp:nat` bootstrap configuration.
 | `node.discovery.nostr.seen_sessions_max_entries` | usize | `2048` | Max seen-session IDs retained for replay detection |
 | `node.discovery.nostr.advertise` | bool | `true` | Publish local endpoint adverts |
 | `node.discovery.nostr.advert_relays` | list[string] | `["wss://relay.damus.io", "wss://nos.lol", "wss://offchain.pub", "wss://temp.iris.to"]` | Built-in service-advert relays; ignored when `peerfinding_source: external` |
-| `node.discovery.nostr.dm_relays` | list[string] | `["wss://relay.damus.io", "wss://nos.lol", "wss://offchain.pub", "wss://temp.iris.to"]` | Relays used only for encrypted traversal signaling events, never peer-advert discovery |
 | `node.discovery.nostr.stun_servers` | list[string] | `["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478", "stun:global.stun.twilio.com:3478"]` | STUN servers used for local reflexive address discovery |
 | `node.discovery.nostr.app` | string | `"fips-overlay-v1"` | Traversal application namespace and advert identifier suffix |
-| `node.discovery.nostr.signal_ttl_secs` | u64 | `120` | Signaling TTL in seconds |
+| `node.discovery.nostr.signal_ttl_secs` | u64 | `120` | Traversal offer/answer TTL inside the authenticated FIPS session |
 | `node.discovery.nostr.attempt_timeout_secs` | u64 | `10` | Overall traversal attempt timeout in seconds |
 | `node.discovery.nostr.replay_window_secs` | u64 | `300` | Replay tracking retention window in seconds |
 | `node.discovery.nostr.punch_start_delay_ms` | u64 | `2000` | Delay before punch traffic starts |
@@ -219,8 +219,8 @@ specified in YAML, the configured list fully overrides the defaults.
 Initiators use only this local list for outbound STUN queries; peer-advertised
 STUN values are published for diagnostics/interoperability but are not used as
 arbitrary egress targets.
-The built-in advert and DM relay defaults point at widely-operated public
-relays (Damus, nos.lol, Primal, Iris) as best-effort endpoints; operators are
+The built-in advert relay defaults point at widely-operated public relays
+(Damus, nos.lol, Primal, Iris) as best-effort endpoints; operators are
 encouraged to override them with their own relay preferences for production
 deployments.
 Advert freshness is enforced semantically: events with expired NIP-40

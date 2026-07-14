@@ -703,23 +703,24 @@ containing its FIPS discovery information — public key and reachable
 transport endpoints (UDP host:port, TCP host:port, .onion address). Other FIPS
 nodes subscribing on the same relays learn about available peers.
 
-Nostr relay discovery is not a transport — it is a discovery service that
-feeds addresses to other transports. A node discovers via Nostr that a peer
-is reachable at UDP 1.2.3.4:9735, then establishes the link over the UDP
-transport.
+Public Nostr adverts are a discovery service that feeds addresses to other
+transports. Separately, the optional `nostr-relay` transport can carry
+already-encrypted FIPS wire datagrams in ephemeral kind 21060 events. Its
+application-owned relay adapter provides a low-priority path when no direct
+transport is available yet.
 
 For NAT'd UDP endpoints, a node may advertise `addr: "nat"` instead of a
 concrete address, signaling that peers should initiate STUN-assisted UDP
-hole punching. Offer/answer exchange uses Nostr gift-wrap (NIP-59) events
-on the configured DM relays; the resulting punched socket is adopted into
-the standard UDP transport via the bootstrap handoff path.
+hole punching. Offer/answer exchange runs over an existing authenticated FIPS
+session; the resulting punched socket is adopted into the standard UDP
+transport via the bootstrap handoff path.
 
 Key properties:
 
 - Identity is built in — Nostr events are signed, so discovery information
   is authenticated
-- Relay selection acts as scoping — which relays a node publishes to and
-  subscribes on determines its discovery neighborhood
+- The embedding application's relay and decentralized pubsub selection scopes
+  the advert discovery neighborhood
 - Can only advertise IP-reachable endpoints (not radio, BLE, serial)
 - Higher latency than local discovery (relay propagation delays)
 

@@ -15,7 +15,7 @@ impl NostrDiscovery {
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
                         warn!(
                             skipped,
-                            "nostr notification channel lagged; advert/signal events dropped"
+                            "nostr notification channel lagged; advert events dropped"
                         );
                         continue;
                     }
@@ -45,71 +45,6 @@ impl NostrDiscovery {
                             );
                         }
                         continue;
-                    }
-
-                    if event.kind != Kind::Custom(SIGNAL_KIND) {
-                        continue;
-                    }
-
-                    let unwrapped = match unwrap_signal_event(&self.keys, &event).await {
-                        Ok(unwrapped) => unwrapped,
-                        Err(err) => {
-                            trace!(error = %err, "failed to unwrap traversal signal");
-                            continue;
-                        }
-                    };
-                    let sender_npub = match unwrapped.sender.to_bech32() {
-                        Ok(npub) => npub,
-                        Err(err) => {
-                            debug!(error = %err, "failed to encode traversal sender npub");
-                            continue;
-                        }
-                    };
-
-                    if let Ok(answer) =
-                        serde_json::from_str::<TraversalAnswer>(&unwrapped.rumor.content)
-                        && answer.message_type == "answer"
-                        && answer.recipient_npub == self.npub
-                    {
-                        if let Some(tx) = self
-                            .pending_answers
-                            .lock()
-                            .await
-                            .remove(&answer.in_reply_to)
-                        {
-                            let _ = tx.send(SignalEnvelope {
-                                payload: answer,
-                                event_id: Some(event.id),
-                                sender_npub: sender_npub.clone(),
-                            });
-                        }
-                        continue;
-                    }
-
-                    if let Ok(offer) =
-                        serde_json::from_str::<TraversalOffer>(&unwrapped.rumor.content)
-                        && offer.message_type == "offer"
-                        && offer.recipient_npub == self.npub
-                    {
-                        let Ok(permit) = self.offer_slots.clone().try_acquire_owned() else {
-                            debug!(
-                                sender_npub = %sender_npub,
-                                limit = self.config.max_concurrent_incoming_offers,
-                                "rate-limited inbound traversal offer (max_concurrent_incoming_offers reached); offer dropped"
-                            );
-                            continue;
-                        };
-                        let runtime = Arc::clone(&self);
-                        self.spawn_child_task(async move {
-                            let _permit = permit;
-                            if let Err(err) = runtime
-                                .handle_incoming_offer(offer, unwrapped.sender, sender_npub)
-                                .await
-                            {
-                                debug!(error = %err, "failed to handle traversal offer");
-                            }
-                        })
-                        .await;
                     }
                 }
             }

@@ -2,8 +2,34 @@
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn wot_admission_prioritizes_good_probes_newcomer_and_penalizes_degraded() {
+    macro_rules! wot_endpoint_test {
+        ($name:ident, $body:block) => {
+            #[test]
+            fn $name() {
+                // A workspace all-features build includes every production
+                // transport in the generic dataplane poll chain. Run the real
+                // endpoint simulator on a production-sized thread stack rather
+                // than libtest's smaller default stack.
+                std::thread::Builder::new()
+                    .name(stringify!($name).to_string())
+                    .stack_size(8 * 1024 * 1024)
+                    .spawn(|| {
+                        tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .expect("build WoT endpoint test runtime")
+                            .block_on(async move $body)
+                    })
+                    .expect("spawn WoT endpoint test thread")
+                    .join()
+                    .expect("WoT endpoint test thread panicked");
+            }
+        };
+    }
+
+    wot_endpoint_test!(
+        wot_admission_prioritizes_good_probes_newcomer_and_penalizes_degraded,
+        {
         let report = Box::pin(run_default_wot_admission_sim()).await;
         assert_eq!(report.trusted_rating_author_count, 1);
         assert!(report.peer_discovery.node_count >= 100);
@@ -144,10 +170,12 @@ mod tests {
                 .iter()
                 .all(|event| event.source != WotRatingEventSource::HistoricIndex)
         );
-    }
+        }
+    );
 
-    #[tokio::test]
-    async fn local_rating_publish_uses_inv_want_pubsub_before_history_lookup() {
+    wot_endpoint_test!(
+        local_rating_publish_uses_inv_want_pubsub_before_history_lookup,
+        {
         let report = Box::pin(run_default_wot_admission_sim()).await;
         let spam_publish_count = report.exchange.local_published_events
             * report.config.rating_pubsub.spam_events_per_publish;
@@ -183,10 +211,10 @@ mod tests {
         assert_eq!(phase(&report, "cold_start").rating_events_seen, 0);
         assert_eq!(phase(&report, "after_initial_probe").rating_events_seen, 3);
         assert_eq!(phase(&report, "after_degradation").rating_events_seen, 5);
-    }
+        }
+    );
 
-    #[tokio::test]
-    async fn untrusted_rating_spam_is_not_indexed_into_history() {
+    wot_endpoint_test!(untrusted_rating_spam_is_not_indexed_into_history, {
         let report = Box::pin(run_default_wot_admission_sim()).await;
         let spam_per_publish = report.config.rating_pubsub.spam_events_per_publish;
 
@@ -213,10 +241,9 @@ mod tests {
                 .iter()
                 .all(|event| event.source != WotRatingEventSource::UntrustedSpam)
         );
-    }
+    });
 
-    #[tokio::test]
-    async fn low_throughput_valid_probe_is_not_downvoted() {
+    wot_endpoint_test!(low_throughput_valid_probe_is_not_downvoted, {
         let peer = peer(
             peer_npub(WotPeerProfile::Newcomer),
             WotPeerProfile::Newcomer,
@@ -240,7 +267,7 @@ mod tests {
         assert!(observation.network_delta.packets_delivered > 0);
         assert_eq!(observation.rating, Some(84));
         assert_eq!(normalize_rating_score(84, 0, 100), Some(68));
-    }
+    });
 
     #[tokio::test]
     async fn trusted_rating_signer_can_differ_from_rater_fact() {
