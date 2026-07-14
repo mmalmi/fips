@@ -345,6 +345,52 @@ async fn stalled_full_close_still_stops_gathered_ice_transport() {
 }
 
 #[tokio::test]
+async fn completed_full_close_still_stops_gathered_ice_transport() {
+    let identity = crate::Identity::generate();
+    let (packet_tx, _packet_rx) = packet_channel(1);
+    let transport = WebRtcTransport::new(
+        TransportId::new(1),
+        None,
+        WebRtcConfig::default(),
+        packet_tx,
+        &identity,
+        &NostrDiscoveryConfig::default(),
+    )
+    .expect("WebRTC transport");
+    let pc = Arc::new(
+        transport
+            .api
+            .new_peer_connection(RTCConfiguration::default())
+            .await
+            .expect("peer connection"),
+    );
+    pc.create_data_channel("cleanup-test", None)
+        .await
+        .expect("data channel");
+    let offer = pc.create_offer(None).await.expect("offer");
+    let mut gathering = pc.gathering_complete_promise().await;
+    pc.set_local_description(offer)
+        .await
+        .expect("local description");
+    tokio::time::timeout(Duration::from_secs(1), gathering.recv())
+        .await
+        .expect("ICE gathering timeout");
+
+    close_peer_connection_with_bounded_full_close(
+        Duration::from_millis(10),
+        Arc::clone(&pc),
+        std::future::ready(()),
+    )
+    .await;
+
+    assert_eq!(
+        pc.dtls_transport().ice_transport().state(),
+        ::webrtc::ice_transport::ice_transport_state::RTCIceTransportState::Closed,
+        "a completed outer close must still force terminal ICE teardown"
+    );
+}
+
+#[tokio::test]
 async fn graceful_full_close_runs_before_ice_fallback() {
     let identity = crate::Identity::generate();
     let (packet_tx, _packet_rx) = packet_channel(1);

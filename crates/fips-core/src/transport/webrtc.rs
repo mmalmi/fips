@@ -555,16 +555,12 @@ async fn close_peer_connection_with_bounded_full_close<F, O>(
     // disappear without that terminal handshake, so the remote side can retain
     // the connection and all of its gathered UDP sockets until exhaustion.
     let mut full_close_task = tokio::spawn(full_close);
-    if tokio::time::timeout(timeout, &mut full_close_task)
-        .await
-        .is_ok()
-    {
-        return;
-    }
+    let _ = tokio::time::timeout(timeout, &mut full_close_task).await;
 
-    // RTCPeerConnection::close may still stall in SCTP or DTLS before the
-    // library reaches ICE teardown. The full-close task remains detached and
-    // non-cancelled; independently stop ICE as the bounded terminal fallback.
+    // Independently stop ICE even when the outer close future reports success.
+    // The library can finish that future after scheduling terminal teardown;
+    // short-lived remote peers otherwise leave gathered UDP sockets behind.
+    // If full close timed out, its task remains detached and non-cancelled.
     let dtls_transport = peer_connection.dtls_transport();
     finish_webrtc_cleanup_bounded(timeout, async move {
         let _ = dtls_transport.ice_transport().stop().await;
