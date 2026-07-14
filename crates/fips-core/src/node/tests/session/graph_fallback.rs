@@ -170,6 +170,7 @@ fn test_direct_established_endpoint_data_falls_back_after_link_dead() {
 }
 
 async fn direct_established_endpoint_data_falls_back_after_link_dead() {
+    let _guard = lock_large_network_test().await;
     // A, B, C are all linked. A<->B should establish directly first. When
     // that direct path goes stale, endpoint data must keep using the
     // existing end-to-end session over C instead of sticking to the stale

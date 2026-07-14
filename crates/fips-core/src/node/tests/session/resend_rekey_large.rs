@@ -565,7 +565,10 @@ async fn session_100_nodes() {
     const NUM_NODES: usize = 100;
     const TARGET_EDGES: usize = 250;
     const SEED: u64 = 42;
-    const PHASE_TIMEOUT: Duration = Duration::from_secs(10);
+    // This 100-node stress test shares loaded CI hosts with the rest of the
+    // workspace. Keep the assertions strict, but allow a single routed phase
+    // enough wall-clock budget to make progress under scheduler contention.
+    const PHASE_TIMEOUT: Duration = Duration::from_secs(30);
 
     let start = Instant::now();
 

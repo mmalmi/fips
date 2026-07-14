@@ -136,96 +136,98 @@ async fn test_disconnect_star_hub_departs() {
 /// root refresh timer fires. This is a known limitation of the current tree
 /// protocol — bloom filter routing is the primary mechanism and it updates
 /// immediately on peer removal.
-#[tokio::test]
-async fn test_disconnect_chain_partition() {
-    let edges = vec![(0, 1), (1, 2), (2, 3), (3, 4)];
-    let mut nodes = run_tree_test(5, &edges, false).await;
-    verify_tree_convergence(&nodes);
+#[test]
+fn test_disconnect_chain_partition() {
+    super::session::run_large_stack_async_test("fips-disconnect-chain-partition", || async {
+        let edges = vec![(0, 1), (1, 2), (2, 3), (3, 4)];
+        let mut nodes = run_tree_test(5, &edges, false).await;
+        verify_tree_convergence(&nodes);
 
-    let node2_addr = *nodes[2].node.node_addr();
-    let node1_addr = *nodes[1].node.node_addr();
-    let node3_addr = *nodes[3].node.node_addr();
+        let node2_addr = *nodes[2].node.node_addr();
+        let node1_addr = *nodes[1].node.node_addr();
+        let node3_addr = *nodes[3].node.node_addr();
 
-    // Node 2 sends Disconnect to nodes 1 and 3
-    let disconnect = Disconnect::new(DisconnectReason::Shutdown);
-    let plaintext = disconnect.encode();
-    nodes[2]
-        .node
-        .send_dataplane_fmp_link_plaintext(&node1_addr, &plaintext, false)
-        .await
-        .expect("Failed to send disconnect to node 1");
-    nodes[2]
-        .node
-        .send_dataplane_fmp_link_plaintext(&node3_addr, &plaintext, false)
-        .await
-        .expect("Failed to send disconnect to node 3");
+        // Node 2 sends Disconnect to nodes 1 and 3
+        let disconnect = Disconnect::new(DisconnectReason::Shutdown);
+        let plaintext = disconnect.encode();
+        nodes[2]
+            .node
+            .send_dataplane_fmp_link_plaintext(&node1_addr, &plaintext, false)
+            .await
+            .expect("Failed to send disconnect to node 1");
+        nodes[2]
+            .node
+            .send_dataplane_fmp_link_plaintext(&node3_addr, &plaintext, false)
+            .await
+            .expect("Failed to send disconnect to node 3");
 
-    // Process disconnects and let filters reconverge
-    drain_all_packets(&mut nodes, false).await;
+        // Process disconnects and let filters reconverge
+        drain_all_packets(&mut nodes, false).await;
 
-    // Nodes 1 and 3 should have removed node 2
-    assert!(
-        nodes[1].node.get_peer(&node2_addr).is_none(),
-        "Node 1 should not have node 2 as peer"
-    );
-    assert!(
-        nodes[3].node.get_peer(&node2_addr).is_none(),
-        "Node 3 should not have node 2 as peer"
-    );
+        // Nodes 1 and 3 should have removed node 2
+        assert!(
+            nodes[1].node.get_peer(&node2_addr).is_none(),
+            "Node 1 should not have node 2 as peer"
+        );
+        assert!(
+            nodes[3].node.get_peer(&node2_addr).is_none(),
+            "Node 3 should not have node 2 as peer"
+        );
 
-    // Within each component, peers are still connected
-    let node0_addr = *nodes[0].node.node_addr();
-    let node4_addr = *nodes[4].node.node_addr();
-    assert!(
-        nodes[0].node.get_peer(&node1_addr).is_some(),
-        "Node 0 should still have node 1 as peer"
-    );
-    assert!(
-        nodes[3].node.get_peer(&node4_addr).is_some(),
-        "Node 3 should still have node 4 as peer"
-    );
+        // Within each component, peers are still connected
+        let node0_addr = *nodes[0].node.node_addr();
+        let node4_addr = *nodes[4].node.node_addr();
+        assert!(
+            nodes[0].node.get_peer(&node1_addr).is_some(),
+            "Node 0 should still have node 1 as peer"
+        );
+        assert!(
+            nodes[3].node.get_peer(&node4_addr).is_some(),
+            "Node 3 should still have node 4 as peer"
+        );
 
-    // Bloom filter check: node 0 should NOT see node 4 as reachable
-    // (bloom filters update immediately on peer removal via split-horizon recomputation)
-    let node0_reaches_node4 = nodes[0]
-        .node
-        .peers()
-        .any(|peer| peer.may_reach(&node4_addr));
-    assert!(
-        !node0_reaches_node4,
-        "Node 0 should not see node 4 as reachable after partition"
-    );
+        // Bloom filter check: node 0 should NOT see node 4 as reachable
+        // (bloom filters update immediately on peer removal via split-horizon recomputation)
+        let node0_reaches_node4 = nodes[0]
+            .node
+            .peers()
+            .any(|peer| peer.may_reach(&node4_addr));
+        assert!(
+            !node0_reaches_node4,
+            "Node 0 should not see node 4 as reachable after partition"
+        );
 
-    // And vice versa
-    let node4_reaches_node0 = nodes[4]
-        .node
-        .peers()
-        .any(|peer| peer.may_reach(&node0_addr));
-    assert!(
-        !node4_reaches_node0,
-        "Node 4 should not see node 0 as reachable after partition"
-    );
+        // And vice versa
+        let node4_reaches_node0 = nodes[4]
+            .node
+            .peers()
+            .any(|peer| peer.may_reach(&node0_addr));
+        assert!(
+            !node4_reaches_node0,
+            "Node 4 should not see node 0 as reachable after partition"
+        );
 
-    // Nodes within the same component should still see each other
-    let node0_reaches_node1 = nodes[0]
-        .node
-        .peers()
-        .any(|peer| peer.may_reach(&node1_addr));
-    assert!(
-        node0_reaches_node1,
-        "Node 0 should still see node 1 as reachable"
-    );
+        // Nodes within the same component should still see each other
+        let node0_reaches_node1 = nodes[0]
+            .node
+            .peers()
+            .any(|peer| peer.may_reach(&node1_addr));
+        assert!(
+            node0_reaches_node1,
+            "Node 0 should still see node 1 as reachable"
+        );
 
-    let node4_reaches_node3 = nodes[4]
-        .node
-        .peers()
-        .any(|peer| peer.may_reach(&node3_addr));
-    assert!(
-        node4_reaches_node3,
-        "Node 4 should still see node 3 as reachable"
-    );
+        let node4_reaches_node3 = nodes[4]
+            .node
+            .peers()
+            .any(|peer| peer.may_reach(&node3_addr));
+        assert!(
+            node4_reaches_node3,
+            "Node 4 should still see node 3 as reachable"
+        );
 
-    cleanup_nodes(&mut nodes).await;
+        cleanup_nodes(&mut nodes).await;
+    });
 }
 
 /// Removing a peer via disconnect must also remove the associated end-to-end session.

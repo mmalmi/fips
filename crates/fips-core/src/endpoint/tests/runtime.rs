@@ -149,7 +149,7 @@ async fn endpoint_rejects_external_nostr_event_when_discovery_is_disabled() {
 
     assert!(
         !endpoint
-            .ingest_nostr_pubsub_event(event)
+            .ingest_nostr_discovery_event(event)
             .await
             .expect("ingest command should complete")
     );

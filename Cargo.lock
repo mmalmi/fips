@@ -1274,7 +1274,7 @@ dependencies = [
 
 [[package]]
 name = "fips-core"
-version = "0.3.97"
+version = "0.3.98"
 dependencies = [
  "bluer",
  "bytes",
@@ -1286,7 +1286,6 @@ dependencies = [
  "libc",
  "mdns-sd",
  "nostr",
- "nostr-pubsub",
  "nostr-sdk",
  "portable-atomic",
  "procfs",
@@ -1314,7 +1313,7 @@ dependencies = [
 
 [[package]]
 name = "fips-endpoint"
-version = "0.3.61"
+version = "0.3.63"
 dependencies = [
  "fips-core",
 ]
@@ -2299,19 +2298,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ade30de16869618919c6b5efc8258f47b654a98b51541eb77f85e8ec5e3c83a6"
 dependencies = [
  "nostr",
-]
-
-[[package]]
-name = "nostr-pubsub"
-version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e65526f2dfdcf7fe14d8bf81c15357cb17e3dbc5ed9d1239a0608cc50645d091"
-dependencies = [
- "async-trait",
- "nostr",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3613,9 +3599,9 @@ dependencies = [
 
 [[package]]
 name = "spin"
-version = "0.9.8"
+version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
+checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
 dependencies = [
  "lock_api",
 ]

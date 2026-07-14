@@ -92,7 +92,7 @@ impl Node {
             } => {
                 let _ = response_tx.send(self.endpoint_services.register(port, sender));
             }
-            NodeEndpointControlCommand::IngestNostrPubsubEvent { event, response_tx } => {
+            NodeEndpointControlCommand::IngestNostrDiscoveryEvent { event, response_tx } => {
                 let accepted = if let Some(discovery) = self.nostr_discovery_handle() {
                     discovery.ingest_advert_event(&event).await.cached()
                         || discovery.process_rating_fact_event(&event).await

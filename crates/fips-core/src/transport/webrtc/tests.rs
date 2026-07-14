@@ -3,6 +3,11 @@ use crate::packet_channel;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[test]
+fn native_webrtc_resolves_browser_mdns_candidates_without_gathering_its_own() {
+    assert_eq!(native_webrtc_mdns_mode(), MulticastDnsMode::QueryOnly);
+}
+
+#[test]
 fn validates_compressed_pubkey_addresses() {
     let good = "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     assert!(validate_compressed_pubkey_hex(good).is_ok());

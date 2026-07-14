@@ -1,5 +1,4 @@
 use super::*;
-use nostr_pubsub::{EventRetentionPolicy, VerifiedEvent as PubsubVerifiedEvent};
 
 impl NostrDiscovery {
     pub(in crate::discovery::nostr) fn advert_event_targets_app(
@@ -28,27 +27,13 @@ impl NostrDiscovery {
         self.ambient_advert_filter().author(target_pubkey)
     }
 
-    pub fn advert_retention_policy(&self) -> EventRetentionPolicy {
-        EventRetentionPolicy::new(
-            self.config.advert_cache_max_entries,
-            vec![self.ambient_advert_filter()],
-        )
-    }
-
-    pub async fn ingest_pubsub_advert_event(
-        &self,
-        event: PubsubVerifiedEvent,
-    ) -> NostrAdvertIngestOutcome {
-        self.ingest_advert_event(event.as_event()).await
-    }
-
     /// Ingest a normal signed Nostr advert event from any peerfinding source.
     ///
-    /// This is the adapter boundary for FIPS-carried pubsub, hashtree-backed
-    /// history, and relay subscriptions: every source feeds ordinary kind
-    /// 37195 events through the same signature, app, freshness, and schema
-    /// checks before the advert becomes a cache candidate. Direct relay query
-    /// remains only the fallback used when this cache has no usable entry.
+    /// This is the transport-neutral boundary for externally received events:
+    /// every source feeds ordinary kind 37195 events through the same signature,
+    /// app, freshness, and schema checks before the advert becomes a cache
+    /// candidate. Direct relay query remains only the fallback used when this
+    /// cache has no usable entry.
     pub async fn ingest_advert_event(&self, event: &Event) -> NostrAdvertIngestOutcome {
         if !Self::advert_event_targets_app(event, &self.config.app) {
             return NostrAdvertIngestOutcome::Rejected;

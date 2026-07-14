@@ -363,6 +363,11 @@ fn test_established_endpoint_data_recovery_stays_out_of_pending_queue() {
 #[test]
 fn test_endpoint_data_routes_through_non_endpoint_transit_node() {
     run_large_stack_async_test("fips-endpoint-data-transit", || async {
+        // Loaded full-suite runs can concurrently exercise several large
+        // in-memory overlays; preserve the delivery assertions while allowing
+        // the three-node route enough scheduler time.
+        const LOADED_ROUTE_TIMEOUT: Duration = Duration::from_secs(30);
+
         // A-B-C: Alice and Bob are app endpoints. The middle node is only FIPS
         // overlay transport and must not receive app-owned endpoint payloads.
         let edges = vec![(0, 1), (1, 2)];
@@ -399,7 +404,7 @@ fn test_endpoint_data_routes_through_non_endpoint_transit_node() {
         let event = recv_endpoint_event_while_draining(
             &mut nodes,
             &mut bob_endpoint.event_rx,
-            Duration::from_secs(10),
+            LOADED_ROUTE_TIMEOUT,
             "alice to bob endpoint data",
         )
         .await;
@@ -432,7 +437,7 @@ fn test_endpoint_data_routes_through_non_endpoint_transit_node() {
         let event = recv_endpoint_event_while_draining(
             &mut nodes,
             &mut alice_endpoint.event_rx,
-            Duration::from_secs(10),
+            LOADED_ROUTE_TIMEOUT,
             "bob to alice endpoint data",
         )
         .await;

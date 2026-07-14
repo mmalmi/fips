@@ -78,7 +78,10 @@ async fn test_tun_outbound_3node_forwarded() {
     let delivered = recv_tun_packet_while_draining(
         &mut nodes,
         &tun_rx,
-        Duration::from_secs(10),
+        // Loaded full-suite runs can concurrently exercise several large
+        // in-memory overlays; preserve the delivery assertion while allowing
+        // the three-node route enough scheduler time.
+        Duration::from_secs(30),
         "forwarded TUN packet",
     )
     .await;

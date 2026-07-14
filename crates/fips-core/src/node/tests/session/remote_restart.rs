@@ -93,6 +93,7 @@ async fn recovery_rekey_replaces_session_after_remote_restart() {
 }
 
 async fn restarted_initiator_reestablishes_with_surviving_responder() {
+    let _guard = lock_large_network_test().await;
     let mut nodes = run_tree_test(2, &[(0, 1)], false).await;
     verify_tree_convergence(&nodes);
     populate_all_coord_caches(&mut nodes);
