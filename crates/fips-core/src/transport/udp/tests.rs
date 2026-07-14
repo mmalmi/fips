@@ -48,6 +48,32 @@ async fn test_start_stop() {
 }
 
 #[tokio::test]
+async fn configured_udp_transport_recovers_socket_after_local_route_failure() {
+    let (tx, _rx) = packet_channel(100);
+    let mut transport = UdpTransport::new(TransportId::new(1), None, make_config(0), tx);
+
+    transport.start_async().await.unwrap();
+    let before = transport.send_snapshot().unwrap();
+
+    assert!(transport.recover_local_route_socket().await.unwrap());
+    assert_eq!(transport.state(), TransportState::Up);
+
+    let after = transport.send_snapshot().unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        assert_ne!(before.socket.as_raw_fd(), after.socket.as_raw_fd());
+    }
+
+    assert!(
+        !transport.recover_local_route_socket().await.unwrap(),
+        "repeated route errors must not churn the UDP socket during the recovery cooldown"
+    );
+
+    transport.stop_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn test_double_start_fails() {
     let (tx, _rx) = packet_channel(100);
     let mut transport = UdpTransport::new(TransportId::new(1), None, make_config(0), tx);

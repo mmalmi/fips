@@ -1,6 +1,31 @@
 use super::*;
 
 impl Node {
+    async fn recover_udp_transport_after_local_route_failure(&mut self, transport_id: TransportId) {
+        let Some(crate::transport::TransportHandle::Udp(transport)) =
+            self.transports.get_mut(&transport_id)
+        else {
+            return;
+        };
+
+        match transport.recover_local_route_socket().await {
+            Ok(true) => {
+                info!(
+                    transport_id = %transport_id,
+                    "Recovered UDP transport after local route failure"
+                );
+            }
+            Ok(false) => {}
+            Err(error) => {
+                warn!(
+                    transport_id = %transport_id,
+                    %error,
+                    "Failed to recover UDP transport after local route failure"
+                );
+            }
+        }
+    }
+
     pub(super) fn is_connecting_to_peer(&self, peer_node_addr: &NodeAddr) -> bool {
         self.peers.connection_values().any(|conn| {
             conn.expected_identity()
@@ -644,6 +669,7 @@ impl Node {
                         );
                     }
                     Err(e) => {
+                        let local_route_unavailable = e.is_local_route_unavailable();
                         warn!(
                             link_id = %link_id,
                             transport_id = %transport_id,
@@ -657,6 +683,10 @@ impl Node {
                         self.peers.remove_connection(&link_id);
                         self.links.remove(&link_id);
                         let _ = self.index_allocator.free(our_index);
+                        if local_route_unavailable {
+                            self.recover_udp_transport_after_local_route_failure(transport_id)
+                                .await;
+                        }
                         return Err(NodeError::from_transport_error(e));
                     }
                 }

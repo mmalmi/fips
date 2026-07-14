@@ -25,6 +25,10 @@ use tracing::{debug, info, trace, warn};
 /// DNS cache TTL for hostname resolution (60 seconds).
 const DNS_CACHE_TTL: Duration = Duration::from_secs(60);
 
+/// Minimum interval between configured UDP socket rebuilds after the kernel
+/// reports that the local route/source address is no longer usable.
+const LOCAL_ROUTE_SOCKET_RECOVERY_COOLDOWN: Duration = Duration::from_secs(5);
+
 /// Datagrams drained per UDP receive syscall.
 ///
 /// WireGuard-go and Tailscale use 128 as their ideal userspace packet batch,
@@ -302,6 +306,12 @@ pub struct UdpTransport {
     recv_task: Option<JoinHandle<()>>,
     /// Local bound address (after start).
     local_addr: Option<SocketAddr>,
+    /// Whether the current socket came from NAT traversal rather than this
+    /// transport's configured bind address. Adopted sockets cannot be rebuilt
+    /// without invalidating the traversal handoff that created them.
+    adopted_socket: bool,
+    /// Last configured-socket rebuild after a local route error.
+    last_local_route_socket_recovery: Option<Instant>,
     /// Transport statistics.
     stats: Arc<UdpStats>,
     /// Linux namespace-level UDP receive-buffer error baseline.
@@ -332,6 +342,8 @@ impl UdpTransport {
             packet_tx,
             recv_task: None,
             local_addr: None,
+            adopted_socket: false,
+            last_local_route_socket_recovery: None,
             stats: Arc::new(UdpStats::new()),
             #[cfg(target_os = "linux")]
             udp_rcvbuf_error_baseline: linux_udp_rcvbuf_errors().unwrap_or(0),
@@ -480,6 +492,7 @@ impl UdpTransport {
         }
 
         self.state = TransportState::Starting;
+        self.adopted_socket = false;
 
         if self.config.outbound_only() && self.config.bind_addr.is_some() {
             warn!(
@@ -556,6 +569,7 @@ impl UdpTransport {
         }
 
         self.state = TransportState::Starting;
+        self.adopted_socket = true;
 
         let raw_socket = UdpRawSocket::adopt(
             socket,
@@ -626,6 +640,43 @@ impl UdpTransport {
         );
 
         Ok(())
+    }
+
+    /// Rebuild a configured UDP socket after the local route/source address
+    /// backing it disappeared during an interface change.
+    ///
+    /// Darwin can keep returning `EADDRNOTAVAIL` from an otherwise wildcard-
+    /// bound UDP socket after moving between Wi-Fi networks or a hotspot. Peer
+    /// retry alone cannot heal that socket. Rebinding preserves the configured
+    /// listen port while letting the kernel select the new underlay path.
+    /// NAT-traversal sockets are intentionally excluded because recreating one
+    /// here would discard the mapping established by the traversal handoff.
+    pub(crate) async fn recover_local_route_socket(&mut self) -> Result<bool, TransportError> {
+        if self.adopted_socket || !self.state.is_operational() {
+            return Ok(false);
+        }
+
+        let now = Instant::now();
+        if self
+            .last_local_route_socket_recovery
+            .is_some_and(|last| now.duration_since(last) < LOCAL_ROUTE_SOCKET_RECOVERY_COOLDOWN)
+        {
+            return Ok(false);
+        }
+        self.last_local_route_socket_recovery = Some(now);
+
+        self.stop_async().await?;
+        if let Err(error) = self.start_async().await {
+            self.state = TransportState::Failed;
+            return Err(error);
+        }
+
+        info!(
+            transport_id = %self.transport_id,
+            local_addr = %self.local_addr.map_or_else(|| "<unbound>".to_string(), |addr| addr.to_string()),
+            "Rebuilt UDP transport after local route failure"
+        );
+        Ok(true)
     }
 
     /// Send a packet asynchronously.
