@@ -35,6 +35,15 @@ fn webrtc_signal_serializes_like_ts_transport() {
     assert!(json.contains(r#""expiresAtMs":2"#));
 }
 
+#[test]
+fn simultaneous_webrtc_offers_have_one_deterministic_winner() {
+    let smaller = "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let larger = "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    assert!(incoming_offer_wins_glare(larger, smaller));
+    assert!(!incoming_offer_wins_glare(smaller, larger));
+}
+
 #[tokio::test]
 async fn accepted_webrtc_offer_cannot_be_replayed_before_expiry() {
     let seen_sessions = SeenSessionPool::default();

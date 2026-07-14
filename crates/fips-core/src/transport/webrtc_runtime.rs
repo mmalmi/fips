@@ -118,8 +118,12 @@ impl WebRtcRuntime {
             WebRtcSignalKind::Answer => self.handle_answer(signal).await,
             WebRtcSignalKind::Reject => {
                 let addr = TransportAddr::from_string(&signal.sender);
-                self.mark_failed(addr, "peer rejected WebRTC session".to_string())
-                    .await;
+                self.mark_session_failed(
+                    addr,
+                    &signal.session_id,
+                    "peer rejected WebRTC session".to_string(),
+                )
+                .await;
                 Ok(())
             }
             WebRtcSignalKind::Candidate => Ok(()),
@@ -148,10 +152,27 @@ impl WebRtcRuntime {
             if pending_session == signal.session_id {
                 return Ok(());
             }
-            let _ = self
-                .send_reject(&signal.sender, sender_xonly, signal.session_id)
-                .await;
-            return Err(TransportError::ConnectionRefused);
+            if incoming_offer_wins_glare(&self.local_pubkey_hex, &signal.sender) {
+                let outgoing = {
+                    let mut pending = self.pending.lock().await;
+                    if pending
+                        .get(&remote_addr)
+                        .is_some_and(|pending| pending.session_id == pending_session)
+                    {
+                        pending.remove(&remote_addr)
+                    } else {
+                        None
+                    }
+                };
+                if let Some(outgoing) = outgoing {
+                    close_peer_connection_bounded(outgoing.pc).await;
+                }
+            } else {
+                let _ = self
+                    .send_reject(&signal.sender, sender_xonly, signal.session_id)
+                    .await;
+                return Err(TransportError::ConnectionRefused);
+            }
         }
         if self.pool.lock().await.len() + self.pending.lock().await.len()
             >= self.config.max_connections()
@@ -479,6 +500,10 @@ impl WebRtcRuntime {
             }
         });
     }
+}
+
+fn incoming_offer_wins_glare(local_pubkey_hex: &str, remote_pubkey_hex: &str) -> bool {
+    remote_pubkey_hex < local_pubkey_hex
 }
 
 fn wire_peer_connection_state(
