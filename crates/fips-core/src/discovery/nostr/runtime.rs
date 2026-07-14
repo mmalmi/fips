@@ -29,7 +29,7 @@ use super::types::{
     CachedOverlayAdvert, MeshTraversalSignal, NostrAdvertIngestOutcome, NostrFailureDecision,
     NostrPeerFailureView, NostrRefetchOutcome, NostrRelayStatus, OverlayAdvert,
     OverlayEndpointAdvert, OverlayTransportKind, PROTOCOL_VERSION, PunchHint, SIGNAL_KIND,
-    TraversalAnswer, TraversalOffer, advert_d_tag,
+    TraversalAnswer, TraversalOffer, advert_d_tag, signal_relay_union,
 };
 use crate::config::{NostrDiscoveryConfig, PeerConfig};
 use crate::discovery::EstablishedTraversal;
@@ -255,6 +255,10 @@ impl NostrRelayConfig {
             .chain(self.dm_relays.iter())
             .cloned()
             .collect()
+    }
+
+    fn signal_relays(&self) -> Vec<String> {
+        signal_relay_union(&self.dm_relays, &self.advert_relays)
     }
 }
 

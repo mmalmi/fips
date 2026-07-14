@@ -11,6 +11,19 @@ pub const SIGNAL_KIND: u16 = 21059;
 pub use crate::discovery::{PUNCH_ACK_MAGIC, PUNCH_MAGIC};
 pub const PROTOCOL_VERSION: &str = "1";
 
+pub(crate) fn signal_relay_union(dm_relays: &[String], advert_relays: &[String]) -> Vec<String> {
+    // A peer may still receive adverts while its dedicated DM relay is down.
+    // Keep DM preference but make traversal signaling reachable through every
+    // relay on which the endpoint is already present.
+    let mut relays = dm_relays.to_vec();
+    for relay in advert_relays {
+        if !relays.contains(relay) {
+            relays.push(relay.clone());
+        }
+    }
+    relays
+}
+
 pub fn advert_d_tag(app: &str) -> String {
     let app = app.trim();
     if app.is_empty() {

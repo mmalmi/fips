@@ -186,7 +186,7 @@ impl NostrDiscovery {
         let relay_config = self.relay_config.read().await.clone();
         let signal_result = self
             .subscribe_required(
-                relay_config.dm_relays.clone(),
+                relay_config.signal_relays(),
                 "fips-traversal-signals",
                 Filter::new()
                     .kind(Kind::Custom(SIGNAL_KIND))
@@ -240,21 +240,27 @@ impl NostrDiscovery {
             .subscribe_with_id_to(relays, SubscriptionId::new(id), filter, None)
             .await
             .map_err(|error| BootstrapError::Nostr(error.to_string()))?;
-        if output.failed.is_empty() {
-            Ok(())
-        } else {
-            Err(BootstrapError::Nostr(format!(
-                "{id} subscription failed on {} relay(s): {:?}",
-                output.failed.len(),
+        if output.success.is_empty() {
+            return Err(BootstrapError::Nostr(format!(
+                "{id} subscription failed on every relay: {:?}",
                 output.failed
-            )))
+            )));
         }
+        if !output.failed.is_empty() {
+            warn!(
+                subscription = id,
+                connected = output.success.len(),
+                failed = output.failed.len(),
+                "Nostr subscription active on a partial relay set"
+            );
+        }
+        Ok(())
     }
 
     pub(super) async fn publish_inbox_relays(&self) -> Result<(), BootstrapError> {
         let relay_config = self.relay_config.read().await.clone();
-        let tags = relay_config
-            .dm_relays
+        let signal_relays = relay_config.signal_relays();
+        let tags = signal_relays
             .iter()
             .filter_map(|relay| RelayUrl::parse(relay).ok())
             .map(|relay| {
@@ -270,7 +276,7 @@ impl NostrDiscovery {
             .sign_with_keys(&self.keys)
             .map_err(|e| BootstrapError::Nostr(e.to_string()))?;
         self.client
-            .send_event_to(relay_config.dm_relays.clone(), &event)
+            .send_event_to(signal_relays, &event)
             .await
             .map_err(|e| BootstrapError::Nostr(e.to_string()))?;
         Ok(())

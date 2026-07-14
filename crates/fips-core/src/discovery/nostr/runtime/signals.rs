@@ -17,9 +17,9 @@ impl NostrDiscovery {
             }
         }
         let relay_config = self.relay_config.read().await.clone();
-        for relay in &relay_config.dm_relays {
-            if !merged.contains(relay) {
-                merged.push(relay.clone());
+        for relay in relay_config.signal_relays() {
+            if !merged.contains(&relay) {
+                merged.push(relay);
             }
         }
         Ok(merged)
@@ -52,8 +52,8 @@ impl NostrDiscovery {
         let events = match events {
             Ok(events) => events,
             Err(err) => {
-                debug!(error = %err, "failed to fetch inbox relays, falling back to configured DM relays");
-                return Ok(self.relay_config.read().await.dm_relays.clone());
+                debug!(error = %err, "failed to fetch inbox relays, falling back to configured signal relays");
+                return Ok(self.relay_config.read().await.signal_relays());
             }
         };
         let newest = events.iter().max_by_key(|event| event.created_at.as_secs());
@@ -65,7 +65,7 @@ impl NostrDiscovery {
                 return Ok(relays);
             }
         }
-        Ok(self.relay_config.read().await.dm_relays.clone())
+        Ok(self.relay_config.read().await.signal_relays())
     }
 
     pub(super) async fn send_signal<T: Serialize>(

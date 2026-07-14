@@ -910,8 +910,12 @@ impl Node {
             identifier: ADVERT_IDENTIFIER.to_string(),
             version: ADVERT_VERSION,
             endpoints,
-            signal_relays: (has_udp_nat || has_webrtc)
-                .then(|| self.config.node.discovery.nostr.dm_relays.clone()),
+            signal_relays: (has_udp_nat || has_webrtc).then(|| {
+                signal_relay_union(
+                    &self.config.node.discovery.nostr.dm_relays,
+                    &self.config.node.discovery.nostr.advert_relays,
+                )
+            }),
             stun_servers: (has_udp_nat || has_webrtc)
                 .then(|| self.config.node.discovery.nostr.stun_servers.clone()),
         })
