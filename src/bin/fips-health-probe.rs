@@ -17,6 +17,11 @@ const ICMPV6_HEADER_LEN: usize = 8;
 const DEFAULT_TIMEOUT_SECONDS: u64 = 25;
 const PING_INTERVAL: Duration = Duration::from_secs(1);
 const PEER_POLL_INTERVAL: Duration = Duration::from_millis(100);
+// `RTCPeerConnection::close` completes after scheduling parts of SCTP/DTLS/ICE
+// teardown on the Tokio runtime. A short-lived probe that exits immediately can
+// kill those tasks before the remote daemon observes the terminal close, leaving
+// one gathered UDP socket set behind per probe.
+const TERMINAL_WEBRTC_CLEANUP_SETTLE: Duration = Duration::from_millis(250);
 
 #[derive(Parser, Debug)]
 #[command(
@@ -96,6 +101,7 @@ async fn run(args: Args) -> Result<ProbeSuccess, String> {
         )),
     };
     let shutdown_result = endpoint.shutdown().await;
+    settle_terminal_webrtc_cleanup().await;
     if let Err(error) = shutdown_result {
         return Err(format!(
             "probe completed but endpoint shutdown failed: {error}"
@@ -103,6 +109,10 @@ async fn run(args: Args) -> Result<ProbeSuccess, String> {
     }
 
     probe_result.map(|rtt| ProbeSuccess { target_npub, rtt })
+}
+
+async fn settle_terminal_webrtc_cleanup() {
+    tokio::time::sleep(TERMINAL_WEBRTC_CLEANUP_SETTLE).await;
 }
 
 fn probe_config(target: &PeerIdentity, relays: &[String], app: &str, timeout_secs: u64) -> Config {
@@ -297,6 +307,27 @@ fn add_words(sum: &mut u64, bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    #[tokio::test]
+    async fn successful_probe_keeps_runtime_alive_for_detached_terminal_cleanup() {
+        let cleanup_finished = Arc::new(AtomicBool::new(false));
+        let cleanup_flag = Arc::clone(&cleanup_finished);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            cleanup_flag.store(true, Ordering::SeqCst);
+        });
+
+        settle_terminal_webrtc_cleanup().await;
+
+        assert!(
+            cleanup_finished.load(Ordering::SeqCst),
+            "the short-lived probe must not exit while detached WebRTC cleanup is pending"
+        );
+    }
 
     fn reply_for(request: &[u8]) -> Vec<u8> {
         let mut reply = request.to_vec();
