@@ -852,8 +852,8 @@ pub struct WebRtcConfig {
     pub max_retransmits: Option<u16>,
 
     /// Signaling relays for this transport. When unset,
-    /// `node.discovery.nostr.dm_relays` is used. Discovery advert relays are
-    /// always included so an observed advert has a working rendezvous path.
+    /// `node.discovery.nostr.dm_relays` is used. Peerfinding/advert relays are
+    /// never added implicitly; traversal signaling is a separate relay plane.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signal_relays: Option<Vec<String>>,
 

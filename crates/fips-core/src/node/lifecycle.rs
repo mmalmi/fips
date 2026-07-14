@@ -6,7 +6,7 @@ use crate::config::{
 };
 use crate::discovery::nostr::{
     ADVERT_IDENTIFIER, ADVERT_VERSION, BootstrapEvent, MeshTraversalSignal, NostrDiscovery,
-    OverlayAdvert, OverlayEndpointAdvert, OverlayTransportKind, signal_relay_union,
+    OverlayAdvert, OverlayEndpointAdvert, OverlayTransportKind,
 };
 use crate::discovery::{BootstrapHandoffResult, EstablishedTraversal};
 use crate::node::acl::PeerAclContext;

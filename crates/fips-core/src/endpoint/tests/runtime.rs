@@ -157,6 +157,38 @@ async fn endpoint_rejects_external_nostr_event_when_discovery_is_disabled() {
 }
 
 #[tokio::test]
+async fn external_peerfinding_endpoint_starts_without_advert_or_signal_relays() {
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.node.discovery.nostr.peerfinding_source =
+        crate::config::NostrPeerfindingSource::External;
+    config.node.discovery.nostr.advert_relays.clear();
+    config.node.discovery.nostr.dm_relays.clear();
+    let endpoint = FipsEndpoint::builder()
+        .config(config)
+        .without_system_tun()
+        .bind()
+        .await
+        .expect("external peerfinding endpoint should not need relay sockets");
+
+    assert!(
+        endpoint
+            .local_nostr_discovery_advert_event()
+            .await
+            .expect("local advert snapshot")
+            .is_none()
+    );
+    assert!(
+        endpoint
+            .relay_statuses()
+            .await
+            .expect("relay snapshot")
+            .is_empty()
+    );
+    endpoint.shutdown().await.expect("endpoint shutdown");
+}
+
+#[tokio::test]
 async fn send_batch_to_peer_loopback_endpoint_data_roundtrips() {
     let endpoint = FipsEndpoint::builder()
         .without_system_tun()

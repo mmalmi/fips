@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::NostrPeerfindingSource;
 use crate::discovery::nostr::{NostrAdvertIngestOutcome, OverlayTransportKind, TraversalAddress};
 
 #[test]
@@ -21,6 +22,23 @@ fn event_channel_capacity_tracks_open_and_inbound_limits() {
     config.open_discovery_max_pending = 5000;
     config.max_concurrent_incoming_offers = 1;
     assert_eq!(event_channel_capacity(&config), 4096);
+}
+
+#[test]
+fn traversal_signaling_does_not_inherit_peerfinding_relays() {
+    let relays = NostrRelayConfig {
+        advert_relays: vec!["wss://peerfinding.example".to_string()],
+        dm_relays: vec!["wss://signaling.example".to_string()],
+    };
+
+    assert_eq!(
+        relays.signal_relays(),
+        vec!["wss://signaling.example".to_string()]
+    );
+    assert_eq!(
+        relays.union(false),
+        HashSet::from(["wss://signaling.example".to_string()])
+    );
 }
 
 #[test]
@@ -564,6 +582,68 @@ fn ambient_advert_filter_targets_normal_nostr_adverts_for_app() {
 
     assert_eq!(filter["kinds"], serde_json::json!([ADVERT_KIND]));
     assert_eq!(filter["#d"], serde_json::json!(["fips-test"]));
+}
+
+#[tokio::test]
+async fn external_peerfinding_signs_local_advert_without_relay_selection() {
+    let discovery = Arc::new(NostrDiscovery::new_for_test_with_config(
+        NostrDiscoveryConfig {
+            advertise: true,
+            peerfinding_source: NostrPeerfindingSource::External,
+            app: "fips-test".to_string(),
+            advert_relays: vec!["wss://must-not-be-used.example".to_string()],
+            ..Default::default()
+        },
+    ));
+    let advert = OverlayAdvert {
+        identifier: ADVERT_IDENTIFIER.to_string(),
+        version: ADVERT_VERSION,
+        endpoints: vec![OverlayEndpointAdvert {
+            transport: OverlayTransportKind::Tcp,
+            addr: "8.8.8.8:443".to_string(),
+        }],
+        signal_relays: None,
+        stun_servers: None,
+    };
+    discovery
+        .update_local_advert(Some(advert))
+        .await
+        .expect("cache local advert");
+
+    let event = discovery
+        .local_advert_event()
+        .await
+        .expect("sign local advert")
+        .expect("local advert event");
+
+    assert!(event.verify().is_ok());
+    assert!(NostrDiscovery::advert_event_targets_app(
+        &event,
+        "fips-test"
+    ));
+    assert!(discovery.current_advert_event_id.read().await.is_none());
+}
+
+#[tokio::test]
+async fn external_peerfinding_never_queries_configured_advert_relays() {
+    let peer = nostr::Keys::generate();
+    let peer_npub = peer.public_key().to_bech32().expect("peer npub");
+    let discovery = NostrDiscovery::new_for_test_with_config(NostrDiscoveryConfig {
+        peerfinding_source: NostrPeerfindingSource::External,
+        advert_relays: vec!["wss://must-not-be-used.example".to_string()],
+        ..Default::default()
+    });
+
+    let error = discovery
+        .advert_endpoints_for_peer(&peer_npub)
+        .await
+        .expect_err("external provider has not supplied this peer");
+
+    assert!(matches!(error, BootstrapError::MissingAdvert(_)));
+    assert_eq!(
+        discovery.refetch_advert_for_stale_check(&peer_npub).await,
+        NostrRefetchOutcome::Skipped
+    );
 }
 
 #[tokio::test]

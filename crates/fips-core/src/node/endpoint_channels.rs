@@ -235,6 +235,9 @@ pub(crate) enum NodeEndpointControlCommand {
         response_tx:
             tokio::sync::oneshot::Sender<Vec<crate::discovery::nostr::OverlayEndpointAdvert>>,
     },
+    LocalNostrDiscoveryAdvertEvent {
+        response_tx: tokio::sync::oneshot::Sender<Result<Option<nostr::Event>, NodeError>>,
+    },
     RelaySnapshot {
         response_tx: tokio::sync::oneshot::Sender<Vec<NodeEndpointRelayStatus>>,
     },

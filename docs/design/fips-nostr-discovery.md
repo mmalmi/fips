@@ -1,13 +1,14 @@
 # FIPS Nostr-Mediated Discovery and NAT Traversal
 
-Nostr-mediated discovery lets FIPS nodes find each other, and if
-necessary, punch through UDP NAT, using public Nostr relays as the
-signaling channel. A node publishes its reachable transport endpoints to
-a small set of relays under its own Nostr identity (which is also its
-FIPS identity), and peers resolve those endpoints at dial time by npub.
-For peers behind UDP NAT, the same relay channel carries an encrypted
-offer/answer exchange, and STUN supplies the reflexive address used for
-a coordinated hole-punch.
+Nostr-mediated discovery lets FIPS nodes find each other and, if
+necessary, punch through UDP NAT. A node publishes its reachable transport
+endpoints as a signed Nostr event under its own Nostr identity (which is also
+its FIPS identity), and peers resolve those endpoints at dial time by npub.
+Peer adverts can travel through FIPS's built-in advert-relay path or through
+an external provider such as `nostr-pubsub`, whose configured relay and
+decentralized pubsub sources remain outside FIPS. For peers behind UDP NAT,
+a separate encrypted offer/answer signaling path coordinates hole-punching;
+STUN supplies the reflexive address.
 
 Nostr discovery is unconditionally compiled into the `fips` binary on
 every supported platform and ships in every stock packaging artifact
@@ -29,9 +30,9 @@ The feature adds three capabilities on top of FIPS's static peer model:
   anchored to the node's FIPS identity key — a peer that knows the npub
   knows the advert is authentic.
 - **Lookup.** When dialing a configured peer, or any peer in `policy:
-  open` mode, the node fetches that peer's advert from the configured
-  relays and appends the advertised endpoints to its dial list. Static
-  addresses are always tried first.
+  open` mode, the node resolves that peer's advert from the selected
+  peerfinding source and appends the advertised endpoints to its dial list.
+  Static addresses are always tried first.
 - **UDP NAT hole-punch.** When both sides of a connection have UDP NAT
   endpoints, the advert carries enough information to run a STUN-based
   offer/answer exchange over encrypted ([NIP-59](https://github.com/nostr-protocol/nips/blob/master/59.md))
@@ -291,8 +292,9 @@ defined in `src/config/node.rs`.
 | --- | --- | --- | --- |
 | `enabled` | bool | `false` | Master switch. When false, the discovery runtime is not started. |
 | `advertise` | bool | `true` | If true, publish this node's own overlay advert. |
-| `advert_relays` | list | `["wss://relay.damus.io", "wss://nos.lol", "wss://offchain.pub", "wss://temp.iris.to"]` | Relays used to publish and fetch overlay adverts (kind 37195). |
-| `dm_relays` | list | same as `advert_relays` | Relays used for encrypted offer/answer signaling (kind 21059). |
+| `peerfinding_source` | enum | `relays` | `relays` uses FIPS's built-in kind 37195 relay path. `external` delegates publication, subscription, and queries to the embedding application, normally through a `nostr-pubsub` event bus. |
+| `advert_relays` | list | `["wss://relay.damus.io", "wss://nos.lol", "wss://offchain.pub", "wss://temp.iris.to"]` | Relays used to publish and fetch overlay adverts (kind 37195) in `relays` mode. Ignored in `external` mode. |
+| `dm_relays` | list | same defaults as `advert_relays` | Relays used only for encrypted offer/answer signaling (kind 21059). They are not a peerfinding source. |
 | `stun_servers` | list | `["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478", "stun:global.stun.twilio.com:3478"]` | STUN servers used to observe the local reflexive address before a punch. Peer-advertised STUN values are not used. |
 | `share_local_candidates` | bool | `false` | If true, include this node's RFC 1918 / ULA interface addresses as host candidates in the traversal offer. Off by default — sharing private host candidates is only useful when peers are on the same physical LAN, and tends to cause misleading punch successes when an asymmetric L3 path (corporate VPN, Tailscale subnet route, overlapping address space) makes a peer's private IP one-way reachable. Enable per-node only when same-LAN punching is wanted. |
 | `app` | string | `"fips-overlay-v1"` | Application namespace. Included in the advert identifier; only peers with the same value cross-resolve. |
@@ -340,13 +342,16 @@ protocol reference at
 ### Overview
 
 The discovery runtime is a background task group started during node
-initialization when `nostr.enabled` is true. It maintains a single
-`nostr-sdk` client connected to the union of `advert_relays` and
-`dm_relays`, and runs four loops: advert publication, advert
-subscription (for open discovery and cache warming), DM subscription
-(for incoming offers and answers), and a periodic advert-cache prune.
-Discovery has no CLI surface; all operations are driven by the
-configuration and by connection attempts made by the rest of the node.
+initialization when `nostr.enabled` is true. In `peerfinding_source: relays`
+mode it maintains a `nostr-sdk` client connected to the union of
+`advert_relays` and `dm_relays`, and runs advert publication/subscription,
+DM subscription, and advert-cache pruning. In `external` mode the advert
+publication and subscription loops are absent, direct advert queries are
+disabled, and `advert_relays` are not connected. The embedding application
+publishes `FipsEndpoint::local_nostr_discovery_advert_event()` and feeds
+received adverts to `FipsEndpoint::ingest_nostr_discovery_event()`; the
+`nostr-pubsub-fips` adapter provides this bridge for any selected EventBus.
+`dm_relays` remain available solely for offer/answer traversal signaling.
 
 ```text
                     +-----------------------+
@@ -412,28 +417,29 @@ endpoint is `udp:nat`; for advert shapes that cannot involve punching
 they are omitted to reduce advert size and keep the relay and STUN
 lists private to the nodes that need them.
 
-Publication happens on startup, again whenever the set of advertised
-endpoints changes (for example, when a Tor onion hostname first
-becomes available), and on a refresh timer every `advert_refresh_secs`.
-If the `advertise` flag is turned off, the previous advert event is
-deleted using a NIP-9 kind 5 delete event. Advert publication is
-fan-out: the same event is sent to every relay in `advert_relays` with
-no explicit failover — relay redundancy is implicit.
+In built-in `relays` mode, publication happens on startup, again whenever the
+set of advertised endpoints changes (for example, when a Tor onion hostname
+first becomes available), and on a refresh timer every
+`advert_refresh_secs`. The kind 37195 event is parameterized replaceable, so a
+newer event supersedes the previous advert. Publication fans the same event to
+every `advert_relays` entry. In `external` mode, the pubsub provider owns the
+publication cadence and source selection.
 
 ### Phase 2 — Lookup
 
-When the node decides to dial a peer that is eligible for Nostr
-resolution (a configured peer, or any peer under `policy: open`), it
-issues a Nostr REQ filtered by `author = peer_pubkey`, `kind = 37195`,
-`#d = <app>`. The fetch is time-bounded (~2 s) and runs against all
-configured `advert_relays` in parallel. The first valid advert wins.
+When the node decides to dial a peer that is eligible for Nostr resolution, it
+first checks the validated advert cache. In built-in `relays` mode, a cache
+miss issues a time-bounded Nostr REQ filtered by `author = peer_pubkey`,
+`kind = 37195`, and `#d = <app>` against `advert_relays`. In `external` mode,
+a cache miss never starts a direct relay query; the external pubsub provider
+fills the same cache via normal FIPS advert ingestion.
 
 Results are kept in an in-memory cache keyed by author npub. Cache
-entries carry the advert's expiration time; a periodic prune drops
-expired entries, and an LRU-by-expiry eviction enforces
-`advert_cache_max_entries`. A parallel long-lived subscription on the
-advert relays populates the cache passively, so open-discovery
-candidates do not require per-dial fetches.
+entries carry the advert's expiration time; a periodic prune drops expired
+entries, and an LRU-by-expiry eviction enforces `advert_cache_max_entries`.
+The built-in long-lived relay subscription or an external pubsub subscription
+populates the cache passively, so open-discovery candidates do not require
+per-dial fetches.
 
 On cache hit, advert endpoints are appended to the peer's static
 address list with lower priority; the static list is tried first.
@@ -570,12 +576,12 @@ the node with offers fast enough to starve legitimate traffic.
 
 ### Relay model
 
-All configured relays (advert + DM) are opened on a single
-`nostr-sdk::Client` at startup. Publication is fan-out: the same event
-is sent to every relay in the target list, with no explicit retry or
-relay selection. Redundancy is implicit — a downed relay simply means
-its copy of the advert or signal is unavailable, while other relays
-still serve the same data.
+In built-in `relays` mode, configured advert and DM relays are opened on one
+`nostr-sdk::Client`. Publication is fan-out to the target list. In `external`
+mode, FIPS does not open or select advert relays; `nostr-pubsub` or another
+embedding provider owns the configured relay and decentralized peerfinding
+sources. The FIPS client may still open `dm_relays`, but only for traversal
+signaling.
 
 For signaling specifically, the node prefers the recipient's NIP-65
 inbox relays when available (the recipient publishes its inbox list as

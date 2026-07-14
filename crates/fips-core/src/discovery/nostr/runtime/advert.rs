@@ -32,8 +32,8 @@ impl NostrDiscovery {
     /// This is the transport-neutral boundary for externally received events:
     /// every source feeds ordinary kind 37195 events through the same signature,
     /// app, freshness, and schema checks before the advert becomes a cache
-    /// candidate. Direct relay query remains only the fallback used when this
-    /// cache has no usable entry.
+    /// candidate. In built-in relay mode a cache miss may query advert relays;
+    /// external peerfinding mode never does so.
     pub async fn ingest_advert_event(&self, event: &Event) -> NostrAdvertIngestOutcome {
         if !Self::advert_event_targets_app(event, &self.config.app) {
             return NostrAdvertIngestOutcome::Rejected;
@@ -189,6 +189,9 @@ impl NostrDiscovery {
     /// if absent, refreshes if newer than the cached `created_at`,
     /// otherwise leaves the cache untouched.
     pub async fn refetch_advert_for_stale_check(&self, peer_npub: &str) -> NostrRefetchOutcome {
+        if !self.config.uses_relay_peerfinding() {
+            return NostrRefetchOutcome::Skipped;
+        }
         let target_pubkey = match PublicKey::parse(peer_npub) {
             Ok(p) => p,
             Err(_) => return NostrRefetchOutcome::Skipped,
@@ -261,6 +264,9 @@ impl NostrDiscovery {
     }
 
     pub async fn request_advert_stale_check(self: &Arc<Self>, peer_npub: String) -> bool {
+        if !self.config.uses_relay_peerfinding() {
+            return false;
+        }
         let Ok(peer_key) = NostrPeerKey::parse(&peer_npub) else {
             return false;
         };
@@ -398,6 +404,9 @@ impl NostrDiscovery {
     }
 
     pub(super) async fn publish_advert(&self) -> Result<(), BootstrapError> {
+        if !self.config.uses_relay_peerfinding() {
+            return Ok(());
+        }
         let previous_event_id = self.current_advert_event_id.read().await.to_owned();
         if !self.config.advertise {
             if let Some(event_id) = previous_event_id {
@@ -419,20 +428,7 @@ impl NostrDiscovery {
             None => return Ok(()),
         };
 
-        let advert = sanitize_advert_for_publish(advert)?;
-
-        let expires_at = now_ms() + self.config.advert_ttl_secs * 1000;
-        let tags = vec![
-            Tag::identifier(advert_d_tag(&self.config.app)),
-            Tag::custom(TagKind::custom("protocol"), [self.config.app.clone()]),
-            Tag::custom(TagKind::custom("version"), [PROTOCOL_VERSION.to_string()]),
-            Tag::expiration(Timestamp::from((expires_at / 1000).max(1))),
-        ];
-
-        let event = EventBuilder::new(Kind::Custom(ADVERT_KIND), serde_json::to_string(&advert)?)
-            .tags(tags)
-            .sign_with_keys(&self.keys)
-            .map_err(|e| BootstrapError::Nostr(e.to_string()))?;
+        let (event, advert) = self.sign_advert(advert)?;
         let relay_config = self.relay_config.read().await.clone();
         self.client
             .send_event_to(relay_config.advert_relays.clone(), &event)
@@ -455,6 +451,44 @@ impl NostrDiscovery {
         Ok(())
     }
 
+    /// Sign the local peer advert for an external peerfinding provider.
+    ///
+    /// The returned event is the same ordinary kind 37195 event used by the
+    /// built-in relay publisher. This method never opens, selects, or writes
+    /// to a relay.
+    pub async fn local_advert_event(&self) -> Result<Option<Event>, BootstrapError> {
+        if !self.config.advertise {
+            return Ok(None);
+        }
+        let Some(advert) = self.local_advert.read().await.clone() else {
+            return Ok(None);
+        };
+        if !advert
+            .endpoints
+            .iter()
+            .any(endpoint_advert_is_publicly_usable)
+        {
+            return Ok(None);
+        }
+        self.sign_advert(advert).map(|(event, _)| Some(event))
+    }
+
+    fn sign_advert(&self, advert: OverlayAdvert) -> Result<(Event, OverlayAdvert), BootstrapError> {
+        let advert = sanitize_advert_for_publish(advert)?;
+        let expires_at = now_ms() + self.config.advert_ttl_secs * 1000;
+        let tags = vec![
+            Tag::identifier(advert_d_tag(&self.config.app)),
+            Tag::custom(TagKind::custom("protocol"), [self.config.app.clone()]),
+            Tag::custom(TagKind::custom("version"), [PROTOCOL_VERSION.to_string()]),
+            Tag::expiration(Timestamp::from((expires_at / 1000).max(1))),
+        ];
+        let event = EventBuilder::new(Kind::Custom(ADVERT_KIND), serde_json::to_string(&advert)?)
+            .tags(tags)
+            .sign_with_keys(&self.keys)
+            .map_err(|error| BootstrapError::Nostr(error.to_string()))?;
+        Ok((event, advert))
+    }
+
     pub(super) async fn fetch_advert(
         &self,
         peer_npub: &str,
@@ -472,6 +506,9 @@ impl NostrDiscovery {
             return Ok(cached.advert);
         }
 
+        if !self.config.uses_relay_peerfinding() {
+            return Err(BootstrapError::MissingAdvert(peer_npub.to_string()));
+        }
         let relay_config = self.relay_config.read().await.clone();
         if relay_config.advert_relays.is_empty() {
             return Err(BootstrapError::MissingAdvert(peer_npub.to_string()));

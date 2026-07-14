@@ -29,7 +29,7 @@ use super::types::{
     CachedOverlayAdvert, MeshTraversalSignal, NostrAdvertIngestOutcome, NostrFailureDecision,
     NostrPeerFailureView, NostrRefetchOutcome, NostrRelayStatus, OverlayAdvert,
     OverlayEndpointAdvert, OverlayTransportKind, PROTOCOL_VERSION, PunchHint, SIGNAL_KIND,
-    TraversalAnswer, TraversalOffer, advert_d_tag, signal_relay_union,
+    TraversalAnswer, TraversalOffer, advert_d_tag,
 };
 use crate::config::{NostrDiscoveryConfig, PeerConfig};
 use crate::discovery::EstablishedTraversal;
@@ -249,16 +249,16 @@ impl From<&NostrDiscoveryConfig> for NostrRelayConfig {
 }
 
 impl NostrRelayConfig {
-    fn union(&self) -> HashSet<String> {
-        self.advert_relays
-            .iter()
-            .chain(self.dm_relays.iter())
-            .cloned()
-            .collect()
+    fn union(&self, include_advert_relays: bool) -> HashSet<String> {
+        let mut relays = self.dm_relays.iter().cloned().collect::<HashSet<_>>();
+        if include_advert_relays {
+            relays.extend(self.advert_relays.iter().cloned());
+        }
+        relays
     }
 
     fn signal_relays(&self) -> Vec<String> {
-        signal_relay_union(&self.dm_relays, &self.advert_relays)
+        self.dm_relays.clone()
     }
 }
 
@@ -352,9 +352,7 @@ impl NostrDiscovery {
             .opts(ClientOptions::new().autoconnect(false))
             .build();
 
-        let mut relay_union = HashSet::new();
-        relay_union.extend(config.advert_relays.iter().cloned());
-        relay_union.extend(config.dm_relays.iter().cloned());
+        let relay_union = NostrRelayConfig::from(&config).union(config.uses_relay_peerfinding());
         for relay in relay_union {
             client
                 .add_relay(&relay)
@@ -374,6 +372,10 @@ impl NostrDiscovery {
             config.failure_state_max_entries,
         );
 
+        let uses_relay_peerfinding = config.uses_relay_peerfinding();
+        let has_signal_relays = !config.dm_relays.is_empty();
+        let has_runtime_relays =
+            has_signal_relays || (uses_relay_peerfinding && !config.advert_relays.is_empty());
         let runtime = Arc::new(Self {
             client,
             keys,
@@ -420,10 +422,15 @@ impl NostrDiscovery {
         // peers to re-publish before discovering them.
         let notifications = runtime.client.notifications();
         runtime.load_rating_fact_events_from_files().await;
-        *runtime.publish_task.lock().await = Some(runtime.clone().spawn_publish_loop());
-        *runtime.relay_task.lock().await = Some(runtime.clone().spawn_relay_loop());
-        *runtime.advertise_task.lock().await = Some(runtime.clone().spawn_advertise_loop());
-        *runtime.notify_task.lock().await = Some(runtime.clone().spawn_notify_loop(notifications));
+        if uses_relay_peerfinding {
+            *runtime.publish_task.lock().await = Some(runtime.clone().spawn_publish_loop());
+            *runtime.advertise_task.lock().await = Some(runtime.clone().spawn_advertise_loop());
+        }
+        if has_runtime_relays {
+            *runtime.relay_task.lock().await = Some(runtime.clone().spawn_relay_loop());
+            *runtime.notify_task.lock().await =
+                Some(runtime.clone().spawn_notify_loop(notifications));
+        }
 
         Ok(runtime)
     }
@@ -532,9 +539,8 @@ impl NostrDiscovery {
     pub async fn relay_statuses(&self) -> Vec<NostrRelayStatus> {
         let relay_config = self.relay_config.read().await.clone();
         let mut statuses = relay_config
-            .advert_relays
-            .iter()
-            .chain(relay_config.dm_relays.iter())
+            .union(self.config.uses_relay_peerfinding())
+            .into_iter()
             .map(|url| {
                 (
                     url.clone(),
@@ -573,8 +579,9 @@ impl NostrDiscovery {
         };
 
         let previous = self.relay_config.read().await.clone();
-        let previous_union = previous.union();
-        let next_union = next.union();
+        let include_advert_relays = self.config.uses_relay_peerfinding();
+        let previous_union = previous.union(include_advert_relays);
+        let next_union = next.union(include_advert_relays);
 
         for relay in &next_union {
             self.client

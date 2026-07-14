@@ -107,6 +107,21 @@ pub enum NostrDiscoveryPolicy {
     Open,
 }
 
+/// Source used to publish and receive Nostr peer adverts.
+///
+/// `relays` keeps the built-in relay client as the peerfinding provider.
+/// `external` disables built-in advert relay publication, subscriptions, and
+/// cache-miss queries so an adapter can route ordinary signed advert events
+/// through a transport-neutral pubsub provider instead. Traversal signaling
+/// remains on the separately configured signaling relays.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NostrPeerfindingSource {
+    #[default]
+    Relays,
+    External,
+}
+
 /// Nostr-mediated overlay endpoint discovery (`node.discovery.nostr.*`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -117,6 +132,9 @@ pub struct NostrDiscoveryConfig {
     /// Publish service advertisements so remote peers can bootstrap inbound.
     #[serde(default = "NostrDiscoveryConfig::default_advertise")]
     pub advertise: bool,
+    /// Provider used for signed peer advert distribution and lookup.
+    #[serde(default)]
+    pub peerfinding_source: NostrPeerfindingSource,
     /// Relay URLs used for service advertisements.
     #[serde(default = "NostrDiscoveryConfig::default_advert_relays")]
     pub advert_relays: Vec<String>,
@@ -229,8 +247,9 @@ pub struct NostrDiscoveryConfig {
     /// Number of consecutive NAT-traversal failures against a peer before
     /// an extended cooldown is applied to throttle further offer publishes.
     /// At this threshold the daemon also actively re-fetches the peer's
-    /// advert from `advert_relays` to evict cache entries for peers that
-    /// have gone away. Default: 5.
+    /// advert in built-in `relays` peerfinding mode to evict cache entries for
+    /// peers that have gone away. External providers own refresh in
+    /// `external` mode. Default: 5.
     #[serde(default = "NostrDiscoveryConfig::default_failure_streak_threshold")]
     pub failure_streak_threshold: u32,
     /// Cooldown applied to a peer once `failure_streak_threshold` is hit.
@@ -268,6 +287,7 @@ impl Default for NostrDiscoveryConfig {
         Self {
             enabled: false,
             advertise: Self::default_advertise(),
+            peerfinding_source: NostrPeerfindingSource::default(),
             advert_relays: Self::default_advert_relays(),
             dm_relays: Self::default_dm_relays(),
             stun_servers: Self::default_stun_servers(),
@@ -304,6 +324,12 @@ impl Default for NostrDiscoveryConfig {
 }
 
 impl NostrDiscoveryConfig {
+    /// Whether FIPS itself should open relay paths for peer adverts.
+    #[must_use]
+    pub const fn uses_relay_peerfinding(&self) -> bool {
+        matches!(self.peerfinding_source, NostrPeerfindingSource::Relays)
+    }
+
     fn default_advertise() -> bool {
         true
     }

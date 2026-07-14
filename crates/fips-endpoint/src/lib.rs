@@ -1,9 +1,9 @@
 //! App-facing FIPS endpoint API.
 
 pub use fips_core::config::{
-    Config, ConnectPolicy, EthernetConfig, NostrDiscoveryConfig, NostrDiscoveryPolicy, PeerAddress,
-    PeerAddressProvenance, PeerConfig, RoutingMode, TransportInstances, TransportsConfig,
-    UdpConfig,
+    Config, ConnectPolicy, EthernetConfig, NostrDiscoveryConfig, NostrDiscoveryPolicy,
+    NostrPeerfindingSource, PeerAddress, PeerAddressProvenance, PeerConfig, RoutingMode,
+    TransportInstances, TransportsConfig, UdpConfig,
 };
 pub use fips_core::endpoint::{
     FIPS_ENDPOINT_DIRECT_PACKET_QUEUE_MAX_PACKETS, FIPS_ENDPOINT_DIRECT_PACKET_RUN_MAX_PACKETS,

@@ -634,6 +634,7 @@ node:
     nostr:
       enabled: true
       advertise: false
+      peerfinding_source: external
       policy: configured_only
       open_discovery_max_pending: 12
       app: "fips.nat.test.v1"
@@ -653,6 +654,10 @@ peers:
     let config: Config = serde_yaml::from_str(yaml).unwrap();
     assert!(config.node.discovery.nostr.enabled);
     assert!(!config.node.discovery.nostr.advertise);
+    assert_eq!(
+        config.node.discovery.nostr.peerfinding_source,
+        NostrPeerfindingSource::External
+    );
     assert_eq!(config.node.discovery.nostr.app, "fips.nat.test.v1");
     assert_eq!(config.node.discovery.nostr.signal_ttl_secs, 45);
     assert_eq!(

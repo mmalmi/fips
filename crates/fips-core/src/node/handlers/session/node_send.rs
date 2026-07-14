@@ -252,6 +252,19 @@ impl Node {
                 };
                 let _ = response_tx.send(endpoints);
             }
+            NodeEndpointControlCommand::LocalNostrDiscoveryAdvertEvent { response_tx } => {
+                let result = if let Some(discovery) = self.nostr_discovery_handle() {
+                    discovery
+                        .local_advert_event()
+                        .await
+                        .map_err(|error| NodeError::Discovery(error.to_string()))
+                } else {
+                    Err(NodeError::Discovery(
+                        "Nostr discovery is not running".to_string(),
+                    ))
+                };
+                let _ = response_tx.send(result);
+            }
             NodeEndpointControlCommand::RelaySnapshot { response_tx } => {
                 let relays = if let Some(discovery) = self.nostr_discovery_handle() {
                     discovery

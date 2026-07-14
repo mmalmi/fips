@@ -899,6 +899,28 @@ impl FipsEndpoint {
         .await
     }
 
+    /// Return the signed local peer advert for an external peerfinding provider.
+    ///
+    /// This only creates the ordinary kind 37195 event; it does not select or
+    /// contact relays. `None` means advertising is disabled or no local
+    /// transport currently has an advert-eligible endpoint.
+    pub async fn local_nostr_discovery_advert_event(
+        &self,
+    ) -> Result<Option<nostr::Event>, FipsEndpointError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        match self
+            .control(
+                "local Nostr discovery advert",
+                NodeEndpointControlCommand::LocalNostrDiscoveryAdvertEvent { response_tx },
+                response_rx,
+            )
+            .await?
+        {
+            Ok(event) => Ok(event),
+            Err(error) => Err(FipsEndpointError::Node(error)),
+        }
+    }
+
     /// Snapshot live Nostr relay states used by the embedded endpoint.
     pub async fn relay_statuses(&self) -> Result<Vec<FipsEndpointRelayStatus>, FipsEndpointError> {
         let (response_tx, response_rx) = oneshot::channel();

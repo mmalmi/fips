@@ -188,7 +188,9 @@ impl CacheConfig {
 
 mod discovery;
 
-pub use discovery::{DiscoveryConfig, NostrDiscoveryConfig, NostrDiscoveryPolicy};
+pub use discovery::{
+    DiscoveryConfig, NostrDiscoveryConfig, NostrDiscoveryPolicy, NostrPeerfindingSource,
+};
 
 /// Spanning tree (`node.tree.*`).
 #[derive(Debug, Clone, Serialize, Deserialize)]

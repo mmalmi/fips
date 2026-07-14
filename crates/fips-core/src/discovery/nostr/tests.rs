@@ -47,27 +47,6 @@ fn observed(
     }
 }
 
-#[test]
-fn traversal_signals_use_dm_and_advert_relays_without_duplicates() {
-    assert_eq!(
-        super::signal_relay_union(
-            &[
-                "wss://dm.example".to_string(),
-                "wss://shared.example".to_string(),
-            ],
-            &[
-                "wss://advert.example".to_string(),
-                "wss://shared.example".to_string(),
-            ],
-        ),
-        vec![
-            "wss://dm.example".to_string(),
-            "wss://shared.example".to_string(),
-            "wss://advert.example".to_string(),
-        ]
-    );
-}
-
 fn can_reach(local_nat: NatType, remote_nat: NatType) -> bool {
     if local_nat == NatType::Symmetric || remote_nat == NatType::Symmetric {
         return false;

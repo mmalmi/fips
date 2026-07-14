@@ -27,6 +27,7 @@ node:
     # Optional Nostr-mediated overlay endpoint discovery.
     # nostr:
     #   enabled: true
+    #   peerfinding_source: relays # relays | external (for nostr-pubsub)
     #   policy: configured_only  # disabled | configured_only | open
     #   open_discovery_max_pending: 64 # caps queued open-discovery retries
     #   app: "fips-overlay-v1"

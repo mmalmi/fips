@@ -179,6 +179,11 @@ fallbacks for configured peers, and can optionally discover non-configured
 peers (`policy: open`). `udp:nat` remains the trigger for NAT traversal
 offer/answer + punch-through, after which the established UDP socket is handed
 into the normal FIPS transport/session stack.
+Peer adverts can either use FIPS's built-in relay client
+(`peerfinding_source: relays`) or an external provider such as
+`nostr-pubsub` (`peerfinding_source: external`). In external mode FIPS signs,
+validates, and caches adverts but opens no advert-relay connections; the
+provider owns configured relay and decentralized pubsub sources.
 Inbox-relay discovery falls back to the local DM relay list if remote relay
 metadata cannot be fetched.
 This support is compiled behind the crate feature `nostr-discovery`; builds
@@ -187,14 +192,15 @@ without that feature ignore `udp:nat` bootstrap configuration.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `node.discovery.nostr.enabled` | bool | `false` | Enable Nostr-mediated overlay discovery |
+| `node.discovery.nostr.peerfinding_source` | string | `"relays"` | `relays` uses FIPS's built-in advert relay publisher/subscriber/query path; `external` delegates kind 37195 transport to an application provider such as `nostr-pubsub` |
 | `node.discovery.nostr.policy` | string | `"configured_only"` | Advert discovery policy: `disabled`, `configured_only`, `open` |
 | `node.discovery.nostr.open_discovery_max_pending` | usize | `64` | Max open-discovery peers queued in outbound retry/connection state at once |
 | `node.discovery.nostr.max_concurrent_incoming_offers` | usize | `16` | Max concurrent inbound traversal offers processed at once (rate limit against offer spam) |
-| `node.discovery.nostr.advert_cache_max_entries` | usize | `2048` | Max cached overlay adverts retained from relay traffic |
+| `node.discovery.nostr.advert_cache_max_entries` | usize | `2048` | Max cached overlay adverts retained from the selected peerfinding source |
 | `node.discovery.nostr.seen_sessions_max_entries` | usize | `2048` | Max seen-session IDs retained for replay detection |
 | `node.discovery.nostr.advertise` | bool | `true` | Publish local endpoint adverts |
-| `node.discovery.nostr.advert_relays` | list[string] | `["wss://relay.damus.io", "wss://nos.lol", "wss://offchain.pub", "wss://temp.iris.to"]` | Relays used for service adverts |
-| `node.discovery.nostr.dm_relays` | list[string] | `["wss://relay.damus.io", "wss://nos.lol", "wss://offchain.pub", "wss://temp.iris.to"]` | Relays used for encrypted signaling events |
+| `node.discovery.nostr.advert_relays` | list[string] | `["wss://relay.damus.io", "wss://nos.lol", "wss://offchain.pub", "wss://temp.iris.to"]` | Built-in service-advert relays; ignored when `peerfinding_source: external` |
+| `node.discovery.nostr.dm_relays` | list[string] | `["wss://relay.damus.io", "wss://nos.lol", "wss://offchain.pub", "wss://temp.iris.to"]` | Relays used only for encrypted traversal signaling events, never peer-advert discovery |
 | `node.discovery.nostr.stun_servers` | list[string] | `["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478", "stun:global.stun.twilio.com:3478"]` | STUN servers used for local reflexive address discovery |
 | `node.discovery.nostr.app` | string | `"fips-overlay-v1"` | Traversal application namespace and advert identifier suffix |
 | `node.discovery.nostr.signal_ttl_secs` | u64 | `120` | Signaling TTL in seconds |

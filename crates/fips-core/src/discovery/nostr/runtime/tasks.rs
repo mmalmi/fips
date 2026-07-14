@@ -179,21 +179,27 @@ impl NostrDiscovery {
     }
 
     pub(super) fn should_subscribe_ambient_adverts(&self) -> bool {
-        self.config.policy == crate::config::NostrDiscoveryPolicy::Open
+        self.config.uses_relay_peerfinding()
+            && self.config.policy == crate::config::NostrDiscoveryPolicy::Open
     }
 
     pub(super) async fn subscribe(&self) -> Result<(), BootstrapError> {
         let relay_config = self.relay_config.read().await.clone();
-        let signal_result = self
-            .subscribe_required(
-                relay_config.signal_relays(),
+        let signal_relays = relay_config.signal_relays();
+        let signal_result = if signal_relays.is_empty() {
+            debug!("skipping Nostr traversal signal subscription without signaling relays");
+            Ok(())
+        } else {
+            self.subscribe_required(
+                signal_relays,
                 "fips-traversal-signals",
                 Filter::new()
                     .kind(Kind::Custom(SIGNAL_KIND))
                     .pubkey(self.pubkey)
                     .limit(0),
             )
-            .await;
+            .await
+        };
 
         let advert_result = if self.should_subscribe_ambient_adverts() {
             self.subscribe_required(
@@ -210,17 +216,18 @@ impl NostrDiscovery {
             Ok(())
         };
 
-        let rating_result = if self.should_subscribe_rating_facts() {
-            self.subscribe_required(
-                relay_config.advert_relays.clone(),
-                "fips-rating-facts",
-                self.rating_fact_filter(),
-            )
-            .await
-        } else {
-            debug!("skipping Nostr rating fact subscription");
-            Ok(())
-        };
+        let rating_result =
+            if self.config.uses_relay_peerfinding() && self.should_subscribe_rating_facts() {
+                self.subscribe_required(
+                    relay_config.advert_relays.clone(),
+                    "fips-rating-facts",
+                    self.rating_fact_filter(),
+                )
+                .await
+            } else {
+                debug!("skipping Nostr rating fact subscription");
+                Ok(())
+            };
 
         signal_result?;
         advert_result?;
@@ -260,6 +267,9 @@ impl NostrDiscovery {
     pub(super) async fn publish_inbox_relays(&self) -> Result<(), BootstrapError> {
         let relay_config = self.relay_config.read().await.clone();
         let signal_relays = relay_config.signal_relays();
+        if signal_relays.is_empty() {
+            return Ok(());
+        }
         let tags = signal_relays
             .iter()
             .filter_map(|relay| RelayUrl::parse(relay).ok())
