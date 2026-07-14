@@ -19,10 +19,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 
 /// Generate a deterministic BLE address for test node `n`.
 fn ble_addr(n: u8) -> BleAddr {
-    BleAddr {
-        adapter: "hci0".to_string(),
-        device: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, n],
-    }
+    BleAddr::from_mac("hci0", [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, n])
 }
 
 /// A pre-connected stream bank for MockBleIo connect handlers.

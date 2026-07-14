@@ -6,6 +6,7 @@ use std::time::Duration;
 
 mod acl;
 #[cfg(target_os = "linux")]
+#[cfg(not(feature = "host-ble-transport"))]
 mod ble;
 mod bloom;
 mod bloom_poison;

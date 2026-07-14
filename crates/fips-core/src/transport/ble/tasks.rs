@@ -3,8 +3,10 @@
 // ============================================================================
 
 use super::{
+    SharedBlePool,
     addr::BleAddr,
     discovery::DiscoveryBuffer,
+    framing::FramedBleStream,
     io::{self, BleScanner, BleStream},
     pool::{BleConnection, ConnectionPool},
     stats::BleStats,
@@ -80,13 +82,14 @@ pub(super) async fn pubkey_exchange<S: BleStream>(
 /// Accept loop: accepts inbound L2CAP connections, exchanges pubkeys,
 /// and adds to pool.
 pub(super) struct AcceptLoopContext<S> {
-    pub(super) pool: Arc<Mutex<ConnectionPool<Arc<S>>>>,
+    pub(super) pool: SharedBlePool<S>,
     pub(super) packet_tx: PacketTx,
     pub(super) transport_id: TransportId,
     pub(super) stats: Arc<BleStats>,
     pub(super) local_pubkey: Option<[u8; 32]>,
     pub(super) discovery_buffer: Arc<DiscoveryBuffer>,
     pub(super) local_node_addr: Option<NodeAddr>,
+    pub(super) max_packet: u16,
 }
 
 pub(super) async fn accept_loop<A>(mut acceptor: A, ctx: AcceptLoopContext<A::Stream>)
@@ -102,6 +105,7 @@ where
         local_pubkey,
         discovery_buffer,
         local_node_addr,
+        max_packet,
     } = ctx;
 
     loop {
@@ -109,6 +113,7 @@ where
             Ok(stream) => {
                 let addr = stream.remote_addr().clone();
                 let ta = addr.to_transport_addr();
+                let stream = FramedBleStream::new(stream, max_packet);
 
                 // Skip if already connected (outbound won the race)
                 {
@@ -255,16 +260,16 @@ pub(super) async fn receive_loop<S: BleStream>(
 /// `cooldown_secs`. Connected peers are filtered by pool membership.
 pub(super) struct ScanProbeContext<I: io::BleIo> {
     pub(super) io: Arc<I>,
-    pub(super) pool: Arc<Mutex<ConnectionPool<Arc<I::Stream>>>>,
+    pub(super) pool: SharedBlePool<I::Stream>,
     pub(super) buffer: Arc<DiscoveryBuffer>,
     pub(super) stats: Arc<BleStats>,
     pub(super) local_pubkey: Option<[u8; 32]>,
-    pub(super) psm: u16,
     pub(super) connect_timeout_ms: u64,
     pub(super) cooldown_secs: u64,
     pub(super) local_node_addr: Option<NodeAddr>,
     pub(super) packet_tx: PacketTx,
     pub(super) transport_id: TransportId,
+    pub(super) max_packet: u16,
 }
 
 pub(super) async fn scan_probe_loop<I: io::BleIo>(
@@ -277,19 +282,19 @@ pub(super) async fn scan_probe_loop<I: io::BleIo>(
         buffer,
         stats,
         local_pubkey,
-        psm,
         connect_timeout_ms,
         cooldown_secs,
         local_node_addr,
         packet_tx,
         transport_id,
+        max_packet,
     } = ctx;
 
     // Track last probe time per address for cooldown
     let mut last_probed: HashMap<BleAddr, tokio::time::Instant> = HashMap::new();
     // Addresses discovered but not yet connected — retried after cooldown
     // even if the scanner doesn't fire again (BlueZ deduplicates).
-    let mut pending_addrs: Vec<BleAddr> = Vec::new();
+    let mut pending_candidates: Vec<io::BleCandidate> = Vec::new();
     let cooldown = std::time::Duration::from_secs(cooldown_secs);
     let retry_interval = tokio::time::interval(std::time::Duration::from_secs(cooldown_secs));
     tokio::pin!(retry_interval);
@@ -297,7 +302,7 @@ pub(super) async fn scan_probe_loop<I: io::BleIo>(
 
     loop {
         // Either a scanner event or the retry timer fires
-        let addr = tokio::select! {
+        let candidate = tokio::select! {
             result = scanner.next() => {
                 match result {
                     Some(a) => a,
@@ -310,31 +315,38 @@ pub(super) async fn scan_probe_loop<I: io::BleIo>(
             _ = retry_interval.tick() => {
                 // Re-probe pending addresses that aren't connected
                 let pool_guard = pool.lock().await;
-                pending_addrs.retain(|a| !pool_guard.contains(&a.to_transport_addr()));
+                pending_candidates.retain(|candidate| {
+                    !pool_guard.contains(&candidate.addr.to_transport_addr())
+                });
                 drop(pool_guard);
-                if let Some(a) = pending_addrs.first().cloned() {
-                    a
+                if let Some(candidate) = pending_candidates.first().cloned() {
+                    candidate
                 } else {
                     continue;
                 }
             }
         };
+        let addr = candidate.addr.clone();
+        let psm = candidate.bootstrap.psm;
 
-        trace!(addr = %addr, "BLE scan result");
+        trace!(addr = %addr, psm, "BLE scan result");
         stats.record_scan_result();
 
         // Skip if already connected
         {
             let pool_guard = pool.lock().await;
             if pool_guard.contains(&addr.to_transport_addr()) {
-                pending_addrs.retain(|a| a != &addr);
+                pending_candidates.retain(|candidate| candidate.addr != addr);
                 continue;
             }
         }
 
         // Track for retry in case probe fails and scanner doesn't re-fire
-        if !pending_addrs.contains(&addr) {
-            pending_addrs.push(addr.clone());
+        if !pending_candidates
+            .iter()
+            .any(|pending| pending.addr == addr)
+        {
+            pending_candidates.push(candidate.clone());
         }
 
         // Skip if in cooldown
@@ -375,6 +387,7 @@ pub(super) async fn scan_probe_loop<I: io::BleIo>(
                 continue;
             }
         };
+        let stream = FramedBleStream::new(stream, max_packet.min(candidate.bootstrap.max_packet));
 
         // Pubkey exchange, then promote connection to pool
         let ta = addr.to_transport_addr();
@@ -437,7 +450,7 @@ pub(super) async fn scan_probe_loop<I: io::BleIo>(
                 }
                 drop(pool_guard);
                 stats.record_connection_established();
-                pending_addrs.retain(|a| a != &addr);
+                pending_candidates.retain(|candidate| candidate.addr != addr);
 
                 // Report to node layer for auto-connect / handshake
                 buffer.add_peer_with_pubkey(&addr, peer_pubkey);

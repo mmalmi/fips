@@ -78,6 +78,10 @@ pub enum FipsEndpointError {
 
     #[error("FSP service port {port} is already registered")]
     ServicePortAlreadyRegistered { port: u16 },
+
+    #[cfg(feature = "host-ble-transport")]
+    #[error("host BLE adapter was already consumed by another endpoint bind")]
+    HostBleAdapterConsumed,
 }
 
 /// Errors specific to capability-advertised local service registration.

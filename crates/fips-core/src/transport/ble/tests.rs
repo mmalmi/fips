@@ -3,10 +3,7 @@ use super::*;
 use io::MockBleIo;
 
 fn test_addr(n: u8) -> BleAddr {
-    BleAddr {
-        adapter: "hci0".to_string(),
-        device: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, n],
-    }
+    BleAddr::from_mac("hci0", [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, n])
 }
 
 fn make_transport(io: MockBleIo) -> (BleTransport<MockBleIo>, crate::transport::PacketRx) {
@@ -48,6 +45,19 @@ async fn test_transport_start_stop() {
 
     transport.stop_async().await.unwrap();
     assert_eq!(transport.state(), TransportState::Down);
+}
+
+#[tokio::test]
+async fn test_transport_advertises_platform_assigned_psm() {
+    let io = MockBleIo::new("ios", test_addr(1)).with_listener_psm(0x0091);
+    let (mut transport, _rx) = make_transport(io);
+    transport.start_async().await.unwrap();
+
+    assert_eq!(
+        transport.io().advertised_bootstrap(),
+        Some(bootstrap::BleBootstrap::new(0x0091, 2048).unwrap())
+    );
+    transport.stop_async().await.unwrap();
 }
 
 #[tokio::test(start_paused = true)]

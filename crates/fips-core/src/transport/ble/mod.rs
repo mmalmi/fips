@@ -1,16 +1,16 @@
 //! BLE L2CAP Transport Implementation
 //!
 //! Provides BLE-based transport for FIPS peer communication using L2CAP
-//! Connection-Oriented Channels (CoC) in SeqPacket mode. L2CAP CoC
-//! preserves message boundaries (unlike TCP byte streams), so no FMP
-//! framing is needed — each send/recv is one FIPS packet.
+//! Connection-Oriented Channels (CoC). A small GATT bootstrap record exposes
+//! the dynamically assigned PSM and packet limit. FIPS BLE framing preserves
+//! packet boundaries across both SeqPacket and byte-stream platform APIs.
 //!
 //! ## Architecture
 //!
 //! Transport logic (pool, discovery, lifecycle) is separated from the
-//! BlueZ/bluer stack via the `BleIo` trait. `BluerIo` provides the real
-//! implementation (behind `cfg(bluer_available)`); `MockBleIo` provides
-//! an in-memory test double for CI without hardware.
+//! BlueZ/bluer and mobile platform stacks via the `BleIo` trait. `BluerIo`
+//! provides the Linux implementation, `HostBleIo` bridges Android and Apple
+//! APIs, and `MockBleIo` provides an in-memory test double.
 //!
 //! ## Connection Pool
 //!
@@ -19,7 +19,11 @@
 //! static (configured) peers get priority over discovered peers.
 
 pub mod addr;
+pub mod bootstrap;
 pub mod discovery;
+pub mod framing;
+#[cfg(feature = "host-ble-transport")]
+pub mod host;
 pub mod io;
 pub mod pool;
 pub mod stats;
@@ -38,7 +42,8 @@ use crate::config::BleConfig;
 use crate::identity::NodeAddr;
 use addr::BleAddr;
 use discovery::DiscoveryBuffer;
-use io::{BleIo, BleStream};
+use framing::FramedBleStream;
+use io::{BleAcceptor, BleIo, BleStream};
 use pool::{BleConnection, ConnectionPool};
 use stats::BleStats;
 
@@ -49,6 +54,8 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
+pub(super) type SharedBlePool<S> = Arc<Mutex<ConnectionPool<Arc<FramedBleStream<S>>>>>;
+
 /// Default FIPS L2CAP PSM (Protocol Service Multiplexer).
 ///
 /// 0x0085 (133) is in the dynamic range (0x0080-0x00FF).
@@ -56,12 +63,15 @@ pub const DEFAULT_PSM: u16 = 0x0085;
 
 /// Concrete BLE transport type for use in TransportHandle.
 ///
-/// Production builds on glibc-linux use `BluerIo` (real BlueZ stack).
-/// Test builds, musl-linux, and non-Linux platforms use `MockBleIo`.
-#[cfg(all(bluer_available, not(test)))]
+/// Host-feature builds use the command adapter, glibc-linux production builds
+/// use BlueZ, and tests plus unsupported targets use the mock adapter.
+#[cfg(feature = "host-ble-transport")]
+pub type DefaultBleTransport = BleTransport<host::HostBleIo>;
+
+#[cfg(all(not(feature = "host-ble-transport"), bluer_available, not(test)))]
 pub type DefaultBleTransport = BleTransport<io::BluerIo>;
 
-#[cfg(any(not(bluer_available), test))]
+#[cfg(all(not(feature = "host-ble-transport"), any(not(bluer_available), test)))]
 pub type DefaultBleTransport = BleTransport<io::MockBleIo>;
 
 // ============================================================================
@@ -85,7 +95,7 @@ pub struct BleTransport<I: BleIo> {
     /// BLE I/O implementation (BluerIo or MockBleIo).
     io: Arc<I>,
     /// Established connection pool.
-    pool: Arc<Mutex<ConnectionPool<Arc<I::Stream>>>>,
+    pool: SharedBlePool<I::Stream>,
     /// Pending connection attempts.
     connecting: Arc<Mutex<HashMap<TransportAddr, ConnectingEntry>>>,
     /// Channel for delivering received packets to Node.
@@ -170,7 +180,8 @@ impl<I: BleIo> BleTransport<I> {
         }
         self.state = TransportState::Starting;
 
-        let psm = self.config.psm();
+        let preferred_psm = self.config.psm();
+        let mut listener_psm = preferred_psm;
         let adapter = self.io.adapter_name().to_string();
 
         // Pre-compute local NodeAddr for cross-probe tie-breaking
@@ -182,8 +193,9 @@ impl<I: BleIo> BleTransport<I> {
 
         // Start L2CAP listener for inbound connections
         if self.config.accept_connections() {
-            match self.io.listen(psm).await {
+            match self.io.listen(preferred_psm).await {
                 Ok(acceptor) => {
+                    listener_psm = acceptor.psm();
                     self.accept_task = Some(tokio::spawn(accept_loop(
                         acceptor,
                         AcceptLoopContext {
@@ -194,9 +206,10 @@ impl<I: BleIo> BleTransport<I> {
                             local_pubkey: self.local_pubkey,
                             discovery_buffer: Arc::clone(&self.discovery_buffer),
                             local_node_addr,
+                            max_packet: self.config.mtu(),
                         },
                     )));
-                    debug!(adapter = %adapter, psm = psm, "BLE accept loop started");
+                    debug!(adapter = %adapter, psm = listener_psm, "BLE accept loop started");
                 }
                 Err(e) => {
                     warn!(adapter = %adapter, error = %e, "failed to start BLE listener");
@@ -208,7 +221,12 @@ impl<I: BleIo> BleTransport<I> {
 
         // Start continuous advertising
         if self.config.advertise() {
-            if let Err(e) = self.io.start_advertising().await {
+            let bootstrap = crate::transport::ble::bootstrap::BleBootstrap::new(
+                listener_psm,
+                self.config.mtu(),
+            )
+            .map_err(|error| TransportError::StartFailed(error.to_string()))?;
+            if let Err(e) = self.io.start_advertising(bootstrap).await {
                 warn!(adapter = %adapter, error = %e, "failed to start BLE advertising");
             } else {
                 self.stats.record_advertisement();
@@ -228,12 +246,12 @@ impl<I: BleIo> BleTransport<I> {
                             buffer: Arc::clone(&self.discovery_buffer),
                             stats: Arc::clone(&self.stats),
                             local_pubkey: self.local_pubkey,
-                            psm: self.config.psm(),
                             connect_timeout_ms: self.config.connect_timeout_ms(),
                             cooldown_secs: self.config.probe_cooldown_secs(),
                             local_node_addr,
                             packet_tx: self.packet_tx.clone(),
                             transport_id: self.transport_id,
+                            max_packet: self.config.mtu(),
                         },
                     )));
                     debug!(adapter = %adapter, "BLE scan+probe loop started");
@@ -245,7 +263,7 @@ impl<I: BleIo> BleTransport<I> {
         }
 
         self.state = TransportState::Up;
-        info!(adapter = %adapter, psm = psm, "BLE transport started");
+        info!(adapter = %adapter, psm = listener_psm, "BLE transport started");
         Ok(())
     }
 
@@ -372,6 +390,7 @@ impl<I: BleIo> BleTransport<I> {
         let addr_clone = addr.clone();
         let local_pubkey = self.local_pubkey;
         let discovery_buffer = Arc::clone(&self.discovery_buffer);
+        let max_packet = self.config.mtu();
 
         let task = tokio::spawn(async move {
             let result = tokio::time::timeout(
@@ -385,6 +404,7 @@ impl<I: BleIo> BleTransport<I> {
 
             match result {
                 Ok(Ok(stream)) => {
+                    let stream = FramedBleStream::new(stream, max_packet);
                     // Pre-handshake pubkey exchange (temporary, pre-XX)
                     if let Some(ref our_pubkey) = local_pubkey {
                         match pubkey_exchange(&stream, our_pubkey).await {

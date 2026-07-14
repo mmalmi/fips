@@ -22,8 +22,8 @@ const DEFAULT_BLE_PROBE_COOLDOWN_SECS: u64 = 30;
 
 /// BLE transport instance configuration.
 ///
-/// BleConfig is always compiled (for config parsing on any platform),
-/// but the transport runtime requires Linux and the `ble` feature.
+/// BleConfig is always compiled. The runtime uses BlueZ on Linux or a
+/// platform command adapter when `host-ble-transport` is enabled.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BleConfig {

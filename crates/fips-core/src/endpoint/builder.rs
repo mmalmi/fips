@@ -10,6 +10,21 @@ pub struct FipsEndpointBuilder {
     local_instance_roles: Vec<crate::discovery::local::LocalInstanceCapability>,
     disable_system_networking: bool,
     packet_channel_capacity: usize,
+    #[cfg(feature = "host-ble-transport")]
+    host_ble: Option<HostBleAttachment>,
+    #[cfg(feature = "host-ble-transport")]
+    host_ble_config: Option<crate::config::BleConfig>,
+}
+
+#[cfg(feature = "host-ble-transport")]
+#[derive(Clone)]
+struct HostBleAttachment(Arc<std::sync::Mutex<Option<crate::transport::ble::host::HostBleIo>>>);
+
+#[cfg(feature = "host-ble-transport")]
+impl std::fmt::Debug for HostBleAttachment {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("HostBleAttachment(..)")
+    }
 }
 
 const DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY: usize = 4096;
@@ -24,6 +39,10 @@ impl Default for FipsEndpointBuilder {
             local_instance_roles: Vec::new(),
             disable_system_networking: true,
             packet_channel_capacity: DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY,
+            #[cfg(feature = "host-ble-transport")]
+            host_ble: None,
+            #[cfg(feature = "host-ble-transport")]
+            host_ble_config: None,
         }
     }
 }
@@ -89,6 +108,21 @@ impl FipsEndpointBuilder {
         self
     }
 
+    /// Attach one platform-command BLE adapter to this endpoint.
+    ///
+    /// Cloned builders share a single-use attachment; only the first bind can
+    /// consume it. The platform adapter must be pumping commands before bind.
+    #[cfg(feature = "host-ble-transport")]
+    pub fn host_ble(
+        mut self,
+        io: crate::transport::ble::host::HostBleIo,
+        config: crate::config::BleConfig,
+    ) -> Self {
+        self.host_ble = Some(HostBleAttachment(Arc::new(std::sync::Mutex::new(Some(io)))));
+        self.host_ble_config = Some(config);
+        self
+    }
+
     pub(super) fn prepared_config(&self) -> Config {
         let mut config = self.config.clone();
         if let Some(nsec) = &self.identity_nsec {
@@ -117,6 +151,10 @@ impl FipsEndpointBuilder {
                 config.node.discovery.lan.scope = Some(scope.to_string());
             }
             apply_default_scoped_discovery(&mut config, scope);
+        }
+        #[cfg(feature = "host-ble-transport")]
+        if let Some(ble_config) = &self.host_ble_config {
+            config.transports.ble = crate::config::TransportInstances::Single(ble_config.clone());
         }
         config
     }
@@ -155,6 +193,16 @@ impl FipsEndpointBuilder {
 
         let mut node = Node::new(config)?;
         node.set_local_instance_roles(self.local_instance_roles);
+        #[cfg(feature = "host-ble-transport")]
+        if let Some(attachment) = &self.host_ble {
+            let io = attachment
+                .0
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take()
+                .ok_or(FipsEndpointError::HostBleAdapterConsumed)?;
+            node.set_host_ble_io(io);
+        }
         let identity = PeerIdentity::from_pubkey_full(node.identity().pubkey_full());
         let npub = identity.npub();
         let node_addr = *identity.node_addr();
