@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [0.3.99] - 2026-07-14
 
 ### Changed
 
@@ -15,6 +15,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fallback.
 - Kept traversal signaling on `dm_relays` only; advert relays are no longer
   inherited as an implicit signaling relay set.
+
+### Fixed
+
+- Replaced stale same-identity WebRTC sessions on fresh offers and resolved
+  simultaneous offers deterministically so restarted peers converge promptly.
+- Recreated the UDP transport socket after a local route failure instead of
+  leaving the node permanently unable to send.
+- Preserved in-progress XK responder state after stale or invalid final
+  handshake packets so a valid retransmission can still complete recovery.
+- Kept production-backed WOT simulation tests off the default libtest worker
+  stack, preventing release-gate stack overflows on Linux.
+- Made the restarted-initiator regression test wait for observable session
+  convergence instead of a scheduler-sensitive individual packet pass.
+- Removed crypto-worker timing assumptions and one-second UDP deadlines from
+  load-sensitive release tests.
+- Bumped `fips-endpoint` to 0.3.64 so app-facing consumers select
+  `fips-core` 0.3.99.
 
 ## [0.3.98] - 2026-07-14
 

@@ -1,10 +1,15 @@
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::run_large_stack_async_test;
 
-    #[tokio::test]
-    async fn wot_admission_prioritizes_good_probes_newcomer_and_penalizes_degraded() {
-        let report = Box::pin(run_default_wot_admission_sim()).await;
+    #[test]
+    fn wot_admission_prioritizes_good_probes_newcomer_and_penalizes_degraded() {
+        run_large_stack_async_test("fips-sim-wot-admission", wot_admission_case);
+    }
+
+    async fn wot_admission_case() {
+        let report = run_default_wot_admission_sim().await;
         assert_eq!(report.trusted_rating_author_count, 1);
         assert!(report.peer_discovery.node_count >= 100);
         assert!((1..=3).contains(&report.peer_discovery.known_entry_nodes));
@@ -146,9 +151,13 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn local_rating_publish_uses_inv_want_pubsub_before_history_lookup() {
-        let report = Box::pin(run_default_wot_admission_sim()).await;
+    #[test]
+    fn local_rating_publish_uses_inv_want_pubsub_before_history_lookup() {
+        run_large_stack_async_test("fips-sim-wot-local-rating", local_rating_publish_case);
+    }
+
+    async fn local_rating_publish_case() {
+        let report = run_default_wot_admission_sim().await;
         let spam_publish_count = report.exchange.local_published_events
             * report.config.rating_pubsub.spam_events_per_publish;
         let expected_pubsub_published = report.peer_discovery.advert_events_published
@@ -185,9 +194,13 @@ mod tests {
         assert_eq!(phase(&report, "after_degradation").rating_events_seen, 5);
     }
 
-    #[tokio::test]
-    async fn untrusted_rating_spam_is_not_indexed_into_history() {
-        let report = Box::pin(run_default_wot_admission_sim()).await;
+    #[test]
+    fn untrusted_rating_spam_is_not_indexed_into_history() {
+        run_large_stack_async_test("fips-sim-wot-untrusted-spam", untrusted_rating_spam_case);
+    }
+
+    async fn untrusted_rating_spam_case() {
+        let report = run_default_wot_admission_sim().await;
         let spam_per_publish = report.config.rating_pubsub.spam_events_per_publish;
 
         assert_eq!(
@@ -215,31 +228,33 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn low_throughput_valid_probe_is_not_downvoted() {
-        let peer = peer(
-            peer_npub(WotPeerProfile::Newcomer),
-            WotPeerProfile::Newcomer,
-            100,
-        );
-        let mut probe_runtime = WotProbeRuntime::start(std::slice::from_ref(&peer))
-            .await
-            .expect("start probe runtime");
-        let observation = probe_runtime
-            .observed_rating_for_probe(&peer, false, 123)
-            .await;
-        probe_runtime
-            .shutdown()
-            .await
-            .expect("shutdown probe runtime");
+    #[test]
+    fn low_throughput_valid_probe_is_not_downvoted() {
+        run_large_stack_async_test("fips-sim-low-throughput-probe", || async {
+            let peer = peer(
+                peer_npub(WotPeerProfile::Newcomer),
+                WotPeerProfile::Newcomer,
+                100,
+            );
+            let mut probe_runtime = WotProbeRuntime::start(std::slice::from_ref(&peer))
+                .await
+                .expect("start probe runtime");
+            let observation = probe_runtime
+                .observed_rating_for_probe(&peer, false, 123)
+                .await;
+            probe_runtime
+                .shutdown()
+                .await
+                .expect("shutdown probe runtime");
 
-        assert!(observation.valid_payload);
-        assert!(!observation.timed_out);
-        assert!(observation.low_throughput_valid_payload);
-        assert!(observation.network_delta.packets_sent > 0);
-        assert!(observation.network_delta.packets_delivered > 0);
-        assert_eq!(observation.rating, Some(84));
-        assert_eq!(normalize_rating_score(84, 0, 100), Some(68));
+            assert!(observation.valid_payload);
+            assert!(!observation.timed_out);
+            assert!(observation.low_throughput_valid_payload);
+            assert!(observation.network_delta.packets_sent > 0);
+            assert!(observation.network_delta.packets_delivered > 0);
+            assert_eq!(observation.rating, Some(84));
+            assert_eq!(normalize_rating_score(84, 0, 100), Some(68));
+        });
     }
 
     #[tokio::test]

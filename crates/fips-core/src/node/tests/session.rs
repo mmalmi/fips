@@ -79,6 +79,32 @@ async fn wait_for_session_established(
     .unwrap_or_else(|_| panic!("{context}: session did not establish"));
 }
 
+async fn wait_for_session_rekey_complete(
+    nodes: &mut [TestNode],
+    index: usize,
+    peer: &NodeAddr,
+    timeout: Duration,
+    context: &str,
+) {
+    tokio::time::timeout(timeout, async {
+        loop {
+            if nodes[index].node.get_session(peer).is_some_and(|entry| {
+                entry.is_established()
+                    && !entry.has_rekey_in_progress()
+                    && entry.pending_new_session().is_none()
+            }) {
+                return;
+            }
+
+            run_session_retransmit_work(nodes).await;
+            process_available_packets(nodes).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{context}: session rekey did not complete"));
+}
+
 fn settle_session_handshake_retransmits(
     nodes: &mut [TestNode],
     left_index: usize,
@@ -340,14 +366,17 @@ async fn process_available_packets_for_node(node: &mut TestNode) -> usize {
 }
 
 async fn wait_process_packets_for_node(nodes: &mut [TestNode], index: usize) -> usize {
-    for _ in 0..20 {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
         tokio::time::sleep(Duration::from_millis(10)).await;
         let count = process_available_packets_for_node(&mut nodes[index]).await;
         if count > 0 {
             return count;
         }
+        if tokio::time::Instant::now() >= deadline {
+            return 0;
+        }
     }
-    0
 }
 
 fn drop_queued_packets_for_node(node: &mut TestNode) -> usize {

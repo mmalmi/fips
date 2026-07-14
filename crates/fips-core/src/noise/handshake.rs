@@ -13,6 +13,7 @@ use std::fmt;
 /// Symmetric state during handshake.
 ///
 /// Maintains the chaining key (ck), handshake hash (h), and current cipher.
+#[derive(Clone)]
 struct SymmetricState {
     /// Chaining key for key derivation.
     ck: [u8; 32],
@@ -798,6 +799,21 @@ impl HandshakeState {
     /// Processes the initiator's encrypted static key and epoch.
     /// After this, the responder learns the initiator's identity.
     pub fn read_xk_message_3(&mut self, message: &[u8]) -> Result<(), NoiseError> {
+        let previous_symmetric = self.symmetric.clone();
+        let previous_progress = self.progress;
+        let previous_remote_static = self.remote_static;
+        let previous_remote_epoch = self.remote_epoch;
+        let result = self.read_xk_message_3_in_place(message);
+        if result.is_err() {
+            self.symmetric = previous_symmetric;
+            self.progress = previous_progress;
+            self.remote_static = previous_remote_static;
+            self.remote_epoch = previous_remote_epoch;
+        }
+        result
+    }
+
+    fn read_xk_message_3_in_place(&mut self, message: &[u8]) -> Result<(), NoiseError> {
         if self.role != HandshakeRole::Responder {
             return Err(NoiseError::WrongState {
                 expected: "responder".to_string(),

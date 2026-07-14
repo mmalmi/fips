@@ -450,7 +450,12 @@
                 && (inline_outputs > 0 || completion_outputs > 0),
             "the newly dispatched packet may complete in this turn"
         );
-        assert_eq!(completion_turn.summary().completions(), completion_outputs);
+        let completion_count = completion_turn.summary().completions();
+        assert!(
+            completion_count <= completion_outputs
+                && completion_outputs <= completion_count.saturating_add(1),
+            "the newly dispatched packet may add one inline output beyond drained completions"
+        );
         assert_eq!(completion_turn.summary().dispatched(), 1);
         assert_eq!(completion_turn.transport_sent(), completion_outputs);
         let sent_total = inline_outputs + completion_outputs;

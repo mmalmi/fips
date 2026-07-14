@@ -62,13 +62,21 @@ async fn lan_discovery_pauses_active_browse_between_scan_windows() {
     .await
     .expect("start LAN discovery");
 
-    tokio::time::timeout(Duration::from_secs(15), async {
-        while !discovery.browse_paused.load(Ordering::Acquire) {
-            tokio::time::sleep(Duration::from_millis(10)).await;
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            while !discovery.browse_paused.load(Ordering::Acquire) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            if super::next_browse_window_delay() >= Duration::from_secs(4) {
+                break;
+            }
+            while discovery.browse_paused.load(Ordering::Acquire) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
         }
     })
     .await
-    .expect("mDNS browse should enter its paused phase");
+    .expect("mDNS browse should enter a pause with an observable interval");
     let before = discovery
         .daemon
         .get_metrics()

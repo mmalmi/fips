@@ -363,6 +363,7 @@ fn test_established_endpoint_data_recovery_stays_out_of_pending_queue() {
 #[test]
 fn test_endpoint_data_routes_through_non_endpoint_transit_node() {
     run_large_stack_async_test("fips-endpoint-data-transit", || async {
+        let _guard = lock_large_network_test().await;
         // Loaded full-suite runs can concurrently exercise several large
         // in-memory overlays; preserve the delivery assertions while allowing
         // the three-node route enough scheduler time.

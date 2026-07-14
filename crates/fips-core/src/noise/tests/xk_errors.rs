@@ -39,6 +39,30 @@ fn test_xk_invalid_msg3_size() {
     );
 }
 
+#[test]
+fn test_xk_invalid_msg3_does_not_consume_valid_retry() {
+    let initiator_keypair = generate_keypair();
+    let responder_keypair = generate_keypair();
+    let mut initiator =
+        HandshakeState::new_xk_initiator(initiator_keypair, responder_keypair.public_key());
+    initiator.set_local_epoch(generate_epoch());
+    let mut responder = HandshakeState::new_xk_responder(responder_keypair);
+    responder.set_local_epoch(generate_epoch());
+
+    let msg1 = initiator.write_xk_message_1().unwrap();
+    responder.read_xk_message_1(&msg1).unwrap();
+    let msg2 = responder.write_xk_message_2().unwrap();
+    initiator.read_xk_message_2(&msg2).unwrap();
+    let msg3 = initiator.write_xk_message_3().unwrap();
+    let mut stale_msg3 = msg3.clone();
+    stale_msg3[0] ^= 0x80;
+
+    assert!(responder.read_xk_message_3(&stale_msg3).is_err());
+    responder
+        .read_xk_message_3(&msg3)
+        .expect("valid msg3 retry should remain decryptable after stale input");
+}
+
 // ===== Off-task encrypt/decrypt API parity =====
 //
 // `encrypt_with_counter[_and_aad]` is the &self counterpart to the existing

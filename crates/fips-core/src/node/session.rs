@@ -301,6 +301,11 @@ impl SessionEntry {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn handshake_hash(&self) -> Option<&[u8; 32]> {
+        Some(self.current_noise_session()?.handshake_hash())
+    }
+
     /// Snapshot the current established-FSP open/seal keys for dataplane owner state.
     pub(crate) fn fsp_crypto_keys(&self) -> Option<(LessSafeKey, LessSafeKey)> {
         let session = self.current_noise_session()?;

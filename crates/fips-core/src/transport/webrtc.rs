@@ -121,6 +121,7 @@ pub struct WebRtcTransport {
     config: WebRtcConfig,
     state: TransportState,
     api: Arc<::webrtc::api::API>,
+    incoming_native_api: Arc<::webrtc::api::API>,
     packet_tx: PacketTx,
     pool: ConnectionPool,
     pending: PendingPool,
@@ -160,22 +161,13 @@ impl WebRtcTransport {
         let (signal_tx, signal_rx) = mpsc::unbounded_channel();
         let signaling = NostrWebRtcSignaling::new(keys, signal_relays.clone(), signal_tx);
 
-        let mut media_engine = MediaEngine::default();
-        media_engine
-            .register_default_codecs()
-            .map_err(|e| TransportError::StartFailed(e.to_string()))?;
         // Native FIPS LAN discovery is handled by the bounded `_fips._udp`
         // browser. Query-only mDNS resolves `.local` ICE candidates emitted by
-        // browsers without gathering native mDNS candidates or creating one
-        // multicast listener per connection while retrying unreachable peers.
-        let mut setting_engine = SettingEngine::default();
-        setting_engine.set_ice_multicast_dns_mode(native_webrtc_mdns_mode());
-        let api = Arc::new(
-            APIBuilder::new()
-                .with_media_engine(media_engine)
-                .with_setting_engine(setting_engine)
-                .build(),
-        );
+        // browsers without gathering native mDNS candidates. The ICE library
+        // still allocates a multicast listener for QueryOnly, so plain native
+        // offers use a separate Disabled API selected from their SDP.
+        let api = build_webrtc_api(native_webrtc_mdns_mode())?;
+        let incoming_native_api = build_webrtc_api(MulticastDnsMode::Disabled)?;
 
         Ok(Self {
             transport_id,
@@ -183,6 +175,7 @@ impl WebRtcTransport {
             config,
             state: TransportState::Configured,
             api,
+            incoming_native_api,
             packet_tx,
             pool: Arc::new(Mutex::new(HashMap::new())),
             pending: Arc::new(Mutex::new(HashMap::new())),
@@ -232,6 +225,7 @@ impl WebRtcTransport {
             transport_id: self.transport_id,
             config: self.config.clone(),
             api: Arc::clone(&self.api),
+            incoming_native_api: Arc::clone(&self.incoming_native_api),
             packet_tx: self.packet_tx.clone(),
             pool: Arc::clone(&self.pool),
             pending: Arc::clone(&self.pending),
@@ -375,6 +369,7 @@ impl WebRtcTransport {
             transport_id: self.transport_id,
             config: self.config.clone(),
             api: Arc::clone(&self.api),
+            incoming_native_api: Arc::clone(&self.incoming_native_api),
             packet_tx: self.packet_tx.clone(),
             pool: Arc::clone(&self.pool),
             pending: Arc::clone(&self.pending),
@@ -461,6 +456,37 @@ impl WebRtcTransport {
 
 fn native_webrtc_mdns_mode() -> MulticastDnsMode {
     MulticastDnsMode::QueryOnly
+}
+
+fn incoming_webrtc_mdns_mode(sdp: &str) -> MulticastDnsMode {
+    if sdp.lines().any(|line| {
+        line.strip_prefix("a=candidate:").is_some_and(|candidate| {
+            candidate
+                .split_ascii_whitespace()
+                .any(|field| field.ends_with(".local"))
+        })
+    }) {
+        MulticastDnsMode::QueryOnly
+    } else {
+        MulticastDnsMode::Disabled
+    }
+}
+
+fn build_webrtc_api(
+    mdns_mode: MulticastDnsMode,
+) -> Result<Arc<::webrtc::api::API>, TransportError> {
+    let mut media_engine = MediaEngine::default();
+    media_engine
+        .register_default_codecs()
+        .map_err(|e| TransportError::StartFailed(e.to_string()))?;
+    let mut setting_engine = SettingEngine::default();
+    setting_engine.set_ice_multicast_dns_mode(mdns_mode);
+    Ok(Arc::new(
+        APIBuilder::new()
+            .with_media_engine(media_engine)
+            .with_setting_engine(setting_engine)
+            .build(),
+    ))
 }
 
 async fn bounded_webrtc_send<F, E, C, CF>(
