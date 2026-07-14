@@ -312,35 +312,75 @@ application content.
 
 ## Cashu Payment Model
 
-### V1 economics
+### Who pays for what
 
-Do not start with per-packet or per-proof delivery verification.
+Payment authorization belongs to an optional service adapter above FSP, not to
+FMP forwarding or route validity. The payer is the peer that requests or
+sponsors a named service; it is not universally the packet sender or recipient.
+For example:
 
-Start with small prepaid service leases:
+- an interactive sender can sponsor a session to a destination;
+- a recipient pulling a requested pubsub event or Hashtree block can pay the
+  immediate provider after verifying it;
+- an application can offer to pay for a bounded link or bandwidth budget to a
+  destination `npub`.
 
-- relay credit by time or byte budget
-- optional free or rate-limited tier
-- explicit session expiry or byte cap
-- service refusal when credit is exhausted
+The authorization must name the application-defined resource, meter, limit,
+expiry, and payer. Raw FMP bytes, retransmissions, duplicates, unsolicited
+traffic, and spam do not create debt merely because a router forwarded them.
+Application adapters decide what useful service means. An nVPN adapter can use
+acknowledged TCP progress and buyer-originated UDP flow costs; pubsub can use
+requested verified events; Hashtree can use first-accepted hash-valid blocks.
 
-### Why not per-packet proof first
+### V1 economics by service shape
 
-"Pay only if the relay definitely forwarded this packet" is a hard protocol
-problem because payment systems do not directly prove end-to-end network
-delivery. Receiver-acknowledged payment windows may be explored later, but
-they should not block basic relay deployment.
+Use one accounting model with a small set of settlement strategies:
+
+- weak-trust streaming: allow a free probe, then use a small, short-lived
+  incremental Cashu Spilman channel. Sign updates after useful service so the
+  provider's unpaid risk is bounded by one update and the buyer does not hand
+  the full stream budget to an unknown provider;
+- verifiable one-shot service: deliver and verify first, then settle directly
+  or in a Cashu batch;
+- trusted or intermittently connected peers: permit bounded bilateral peer
+  credit and settle later through an accepted mint;
+- fixed prepayment: use only when the buyer explicitly accepts the full lease
+  exposure or already trusts the provider.
+
+"Pay only if a transit hop definitely forwarded this packet" remains a hard
+protocol problem because a payment does not prove end-to-end delivery. Do not
+put per-packet payment or inspection in FMP. A particular FSP service may use a
+receiver-verifiable meter, but routing must continue to work when payment is
+disabled.
+
+Peer credit is an unbacked, non-cashout relationship limit. Closed-loop Cashu
+is a backed issuer liability that can buy issuer service or circulate among
+peers accepting that mint. Only separately reserve-backed withdrawable value
+may authorize an external Cashu or Lightning payout; peer or closed-loop credit
+must never borrow that reserve transitively.
+
+Accepted mint IDs and local limits should normally be exchanged privately with
+connected peers. A public service may optionally advertise exact accepted mints
+and limits so clients can estimate usefulness, but nodes must not advertise a
+generic "supernode" or high-capacity role. Capacity and reliability are learned
+from observed service.
 
 ### Integration boundary
 
-Cashu should live at the service-access layer:
+Cashu and peer credit should live at the service-access layer:
 
-- obtain a quote
-- pay
-- receive capability token / lease
-- present token when opening relay or public entry service
+- negotiate a named resource, meter, budget, expiry, and accepted settlement
+  methods;
+- obtain a quote, establish bounded credit, or open a small channel;
+- present the resulting authorization when opening the relay or public entry
+  service;
+- record only verified useful-service progress;
+- settle, close, or suspend service when the negotiated limit is reached.
 
-Routing and forwarding logic should remain valid even when payment is
-disabled.
+The reusable accounting and Cashu wallet/mint integration belong in a separate
+adapter crate. `fips-core` should expose transport/session observations needed
+by that adapter but must not depend on Cashu, pubsub, or a payment database.
+Routing and forwarding logic remain valid when payment is disabled.
 
 ## Transport-Agnostic Design
 
@@ -538,13 +578,18 @@ Add economic policy to relay and entry services.
 
 Deliverables:
 
-- quote and payment flow
-- prepaid lease issuance
-- token validation at service entry
+- optional FSP service-authorization adapter, without a `fips-core` Cashu
+  dependency
+- free probe and bounded incremental Spilman flow for weak-trust streams
+- verified post-delivery Cashu batching and bounded offline peer credit
+- accepted-mint/limit exchange and reserve-separated withdrawal authorization
+- adversarial accounting tests for replay, default, provider failure, and
+  forged service claims
 
 Exit criteria:
 
 - public service operators can require payment without modifying routing core
+  or turning raw FMP traffic into billable service
 
 ### Phase 10: hardening and release readiness
 
