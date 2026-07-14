@@ -42,6 +42,14 @@ fn simultaneous_webrtc_offers_have_one_deterministic_winner() {
 
     assert!(incoming_offer_wins_glare(larger, smaller));
     assert!(!incoming_offer_wins_glare(smaller, larger));
+    assert_eq!(
+        pooled_replacement_disposition(larger, smaller),
+        PooledOfferDisposition::Accept
+    );
+    assert_eq!(
+        pooled_replacement_disposition(smaller, larger),
+        PooledOfferDisposition::Redial
+    );
 }
 
 #[tokio::test]
@@ -389,30 +397,34 @@ async fn fresh_offer_replaces_an_existing_webrtc_session() {
     );
     transport.ready.lock().await.insert(addr.clone());
 
-    assert!(
-        retire_pooled_webrtc_session_for_offer(
+    assert_eq!(
+        prepare_pooled_webrtc_session_for_offer(
             &transport.pool,
             &transport.pending,
             &transport.failed,
             &transport.ready,
             &addr,
             "old-session",
+            "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         )
         .await,
+        PooledOfferDisposition::IgnoreReplay,
         "a replay of the active session must be ignored"
     );
     assert!(transport.pool.lock().await.contains_key(&addr));
 
-    assert!(
-        !retire_pooled_webrtc_session_for_offer(
+    assert_eq!(
+        prepare_pooled_webrtc_session_for_offer(
             &transport.pool,
             &transport.pending,
             &transport.failed,
             &transport.ready,
             &addr,
             "new-session",
+            "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         )
         .await,
+        PooledOfferDisposition::Accept,
         "a fresh offer must continue after retiring the old session"
     );
     assert!(!transport.pool.lock().await.contains_key(&addr));

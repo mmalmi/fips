@@ -139,17 +139,25 @@ impl WebRtcRuntime {
             return Ok(());
         }
         let remote_addr = TransportAddr::from_string(&signal.sender);
-        if retire_pooled_webrtc_session_for_offer(
+        match prepare_pooled_webrtc_session_for_offer(
             &self.pool,
             &self.pending,
             &self.failed,
             &self.ready,
             &remote_addr,
             &signal.session_id,
+            &self.local_pubkey_hex,
         )
         .await
         {
-            return Ok(());
+            PooledOfferDisposition::Accept => {}
+            PooledOfferDisposition::IgnoreReplay => return Ok(()),
+            PooledOfferDisposition::Redial => {
+                let _ = self
+                    .send_reject(&signal.sender, sender_xonly, signal.session_id)
+                    .await;
+                return self.start_outbound(remote_addr).await;
+            }
         }
         let pending_session = self
             .pending
@@ -515,24 +523,32 @@ fn incoming_offer_wins_glare(local_pubkey_hex: &str, remote_pubkey_hex: &str) ->
     remote_pubkey_hex < local_pubkey_hex
 }
 
-async fn retire_pooled_webrtc_session_for_offer(
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PooledOfferDisposition {
+    Accept,
+    IgnoreReplay,
+    Redial,
+}
+
+async fn prepare_pooled_webrtc_session_for_offer(
     pool: &ConnectionPool,
     pending: &PendingPool,
     failed: &FailedPool,
     ready: &ReadyPool,
     remote_addr: &TransportAddr,
     incoming_session_id: &str,
-) -> bool {
+    local_pubkey_hex: &str,
+) -> PooledOfferDisposition {
     let existing_session = pool
         .lock()
         .await
         .get(remote_addr)
         .map(|connection| connection.session_id.clone());
     let Some(existing_session) = existing_session else {
-        return false;
+        return PooledOfferDisposition::Accept;
     };
     if existing_session == incoming_session_id {
-        return true;
+        return PooledOfferDisposition::IgnoreReplay;
     }
 
     cleanup_webrtc_session(
@@ -545,7 +561,21 @@ async fn retire_pooled_webrtc_session_for_offer(
         None,
     )
     .await;
-    false
+    pooled_replacement_disposition(
+        local_pubkey_hex,
+        remote_addr.as_str().unwrap_or_default(),
+    )
+}
+
+fn pooled_replacement_disposition(
+    local_pubkey_hex: &str,
+    remote_pubkey_hex: &str,
+) -> PooledOfferDisposition {
+    if incoming_offer_wins_glare(local_pubkey_hex, remote_pubkey_hex) {
+        PooledOfferDisposition::Accept
+    } else {
+        PooledOfferDisposition::Redial
+    }
 }
 
 fn wire_peer_connection_state(
