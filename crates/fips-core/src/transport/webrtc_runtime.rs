@@ -43,7 +43,13 @@ impl WebRtcRuntime {
         );
 
         if !self
-            .try_reserve_pending(&remote_addr, session_id.clone(), Arc::clone(&pc))
+            .try_reserve_pending(
+                &remote_addr,
+                session_id.clone(),
+                Arc::clone(&pc),
+                now_ms(),
+                PendingDialOrigin::Local,
+            )
             .await
         {
             close_data_channel_bounded(data_channel).await;
@@ -139,6 +145,57 @@ impl WebRtcRuntime {
             return Ok(());
         }
         let remote_addr = TransportAddr::from_string(&signal.sender);
+        let pending = self.pending.lock().await.get(&remote_addr).map(|pending| {
+            (
+                pending.session_id.clone(),
+                pending.created_at_ms,
+                pending.origin,
+            )
+        });
+        if let Some((pending_session, pending_created_at_ms, pending_origin)) = pending {
+            if pending_session == signal.session_id {
+                return Ok(());
+            }
+            if !incoming_offer_replaces_pending(
+                &self.local_pubkey_hex,
+                &signal.sender,
+                pending_origin,
+                pending_created_at_ms,
+                signal.created_at_ms,
+            ) || !evict_pending_webrtc_session_for_offer(
+                &self.pending,
+                &self.failed,
+                &self.ready,
+                &remote_addr,
+                &pending_session,
+            )
+            .await
+            {
+                let _ = self
+                    .send_reject(&signal.sender, sender_xonly, signal.session_id)
+                    .await;
+                return Err(TransportError::ConnectionRefused);
+            }
+        }
+        if !accept_webrtc_offer_once(
+            &self.seen_sessions,
+            &remote_addr,
+            &signal.session_id,
+            signal.expires_at_ms,
+            now_ms(),
+        )
+        .await
+        {
+            debug!(
+                transport_id = %self.transport_id,
+                remote_addr = %remote_addr,
+                session = %signal.session_id,
+                "duplicate WebRTC offer ignored"
+            );
+            return Ok(());
+        }
+        let offer = RTCSessionDescription::offer(signal.sdp.clone().unwrap_or_default())
+            .map_err(|e| TransportError::StartFailed(e.to_string()))?;
         match prepare_pooled_webrtc_session_for_offer(
             &self.pool,
             &self.pending,
@@ -159,38 +216,6 @@ impl WebRtcRuntime {
                 return self.start_outbound(remote_addr).await;
             }
         }
-        let pending_session = self
-            .pending
-            .lock()
-            .await
-            .get(&remote_addr)
-            .map(|pending| pending.session_id.clone());
-        if let Some(pending_session) = pending_session {
-            if pending_session == signal.session_id {
-                return Ok(());
-            }
-            if incoming_offer_wins_glare(&self.local_pubkey_hex, &signal.sender) {
-                let outgoing = {
-                    let mut pending = self.pending.lock().await;
-                    if pending
-                        .get(&remote_addr)
-                        .is_some_and(|pending| pending.session_id == pending_session)
-                    {
-                        pending.remove(&remote_addr)
-                    } else {
-                        None
-                    }
-                };
-                if let Some(outgoing) = outgoing {
-                    close_peer_connection_bounded(outgoing.pc).await;
-                }
-            } else {
-                let _ = self
-                    .send_reject(&signal.sender, sender_xonly, signal.session_id)
-                    .await;
-                return Err(TransportError::ConnectionRefused);
-            }
-        }
         if self.pool.lock().await.len() + self.pending.lock().await.len()
             >= self.config.max_connections()
         {
@@ -198,23 +223,6 @@ impl WebRtcRuntime {
                 .send_reject(&signal.sender, sender_xonly, signal.session_id)
                 .await;
             return Err(TransportError::ConnectionRefused);
-        }
-        if !accept_webrtc_offer_once(
-            &self.seen_sessions,
-            &remote_addr,
-            &signal.session_id,
-            signal.expires_at_ms,
-            now_ms(),
-        )
-        .await
-        {
-            debug!(
-                transport_id = %self.transport_id,
-                remote_addr = %remote_addr,
-                session = %signal.session_id,
-                "duplicate WebRTC offer ignored"
-            );
-            return Ok(());
         }
 
         let session_id = signal.session_id.clone();
@@ -236,7 +244,13 @@ impl WebRtcRuntime {
         }));
 
         if !self
-            .try_reserve_pending(&remote_addr, session_id.clone(), Arc::clone(&pc))
+            .try_reserve_pending(
+                &remote_addr,
+                session_id.clone(),
+                Arc::clone(&pc),
+                signal.created_at_ms,
+                PendingDialOrigin::Remote,
+            )
             .await
         {
             close_peer_connection_bounded(pc).await;
@@ -254,8 +268,6 @@ impl WebRtcRuntime {
         self.spawn_connect_timeout(remote_addr.clone(), session_id.clone());
 
         let result = async {
-            let offer = RTCSessionDescription::offer(signal.sdp.unwrap_or_default())
-                .map_err(|e| TransportError::StartFailed(e.to_string()))?;
             pc.set_remote_description(offer)
                 .await
                 .map_err(|e| TransportError::StartFailed(e.to_string()))?;
@@ -321,6 +333,8 @@ impl WebRtcRuntime {
         addr: &TransportAddr,
         session_id: String,
         pc: Arc<RTCPeerConnection>,
+        created_at_ms: u64,
+        origin: PendingDialOrigin,
     ) -> bool {
         let pool = self.pool.lock().await;
         let mut pending = self.pending.lock().await;
@@ -330,7 +344,15 @@ impl WebRtcRuntime {
         {
             return false;
         }
-        pending.insert(addr.clone(), PendingDial { session_id, pc });
+        pending.insert(
+            addr.clone(),
+            PendingDial {
+                session_id,
+                pc,
+                created_at_ms,
+                origin,
+            },
+        );
         true
     }
 
