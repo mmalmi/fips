@@ -90,9 +90,10 @@ application drains signed outbound events with
 `FipsEndpoint::ingest_nostr_event()`.
 
 Direct `Node` embedders can attach the equivalent `NostrRelayIo` handle before
-starting the node. The standalone `fips` daemon does this when
-`transports.nostr_relay` is enabled and uses its application-configured
-`advert_relays` for the direct relay bridge.
+starting the node. The standalone `fips` daemon enables the default transport
+and attaches the adapter whenever `node.discovery.nostr.enabled` is true. It
+uses its application-configured `advert_relays` for the direct relay bridge.
+An explicit `transports.nostr_relay` section overrides the transport defaults.
 
 | Nostr relay transport field | Default | Meaning |
 | --- | --- | --- |

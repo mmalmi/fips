@@ -41,6 +41,16 @@ struct Args {
     uninstall_service: bool,
 }
 
+/// Materialize the standalone daemon's relay fallback when Nostr peerfinding
+/// is enabled. Library embedders retain explicit control over this transport.
+fn configure_nostr_relay_fallback(config: &mut Config) -> bool {
+    if config.node.discovery.nostr.enabled && config.transports.nostr_relay.is_empty() {
+        config.transports.nostr_relay =
+            fips::config::TransportInstances::Single(fips::config::NostrRelayConfig::default());
+    }
+    !config.transports.nostr_relay.is_empty()
+}
+
 /// Run the FIPS daemon (shared between foreground and service modes).
 ///
 /// `config_path` overrides the default config search. `shutdown_signal`
@@ -138,7 +148,7 @@ async fn run_daemon(
     let mut config = config;
     config.node.identity.nsec = Some(resolved.nsec);
     let relay_urls = config.node.discovery.nostr.advert_relays.clone();
-    let relay_fallback_enabled = !config.transports.nostr_relay.is_empty();
+    let relay_fallback_enabled = configure_nostr_relay_fallback(&mut config);
     debug!("Creating node");
     let mut node = match Node::new(config) {
         Ok(node) => node,
@@ -459,5 +469,58 @@ mod service {
         service.delete()?;
         println!("Service '{}' uninstalled.", SERVICE_NAME);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fips::config::{NostrPeerfindingSource, NostrRelayConfig, TransportInstances};
+
+    #[test]
+    fn daemon_enables_relay_fallback_for_each_nostr_peerfinding_source() {
+        for source in [
+            NostrPeerfindingSource::Relays,
+            NostrPeerfindingSource::External,
+        ] {
+            let mut config = Config::default();
+            config.node.discovery.nostr.enabled = true;
+            config.node.discovery.nostr.peerfinding_source = source;
+
+            assert!(configure_nostr_relay_fallback(&mut config));
+            assert!(matches!(
+                config.transports.nostr_relay,
+                TransportInstances::Single(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn daemon_does_not_enable_relay_fallback_when_nostr_is_disabled() {
+        let mut config = Config::default();
+
+        assert!(!configure_nostr_relay_fallback(&mut config));
+        assert!(config.transports.nostr_relay.is_empty());
+    }
+
+    #[test]
+    fn daemon_preserves_explicit_relay_fallback_configuration() {
+        let explicit = NostrRelayConfig {
+            mtu: Some(900),
+            auto_connect: Some(false),
+            accept_connections: Some(false),
+            max_pending_events: Some(17),
+        };
+        let mut config = Config::default();
+        config.transports.nostr_relay = TransportInstances::Single(explicit);
+
+        assert!(configure_nostr_relay_fallback(&mut config));
+        let TransportInstances::Single(config) = config.transports.nostr_relay else {
+            panic!("explicit relay fallback should remain a single instance");
+        };
+        assert_eq!(config.mtu, Some(900));
+        assert_eq!(config.auto_connect, Some(false));
+        assert_eq!(config.accept_connections, Some(false));
+        assert_eq!(config.max_pending_events, Some(17));
     }
 }

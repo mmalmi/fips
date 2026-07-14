@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   datagrams. Relay URLs remain owned by the embedding application, allowing
   it to prefer relays that delivered a peer's advert without creating a
   second relay configuration inside FIPS.
+- Made the standalone `fips` daemon enable that relay fallback automatically
+  whenever Nostr peerfinding is enabled; an explicit `transports.nostr_relay`
+  section still overrides its transport defaults.
 - Moved UDP traversal and WebRTC offer/answer negotiation into authenticated
   FIPS sessions. Removed DM relay sets, NIP-59 gift-wrap signaling, NIP-65
   inbox lookup, and relay metadata from public endpoint adverts.

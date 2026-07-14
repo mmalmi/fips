@@ -66,6 +66,8 @@ dns:
 transports:
   # Low-priority encrypted datagrams over the Nostr relays configured above.
   # The standalone daemon owns the relay bridge; fips-core owns no relay URLs.
+  # Automatically enabled when node.discovery.nostr.enabled is true. Uncomment
+  # only to override its mtu/auto_connect/accept_connections/queue defaults.
   # nostr_relay: {}
 
   udp:

@@ -187,6 +187,10 @@ validates, and caches adverts but opens no advert-relay connections; the
 provider owns configured relay and decentralized pubsub sources. An embedding
 application can also carry encrypted FIPS datagrams over those configured
 relays with `transports.nostr_relay`; FIPS itself never owns that relay list.
+The standalone `fips` daemon enables the default Nostr relay transport and
+adapter automatically when `node.discovery.nostr.enabled` is true. An explicit
+`transports.nostr_relay` section overrides the transport defaults. Library
+embedders continue to attach and route the relay adapter themselves.
 This support is compiled behind the crate feature `nostr-discovery`; builds
 without that feature ignore `udp:nat` bootstrap configuration.
 
