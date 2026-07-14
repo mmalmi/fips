@@ -25,6 +25,10 @@ Platform adapters own only operating-system BLE operations:
 Platform adapters treat peer identifiers as opaque tokens. FIPS replaces those
 tokens with authenticated node addresses after the link handshake.
 
+Reference platform packages live under `platform/android/fips-ble` and
+`platform/apple`. Embedding applications own only the generated-binding mapper
+between these packages and their Rust `HostBleAdapter` pump.
+
 ## GATT Bootstrap
 
 BLE v2 advertises service UUID `9c90b792-2cc5-42c0-9f87-c9cc40648f4c`.

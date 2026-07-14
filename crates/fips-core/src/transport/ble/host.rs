@@ -312,7 +312,15 @@ async fn dispatch_events(shared: Arc<HostShared>, mut event_rx: mpsc::Receiver<H
                 send_segment_mtu,
                 receive_segment_mtu,
             } => {
-                let response = shared
+                let Some(sender) = shared.pending.lock().await.remove(&request_id) else {
+                    shared.close_without_waiting(connection_id);
+                    continue;
+                };
+                if sender.is_closed() {
+                    shared.close_without_waiting(connection_id);
+                    continue;
+                }
+                let result = shared
                     .register_stream(
                         connection_id,
                         peer_token,
@@ -321,7 +329,7 @@ async fn dispatch_events(shared: Arc<HostShared>, mut event_rx: mpsc::Receiver<H
                     )
                     .await
                     .map(HostResponse::Connected);
-                shared.complete(request_id, response).await;
+                let _ = sender.send(result);
             }
             HostBleEvent::IncomingConnection {
                 connection_id,
@@ -749,5 +757,40 @@ mod tests {
         let received = stream.recv(&mut output).await.unwrap();
         assert_eq!(&output[..received], b"pong");
         platform.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn late_connection_after_cancel_is_closed_without_becoming_a_stream() {
+        let (io, adapter) = HostBleIo::channel("android", "local-device", 8).unwrap();
+        let addr = BleAddr::from_opaque("android", "remote-device").unwrap();
+        let connect = tokio::spawn(async move { io.connect(&addr, 0x0092).await });
+        let HostBleCommand::Connect {
+            request_id,
+            peer_token,
+            ..
+        } = adapter.next_command().await.unwrap()
+        else {
+            panic!("expected connect command");
+        };
+
+        connect.abort();
+        let _ = connect.await;
+        adapter
+            .emit(HostBleEvent::Connected {
+                request_id,
+                connection_id: 12,
+                peer_token,
+                send_segment_mtu: 64,
+                receive_segment_mtu: 64,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), adapter.next_command())
+                .await
+                .unwrap(),
+            Some(HostBleCommand::Close { connection_id: 12 })
+        );
     }
 }
