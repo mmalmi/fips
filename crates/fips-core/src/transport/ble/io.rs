@@ -318,12 +318,10 @@ mod bluer_impl {
             .is_connected()
             .await
             .map_err(|error| map_err("is_connected", error))?
+            && let Err(error) = device.connect().await
+            && !device.is_connected().await.unwrap_or(false)
         {
-            if let Err(error) = device.connect().await
-                && !device.is_connected().await.unwrap_or(false)
-            {
-                return Err(map_err("GATT connect", error));
-            }
+            return Err(map_err("GATT connect", error));
         }
         for service in device
             .services()
