@@ -17,12 +17,20 @@ struct TunWriteState {
 }
 
 #[derive(Debug)]
+#[cfg_attr(
+    not(any(test, target_os = "linux", target_os = "macos", windows)),
+    allow(dead_code)
+)]
 pub(crate) enum TunWritePacket {
     Vec(Vec<u8>),
     Pooled(PacketBuffer),
 }
 
 impl TunWritePacket {
+    #[cfg_attr(
+        not(any(test, target_os = "linux", target_os = "macos", windows)),
+        allow(dead_code)
+    )]
     pub(crate) fn as_slice(&self) -> &[u8] {
         match self {
             Self::Vec(packet) => packet,
@@ -64,6 +72,7 @@ pub struct TunTx {
 
 /// Channel receiver consumed by the blocking TUN writer.
 #[derive(Debug)]
+#[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
 pub(crate) struct TunRx {
     queue: Arc<TunWriteQueue>,
 }
@@ -133,6 +142,7 @@ impl TunTx {
     }
 }
 
+#[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
 impl TunRx {
     pub(crate) fn recv(&self) -> Option<TunWritePacket> {
         let mut state = self.queue.lock();
@@ -167,6 +177,7 @@ impl TunRx {
     }
 }
 
+#[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
 impl Drop for TunRx {
     fn drop(&mut self) {
         let mut state = self.queue.lock();
@@ -185,6 +196,7 @@ impl TunWriteQueue {
     }
 }
 
+#[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
 pub(crate) fn write_channel() -> (TunTx, TunRx) {
     let queue = Arc::new(TunWriteQueue {
         state: Mutex::new(TunWriteState {

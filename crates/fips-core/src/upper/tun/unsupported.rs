@@ -60,7 +60,24 @@ impl TunWriter {
 
 /// No-op reader placeholder for platforms where apps own packet I/O.
 pub(crate) fn run_tun_reader(runtime: super::TunReaderRuntime) {
-    let _ = runtime;
+    let super::TunReaderRuntime {
+        device,
+        mtu,
+        our_addr,
+        tun_tx,
+        outbound_tx,
+        transport_mtu,
+        path_mtu_lookup,
+    } = runtime;
+    let _ = (
+        device,
+        mtu,
+        our_addr,
+        tun_tx,
+        outbound_tx,
+        transport_mtu,
+        path_mtu_lookup,
+    );
 }
 
 /// No-op shutdown for platforms without a FIPS-created system TUN.
