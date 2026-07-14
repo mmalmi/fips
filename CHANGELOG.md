@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.97] - 2026-07-13
+## [0.3.97] - 2026-07-14
 
 ### Fixed
 
@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   falling back to independent ICE teardown, preventing repeated short-lived
   health probes from retaining remote UDP sockets while preserving bounded
   cleanup for stalled close futures.
+- Resolved browser-emitted `.local` WebRTC ICE candidates with query-only mDNS
+  while continuing to suppress native mDNS candidate gathering and its
+  per-connection multicast listeners.
+- Bumped `fips-endpoint` to 0.3.62 so app-facing consumers select
+  `fips-core` 0.3.97.
 
 ## [0.3.96] - 2026-07-13
 

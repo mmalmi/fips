@@ -165,10 +165,11 @@ impl WebRtcTransport {
             .register_default_codecs()
             .map_err(|e| TransportError::StartFailed(e.to_string()))?;
         // Native FIPS LAN discovery is handled by the bounded `_fips._udp`
-        // browser. ICE mDNS creates one multicast listener per connection and
-        // can leak hundreds of sockets while retrying unreachable peers.
+        // browser. Query-only mDNS resolves `.local` ICE candidates emitted by
+        // browsers without gathering native mDNS candidates or creating one
+        // multicast listener per connection while retrying unreachable peers.
         let mut setting_engine = SettingEngine::default();
-        setting_engine.set_ice_multicast_dns_mode(MulticastDnsMode::Disabled);
+        setting_engine.set_ice_multicast_dns_mode(native_webrtc_mdns_mode());
         let api = Arc::new(
             APIBuilder::new()
                 .with_media_engine(media_engine)
@@ -456,6 +457,10 @@ impl WebRtcTransport {
             None,
         );
     }
+}
+
+fn native_webrtc_mdns_mode() -> MulticastDnsMode {
+    MulticastDnsMode::QueryOnly
 }
 
 async fn bounded_webrtc_send<F, E, C, CF>(
