@@ -1,6 +1,6 @@
 [package]
 name = "fips-core"
-version = "0.3.97"
+version = "0.3.98"
 edition = "2024"
 description = "Reusable FIPS mesh, endpoint, transport, and protocol library"
 license = "MIT"
@@ -40,7 +40,6 @@ bytes = { version = "1", optional = true }
 webrtc = { version = "0.17", optional = true }
 
 nostr = { version = "0.44", features = ["std", "nip59"] }
-nostr-pubsub = "0.1.8"
 nostr-sdk = "0.44"
 
 [target.'cfg(unix)'.dependencies]

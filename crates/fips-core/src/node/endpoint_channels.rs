@@ -256,7 +256,7 @@ pub(crate) enum NodeEndpointControlCommand {
         sender: EndpointServiceEventSender,
         response_tx: tokio::sync::oneshot::Sender<bool>,
     },
-    IngestNostrPubsubEvent {
+    IngestNostrDiscoveryEvent {
         event: nostr::Event,
         response_tx: tokio::sync::oneshot::Sender<bool>,
     },
