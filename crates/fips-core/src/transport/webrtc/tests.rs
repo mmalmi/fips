@@ -351,3 +351,71 @@ async fn terminal_session_cleanup_closes_the_peer_connection() {
     );
     assert_eq!(pc.connection_state(), RTCPeerConnectionState::Closed);
 }
+
+#[tokio::test]
+async fn fresh_offer_replaces_an_existing_webrtc_session() {
+    let identity = crate::Identity::generate();
+    let (packet_tx, _packet_rx) = packet_channel(1);
+    let transport = WebRtcTransport::new(
+        TransportId::new(1),
+        None,
+        WebRtcConfig::default(),
+        packet_tx,
+        &identity,
+        &NostrDiscoveryConfig::default(),
+    )
+    .expect("WebRTC transport");
+    let pc = Arc::new(
+        transport
+            .api
+            .new_peer_connection(RTCConfiguration::default())
+            .await
+            .expect("peer connection"),
+    );
+    let data_channel = pc
+        .create_data_channel("replacement-test", None)
+        .await
+        .expect("data channel");
+    let addr = TransportAddr::from_string(
+        "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    transport.pool.lock().await.insert(
+        addr.clone(),
+        WebRtcConnection {
+            session_id: "old-session".to_string(),
+            pc: Arc::clone(&pc),
+            data_channel,
+        },
+    );
+    transport.ready.lock().await.insert(addr.clone());
+
+    assert!(
+        retire_pooled_webrtc_session_for_offer(
+            &transport.pool,
+            &transport.pending,
+            &transport.failed,
+            &transport.ready,
+            &addr,
+            "old-session",
+        )
+        .await,
+        "a replay of the active session must be ignored"
+    );
+    assert!(transport.pool.lock().await.contains_key(&addr));
+
+    assert!(
+        !retire_pooled_webrtc_session_for_offer(
+            &transport.pool,
+            &transport.pending,
+            &transport.failed,
+            &transport.ready,
+            &addr,
+            "new-session",
+        )
+        .await,
+        "a fresh offer must continue after retiring the old session"
+    );
+    assert!(!transport.pool.lock().await.contains_key(&addr));
+    assert!(!transport.ready.lock().await.contains(&addr));
+    assert_eq!(pc.connection_state(), RTCPeerConnectionState::Closed);
+}

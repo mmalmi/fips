@@ -139,7 +139,16 @@ impl WebRtcRuntime {
             return Ok(());
         }
         let remote_addr = TransportAddr::from_string(&signal.sender);
-        if self.pool.lock().await.contains_key(&remote_addr) {
+        if retire_pooled_webrtc_session_for_offer(
+            &self.pool,
+            &self.pending,
+            &self.failed,
+            &self.ready,
+            &remote_addr,
+            &signal.session_id,
+        )
+        .await
+        {
             return Ok(());
         }
         let pending_session = self
@@ -504,6 +513,39 @@ impl WebRtcRuntime {
 
 fn incoming_offer_wins_glare(local_pubkey_hex: &str, remote_pubkey_hex: &str) -> bool {
     remote_pubkey_hex < local_pubkey_hex
+}
+
+async fn retire_pooled_webrtc_session_for_offer(
+    pool: &ConnectionPool,
+    pending: &PendingPool,
+    failed: &FailedPool,
+    ready: &ReadyPool,
+    remote_addr: &TransportAddr,
+    incoming_session_id: &str,
+) -> bool {
+    let existing_session = pool
+        .lock()
+        .await
+        .get(remote_addr)
+        .map(|connection| connection.session_id.clone());
+    let Some(existing_session) = existing_session else {
+        return false;
+    };
+    if existing_session == incoming_session_id {
+        return true;
+    }
+
+    cleanup_webrtc_session(
+        pool,
+        pending,
+        failed,
+        ready,
+        remote_addr,
+        Some(&existing_session),
+        None,
+    )
+    .await;
+    false
 }
 
 fn wire_peer_connection_state(
