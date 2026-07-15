@@ -43,9 +43,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   proves identity, the normal ACL authorizes the link, and bounded capability
   adverts travel only over encrypted FSP. The sticky rendezvous anchor never
   suppresses or delegates application-owned outbound transports and is
-  replaced after its socket closes. The public local-discovery configuration
-  is non-exhaustive, so this release intentionally advances the minor version
-  rather than presenting the change as `0.3.100`.
+  replaced after its socket closes. Authenticated capability announcements
+  refresh short in-memory leases; unchanged revisions keep a live provider
+  present, while stale revisions cannot extend a dead provider's lease. The
+  public local-discovery configuration is non-exhaustive, so this release
+  intentionally advances the minor version rather than presenting the change
+  as `0.3.100`.
 - Bounded optional-transport send work so unavailable companion transports do
   not stall the endpoint send stack.
 - Corrected external peerfinding so application-owned EventBus discovery does
