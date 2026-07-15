@@ -1,5 +1,5 @@
 use super::*;
-use futures::stream::{self, StreamExt, TryStreamExt};
+use futures::stream::{self, StreamExt};
 use mdns_sd::{DaemonStatus, HostnameResolutionEvent, ServiceDaemon};
 use std::collections::{BTreeSet, HashMap};
 use std::net::IpAddr;
@@ -10,8 +10,11 @@ use tokio::sync::{Mutex, Semaphore};
 
 const MAX_MDNS_WAITERS: usize = 8;
 const MAX_MDNS_HOSTNAMES: usize = 32;
-const MDNS_RESOLVE_TIMEOUT: Duration = Duration::from_millis(1_750);
-const MDNS_BATCH_TIMEOUT: Duration = Duration::from_millis(1_900);
+// mDNS retries at 0, 1, and 3 seconds. Keep the bounded lookup alive for the
+// third query because browsers can publish fresh obfuscated hostnames shortly
+// before sending an SDP offer.
+const MDNS_RESOLVE_TIMEOUT: Duration = Duration::from_millis(4_250);
+const MDNS_BATCH_TIMEOUT: Duration = Duration::from_millis(4_500);
 
 #[derive(Clone)]
 pub(super) struct SharedMdnsResolver(Option<Arc<SharedMdnsResolverInner>>);
@@ -108,25 +111,33 @@ impl SharedMdnsResolver {
         // prevents two negotiations for the same browser hostname from
         // replacing one another while still resolving distinct candidates in
         // parallel under the transport-wide waiter bound.
-        let resolve = async {
-            let _request = inner.request_lock.lock().await;
-            let daemon = inner.daemon()?;
-            stream::iter(hostnames)
-                .map(|hostname| {
-                    let inner = Arc::clone(inner);
-                    let daemon = daemon.clone();
-                    async move {
-                        let address = resolve_hostname(inner, daemon, hostname.clone()).await?;
-                        Ok::<_, TransportError>((hostname, address))
-                    }
-                })
-                .buffer_unordered(inner.max_waiters)
-                .try_collect::<HashMap<_, _>>()
-                .await
+        let deadline = tokio::time::Instant::now() + MDNS_BATCH_TIMEOUT;
+        let _request = match tokio::time::timeout_at(deadline, inner.request_lock.lock()).await {
+            Ok(request) => request,
+            Err(_) => return rewrite_mdns_candidates(sdp, &HashMap::new()),
         };
-        let resolved = tokio::time::timeout(MDNS_BATCH_TIMEOUT, resolve)
-            .await
-            .map_err(|_| TransportError::Timeout)??;
+        let daemon = inner.daemon()?;
+        let mut queries = stream::iter(hostnames)
+            .map(|hostname| {
+                let inner = Arc::clone(inner);
+                let daemon = daemon.clone();
+                async move {
+                    let result = resolve_hostname(inner, daemon, hostname.clone()).await;
+                    (hostname, result)
+                }
+            })
+            .buffer_unordered(inner.max_waiters);
+        let mut resolved = HashMap::new();
+        while let Ok(Some((hostname, result))) =
+            tokio::time::timeout_at(deadline, queries.next()).await
+        {
+            match result {
+                Ok(address) => _ = resolved.insert(hostname, address),
+                Err(error) => {
+                    debug!(%hostname, %error, "WebRTC mDNS candidate route unavailable");
+                }
+            }
+        }
 
         rewrite_mdns_candidates(sdp, &resolved)
     }
@@ -305,11 +316,9 @@ fn rewrite_mdns_candidates(
             continue;
         }
         let hostname = normalize_mdns_hostname(candidate)?;
-        let address = addresses.get(&hostname).ok_or_else(|| {
-            TransportError::StartFailed(format!(
-                "WebRTC mDNS candidate {hostname} was not resolved"
-            ))
-        })?;
+        let Some(address) = addresses.get(&hostname) else {
+            continue;
+        };
         rewritten.push_str(&line[..range.start]);
         rewritten.push_str(&address.to_string());
         rewritten.push_str(&line[range.end..]);
@@ -423,6 +432,24 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_mdns_candidate_is_dropped_without_discarding_resolved_route() {
+        let sdp = concat!(
+            "v=0\r\n",
+            "a=candidate:1 1 UDP 2 working.local 5000 typ host\r\n",
+            "a=candidate:2 1 UDP 1 stale.local 5001 typ host\r\n"
+        );
+        let rewritten = rewrite_mdns_candidates(
+            sdp,
+            &HashMap::from([("working.local.".to_string(), "192.0.2.8".parse().unwrap())]),
+        )
+        .expect("one stale mDNS route must not discard the usable route");
+
+        assert!(rewritten.contains("192.0.2.8"));
+        assert!(!rewritten.contains("working.local"));
+        assert!(!rewritten.contains("stale.local"));
+    }
+
+    #[test]
     fn candidate_parser_deduplicates_and_validates_mdns_names() {
         let repeated = concat!(
             "a=candidate:1 1 UDP 1 Browser-Host.LOCAL 5000 typ host\n",
@@ -481,13 +508,12 @@ mod tests {
         .expect("first query owns request lock");
 
         let started = tokio::time::Instant::now();
-        assert!(matches!(
-            resolver
-                .resolve_sdp("a=candidate:2 1 UDP 1 second-unresolved.local 5001 typ host\r\n")
-                .await,
-            Err(TransportError::Timeout)
-        ));
-        assert!(started.elapsed() < Duration::from_secs(2));
+        let resolved = resolver
+            .resolve_sdp("a=candidate:2 1 UDP 1 second-unresolved.local 5001 typ host\r\n")
+            .await
+            .expect("unresolved candidate is omitted at the batch deadline");
+        assert!(resolved.is_empty());
+        assert!(started.elapsed() < Duration::from_secs(5));
         first_task.abort();
         let _ = first_task.await;
         resolver.stop().await.expect("stop shared resolver");
@@ -522,6 +548,9 @@ mod tests {
         })
         .await
         .expect("shared resolver query starts");
+        // Browser hostnames can be registered immediately before the offer is
+        // sent. Exercise the standard third mDNS query at three seconds.
+        tokio::time::sleep(Duration::from_millis(2_100)).await;
         server.register(service).expect("register mDNS test host");
 
         let rewritten = resolve_task
