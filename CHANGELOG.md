@@ -21,9 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Made the standalone `fips` daemon enable that relay fallback automatically
   whenever Nostr peerfinding is enabled; an explicit `transports.nostr_relay`
   section still overrides its transport defaults.
-- Moved UDP traversal and WebRTC offer/answer negotiation into authenticated
-  FIPS sessions. Removed DM relay sets, NIP-59 gift-wrap signaling, NIP-65
-  inbox lookup, and relay metadata from public endpoint adverts.
+- Moved UDP traversal and link negotiation into authenticated FIPS sessions.
+  WebRTC uses the existing `DataPacket` message on the generic link-negotiation
+  service port; no FSP message type was added. Removed DM relay sets, NIP-59
+  gift-wrap signaling, NIP-65 inbox lookup, and relay metadata from public
+  endpoint adverts.
+- Made unsolicited WebRTC acceptance opt-in: it follows public WebRTC
+  advertisement unless `accept_connections` explicitly overrides it. Replies
+  to locally initiated negotiations remain correlated by negotiation ID.
 - Made the relay fallback deliberately low priority so an established FIPS
   session can negotiate and move to UDP, WebRTC, or TCP when a better path is
   available.

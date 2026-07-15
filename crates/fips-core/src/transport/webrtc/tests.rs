@@ -23,19 +23,20 @@ fn validates_compressed_pubkey_addresses() {
 #[test]
 fn webrtc_signal_serializes_like_ts_transport() {
     let signal = WebRtcSignal {
-        protocol: WEBRTC_PROTOCOL.to_string(),
-        version: WEBRTC_SIGNAL_VERSION,
-        session_id: "abc".to_string(),
-        kind: WebRtcSignalKind::Offer,
-        sender: "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
-        recipient: "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
-        sdp: Some("v=0".to_string()),
-        candidates: None,
+        version: crate::transport::link_negotiation::LINK_NEGOTIATION_VERSION,
+        negotiation_id: "abc".to_string(),
+        link_type: "webrtc".to_string(),
+        kind: LinkNegotiationKind::Offer,
         created_at_ms: 1,
         expires_at_ms: 2,
+        payload: WebRtcSignalPayload {
+            sdp: Some("v=0".to_string()),
+            candidates: None,
+        },
     };
     let json = serde_json::to_string(&signal).unwrap();
-    assert!(json.contains(r#""sessionId":"abc""#));
+    assert!(json.contains(r#""negotiationId":"abc""#));
+    assert!(json.contains(r#""linkType":"webrtc""#));
     assert!(json.contains(r#""createdAtMs":1"#));
     assert!(json.contains(r#""expiresAtMs":2"#));
 }
@@ -158,23 +159,23 @@ async fn webrtc_queues_negotiation_for_fips_session_without_relay_client() {
         .expect("remote Nostr pubkey");
     let now = now_ms();
     let signal = WebRtcSignal {
-        protocol: WEBRTC_PROTOCOL.to_string(),
-        version: WEBRTC_SIGNAL_VERSION,
-        session_id: "test-session".to_string(),
-        kind: WebRtcSignalKind::Offer,
-        sender: hex::encode(identity.pubkey_full().serialize()),
-        recipient: hex::encode(remote.pubkey_full().serialize()),
-        sdp: Some("v=0".to_string()),
-        candidates: None,
+        version: crate::transport::link_negotiation::LINK_NEGOTIATION_VERSION,
+        negotiation_id: "test-session".to_string(),
+        link_type: "webrtc".to_string(),
+        kind: LinkNegotiationKind::Offer,
         created_at_ms: now,
         expires_at_ms: now + SIGNAL_TTL_MS,
+        payload: WebRtcSignalPayload {
+            sdp: Some("v=0".to_string()),
+            candidates: None,
+        },
     };
     transport
         .signaling
         .send_signal(remote_nostr, &signal)
         .await
         .expect("queue FIPS session signal");
-    let queued = transport.drain_session_signals(1);
+    let queued = transport.drain_link_negotiations(1);
     assert_eq!(queued.len(), 1);
     assert_eq!(queued[0].recipient, *remote.node_addr());
 }

@@ -634,32 +634,32 @@ impl Node {
     }
 
     #[cfg(feature = "webrtc-transport")]
-    fn handle_webrtc_session_signal(&mut self, src_addr: &NodeAddr, body: &[u8]) {
-        let result = self
-            .transports
-            .values()
-            .find(|transport| matches!(transport, TransportHandle::WebRtc(_)))
-            .ok_or_else(|| "no WebRTC transport configured".to_string())
-            .and_then(|transport| {
-                transport
-                    .ingest_webrtc_session_signal(src_addr, body)
+    fn handle_link_negotiation_service(&mut self, src_addr: &NodeAddr, body: &[u8]) {
+        let result = crate::transport::link_negotiation::LinkNegotiationMessage::decode(body)
+            .and_then(|message| {
+                message.validate(crate::time::now_ms())?;
+                if self.enforces_configured_only_peer_admission()
+                    && self.configured_peer(src_addr).is_none()
+                {
+                    return Err("link negotiation rejected for non-configured peer".into());
+                }
+                let source = self
+                    .pubkey_for_node_addr(src_addr)
+                    .ok_or_else(|| "missing authenticated peer identity".to_string())?;
+                self.transports
+                    .values()
+                    .find(|transport| matches!(transport, TransportHandle::WebRtc(_)))
+                    .ok_or_else(|| "no enabled adapter accepts this negotiation".to_string())?
+                    .ingest_link_negotiation(source, message)
                     .map_err(|error| error.to_string())
             });
         if let Err(error) = result {
             debug!(
                 src = %self.peer_display_name(src_addr),
                 error = %error,
-                "Ignoring WebRTC FIPS-session signal"
+                "Ignoring FIPS link negotiation"
             );
         }
-    }
-
-    #[cfg(not(feature = "webrtc-transport"))]
-    fn handle_webrtc_session_signal(&mut self, src_addr: &NodeAddr, _body: &[u8]) {
-        trace!(
-            src = %self.peer_display_name(src_addr),
-            "Ignoring WebRTC session signal without WebRTC transport support"
-        );
     }
 
 }

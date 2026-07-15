@@ -340,8 +340,19 @@ impl AuthenticatedSessionDispatch {
     }
 
     fn is_service_data_packet(&self) -> bool {
-        self.service_ports()
-            .is_some_and(|(_, destination_port)| destination_port != FSP_PORT_IPV6_SHIM)
+        let Some((_, destination_port)) = self.service_ports() else {
+            return false;
+        };
+        if destination_port == FSP_PORT_IPV6_SHIM {
+            return false;
+        }
+        #[cfg(feature = "webrtc-transport")]
+        if destination_port
+            == crate::transport::link_negotiation::LINK_NEGOTIATION_SERVICE_PORT
+        {
+            return false;
+        }
+        true
     }
 
     fn body(&self) -> &[u8] {
@@ -407,6 +418,13 @@ impl AuthenticatedSessionDispatch {
                 let ce_flag = self.ce_flag();
 
                 match dst_port {
+                    #[cfg(feature = "webrtc-transport")]
+                    port if port
+                        == crate::transport::link_negotiation::LINK_NEGOTIATION_SERVICE_PORT =>
+                    {
+                        let payload = &self.body()[FSP_PORT_HEADER_SIZE..];
+                        node.handle_link_negotiation_service(&source_addr, payload);
+                    }
                     FSP_PORT_IPV6_SHIM => {
                         use crate::FipsAddress;
                         let src_ipv6 = FipsAddress::from_node_addr(&source_addr).to_ipv6().octets();
@@ -473,10 +491,6 @@ impl AuthenticatedSessionDispatch {
             Some(SessionMessageType::TraversalAnswer) => {
                 let rest = self.body();
                 node.handle_mesh_traversal_answer(&source_addr, rest).await;
-            }
-            Some(SessionMessageType::WebRtcSignal) => {
-                let rest = self.body();
-                node.handle_webrtc_session_signal(&source_addr, rest);
             }
             Some(SessionMessageType::SenderReport) => {
                 let rest = self.body();

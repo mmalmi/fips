@@ -48,31 +48,32 @@ pub enum TransportHandle {
 }
 
 impl TransportHandle {
-    /// Drain WebRTC negotiation messages that must travel over authenticated
-    /// FIPS sessions.
+    /// Drain adapter negotiations that must travel over the standard FSP
+    /// link-negotiation service.
     #[cfg(feature = "webrtc-transport")]
-    pub(crate) fn drain_webrtc_session_signals(
+    pub(crate) fn drain_link_negotiations(
         &mut self,
         limit: usize,
-    ) -> Vec<super::webrtc::OutboundWebRtcSignal> {
+    ) -> Vec<super::link_negotiation::OutboundLinkNegotiation> {
         match self {
-            TransportHandle::WebRtc(transport) => transport.drain_session_signals(limit),
+            TransportHandle::WebRtc(transport) => transport.drain_link_negotiations(limit),
             _ => Vec::new(),
         }
     }
 
-    /// Deliver a WebRTC negotiation message received over an authenticated
-    /// FIPS session.
+    /// Deliver an authenticated negotiation to the enabled matching adapter.
     #[cfg(feature = "webrtc-transport")]
-    pub(crate) fn ingest_webrtc_session_signal(
+    pub(crate) fn ingest_link_negotiation(
         &self,
-        source: &crate::NodeAddr,
-        payload: &[u8],
+        source: secp256k1::PublicKey,
+        message: super::link_negotiation::LinkNegotiationMessage,
     ) -> Result<(), TransportError> {
         match self {
-            TransportHandle::WebRtc(transport) => transport.ingest_session_signal(source, payload),
+            TransportHandle::WebRtc(transport) if message.link_type == "webrtc" => {
+                transport.ingest_link_negotiation(source, message)
+            }
             _ => Err(TransportError::NotSupported(
-                "transport is not WebRTC".into(),
+                "no enabled adapter accepts this link negotiation".into(),
             )),
         }
     }

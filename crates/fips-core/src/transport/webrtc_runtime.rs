@@ -84,23 +84,23 @@ impl WebRtcRuntime {
             .sdp;
         let now = now_ms();
         let signal = WebRtcSignal {
-            protocol: WEBRTC_PROTOCOL.to_string(),
-            version: WEBRTC_SIGNAL_VERSION,
-            session_id,
-            kind: WebRtcSignalKind::Offer,
-            sender: self.local_pubkey_hex.clone(),
-            recipient: remote_pubkey_hex,
-            sdp: Some(sdp),
-            candidates: None,
+            version: crate::transport::link_negotiation::LINK_NEGOTIATION_VERSION,
+            negotiation_id: session_id,
+            link_type: "webrtc".to_string(),
+            kind: LinkNegotiationKind::Offer,
             created_at_ms: now,
             expires_at_ms: now.saturating_add(SIGNAL_TTL_MS),
+            payload: WebRtcSignalPayload {
+                sdp: Some(sdp),
+                candidates: None,
+            },
         };
         self.signaling.send_signal(remote_xonly, &signal).await?;
         debug!(
             transport_id = %self.transport_id,
             remote_addr = %remote_addr,
-            session = %signal.session_id,
-            sdp_bytes = signal.sdp.as_ref().map(|s| s.len()).unwrap_or(0),
+            negotiation = %signal.negotiation_id,
+            sdp_bytes = signal.payload.sdp.as_ref().map(|s| s.len()).unwrap_or(0),
             "WebRTC offer sent"
         );
         Ok(())
@@ -111,25 +111,30 @@ impl WebRtcRuntime {
         debug!(
             transport_id = %self.transport_id,
             kind = ?signal.kind,
-            session = %signal.session_id,
-            sender = %signal.sender,
+            negotiation = %signal.negotiation_id,
+            sender = %incoming.sender_full_hex,
             "WebRTC signal received"
         );
-        self.validate_signal(&signal, incoming.sender)?;
+        self.validate_signal(&signal)?;
         match signal.kind {
-            WebRtcSignalKind::Offer => self.handle_offer(signal, incoming.sender).await,
-            WebRtcSignalKind::Answer => self.handle_answer(signal).await,
-            WebRtcSignalKind::Reject => {
-                let addr = TransportAddr::from_string(&signal.sender);
+            LinkNegotiationKind::Offer => {
+                self.handle_offer(signal, incoming.sender, incoming.sender_full_hex)
+                    .await
+            }
+            LinkNegotiationKind::Answer => {
+                self.handle_answer(signal, &incoming.sender_full_hex).await
+            }
+            LinkNegotiationKind::Reject => {
+                let addr = TransportAddr::from_string(&incoming.sender_full_hex);
                 self.mark_session_failed(
                     addr,
-                    &signal.session_id,
+                    &signal.negotiation_id,
                     "peer rejected WebRTC session".to_string(),
                 )
                 .await;
                 Ok(())
             }
-            WebRtcSignalKind::Candidate => Ok(()),
+            LinkNegotiationKind::Candidate => Ok(()),
         }
     }
 
@@ -137,11 +142,9 @@ impl WebRtcRuntime {
         &self,
         signal: WebRtcSignal,
         sender_xonly: PublicKey,
+        sender_full_hex: String,
     ) -> Result<(), TransportError> {
-        if !self.config.accept_connections() {
-            return Ok(());
-        }
-        let remote_addr = TransportAddr::from_string(&signal.sender);
+        let remote_addr = TransportAddr::from_string(&sender_full_hex);
         let pending = self.pending.lock().await.get(&remote_addr).map(|pending| {
             (
                 pending.session_id.clone(),
@@ -149,13 +152,19 @@ impl WebRtcRuntime {
                 pending.origin,
             )
         });
+        if !self.config.accept_connections() && pending.is_none() {
+            let _ = self
+                .send_reject(sender_xonly, signal.negotiation_id.clone())
+                .await;
+            return Err(TransportError::ConnectionRefused);
+        }
         if let Some((pending_session, pending_created_at_ms, pending_origin)) = pending {
-            if pending_session == signal.session_id {
+            if pending_session == signal.negotiation_id {
                 return Ok(());
             }
             if !incoming_offer_replaces_pending(
                 &self.local_pubkey_hex,
-                &signal.sender,
+                &sender_full_hex,
                 pending_origin,
                 pending_created_at_ms,
                 signal.created_at_ms,
@@ -168,14 +177,16 @@ impl WebRtcRuntime {
             )
             .await
             {
-                let _ = self.send_reject(&signal.sender, sender_xonly, signal.session_id).await;
+                let _ = self
+                    .send_reject(sender_xonly, signal.negotiation_id)
+                    .await;
                 return Err(TransportError::ConnectionRefused);
             }
         }
         if !accept_webrtc_offer_once(
             &self.seen_sessions,
             &remote_addr,
-            &signal.session_id,
+            &signal.negotiation_id,
             signal.expires_at_ms,
             now_ms(),
         )
@@ -184,12 +195,12 @@ impl WebRtcRuntime {
             debug!(
                 transport_id = %self.transport_id,
                 remote_addr = %remote_addr,
-                session = %signal.session_id,
+                negotiation = %signal.negotiation_id,
                 "duplicate WebRTC offer ignored"
             );
             return Ok(());
         }
-        let offer = RTCSessionDescription::offer(signal.sdp.clone().unwrap_or_default())
+        let offer = RTCSessionDescription::offer(signal.payload.sdp.clone().unwrap_or_default())
             .map_err(|e| TransportError::StartFailed(e.to_string()))?;
         match prepare_pooled_webrtc_session_for_offer(
             &self.pool,
@@ -197,7 +208,7 @@ impl WebRtcRuntime {
             &self.failed,
             &self.ready,
             &remote_addr,
-            &signal.session_id,
+            &signal.negotiation_id,
             &self.local_pubkey_hex,
         )
         .await
@@ -205,18 +216,22 @@ impl WebRtcRuntime {
             PooledOfferDisposition::Accept => {}
             PooledOfferDisposition::IgnoreReplay => return Ok(()),
             PooledOfferDisposition::Redial => {
-                let _ = self.send_reject(&signal.sender, sender_xonly, signal.session_id).await;
+                let _ = self
+                    .send_reject(sender_xonly, signal.negotiation_id)
+                    .await;
                 return self.start_outbound(remote_addr).await;
             }
         }
         if self.pool.lock().await.len() + self.pending.lock().await.len()
             >= self.config.max_connections()
         {
-            let _ = self.send_reject(&signal.sender, sender_xonly, signal.session_id).await;
+            let _ = self
+                .send_reject(sender_xonly, signal.negotiation_id)
+                .await;
             return Err(TransportError::ConnectionRefused);
         }
 
-        let session_id = signal.session_id.clone();
+        let session_id = signal.negotiation_id.clone();
         let pc = Arc::new(self.new_peer_connection().await?);
         let runtime = self.clone();
         let pc_for_data_channel = Arc::downgrade(&pc);
@@ -245,7 +260,7 @@ impl WebRtcRuntime {
             .await
         {
             close_peer_connection_bounded(pc).await;
-            let _ = self.send_reject(&signal.sender, sender_xonly, session_id).await;
+            let _ = self.send_reject(sender_xonly, session_id).await;
             return Err(TransportError::ConnectionRefused);
         }
         wire_peer_connection_state(
@@ -281,23 +296,23 @@ impl WebRtcRuntime {
                 .sdp;
             let now = now_ms();
             let reply = WebRtcSignal {
-                protocol: WEBRTC_PROTOCOL.to_string(),
-                version: WEBRTC_SIGNAL_VERSION,
-                session_id: session_id.clone(),
-                kind: WebRtcSignalKind::Answer,
-                sender: self.local_pubkey_hex.clone(),
-                recipient: signal.sender.clone(),
-                sdp: Some(sdp),
-                candidates: None,
+                version: crate::transport::link_negotiation::LINK_NEGOTIATION_VERSION,
+                negotiation_id: session_id.clone(),
+                link_type: "webrtc".to_string(),
+                kind: LinkNegotiationKind::Answer,
                 created_at_ms: now,
                 expires_at_ms: now.saturating_add(SIGNAL_TTL_MS),
+                payload: WebRtcSignalPayload {
+                    sdp: Some(sdp),
+                    candidates: None,
+                },
             };
             self.signaling.send_signal(sender_xonly, &reply).await?;
             debug!(
                 transport_id = %self.transport_id,
                 remote_addr = %remote_addr,
-                session = %reply.session_id,
-                sdp_bytes = reply.sdp.as_ref().map(|s| s.len()).unwrap_or(0),
+                negotiation = %reply.negotiation_id,
+                sdp_bytes = reply.payload.sdp.as_ref().map(|s| s.len()).unwrap_or(0),
                 "WebRTC answer sent"
             );
             Ok(())
@@ -343,29 +358,33 @@ impl WebRtcRuntime {
         true
     }
 
-    async fn handle_answer(&self, signal: WebRtcSignal) -> Result<(), TransportError> {
-        let remote_addr = TransportAddr::from_string(&signal.sender);
+    async fn handle_answer(
+        &self,
+        signal: WebRtcSignal,
+        sender_full_hex: &str,
+    ) -> Result<(), TransportError> {
+        let remote_addr = TransportAddr::from_string(sender_full_hex);
         let pc = {
             let pending = self.pending.lock().await;
             let Some(pending) = pending.get(&remote_addr) else {
                 return Ok(());
             };
-            if pending.session_id != signal.session_id {
+            if pending.session_id != signal.negotiation_id {
                 return Err(TransportError::StartFailed(
                     "WebRTC answer session mismatch".into(),
                 ));
             }
             Arc::clone(&pending.pc)
         };
-        let answer = RTCSessionDescription::answer(signal.sdp.unwrap_or_default())
+        let answer = RTCSessionDescription::answer(signal.payload.sdp.unwrap_or_default())
             .map_err(|e| TransportError::StartFailed(e.to_string()))?;
         pc.set_remote_description(answer)
             .await
             .map_err(|e| TransportError::StartFailed(e.to_string()))?;
         debug!(
             transport_id = %self.transport_id,
-            remote_addr = %signal.sender,
-            session = %signal.session_id,
+            remote_addr = %sender_full_hex,
+            negotiation = %signal.negotiation_id,
             "WebRTC answer applied"
         );
         Ok(())
@@ -373,22 +392,21 @@ impl WebRtcRuntime {
 
     async fn send_reject(
         &self,
-        recipient_full_hex: &str,
         recipient_xonly: PublicKey,
         session_id: String,
     ) -> Result<(), TransportError> {
         let now = now_ms();
         let reject = WebRtcSignal {
-            protocol: WEBRTC_PROTOCOL.to_string(),
-            version: WEBRTC_SIGNAL_VERSION,
-            session_id,
-            kind: WebRtcSignalKind::Reject,
-            sender: self.local_pubkey_hex.clone(),
-            recipient: recipient_full_hex.to_string(),
-            sdp: None,
-            candidates: None,
+            version: crate::transport::link_negotiation::LINK_NEGOTIATION_VERSION,
+            negotiation_id: session_id,
+            link_type: "webrtc".to_string(),
+            kind: LinkNegotiationKind::Reject,
             created_at_ms: now,
             expires_at_ms: now.saturating_add(SIGNAL_TTL_MS),
+            payload: WebRtcSignalPayload {
+                sdp: None,
+                candidates: None,
+            },
         };
         self.signaling.send_signal(recipient_xonly, &reject).await
     }
@@ -410,28 +428,13 @@ impl WebRtcRuntime {
             .map_err(|e| TransportError::StartFailed(e.to_string()))
     }
 
-    fn validate_signal(
-        &self,
-        signal: &WebRtcSignal,
-        outer_sender: PublicKey,
-    ) -> Result<(), TransportError> {
-        if signal.protocol != WEBRTC_PROTOCOL {
-            return Err(TransportError::InvalidAddress("bad WebRTC protocol".into()));
-        }
-        if signal.version != WEBRTC_SIGNAL_VERSION {
+    fn validate_signal(&self, signal: &WebRtcSignal) -> Result<(), TransportError> {
+        if signal.version != crate::transport::link_negotiation::LINK_NEGOTIATION_VERSION {
             return Err(TransportError::InvalidAddress("bad WebRTC version".into()));
         }
-        if signal.recipient != self.local_pubkey_hex {
+        if signal.link_type != "webrtc" {
             return Err(TransportError::InvalidAddress(
-                "WebRTC signal recipient is not local identity".into(),
-            ));
-        }
-        validate_compressed_pubkey_hex(&signal.sender)?;
-        validate_compressed_pubkey_hex(&signal.recipient)?;
-        let sender_xonly = xonly_from_compressed_hex(&signal.sender)?;
-        if sender_xonly != outer_sender {
-            return Err(TransportError::InvalidAddress(
-                "WebRTC signal sender does not match FIPS session sender".into(),
+                "bad WebRTC link-negotiation type".into(),
             ));
         }
         let now = now_ms();
@@ -440,11 +443,25 @@ impl WebRtcRuntime {
         }
         if matches!(
             signal.kind,
-            WebRtcSignalKind::Offer | WebRtcSignalKind::Answer
-        ) && signal.sdp.as_deref().unwrap_or_default().is_empty()
+            LinkNegotiationKind::Offer | LinkNegotiationKind::Answer
+        ) && signal
+            .payload
+            .sdp
+            .as_deref()
+            .is_none_or(|sdp| sdp.is_empty() || sdp.len() > MAX_WEBRTC_SDP_LENGTH)
         {
             return Err(TransportError::InvalidAddress(
-                "WebRTC offer/answer requires SDP".into(),
+                "WebRTC offer/answer requires bounded SDP".into(),
+            ));
+        }
+        if let Some(candidates) = &signal.payload.candidates
+            && (candidates.len() > MAX_WEBRTC_CANDIDATES
+                || candidates
+                    .iter()
+                    .any(|candidate| candidate.candidate.len() > MAX_WEBRTC_CANDIDATE_LENGTH))
+        {
+            return Err(TransportError::InvalidAddress(
+                "WebRTC candidate payload exceeds limits".into(),
             ));
         }
         Ok(())

@@ -415,8 +415,9 @@ impl FipsEndpoint {
 
     /// Register one local FSP DataPacket destination port.
     ///
-    /// Port 256 remains reserved for the built-in IPv6 shim. Datagrams for
-    /// unregistered ports are discarded by the authenticated receive path.
+    /// Ports 256 and 257 remain reserved for the built-in IPv6 shim and link
+    /// negotiation service. Datagrams for unregistered ports are discarded by
+    /// the authenticated receive path.
     pub async fn register_service(&self, port: u16) -> Result<(), FipsEndpointError> {
         self.register_service_with_sender(port, self.inbound_service_tx.clone())
             .await
@@ -439,7 +440,9 @@ impl FipsEndpoint {
         port: u16,
         sender: EndpointServiceEventSender,
     ) -> Result<(), FipsEndpointError> {
-        if port == crate::node::session_wire::FSP_PORT_IPV6_SHIM {
+        if port == crate::node::session_wire::FSP_PORT_IPV6_SHIM
+            || port == crate::transport::link_negotiation::LINK_NEGOTIATION_SERVICE_PORT
+        {
             return Err(FipsEndpointError::ServicePortReserved { port });
         }
 

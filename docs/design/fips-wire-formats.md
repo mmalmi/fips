@@ -607,7 +607,12 @@ The receiver dispatches by `dst_port` to the registered service handler.
 | 256–1023 (0x100–0x3FF) | Reserved, FIPS standard services |
 | 1024–65535 (0x400–0xFFFF) | Application use |
 
-**Initial assignment**: Port 256 (0x100) = IPv6 shim.
+**Standard service assignments**:
+
+- Port 256 (0x100) = IPv6 shim.
+- Port 257 (0x101) = generic link negotiation. Its service payload selects a
+  link adapter and carries that adapter's offer/answer data. This uses the
+  existing DataPacket wire format and does not allocate an FSP message type.
 
 #### IPv6 Shim Payload Format (Port 256)
 

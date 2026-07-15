@@ -5,6 +5,9 @@
 //! messages. The data channel is configured as unordered and zero-retransmit
 //! by default so it behaves like a datagram-ish transport.
 
+use super::link_negotiation::{
+    LinkNegotiationKind, LinkNegotiationMessage, OutboundLinkNegotiation,
+};
 use super::{
     ConnectionState, DiscoveredPeer, PacketBuffer, PacketTx, ReceivedPacket, Transport,
     TransportAddr, TransportError, TransportId, TransportState, TransportType,
@@ -35,28 +38,19 @@ use tokio::sync::{Mutex, mpsc};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, info, trace, warn};
 
-const WEBRTC_PROTOCOL: &str = "fips-webrtc-v1";
-const WEBRTC_SIGNAL_VERSION: u32 = 1;
 const SIGNAL_TTL_MS: u64 = 60_000;
 const WEBRTC_READY_FRAME: &[u8] = &[0xff, 0x46, 0x57, 0x52, 0x31]; // FWR1
 const WEBRTC_READY_FALLBACK_MS: u64 = 250;
 const WEBRTC_IO_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_WEBRTC_SIGNAL_TASKS: usize = 32;
 const MAX_WEBRTC_SEEN_SESSIONS: usize = 1024;
+const MAX_WEBRTC_SDP_LENGTH: usize = 48 * 1024;
+const MAX_WEBRTC_CANDIDATES: usize = 32;
+const MAX_WEBRTC_CANDIDATE_LENGTH: usize = 2048;
 
 mod signaling;
 
 use signaling::FipsSignalSender;
-pub(crate) use signaling::OutboundWebRtcSignal;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum WebRtcSignalKind {
-    Offer,
-    Answer,
-    Candidate,
-    Reject,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,24 +64,19 @@ struct IceCandidateJson {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct WebRtcSignal {
-    protocol: String,
-    version: u32,
-    session_id: String,
-    kind: WebRtcSignalKind,
-    sender: String,
-    recipient: String,
+struct WebRtcSignalPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     sdp: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     candidates: Option<Vec<IceCandidateJson>>,
-    created_at_ms: u64,
-    expires_at_ms: u64,
 }
+
+type WebRtcSignal = LinkNegotiationMessage<WebRtcSignalPayload>;
 
 struct IncomingSignal {
     signal: WebRtcSignal,
     sender: PublicKey,
+    sender_full_hex: String,
 }
 
 struct WebRtcConnection {
@@ -130,7 +119,7 @@ pub struct WebRtcTransport {
     seen_sessions: SeenSessionPool,
     signal_tx: mpsc::UnboundedSender<IncomingSignal>,
     signal_rx: Option<mpsc::UnboundedReceiver<IncomingSignal>>,
-    outgoing_signal_rx: mpsc::UnboundedReceiver<OutboundWebRtcSignal>,
+    outgoing_signal_rx: mpsc::UnboundedReceiver<OutboundLinkNegotiation>,
     signal_task: Option<JoinHandle<()>>,
     signaling: FipsSignalSender,
     local_pubkey_hex: String,
@@ -373,7 +362,7 @@ impl WebRtcTransport {
 
     /// Drain SDP negotiation messages for delivery over encrypted FIPS
     /// sessions. Relay adapters must never consume or republish this queue.
-    pub(crate) fn drain_session_signals(&mut self, limit: usize) -> Vec<OutboundWebRtcSignal> {
+    pub(crate) fn drain_link_negotiations(&mut self, limit: usize) -> Vec<OutboundLinkNegotiation> {
         let mut drained = Vec::with_capacity(limit.min(32));
         while drained.len() < limit {
             match self.outgoing_signal_rx.try_recv() {
@@ -388,24 +377,24 @@ impl WebRtcTransport {
 
     /// Deliver an authenticated FIPS-session SDP negotiation message to the
     /// WebRTC runtime.
-    pub(crate) fn ingest_session_signal(
+    pub(crate) fn ingest_link_negotiation(
         &self,
-        source: &crate::NodeAddr,
-        payload: &[u8],
+        source: secp256k1::PublicKey,
+        message: LinkNegotiationMessage,
     ) -> Result<(), TransportError> {
-        let signal = serde_json::from_slice::<WebRtcSignal>(payload)
+        let signal = message
+            .typed_payload::<WebRtcSignalPayload>()
             .map_err(|error| TransportError::InvalidAddress(error.to_string()))?;
-        let sender = xonly_from_compressed_hex(&signal.sender)?;
-        let sender_xonly = secp256k1::XOnlyPublicKey::from_slice(sender.as_bytes())
+        let (sender_xonly, _) = source.x_only_public_key();
+        let sender = PublicKey::from_slice(&sender_xonly.serialize())
             .map_err(|error| TransportError::InvalidAddress(error.to_string()))?;
-        let sender_addr = crate::NodeAddr::from_pubkey(&sender_xonly);
-        if &sender_addr != source {
-            return Err(TransportError::InvalidAddress(
-                "WebRTC signal sender does not match FIPS session source".into(),
-            ));
-        }
+        let sender_full_hex = hex::encode(source.serialize());
         self.signal_tx
-            .send(IncomingSignal { signal, sender })
+            .send(IncomingSignal {
+                signal,
+                sender,
+                sender_full_hex,
+            })
             .map_err(|_| TransportError::NotStarted)
     }
 

@@ -9,9 +9,10 @@ FIPS uses Nostr for two deliberately separate jobs:
    when no direct transport is available yet.
 
 There is no DM-relay configuration or Nostr-specific offer/answer plane.
-UDP traversal and WebRTC negotiation are ordinary encrypted FIPS session
-messages. Once a relay-carried session exists, FIPS can negotiate a better
-UDP, WebRTC, or TCP path over that authenticated session.
+UDP traversal uses its existing session messages. Generic link negotiation is
+an ordinary service carried by the existing FSP `DataPacket` message (`0x10`)
+on standard service port 257. Once a relay-carried session exists, FIPS can
+negotiate a better UDP, WebRTC, or TCP path without adding an FSP message type.
 
 ## Ownership boundary
 
@@ -210,10 +211,22 @@ duplicated session messages.
 
 ### WebRTC
 
-WebRTC SDP/ICE negotiation is also carried as authenticated FIPS session
-messages. The WebRTC transport has an internal signal outbox/inbox but no
-Nostr client and no relay URL configuration. Once negotiated, its SCTP data
-channel carries FIPS traffic directly.
+WebRTC SDP/ICE is an adapter payload inside the generic link-negotiation
+service. The envelope identifies the link type, negotiation ID, step, lifetime,
+and adapter-owned payload; FSP supplies the authenticated peer identity and
+replay protection. The WebRTC transport has no Nostr client or relay URL
+configuration. Once negotiated, its SCTP data channel carries FIPS traffic
+directly.
+
+An unsolicited WebRTC offer is eligible only when the adapter is enabled and
+inbound acceptance is enabled. By default, inbound acceptance follows public
+WebRTC advertisement; an explicit `accept_connections` setting overrides that
+policy for private deployments. Capacity, one-pending-dial-per-peer behavior,
+expiry, replay suppression, and deterministic simultaneous-dial resolution are
+checked before allocating or retaining a connection.
+The node's discovery admission policy is also enforced: configured-only mode
+rejects negotiation from non-configured identities, while open mode relies on
+its existing bounded ambient-peer admission.
 
 ### TCP
 

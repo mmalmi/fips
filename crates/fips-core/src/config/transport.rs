@@ -868,7 +868,8 @@ pub struct WebRtcConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_connect: Option<bool>,
 
-    /// Accept inbound WebRTC offers. Default: true.
+    /// Accept inbound WebRTC offers. Defaults to `advertise_on_nostr`: a
+    /// non-advertising adapter has no inbound listener policy unless enabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accept_connections: Option<bool>,
 
@@ -920,7 +921,8 @@ impl WebRtcConfig {
 
     /// Whether this transport accepts inbound offers.
     pub fn accept_connections(&self) -> bool {
-        self.accept_connections.unwrap_or(true)
+        self.accept_connections
+            .unwrap_or_else(|| self.advertise_on_nostr())
     }
 
     /// Get the data-channel MTU.

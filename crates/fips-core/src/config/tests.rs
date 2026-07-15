@@ -764,6 +764,18 @@ fn test_webrtc_advert_uses_fips_session_signaling_without_relay_config() {
 }
 
 #[test]
+fn webrtc_inbound_acceptance_follows_advertisement_unless_explicit() {
+    let mut config = WebRtcConfig::default();
+    assert!(!config.accept_connections());
+
+    config.advertise_on_nostr = Some(true);
+    assert!(config.accept_connections());
+
+    config.accept_connections = Some(false);
+    assert!(!config.accept_connections());
+}
+
+#[test]
 fn deprecated_dm_and_webrtc_signal_relay_fields_are_rejected() {
     let dm_error = serde_yaml::from_str::<Config>(
         "node:\n  discovery:\n    nostr:\n      dm_relays: [wss://relay.example]\n",

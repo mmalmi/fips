@@ -21,6 +21,7 @@ pub mod ethernet;
 pub mod ble;
 
 mod handle;
+pub(crate) mod link_negotiation;
 mod packet_channel;
 
 #[cfg(test)]

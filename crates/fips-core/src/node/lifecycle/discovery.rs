@@ -343,7 +343,7 @@ impl Node {
             if remaining == 0 {
                 break;
             }
-            signals.extend(transport.drain_webrtc_session_signals(remaining));
+            signals.extend(transport.drain_link_negotiations(remaining));
         }
 
         for signal in signals {
@@ -354,6 +354,11 @@ impl Node {
                 );
                 continue;
             };
+            let mut payload = Vec::with_capacity(4 + signal.payload.len());
+            let port = crate::transport::link_negotiation::LINK_NEGOTIATION_SERVICE_PORT;
+            payload.extend_from_slice(&port.to_le_bytes());
+            payload.extend_from_slice(&port.to_le_bytes());
+            payload.extend_from_slice(&signal.payload);
             match self
                 .mesh_signal_session_action(signal.recipient, pubkey)
                 .await
@@ -364,8 +369,8 @@ impl Node {
                         .entry(signal.recipient)
                         .or_default()
                         .push(super::PendingMeshSignal {
-                            msg_type: SessionMessageType::WebRtcSignal.to_byte(),
-                            payload: signal.payload,
+                            msg_type: SessionMessageType::DataPacket.to_byte(),
+                            payload,
                         });
                     continue;
                 }
@@ -374,8 +379,8 @@ impl Node {
             if let Err(error) = self
                 .send_session_msg(
                     &signal.recipient,
-                    SessionMessageType::WebRtcSignal.to_byte(),
-                    &signal.payload,
+                    SessionMessageType::DataPacket.to_byte(),
+                    &payload,
                 )
                 .await
             {

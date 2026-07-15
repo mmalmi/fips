@@ -21,6 +21,7 @@
 //! ```
 //!
 //! Port 256 (0x100) = IPv6 shim with header compression.
+//! Port 257 (0x101) = generic link negotiation service.
 //!
 //! App-owned endpoint data uses EndpointData directly, without DataPacket port dispatch.
 //!
