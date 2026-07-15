@@ -1,10 +1,15 @@
+#[cfg(feature = "webrtc-transport")]
 use crate::NodeAddr;
+#[cfg(feature = "webrtc-transport")]
 use serde::de::DeserializeOwned;
+#[cfg(feature = "webrtc-transport")]
 use serde::{Deserialize, Serialize};
 
 pub(crate) const LINK_NEGOTIATION_SERVICE_PORT: u16 = 257;
+#[cfg(feature = "webrtc-transport")]
 pub(crate) const LINK_NEGOTIATION_VERSION: u32 = 1;
 
+#[cfg(feature = "webrtc-transport")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum LinkNegotiationKind {
@@ -14,6 +19,7 @@ pub(crate) enum LinkNegotiationKind {
     Reject,
 }
 
+#[cfg(feature = "webrtc-transport")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LinkNegotiationMessage<T = serde_json::Value> {
@@ -26,6 +32,7 @@ pub(crate) struct LinkNegotiationMessage<T = serde_json::Value> {
     pub(crate) payload: T,
 }
 
+#[cfg(feature = "webrtc-transport")]
 impl LinkNegotiationMessage {
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, String> {
         serde_json::from_slice(bytes).map_err(|error| error.to_string())
@@ -60,12 +67,13 @@ impl LinkNegotiationMessage {
     }
 }
 
+#[cfg(feature = "webrtc-transport")]
 pub(crate) struct OutboundLinkNegotiation {
     pub(crate) recipient: NodeAddr,
     pub(crate) payload: Vec<u8>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "webrtc-transport"))]
 mod tests {
     use super::*;
 

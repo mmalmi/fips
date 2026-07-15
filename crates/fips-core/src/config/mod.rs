@@ -50,13 +50,13 @@ pub use transport::{
 pub(crate) use webrtc_budget::{
     MAX_WEBRTC_CONFIG_CANDIDATE_SOCKETS, validate_webrtc_candidate_socket_budget,
 };
-#[cfg(any(feature = "webrtc-transport", test))]
+#[cfg(feature = "webrtc-transport")]
 pub(crate) use webrtc_budget::{
     MAX_WEBRTC_HOST_CANDIDATE_SOCKETS, MAX_WEBRTC_LOCAL_CANDIDATE_LINES,
     MAX_WEBRTC_LOCAL_CANDIDATE_ROUTES, MAX_WEBRTC_REMOTE_CANDIDATE_LINES,
     MAX_WEBRTC_REMOTE_CANDIDATE_ROUTES,
 };
-#[cfg(test)]
+#[cfg(all(test, feature = "webrtc-transport"))]
 pub(crate) use webrtc_budget::{MAX_WEBRTC_SOCKETS_PER_STUN_SERVER, MAX_WEBRTC_STUN_SERVERS};
 
 /// Default config filename.

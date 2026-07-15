@@ -9,11 +9,11 @@ pub(crate) const MAX_WEBRTC_CONFIG_CANDIDATE_SOCKETS: usize = 96;
 #[cfg(any(feature = "webrtc-transport", test))]
 pub(crate) const MAX_WEBRTC_LOCAL_CANDIDATE_ROUTES: usize = MAX_WEBRTC_HOST_CANDIDATE_SOCKETS
     + MAX_WEBRTC_STUN_SERVERS * MAX_WEBRTC_SOCKETS_PER_STUN_SERVER;
-#[cfg(any(feature = "webrtc-transport", test))]
+#[cfg(feature = "webrtc-transport")]
 pub(crate) const MAX_WEBRTC_LOCAL_CANDIDATE_LINES: usize = MAX_WEBRTC_LOCAL_CANDIDATE_ROUTES * 2;
-#[cfg(any(feature = "webrtc-transport", test))]
+#[cfg(feature = "webrtc-transport")]
 pub(crate) const MAX_WEBRTC_REMOTE_CANDIDATE_ROUTES: usize = 32;
-#[cfg(any(feature = "webrtc-transport", test))]
+#[cfg(feature = "webrtc-transport")]
 pub(crate) const MAX_WEBRTC_REMOTE_CANDIDATE_LINES: usize = MAX_WEBRTC_REMOTE_CANDIDATE_ROUTES * 2;
 
 pub(crate) fn validate_webrtc_candidate_socket_budget(
