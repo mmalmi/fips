@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [0.4.0] - 2026-07-15
 
 ### Changed
 
@@ -32,6 +32,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Made the relay fallback deliberately low priority so an established FIPS
   session can negotiate and move to UDP, WebRTC, or TCP when a better path is
   available.
+- Added capability-aware same-host instance discovery with an isolated local
+  scope, authenticated loopback admission, deterministic provider selection,
+  and application service/role advertisements. The public local-discovery
+  configuration is now non-exhaustive, so this release intentionally advances
+  the minor version rather than presenting the change as `0.3.100`.
+- Bounded optional-transport send work so unavailable companion transports do
+  not stall the endpoint send stack.
+- Corrected external peerfinding so application-owned EventBus discovery does
+  not report built-in advert-relay status.
+- Bumped `fips-endpoint` to 0.4.0 because its public facade reexports the
+  source-incompatible `fips-core` 0.4.0 API.
+
+## [0.3.99] - 2026-07-14 [YANKED]
+
+### Fixed
+
+- Yanked because external peerfinding could report built-in advert-relay
+  status, violating the EventBus ownership boundary. This release also carried
+  a temporary WebRTC-specific FSP message allocation; use 0.4.0, which carries
+  generic link negotiation through the existing DataPacket service on port 257.
 
 ## [0.3.98] - 2026-07-14
 
