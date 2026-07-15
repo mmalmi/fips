@@ -96,7 +96,7 @@ fn assert_loopback_transport(peer: &FipsEndpointPeer, expected_transport: &str) 
     assert!(addr.ip().is_loopback());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn local_consumer_reaches_remote_service_only_through_selected_egress_provider() {
     // Provider ranking/withdrawal has its own focused registry test. One
     // provider here keeps the asserted transport topology unambiguous.

@@ -130,7 +130,8 @@ impl TransportHandle {
             }
             TransportHandle::Tor(t) => t.send_async(addr, data).await,
             #[cfg(feature = "webrtc-transport")]
-            TransportHandle::WebRtc(t) => t.send_async(addr, data).await,
+            // Keep this optional adapter's large future out of every transport send frame.
+            TransportHandle::WebRtc(t) => Box::pin(t.send_async(addr, data)).await,
             #[cfg(target_os = "linux")]
             TransportHandle::Ble(t) => t.send_async(addr, data).await,
         }
