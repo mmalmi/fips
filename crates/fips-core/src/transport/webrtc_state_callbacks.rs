@@ -87,8 +87,13 @@ fn spawn_webrtc_ready_fallback(
     pool: ConnectionPool,
     ready: ReadyPool,
 ) {
+    let pool = Arc::downgrade(&pool);
+    let ready = Arc::downgrade(&ready);
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(WEBRTC_READY_FALLBACK_MS)).await;
+        let (Some(pool), Some(ready)) = (pool.upgrade(), ready.upgrade()) else {
+            return;
+        };
         if pool
             .lock()
             .await

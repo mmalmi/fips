@@ -18,6 +18,143 @@ struct OpenFileModes {
     other: usize,
 }
 
+struct ChurnPeers<'a> {
+    churn_identity: &'a crate::Identity,
+    stable_identity: &'a crate::Identity,
+    churn_addr: &'a TransportAddr,
+    stable_addr: &'a TransportAddr,
+}
+
+#[tokio::test]
+async fn fresh_replacement_with_one_slot_finishes_inside_connect_timeout() {
+    let (churn_identity, stable_identity) = ordered_identities();
+    let churn_addr = identity_addr(&churn_identity);
+    let stable_addr = identity_addr(&stable_identity);
+    let peers = ChurnPeers {
+        churn_identity: &churn_identity,
+        stable_identity: &stable_identity,
+        churn_addr: &churn_addr,
+        stable_addr: &stable_addr,
+    };
+    let config = WebRtcConfig {
+        accept_connections: Some(true),
+        max_connections: Some(1),
+        connect_timeout_ms: Some(2_000),
+        ice_gather_timeout_ms: Some(250),
+        stun_servers: Some(Vec::new()),
+        ..WebRtcConfig::default()
+    };
+    let (mut churn_a, _churn_a_rx) = new_transport(66, &churn_identity, &config);
+    let (mut churn_b, mut churn_b_rx) = new_transport(67, &churn_identity, &config);
+    let (mut stable, mut stable_rx) = new_transport(68, &stable_identity, &config);
+    churn_a.start_async().await.expect("start churn A");
+    churn_b.start_async().await.expect("start churn B");
+    stable.start_async().await.expect("start stable peer");
+
+    reconnect(
+        &mut churn_a,
+        &mut stable,
+        &peers,
+        "focused initial connection",
+    )
+    .await;
+    tokio::time::timeout(
+        Duration::from_millis(config.connect_timeout_ms()),
+        fresh_replace(
+            &churn_a,
+            &mut churn_b,
+            &mut stable,
+            &peers,
+            "focused fresh replacement",
+        ),
+    )
+    .await
+    .expect("fresh replacement stays inside the configured connection timeout");
+    assert_round_trip(
+        &churn_b,
+        &stable,
+        &mut churn_b_rx,
+        &mut stable_rx,
+        &churn_addr,
+        &stable_addr,
+        0,
+    )
+    .await;
+
+    churn_b.close_connection_async(&stable_addr).await;
+    stable.close_connection_async(&churn_addr).await;
+    wait_for_resource_quiescence(&[&churn_a, &churn_b, &stable]).await;
+    churn_a.stop_async().await.expect("stop churn A");
+    churn_b.stop_async().await.expect("stop churn B");
+    stable.stop_async().await.expect("stop stable peer");
+}
+
+#[tokio::test]
+async fn established_on_open_callbacks_release_maps_after_direct_drop() {
+    let (churn_identity, stable_identity) = ordered_identities();
+    let churn_addr = identity_addr(&churn_identity);
+    let stable_addr = identity_addr(&stable_identity);
+    let peers = ChurnPeers {
+        churn_identity: &churn_identity,
+        stable_identity: &stable_identity,
+        churn_addr: &churn_addr,
+        stable_addr: &stable_addr,
+    };
+    let config = WebRtcConfig {
+        accept_connections: Some(true),
+        max_connections: Some(1),
+        connect_timeout_ms: Some(2_000),
+        ice_gather_timeout_ms: Some(250),
+        stun_servers: Some(Vec::new()),
+        ..WebRtcConfig::default()
+    };
+    let (mut churn, _churn_rx) = new_transport(64, &churn_identity, &config);
+    let (mut stable, _stable_rx) = new_transport(65, &stable_identity, &config);
+    churn.start_async().await.expect("start churn peer");
+    stable.start_async().await.expect("start stable peer");
+    reconnect(
+        &mut churn,
+        &mut stable,
+        &peers,
+        "focused on-open Drop",
+    )
+    .await;
+
+    let weak_churn_pool = Arc::downgrade(&churn.pool);
+    let weak_churn_ready = Arc::downgrade(&churn.ready);
+    let weak_stable_pool = Arc::downgrade(&stable.pool);
+    let weak_stable_ready = Arc::downgrade(&stable.ready);
+    let churn_resources = churn.physical.clone();
+    let stable_resources = stable.physical.clone();
+    drop(churn);
+    drop(stable);
+
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if weak_churn_pool.upgrade().is_none()
+                && weak_churn_ready.upgrade().is_none()
+                && weak_stable_pool.upgrade().is_none()
+                && weak_stable_ready.upgrade().is_none()
+            {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("on-open callbacks release owner maps after direct Drop");
+    assert!(
+        churn_resources
+            .wait_for_quiescence(Duration::from_secs(3))
+            .await
+    );
+    assert!(
+        stable_resources
+            .wait_for_quiescence(Duration::from_secs(3))
+            .await
+    );
+}
+
 #[test]
 #[ignore = "release-only low-RLIMIT WebRTC FD soak"]
 fn webrtc_physical_connections_survive_low_fd_reconnect_churn() {
@@ -126,6 +263,12 @@ async fn run_low_fd_reconnect_churn(runtime_baseline: usize) {
     let (churn_identity, stable_identity) = ordered_identities();
     let churn_addr = identity_addr(&churn_identity);
     let stable_addr = identity_addr(&stable_identity);
+    let peers = ChurnPeers {
+        churn_identity: &churn_identity,
+        stable_identity: &stable_identity,
+        churn_addr: &churn_addr,
+        stable_addr: &stable_addr,
+    };
     let config = WebRtcConfig {
         accept_connections: Some(true),
         max_connections: Some(1),
@@ -155,13 +298,19 @@ async fn run_low_fd_reconnect_churn(runtime_baseline: usize) {
     let mut control_two = None;
     let mut control_ten = None;
     for cycle in 0..10 {
+        let context = format!("warm-up cycle {cycle}");
         let churn = if cycle % 2 == 0 {
             &mut churn_a
         } else {
             &mut churn_b
         };
-        reconnect(churn, &mut stable, &churn_identity, &stable_identity, &churn_addr, &stable_addr)
-            .await;
+        reconnect(
+            churn,
+            &mut stable,
+            &peers,
+            &context,
+        )
+        .await;
         churn.close_connection_async(&stable_addr).await;
         stable.close_connection_async(&churn_addr).await;
         wait_for_resource_quiescence(&[churn, &stable]).await;
@@ -204,24 +353,30 @@ async fn run_low_fd_reconnect_churn(runtime_baseline: usize) {
     reconnect(
         &mut churn_a,
         &mut stable,
-        &churn_identity,
-        &stable_identity,
-        &churn_addr,
-        &stable_addr,
+        &peers,
+        "canonical initial connection",
     )
     .await;
     let mut active_a = true;
     for iteration in 0..CANONICAL_CHURN_CYCLES {
+        let context = format!("canonical iteration {iteration}");
+        if iteration % 64 == 0 {
+            let (fd_count, fd_modes) = open_file_snapshot();
+            eprintln!(
+                "WebRTC FD progress: iteration={iteration} activeA={active_a} fds={fd_count} modes={fd_modes:?} churnA={:?} churnB={:?} stable={:?}",
+                churn_a.resource_snapshot(),
+                churn_b.resource_snapshot(),
+                stable.resource_snapshot()
+            );
+        }
         if iteration % 64 == 0 {
             if active_a {
                 abandon_then_retry(
                     &churn_a,
                     &mut churn_b,
                     &mut stable,
-                    &churn_identity,
-                    &stable_identity,
-                    &churn_addr,
-                    &stable_addr,
+                    &peers,
+                    &context,
                 )
                 .await;
             } else {
@@ -229,10 +384,8 @@ async fn run_low_fd_reconnect_churn(runtime_baseline: usize) {
                     &churn_b,
                     &mut churn_a,
                     &mut stable,
-                    &churn_identity,
-                    &stable_identity,
-                    &churn_addr,
-                    &stable_addr,
+                    &peers,
+                    &context,
                 )
                 .await;
             }
@@ -243,10 +396,8 @@ async fn run_low_fd_reconnect_churn(runtime_baseline: usize) {
                     &churn_a,
                     &mut churn_b,
                     &mut stable,
-                    &churn_identity,
-                    &stable_identity,
-                    &churn_addr,
-                    &stable_addr,
+                    &peers,
+                    &context,
                 )
                 .await;
             } else {
@@ -254,18 +405,28 @@ async fn run_low_fd_reconnect_churn(runtime_baseline: usize) {
                     &churn_b,
                     &mut churn_a,
                     &mut stable,
-                    &churn_identity,
-                    &stable_identity,
-                    &churn_addr,
-                    &stable_addr,
+                    &peers,
+                    &context,
                 )
                 .await;
             }
             active_a = !active_a;
         } else if active_a {
-            reconnect(&mut churn_a, &mut stable, &churn_identity, &stable_identity, &churn_addr, &stable_addr).await;
+            reconnect(
+                &mut churn_a,
+                &mut stable,
+                &peers,
+                &context,
+            )
+            .await;
         } else {
-            reconnect(&mut churn_b, &mut stable, &churn_identity, &stable_identity, &churn_addr, &stable_addr).await;
+            reconnect(
+                &mut churn_b,
+                &mut stable,
+                &peers,
+                &context,
+            )
+            .await;
         }
 
         if active_a {
@@ -284,6 +445,9 @@ async fn run_low_fd_reconnect_churn(runtime_baseline: usize) {
     for transport in [&churn_a, &churn_b, &stable] {
         assert_resource_quiescent(transport);
     }
+    let final_churn_a = churn_a.resource_snapshot();
+    let final_churn_b = churn_b.resource_snapshot();
+    let final_stable = stable.resource_snapshot();
     stop_sampler.store(true, Ordering::Release);
     sampler.await.expect("FD sampler");
     let (final_count, settle_samples) = settle_fd_count_async(runtime_baseline).await;
@@ -291,7 +455,7 @@ async fn run_low_fd_reconnect_churn(runtime_baseline: usize) {
     let peak_modes = *peak_modes.lock().expect("peak FD modes");
     let final_modes = open_file_snapshot().1;
     eprintln!(
-        "WebRTC FD churn: cycles={CANONICAL_CHURN_CYCLES} runtimeCold={runtime_baseline} control2={control_two:?} control10={control_ten:?} baseline={baseline} baselineModes={baseline_modes:?} peak={peak} peakModes={peak_modes:?} settleSamples={settle_samples:?} final={final_count} finalModes={final_modes:?}"
+        "WebRTC FD churn: cycles={CANONICAL_CHURN_CYCLES} runtimeCold={runtime_baseline} control2={control_two:?} control10={control_ten:?} baseline={baseline} baselineModes={baseline_modes:?} peak={peak} peakModes={peak_modes:?} settleSamples={settle_samples:?} final={final_count} finalModes={final_modes:?} churnA={final_churn_a:?} churnB={final_churn_b:?} stable={final_stable:?}"
     );
     assert!(peak < FD_PEAK_LIMIT, "peak FD count {peak} must stay below 80% of {FD_LIMIT}");
     assert!(
@@ -324,31 +488,45 @@ fn new_transport(id: u32, identity: &crate::Identity, config: &WebRtcConfig) -> 
 async fn reconnect(
     churn: &mut WebRtcTransport,
     stable: &mut WebRtcTransport,
-    churn_identity: &crate::Identity,
-    stable_identity: &crate::Identity,
-    churn_addr: &TransportAddr,
-    stable_addr: &TransportAddr,
+    peers: &ChurnPeers<'_>,
+    context: &str,
 ) {
-    if churn.connection_state_sync(stable_addr) != ConnectionState::None {
-        churn.close_connection_async(stable_addr).await;
-        stable.close_connection_async(churn_addr).await;
+    if churn.connection_state_sync(peers.stable_addr) != ConnectionState::None {
+        churn.close_connection_async(peers.stable_addr).await;
+        stable.close_connection_async(peers.churn_addr).await;
         wait_for_resource_quiescence(&[churn, stable]).await;
     }
-    churn.connect_async(stable_addr).await.expect("WebRTC reconnect");
-    relay_until_connected(churn, stable, churn_identity, stable_identity, churn_addr, stable_addr).await;
+    churn
+        .connect_async(peers.stable_addr)
+        .await
+        .expect("WebRTC reconnect");
+    relay_until_connected(
+        churn,
+        stable,
+        peers,
+        context,
+    )
+    .await;
 }
 
 async fn fresh_replace(
     old: &WebRtcTransport,
     replacement: &mut WebRtcTransport,
     stable: &mut WebRtcTransport,
-    churn_identity: &crate::Identity,
-    stable_identity: &crate::Identity,
-    churn_addr: &TransportAddr,
-    stable_addr: &TransportAddr,
+    peers: &ChurnPeers<'_>,
+    context: &str,
 ) {
-    replacement.connect_async(stable_addr).await.expect("fresh replacement offer");
-    relay_until_connected(replacement, stable, churn_identity, stable_identity, churn_addr, stable_addr).await;
+    replacement
+        .connect_async(peers.stable_addr)
+        .await
+        .expect("fresh replacement offer");
+    relay_until_connected(
+        replacement,
+        stable,
+        peers,
+        context,
+    )
+    .await;
     wait_for_resource_quiescence(&[old]).await;
 }
 
@@ -356,17 +534,20 @@ async fn abandon_then_retry(
     old: &WebRtcTransport,
     replacement: &mut WebRtcTransport,
     stable: &mut WebRtcTransport,
-    churn_identity: &crate::Identity,
-    stable_identity: &crate::Identity,
-    churn_addr: &TransportAddr,
-    stable_addr: &TransportAddr,
+    peers: &ChurnPeers<'_>,
+    context: &str,
 ) {
-    replacement.connect_async(stable_addr).await.expect("abandoned offer");
+    replacement
+        .connect_async(peers.stable_addr)
+        .await
+        .expect("abandoned offer");
     let offer = take_link_negotiation(replacement, LinkNegotiationKind::Offer).await;
-    stable.ingest_link_negotiation(churn_identity.pubkey_full(), offer).expect("deliver abandoned offer");
+    stable
+        .ingest_link_negotiation(peers.churn_identity.pubkey_full(), offer)
+        .expect("deliver abandoned offer");
     let _discarded = take_link_negotiation(stable, LinkNegotiationKind::Answer).await;
     wait_for_resource_quiescence(&[old, replacement, stable]).await;
-    reconnect(replacement, stable, churn_identity, stable_identity, churn_addr, stable_addr).await;
+    reconnect(replacement, stable, peers, context).await;
 }
 
 fn assert_resource_bound(transport: &WebRtcTransport) {
@@ -438,40 +619,116 @@ async fn take_link_negotiation(transport: &mut WebRtcTransport, kind: LinkNegoti
 async fn relay_until_connected(
     churn: &mut WebRtcTransport,
     stable: &mut WebRtcTransport,
-    churn_identity: &crate::Identity,
-    stable_identity: &crate::Identity,
-    churn_addr: &TransportAddr,
-    stable_addr: &TransportAddr,
+    peers: &ChurnPeers<'_>,
+    context: &str,
 ) {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    let mut last_signal = None;
+    let connected = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            relay_negotiations(churn, stable, churn_identity, stable_identity);
-            if churn.connection_state_sync(stable_addr) == ConnectionState::Connected
-                && stable.connection_state_sync(churn_addr) == ConnectionState::Connected
+            if let Some(signal) = relay_negotiations(churn, stable, peers) {
+                last_signal = Some(signal);
+            }
+            if churn.connection_state_sync(peers.stable_addr) == ConnectionState::Connected
+                && stable.connection_state_sync(peers.churn_addr) == ConnectionState::Connected
             {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
     })
-    .await
-    .expect("two local WebRTC peers connect");
+    .await;
+    if connected.is_err() {
+        let (fd_count, fd_modes) = open_file_snapshot();
+        let churn_state = transport_failure_state(churn, peers.stable_addr).await;
+        let stable_state = transport_failure_state(stable, peers.churn_addr).await;
+        panic!(
+            "two local WebRTC peers connect: context={context} lastSignal={last_signal:?} fds={fd_count} modes={fd_modes:?} churn=[{churn_state}] stable=[{stable_state}]"
+        );
+    }
 }
 
 fn relay_negotiations(
     churn: &mut WebRtcTransport,
     stable: &mut WebRtcTransport,
-    churn_identity: &crate::Identity,
-    stable_identity: &crate::Identity,
-) {
+    peers: &ChurnPeers<'_>,
+) -> Option<String> {
+    let mut last_signal = None;
     for outbound in churn.drain_link_negotiations(16) {
         let message = LinkNegotiationMessage::decode(&outbound.payload).expect("churn signal");
-        stable.ingest_link_negotiation(churn_identity.pubkey_full(), message).expect("deliver churn signal");
+        last_signal = Some(format!(
+            "churn->stable kind={:?} session={}",
+            message.kind, message.negotiation_id
+        ));
+        stable
+            .ingest_link_negotiation(peers.churn_identity.pubkey_full(), message)
+            .expect("deliver churn signal");
     }
     for outbound in stable.drain_link_negotiations(16) {
         let message = LinkNegotiationMessage::decode(&outbound.payload).expect("stable signal");
-        churn.ingest_link_negotiation(stable_identity.pubkey_full(), message).expect("deliver stable signal");
+        last_signal = Some(format!(
+            "stable->churn kind={:?} session={}",
+            message.kind, message.negotiation_id
+        ));
+        churn
+            .ingest_link_negotiation(peers.stable_identity.pubkey_full(), message)
+            .expect("deliver stable signal");
     }
+    last_signal
+}
+
+async fn transport_failure_state(
+    transport: &WebRtcTransport,
+    remote_addr: &TransportAddr,
+) -> String {
+    let connection_state = transport.connection_state_sync(remote_addr);
+    let resources = transport.resource_snapshot();
+    let pool_session = transport
+        .pool
+        .lock()
+        .await
+        .get(remote_addr)
+        .map(|connection| connection.session_id.clone());
+    let pending_session = transport.pending.lock().await.get(remote_addr).map(|pending| {
+        let origin = match pending.origin {
+            PendingDialOrigin::Local => "local",
+            PendingDialOrigin::Remote => "remote",
+        };
+        format!(
+            "{}:{origin}:created={}",
+            pending.session_id, pending.created_at_ms
+        )
+    });
+    let failure = transport.failed.lock().await.get(remote_addr).cloned();
+    let ready = transport.ready.lock().await.contains(remote_addr);
+    let (dial_inflight, dial_outcomes) = take_finished_dial_outcomes(transport).await;
+    format!(
+        "state={connection_state:?} pool={pool_session:?} pending={pending_session:?} failed={failure:?} ready={ready} resources={resources:?} dialInflight={dial_inflight} dialOutcomes={dial_outcomes:?}"
+    )
+}
+
+async fn take_finished_dial_outcomes(transport: &WebRtcTransport) -> (usize, Vec<String>) {
+    let (inflight, finished) = {
+        let mut tasks = transport.dial_tasks.lock().expect("WebRTC dial tasks");
+        let mut finished = Vec::new();
+        let mut index = 0;
+        while index < tasks.len() {
+            if tasks[index].is_finished() {
+                finished.push(tasks.swap_remove(index));
+            } else {
+                index += 1;
+            }
+        }
+        (tasks.len(), finished)
+    };
+    let mut outcomes = Vec::with_capacity(finished.len());
+    for task in finished {
+        outcomes.push(match task.await {
+            Ok(Ok(())) => "ok".to_string(),
+            Ok(Err(error)) => format!("error: {error}"),
+            Err(error) => format!("join error: {error}"),
+        });
+    }
+    (inflight, outcomes)
 }
 
 async fn assert_round_trip(

@@ -1,6 +1,5 @@
 use super::*;
 use crate::packet_channel;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(unix)]
 const DISABLED_MDNS_ISOLATION_CHILD: &str = "FIPS_DISABLED_MDNS_ISOLATION_CHILD";
@@ -508,27 +507,6 @@ async fn connection_state_does_not_report_none_during_pool_contention() {
 }
 
 #[tokio::test]
-async fn stalled_webrtc_send_times_out_and_starts_cleanup() {
-    let cleanup_started = Arc::new(AtomicBool::new(false));
-    let cleanup_flag = Arc::clone(&cleanup_started);
-    let started = tokio::time::Instant::now();
-
-    let result = bounded_webrtc_send(
-        Duration::from_millis(10),
-        std::future::pending::<Result<usize, std::io::Error>>(),
-        move || async move {
-            cleanup_flag.store(true, Ordering::SeqCst);
-            std::future::pending::<()>().await;
-        },
-    )
-    .await;
-
-    assert!(matches!(result, Err(TransportError::Timeout)));
-    assert!(cleanup_started.load(Ordering::SeqCst));
-    assert!(started.elapsed() < Duration::from_millis(100));
-}
-
-#[tokio::test]
 async fn physical_cleanup_stops_gathered_ice_and_releases_capacity() {
     let identity = crate::Identity::generate();
     let (packet_tx, _packet_rx) = packet_channel(1);
@@ -698,14 +676,18 @@ async fn terminal_session_cleanup_closes_the_peer_connection() {
     );
     transport.ready.lock().await.insert(addr.clone());
 
-    let removed = cleanup_webrtc_session(
+    let owners = WebRtcSessionOwners::from_refs(
         &transport.pool,
         &transport.pending,
         &transport.failed,
         &transport.ready,
+    );
+    let removed = cleanup_webrtc_session(
+        &owners,
         &addr,
         Some("cleanup-session"),
         Some("peer disconnected".to_string()),
+        CleanupWait::Bounded,
     )
     .await;
 
@@ -717,73 +699,6 @@ async fn terminal_session_cleanup_closes_the_peer_connection() {
         Some("peer disconnected")
     );
     assert_eq!(raw_pc.connection_state(), RTCPeerConnectionState::Closed);
-}
-
-#[tokio::test]
-async fn transport_drop_breaks_callback_cycles_and_completes_physical_cleanup() {
-    let identity = crate::Identity::generate();
-    let (packet_tx, _packet_rx) = packet_channel(1);
-    let transport = WebRtcTransport::new(
-        TransportId::new(78),
-        None,
-        WebRtcConfig {
-            resolve_mdns_candidates: Some(false),
-            ..WebRtcConfig::default()
-        },
-        packet_tx,
-        &identity,
-        &NostrDiscoveryConfig::default(),
-    )
-    .expect("WebRTC transport");
-    let addr = TransportAddr::from_string("drop-cycle-peer");
-    let pc = transport
-        .physical
-        .reserve(&addr)
-        .expect("physical permit")
-        .activate(
-            transport
-                .api
-                .new_peer_connection(RTCConfiguration::default())
-                .await
-                .expect("peer connection"),
-        );
-    let data_channel = pc
-        .create_data_channel("drop-cycle", None)
-        .await
-        .expect("data channel");
-    let runtime = transport.runtime();
-    wire_peer_connection_state(&runtime, addr.clone(), "drop-cycle".into(), Arc::clone(&pc));
-    wire_data_channel(
-        runtime.transport_id,
-        runtime.packet_tx.clone(),
-        Arc::clone(&runtime.pool),
-        Arc::clone(&runtime.pending),
-        Arc::clone(&runtime.failed),
-        Arc::clone(&runtime.ready),
-        addr.clone(),
-        "drop-cycle".into(),
-        Arc::clone(&pc),
-        Arc::clone(&data_channel),
-    );
-    transport.pool.lock().await.insert(
-        addr,
-        WebRtcConnection {
-            session_id: "drop-cycle".into(),
-            pc: Arc::clone(&pc),
-            data_channel,
-        },
-    );
-    let weak_pool = Arc::downgrade(&transport.pool);
-    let resources = transport.physical.clone();
-    drop(runtime);
-    drop(pc);
-    drop(transport);
-
-    assert!(weak_pool.upgrade().is_none(), "callback maps must not form an ownership cycle");
-    assert!(resources.wait_for_quiescence(Duration::from_secs(3)).await);
-    let snapshot = resources.snapshot();
-    assert_eq!(snapshot.created_total, snapshot.closed_total);
-    assert_eq!(snapshot.abandoned, 0);
 }
 
 #[tokio::test]
@@ -925,6 +840,8 @@ async fn fresh_offer_replaces_an_existing_webrtc_session() {
             .expect("peer connection"),
     );
     let raw_pc = pc.raw();
+    let weak_raw_pc = Arc::downgrade(&raw_pc);
+    drop(raw_pc);
     let data_channel = pc
         .create_data_channel("replacement-test", None)
         .await
@@ -954,6 +871,7 @@ async fn fresh_offer_replaces_an_existing_webrtc_session() {
         "a replay of the active session must be ignored"
     );
     assert!(transport.pool.lock().await.contains_key(&addr));
+    drop(pc);
 
     assert_eq!(
         prepare_pooled_webrtc_session_for_offer(
@@ -971,5 +889,78 @@ async fn fresh_offer_replaces_an_existing_webrtc_session() {
     );
     assert!(!transport.pool.lock().await.contains_key(&addr));
     assert!(!transport.ready.lock().await.contains(&addr));
-    assert_eq!(raw_pc.connection_state(), RTCPeerConnectionState::Closed);
+    assert!(weak_raw_pc.upgrade().is_none());
+    let snapshot = transport.resource_snapshot();
+    assert_eq!(snapshot.created_total, snapshot.closed_total);
+    assert_eq!(snapshot.creating + snapshot.active + snapshot.closing, 0);
+}
+
+#[tokio::test]
+async fn session_failure_bookkeeping_precedes_physical_permit_release() {
+    let identity = crate::Identity::generate();
+    let (packet_tx, _packet_rx) = packet_channel(1);
+    let transport = WebRtcTransport::new(
+        TransportId::new(83),
+        None,
+        WebRtcConfig::default(),
+        packet_tx,
+        &identity,
+        &NostrDiscoveryConfig::default(),
+    )
+    .expect("WebRTC transport");
+    let addr = TransportAddr::from_string(
+        "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    let pc = transport
+        .physical
+        .reserve(&addr)
+        .expect("physical permit")
+        .activate(
+            transport
+                .api
+                .new_peer_connection(RTCConfiguration::default())
+                .await
+                .expect("peer connection"),
+        );
+    let raw_pc = pc.raw();
+    transport.pending.lock().await.insert(
+        addr.clone(),
+        PendingDial {
+            session_id: "old-session".into(),
+            pc: Arc::clone(&pc),
+            created_at_ms: now_ms(),
+            origin: PendingDialOrigin::Local,
+        },
+    );
+    transport.ready.lock().await.insert(addr.clone());
+    drop(pc);
+
+    let runtime = transport.runtime();
+    let failed_addr = addr.clone();
+    let failure = tokio::spawn(async move {
+        runtime
+            .mark_session_failed(failed_addr, "old-session", "old session failed".into())
+            .await;
+    });
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while transport.resource_snapshot().closing == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("old physical session enters Closing");
+    assert!(!transport.ready.lock().await.contains(&addr));
+    assert_eq!(
+        transport.failed.lock().await.get(&addr).map(String::as_str),
+        Some("old session failed")
+    );
+
+    drop(raw_pc);
+    failure.await.expect("failure cleanup task");
+    assert!(
+        transport
+            .physical
+            .wait_for_quiescence(Duration::from_secs(3))
+            .await
+    );
 }

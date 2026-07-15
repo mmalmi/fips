@@ -14,6 +14,7 @@ pub(super) enum PhysicalPhase {
 struct PhysicalSlot {
     generation: u64,
     phase: PhysicalPhase,
+    replacement_waiter: bool,
 }
 
 #[derive(Default)]
@@ -103,6 +104,12 @@ pub(super) struct PhysicalCleanupGuard {
 
 pub(super) struct StragglerWaitGuard(PhysicalResources);
 
+struct PhysicalReleaseWaitGuard {
+    resources: PhysicalResources,
+    addr: TransportAddr,
+    generation: u64,
+}
+
 pub(super) struct CleanupCompletion {
     done: AtomicBool,
     notify: Notify,
@@ -169,6 +176,7 @@ impl PhysicalResources {
 
     pub(super) fn stop_accepting(&self) {
         self.0.accepting.store(false, Ordering::Release);
+        self.0.idle.notify_waiters();
     }
 
     pub(super) fn is_accepting(&self) -> bool {
@@ -198,6 +206,7 @@ impl PhysicalResources {
             PhysicalSlot {
                 generation,
                 phase: PhysicalPhase::Creating,
+                replacement_waiter: false,
             },
         );
         state.creating += 1;
@@ -279,6 +288,62 @@ impl PhysicalResources {
         quiescent
     }
 
+    pub(super) async fn wait_for_peer_release(
+        &self,
+        addr: &TransportAddr,
+        timeout: Duration,
+    ) -> bool {
+        let waiter = {
+            let mut state = self.0.state.lock().expect("WebRTC physical state");
+            let Some(slot) = state.peers.get_mut(addr) else {
+                return self.is_accepting();
+            };
+            if slot.phase != PhysicalPhase::Closing || slot.replacement_waiter {
+                return false;
+            }
+            slot.replacement_waiter = true;
+            PhysicalReleaseWaitGuard {
+                resources: self.clone(),
+                addr: addr.clone(),
+                generation: slot.generation,
+            }
+        };
+        let wait = async {
+            loop {
+                let notified = self.0.idle.notified();
+                if !self.is_accepting() {
+                    return false;
+                }
+                let phase = {
+                    let state = self.0.state.lock().expect("WebRTC physical state");
+                    match state.peers.get(addr) {
+                        None => return true,
+                        Some(slot) if slot.generation != waiter.generation => return false,
+                        Some(slot) => slot.phase,
+                    }
+                };
+                match phase {
+                    PhysicalPhase::Closing => notified.await,
+                    PhysicalPhase::Creating | PhysicalPhase::Active => return false,
+                }
+            }
+        };
+        let released = tokio::time::timeout(timeout, wait).await.unwrap_or(false);
+        drop(waiter);
+        released
+    }
+
+    #[cfg(test)]
+    pub(super) fn has_peer_release_waiter(&self, addr: &TransportAddr) -> bool {
+        self.0
+            .state
+            .lock()
+            .expect("WebRTC physical state")
+            .peers
+            .get(addr)
+            .is_some_and(|slot| slot.replacement_waiter)
+    }
+
     pub(super) fn note_ice_stop_failure(&self) {
         self.0
             .ice_stop_failures_total
@@ -309,6 +374,22 @@ impl PhysicalResources {
 impl Drop for StragglerWaitGuard {
     fn drop(&mut self) {
         self.0.0.straggler_waiters.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+impl Drop for PhysicalReleaseWaitGuard {
+    fn drop(&mut self) {
+        let mut state = self
+            .resources
+            .0
+            .state
+            .lock()
+            .expect("WebRTC physical state");
+        if let Some(slot) = state.peers.get_mut(&self.addr)
+            && slot.generation == self.generation
+        {
+            slot.replacement_waiter = false;
+        }
     }
 }
 
@@ -570,6 +651,54 @@ mod lifecycle_tests {
             resources.reserve(&addr("peer-a")),
             Err(PhysicalReserveError::Capacity)
         ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn release_waiter_does_not_follow_a_new_peer_generation() {
+        let resources = PhysicalResources::new(1);
+        let peer = addr("peer-a");
+        let first_cleanup = resources
+            .reserve(&peer)
+            .expect("first reserve")
+            .into_lease()
+            .begin_cleanup();
+        let old_resources = resources.clone();
+        let old_peer = peer.clone();
+        let old_waiter = tokio::spawn(async move {
+            old_resources
+                .wait_for_peer_release(&old_peer, Duration::from_secs(1))
+                .await
+        });
+        while !resources.has_peer_release_waiter(&peer) {
+            tokio::task::yield_now().await;
+        }
+
+        first_cleanup.complete();
+        // Do not yield between generations: the old waiter must observe that
+        // this Closing slot is a different owner rather than following it.
+        let second_cleanup = resources
+            .reserve(&peer)
+            .expect("second reserve")
+            .into_lease()
+            .begin_cleanup();
+        let new_resources = resources.clone();
+        let new_peer = peer.clone();
+        let new_waiter = tokio::spawn(async move {
+            new_resources
+                .wait_for_peer_release(&new_peer, Duration::from_secs(1))
+                .await
+        });
+
+        let old_released = tokio::time::timeout(Duration::from_millis(100), old_waiter)
+            .await
+            .expect("old waiter does not follow the new generation")
+            .expect("old waiter task");
+        assert!(!old_released);
+        while !resources.has_peer_release_waiter(&peer) {
+            tokio::task::yield_now().await;
+        }
+        second_cleanup.complete();
+        assert!(new_waiter.await.expect("new waiter task"));
     }
 
     #[test]

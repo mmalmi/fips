@@ -48,10 +48,12 @@ impl WebRtcRuntime {
         wire_data_channel(
             self.transport_id,
             self.packet_tx.clone(),
-            Arc::clone(&self.pool),
-            Arc::clone(&self.pending),
-            Arc::clone(&self.failed),
-            Arc::clone(&self.ready),
+            WebRtcSessionOwners::from_refs(
+                &self.pool,
+                &self.pending,
+                &self.failed,
+                &self.ready,
+            ),
             remote_addr.clone(),
             session_id.clone(),
             Arc::clone(&pc),
@@ -237,7 +239,7 @@ impl WebRtcRuntime {
             .await?;
         let offer = RTCSessionDescription::offer(offer_sdp)
             .map_err(|e| TransportError::StartFailed(e.to_string()))?;
-        match prepare_pooled_webrtc_session_for_offer(
+        let disposition = prepare_pooled_webrtc_session_for_offer(
             &self.pool,
             &self.pending,
             &self.failed,
@@ -246,22 +248,25 @@ impl WebRtcRuntime {
             &signal.negotiation_id,
             &self.local_pubkey_hex,
         )
+        .await;
+        if disposition != PooledOfferDisposition::IgnoreReplay
+            && (signal.expires_at_ms < now_ms() || !self.physical.is_accepting())
+        {
+            let _ = self
+                .send_reject(sender_xonly, signal.negotiation_id)
+                .await;
+            return Err(TransportError::ConnectionRefused);
+        }
+        if disposition == PooledOfferDisposition::IgnoreReplay {
+            return Ok(());
+        }
+        let reservation = match reserve_physical_for_incoming_offer(
+            &self.physical,
+            &remote_addr,
+            signal.expires_at_ms,
+        )
         .await
         {
-            PooledOfferDisposition::Accept => {}
-            PooledOfferDisposition::IgnoreReplay => return Ok(()),
-            PooledOfferDisposition::Redial => {
-                let _ = self
-                    .send_reject(sender_xonly, signal.negotiation_id)
-                    .await;
-                let reservation = self
-                    .physical
-                    .reserve(&remote_addr)
-                    .map_err(|_| TransportError::ConnectionRefused)?;
-                return self.start_outbound(remote_addr, reservation).await;
-            }
-        }
-        let reservation = match self.physical.reserve(&remote_addr) {
             Ok(reservation) => reservation,
             Err(_) => {
                 let _ = self
@@ -270,6 +275,12 @@ impl WebRtcRuntime {
                 return Err(TransportError::ConnectionRefused);
             }
         };
+        if disposition == PooledOfferDisposition::Redial {
+            let _ = self
+                .send_reject(sender_xonly, signal.negotiation_id)
+                .await;
+            return self.start_outbound(remote_addr, reservation).await;
+        }
 
         let session_id = signal.negotiation_id.clone();
         let pc = reservation.activate(self.new_peer_connection().await?);
@@ -300,10 +311,12 @@ impl WebRtcRuntime {
                 wire_data_channel(
                     callback_transport_id,
                     packet_tx,
-                    pool,
-                    pending,
-                    failed,
-                    ready,
+                    WebRtcSessionOwners {
+                        pool,
+                        pending,
+                        failed,
+                        ready,
+                    },
                     remote_addr,
                     session_id,
                     pc,
@@ -527,7 +540,13 @@ impl WebRtcRuntime {
             ));
         }
         let now = now_ms();
-        if signal.expires_at_ms < now || signal.created_at_ms > now.saturating_add(60_000) {
+        let Some(validity_ms) = signal.expires_at_ms.checked_sub(signal.created_at_ms) else {
+            return Err(TransportError::Timeout);
+        };
+        if signal.expires_at_ms < now
+            || signal.created_at_ms > now.saturating_add(SIGNAL_TTL_MS)
+            || validity_ms > SIGNAL_TTL_MS
+        {
             return Err(TransportError::Timeout);
         }
         if matches!(
@@ -571,7 +590,6 @@ impl WebRtcRuntime {
         let Some(pending) = pending else {
             return;
         };
-        close_peer_connection_bounded(pending.pc).await;
         self.ready.lock().await.remove(&addr);
         self.failed
             .lock()
@@ -583,15 +601,19 @@ impl WebRtcRuntime {
             reason = %reason,
             "WebRTC connection failed"
         );
+        close_peer_connection_bounded(pending.pc).await;
     }
 
     fn spawn_connect_timeout(&self, addr: TransportAddr, session_id: String) {
         let timeout = Duration::from_millis(self.config.connect_timeout_ms());
-        let pending = Arc::clone(&self.pending);
-        let failed = Arc::clone(&self.failed);
+        let pending = Arc::downgrade(&self.pending);
+        let failed = Arc::downgrade(&self.failed);
         let transport_id = self.transport_id;
         tokio::spawn(async move {
             tokio::time::sleep(timeout).await;
+            let Some(pending) = pending.upgrade() else {
+                return;
+            };
             let maybe_pending = {
                 let mut pending = pending.lock().await;
                 match pending.get(&addr) {
@@ -599,10 +621,13 @@ impl WebRtcRuntime {
                     _ => None,
                 }
             };
+            drop(pending);
             if let Some(dial) = maybe_pending {
-                close_peer_connection_bounded(dial.pc).await;
                 let reason = "WebRTC connect timed out".to_string();
-                failed.lock().await.insert(addr.clone(), reason.clone());
+                if let Some(failed) = failed.upgrade() {
+                    failed.lock().await.insert(addr.clone(), reason.clone());
+                }
+                close_peer_connection_bounded(dial.pc).await;
                 warn!(
                     transport_id = %transport_id,
                     remote_addr = %addr,
@@ -646,14 +671,13 @@ async fn prepare_pooled_webrtc_session_for_offer(
         return PooledOfferDisposition::IgnoreReplay;
     }
 
+    let owners = WebRtcSessionOwners::from_refs(pool, pending, failed, ready);
     cleanup_webrtc_session(
-        pool,
-        pending,
-        failed,
-        ready,
+        &owners,
         remote_addr,
         Some(&existing_session),
         None,
+        CleanupWait::Physical,
     )
     .await;
     pooled_replacement_disposition(
@@ -676,15 +700,18 @@ fn pooled_replacement_disposition(
 fn wire_data_channel(
     transport_id: TransportId,
     packet_tx: PacketTx,
-    pool: ConnectionPool,
-    pending: PendingPool,
-    failed: FailedPool,
-    ready: ReadyPool,
+    owners: WebRtcSessionOwners,
     remote_addr: TransportAddr,
     session_id: String,
     pc: ManagedPeer,
     data_channel: Arc<RTCDataChannel>,
 ) {
+    let WebRtcSessionOwners {
+        pool,
+        pending,
+        failed,
+        ready,
+    } = owners;
     let recv_addr = remote_addr.clone();
     let recv_session = session_id.clone();
     let recv_tx = packet_tx;
@@ -836,16 +863,28 @@ fn wire_data_channel(
                 );
                 return;
             }
-            if let Err(err) = ready_dc
-                .send(&Bytes::copy_from_slice(WEBRTC_READY_FRAME))
-                .await
-            {
+            let ready_sent = tokio::time::timeout(
+                WEBRTC_IO_TIMEOUT,
+                ready_dc.send(&Bytes::copy_from_slice(WEBRTC_READY_FRAME)),
+            )
+            .await;
+            if !matches!(ready_sent, Ok(Ok(_))) {
                 debug!(
                     transport_id = %transport_id,
                     remote_addr = %open_addr,
-                    error = %err,
-                    "Failed to send WebRTC ready marker"
+                    result = ?ready_sent,
+                    "Failed to send bounded WebRTC ready marker"
                 );
+                spawn_webrtc_session_cleanup(
+                    open_pool,
+                    open_pending,
+                    open_failed,
+                    open_ready,
+                    open_addr,
+                    Some(open_session),
+                    Some("WebRTC ready marker failed".into()),
+                );
+                return;
             }
             spawn_webrtc_ready_fallback(
                 transport_id,
@@ -901,59 +940,23 @@ fn wire_data_channel(
     }));
 }
 
-impl Transport for WebRtcTransport {
-    fn transport_id(&self) -> TransportId {
-        self.transport_id
-    }
-
-    fn transport_type(&self) -> &TransportType {
-        &TransportType::WEBRTC
-    }
-
-    fn state(&self) -> TransportState {
-        self.state
-    }
-
-    fn mtu(&self) -> u16 {
-        self.config.mtu()
-    }
-
-    fn start(&mut self) -> Result<(), TransportError> {
-        Err(TransportError::NotSupported(
-            "use start_async() for WebRTC transport".into(),
-        ))
-    }
-
-    fn stop(&mut self) -> Result<(), TransportError> {
-        Err(TransportError::NotSupported(
-            "use stop_async() for WebRTC transport".into(),
-        ))
-    }
-
-    fn send(&self, _addr: &TransportAddr, _data: &[u8]) -> Result<(), TransportError> {
-        Err(TransportError::NotSupported(
-            "use send_async() for WebRTC transport".into(),
-        ))
-    }
-
-    fn discover(&self) -> Result<Vec<DiscoveredPeer>, TransportError> {
-        Ok(Vec::new())
-    }
-
-    fn auto_connect(&self) -> bool {
-        self.config.auto_connect()
-    }
-
-    fn accept_connections(&self) -> bool {
-        self.config.accept_connections()
-    }
-
-    fn close_connection(&self, _addr: &TransportAddr) {}
-}
+include!("webrtc_transport_trait.rs");
 
 #[cfg(test)]
 #[path = "webrtc/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "webrtc/drop_tests.rs"]
+mod drop_tests;
+
+#[cfg(test)]
+#[path = "webrtc/signal_tests.rs"]
+mod signal_tests;
+
+#[cfg(test)]
+#[path = "webrtc/replacement_tests.rs"]
+mod replacement_tests;
 
 #[cfg(all(test, unix))]
 #[path = "webrtc/low_fd_tests.rs"]

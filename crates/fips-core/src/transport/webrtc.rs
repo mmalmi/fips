@@ -51,6 +51,10 @@ mod lifecycle;
 mod mdns;
 mod signaling;
 
+#[cfg(test)]
+#[path = "webrtc/send_tests.rs"]
+mod send_tests;
+
 pub use lifecycle::WebRtcResourceSnapshot;
 use lifecycle::{
     ManagedPeer, ManagedPeerConnection, PhysicalPhase, PhysicalReservation, PhysicalReserveError,
@@ -98,6 +102,12 @@ enum PendingDialOrigin {
     Remote,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CleanupWait {
+    Bounded,
+    Physical,
+}
+
 struct PendingDial {
     session_id: String,
     pc: ManagedPeer,
@@ -110,6 +120,30 @@ type PendingPool = Arc<Mutex<HashMap<TransportAddr, PendingDial>>>;
 type FailedPool = Arc<Mutex<HashMap<TransportAddr, String>>>;
 type ReadyPool = Arc<Mutex<HashSet<TransportAddr>>>;
 type SeenSessionPool = Arc<Mutex<HashMap<(TransportAddr, String), u64>>>;
+
+#[derive(Clone)]
+struct WebRtcSessionOwners {
+    pool: ConnectionPool,
+    pending: PendingPool,
+    failed: FailedPool,
+    ready: ReadyPool,
+}
+
+impl WebRtcSessionOwners {
+    fn from_refs(
+        pool: &ConnectionPool,
+        pending: &PendingPool,
+        failed: &FailedPool,
+        ready: &ReadyPool,
+    ) -> Self {
+        Self {
+            pool: Arc::clone(pool),
+            pending: Arc::clone(pending),
+            failed: Arc::clone(failed),
+            ready: Arc::clone(ready),
+        }
+    }
+}
 
 /// WebRTC transport for FIPS.
 pub struct WebRtcTransport {
@@ -130,7 +164,7 @@ pub struct WebRtcTransport {
     signal_rx: Option<mpsc::UnboundedReceiver<IncomingSignal>>,
     outgoing_signal_rx: mpsc::UnboundedReceiver<OutboundLinkNegotiation>,
     signal_task: Option<JoinHandle<()>>,
-    dial_tasks: StdMutex<Vec<JoinHandle<()>>>,
+    dial_tasks: StdMutex<Vec<JoinHandle<Result<(), TransportError>>>>,
     signaling: FipsSignalSender,
     local_pubkey_hex: String,
     stun_servers: Vec<String>,
@@ -230,18 +264,15 @@ impl WebRtcTransport {
                 .clamp(1, MAX_WEBRTC_SIGNAL_TASKS);
             let mut tasks = JoinSet::new();
             loop {
+                let has_handler_capacity = tasks.len() < max_tasks;
                 tokio::select! {
                     completed = tasks.join_next(), if !tasks.is_empty() => {
                         if let Some(Err(err)) = completed {
                             warn!(error = %err, "WebRTC signal task failed");
                         }
                     }
-                    incoming = signal_rx.recv() => {
+                    incoming = signal_rx.recv(), if has_handler_capacity => {
                         let Some(incoming) = incoming else { break };
-                        if tasks.len() >= max_tasks {
-                            warn!(max_tasks, "WebRTC signal dropped at handler limit");
-                            continue;
-                        }
                         let runtime = runtime.clone();
                         tasks.spawn(async move {
                             if let Err(err) = runtime.handle_incoming_signal(incoming).await {
@@ -383,9 +414,11 @@ impl WebRtcTransport {
         let runtime = self.runtime();
         let remote_addr = addr.clone();
         let task = tokio::spawn(async move {
-            if let Err(error) = runtime.start_outbound(remote_addr, reservation).await {
+            let result = runtime.start_outbound(remote_addr, reservation).await;
+            if let Err(error) = &result {
                 trace!(error = %error, "WebRTC outbound setup failed");
             }
+            result
         });
         let mut tasks = self.dial_tasks.lock().expect("WebRTC dial tasks");
         tasks.retain(|task| !task.is_finished());
@@ -468,16 +501,9 @@ impl WebRtcTransport {
 
     /// Close a WebRTC connection.
     pub async fn close_connection_async(&self, addr: &TransportAddr) {
-        cleanup_webrtc_session(
-            &self.pool,
-            &self.pending,
-            &self.failed,
-            &self.ready,
-            addr,
-            None,
-            None,
-        )
-        .await;
+        let owners =
+            WebRtcSessionOwners::from_refs(&self.pool, &self.pending, &self.failed, &self.ready);
+        cleanup_webrtc_session(&owners, addr, None, None, CleanupWait::Bounded).await;
     }
 
     /// Schedule connection cleanup from synchronous node-lifecycle paths.
@@ -491,6 +517,20 @@ impl WebRtcTransport {
             None,
             None,
         );
+    }
+}
+
+impl Drop for WebRtcTransport {
+    fn drop(&mut self) {
+        self.physical.stop_accepting();
+        if let Some(task) = self.signal_task.take() {
+            task.abort();
+        }
+        if let Ok(mut tasks) = self.dial_tasks.lock() {
+            for task in tasks.drain(..) {
+                task.abort();
+            }
+        }
     }
 }
 
@@ -509,6 +549,29 @@ fn build_webrtc_api() -> Result<Arc<::webrtc::api::API>, TransportError> {
     ))
 }
 
+async fn reserve_physical_for_incoming_offer(
+    physical: &PhysicalResources,
+    addr: &TransportAddr,
+    expires_at_ms: u64,
+) -> Result<PhysicalReservation, PhysicalReserveError> {
+    match physical.reserve(addr) {
+        Err(PhysicalReserveError::PeerBusy(PhysicalPhase::Closing)) => {
+            let remaining_ms = expires_at_ms.saturating_sub(now_ms()).min(SIGNAL_TTL_MS);
+            if remaining_ms == 0
+                || !physical
+                    .wait_for_peer_release(addr, Duration::from_millis(remaining_ms))
+                    .await
+                || expires_at_ms < now_ms()
+                || !physical.is_accepting()
+            {
+                return Err(PhysicalReserveError::PeerBusy(PhysicalPhase::Closing));
+            }
+            physical.reserve(addr)
+        }
+        result => result,
+    }
+}
+
 async fn bounded_webrtc_send<F, E, C, CF>(
     timeout: Duration,
     send: F,
@@ -522,7 +585,11 @@ where
 {
     match tokio::time::timeout(timeout, send).await {
         Ok(Ok(bytes)) => Ok(bytes),
-        Ok(Err(error)) => Err(TransportError::SendFailed(error.to_string())),
+        Ok(Err(error)) => {
+            let error = error.to_string();
+            let _ = tokio::time::timeout(timeout, cleanup()).await;
+            Err(TransportError::SendFailed(error))
+        }
         Err(_) => {
             // Removing the connection is more important than completing the
             // underlying WebRTC close handshake. A dead SCTP association must
@@ -644,16 +711,14 @@ async fn stop_ice_bounded(timeout: Duration, peer_connection: &Arc<RTCPeerConnec
 }
 
 async fn cleanup_webrtc_session(
-    pool: &ConnectionPool,
-    pending: &PendingPool,
-    failed: &FailedPool,
-    ready: &ReadyPool,
+    owners: &WebRtcSessionOwners,
     addr: &TransportAddr,
     expected_session: Option<&str>,
     failure: Option<String>,
+    wait: CleanupWait,
 ) -> bool {
     let connection = {
-        let mut pool = pool.lock().await;
+        let mut pool = owners.pool.lock().await;
         if pool.get(addr).is_some_and(|connection| {
             expected_session.is_none_or(|session| connection.session_id == session)
         }) {
@@ -663,7 +728,7 @@ async fn cleanup_webrtc_session(
         }
     };
     let pending_dial = {
-        let mut pending = pending.lock().await;
+        let mut pending = owners.pending.lock().await;
         if pending
             .get(addr)
             .is_some_and(|dial| expected_session.is_none_or(|session| dial.session_id == session))
@@ -675,22 +740,44 @@ async fn cleanup_webrtc_session(
     };
     let removed = connection.is_some() || pending_dial.is_some();
     if removed || expected_session.is_none() {
-        ready.lock().await.remove(addr);
-        let mut failed = failed.lock().await;
+        owners.ready.lock().await.remove(addr);
+        let mut failed = owners.failed.lock().await;
         failed.remove(addr);
         if let Some(reason) = failure {
             failed.insert(addr.clone(), reason);
         }
     }
 
-    // Logical eviction happens before potentially slow library cleanup. The
-    // bounded caller wait must not cancel physical SCTP/DTLS/ICE teardown.
-    if let Some(pending) = pending_dial {
-        close_peer_connection_bounded(pending.pc).await;
-    }
-    if let Some(connection) = connection {
-        close_data_channel_bounded(connection.data_channel).await;
-        close_peer_connection_bounded(connection.pc).await;
+    // Start physical peer cleanup before closing the data channel so normal
+    // replacement does not serially spend two I/O timeout budgets. A fresh
+    // session can await this same completion before reserving the peer slot;
+    // ordinary cleanup stays bounded while the owned cleanup job continues.
+    let pending_completion = pending_dial.map(|pending| start_peer_connection_cleanup(pending.pc));
+    let connection_cleanup = connection.map(|connection| {
+        (
+            connection.data_channel,
+            start_peer_connection_cleanup(connection.pc),
+        )
+    });
+    match wait {
+        CleanupWait::Bounded => {
+            if let Some(completion) = pending_completion {
+                let _ = tokio::time::timeout(WEBRTC_IO_TIMEOUT, completion.wait()).await;
+            }
+            if let Some((data_channel, completion)) = connection_cleanup {
+                tokio::join!(close_data_channel_bounded(data_channel), async {
+                    let _ = tokio::time::timeout(WEBRTC_IO_TIMEOUT, completion.wait()).await;
+                });
+            }
+        }
+        CleanupWait::Physical => {
+            if let Some(completion) = pending_completion {
+                completion.wait().await;
+            }
+            if let Some((data_channel, completion)) = connection_cleanup {
+                tokio::join!(close_data_channel_bounded(data_channel), completion.wait());
+            }
+        }
     }
     removed
 }
@@ -731,7 +818,7 @@ async fn evict_pending_webrtc_session_for_offer(
     };
     ready.lock().await.remove(addr);
     failed.lock().await.remove(addr);
-    close_peer_connection_bounded(pending_dial.pc).await;
+    start_peer_connection_cleanup(pending_dial.pc).wait().await;
     true
 }
 
@@ -745,14 +832,18 @@ fn spawn_webrtc_session_cleanup(
     failure: Option<String>,
 ) {
     tokio::spawn(async move {
+        let owners = WebRtcSessionOwners {
+            pool,
+            pending,
+            failed,
+            ready,
+        };
         cleanup_webrtc_session(
-            &pool,
-            &pending,
-            &failed,
-            &ready,
+            &owners,
             &addr,
             expected_session.as_deref(),
             failure,
+            CleanupWait::Bounded,
         )
         .await;
     });
