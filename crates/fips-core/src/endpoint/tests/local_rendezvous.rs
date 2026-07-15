@@ -4,11 +4,16 @@ use crate::discovery::local::{
     LocalInstanceAdvertisement, LocalInstanceCapability, select_capability_provider,
 };
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
+use std::process::Stdio;
 
 const SERVICE_CAPABILITY: &str = "hashtree.blob/1";
 const SERVICE_PORT: u16 = 39_019;
 const CONSUMER_PORT: u16 = 49_019;
 const CONVERGENCE_TIMEOUT: Duration = Duration::from_secs(20);
+const LOCAL_PROVIDER_CHILD: &str = "FIPS_LOCAL_PROVIDER_CHILD";
+const LOCAL_PROVIDER_ADDR: &str = "FIPS_LOCAL_PROVIDER_ADDR";
+const LOCAL_PROVIDER_READY: &str = "FIPS_LOCAL_PROVIDER_READY";
+const LOCAL_PROVIDER_STOP: &str = "FIPS_LOCAL_PROVIDER_STOP";
 
 fn reserve_rendezvous_addr() -> SocketAddrV4 {
     let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("reserve loopback UDP port");
@@ -95,6 +100,130 @@ async fn wait_for_capability_removal(endpoint: &FipsEndpoint, name: &str) {
     })
     .await
     .unwrap_or_else(|_| panic!("local capability {name} was not withdrawn"));
+}
+
+async fn wait_for_capability_removal_within(
+    endpoint: &FipsEndpoint,
+    name: &str,
+    deadline: Duration,
+) {
+    let removed = tokio::time::timeout(deadline, async {
+        loop {
+            let adverts = endpoint
+                .local_instance_advertisements()
+                .expect("local capability snapshot");
+            if select_capability_provider(&adverts, name).is_none() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    if removed.is_err() {
+        let adverts = endpoint
+            .local_instance_advertisements()
+            .expect("local capability snapshot after timeout");
+        let peers = endpoint.peers().await.expect("peer snapshot after timeout");
+        panic!(
+            "local capability {name} survived provider process exit; adverts={adverts:?}; peers={peers:?}"
+        );
+    }
+}
+
+async fn run_local_provider_child() {
+    let rendezvous_addr = std::env::var(LOCAL_PROVIDER_ADDR)
+        .expect("child rendezvous address")
+        .parse()
+        .expect("valid child rendezvous address");
+    let ready = std::env::var_os(LOCAL_PROVIDER_READY).expect("child ready path");
+    let stop = std::env::var_os(LOCAL_PROVIDER_STOP).expect("child stop path");
+    let provider = bind_local(rendezvous_addr).await;
+    let service = provider
+        .register_service_receiver_with_capability(LocalInstanceCapability::service(
+            SERVICE_CAPABILITY,
+            SERVICE_PORT,
+        ))
+        .await
+        .expect("register child provider capability");
+    std::fs::write(&ready, provider.npub()).expect("publish child provider identity");
+
+    while !std::path::Path::new(&stop).exists() {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    drop(service);
+    provider.shutdown().await.expect("child provider shutdown");
+}
+
+#[derive(Clone, Copy)]
+enum ProviderExit {
+    Graceful,
+    Forced,
+}
+
+async fn cross_process_provider_exit(exit: ProviderExit) {
+    let rendezvous_addr = reserve_rendezvous_addr();
+    let consumer = bind_local(rendezvous_addr).await;
+    let ready_dir = tempfile::tempdir().expect("provider ready directory");
+    let ready = ready_dir.path().join("provider-npub");
+    let stop = ready_dir.path().join("stop");
+    let mut child = tokio::process::Command::new(std::env::current_exe().expect("test binary"))
+        .arg("cross_process_provider_capabilities_expire_after_exit")
+        .arg("--nocapture")
+        .arg("--test-threads=1")
+        .env(LOCAL_PROVIDER_CHILD, "1")
+        .env(LOCAL_PROVIDER_ADDR, rendezvous_addr.to_string())
+        .env(LOCAL_PROVIDER_READY, &ready)
+        .env(LOCAL_PROVIDER_STOP, &stop)
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn local provider child");
+
+    let provider_npub = tokio::time::timeout(CONVERGENCE_TIMEOUT, async {
+        loop {
+            if let Ok(npub) = std::fs::read_to_string(&ready) {
+                break npub;
+            }
+            assert!(
+                child.try_wait().expect("provider child status").is_none(),
+                "provider child exited before advertising"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("provider child did not start");
+    wait_for_capability(&consumer, SERVICE_CAPABILITY, &provider_npub).await;
+
+    match exit {
+        ProviderExit::Graceful => {
+            std::fs::write(&stop, b"stop").expect("signal graceful provider shutdown");
+            let status = tokio::time::timeout(CONVERGENCE_TIMEOUT, child.wait())
+                .await
+                .expect("provider child graceful exit timed out")
+                .expect("provider child status");
+            assert!(status.success(), "provider child failed: {status}");
+        }
+        ProviderExit::Forced => {
+            child.kill().await.expect("kill provider child");
+            let _ = child.wait().await;
+        }
+    }
+
+    wait_for_capability_removal_within(&consumer, SERVICE_CAPABILITY, Duration::from_secs(10))
+        .await;
+    consumer.shutdown().await.expect("consumer shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cross_process_provider_capabilities_expire_after_exit() {
+    if std::env::var_os(LOCAL_PROVIDER_CHILD).is_some() {
+        run_local_provider_child().await;
+        return;
+    }
+    cross_process_provider_exit(ProviderExit::Graceful).await;
+    cross_process_provider_exit(ProviderExit::Forced).await;
 }
 
 async fn receive_service_datagram(

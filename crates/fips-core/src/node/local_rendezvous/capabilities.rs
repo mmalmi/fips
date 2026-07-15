@@ -219,32 +219,32 @@ impl Node {
                     return;
                 }
                 let identity = *peer.identity();
-                let fresh =
-                    self.local_rendezvous
-                        .providers
-                        .get(source_addr)
-                        .is_none_or(|existing| {
-                            existing.startup_epoch != process_epoch || revision > existing.revision
-                        });
-                if fresh {
-                    let is_new = !self.local_rendezvous.providers.contains_key(source_addr);
-                    if is_new
-                        && self.local_rendezvous.providers.len()
-                            >= crate::discovery::local_udp::LOCAL_CAPABILITY_MAX_PROVIDERS
-                                .saturating_sub(1)
+                let now = crate::time::instant_now();
+                let update = if let Some(existing) =
+                    self.local_rendezvous.providers.get_mut(source_addr)
+                {
+                    existing.apply_announcement(
+                        identity,
+                        process_epoch,
+                        revision,
+                        capabilities,
+                        now,
+                    )
+                } else {
+                    if self.local_rendezvous.providers.len()
+                        >= crate::discovery::local_udp::LOCAL_CAPABILITY_MAX_PROVIDERS
+                            .saturating_sub(1)
                     {
                         debug!(peer = %self.peer_display_name(source_addr), "Local capability provider limit reached");
                         return;
                     }
                     self.local_rendezvous.providers.insert(
                         *source_addr,
-                        ProviderState {
-                            identity,
-                            startup_epoch: process_epoch,
-                            revision,
-                            capabilities,
-                        },
+                        ProviderState::new(identity, process_epoch, revision, capabilities, now),
                     );
+                    ProviderAnnouncementUpdate::Changed
+                };
+                if update == ProviderAnnouncementUpdate::Changed {
                     self.local_rendezvous.roster_revision =
                         self.local_rendezvous.roster_revision.saturating_add(1);
                     self.local_rendezvous.roster_dirty = true;
@@ -299,12 +299,15 @@ impl Node {
 
     pub(super) fn prune_local_roster(&mut self) -> bool {
         let before = self.local_rendezvous.providers.len();
+        let now = crate::time::instant_now();
         let active = self
             .local_rendezvous
             .providers
-            .keys()
-            .copied()
-            .filter(|node_addr| self.authenticated_local_peer(node_addr))
+            .iter()
+            .filter(|(node_addr, provider)| {
+                self.authenticated_local_peer(node_addr) && provider.lease_is_current(now)
+            })
+            .map(|(node_addr, _)| *node_addr)
             .collect::<HashSet<_>>();
         self.local_rendezvous
             .providers

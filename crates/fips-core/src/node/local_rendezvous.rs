@@ -12,7 +12,8 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use tracing::info;
 
 const LOCAL_RENDEZVOUS_TRANSPORT_NAME: &str = "local-rendezvous";
-const CAPABILITY_REFRESH_MS: u64 = 10_000;
+const CAPABILITY_REFRESH_MS: u64 = 2_000;
+const CAPABILITY_LEASE_MS: u64 = 6_000;
 const ROSTER_BROADCAST_MIN_MS: u64 = 250;
 const KEY_HINT_RESPONSE_BURST: u32 = 32;
 const KEY_HINT_RESPONSE_RATE: f64 = 64.0;
@@ -35,6 +36,59 @@ struct ProviderState {
     startup_epoch: [u8; 8],
     revision: u64,
     capabilities: Vec<LocalInstanceCapability>,
+    last_announcement_at: crate::time::Instant,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProviderAnnouncementUpdate {
+    Changed,
+    Refreshed,
+    Stale,
+}
+
+impl ProviderState {
+    fn new(
+        identity: PeerIdentity,
+        startup_epoch: [u8; 8],
+        revision: u64,
+        capabilities: Vec<LocalInstanceCapability>,
+        now: crate::time::Instant,
+    ) -> Self {
+        Self {
+            identity,
+            startup_epoch,
+            revision,
+            capabilities,
+            last_announcement_at: now,
+        }
+    }
+
+    fn apply_announcement(
+        &mut self,
+        identity: PeerIdentity,
+        startup_epoch: [u8; 8],
+        revision: u64,
+        capabilities: Vec<LocalInstanceCapability>,
+        now: crate::time::Instant,
+    ) -> ProviderAnnouncementUpdate {
+        if startup_epoch != self.startup_epoch || revision > self.revision {
+            self.identity = identity;
+            self.startup_epoch = startup_epoch;
+            self.revision = revision;
+            self.capabilities = capabilities;
+            self.last_announcement_at = now;
+            return ProviderAnnouncementUpdate::Changed;
+        }
+        if revision == self.revision {
+            self.last_announcement_at = now;
+            return ProviderAnnouncementUpdate::Refreshed;
+        }
+        ProviderAnnouncementUpdate::Stale
+    }
+
+    fn lease_is_current(&self, now: crate::time::Instant) -> bool {
+        now.duration_since(self.last_announcement_at).as_millis() < u128::from(CAPABILITY_LEASE_MS)
+    }
 }
 
 pub(super) struct LocalRendezvous {
@@ -499,6 +553,56 @@ impl Node {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_provider_state(now: crate::time::Instant) -> ProviderState {
+        let identity = Identity::generate();
+        ProviderState::new(
+            PeerIdentity::from_pubkey_full(identity.pubkey_full()),
+            [1; 8],
+            7,
+            vec![LocalInstanceCapability::service("hashtree.blob/1", 39019)],
+            now,
+        )
+    }
+
+    #[test]
+    fn equal_capability_revision_refreshes_lease_without_changing_state() {
+        let started = crate::time::instant_now();
+        let refreshed_at = started + std::time::Duration::from_secs(2);
+        let mut provider = test_provider_state(started);
+        let original_capabilities = provider.capabilities.clone();
+
+        let update = provider.apply_announcement(
+            provider.identity,
+            provider.startup_epoch,
+            provider.revision,
+            vec![LocalInstanceCapability::role("replayed.different/1")],
+            refreshed_at,
+        );
+
+        assert_eq!(update, ProviderAnnouncementUpdate::Refreshed);
+        assert_eq!(provider.capabilities, original_capabilities);
+        assert_eq!(provider.last_announcement_at, refreshed_at);
+        assert!(provider.lease_is_current(started + std::time::Duration::from_secs(7)));
+    }
+
+    #[test]
+    fn lower_capability_revision_does_not_refresh_lease() {
+        let started = crate::time::instant_now();
+        let mut provider = test_provider_state(started);
+
+        let update = provider.apply_announcement(
+            provider.identity,
+            provider.startup_epoch,
+            provider.revision - 1,
+            Vec::new(),
+            started + std::time::Duration::from_secs(5),
+        );
+
+        assert_eq!(update, ProviderAnnouncementUpdate::Stale);
+        assert_eq!(provider.last_announcement_at, started);
+        assert!(!provider.lease_is_current(started + std::time::Duration::from_secs(6)));
+    }
 
     fn key_hint_packet(
         transport_id: TransportId,
