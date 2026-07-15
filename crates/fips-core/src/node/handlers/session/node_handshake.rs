@@ -561,8 +561,8 @@ impl Node {
 
             // Process XK msg3
             if let Err(e) = handshake.read_xk_message_3(&msg3.handshake_payload) {
-                debug!(error = %e, "Failed to process rekey XK msg3");
-                entry.abandon_rekey();
+                debug!(error = %e, "Ignoring stale or invalid rekey XK msg3");
+                entry.set_rekey_state(handshake, false);
                 self.sessions.insert(*src_addr, entry);
                 return;
             }

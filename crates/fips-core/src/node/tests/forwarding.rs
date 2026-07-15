@@ -424,14 +424,20 @@ async fn test_forwarding_no_route_generates_error() {
         .await
         .unwrap();
 
-    // Process: node 0 receives, can't route to unknown_dest, sends error back to node 1
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    process_available_packets(&mut nodes).await;
-
-    // Process the error signal arriving at node 1
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let count = process_available_packets(&mut nodes).await;
-    assert!(count > 0, "Expected error signal to arrive at node 1");
+    // A single drain can process both the failed forward and the returned
+    // signal. Observe the signal's actual side effect instead of requiring it
+    // to land in an arbitrary later drain turn.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            process_available_packets(&mut nodes).await;
+            if nodes[1].node.stats().errors.coords_required > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Expected CoordsRequired error signal to arrive at node 1");
 
     cleanup_nodes(&mut nodes).await;
 }

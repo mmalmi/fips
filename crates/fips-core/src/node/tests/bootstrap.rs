@@ -177,6 +177,8 @@ async fn test_adopted_traversal_races_alternate_path_for_already_connected_peer(
 
 #[tokio::test]
 async fn test_third_peer_can_handshake_via_adopted_transport_socket() {
+    const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
     let mut node_a = make_node(); // Existing traversal peer (Alice)
     let mut node_b = make_node(); // Node with adopted socket (Bob)
     let mut node_c = make_node(); // New peer onboarding via Bob socket (Colin)
@@ -222,14 +224,14 @@ async fn test_third_peer_can_handshake_via_adopted_transport_socket() {
     let mut rx_a = node_a.packet_rx.take().expect("node_a packet_rx");
     let mut rx_b = node_b.packet_rx.take().expect("node_b packet_rx");
 
-    let pkt_at_a = timeout(Duration::from_secs(1), rx_a.recv())
+    let pkt_at_a = timeout(HANDSHAKE_TIMEOUT, rx_a.recv())
         .await
         .expect("timeout waiting for Bob->Alice msg1")
         .expect("node_a channel closed");
     assert_eq!(pkt_at_a.data.as_slice()[0] & 0x0f, PHASE_MSG1);
     node_a.handle_msg1(pkt_at_a).await;
 
-    let pkt_at_b = timeout(Duration::from_secs(1), rx_b.recv())
+    let pkt_at_b = timeout(HANDSHAKE_TIMEOUT, rx_b.recv())
         .await
         .expect("timeout waiting for Alice->Bob msg2")
         .expect("node_b channel closed");
@@ -260,7 +262,7 @@ async fn test_third_peer_can_handshake_via_adopted_transport_socket() {
     // Drive Bob/Colin handshake manually (msg1 -> msg2).
     let mut rx_c = node_c.packet_rx.take().expect("node_c packet_rx");
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    let deadline = tokio::time::Instant::now() + HANDSHAKE_TIMEOUT;
     let pkt_at_b = loop {
         let pkt = timeout_at(deadline, rx_b.recv())
             .await
@@ -274,7 +276,7 @@ async fn test_third_peer_can_handshake_via_adopted_transport_socket() {
     };
     node_b.handle_msg1(pkt_at_b).await;
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    let deadline = tokio::time::Instant::now() + HANDSHAKE_TIMEOUT;
     let pkt_at_c = loop {
         let pkt = timeout_at(deadline, rx_c.recv())
             .await

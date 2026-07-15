@@ -3,6 +3,7 @@ struct WebRtcRuntime {
     transport_id: TransportId,
     config: WebRtcConfig,
     api: Arc<::webrtc::api::API>,
+    incoming_native_api: Arc<::webrtc::api::API>,
     packet_tx: PacketTx,
     pool: ConnectionPool,
     pending: PendingPool,
@@ -200,7 +201,8 @@ impl WebRtcRuntime {
             );
             return Ok(());
         }
-        let offer = RTCSessionDescription::offer(signal.payload.sdp.clone().unwrap_or_default())
+        let offer_sdp = signal.payload.sdp.clone().unwrap_or_default();
+        let offer = RTCSessionDescription::offer(offer_sdp.clone())
             .map_err(|e| TransportError::StartFailed(e.to_string()))?;
         match prepare_pooled_webrtc_session_for_offer(
             &self.pool,
@@ -232,7 +234,7 @@ impl WebRtcRuntime {
         }
 
         let session_id = signal.negotiation_id.clone();
-        let pc = Arc::new(self.new_peer_connection().await?);
+        let pc = Arc::new(self.new_incoming_peer_connection(&offer_sdp).await?);
         let runtime = self.clone();
         let pc_for_data_channel = Arc::downgrade(&pc);
         let session_for_data_channel = session_id.clone();
@@ -412,7 +414,26 @@ impl WebRtcRuntime {
     }
 
     async fn new_peer_connection(&self) -> Result<RTCPeerConnection, TransportError> {
-        self.api
+        self.new_peer_connection_with_api(&self.api).await
+    }
+
+    async fn new_incoming_peer_connection(
+        &self,
+        remote_sdp: &str,
+    ) -> Result<RTCPeerConnection, TransportError> {
+        let api = if incoming_webrtc_mdns_mode(remote_sdp) == MulticastDnsMode::QueryOnly {
+            &self.api
+        } else {
+            &self.incoming_native_api
+        };
+        self.new_peer_connection_with_api(api).await
+    }
+
+    async fn new_peer_connection_with_api(
+        &self,
+        api: &::webrtc::api::API,
+    ) -> Result<RTCPeerConnection, TransportError> {
+        api
             .new_peer_connection(RTCConfiguration {
                 ice_servers: self
                     .stun_servers

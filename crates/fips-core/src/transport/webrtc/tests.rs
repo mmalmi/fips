@@ -8,6 +8,24 @@ fn native_webrtc_resolves_browser_mdns_candidates_without_gathering_its_own() {
 }
 
 #[test]
+fn incoming_offer_enables_mdns_only_for_local_candidates() {
+    let native_sdp = "v=0\r\na=candidate:1 1 UDP 1 192.0.2.1 5000 typ host\r\n";
+    let browser_sdp =
+        "v=0\r\na=candidate:1 1 UDP 1 01234567-89ab-cdef-0123-456789abcdef.local 5000 typ host\r\n";
+
+    assert_eq!(
+        incoming_webrtc_mdns_mode(native_sdp),
+        MulticastDnsMode::Disabled,
+        "native IP candidates must not allocate a multicast listener"
+    );
+    assert_eq!(
+        incoming_webrtc_mdns_mode(browser_sdp),
+        MulticastDnsMode::QueryOnly,
+        "browser .local candidates still require mDNS resolution"
+    );
+}
+
+#[test]
 fn validates_compressed_pubkey_addresses() {
     let good = "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     assert!(validate_compressed_pubkey_hex(good).is_ok());
@@ -334,6 +352,52 @@ async fn stalled_full_close_still_stops_gathered_ice_transport() {
         pc.dtls_transport().ice_transport().state(),
         ::webrtc::ice_transport::ice_transport_state::RTCIceTransportState::Closed,
         "ICE teardown must not wait behind a stalled SCTP/DTLS/full close"
+    );
+}
+
+#[tokio::test]
+async fn completed_full_close_still_stops_gathered_ice_transport() {
+    let identity = crate::Identity::generate();
+    let (packet_tx, _packet_rx) = packet_channel(1);
+    let transport = WebRtcTransport::new(
+        TransportId::new(1),
+        None,
+        WebRtcConfig::default(),
+        packet_tx,
+        &identity,
+        &NostrDiscoveryConfig::default(),
+    )
+    .expect("WebRTC transport");
+    let pc = Arc::new(
+        transport
+            .api
+            .new_peer_connection(RTCConfiguration::default())
+            .await
+            .expect("peer connection"),
+    );
+    pc.create_data_channel("cleanup-test", None)
+        .await
+        .expect("data channel");
+    let offer = pc.create_offer(None).await.expect("offer");
+    let mut gathering = pc.gathering_complete_promise().await;
+    pc.set_local_description(offer)
+        .await
+        .expect("local description");
+    tokio::time::timeout(Duration::from_secs(1), gathering.recv())
+        .await
+        .expect("ICE gathering timeout");
+
+    close_peer_connection_with_bounded_full_close(
+        Duration::from_millis(10),
+        Arc::clone(&pc),
+        std::future::ready(()),
+    )
+    .await;
+
+    assert_eq!(
+        pc.dtls_transport().ice_transport().state(),
+        ::webrtc::ice_transport::ice_transport_state::RTCIceTransportState::Closed,
+        "a completed outer close must still force terminal ICE teardown"
     );
 }
 

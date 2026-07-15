@@ -149,8 +149,22 @@ async fn restarted_initiator_reestablishes_with_surviving_responder() {
             .is_some_and(|entry| entry.has_rekey_in_progress()),
         "surviving responder must process the restarted peer's fresh setup"
     );
-    assert!(wait_process_packets_for_node(&mut nodes, 0).await > 0);
-    assert!(wait_process_packets_for_node(&mut nodes, 1).await > 0);
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &survivor_addr,
+        Duration::from_secs(10),
+        "restarted initiator fresh session",
+    )
+    .await;
+    wait_for_session_rekey_complete(
+        &mut nodes,
+        1,
+        &restarted_addr,
+        Duration::from_secs(10),
+        "surviving responder fresh session",
+    )
+    .await;
 
     let restarted_session = nodes[0].node.get_session(&survivor_addr).unwrap();
     assert!(restarted_session.is_established());
@@ -160,6 +174,13 @@ async fn restarted_initiator_reestablishes_with_surviving_responder() {
     assert!(survivor_session.is_established());
     assert!(!survivor_session.current_k_bit());
     assert!(survivor_session.pending_new_session().is_none());
+    assert_eq!(
+        restarted_session.handshake_hash(),
+        survivor_session.handshake_hash(),
+        "both peers must install the same restarted session"
+    );
+    assert!(nodes[0].node.dataplane_has_fsp_owner(&survivor_addr));
+    assert!(nodes[1].node.dataplane_has_fsp_owner(&restarted_addr));
 
     let mut restarted_endpoint = nodes[0]
         .node
