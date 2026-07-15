@@ -238,54 +238,6 @@ fn local_rendezvous_enables_fixed_loopback_without_adding_transports() {
 }
 
 #[test]
-fn legacy_local_discovery_scope_preserves_application_transports() {
-    let mut explicit = Config::new();
-    explicit.transports.udp = TransportInstances::Single(UdpConfig {
-        bind_addr: Some("127.0.0.1:34567".to_string()),
-        advertise_on_nostr: Some(false),
-        outbound_only: Some(true),
-        ..UdpConfig::default()
-    });
-    explicit.transports.ethernet = TransportInstances::Single(crate::config::EthernetConfig {
-        interface: "br-existing".to_string(),
-        announce: Some(false),
-        ..crate::config::EthernetConfig::default()
-    });
-
-    let config = FipsEndpoint::builder()
-        .config(explicit)
-        .local_discovery_scope("ignored-legacy-scope")
-        .prepared_config();
-
-    assert!(config.node.discovery.local.enabled);
-    assert_eq!(
-        config.node.discovery.local.rendezvous_addr,
-        crate::discovery::local::DEFAULT_LOCAL_RENDEZVOUS_ADDR
-    );
-    let TransportInstances::Single(udp) = config.transports.udp else {
-        panic!("expected the explicit UDP transport");
-    };
-    assert_eq!(udp.bind_addr.as_deref(), Some("127.0.0.1:34567"));
-    assert_eq!(udp.advertise_on_nostr, Some(false));
-    assert_eq!(udp.outbound_only, Some(true));
-
-    let TransportInstances::Single(ethernet) = config.transports.ethernet else {
-        panic!("expected the explicit Ethernet transport");
-    };
-    assert_eq!(ethernet.interface, "br-existing");
-    assert_eq!(ethernet.announce, Some(false));
-}
-
-#[test]
-fn empty_legacy_local_discovery_scope_remains_disabled() {
-    let config = FipsEndpoint::builder()
-        .local_discovery_scope("  ")
-        .prepared_config();
-
-    assert!(!config.node.discovery.local.enabled);
-}
-
-#[test]
 fn discovery_scope_preserves_explicit_connectivity_config() {
     let mut explicit = Config::new();
     explicit.node.discovery.nostr.enabled = true;
@@ -329,6 +281,10 @@ fn discovery_scope_preserves_explicit_connectivity_config() {
         .local_rendezvous()
         .prepared_config();
     assert!(local.node.discovery.local.enabled);
+    let TransportInstances::Single(udp) = local.transports.udp else {
+        panic!("expected the explicit UDP transport");
+    };
+    assert_eq!(udp.bind_addr.as_deref(), Some("127.0.0.1:34567"));
 }
 
 #[tokio::test]

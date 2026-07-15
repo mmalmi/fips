@@ -48,20 +48,10 @@ impl FipsEndpointBuilder {
     /// LAN candidates, host-wide loopback rendezvous, and a UDP NAT advert.
     /// If an explicit transport or Nostr config was supplied, the explicit
     /// config is left in control and the scope is retained as endpoint
-    /// metadata.
+    /// metadata; call [`Self::local_rendezvous`] to opt that endpoint into
+    /// same-host composition.
     pub fn discovery_scope(mut self, scope: impl Into<String>) -> Self {
         self.discovery_scope = Some(scope.into());
-        self
-    }
-
-    /// Enable host-wide authenticated loopback composition.
-    ///
-    /// The legacy scope argument is ignored: one fixed UDP rendezvous joins
-    /// all local FIPS processes without filesystem state or product scopes.
-    pub fn local_discovery_scope(mut self, scope: impl Into<String>) -> Self {
-        if !scope.into().trim().is_empty() {
-            self.local_rendezvous = true;
-        }
         self
     }
 
