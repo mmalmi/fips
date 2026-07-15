@@ -12,8 +12,8 @@ impl Node {
         let mut endpoints = Vec::new();
         let mut has_udp_nat = false;
 
-        for handle in self.transports.values() {
-            if !handle.is_operational() {
+        for (transport_id, handle) in &self.transports {
+            if self.is_local_rendezvous_transport(transport_id) || !handle.is_operational() {
                 continue;
             }
 

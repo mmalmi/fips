@@ -8,6 +8,7 @@
 
 pub mod lan;
 pub mod local;
+pub(crate) mod local_udp;
 pub mod nostr;
 
 use crate::config::UdpConfig;

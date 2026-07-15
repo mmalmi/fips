@@ -189,6 +189,9 @@ impl Node {
         control: crate::dataplane::DataplaneFmpControlIngress,
     ) -> bool {
         let packet = control.into_packet();
+        if self.handle_local_key_hint(&packet).await {
+            return true;
+        }
         if is_punch_packet(packet.data.as_slice()) {
             trace!(
                 transport_id = %packet.transport_id,

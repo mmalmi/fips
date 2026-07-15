@@ -490,11 +490,10 @@ impl Node {
         transport_id: TransportId,
         remote_addr: &TransportAddr,
     ) -> Result<(), NodeError> {
-        let live_local_instance =
-            self.is_live_local_instance_peer(peer_identity, transport_id, remote_addr);
+        let local_rendezvous = self.is_local_rendezvous_path(transport_id, remote_addr);
         if self.enforces_configured_only_peer_admission()
             && !self.is_configured_peer_identity(peer_identity)
-            && !live_local_instance
+            && !local_rendezvous
         {
             let peer_node_addr = *peer_identity.node_addr();
             warn!(
@@ -512,7 +511,7 @@ impl Node {
             )));
         }
 
-        if !live_local_instance
+        if !local_rendezvous
             && matches!(context, PeerAclContext::InboundHandshake)
             && !self.admits_open_discovery_peer(peer_identity)
         {

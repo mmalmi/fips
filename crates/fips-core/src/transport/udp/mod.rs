@@ -306,10 +306,10 @@ pub struct UdpTransport {
     recv_task: Option<JoinHandle<()>>,
     /// Local bound address (after start).
     local_addr: Option<SocketAddr>,
-    /// Whether the current socket came from NAT traversal rather than this
-    /// transport's configured bind address. Adopted sockets cannot be rebuilt
-    /// without invalidating the traversal handoff that created them.
-    adopted_socket: bool,
+    /// How the active socket was created. Adopted sockets cannot be rebuilt
+    /// without invalidating their NAT traversal handoff; exclusive sockets
+    /// must retain their ownership semantics when rebuilt.
+    socket_origin: UdpSocketOrigin,
     /// Last configured-socket rebuild after a local route error.
     last_local_route_socket_recovery: Option<Instant>,
     /// Transport statistics.
@@ -323,6 +323,23 @@ pub struct UdpTransport {
     udp_rcvbuf_error_baseline: u64,
     /// DNS resolution cache for hostname addresses.
     dns_cache: StdMutex<HashMap<TransportAddr, (SocketAddr, Instant)>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UdpSocketOrigin {
+    Configured,
+    Exclusive,
+    Adopted,
+}
+
+impl UdpSocketOrigin {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Configured => "configured",
+            Self::Exclusive => "exclusive",
+            Self::Adopted => "adopted",
+        }
+    }
 }
 
 impl UdpTransport {
@@ -342,7 +359,7 @@ impl UdpTransport {
             packet_tx,
             recv_task: None,
             local_addr: None,
-            adopted_socket: false,
+            socket_origin: UdpSocketOrigin::Configured,
             last_local_route_socket_recovery: None,
             stats: Arc::new(UdpStats::new()),
             #[cfg(target_os = "linux")]
@@ -487,12 +504,22 @@ impl UdpTransport {
     ///
     /// Binds the UDP socket and spawns the receive loop.
     pub async fn start_async(&mut self) -> Result<(), TransportError> {
-        if !self.state.can_start() {
-            return Err(TransportError::AlreadyStarted);
-        }
+        self.start_bound_async(UdpSocketOrigin::Configured).await
+    }
 
-        self.state = TransportState::Starting;
-        self.adopted_socket = false;
+    /// Start with an exclusive bind on the configured UDP address.
+    ///
+    /// The bound socket remains the transport's live FIPS carrier, so the OS
+    /// bind is also a durable ownership lock until this transport stops or the
+    /// process exits. Callers can match [`TransportError::AddressInUse`] to
+    /// distinguish losing the ownership election from other startup failures.
+    pub async fn start_exclusive_async(&mut self) -> Result<(), TransportError> {
+        self.start_bound_async(UdpSocketOrigin::Exclusive).await
+    }
+
+    async fn start_bound_async(&mut self, origin: UdpSocketOrigin) -> Result<(), TransportError> {
+        debug_assert!(origin != UdpSocketOrigin::Adopted);
+        self.begin_start(origin)?;
 
         if self.config.outbound_only() && self.config.bind_addr.is_some() {
             warn!(
@@ -501,57 +528,77 @@ impl UdpTransport {
             );
         }
 
-        // Parse bind address
-        let bind_addr: SocketAddr = self
-            .config
-            .bind_addr()
-            .parse()
-            .map_err(|e| TransportError::StartFailed(format!("invalid bind address: {}", e)))?;
+        let bind_addr =
+            self.config.bind_addr().parse().map_err(|error| {
+                TransportError::StartFailed(format!("invalid bind address: {error}"))
+            });
+        let bind_addr = self.require_start(bind_addr)?;
+        let raw_socket = match origin {
+            UdpSocketOrigin::Configured => UdpRawSocket::open(
+                bind_addr,
+                self.config.recv_buf_size(),
+                self.config.send_buf_size(),
+            ),
+            UdpSocketOrigin::Exclusive => UdpRawSocket::open_exclusive(
+                bind_addr,
+                self.config.recv_buf_size(),
+                self.config.send_buf_size(),
+            ),
+            UdpSocketOrigin::Adopted => unreachable!("checked above"),
+        };
 
-        // Create, bind, and configure UDP socket
-        let raw_socket = UdpRawSocket::open(
-            bind_addr,
-            self.config.recv_buf_size(),
-            self.config.send_buf_size(),
-        )?;
+        let raw_socket = self.require_start(raw_socket)?;
+        self.install_raw_socket(raw_socket, origin)
+    }
 
-        let actual_recv = raw_socket.recv_buffer_size()?;
-        let actual_send = raw_socket.send_buffer_size()?;
+    fn begin_start(&mut self, origin: UdpSocketOrigin) -> Result<(), TransportError> {
+        if !self.state.can_start() {
+            return Err(TransportError::AlreadyStarted);
+        }
+
+        self.state = TransportState::Starting;
+        self.socket_origin = origin;
+        Ok(())
+    }
+
+    fn require_start<T>(&mut self, result: Result<T, TransportError>) -> Result<T, TransportError> {
+        if result.is_err() {
+            self.state = TransportState::Failed;
+            self.socket = None;
+            self.recv_task = None;
+            self.local_addr = None;
+        }
+        result
+    }
+
+    fn install_raw_socket(
+        &mut self,
+        raw_socket: UdpRawSocket,
+        origin: UdpSocketOrigin,
+    ) -> Result<(), TransportError> {
+        let actual_recv = self.require_start(raw_socket.recv_buffer_size())?;
+        let actual_send = self.require_start(raw_socket.send_buffer_size())?;
         self.local_addr = Some(raw_socket.local_addr());
 
-        // Wrap in AsyncFd for tokio integration
-        let async_socket = raw_socket.into_async()?;
+        let async_socket = self.require_start(raw_socket.into_async())?;
         self.socket = Some(async_socket.clone());
-
-        // Spawn receive loop
-        let transport_id = self.transport_id;
-        let packet_tx = self.packet_tx.clone();
-        let mtu = self.config.mtu();
-        let stats = self.stats.clone();
-
-        let recv_task = tokio::spawn(async move {
-            udp_receive_loop(async_socket, transport_id, packet_tx, mtu, stats).await;
-        });
-
-        self.recv_task = Some(recv_task);
+        self.recv_task = Some(tokio::spawn(udp_receive_loop(
+            async_socket,
+            self.transport_id,
+            self.packet_tx.clone(),
+            self.config.mtu(),
+            self.stats.clone(),
+        )));
         self.state = TransportState::Up;
 
-        if let Some(ref name) = self.name {
-            info!(
-                name = %name,
-                local_addr = %self.local_addr.map_or_else(|| "<unbound>".to_string(), |addr| addr.to_string()),
-                recv_buf = actual_recv,
-                send_buf = actual_send,
-                "UDP transport started"
-            );
-        } else {
-            info!(
-                local_addr = %self.local_addr.map_or_else(|| "<unbound>".to_string(), |addr| addr.to_string()),
-                recv_buf = actual_recv,
-                send_buf = actual_send,
-                "UDP transport started"
-            );
-        }
+        info!(
+            name = self.name.as_deref(),
+            local_addr = %self.local_addr.map_or_else(|| "<unbound>".to_string(), |addr| addr.to_string()),
+            recv_buf = actual_recv,
+            send_buf = actual_send,
+            socket_origin = origin.label(),
+            "UDP transport started"
+        );
 
         Ok(())
     }
@@ -564,56 +611,15 @@ impl UdpTransport {
         &mut self,
         socket: std::net::UdpSocket,
     ) -> Result<(), TransportError> {
-        if !self.state.can_start() {
-            return Err(TransportError::AlreadyStarted);
-        }
-
-        self.state = TransportState::Starting;
-        self.adopted_socket = true;
+        self.begin_start(UdpSocketOrigin::Adopted)?;
 
         let raw_socket = UdpRawSocket::adopt(
             socket,
             self.config.recv_buf_size(),
             self.config.send_buf_size(),
-        )?;
-
-        let actual_recv = raw_socket.recv_buffer_size()?;
-        let actual_send = raw_socket.send_buffer_size()?;
-        self.local_addr = Some(raw_socket.local_addr());
-
-        let async_socket = raw_socket.into_async()?;
-        self.socket = Some(async_socket.clone());
-
-        let transport_id = self.transport_id;
-        let packet_tx = self.packet_tx.clone();
-        let mtu = self.config.mtu();
-        let stats = self.stats.clone();
-
-        let recv_task = tokio::spawn(async move {
-            udp_receive_loop(async_socket, transport_id, packet_tx, mtu, stats).await;
-        });
-
-        self.recv_task = Some(recv_task);
-        self.state = TransportState::Up;
-
-        if let Some(ref name) = self.name {
-            info!(
-                name = %name,
-                local_addr = %self.local_addr.map_or_else(|| "<unbound>".to_string(), |addr| addr.to_string()),
-                recv_buf = actual_recv,
-                send_buf = actual_send,
-                "UDP transport adopted existing socket"
-            );
-        } else {
-            info!(
-                local_addr = %self.local_addr.map_or_else(|| "<unbound>".to_string(), |addr| addr.to_string()),
-                recv_buf = actual_recv,
-                send_buf = actual_send,
-                "UDP transport adopted existing socket"
-            );
-        }
-
-        Ok(())
+        );
+        let raw_socket = self.require_start(raw_socket)?;
+        self.install_raw_socket(raw_socket, UdpSocketOrigin::Adopted)
     }
 
     /// Stop the transport asynchronously.
@@ -649,10 +655,11 @@ impl UdpTransport {
     /// bound UDP socket after moving between Wi-Fi networks or a hotspot. Peer
     /// retry alone cannot heal that socket. Rebinding preserves the configured
     /// listen port while letting the kernel select the new underlay path.
-    /// NAT-traversal sockets are intentionally excluded because recreating one
-    /// here would discard the mapping established by the traversal handoff.
+    /// NAT-traversal sockets are excluded because recreating one would discard
+    /// the established mapping. Exclusive sockets are also excluded: their
+    /// live bind is an ownership lock and must never be dropped for recovery.
     pub(crate) async fn recover_local_route_socket(&mut self) -> Result<bool, TransportError> {
-        if self.adopted_socket || !self.state.is_operational() {
+        if self.socket_origin != UdpSocketOrigin::Configured || !self.state.is_operational() {
             return Ok(false);
         }
 

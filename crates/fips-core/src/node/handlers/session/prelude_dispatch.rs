@@ -346,6 +346,9 @@ impl AuthenticatedSessionDispatch {
         if destination_port == FSP_PORT_IPV6_SHIM {
             return false;
         }
+        if destination_port == crate::discovery::local_udp::LOCAL_CAPABILITY_FSP_PORT {
+            return false;
+        }
         #[cfg(feature = "webrtc-transport")]
         if destination_port
             == crate::transport::link_negotiation::LINK_NEGOTIATION_SERVICE_PORT
@@ -418,6 +421,10 @@ impl AuthenticatedSessionDispatch {
                 let ce_flag = self.ce_flag();
 
                 match dst_port {
+                    port if port == crate::discovery::local_udp::LOCAL_CAPABILITY_FSP_PORT => {
+                        let payload = &self.body()[FSP_PORT_HEADER_SIZE..];
+                        node.handle_local_capability_message(&source_addr, payload);
+                    }
                     #[cfg(feature = "webrtc-transport")]
                     port if port
                         == crate::transport::link_negotiation::LINK_NEGOTIATION_SERVICE_PORT =>

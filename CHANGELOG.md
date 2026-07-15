@@ -37,11 +37,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Made the relay fallback deliberately low priority so an established FIPS
   session can negotiate and move to UDP, WebRTC, or TCP when a better path is
   available.
-- Added capability-aware same-host instance discovery with an isolated local
-  scope, authenticated loopback admission, deterministic provider selection,
-  and application service/role advertisements. The public local-discovery
-  configuration is now non-exhaustive, so this release intentionally advances
-  the minor version rather than presenting the change as `0.3.100`.
+- Replaced filesystem and private-Ethernet same-host discovery with one fixed,
+  exclusively bound loopback UDP rendezvous. Its plaintext exchange is only
+  `version + nonce` / `version + nonce + public-key hint`; ordinary Noise IK
+  proves identity, the normal ACL authorizes the link, and bounded capability
+  adverts travel only over encrypted FSP. The sticky rendezvous anchor never
+  suppresses or delegates application-owned outbound transports and is
+  replaced after its socket closes. The public local-discovery configuration
+  is non-exhaustive, so this release intentionally advances the minor version
+  rather than presenting the change as `0.3.100`.
 - Bounded optional-transport send work so unavailable companion transports do
   not stall the endpoint send stack.
 - Corrected external peerfinding so application-owned EventBus discovery does

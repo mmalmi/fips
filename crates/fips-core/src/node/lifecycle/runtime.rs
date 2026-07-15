@@ -35,7 +35,12 @@ impl Node {
         self.packet_tx = Some(packet_tx.clone());
         self.packet_rx = Some(packet_rx);
 
-        // Initialize transports first (before TUN, before Nostr discovery).
+        // The dedicated loopback socket is both the sticky rendezvous bind and
+        // its ordinary authenticated FIPS carrier. Start it before potentially
+        // slow public discovery, but never let it alter other transports.
+        self.start_local_rendezvous(&packet_tx).await;
+
+        // Initialize configured transports (before TUN and public discovery).
         let transport_handles = self.create_transports(&packet_tx).await;
 
         for mut handle in transport_handles {
@@ -85,8 +90,9 @@ impl Node {
         if self.config.node.discovery.lan.enabled {
             let advertised_udp_port = self
                 .transports
-                .values()
-                .filter(|h| h.is_operational())
+                .iter()
+                .filter(|(id, h)| h.is_operational() && !self.is_local_rendezvous_transport(id))
+                .map(|(_, handle)| handle)
                 .filter(|h| h.transport_type().name == "udp")
                 .find_map(|h| h.local_addr().map(|addr| addr.port()))
                 .unwrap_or(0);
@@ -108,9 +114,6 @@ impl Node {
                 }
             }
         }
-
-        self.start_local_instance_discovery();
-        self.poll_local_instance_discovery().await;
 
         // Connect to static peers before TUN is active
         // This allows handshake messages to be sent before we start accepting packets
@@ -426,14 +429,12 @@ impl Node {
             lan.shutdown().await;
         }
 
-        if let Some(registry) = self.local_instance_registry.take()
-            && let Err(err) = registry.remove()
-        {
-            debug!(error = %err, "failed to remove same-host FIPS instance record");
-        }
-
-        // Shutdown transports (they're packet producers)
-        let transport_ids: Vec<_> = self.transports.keys().cloned().collect();
+        // Shutdown configured transports first. The fixed local socket is the
+        // OS rendezvous lock and remains available until all other network
+        // work and disconnect notices have drained.
+        let local_transport_id = self.local_rendezvous_transport_id();
+        let mut transport_ids: Vec<_> = self.transports.keys().cloned().collect();
+        transport_ids.sort_by_key(|id| (Some(*id) == local_transport_id, id.as_u32()));
         for transport_id in transport_ids {
             if let Some(mut handle) = self.transports.remove(&transport_id) {
                 let transport_type = handle.transport_type().name;

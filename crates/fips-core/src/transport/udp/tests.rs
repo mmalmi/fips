@@ -53,11 +53,13 @@ async fn configured_udp_transport_recovers_socket_after_local_route_failure() {
     let mut transport = UdpTransport::new(TransportId::new(1), None, make_config(0), tx);
 
     transport.start_async().await.unwrap();
+    #[cfg(unix)]
     let before = transport.send_snapshot().unwrap();
 
     assert!(transport.recover_local_route_socket().await.unwrap());
     assert_eq!(transport.state(), TransportState::Up);
 
+    #[cfg(unix)]
     let after = transport.send_snapshot().unwrap();
     #[cfg(unix)]
     {
@@ -84,6 +86,56 @@ async fn test_double_start_fails() {
     assert!(matches!(result, Err(TransportError::AlreadyStarted)));
 
     transport.stop_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn exclusive_start_reports_address_in_use_and_can_retry() {
+    let (owner_tx, _owner_rx) = packet_channel(100);
+    let mut owner = UdpTransport::new(TransportId::new(1), None, make_config(0), owner_tx);
+    owner.start_exclusive_async().await.unwrap();
+    let owner_addr = owner.local_addr().unwrap();
+
+    let (candidate_tx, _candidate_rx) = packet_channel(100);
+    let mut candidate = UdpTransport::new(
+        TransportId::new(2),
+        None,
+        make_config(owner_addr.port()),
+        candidate_tx,
+    );
+    assert!(matches!(
+        candidate.start_exclusive_async().await,
+        Err(TransportError::AddressInUse { address, .. }) if address == owner_addr
+    ));
+    assert_eq!(candidate.state(), TransportState::Failed);
+
+    owner.stop_async().await.unwrap();
+    candidate.start_exclusive_async().await.unwrap();
+    assert_eq!(candidate.local_addr(), Some(owner_addr));
+    candidate.stop_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn exclusive_transport_recovery_preserves_ownership_bind() {
+    let (owner_tx, _owner_rx) = packet_channel(100);
+    let mut owner = UdpTransport::new(TransportId::new(1), None, make_config(0), owner_tx);
+    owner.start_exclusive_async().await.unwrap();
+    let owner_addr = owner.local_addr().unwrap();
+
+    assert!(!owner.recover_local_route_socket().await.unwrap());
+
+    let (candidate_tx, _candidate_rx) = packet_channel(100);
+    let mut candidate = UdpTransport::new(
+        TransportId::new(2),
+        None,
+        make_config(owner_addr.port()),
+        candidate_tx,
+    );
+    assert!(matches!(
+        candidate.start_exclusive_async().await,
+        Err(TransportError::AddressInUse { address, .. }) if address == owner_addr
+    ));
+
+    owner.stop_async().await.unwrap();
 }
 
 #[tokio::test]

@@ -621,6 +621,32 @@ impl Config {
     /// Validate cross-field configuration invariants.
     pub fn validate(&self) -> Result<(), ConfigError> {
         let nostr = &self.node.discovery.nostr;
+        let local = &self.node.discovery.local;
+
+        if local.enabled && !local.has_valid_rendezvous_addr() {
+            return Err(ConfigError::Validation(format!(
+                "node.discovery.local.rendezvous_addr must be a non-zero IPv4 loopback address, got {}",
+                local.rendezvous_addr
+            )));
+        }
+
+        if local.enabled {
+            let fixed = std::net::SocketAddr::V4(local.rendezvous_addr);
+            for (name, udp) in self.transports.udp.iter() {
+                if udp.outbound_only() {
+                    continue;
+                }
+                let Ok(bind) = udp.bind_addr().parse::<std::net::SocketAddr>() else {
+                    continue;
+                };
+                if bind.port() == fixed.port() && (bind.ip().is_unspecified() || bind == fixed) {
+                    let name = name.unwrap_or("default");
+                    return Err(ConfigError::Validation(format!(
+                        "transports.udp.{name} bind {bind} collides with the local rendezvous at {fixed}"
+                    )));
+                }
+            }
+        }
 
         let any_transport_advertises_on_nostr = self
             .transports

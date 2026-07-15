@@ -67,6 +67,18 @@ fn permission_denied_send_errors_are_local_route_unavailable() {
     assert!(text_error.is_local_route_unavailable());
 }
 
+#[cfg(windows)]
+#[test]
+fn winsock_exclusive_access_denied_is_typed_as_bind_contention() {
+    let address = "127.0.0.1:21211".parse().unwrap();
+    let error =
+        TransportError::exclusive_bind_failed(address, std::io::Error::from_raw_os_error(10_013));
+    assert!(matches!(
+        error,
+        TransportError::AddressInUse { address: actual, .. } if actual == address
+    ));
+}
+
 #[test]
 fn test_transport_addr_string() {
     let addr = TransportAddr::from_string("192.168.1.1:2121");

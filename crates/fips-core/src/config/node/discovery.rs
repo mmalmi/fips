@@ -38,10 +38,10 @@ pub struct DiscoveryConfig {
     /// for same-LAN peers is large (sub-second pairing, no relay).
     #[serde(default = "DiscoveryConfig::default_lan")]
     pub lan: crate::discovery::lan::LanDiscoveryConfig,
-    /// Same-host process discovery through `~/.fips/instances/*.json`.
-    /// Embedded endpoints with a discovery scope enable this so local VMs,
-    /// browser helpers, and native app processes can find loopback-reachable
-    /// FIPS sockets without polling relays or relying on mDNS loopback.
+    /// Same-host process discovery through one fixed loopback UDP rendezvous.
+    /// The socket is only a bootstrap hint; the normal Noise handshake still
+    /// authenticates every local peer. It never changes application-owned
+    /// outbound connectivity.
     #[serde(default = "DiscoveryConfig::default_local")]
     pub local: crate::discovery::local::LocalInstanceDiscoveryConfig,
 }

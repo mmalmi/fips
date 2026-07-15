@@ -752,7 +752,7 @@ impl Node {
         // packet flow.
         self.poll_nostr_discovery().await;
         self.poll_lan_discovery().await;
-        self.poll_local_instance_discovery().await;
+        self.poll_local_rendezvous().await;
         self.check_tree_state().await;
         self.check_bloom_state().await;
         self.compute_mesh_size();

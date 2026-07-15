@@ -102,6 +102,13 @@ pub enum TransportError {
     #[error("transport failed to start: {0}")]
     StartFailed(String),
 
+    #[error("transport address already in use: {address}")]
+    AddressInUse {
+        address: SocketAddr,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("transport shutdown failed: {0}")]
     ShutdownFailed(String),
 
@@ -134,6 +141,27 @@ pub enum TransportError {
 }
 
 impl TransportError {
+    /// Preserve address-in-use as a typed bind outcome so callers can use a
+    /// socket bind as an ownership election without inspecting OS text.
+    pub(crate) fn bind_failed(address: SocketAddr, source: std::io::Error) -> Self {
+        if source.kind() == std::io::ErrorKind::AddrInUse {
+            Self::AddressInUse { address, source }
+        } else {
+            Self::StartFailed(format!("bind {address} failed: {source}"))
+        }
+    }
+
+    /// Map contention for an explicitly exclusive bind. Winsock reports a
+    /// collision with `SO_EXCLUSIVEADDRUSE` as WSAEACCES rather than
+    /// WSAEADDRINUSE; keep that exception local to this ownership primitive.
+    #[cfg(windows)]
+    pub(crate) fn exclusive_bind_failed(address: SocketAddr, source: std::io::Error) -> Self {
+        if source.raw_os_error() == Some(10_013) {
+            return Self::AddressInUse { address, source };
+        }
+        Self::bind_failed(address, source)
+    }
+
     /// True when the local OS says the outbound underlay path is temporarily
     /// unsendable, rather than the peer or protocol being bad.
     pub fn is_local_route_unavailable(&self) -> bool {

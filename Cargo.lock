@@ -1310,6 +1310,7 @@ dependencies = [
  "tun",
  "uuid",
  "webrtc",
+ "windows-sys 0.61.2",
  "wintun",
 ]
 

@@ -64,6 +64,8 @@ impl Node {
 
         let (host_map, peer_acl) = Self::host_map_and_peer_acl(&config);
         let configured_peers = ConfiguredPeerLookup::from_config(&config);
+        let local_rendezvous =
+            local_rendezvous::LocalRendezvous::new(&config, &identity, startup_epoch);
 
         Ok(Self {
             identity,
@@ -137,11 +139,7 @@ impl Node {
             pending_mesh_signals: HashMap::new(),
             nostr_discovery_started_at_ms: None,
             lan_discovery: None,
-            local_instance_registry: None,
-            local_instance_capabilities: Vec::new(),
-            local_instance_started_at_ms: None,
-            last_local_instance_publish_ms: None,
-            last_local_instance_scan_ms: None,
+            local_rendezvous,
             startup_open_discovery_sweep_done: false,
             bootstrap_transports: BootstrapTransports::default(),
             discovery_fallback_transit: DiscoveryFallbackTransit::default(),
@@ -210,6 +208,8 @@ impl Node {
 
         let (host_map, peer_acl) = Self::host_map_and_peer_acl(&config);
         let configured_peers = ConfiguredPeerLookup::from_config(&config);
+        let local_rendezvous =
+            local_rendezvous::LocalRendezvous::new(&config, &identity, startup_epoch);
 
         Ok(Self {
             identity,
@@ -281,11 +281,7 @@ impl Node {
             pending_mesh_signals: HashMap::new(),
             nostr_discovery_started_at_ms: None,
             lan_discovery: None,
-            local_instance_registry: None,
-            local_instance_capabilities: Vec::new(),
-            local_instance_started_at_ms: None,
-            last_local_instance_publish_ms: None,
-            last_local_instance_scan_ms: None,
+            local_rendezvous,
             startup_open_discovery_sweep_done: false,
             bootstrap_transports: BootstrapTransports::default(),
             discovery_fallback_transit: DiscoveryFallbackTransit::default(),
@@ -555,6 +551,7 @@ impl Node {
                 handle.transport_type().name == transport_type
                     && handle.is_operational()
                     && !self.bootstrap_transports.contains(id)
+                    && !self.is_local_rendezvous_transport(id)
             })
             .min_by_key(|(id, _)| id.as_u32())
             .map(|(id, _)| *id)

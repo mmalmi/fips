@@ -8,13 +8,24 @@
             recv_buf_size: usize,
             send_buf_size: usize,
         ) -> Result<Self, TransportError> {
-            Self::open_inner(bind_addr, recv_buf_size, send_buf_size)
+            Self::open_inner(bind_addr, recv_buf_size, send_buf_size, true)
+        }
+
+        /// Create a UDP socket whose address cannot be shared by another
+        /// FIPS instance. Used as the same-host rendezvous ownership lock.
+        pub fn open_exclusive(
+            bind_addr: SocketAddr,
+            recv_buf_size: usize,
+            send_buf_size: usize,
+        ) -> Result<Self, TransportError> {
+            Self::open_inner(bind_addr, recv_buf_size, send_buf_size, false)
         }
 
         fn open_inner(
             bind_addr: SocketAddr,
             recv_buf_size: usize,
             send_buf_size: usize,
+            reusable: bool,
         ) -> Result<Self, TransportError> {
             let domain = if bind_addr.is_ipv4() {
                 Domain::IPV4
@@ -26,13 +37,16 @@
 
             configure_socket_nonblocking(&sock)?;
 
-            // SO_REUSEPORT/SO_REUSEADDR keeps restart/adopt behavior friendly
-            // on platforms that support it.
-            configure_socket_reuse(&sock);
+            if reusable {
+                // SO_REUSEPORT/SO_REUSEADDR keeps ordinary transport restart
+                // and adoption friendly. Rendezvous ownership deliberately
+                // skips both options so bind remains an exclusive OS lock.
+                configure_socket_reuse(&sock);
+            }
             apply_darwin_udp_tuning(&sock, "udp-listen");
 
             sock.bind(&bind_addr.into())
-                .map_err(|e| TransportError::StartFailed(format!("bind failed: {}", e)))?;
+                .map_err(|error| TransportError::bind_failed(bind_addr, error))?;
 
             // Set socket buffer sizes via the standard SO_RCVBUF /
             // SO_SNDBUF path first. These are clamped to

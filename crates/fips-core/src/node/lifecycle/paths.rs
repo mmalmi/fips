@@ -612,6 +612,16 @@ impl Node {
             return true;
         };
 
+        // Same-host composition must remain usable even when these identities
+        // also have a public/application-owned path. Prefer the authenticated
+        // loopback path without altering or disabling any configured transport.
+        let candidate_is_local =
+            self.is_local_rendezvous_path(candidate_transport_id, candidate_addr);
+        let current_is_local = self.is_local_rendezvous_path(current_transport_id, current_addr);
+        if candidate_is_local != current_is_local {
+            return candidate_is_local;
+        }
+
         let current_priority = self
             .known_path_priority(peer_node_addr, current_transport_id, current_addr)
             .map(u16::from)

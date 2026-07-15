@@ -144,6 +144,18 @@ fn test_udp_socket_buffer_sizes() {
     assert!(send_buf > 0, "send buffer should be non-zero");
 }
 
+#[test]
+fn exclusive_udp_socket_rejects_a_reusable_second_bind() {
+    let owner = UdpRawSocket::open_exclusive("127.0.0.1:0".parse().unwrap(), 65_536, 65_536)
+        .expect("bind exclusive UDP owner");
+    let addr = owner.local_addr();
+
+    assert!(
+        UdpRawSocket::open(addr, 65_536, 65_536).is_err(),
+        "ordinary reusable UDP sockets must not share the rendezvous owner port"
+    );
+}
+
 #[tokio::test]
 async fn test_async_udp_socket_send_recv() {
     let sock1 = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 65536, 65536)

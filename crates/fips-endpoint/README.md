@@ -8,26 +8,29 @@ the full `fips-core` API surface.
 
 FIPS is under active development. APIs and wire behavior are not yet stable.
 
-## Host-Local Ethernet Discovery
+## Same-Host Composition
 
-Applications running on a private host bridge or veth segment can enable scoped
-Ethernet discovery through the endpoint builder:
+Applications on one host can discover and reuse each other's authenticated FSP
+services without a daemon, filesystem registry, or privileged interface:
 
 ```rust
 let endpoint = fips_endpoint::FipsEndpoint::builder()
-    .discovery_scope("iris-chat:host")
-    .local_ethernet("fips-app0")
+    .local_rendezvous()
     .bind()
     .await?;
 ```
 
-The interface must already exist and be up. The endpoint will announce scoped
-Ethernet beacons, auto-connect to matching peers on that L2 segment, and still
-use the normal scoped UDP/Nostr defaults when `discovery_scope` is set.
+The first process exclusively binds `127.0.0.1:21211`; later processes use an
+ephemeral loopback UDP socket. A minimal nonce exchange yields only the
+owner's untrusted public-key hint. The ordinary Noise IK handshake then proves
+that identity, applies the normal ACL, and carries bounded capability adverts
+over encrypted FSP.
 
-`discovery_scope` is the Nostr advert app scope. A generic daemon can advertise
-`fips-overlay-v1`, while an application endpoint behind it can advertise a
-separate scope such as `hashtree-v1` with its own endpoint identity.
+The fixed-port owner is only a sticky rendezvous anchor. It does not own or
+suppress another application's configured Internet, VPN, Nostr, LAN, or other
+transports. If it exits, one surviving process acquires the released socket
+after jitter and peers authenticate again. Simultaneous processes need
+distinct FIPS transport identities.
 
 ## Repository
 

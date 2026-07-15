@@ -188,7 +188,7 @@ fn endpoint_data_batch_owns_payload_bytes_and_queue_stamp() {
     assert_eq!(owned_enqueued_at_ms, enqueued_at_ms);
 }
 
-mod local_egress;
+mod local_rendezvous;
 mod runtime;
 
 #[test]
@@ -226,55 +226,63 @@ fn discovery_scope_enables_default_scoped_udp_discovery() {
 }
 
 #[test]
-fn local_ethernet_adds_scoped_discovery_transport() {
-    let config = FipsEndpoint::builder()
-        .discovery_scope("iris-chat:host")
-        .local_ethernet("fips-app0")
-        .prepared_config();
+fn local_rendezvous_enables_fixed_loopback_without_adding_transports() {
+    let config = FipsEndpoint::builder().local_rendezvous().prepared_config();
 
-    assert!(config.node.discovery.nostr.enabled);
+    assert!(config.node.discovery.local.enabled);
     assert_eq!(
-        config.node.discovery.lan.scope.as_deref(),
-        Some("iris-chat:host")
+        config.node.discovery.local.rendezvous_addr,
+        crate::discovery::local::DEFAULT_LOCAL_RENDEZVOUS_ADDR
     );
-
-    let eth = match config.transports.ethernet {
-        TransportInstances::Single(eth) => eth,
-        TransportInstances::Named(_) => panic!("expected a single Ethernet transport"),
-    };
-    assert_eq!(eth.interface, "fips-app0");
-    assert!(eth.discovery());
-    assert!(eth.announce());
-    assert!(eth.auto_connect());
-    assert!(eth.accept_connections());
-    assert_eq!(eth.discovery_scope(), Some("iris-chat:host"));
+    assert!(config.transports.is_empty());
 }
 
 #[test]
-fn local_ethernet_preserves_existing_ethernet_config() {
+fn legacy_local_discovery_scope_preserves_application_transports() {
     let mut explicit = Config::new();
-    explicit.transports.ethernet = TransportInstances::Single(EthernetConfig {
+    explicit.transports.udp = TransportInstances::Single(UdpConfig {
+        bind_addr: Some("127.0.0.1:34567".to_string()),
+        advertise_on_nostr: Some(false),
+        outbound_only: Some(true),
+        ..UdpConfig::default()
+    });
+    explicit.transports.ethernet = TransportInstances::Single(crate::config::EthernetConfig {
         interface: "br-existing".to_string(),
         announce: Some(false),
-        ..EthernetConfig::default()
+        ..crate::config::EthernetConfig::default()
     });
 
     let config = FipsEndpoint::builder()
         .config(explicit)
-        .local_ethernet("fips-app0")
+        .local_discovery_scope("ignored-legacy-scope")
         .prepared_config();
 
-    let TransportInstances::Named(map) = config.transports.ethernet else {
-        panic!("expected named Ethernet transports");
+    assert!(config.node.discovery.local.enabled);
+    assert_eq!(
+        config.node.discovery.local.rendezvous_addr,
+        crate::discovery::local::DEFAULT_LOCAL_RENDEZVOUS_ADDR
+    );
+    let TransportInstances::Single(udp) = config.transports.udp else {
+        panic!("expected the explicit UDP transport");
     };
-    assert!(map.contains_key("default"));
-    let local = map
-        .get("local-ethernet-fips-app0")
-        .expect("local endpoint Ethernet transport");
-    assert_eq!(local.interface, "fips-app0");
-    assert!(local.announce());
-    assert!(local.auto_connect());
-    assert!(local.accept_connections());
+    assert_eq!(udp.bind_addr.as_deref(), Some("127.0.0.1:34567"));
+    assert_eq!(udp.advertise_on_nostr, Some(false));
+    assert_eq!(udp.outbound_only, Some(true));
+
+    let TransportInstances::Single(ethernet) = config.transports.ethernet else {
+        panic!("expected the explicit Ethernet transport");
+    };
+    assert_eq!(ethernet.interface, "br-existing");
+    assert_eq!(ethernet.announce, Some(false));
+}
+
+#[test]
+fn empty_legacy_local_discovery_scope_remains_disabled() {
+    let config = FipsEndpoint::builder()
+        .local_discovery_scope("  ")
+        .prepared_config();
+
+    assert!(!config.node.discovery.local.enabled);
 }
 
 #[test]
@@ -308,34 +316,12 @@ fn discovery_scope_preserves_explicit_connectivity_config() {
         Some("iris-local-v1")
     );
     assert!(config.node.discovery.local.enabled);
-    let TransportInstances::Named(udp) = config.transports.udp else {
-        panic!("expected explicit and local-instance UDP transports");
+    let TransportInstances::Single(udp) = config.transports.udp else {
+        panic!("expected the explicit UDP transport");
     };
-    let external = udp.get("default").expect("explicit UDP transport");
-    assert_eq!(external.bind_addr.as_deref(), Some("127.0.0.1:34567"));
-    assert_eq!(external.bind_addr(), "0.0.0.0:0");
-    assert!(!external.advertise_on_nostr());
-    assert!(external.outbound_only());
-    let local = udp.get("local-instance").expect("local UDP transport");
-    assert_eq!(local.bind_addr(), "127.0.0.1:0");
-    assert!(local.accept_connections());
-    assert!(!local.advertise_on_nostr());
-}
-
-#[test]
-fn local_discovery_reuses_accepting_tcp_with_nostr_app_scope() {
-    let mut explicit = Config::new();
-    explicit.node.discovery.local.enabled = true;
-    explicit.node.discovery.nostr.app = "iris-local-v1".to_string();
-    explicit.transports.tcp = TransportInstances::Single(crate::config::TcpConfig {
-        bind_addr: Some("[::]:0".to_string()),
-        ..crate::config::TcpConfig::default()
-    });
-
-    let config = FipsEndpoint::builder().config(explicit).prepared_config();
-
-    assert!(config.transports.udp.is_empty());
-    assert_eq!(config.transports.tcp.len(), 1);
+    assert_eq!(udp.bind_addr.as_deref(), Some("127.0.0.1:34567"));
+    assert_eq!(udp.advertise_on_nostr, Some(false));
+    assert_eq!(udp.outbound_only, Some(true));
 }
 
 #[tokio::test]

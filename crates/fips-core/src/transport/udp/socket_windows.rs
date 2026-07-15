@@ -2,6 +2,32 @@
 mod platform {
     use super::*;
 
+    fn set_windows_exclusive_addr_use(sock: &Socket) -> Result<(), TransportError> {
+        use std::os::windows::io::AsRawSocket;
+        use windows_sys::Win32::Networking::WinSock::{
+            SO_EXCLUSIVEADDRUSE, SOL_SOCKET, SOCKET, setsockopt,
+        };
+
+        let enabled: i32 = 1;
+        let result = unsafe {
+            setsockopt(
+                sock.as_raw_socket() as SOCKET,
+                SOL_SOCKET,
+                SO_EXCLUSIVEADDRUSE,
+                (&enabled as *const i32).cast(),
+                std::mem::size_of::<i32>() as i32,
+            )
+        };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(TransportError::StartFailed(format!(
+                "set SO_EXCLUSIVEADDRUSE failed: {}",
+                std::io::Error::last_os_error()
+            )))
+        }
+    }
+
     const UDP_CONTROL_SEND_TIMEOUT: std::time::Duration =
         std::time::Duration::from_millis(100);
 
@@ -26,6 +52,24 @@ mod platform {
             recv_buf_size: usize,
             send_buf_size: usize,
         ) -> Result<Self, TransportError> {
+            Self::open_inner(bind_addr, recv_buf_size, send_buf_size, false)
+        }
+
+        /// Create an exclusive UDP socket for same-host rendezvous ownership.
+        pub fn open_exclusive(
+            bind_addr: SocketAddr,
+            recv_buf_size: usize,
+            send_buf_size: usize,
+        ) -> Result<Self, TransportError> {
+            Self::open_inner(bind_addr, recv_buf_size, send_buf_size, true)
+        }
+
+        fn open_inner(
+            bind_addr: SocketAddr,
+            recv_buf_size: usize,
+            send_buf_size: usize,
+            exclusive: bool,
+        ) -> Result<Self, TransportError> {
             let domain = if bind_addr.is_ipv4() {
                 Domain::IPV4
             } else {
@@ -38,12 +82,20 @@ mod platform {
                 TransportError::StartFailed(format!("set nonblocking failed: {}", e))
             })?;
 
-            // Windows: `socket2::Socket::set_reuse_port` doesn't exist.
-            // SO_REUSEADDR is available and harmless to set.
-            let _ = sock.set_reuse_address(true);
+            if exclusive {
+                set_windows_exclusive_addr_use(&sock)?;
+            } else {
+                // Windows: `socket2::Socket::set_reuse_port` doesn't exist.
+                let _ = sock.set_reuse_address(true);
+            }
 
-            sock.bind(&bind_addr.into())
-                .map_err(|e| TransportError::StartFailed(format!("bind failed: {}", e)))?;
+            sock.bind(&bind_addr.into()).map_err(|error| {
+                if exclusive {
+                    TransportError::exclusive_bind_failed(bind_addr, error)
+                } else {
+                    TransportError::bind_failed(bind_addr, error)
+                }
+            })?;
 
             // Set socket buffer sizes
             sock.set_recv_buffer_size(recv_buf_size)

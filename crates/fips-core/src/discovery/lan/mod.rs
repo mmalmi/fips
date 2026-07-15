@@ -11,7 +11,7 @@
 //!
 //! mDNS adverts are unauthenticated: anyone on the LAN can multicast a
 //! TXT carrying `npub=...`. Identity is still proven end-to-end by the
-//! Noise XX handshake the Node initiates against the observed endpoint
+//! Noise IK handshake the Node initiates against the observed endpoint
 //! — a spoofed advert with another peer's npub fails the handshake and
 //! is silently dropped. Treat the mDNS advert as a routing hint, not as
 //! identity. LAN discovery is link-local mDNS only. It is not a Nostr advert
@@ -79,7 +79,7 @@ pub enum LanDiscoveryError {
 }
 
 /// A peer we learned about via mDNS. Identity is unverified at this
-/// point; the Node initiates a Noise XX handshake against `addr` to
+/// point; the Node initiates a Noise IK handshake against `addr` to
 /// confirm `npub` actually controls the matching private key.
 #[derive(Debug, Clone)]
 pub struct LanDiscoveredPeer {
@@ -151,7 +151,7 @@ impl LanDiscovery {
     /// Start the mDNS responder and browser.
     ///
     /// `advertised_port` is the UDP port the operational UDP transport
-    /// is bound to — peers receiving our advert will initiate Noise XX
+    /// is bound to — peers receiving our advert will initiate Noise IK
     /// against that port. `scope` mirrors the Nostr discovery scope and
     /// is used to filter the browser stream.
     pub async fn start(

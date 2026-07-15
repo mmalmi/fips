@@ -823,7 +823,16 @@ async fn blocking_send_batch_to_peer_loopback_endpoint_data_roundtrips() {
 #[tokio::test]
 async fn local_capability_snapshot_connects_across_product_scopes() {
     const SERVICE_PORT: u16 = 39_018;
-    let temp = tempfile::tempdir().expect("temporary local registry");
+    let rendezvous_socket =
+        std::net::UdpSocket::bind("127.0.0.1:0").expect("reserve local rendezvous address");
+    let std::net::SocketAddr::V4(rendezvous_addr) = rendezvous_socket
+        .local_addr()
+        .expect("reserved local rendezvous address")
+    else {
+        panic!("reserved rendezvous address should be IPv4");
+    };
+    drop(rendezvous_socket);
+
     let mut config = Config::new();
     config.transports.udp = crate::config::TransportInstances::Single(UdpConfig {
         bind_addr: Some("127.0.0.1:0".to_string()),
@@ -835,7 +844,8 @@ async fn local_capability_snapshot_connects_across_product_scopes() {
         crate::config::NostrPeerfindingSource::External;
     config.node.discovery.nostr.advert_relays.clear();
     config.node.discovery.lan.enabled = false;
-    config.node.discovery.local.dir = Some(temp.path().display().to_string());
+    config.node.discovery.local.rendezvous_addr = rendezvous_addr;
+    config.node.discovery.local.retry_interval_ms = 10;
     assert_eq!(
         config.node.discovery.nostr.policy,
         crate::config::NostrDiscoveryPolicy::ConfiguredOnly
@@ -844,7 +854,7 @@ async fn local_capability_snapshot_connects_across_product_scopes() {
     let provider = FipsEndpoint::builder()
         .config(config.clone())
         .discovery_scope("iris-chat-device-sync-v1:account-a")
-        .local_discovery_scope("iris-local-v1")
+        .local_rendezvous()
         .without_system_tun()
         .bind()
         .await
@@ -869,7 +879,7 @@ async fn local_capability_snapshot_connects_across_product_scopes() {
     consumer_udp.outbound_only = Some(true);
     consumer_udp.accept_connections = Some(false);
     let consumer = FipsEndpoint::builder()
-        .local_discovery_scope("iris-local-v1")
+        .local_rendezvous()
         .config(consumer_config)
         .discovery_scope("nostr-vpn:private-network")
         .without_system_tun()
@@ -877,16 +887,22 @@ async fn local_capability_snapshot_connects_across_product_scopes() {
         .await
         .expect("consumer should bind");
 
-    tokio::time::timeout(Duration::from_secs(5), async {
+    let selected = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if consumer
+            let provider_connected = consumer
                 .peers()
                 .await
                 .expect("peer snapshot")
                 .iter()
-                .any(|peer| peer.npub == provider_npub && peer.connected)
+                .any(|peer| peer.npub == provider_npub && peer.connected);
+            let adverts = consumer
+                .local_instance_advertisements()
+                .expect("local capability snapshot");
+            if provider_connected
+                && let Some(selected) =
+                    crate::discovery::local::select_capability_provider(&adverts, "hashtree.blob/1")
             {
-                break;
+                break selected.clone();
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -894,12 +910,7 @@ async fn local_capability_snapshot_connects_across_product_scopes() {
     .await
     .expect("same-host endpoints should connect without public open discovery");
 
-    let adverts = consumer
-        .local_instance_advertisements()
-        .expect("local capability snapshot");
-    let selected = crate::discovery::local::select_capability_provider(&adverts, "hashtree.blob/1")
-        .expect("Hashtree provider advert");
-    assert_eq!(selected.instance.npub, provider_npub);
+    assert_eq!(selected.npub, provider_npub);
     assert_eq!(
         selected
             .capability("hashtree.blob/1")

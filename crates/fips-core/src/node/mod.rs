@@ -19,6 +19,7 @@ mod identity_cache;
 mod io_impl;
 mod lifecycle;
 mod link_registry;
+mod local_rendezvous;
 mod peer_lifecycle;
 mod peer_runtime;
 mod rate_limit;
@@ -353,18 +354,13 @@ pub struct Node {
     /// them here avoids requeueing and reparsing npubs on every maintenance tick.
     pending_mesh_signals: HashMap<NodeAddr, Vec<lifecycle::PendingMeshSignal>>,
     /// mDNS / DNS-SD responder + browser for local-link peer discovery.
-    /// Identity is unverified at this layer — the Noise XX handshake
+    /// Identity is unverified at this layer — the Noise IK handshake
     /// initiated against an mDNS-observed endpoint is what proves the
     /// peer holds the matching private key.
     lan_discovery: Option<Arc<crate::discovery::lan::LanDiscovery>>,
-    /// Same-host JSON registry under `~/.fips/instances`. Records are
-    /// loopback routing hints only; peer identity is still verified by the
-    /// Noise handshake.
-    local_instance_registry: Option<crate::discovery::local::LocalInstanceRegistry>,
-    local_instance_capabilities: Vec<crate::discovery::local::LocalInstanceCapability>,
-    local_instance_started_at_ms: Option<u64>,
-    last_local_instance_publish_ms: Option<u64>,
-    last_local_instance_scan_ms: Option<u64>,
+    /// Host-global fixed-UDP rendezvous and authenticated capability roster.
+    /// It never changes application-owned outbound connectivity.
+    local_rendezvous: local_rendezvous::LocalRendezvous,
     /// Wall-clock ms when Nostr discovery successfully started, used to
     /// schedule the one-shot startup advert sweep after a settle delay.
     /// `None` until discovery comes up; remains `None` if discovery is

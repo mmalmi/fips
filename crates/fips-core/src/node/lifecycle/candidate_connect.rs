@@ -34,7 +34,7 @@ impl Node {
         })
     }
 
-    pub(super) fn is_connecting_to_peer_on_path(
+    pub(in crate::node) fn is_connecting_to_peer_on_path(
         &self,
         peer_node_addr: &NodeAddr,
         transport_id: TransportId,
@@ -330,6 +330,7 @@ impl Node {
                 handle.transport_type().name == "udp"
                     && handle.is_operational()
                     && !self.bootstrap_transports.contains(id)
+                    && !self.is_local_rendezvous_transport(id)
             })
             .filter_map(|(id, handle)| {
                 let local_addr = handle.local_addr()?;

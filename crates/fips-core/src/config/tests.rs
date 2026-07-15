@@ -986,3 +986,30 @@ fn test_udp_accept_connections_default_true() {
     let cfg = UdpConfig::default();
     assert!(cfg.accept_connections());
 }
+
+#[test]
+fn local_rendezvous_rejects_colliding_application_udp_bind() {
+    let mut config = Config::new();
+    config.node.discovery.local.enabled = true;
+    config.transports.udp = TransportInstances::Single(UdpConfig {
+        bind_addr: Some("0.0.0.0:21211".to_string()),
+        ..UdpConfig::default()
+    });
+
+    let error = config
+        .validate()
+        .expect_err("application bind must not steal the rendezvous port");
+    assert!(
+        error
+            .to_string()
+            .contains("collides with the local rendezvous")
+    );
+
+    let TransportInstances::Single(udp) = &mut config.transports.udp else {
+        unreachable!()
+    };
+    udp.outbound_only = Some(true);
+    config
+        .validate()
+        .expect("outbound-only transport ignores its configured bind");
+}

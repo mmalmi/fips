@@ -1,11 +1,11 @@
 use super::*;
 
 impl Node {
-    /// Drain mDNS-discovered peers and initiate Noise XX handshakes. For
+    /// Drain mDNS-discovered peers and initiate Noise IK handshakes. For
     /// active peers this is a non-disruptive alternate-path refresh: the
     /// current link stays live until a new handshake authenticates and
     /// promotes. The handshake itself is the authentication — a spoofed
-    /// mDNS advert with someone else's npub fails the XX exchange and
+    /// mDNS advert with someone else's npub fails the IK exchange and
     /// is dropped.
     pub(in crate::node) async fn poll_lan_discovery(&mut self) {
         let Some(runtime) = self.lan_discovery.clone() else {

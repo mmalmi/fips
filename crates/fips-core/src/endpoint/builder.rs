@@ -6,9 +6,8 @@ pub struct FipsEndpointBuilder {
     config: Config,
     identity_nsec: Option<String>,
     discovery_scope: Option<String>,
-    local_discovery_scope: Option<String>,
+    local_rendezvous: bool,
     local_instance_roles: Vec<crate::discovery::local::LocalInstanceCapability>,
-    local_ethernet_interfaces: Vec<String>,
     disable_system_networking: bool,
     packet_channel_capacity: usize,
 }
@@ -21,9 +20,8 @@ impl Default for FipsEndpointBuilder {
             config: Config::new(),
             identity_nsec: None,
             discovery_scope: None,
-            local_discovery_scope: None,
+            local_rendezvous: false,
             local_instance_roles: Vec::new(),
-            local_ethernet_interfaces: Vec::new(),
             disable_system_networking: true,
             packet_channel_capacity: DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY,
         }
@@ -47,49 +45,45 @@ impl FipsEndpointBuilder {
     ///
     /// When the builder owns the default empty connectivity config, this also
     /// enables scoped Nostr discovery, open same-scope peer discovery, local
-    /// LAN candidates, and a UDP NAT advert. If an explicit transport or
-    /// Nostr config was supplied, the explicit config is left in control and
-    /// the scope is retained as endpoint metadata.
+    /// LAN candidates, host-wide loopback rendezvous, and a UDP NAT advert.
+    /// If an explicit transport or Nostr config was supplied, the explicit
+    /// config is left in control and the scope is retained as endpoint
+    /// metadata.
     pub fn discovery_scope(mut self, scope: impl Into<String>) -> Self {
         self.discovery_scope = Some(scope.into());
         self
     }
 
-    /// Set the private same-host composition scope independently of the
-    /// endpoint's public or product discovery scope.
+    /// Enable host-wide authenticated loopback composition.
     ///
-    /// Applications that share this value can discover each other's loopback
-    /// contacts through `~/.fips/instances` without joining the same Nostr,
-    /// LAN, or VPN discovery namespace.
+    /// The legacy scope argument is ignored: one fixed UDP rendezvous joins
+    /// all local FIPS processes without filesystem state or product scopes.
     pub fn local_discovery_scope(mut self, scope: impl Into<String>) -> Self {
-        let scope = scope.into().trim().to_string();
-        if !scope.is_empty() {
-            self.local_discovery_scope = Some(scope);
+        if !scope.into().trim().is_empty() {
+            self.local_rendezvous = true;
         }
         self
     }
 
-    /// Advertise a portless same-host role, such as `fips.egress/1`.
-    /// Empty names are ignored.
+    /// Enable host-wide authenticated loopback composition.
+    pub fn local_rendezvous(mut self) -> Self {
+        self.local_rendezvous = true;
+        self
+    }
+
+    /// Advertise a portless same-host role, such as `nostr.pubsub/1`.
+    /// Empty, oversized, and excess names are ignored.
     pub fn local_role(mut self, name: impl Into<String>, priority: i16) -> Self {
         let name = name.into().trim().to_string();
-        if !name.is_empty() {
+        if crate::discovery::local_udp::local_capability_name_is_valid(&name)
+            && self.local_instance_roles.len()
+                < crate::discovery::local_udp::LOCAL_CAPABILITY_MAX_COUNT
+        {
             self.local_instance_roles.push(
                 crate::discovery::local::LocalInstanceCapability::role(name)
                     .with_priority(priority),
             );
         }
-        self
-    }
-
-    /// Enable host-local Ethernet discovery on a private L2 interface.
-    ///
-    /// This is intended for veth/TAP interfaces attached to a per-host bridge
-    /// shared by FIPS-aware applications. The endpoint announces Ethernet
-    /// beacons, listens for matching peers, auto-connects to them, and accepts
-    /// inbound handshakes over the interface.
-    pub fn local_ethernet(mut self, interface: impl Into<String>) -> Self {
-        self.local_ethernet_interfaces.push(interface.into());
         self
     }
 
@@ -118,9 +112,8 @@ impl FipsEndpointBuilder {
             config.dns.enabled = false;
             config.node.system_files_enabled = false;
         }
-        if let Some(scope) = self.local_discovery_scope.as_deref() {
+        if self.local_rendezvous {
             config.node.discovery.local.enabled = true;
-            config.node.discovery.local.scope = Some(scope.to_string());
         }
         if let Some(scope) = self.discovery_scope.as_deref() {
             if config
@@ -136,14 +129,6 @@ impl FipsEndpointBuilder {
             config.node.discovery.local.enabled = true;
             apply_default_scoped_discovery(&mut config, scope);
         }
-        for interface in &self.local_ethernet_interfaces {
-            add_endpoint_ethernet_transport(
-                &mut config,
-                interface,
-                self.discovery_scope.as_deref(),
-            );
-        }
-        ensure_local_instance_udp_transport(&mut config);
         config
     }
 
@@ -193,7 +178,7 @@ impl FipsEndpointBuilder {
             None => node.attach_endpoint_data_io(self.packet_channel_capacity)?,
         };
         node.start().await?;
-        let local_instance_registry = node.local_instance_registry_handle();
+        let local_capability_directory = node.local_capability_directory();
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let task = spawn_node_task(node, shutdown_rx);
@@ -207,7 +192,7 @@ impl FipsEndpointBuilder {
             node_addr,
             address,
             discovery_scope: self.discovery_scope,
-            local_instance_registry,
+            local_capability_directory,
             outbound_packets: packet_io.outbound_tx,
             delivered_packets: Arc::new(Mutex::new(packet_io.inbound_rx)),
             endpoint_control_tx,
