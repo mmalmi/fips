@@ -846,7 +846,7 @@ const DEFAULT_WEBRTC_CONNECT_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_WEBRTC_ICE_GATHER_TIMEOUT_MS: u64 = 2_000;
 
 /// Default maximum simultaneous WebRTC peer connections.
-const DEFAULT_WEBRTC_MAX_CONNECTIONS: usize = 32;
+const DEFAULT_WEBRTC_MAX_CONNECTIONS: usize = 6;
 
 /// Default WebRTC data channel label.
 const DEFAULT_WEBRTC_DATA_CHANNEL_LABEL: &str = "fips";
@@ -877,7 +877,8 @@ pub struct WebRtcConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mtu: Option<u16>,
 
-    /// Maximum simultaneous WebRTC peer connections. Defaults to 32.
+    /// Maximum simultaneous WebRTC peer connections. Defaults to 6 and is
+    /// additionally bounded by the configured ICE socket budget.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_connections: Option<usize>,
 
@@ -902,8 +903,8 @@ pub struct WebRtcConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_retransmits: Option<u16>,
 
-    /// Override STUN servers for this transport. When unset,
-    /// `node.discovery.nostr.stun_servers` is used.
+    /// Override STUN servers for this transport. Supports up to three `stun:`
+    /// URLs. When unset, `node.discovery.nostr.stun_servers` is used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stun_servers: Option<Vec<String>>,
 

@@ -123,12 +123,12 @@ fn deadline_from_signal(
     monotonic_now + signal_remaining.min(local_timeout)
 }
 
-fn require_non_trickle_ice_candidates(sdp: &str) -> Result<usize, TransportError> {
-    let candidates = sdp
-        .lines()
-        .filter(|line| line.trim_start().starts_with("a=candidate:"))
-        .count();
-    if candidates == 0 {
+fn require_non_trickle_ice_candidates(
+    sdp: &str,
+    scope: EmbeddedCandidateScope,
+) -> Result<EmbeddedCandidateCount, TransportError> {
+    let candidates = validate_embedded_ice_candidates(sdp, scope)?;
+    if candidates.unique_routes == 0 {
         return Err(TransportError::StartFailed(
             "WebRTC non-trickle SDP contains no ICE candidates".to_string(),
         ));
@@ -169,18 +169,21 @@ impl WebRtcRuntime {
         if matches!(
             signal.kind,
             LinkNegotiationKind::Offer | LinkNegotiationKind::Answer
-        ) && signal
-            .payload
-            .sdp
-            .as_deref()
-            .is_none_or(|sdp| sdp.is_empty() || sdp.len() > MAX_WEBRTC_SDP_LENGTH)
-        {
-            return Err(TransportError::InvalidAddress(
-                "WebRTC offer/answer requires bounded SDP".into(),
-            ));
+        ) {
+            let Some(sdp) = signal.payload.sdp.as_deref() else {
+                return Err(TransportError::InvalidAddress(
+                    "WebRTC offer/answer requires bounded SDP".into(),
+                ));
+            };
+            if sdp.is_empty() || sdp.len() > MAX_WEBRTC_SDP_LENGTH {
+                return Err(TransportError::InvalidAddress(
+                    "WebRTC offer/answer requires bounded SDP".into(),
+                ));
+            }
+            require_non_trickle_ice_candidates(sdp, EmbeddedCandidateScope::Remote)?;
         }
         if let Some(candidates) = &signal.payload.candidates
-            && (candidates.len() > MAX_WEBRTC_CANDIDATES
+            && (candidates.len() > crate::config::MAX_WEBRTC_REMOTE_CANDIDATE_ROUTES
                 || candidates
                     .iter()
                     .any(|candidate| candidate.candidate.len() > MAX_WEBRTC_CANDIDATE_LENGTH))
@@ -346,7 +349,8 @@ impl WebRtcRuntime {
     }
 
     async fn new_peer_connection(&self) -> Result<RTCPeerConnection, TransportError> {
-        self.new_peer_connection_with_api(&self.api).await
+        let api = self.candidate_policy.build_api()?;
+        self.new_peer_connection_with_api(&api).await
     }
 
     async fn new_peer_connection_with_api(
@@ -416,10 +420,17 @@ impl WebRtcRuntime {
             if let Some(dial) = maybe_pending {
                 negotiation.record_timeout();
                 let reason = "WebRTC connect timed out".to_string();
+                let rtc = dial.pc.failure_stage_diagnostic();
                 drop(start_peer_connection_cleanup(dial.pc));
                 warn!(
                     transport_id = %transport_id,
                     remote_addr = %addr,
+                    negotiation = %session_id,
+                    deadline_late_ms = tokio::time::Instant::now()
+                        .saturating_duration_since(deadline)
+                        .as_millis(),
+                    stage = "pending-before-data-channel-open",
+                    rtc = %rtc,
                     reason = %reason,
                     "WebRTC connection failed"
                 );

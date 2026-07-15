@@ -14,7 +14,13 @@ pub(super) fn incoming_offer(identity: &crate::Identity, session_id: &str) -> In
             created_at_ms: now,
             expires_at_ms: now + SIGNAL_TTL_MS,
             payload: WebRtcSignalPayload {
-                sdp: Some("invalid but bounded SDP".into()),
+                // Admission accepts the complete candidate-bearing shape. Tests
+                // that disable mDNS resolution then strip this route and fail
+                // immediately after the seen-session boundary, before a peer
+                // connection is allocated.
+                sdp: Some(
+                    "v=0\r\na=candidate:1 1 UDP 1 fixture.local 5000 typ host\r\n".into(),
+                ),
                 candidates: None,
             },
         },

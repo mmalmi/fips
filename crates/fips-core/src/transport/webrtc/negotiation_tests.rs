@@ -13,14 +13,16 @@ async fn incomplete_ice_gathering_is_not_treated_as_success() {
 
 #[test]
 fn completed_non_trickle_sdp_requires_at_least_one_candidate() {
-    assert!(require_non_trickle_ice_candidates("v=0\r\n").is_err());
-    assert_eq!(
-        require_non_trickle_ice_candidates(
-            "v=0\r\na=candidate:1 1 UDP 1 127.0.0.1 5000 typ host\r\n"
-        )
-        .expect("candidate-bearing SDP"),
-        1
+    assert!(
+        require_non_trickle_ice_candidates("v=0\r\n", EmbeddedCandidateScope::Local).is_err()
     );
+    let count = require_non_trickle_ice_candidates(
+        "v=0\r\na=candidate:1 1 UDP 1 127.0.0.1 5000 typ host\r\n",
+        EmbeddedCandidateScope::Local,
+    )
+    .expect("candidate-bearing SDP");
+    assert_eq!(count.raw_lines, 1);
+    assert_eq!(count.unique_routes, 1);
 }
 
 #[test]
@@ -327,7 +329,7 @@ async fn expired_answer_after_connect_timer_counts_one_phase_timeout() {
     );
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn locked_answer_queue_deadline_records_exactly_one_timeout() {
     let local = crate::Identity::generate();
     let remote = crate::Identity::generate();
@@ -351,8 +353,12 @@ async fn locked_answer_queue_deadline_records_exactly_one_timeout() {
         &NostrDiscoveryConfig::default(),
     )
     .expect("WebRTC transport");
+    transport
+        .use_canonical_loopback_candidate_profile()
+        .expect("real UDP4 loopback candidate profile");
 
-    let offer_pc = build_webrtc_api()
+    let offer_pc = CandidateAddressPolicy::loopback_udp4()
+        .build_api()
         .expect("offer API")
         .new_peer_connection(RTCConfiguration::default())
         .await
@@ -375,7 +381,8 @@ async fn locked_answer_queue_deadline_records_exactly_one_timeout() {
         .await
         .expect("complete local offer")
         .sdp;
-    require_non_trickle_ice_candidates(&offer_sdp).expect("candidate-bearing offer");
+    require_non_trickle_ice_candidates(&offer_sdp, EmbeddedCandidateScope::Local)
+        .expect("candidate-bearing offer");
 
     let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
     let wall_now = now_ms();
@@ -420,10 +427,11 @@ async fn locked_answer_queue_deadline_records_exactly_one_timeout() {
     tokio::time::sleep_until(deadline + Duration::from_millis(10)).await;
     drop(pending_guard);
 
-    assert!(matches!(
-        handler.await.expect("offer handler task"),
-        Err(TransportError::Timeout)
-    ));
+    let result = handler.await.expect("offer handler task");
+    assert!(
+        matches!(result, Err(TransportError::Timeout)),
+        "unexpected locked-answer result: {result:?}"
+    );
     assert!(transport.drain_link_negotiations(1).is_empty());
     let snapshot = transport.negotiation.snapshot();
     assert_eq!(snapshot.answers_queued, 0);
@@ -511,7 +519,8 @@ async fn replacement_deadline_queues_no_late_answer_or_successor() {
         .await
         .expect("complete local offer")
         .sdp;
-    require_non_trickle_ice_candidates(&offer_sdp).expect("candidate-bearing offer");
+    require_non_trickle_ice_candidates(&offer_sdp, EmbeddedCandidateScope::Local)
+        .expect("candidate-bearing offer");
     let now = now_ms();
     let incoming = IncomingSignal {
         signal: WebRtcSignal {

@@ -23,6 +23,7 @@ mod gateway;
 mod node;
 mod peer;
 mod transport;
+mod webrtc_budget;
 
 use crate::upper::config::{DnsConfig, TunConfig};
 use crate::{Identity, IdentityError};
@@ -46,6 +47,17 @@ pub use transport::{
     BleConfig, DirectoryServiceConfig, EthernetConfig, NostrRelayConfig, TcpConfig, TorConfig,
     TransportInstances, TransportsConfig, UdpConfig, WebRtcConfig,
 };
+pub(crate) use webrtc_budget::{
+    MAX_WEBRTC_CONFIG_CANDIDATE_SOCKETS, validate_webrtc_candidate_socket_budget,
+};
+#[cfg(any(feature = "webrtc-transport", test))]
+pub(crate) use webrtc_budget::{
+    MAX_WEBRTC_HOST_CANDIDATE_SOCKETS, MAX_WEBRTC_LOCAL_CANDIDATE_LINES,
+    MAX_WEBRTC_LOCAL_CANDIDATE_ROUTES, MAX_WEBRTC_REMOTE_CANDIDATE_LINES,
+    MAX_WEBRTC_REMOTE_CANDIDATE_ROUTES,
+};
+#[cfg(test)]
+pub(crate) use webrtc_budget::{MAX_WEBRTC_SOCKETS_PER_STUN_SERVER, MAX_WEBRTC_STUN_SERVERS};
 
 /// Default config filename.
 const CONFIG_FILENAME: &str = "fips.yaml";
@@ -686,6 +698,31 @@ impl Config {
             }
         }
 
+        let mut webrtc_candidate_sockets = 0usize;
+        for (name, cfg) in self.transports.webrtc.iter() {
+            let stun_servers = cfg.stun_servers(&nostr.stun_servers);
+            let reservation =
+                validate_webrtc_candidate_socket_budget(cfg.max_connections(), &stun_servers)
+                    .map_err(|reason| {
+                        let label = name.unwrap_or("(unnamed)");
+                        ConfigError::Validation(format!(
+                            "transports.webrtc[{label}] candidate socket budget: {reason}"
+                        ))
+                    })?;
+            webrtc_candidate_sockets = webrtc_candidate_sockets
+                .checked_add(reservation)
+                .ok_or_else(|| {
+                    ConfigError::Validation(
+                        "transports.webrtc configured candidate socket budget overflowed".into(),
+                    )
+                })?;
+            if webrtc_candidate_sockets > MAX_WEBRTC_CONFIG_CANDIDATE_SOCKETS {
+                return Err(ConfigError::Validation(format!(
+                    "transports.webrtc configured candidate socket budget reserves {webrtc_candidate_sockets}, exceeding {MAX_WEBRTC_CONFIG_CANDIDATE_SOCKETS}"
+                )));
+            }
+        }
+
         Ok(())
     }
 
@@ -713,3 +750,6 @@ fn merge_yaml_value(base: &mut serde_yaml::Value, overlay: serde_yaml::Value) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod webrtc_budget_tests;

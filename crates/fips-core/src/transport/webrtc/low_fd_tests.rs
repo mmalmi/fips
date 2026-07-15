@@ -572,8 +572,11 @@ fn identity_addr(identity: &crate::Identity) -> TransportAddr {
 
 fn new_transport(id: u32, identity: &crate::Identity, config: &WebRtcConfig) -> (WebRtcTransport, crate::transport::PacketRx) {
     let (packet_tx, packet_rx) = packet_channel(8);
-    let transport = WebRtcTransport::new(TransportId::new(id), None, config.clone(), packet_tx, identity, &NostrDiscoveryConfig::default())
+    let mut transport = WebRtcTransport::new(TransportId::new(id), None, config.clone(), packet_tx, identity, &NostrDiscoveryConfig::default())
         .expect("low-FD WebRTC transport");
+    transport
+        .use_canonical_loopback_candidate_profile()
+        .expect("real UDP4 loopback candidate profile");
     (transport, packet_rx)
 }
 
@@ -634,6 +637,7 @@ async fn abandon_then_retry(
         .await
         .expect("abandoned offer");
     let offer = take_link_negotiation(replacement, LinkNegotiationKind::Offer).await;
+    assert_canonical_loopback_candidate_profile(&offer);
     stable
         .ingest_link_negotiation(peers.churn_identity.pubkey_full(), offer)
         .expect("deliver abandoned offer");
@@ -747,6 +751,7 @@ fn relay_negotiations(
     let mut last_signal = None;
     for outbound in churn.drain_link_negotiations(16) {
         let message = LinkNegotiationMessage::decode(&outbound.payload).expect("churn signal");
+        assert_canonical_loopback_candidate_profile(&message);
         last_signal = Some(signal_diagnostic("churn->stable", &message));
         stable
             .ingest_link_negotiation(peers.churn_identity.pubkey_full(), message)
@@ -754,12 +759,44 @@ fn relay_negotiations(
     }
     for outbound in stable.drain_link_negotiations(16) {
         let message = LinkNegotiationMessage::decode(&outbound.payload).expect("stable signal");
+        assert_canonical_loopback_candidate_profile(&message);
         last_signal = Some(signal_diagnostic("stable->churn", &message));
         churn
             .ingest_link_negotiation(peers.stable_identity.pubkey_full(), message)
             .expect("deliver stable signal");
     }
     last_signal
+}
+
+fn assert_canonical_loopback_candidate_profile(message: &LinkNegotiationMessage) {
+    if !matches!(
+        message.kind,
+        LinkNegotiationKind::Offer | LinkNegotiationKind::Answer
+    ) {
+        return;
+    }
+    let payload = message
+        .clone()
+        .typed_payload::<WebRtcSignalPayload>()
+        .expect("typed WebRTC signal");
+    let component_one: Vec<_> = payload
+        .payload
+        .sdp
+        .as_deref()
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("a=candidate:"))
+        .filter_map(|candidate| {
+            let fields: Vec<_> = candidate.split_whitespace().collect();
+            (fields.len() >= 6 && fields[1] == "1")
+                .then(|| (fields[2].to_ascii_lowercase(), fields[4].to_string()))
+        })
+        .collect();
+    assert_eq!(
+        component_one,
+        vec![("udp".to_string(), "127.0.0.1".to_string())],
+        "canonical lifecycle timing must use exactly one real UDP4 loopback candidate socket"
+    );
 }
 
 fn signal_diagnostic(direction: &str, message: &LinkNegotiationMessage) -> String {

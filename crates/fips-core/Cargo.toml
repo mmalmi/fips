@@ -11,7 +11,7 @@ readme = "README.md"
 [features]
 default = []
 sim-transport = []
-webrtc-transport = ["dep:bytes", "dep:webrtc"]
+webrtc-transport = ["dep:bytes", "dep:if-addrs", "dep:webrtc"]
 
 [dependencies]
 fips-identity = { version = "0.3.1", path = "../fips-identity" }
@@ -38,6 +38,7 @@ socket2 = { version = "0.6.2", features = ["all"] }
 tokio-socks = "0.5"
 portable-atomic = { version = "1", features = ["std"] }
 bytes = { version = "1", optional = true }
+if-addrs = { version = "0.15", optional = true }
 webrtc = { version = "0.17", optional = true }
 
 nostr = { version = "0.44", features = ["std"] }
@@ -63,4 +64,3 @@ wintun = "0.5"
 [dev-dependencies]
 tempfile = "3.15"
 tokio = { version = "1", features = ["test-util"] }
-if-addrs = "0.15"

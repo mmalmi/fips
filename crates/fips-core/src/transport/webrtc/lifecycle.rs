@@ -152,6 +152,23 @@ pub(super) struct ManagedPeerConnection {
     pc: Arc<RTCPeerConnection>,
     lease: StdMutex<Option<PhysicalLease>>,
     cleanup: Arc<CleanupCompletion>,
+    negotiation_stage: StdMutex<NegotiationStageDiagnostic>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum DataChannelStage {
+    #[default]
+    None,
+    Wired,
+    Open,
+    Closed,
+}
+
+#[derive(Clone, Copy, Default)]
+struct NegotiationStageDiagnostic {
+    local_candidates: Option<EmbeddedCandidateCount>,
+    remote_candidates: Option<EmbeddedCandidateCount>,
+    data_channel: DataChannelStage,
 }
 
 pub(super) type ManagedPeer = Arc<ManagedPeerConnection>;
@@ -530,6 +547,7 @@ impl PhysicalReservation {
             pc: Arc::new(pc),
             lease: StdMutex::new(Some(self.into_lease())),
             cleanup: CleanupCompletion::new(),
+            negotiation_stage: StdMutex::new(NegotiationStageDiagnostic::default()),
         })
     }
 }
@@ -670,6 +688,70 @@ impl ManagedPeerConnection {
 
     pub(super) fn is_closing(&self) -> bool {
         self.lease.lock().expect("WebRTC physical lease").is_none()
+    }
+
+    pub(super) fn failure_stage_diagnostic(&self) -> String {
+        let sctp = self.pc.sctp();
+        let stage = *self
+            .negotiation_stage
+            .lock()
+            .expect("WebRTC negotiation diagnostic");
+        let candidate_count = |count: Option<EmbeddedCandidateCount>| {
+            count
+                .map(|count| format!("{}/{}", count.raw_lines, count.unique_routes))
+                .unwrap_or_else(|| "unseen".into())
+        };
+        format!(
+            "pc={:?},signaling={:?},iceGathering={:?},iceConnection={:?},dtls={:?},sctp={:?},dataChannel={:?},localCandidatesRawUnique={},remoteCandidatesRawUnique={},physicalClosing={}",
+            self.pc.connection_state(),
+            self.pc.signaling_state(),
+            self.pc.ice_gathering_state(),
+            self.pc.ice_connection_state(),
+            sctp.transport().state(),
+            sctp.state(),
+            stage.data_channel,
+            candidate_count(stage.local_candidates),
+            candidate_count(stage.remote_candidates),
+            self.is_closing(),
+        )
+    }
+
+    pub(super) fn record_local_candidates(&self, count: EmbeddedCandidateCount) {
+        self.negotiation_stage
+            .lock()
+            .expect("WebRTC negotiation diagnostic")
+            .local_candidates = Some(count);
+    }
+
+    pub(super) fn record_remote_candidates(&self, count: EmbeddedCandidateCount) {
+        self.negotiation_stage
+            .lock()
+            .expect("WebRTC negotiation diagnostic")
+            .remote_candidates = Some(count);
+    }
+
+    pub(super) fn record_data_channel_wired(&self) {
+        let mut stage = self
+            .negotiation_stage
+            .lock()
+            .expect("WebRTC negotiation diagnostic");
+        if stage.data_channel == DataChannelStage::None {
+            stage.data_channel = DataChannelStage::Wired;
+        }
+    }
+
+    pub(super) fn record_data_channel_open(&self) {
+        self.negotiation_stage
+            .lock()
+            .expect("WebRTC negotiation diagnostic")
+            .data_channel = DataChannelStage::Open;
+    }
+
+    pub(super) fn record_data_channel_closed(&self) {
+        self.negotiation_stage
+            .lock()
+            .expect("WebRTC negotiation diagnostic")
+            .data_channel = DataChannelStage::Closed;
     }
 
     pub(super) fn physical_generation(&self) -> Option<u64> {

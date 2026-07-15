@@ -29,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Made unsolicited WebRTC acceptance opt-in: it follows public WebRTC
   advertisement unless `accept_connections` explicitly overrides it. Replies
   to locally initiated negotiations remain correlated by negotiation ID.
+- Bounded WebRTC ICE socket fanout to six selected local addresses and three
+  STUN servers per peer connection, validated aggregate capacity within one
+  configuration, and changed the default WebRTC connection limit from 32 to 6.
+  Remote browser SDP retains a separate bounded admission budget because its
+  candidates do not allocate corresponding local sockets.
 - Made the relay fallback deliberately low priority so an established FIPS
   session can negotiate and move to UDP, WebRTC, or TCP when a better path is
   available.

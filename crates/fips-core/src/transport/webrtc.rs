@@ -2,8 +2,8 @@
 //!
 //! SDP offer/answer exchange is carried over an existing authenticated FIPS
 //! session. Ordinary FIPS packets then travel as binary SCTP data-channel
-//! messages. The data channel is configured as unordered and zero-retransmit
-//! by default so it behaves like a datagram-ish transport.
+//! messages. Reliability and ordering follow [`crate::WebRtcConfig`]; both are
+//! enabled by default.
 
 use super::link_negotiation::{
     LinkNegotiationKind, LinkNegotiationMessage, OutboundLinkNegotiation,
@@ -12,14 +12,10 @@ use super::{
     ConnectionState, DiscoveredPeer, PacketBuffer, PacketTx, ReceivedPacket, Transport,
     TransportAddr, TransportError, TransportId, TransportState, TransportType,
 };
-use crate::config::{NostrDiscoveryConfig, WebRtcConfig};
-use ::webrtc::api::APIBuilder;
-use ::webrtc::api::media_engine::MediaEngine;
-use ::webrtc::api::setting_engine::SettingEngine;
+use crate::config::{NostrDiscoveryConfig, WebRtcConfig, validate_webrtc_candidate_socket_budget};
 use ::webrtc::data_channel::RTCDataChannel;
 use ::webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use ::webrtc::data_channel::data_channel_message::DataChannelMessage;
-use ::webrtc::ice::mdns::MulticastDnsMode;
 use ::webrtc::ice_transport::ice_server::RTCIceServer;
 use ::webrtc::peer_connection::RTCPeerConnection;
 use ::webrtc::peer_connection::configuration::RTCConfiguration;
@@ -44,9 +40,9 @@ const WEBRTC_IO_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_WEBRTC_SIGNAL_TASKS: usize = 32;
 const MAX_WEBRTC_SEEN_SESSIONS: usize = 1024;
 const MAX_WEBRTC_SDP_LENGTH: usize = 48 * 1024;
-const MAX_WEBRTC_CANDIDATES: usize = 32;
 const MAX_WEBRTC_CANDIDATE_LENGTH: usize = 2048;
 
+mod candidate_policy;
 mod lifecycle;
 mod mdns;
 mod signaling;
@@ -55,6 +51,12 @@ mod signaling;
 #[path = "webrtc/send_tests.rs"]
 mod send_tests;
 
+#[cfg(test)]
+use candidate_policy::build_webrtc_api;
+use candidate_policy::{
+    CandidateAddressPolicy, EmbeddedCandidateCount, EmbeddedCandidateScope,
+    validate_embedded_ice_candidates,
+};
 pub use lifecycle::WebRtcResourceSnapshot;
 use lifecycle::{
     ManagedPeer, ManagedPeerConnection, PhysicalPhase, PhysicalReservation, PhysicalReserveError,
@@ -153,7 +155,9 @@ pub struct WebRtcTransport {
     name: Option<String>,
     config: WebRtcConfig,
     state: TransportState,
+    #[cfg(test)]
     api: Arc<::webrtc::api::API>,
+    candidate_policy: CandidateAddressPolicy,
     mdns_resolver: SharedMdnsResolver,
     packet_tx: PacketTx,
     pool: ConnectionPool,
@@ -175,6 +179,9 @@ pub struct WebRtcTransport {
 
 impl WebRtcTransport {
     /// Create a new WebRTC transport.
+    ///
+    /// This bounds one instance. Callers constructing multiple instances should
+    /// validate their aggregate configuration with [`crate::Config::validate`].
     pub fn new(
         transport_id: TransportId,
         name: Option<String>,
@@ -185,6 +192,8 @@ impl WebRtcTransport {
     ) -> Result<Self, TransportError> {
         let local_pubkey_hex = hex::encode(identity.pubkey_full().serialize());
         let stun_servers = config.stun_servers(&nostr_config.stun_servers);
+        validate_webrtc_candidate_socket_budget(config.max_connections(), &stun_servers)
+            .map_err(TransportError::StartFailed)?;
         let (signal_tx, signal_rx) = mpsc::unbounded_channel();
         let (outgoing_signal_tx, outgoing_signal_rx) = mpsc::unbounded_channel();
         let signaling = FipsSignalSender::new(outgoing_signal_tx);
@@ -193,7 +202,9 @@ impl WebRtcTransport {
         // The WebRTC crate allocates one multicast listener per ICE agent in
         // QueryOnly mode. Keep every peer connection fully disabled and resolve
         // browser `.local` candidates through one bounded transport owner.
-        let api = build_webrtc_api()?;
+        let candidate_policy = CandidateAddressPolicy::system();
+        #[cfg(test)]
+        let api = candidate_policy.build_api()?;
         let mdns_resolver =
             SharedMdnsResolver::new(config.resolve_mdns_candidates(), config.max_connections())?;
 
@@ -202,7 +213,9 @@ impl WebRtcTransport {
             name,
             config,
             state: TransportState::Configured,
+            #[cfg(test)]
             api,
+            candidate_policy,
             mdns_resolver,
             packet_tx,
             pool: Arc::new(Mutex::new(HashMap::new())),
@@ -232,7 +245,7 @@ impl WebRtcTransport {
         WebRtcRuntime {
             transport_id: self.transport_id,
             config: self.config.clone(),
-            api: Arc::clone(&self.api),
+            candidate_policy: self.candidate_policy.clone(),
             mdns_resolver: self.mdns_resolver.clone(),
             packet_tx: self.packet_tx.clone(),
             pool: Arc::clone(&self.pool),
@@ -246,6 +259,14 @@ impl WebRtcTransport {
             stun_servers: self.stun_servers.clone(),
             signaling: self.signaling.clone(),
         }
+    }
+
+    #[cfg(test)]
+    fn use_canonical_loopback_candidate_profile(&mut self) -> Result<(), TransportError> {
+        let policy = CandidateAddressPolicy::loopback_udp4();
+        self.api = policy.build_api()?;
+        self.candidate_policy = policy;
+        Ok(())
     }
 
     /// Start the transport asynchronously.
@@ -558,21 +579,6 @@ impl Drop for WebRtcTransport {
             }
         }
     }
-}
-
-fn build_webrtc_api() -> Result<Arc<::webrtc::api::API>, TransportError> {
-    let mut media_engine = MediaEngine::default();
-    media_engine
-        .register_default_codecs()
-        .map_err(|e| TransportError::StartFailed(e.to_string()))?;
-    let mut setting_engine = SettingEngine::default();
-    setting_engine.set_ice_multicast_dns_mode(MulticastDnsMode::Disabled);
-    Ok(Arc::new(
-        APIBuilder::new()
-            .with_media_engine(media_engine)
-            .with_setting_engine(setting_engine)
-            .build(),
-    ))
 }
 
 async fn reserve_physical_for_incoming_offer(

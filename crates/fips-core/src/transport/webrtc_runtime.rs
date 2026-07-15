@@ -2,7 +2,7 @@
 struct WebRtcRuntime {
     transport_id: TransportId,
     config: WebRtcConfig,
-    api: Arc<::webrtc::api::API>,
+    candidate_policy: CandidateAddressPolicy,
     mdns_resolver: SharedMdnsResolver,
     packet_tx: PacketTx,
     pool: ConnectionPool,
@@ -18,6 +18,23 @@ struct WebRtcRuntime {
 }
 
 impl WebRtcRuntime {
+    async fn record_partial_local_candidate_diagnostic(pc: &ManagedPeer) {
+        let Ok(Some(local_description)) = tokio::time::timeout(
+            Duration::from_millis(25),
+            pc.local_description(),
+        )
+        .await
+        else {
+            return;
+        };
+        if let Ok(count) = validate_embedded_ice_candidates(
+            &local_description.sdp,
+            EmbeddedCandidateScope::Local,
+        ) {
+            pc.record_local_candidates(count);
+        }
+    }
+
     fn data_channel_context(&self) -> WebRtcDataChannelContext {
         WebRtcDataChannelContext {
             transport_id: self.transport_id,
@@ -124,7 +141,9 @@ impl WebRtcRuntime {
                 .await
                 .ok_or_else(|| TransportError::StartFailed("missing local WebRTC offer".into()))?
                 .sdp;
-            let candidate_count = require_non_trickle_ice_candidates(&sdp)?;
+            let candidate_count =
+                require_non_trickle_ice_candidates(&sdp, EmbeddedCandidateScope::Local)?;
+            pc.record_local_candidates(candidate_count);
             let monotonic_now = tokio::time::Instant::now();
             let now = now_ms();
             let expires_at_ms =
@@ -158,7 +177,8 @@ impl WebRtcRuntime {
                 remote_addr = %remote_addr,
                 negotiation = %signal.negotiation_id,
                 sdp_bytes = signal.payload.sdp.as_ref().map(|s| s.len()).unwrap_or(0),
-                candidate_count,
+                candidate_raw = candidate_count.raw_lines,
+                candidate_routes = candidate_count.unique_routes,
                 "WebRTC offer sent"
             );
             Ok(())
@@ -173,6 +193,16 @@ impl WebRtcRuntime {
             if is_negotiation_timeout(&error) {
                 self.negotiation.record_timeout();
             }
+            Self::record_partial_local_candidate_diagnostic(&pc).await;
+            warn!(
+                transport_id = %self.transport_id,
+                remote_addr = %remote_addr,
+                negotiation = %session_id,
+                stage = "outbound-offer-before-data-channel-open",
+                rtc = %pc.failure_stage_diagnostic(),
+                error = %error,
+                "WebRTC negotiation failed"
+            );
             let expected_owner = WebRtcSessionOwner::new(&session_id, &pc);
             self.mark_session_failed(
                 remote_addr,
@@ -370,7 +400,8 @@ impl WebRtcRuntime {
             .mdns_resolver
             .resolve_sdp(signal.payload.sdp.as_deref().unwrap_or_default())
             .await?;
-        require_non_trickle_ice_candidates(&offer_sdp)?;
+        let remote_candidate_count =
+            require_non_trickle_ice_candidates(&offer_sdp, EmbeddedCandidateScope::Remote)?;
         let offer = RTCSessionDescription::offer(offer_sdp)
             .map_err(|e| TransportError::StartFailed(e.to_string()))?;
         let disposition = prepare_pooled_webrtc_session_for_offer(
@@ -422,6 +453,7 @@ impl WebRtcRuntime {
 
         let session_id = signal.negotiation_id.clone();
         let pc = reservation.activate(self.new_peer_connection().await?);
+        pc.record_remote_candidates(remote_candidate_count);
         let callback_transport_id = self.transport_id;
         let callback_packet_tx = self.packet_tx.clone();
         let callback_pool = Arc::downgrade(&self.pool);
@@ -515,7 +547,9 @@ impl WebRtcRuntime {
                 .await
                 .ok_or_else(|| TransportError::StartFailed("missing local WebRTC answer".into()))?
                 .sdp;
-            let candidate_count = require_non_trickle_ice_candidates(&sdp)?;
+            let candidate_count =
+                require_non_trickle_ice_candidates(&sdp, EmbeddedCandidateScope::Local)?;
+            pc.record_local_candidates(candidate_count);
             let now = now_ms();
             if tokio::time::Instant::now() >= deadline || signal.expires_at_ms < now {
                 return Err(TransportError::Timeout);
@@ -546,7 +580,8 @@ impl WebRtcRuntime {
                 remote_addr = %remote_addr,
                 negotiation = %reply.negotiation_id,
                 sdp_bytes = reply.payload.sdp.as_ref().map(|s| s.len()).unwrap_or(0),
-                candidate_count,
+                candidate_raw = candidate_count.raw_lines,
+                candidate_routes = candidate_count.unique_routes,
                 "WebRTC answer sent"
             );
             Ok(())
@@ -557,6 +592,16 @@ impl WebRtcRuntime {
             if is_negotiation_timeout(err) {
                 self.negotiation.record_timeout();
             }
+            Self::record_partial_local_candidate_diagnostic(&pc).await;
+            warn!(
+                transport_id = %self.transport_id,
+                remote_addr = %remote_addr,
+                negotiation = %session_id,
+                stage = "inbound-answer-before-data-channel-open",
+                rtc = %pc.failure_stage_diagnostic(),
+                error = %err,
+                "WebRTC negotiation failed"
+            );
             let expected_owner = WebRtcSessionOwner::new(&session_id, &pc);
             self.mark_session_failed(
                 remote_addr,
@@ -637,12 +682,15 @@ impl WebRtcRuntime {
                 "WebRTC answer session mismatch".into(),
             ));
         }
-        let result: Result<usize, TransportError> = tokio::time::timeout_at(deadline, async {
+        let result: Result<EmbeddedCandidateCount, TransportError> =
+            tokio::time::timeout_at(deadline, async {
             let answer_sdp = self
                 .mdns_resolver
                 .resolve_sdp(signal.payload.sdp.as_deref().unwrap_or_default())
                 .await?;
-            let candidate_count = require_non_trickle_ice_candidates(&answer_sdp)?;
+            let candidate_count =
+                require_non_trickle_ice_candidates(&answer_sdp, EmbeddedCandidateScope::Remote)?;
+            pc.record_remote_candidates(candidate_count);
             let answer = RTCSessionDescription::answer(answer_sdp)
                 .map_err(|e| TransportError::StartFailed(e.to_string()))?;
             pc.set_remote_description(answer)
@@ -659,12 +707,21 @@ impl WebRtcRuntime {
                 return Err(TransportError::ConnectionRefused);
             }
             Ok(candidate_count)
-        })
-        .await
-        .unwrap_or(Err(TransportError::Timeout));
+            })
+            .await
+            .unwrap_or(Err(TransportError::Timeout));
         let candidate_count = match result {
             Ok(candidate_count) => candidate_count,
             Err(error) => {
+                warn!(
+                    transport_id = %self.transport_id,
+                    remote_addr = %remote_addr,
+                    negotiation = %signal.negotiation_id,
+                    stage = "apply-answer-before-data-channel-open",
+                    rtc = %pc.failure_stage_diagnostic(),
+                    error = %error,
+                    "WebRTC negotiation failed"
+                );
                 let expected_owner = WebRtcSessionOwner::new(&signal.negotiation_id, &pc);
                 let won_failure = self
                     .mark_session_failed(
@@ -686,7 +743,8 @@ impl WebRtcRuntime {
             transport_id = %self.transport_id,
             remote_addr = %sender_full_hex,
             negotiation = %signal.negotiation_id,
-            candidate_count,
+            candidate_raw = candidate_count.raw_lines,
+            candidate_routes = candidate_count.unique_routes,
             "WebRTC answer applied"
         );
         self.negotiation.record_answer_applied();
@@ -780,3 +838,7 @@ mod negotiation_tests;
 #[cfg(all(test, unix))]
 #[path = "webrtc/low_fd_tests.rs"]
 mod low_fd_tests;
+
+#[cfg(test)]
+#[path = "webrtc/candidate_policy_tests.rs"]
+mod candidate_policy_tests;

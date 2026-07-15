@@ -12,6 +12,7 @@ fn wire_data_channel(
     pc: ManagedPeer,
     data_channel: Arc<RTCDataChannel>,
 ) {
+    pc.record_data_channel_wired();
     let WebRtcDataChannelContext {
         transport_id,
         packet_tx,
@@ -124,6 +125,7 @@ fn wire_data_channel(
             let (Some(open_pc), Some(open_dc)) = (open_pc.upgrade(), open_dc.upgrade()) else {
                 return;
             };
+            open_pc.record_data_channel_open();
             let (Some(open_pool), Some(open_pending), Some(open_failed), Some(open_ready)) = (
                 open_pool.upgrade(),
                 open_pending.upgrade(),
@@ -229,6 +231,7 @@ fn wire_data_channel(
             let Some(close_pc) = close_pc.upgrade() else {
                 return;
             };
+            close_pc.record_data_channel_closed();
             let (Some(close_pool), Some(close_pending), Some(close_failed), Some(close_ready)) = (
                 close_pool.upgrade(),
                 close_pending.upgrade(),
