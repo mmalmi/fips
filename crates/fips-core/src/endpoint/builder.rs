@@ -126,7 +126,6 @@ impl FipsEndpointBuilder {
             {
                 config.node.discovery.lan.scope = Some(scope.to_string());
             }
-            config.node.discovery.local.enabled = true;
             apply_default_scoped_discovery(&mut config, scope);
         }
         config
