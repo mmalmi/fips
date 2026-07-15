@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-07-16
+
+### Fixed
+
+- Kept usable browser WebRTC ICE routes when another obfuscated mDNS
+  candidate is unavailable instead of rejecting the whole SDP offer.
+- Kept bounded mDNS resolution alive through the standard third query so
+  freshly registered browser candidates can resolve during reconnects.
+- Bumped `fips-endpoint` to 0.4.1 so app-facing consumers select
+  `fips-core` 0.4.1.
+
 ## [0.4.0] - 2026-07-15
 
 ### Changed
