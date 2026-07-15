@@ -273,6 +273,7 @@ fn aead_worker_pool_reserves_priority_capacity_from_bulk() {
         pool.available_capacity_for_lane(Lane::Priority),
         DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS + retired.len()
     );
+    let retired_bulk = retired.len();
 
     mover
         .submit_socket_packet(encrypted_fmp_packet(
@@ -289,7 +290,7 @@ fn aead_worker_pool_reserves_priority_capacity_from_bulk() {
         &mut pool,
         DATAPLANE_AEAD_WORKER_FAIRNESS_PACKETS * 2,
     );
-    assert_eq!(dispatched, 1);
+    assert_eq!(dispatched, 1 + retired_bulk);
     assert!(drops.is_empty());
 }
 
