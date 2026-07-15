@@ -986,9 +986,12 @@ impl Drop for FipsEndpoint {
             let _ = shutdown_tx.send(());
         }
         if let Ok(mut task) = self.task.lock()
-            && let Some(task) = task.take()
+            && task.is_some()
         {
-            task.abort();
+            // Dropping a Tokio JoinHandle detaches it. The shutdown signal lets
+            // the owned node reach node.stop(), including bounded WebRTC
+            // physical cleanup, instead of aborting that cleanup at Drop.
+            drop(task.take());
         }
     }
 }

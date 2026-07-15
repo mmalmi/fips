@@ -906,6 +906,12 @@ pub struct WebRtcConfig {
     /// `node.discovery.nostr.stun_servers` is used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stun_servers: Option<Vec<String>>,
+
+    /// Resolve browser `.local` ICE candidates through one shared mDNS owner.
+    /// Every peer connection keeps its own ICE mDNS mode disabled. Default:
+    /// true. Disable this for environments where multicast DNS is unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolve_mdns_candidates: Option<bool>,
 }
 
 impl WebRtcConfig {
@@ -963,6 +969,11 @@ impl WebRtcConfig {
     /// Get the configured max retransmits. None uses WebRTC's reliable mode.
     pub fn max_retransmits(&self) -> Option<u16> {
         self.max_retransmits
+    }
+
+    /// Whether browser `.local` ICE candidates should be resolved.
+    pub fn resolve_mdns_candidates(&self) -> bool {
+        self.resolve_mdns_candidates.unwrap_or(true)
     }
 
     /// Resolve STUN servers, falling back to node discovery STUN servers.

@@ -776,6 +776,16 @@ fn webrtc_inbound_acceptance_follows_advertisement_unless_explicit() {
 }
 
 #[test]
+fn webrtc_mdns_candidate_resolution_defaults_on_and_can_be_disabled() {
+    assert!(WebRtcConfig::default().resolve_mdns_candidates());
+
+    let config: WebRtcConfig =
+        serde_yaml::from_str("resolve_mdns_candidates: false\n").expect("WebRTC mDNS config");
+    assert!(!config.resolve_mdns_candidates());
+    assert_eq!(config.resolve_mdns_candidates, Some(false));
+}
+
+#[test]
 fn deprecated_dm_and_webrtc_signal_relay_fields_are_rejected() {
     let dm_error = serde_yaml::from_str::<Config>(
         "node:\n  discovery:\n    nostr:\n      dm_relays: [wss://relay.example]\n",

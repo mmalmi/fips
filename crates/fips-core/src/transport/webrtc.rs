@@ -26,13 +26,12 @@ use ::webrtc::peer_connection::configuration::RTCConfiguration;
 use ::webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use ::webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use bytes::Bytes;
-use futures::future::join_all;
 use nostr::prelude::PublicKey;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::{JoinHandle, JoinSet};
@@ -48,8 +47,16 @@ const MAX_WEBRTC_SDP_LENGTH: usize = 48 * 1024;
 const MAX_WEBRTC_CANDIDATES: usize = 32;
 const MAX_WEBRTC_CANDIDATE_LENGTH: usize = 2048;
 
+mod lifecycle;
+mod mdns;
 mod signaling;
 
+pub use lifecycle::WebRtcResourceSnapshot;
+use lifecycle::{
+    ManagedPeer, ManagedPeerConnection, PhysicalPhase, PhysicalReservation, PhysicalReserveError,
+    PhysicalResources,
+};
+use mdns::SharedMdnsResolver;
 use signaling::FipsSignalSender;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,7 +88,7 @@ struct IncomingSignal {
 
 struct WebRtcConnection {
     session_id: String,
-    pc: Arc<RTCPeerConnection>,
+    pc: ManagedPeer,
     data_channel: Arc<RTCDataChannel>,
 }
 
@@ -93,7 +100,7 @@ enum PendingDialOrigin {
 
 struct PendingDial {
     session_id: String,
-    pc: Arc<RTCPeerConnection>,
+    pc: ManagedPeer,
     created_at_ms: u64,
     origin: PendingDialOrigin,
 }
@@ -111,17 +118,19 @@ pub struct WebRtcTransport {
     config: WebRtcConfig,
     state: TransportState,
     api: Arc<::webrtc::api::API>,
-    incoming_native_api: Arc<::webrtc::api::API>,
+    mdns_resolver: SharedMdnsResolver,
     packet_tx: PacketTx,
     pool: ConnectionPool,
     pending: PendingPool,
     failed: FailedPool,
     ready: ReadyPool,
     seen_sessions: SeenSessionPool,
+    physical: PhysicalResources,
     signal_tx: mpsc::UnboundedSender<IncomingSignal>,
     signal_rx: Option<mpsc::UnboundedReceiver<IncomingSignal>>,
     outgoing_signal_rx: mpsc::UnboundedReceiver<OutboundLinkNegotiation>,
     signal_task: Option<JoinHandle<()>>,
+    dial_tasks: StdMutex<Vec<JoinHandle<()>>>,
     signaling: FipsSignalSender,
     local_pubkey_hex: String,
     stun_servers: Vec<String>,
@@ -142,14 +151,14 @@ impl WebRtcTransport {
         let (signal_tx, signal_rx) = mpsc::unbounded_channel();
         let (outgoing_signal_tx, outgoing_signal_rx) = mpsc::unbounded_channel();
         let signaling = FipsSignalSender::new(outgoing_signal_tx);
+        let physical = PhysicalResources::new(config.max_connections());
 
-        // Native FIPS LAN discovery is handled by the bounded `_fips._udp`
-        // browser. Query-only mDNS resolves `.local` ICE candidates emitted by
-        // browsers without gathering native mDNS candidates. The ICE library
-        // still allocates a multicast listener for QueryOnly, so plain native
-        // offers use a separate Disabled API selected from their SDP.
-        let api = build_webrtc_api(native_webrtc_mdns_mode())?;
-        let incoming_native_api = build_webrtc_api(MulticastDnsMode::Disabled)?;
+        // The WebRTC crate allocates one multicast listener per ICE agent in
+        // QueryOnly mode. Keep every peer connection fully disabled and resolve
+        // browser `.local` candidates through one bounded transport owner.
+        let api = build_webrtc_api()?;
+        let mdns_resolver =
+            SharedMdnsResolver::new(config.resolve_mdns_candidates(), config.max_connections())?;
 
         Ok(Self {
             transport_id,
@@ -157,17 +166,19 @@ impl WebRtcTransport {
             config,
             state: TransportState::Configured,
             api,
-            incoming_native_api,
+            mdns_resolver,
             packet_tx,
             pool: Arc::new(Mutex::new(HashMap::new())),
             pending: Arc::new(Mutex::new(HashMap::new())),
             failed: Arc::new(Mutex::new(HashMap::new())),
             ready: Arc::new(Mutex::new(HashSet::new())),
             seen_sessions: Arc::new(Mutex::new(HashMap::new())),
+            physical,
             signal_tx,
             signal_rx: Some(signal_rx),
             outgoing_signal_rx,
             signal_task: None,
+            dial_tasks: StdMutex::new(Vec::new()),
             signaling,
             local_pubkey_hex,
             stun_servers,
@@ -179,32 +190,39 @@ impl WebRtcTransport {
         self.name.as_deref()
     }
 
-    /// Start the transport asynchronously.
-    pub async fn start_async(&mut self) -> Result<(), TransportError> {
-        if !self.state.can_start() {
-            return Err(TransportError::AlreadyStarted);
-        }
-        self.state = TransportState::Starting;
-
-        let mut signal_rx = self
-            .signal_rx
-            .take()
-            .ok_or_else(|| TransportError::StartFailed("signal receiver already taken".into()))?;
-        let runtime = WebRtcRuntime {
+    fn runtime(&self) -> WebRtcRuntime {
+        WebRtcRuntime {
             transport_id: self.transport_id,
             config: self.config.clone(),
             api: Arc::clone(&self.api),
-            incoming_native_api: Arc::clone(&self.incoming_native_api),
+            mdns_resolver: self.mdns_resolver.clone(),
             packet_tx: self.packet_tx.clone(),
             pool: Arc::clone(&self.pool),
             pending: Arc::clone(&self.pending),
             failed: Arc::clone(&self.failed),
             ready: Arc::clone(&self.ready),
             seen_sessions: Arc::clone(&self.seen_sessions),
+            physical: self.physical.clone(),
             local_pubkey_hex: self.local_pubkey_hex.clone(),
             stun_servers: self.stun_servers.clone(),
             signaling: self.signaling.clone(),
-        };
+        }
+    }
+
+    /// Start the transport asynchronously.
+    pub async fn start_async(&mut self) -> Result<(), TransportError> {
+        if !self.state.can_start() {
+            return Err(TransportError::AlreadyStarted);
+        }
+        self.state = TransportState::Starting;
+        self.physical.start_accepting();
+        self.mdns_resolver.start_accepting();
+
+        let mut signal_rx = self
+            .signal_rx
+            .take()
+            .ok_or_else(|| TransportError::StartFailed("signal receiver already taken".into()))?;
+        let runtime = self.runtime();
         self.signal_task = Some(tokio::spawn(async move {
             let max_tasks = runtime
                 .config
@@ -252,9 +270,22 @@ impl WebRtcTransport {
         if !self.state.is_operational() {
             return Err(TransportError::NotStarted);
         }
+        self.physical.stop_accepting();
         if let Some(task) = self.signal_task.take() {
             task.abort();
+            let _ = task.await;
         }
+        let dial_tasks = {
+            let mut tasks = self.dial_tasks.lock().expect("WebRTC dial tasks");
+            std::mem::take(&mut *tasks)
+        };
+        for task in &dial_tasks {
+            task.abort();
+        }
+        for task in dial_tasks {
+            let _ = task.await;
+        }
+        let mdns_shutdown = self.mdns_resolver.stop().await;
         self.failed.lock().await.clear();
         self.seen_sessions.lock().await.clear();
         let pending = self
@@ -264,12 +295,6 @@ impl WebRtcTransport {
             .drain()
             .map(|(_, pending)| pending)
             .collect::<Vec<_>>();
-        join_all(
-            pending
-                .into_iter()
-                .map(|pending| close_peer_connection_bounded(pending.pc)),
-        )
-        .await;
         self.ready.lock().await.clear();
         let connections = self
             .pool
@@ -278,11 +303,31 @@ impl WebRtcTransport {
             .drain()
             .map(|(_, connection)| connection)
             .collect::<Vec<_>>();
-        join_all(connections.into_iter().map(|connection| async move {
-            close_data_channel_bounded(connection.data_channel).await;
-            close_peer_connection_bounded(connection.pc).await;
-        }))
-        .await;
+        // Empty both logical owner maps before starting physical close. This
+        // breaks callback back-reference cycles and lets all peer cleanups run
+        // concurrently under the one physical-owner cap.
+        for pending in pending {
+            start_peer_connection_cleanup(pending.pc);
+        }
+        for connection in connections {
+            drop(connection.data_channel);
+            start_peer_connection_cleanup(connection.pc);
+        }
+        let quiescent = self
+            .physical
+            .wait_for_quiescence(WEBRTC_IO_TIMEOUT.saturating_mul(2))
+            .await;
+        if !quiescent {
+            let snapshot = self.physical.snapshot();
+            self.state = TransportState::Failed;
+            return Err(TransportError::ShutdownFailed(format!(
+                "WebRTC physical owners did not quiesce: {snapshot:?}"
+            )));
+        }
+        if let Err(error) = mdns_shutdown {
+            self.state = TransportState::Failed;
+            return Err(error);
+        }
         self.state = TransportState::Down;
         Ok(())
     }
@@ -322,37 +367,35 @@ impl WebRtcTransport {
         if self.pending.lock().await.contains_key(addr) {
             return Ok(());
         }
-        if self.pool.lock().await.len() + self.pending.lock().await.len()
-            >= self.config.max_connections()
-        {
-            return Err(TransportError::ConnectionRefused);
-        }
+        let reservation = match self.physical.reserve(addr) {
+            Ok(reservation) => reservation,
+            Err(PhysicalReserveError::PeerBusy(
+                PhysicalPhase::Creating | PhysicalPhase::Active,
+            )) => return Ok(()),
+            Err(
+                PhysicalReserveError::Stopped
+                | PhysicalReserveError::Capacity
+                | PhysicalReserveError::PeerBusy(PhysicalPhase::Closing),
+            ) => return Err(TransportError::ConnectionRefused),
+        };
         self.failed.lock().await.remove(addr);
 
-        let runtime = WebRtcRuntime {
-            transport_id: self.transport_id,
-            config: self.config.clone(),
-            api: Arc::clone(&self.api),
-            incoming_native_api: Arc::clone(&self.incoming_native_api),
-            packet_tx: self.packet_tx.clone(),
-            pool: Arc::clone(&self.pool),
-            pending: Arc::clone(&self.pending),
-            failed: Arc::clone(&self.failed),
-            ready: Arc::clone(&self.ready),
-            seen_sessions: Arc::clone(&self.seen_sessions),
-            local_pubkey_hex: self.local_pubkey_hex.clone(),
-            stun_servers: self.stun_servers.clone(),
-            signaling: self.signaling.clone(),
-        };
+        let runtime = self.runtime();
         let remote_addr = addr.clone();
-        tokio::spawn(async move {
-            if let Err(err) = runtime.start_outbound(remote_addr.clone()).await {
-                runtime
-                    .mark_failed(remote_addr, format!("WebRTC connect failed: {err}"))
-                    .await;
+        let task = tokio::spawn(async move {
+            if let Err(error) = runtime.start_outbound(remote_addr, reservation).await {
+                trace!(error = %error, "WebRTC outbound setup failed");
             }
         });
+        let mut tasks = self.dial_tasks.lock().expect("WebRTC dial tasks");
+        tasks.retain(|task| !task.is_finished());
+        tasks.push(task);
         Ok(())
+    }
+
+    /// Return physical peer-connection conservation counters.
+    pub fn resource_snapshot(&self) -> WebRtcResourceSnapshot {
+        self.physical.snapshot()
     }
 
     /// Drain SDP negotiation messages for delivery over encrypted FIPS
@@ -451,33 +494,13 @@ impl WebRtcTransport {
     }
 }
 
-fn native_webrtc_mdns_mode() -> MulticastDnsMode {
-    MulticastDnsMode::QueryOnly
-}
-
-fn incoming_webrtc_mdns_mode(sdp: &str) -> MulticastDnsMode {
-    if sdp.lines().any(|line| {
-        line.strip_prefix("a=candidate:").is_some_and(|candidate| {
-            candidate
-                .split_ascii_whitespace()
-                .any(|field| field.ends_with(".local"))
-        })
-    }) {
-        MulticastDnsMode::QueryOnly
-    } else {
-        MulticastDnsMode::Disabled
-    }
-}
-
-fn build_webrtc_api(
-    mdns_mode: MulticastDnsMode,
-) -> Result<Arc<::webrtc::api::API>, TransportError> {
+fn build_webrtc_api() -> Result<Arc<::webrtc::api::API>, TransportError> {
     let mut media_engine = MediaEngine::default();
     media_engine
         .register_default_codecs()
         .map_err(|e| TransportError::StartFailed(e.to_string()))?;
     let mut setting_engine = SettingEngine::default();
-    setting_engine.set_ice_multicast_dns_mode(mdns_mode);
+    setting_engine.set_ice_multicast_dns_mode(MulticastDnsMode::Disabled);
     Ok(Arc::new(
         APIBuilder::new()
             .with_media_engine(media_engine)
@@ -510,59 +533,114 @@ where
     }
 }
 
-async fn finish_webrtc_cleanup_bounded<F, O>(timeout: Duration, cleanup: F)
-where
-    F: Future<Output = O> + Send + 'static,
-    O: Send + 'static,
-{
-    let mut cleanup_task = tokio::spawn(cleanup);
-    // RTCPeerConnection::close marks the peer closed before it awaits SCTP,
-    // DTLS, and ICE teardown. Canceling that future can therefore strand the
-    // peer in a half-closed state whose UDP sockets can never be released by a
-    // later close call. Bound only the caller's wait; dropping the JoinHandle
-    // detaches the non-cancellation-safe physical cleanup to finish.
-    let _ = tokio::time::timeout(timeout, &mut cleanup_task).await;
-}
-
 async fn close_data_channel_bounded(data_channel: Arc<RTCDataChannel>) {
-    finish_webrtc_cleanup_bounded(WEBRTC_IO_TIMEOUT, async move {
-        let _ = data_channel.close().await;
-    })
-    .await;
+    let _ = tokio::time::timeout(WEBRTC_IO_TIMEOUT, data_channel.close()).await;
 }
 
-async fn close_peer_connection_bounded(peer_connection: Arc<RTCPeerConnection>) {
-    let peer_connection_for_close = Arc::clone(&peer_connection);
-    close_peer_connection_with_bounded_full_close(WEBRTC_IO_TIMEOUT, peer_connection, async move {
-        let _ = peer_connection_for_close.close().await;
-    })
-    .await;
+async fn close_peer_connection_bounded(peer_connection: ManagedPeer) {
+    let completion = start_peer_connection_cleanup(peer_connection);
+    let _ = tokio::time::timeout(WEBRTC_IO_TIMEOUT, completion.wait()).await;
 }
 
-async fn close_peer_connection_with_bounded_full_close<F, O>(
+fn start_peer_connection_cleanup(
+    peer_connection: ManagedPeer,
+) -> Arc<lifecycle::CleanupCompletion> {
+    let completion = peer_connection.cleanup_completion();
+    spawn_managed_peer_cleanup(&peer_connection);
+    // The physical cleanup job owns the raw peer and its permit now. Releasing
+    // this managed reference lets it distinguish real escaped raw references
+    // from the caller merely waiting for cleanup completion.
+    drop(peer_connection);
+    completion
+}
+
+fn spawn_managed_peer_cleanup(peer_connection: &ManagedPeerConnection) -> bool {
+    let Some((peer_connection, cleanup_guard, completion)) = peer_connection.begin_cleanup() else {
+        return false;
+    };
+    let resources = cleanup_guard.resources();
+    if tokio::runtime::Handle::try_current().is_err() {
+        resources.stop_accepting();
+        drop(peer_connection);
+        drop(cleanup_guard);
+        completion.finish();
+        return true;
+    }
+    let cleanup_resources = resources.clone();
+    resources.spawn_cleanup(async move {
+        run_physical_peer_cleanup(WEBRTC_IO_TIMEOUT, peer_connection, cleanup_resources).await;
+        cleanup_guard.complete();
+        completion.finish();
+    });
+    true
+}
+
+async fn run_physical_peer_cleanup(
     timeout: Duration,
     peer_connection: Arc<RTCPeerConnection>,
-    full_close: F,
-) where
-    F: Future<Output = O> + Send + 'static,
-    O: Send + 'static,
-{
+    resources: PhysicalResources,
+) {
     // Give the normal close path a bounded chance to notify the remote SCTP,
     // DTLS, and ICE stacks. Stopping local ICE first makes a short-lived peer
     // disappear without that terminal handshake, so the remote side can retain
     // the connection and all of its gathered UDP sockets until exhaustion.
-    let mut full_close_task = tokio::spawn(full_close);
-    let _ = tokio::time::timeout(timeout, &mut full_close_task).await;
+    let peer_connection_for_close = Arc::clone(&peer_connection);
+    let mut full_close = tokio::spawn(async move { peer_connection_for_close.close().await });
+    let mut full_close_running = tokio::time::timeout(timeout, &mut full_close)
+        .await
+        .is_err();
 
     // Independently stop ICE even when the outer close future reports success.
     // The library can finish that future after scheduling terminal teardown;
     // short-lived remote peers otherwise leave gathered UDP sockets behind.
-    // If full close timed out, its task remains detached and non-cancelled.
+    let mut ice_stopped = stop_ice_bounded(timeout, &peer_connection).await;
+    if !ice_stopped {
+        resources.note_ice_stop_failure();
+    }
+    if !ice_stopped && full_close_running {
+        full_close.abort();
+        let _ = (&mut full_close).await;
+        full_close_running = false;
+    }
+    while !ice_stopped {
+        tokio::time::sleep(timeout).await;
+        ice_stopped = stop_ice_bounded(timeout, &peer_connection).await;
+        if !ice_stopped {
+            resources.note_ice_stop_failure();
+        }
+    }
+
+    // Full close is not cancellation-safe until ICE has definitely stopped.
+    // Once it has, abort and join any straggler task while retaining the same
+    // physical permit in this cleanup job.
+    if full_close_running {
+        full_close.abort();
+        let _ = full_close.await;
+    }
+
+    // A raw peer reference can retain DTLS/SCTP/ICE owners even after their
+    // close methods return. Capacity remains occupied until this job owns the
+    // final raw reference, so replacement churn fails closed instead of
+    // allocating around a physically retained peer connection.
+    let _straggler_wait =
+        (Arc::strong_count(&peer_connection) > 1).then(|| resources.begin_straggler_wait());
+    while Arc::strong_count(&peer_connection) > 1 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn stop_ice_bounded(timeout: Duration, peer_connection: &Arc<RTCPeerConnection>) -> bool {
     let dtls_transport = peer_connection.dtls_transport();
-    finish_webrtc_cleanup_bounded(timeout, async move {
-        let _ = dtls_transport.ice_transport().stop().await;
-    })
-    .await;
+    let mut ice_stop = tokio::spawn(async move { dtls_transport.ice_transport().stop().await });
+    match tokio::time::timeout(timeout, &mut ice_stop).await {
+        Ok(Ok(Ok(()))) => true,
+        Ok(_) => false,
+        Err(_) => {
+            ice_stop.abort();
+            let _ = ice_stop.await;
+            false
+        }
+    }
 }
 
 async fn cleanup_webrtc_session(
@@ -653,7 +731,7 @@ async fn evict_pending_webrtc_session_for_offer(
     };
     ready.lock().await.remove(addr);
     failed.lock().await.remove(addr);
-    tokio::spawn(close_peer_connection_bounded(pending_dial.pc));
+    close_peer_connection_bounded(pending_dial.pc).await;
     true
 }
 
@@ -707,4 +785,6 @@ async fn accept_webrtc_offer_once(
     true
 }
 
+include!("webrtc_utils.rs");
+include!("webrtc_state_callbacks.rs");
 include!("webrtc_runtime.rs");

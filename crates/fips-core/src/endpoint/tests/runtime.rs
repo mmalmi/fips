@@ -137,6 +137,45 @@ async fn endpoint_shutdown_aborts_wedged_node_after_graceful_budget() {
 }
 
 #[tokio::test]
+async fn endpoint_drop_detaches_its_task_after_signaling_graceful_shutdown() {
+    let endpoint = FipsEndpoint::builder()
+        .without_system_tun()
+        .bind()
+        .await
+        .expect("endpoint should bind");
+    let original = endpoint
+        .task
+        .lock()
+        .expect("endpoint task lock")
+        .take()
+        .expect("running node task");
+    original.abort();
+    let _ = original.await;
+    drop(
+        endpoint
+            .shutdown_tx
+            .lock()
+            .expect("endpoint shutdown lock")
+            .take(),
+    );
+
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let (stopped_tx, stopped_rx) = oneshot::channel();
+    *endpoint.shutdown_tx.lock().expect("endpoint shutdown lock") = Some(shutdown_tx);
+    *endpoint.task.lock().expect("endpoint task lock") = Some(tokio::spawn(async move {
+        let _ = shutdown_rx.await;
+        let _ = stopped_tx.send(());
+        Ok(())
+    }));
+
+    drop(endpoint);
+    tokio::time::timeout(Duration::from_secs(1), stopped_rx)
+        .await
+        .expect("detached node task receives graceful shutdown")
+        .expect("detached node task reports stop");
+}
+
+#[tokio::test]
 async fn endpoint_rejects_external_nostr_event_when_discovery_is_disabled() {
     let endpoint = FipsEndpoint::builder()
         .without_system_tun()
