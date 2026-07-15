@@ -188,6 +188,7 @@ fn endpoint_data_batch_owns_payload_bytes_and_queue_stamp() {
     assert_eq!(owned_enqueued_at_ms, enqueued_at_ms);
 }
 
+mod local_egress;
 mod runtime;
 
 #[test]
