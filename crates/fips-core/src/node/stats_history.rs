@@ -11,7 +11,10 @@
 //! NaN on first sight so every peer shares the same time axis with the
 //! node-level rings. When a peer is absent from a tick, NaN is appended
 //! to keep alignment. Peers are evicted once they have been absent from
-//! every tick in the full 24h slow-ring window.
+//! every tick in the full 24h slow-ring window. To keep streams of
+//! one-shot identities from allocating unbounded rings, only the most
+//! recently active inactive-peer histories are retained; histories for
+//! peers present in the latest tick are never removed by that limit.
 //!
 //! Gap representation: `f64::NAN` for any sample where data is not
 //! available (new peer back-fill, disconnected peer, MMP not yet
@@ -35,6 +38,9 @@ pub const DOWNSAMPLE_FACTOR: usize = 60;
 
 /// Evict peers that have been silent for at least this long.
 pub const PEER_EVICTION_SECS: u64 = 24 * 3600;
+
+/// Maximum number of inactive peers whose detailed history is retained.
+pub const MAX_INACTIVE_PEER_HISTORIES: usize = 64;
 
 /// Node-level metrics tracked in the history. Keep this list in sync
 /// with `ALL_METRICS` and with the snapshot construction in
@@ -559,7 +565,8 @@ impl StatsHistory {
     /// Derives per-second rates from delta on counter totals; gauges
     /// are sampled directly. Every 60 pushes, the accumulator is
     /// flushed to the slow ring. Peers that have been absent for the
-    /// full eviction window are dropped from the map.
+    /// full eviction window are dropped from the map. Inactive histories are
+    /// retained for up to that window, subject to the inactive-peer cap.
     pub fn tick(&mut self, now: Instant, snapshot: &Snapshot, peers: &[PeerSnapshot]) {
         // Node-level metrics.
         for &metric in ALL_METRICS {
@@ -616,8 +623,27 @@ impl StatsHistory {
         let threshold = Duration::from_secs(PEER_EVICTION_SECS);
         self.peers
             .retain(|_, rings| now.duration_since(rings.last_contact) < threshold);
+        self.prune_inactive_peer_histories(&seen);
 
         self.last_tick = Some(now);
+    }
+
+    fn prune_inactive_peer_histories(&mut self, active: &HashSet<NodeAddr>) {
+        let mut inactive = self
+            .peers
+            .iter()
+            .filter(|(addr, _)| !active.contains(addr))
+            .map(|(addr, rings)| (*addr, rings.last_contact))
+            .collect::<Vec<_>>();
+        let overflow = inactive.len().saturating_sub(MAX_INACTIVE_PEER_HISTORIES);
+        if overflow == 0 {
+            return;
+        }
+
+        inactive.sort_unstable_by_key(|(_, last_contact)| *last_contact);
+        for (addr, _) in inactive.into_iter().take(overflow) {
+            self.peers.remove(&addr);
+        }
     }
 
     /// Helper: node-level monotonic counter → per-tick delta. Uses

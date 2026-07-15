@@ -90,6 +90,98 @@ async fn fresh_replacement_with_one_slot_finishes_inside_connect_timeout() {
 }
 
 #[tokio::test]
+#[ignore = "release-only repeated one-slot WebRTC replacement timing"]
+async fn repeated_fresh_replacements_stay_inside_the_original_connect_deadline() {
+    const REPLACEMENTS: usize = 129;
+    let (churn_identity, stable_identity) = ordered_identities();
+    let churn_addr = identity_addr(&churn_identity);
+    let stable_addr = identity_addr(&stable_identity);
+    let peers = ChurnPeers {
+        churn_identity: &churn_identity,
+        stable_identity: &stable_identity,
+        churn_addr: &churn_addr,
+        stable_addr: &stable_addr,
+    };
+    let config = WebRtcConfig {
+        accept_connections: Some(true),
+        max_connections: Some(1),
+        connect_timeout_ms: Some(2_000),
+        ice_gather_timeout_ms: Some(250),
+        stun_servers: Some(Vec::new()),
+        ..WebRtcConfig::default()
+    };
+    let (mut churn_a, _churn_a_rx) = new_transport(91, &churn_identity, &config);
+    let (mut churn_b, _churn_b_rx) = new_transport(92, &churn_identity, &config);
+    let (mut stable, _stable_rx) = new_transport(93, &stable_identity, &config);
+    assert!(churn_a.stun_servers.is_empty());
+    assert!(churn_b.stun_servers.is_empty());
+    assert!(stable.stun_servers.is_empty());
+    churn_a.start_async().await.expect("start churn A");
+    churn_b.start_async().await.expect("start churn B");
+    stable.start_async().await.expect("start stable peer");
+    reconnect(
+        &mut churn_a,
+        &mut stable,
+        &peers,
+        "repeated replacement initial connection",
+    )
+    .await;
+
+    let mut active_a = true;
+    for replacement in 0..REPLACEMENTS {
+        let context = format!("repeated replacement {replacement}");
+        let replacement_result = if active_a {
+            tokio::time::timeout(
+                Duration::from_millis(config.connect_timeout_ms()),
+                fresh_replace(
+                    &churn_a,
+                    &mut churn_b,
+                    &mut stable,
+                    &peers,
+                    &context,
+                ),
+            )
+            .await
+        } else {
+            tokio::time::timeout(
+                Duration::from_millis(config.connect_timeout_ms()),
+                fresh_replace(
+                    &churn_b,
+                    &mut churn_a,
+                    &mut stable,
+                    &peers,
+                    &context,
+                ),
+            )
+            .await
+        };
+        if replacement_result.is_err() {
+            let (old, replacement_transport) = if active_a {
+                (&churn_a, &churn_b)
+            } else {
+                (&churn_b, &churn_a)
+            };
+            let replacement_state =
+                transport_failure_state(replacement_transport, &stable_addr).await;
+            let stable_state = transport_failure_state(&stable, &churn_addr).await;
+            panic!(
+                "fresh replacement {replacement} exceeded the original 2s deadline: oldResources={:?} replacement=[{replacement_state}] stable=[{stable_state}]",
+                old.resource_snapshot()
+            );
+        }
+        active_a = !active_a;
+    }
+
+    let active = if active_a { &churn_a } else { &churn_b };
+    active.close_connection_async(&stable_addr).await;
+    stable.close_connection_async(&churn_addr).await;
+    wait_for_resource_quiescence(&[&churn_a, &churn_b, &stable]).await;
+    churn_a.stop_async().await.expect("stop churn A");
+    churn_b.stop_async().await.expect("stop churn B");
+    stable.stop_async().await.expect("stop stable peer");
+}
+
+#[tokio::test]
 async fn established_on_open_callbacks_release_maps_after_direct_drop() {
     let (churn_identity, stable_identity) = ordered_identities();
     let churn_addr = identity_addr(&churn_identity);
@@ -655,25 +747,48 @@ fn relay_negotiations(
     let mut last_signal = None;
     for outbound in churn.drain_link_negotiations(16) {
         let message = LinkNegotiationMessage::decode(&outbound.payload).expect("churn signal");
-        last_signal = Some(format!(
-            "churn->stable kind={:?} session={}",
-            message.kind, message.negotiation_id
-        ));
+        last_signal = Some(signal_diagnostic("churn->stable", &message));
         stable
             .ingest_link_negotiation(peers.churn_identity.pubkey_full(), message)
             .expect("deliver churn signal");
     }
     for outbound in stable.drain_link_negotiations(16) {
         let message = LinkNegotiationMessage::decode(&outbound.payload).expect("stable signal");
-        last_signal = Some(format!(
-            "stable->churn kind={:?} session={}",
-            message.kind, message.negotiation_id
-        ));
+        last_signal = Some(signal_diagnostic("stable->churn", &message));
         churn
             .ingest_link_negotiation(peers.stable_identity.pubkey_full(), message)
             .expect("deliver stable signal");
     }
     last_signal
+}
+
+fn signal_diagnostic(direction: &str, message: &LinkNegotiationMessage) -> String {
+    let now = now_ms();
+    let payload = message
+        .clone()
+        .typed_payload::<WebRtcSignalPayload>()
+        .ok();
+    let candidate_count = payload
+        .as_ref()
+        .and_then(|message| message.payload.sdp.as_deref())
+        .map(|sdp| {
+            sdp.lines()
+                .filter(|line| line.trim_start().starts_with("a=candidate:"))
+                .count()
+        })
+        .unwrap_or(0);
+    let end_of_candidates = payload
+        .as_ref()
+        .and_then(|message| message.payload.sdp.as_deref())
+        .is_some_and(|sdp| sdp.lines().any(|line| line.trim() == "a=end-of-candidates"));
+    format!(
+        "{direction} kind={:?} session={} ageMs={} expiresInMs={} candidates={} endOfCandidates={end_of_candidates}",
+        message.kind,
+        message.negotiation_id,
+        now.saturating_sub(message.created_at_ms),
+        message.expires_at_ms.saturating_sub(now),
+        candidate_count,
+    )
 }
 
 async fn transport_failure_state(
@@ -694,15 +809,21 @@ async fn transport_failure_state(
             PendingDialOrigin::Remote => "remote",
         };
         format!(
-            "{}:{origin}:created={}",
-            pending.session_id, pending.created_at_ms
+            "{}:{origin}:created={}:deadlineInMs={}",
+            pending.session_id,
+            pending.created_at_ms,
+            pending
+                .deadline
+                .saturating_duration_since(tokio::time::Instant::now())
+                .as_millis()
         )
     });
     let failure = transport.failed.lock().await.get(remote_addr).cloned();
     let ready = transport.ready.lock().await.contains(remote_addr);
+    let negotiation = transport.negotiation.snapshot();
     let (dial_inflight, dial_outcomes) = take_finished_dial_outcomes(transport).await;
     format!(
-        "state={connection_state:?} pool={pool_session:?} pending={pending_session:?} failed={failure:?} ready={ready} resources={resources:?} dialInflight={dial_inflight} dialOutcomes={dial_outcomes:?}"
+        "state={connection_state:?} pool={pool_session:?} pending={pending_session:?} failed={failure:?} ready={ready} resources={resources:?} negotiation={negotiation:?} dialInflight={dial_inflight} dialOutcomes={dial_outcomes:?}"
     )
 }
 

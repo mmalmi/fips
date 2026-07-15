@@ -1,6 +1,7 @@
 {
   "data": {
     "fast_ring_seconds": 3600,
+    "inactive_peer_history_limit": 64,
     "metrics": [
       {
         "name": "mesh_size",

@@ -365,6 +365,53 @@ fn peer_eviction_fires_after_24h_of_silence() {
 }
 
 #[test]
+fn unique_ephemeral_peer_churn_keeps_active_and_recent_history_bounded() {
+    let mut h = StatsHistory::new();
+    let t0 = Instant::now();
+    let stable = make_addr(250);
+    let churn = MAX_INACTIVE_PEER_HISTORIES + 10;
+
+    for i in 0..churn {
+        let now = t0 + Duration::from_secs(i as u64);
+        h.tick(
+            now,
+            &make_snap(i as u64),
+            &[
+                make_peer_snap(250, now, i as u64),
+                make_peer_snap((i + 1) as u8, now, i as u64),
+            ],
+        );
+        assert!(
+            h.tracked_peer_count() <= MAX_INACTIVE_PEER_HISTORIES + 2,
+            "every tick retains only active peers plus the inactive budget"
+        );
+    }
+    h.tick(
+        t0 + Duration::from_secs(churn as u64),
+        &make_snap(churn as u64),
+        &[make_peer_snap(250, t0, churn as u64)],
+    );
+
+    assert!(
+        h.has_peer(&stable),
+        "active peer history must never be evicted"
+    );
+    assert!(
+        h.has_peer(&make_addr(churn as u8)),
+        "the most recently inactive peer should retain its history"
+    );
+    assert!(
+        !h.has_peer(&make_addr(1)),
+        "the oldest inactive peer should be evicted under identity churn"
+    );
+    assert_eq!(
+        h.tracked_peer_count(),
+        MAX_INACTIVE_PEER_HISTORIES + 1,
+        "one active peer plus the bounded inactive history budget"
+    );
+}
+
+#[test]
 fn nan_mean_downsample_skips_nan_samples() {
     let mut h = StatsHistory::new();
     let t0 = Instant::now();

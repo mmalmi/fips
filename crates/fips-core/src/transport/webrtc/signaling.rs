@@ -19,7 +19,7 @@ impl FipsSignalSender {
         Self { tx }
     }
 
-    pub(super) async fn send_signal(
+    pub(super) fn send_signal(
         &self,
         receiver: PublicKey,
         signal: &WebRtcSignal,

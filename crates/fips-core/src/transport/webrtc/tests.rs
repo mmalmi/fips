@@ -475,7 +475,6 @@ async fn webrtc_queues_negotiation_for_fips_session_without_relay_client() {
     transport
         .signaling
         .send_signal(remote_nostr, &signal)
-        .await
         .expect("queue FIPS session signal");
     let queued = transport.drain_link_negotiations(1);
     assert_eq!(queued.len(), 1);
@@ -561,6 +560,7 @@ async fn physical_cleanup_stops_gathered_ice_and_releases_capacity() {
     assert_eq!(transport.resource_snapshot().closing, 0);
     assert_eq!(transport.resource_snapshot().created_total, 1);
     assert_eq!(transport.resource_snapshot().closed_total, 1);
+    assert_eq!(transport.resource_snapshot().ice_stop_failures_total, 0);
 }
 
 #[tokio::test]
@@ -635,6 +635,7 @@ async fn straggler_peer_reference_keeps_cleanup_owned_and_replacement_blocked() 
     assert_eq!(snapshot.active + snapshot.closing, 0);
     assert_eq!(snapshot.cleanup_inflight, 0);
     assert_eq!(snapshot.created_total, snapshot.closed_total);
+    assert_eq!(snapshot.ice_stop_failures_total, 0);
 }
 
 #[tokio::test]
@@ -682,10 +683,11 @@ async fn terminal_session_cleanup_closes_the_peer_connection() {
         &transport.failed,
         &transport.ready,
     );
+    let expected_owner = WebRtcSessionOwner::new("cleanup-session", &pc);
     let removed = cleanup_webrtc_session(
         &owners,
         &addr,
-        Some("cleanup-session"),
+        Some(&expected_owner),
         Some("peer disconnected".to_string()),
         CleanupWait::Bounded,
     )
@@ -732,9 +734,11 @@ async fn invalid_answer_immediately_removes_and_closes_its_pending_session() {
         addr.clone(),
         PendingDial {
             session_id: "invalid-answer".into(),
+            phase_owner_id: "invalid-answer".into(),
             pc: Arc::clone(&pc),
             created_at_ms: now_ms(),
             origin: PendingDialOrigin::Local,
+            deadline: tokio::time::Instant::now() + Duration::from_secs(2),
         },
     );
     drop(pc);
@@ -799,7 +803,13 @@ async fn outbound_post_attach_error_immediately_closes_its_pending_session() {
 
     assert!(
         runtime
-            .start_outbound(addr.clone(), reservation)
+            .start_outbound(
+                addr.clone(),
+                reservation,
+                tokio::time::Instant::now()
+                    + Duration::from_millis(runtime.config.connect_timeout_ms()),
+                None,
+            )
             .await
             .is_err()
     );
@@ -889,6 +899,17 @@ async fn fresh_offer_replaces_an_existing_webrtc_session() {
     );
     assert!(!transport.pool.lock().await.contains_key(&addr));
     assert!(!transport.ready.lock().await.contains(&addr));
+    assert_eq!(
+        transport.physical.phase(&addr),
+        Some(PhysicalPhase::Closing),
+        "logical eviction starts physical cleanup synchronously"
+    );
+    assert!(
+        transport
+            .physical
+            .wait_for_quiescence(Duration::from_secs(3))
+            .await
+    );
     assert!(weak_raw_pc.upgrade().is_none());
     let snapshot = transport.resource_snapshot();
     assert_eq!(snapshot.created_total, snapshot.closed_total);
@@ -927,19 +948,22 @@ async fn session_failure_bookkeeping_precedes_physical_permit_release() {
         addr.clone(),
         PendingDial {
             session_id: "old-session".into(),
+            phase_owner_id: "old-session".into(),
             pc: Arc::clone(&pc),
             created_at_ms: now_ms(),
             origin: PendingDialOrigin::Local,
+            deadline: tokio::time::Instant::now() + Duration::from_secs(2),
         },
     );
     transport.ready.lock().await.insert(addr.clone());
+    let expected_owner = WebRtcSessionOwner::new("old-session", &pc);
     drop(pc);
 
     let runtime = transport.runtime();
     let failed_addr = addr.clone();
     let failure = tokio::spawn(async move {
         runtime
-            .mark_session_failed(failed_addr, "old-session", "old session failed".into())
+            .mark_session_failed(failed_addr, &expected_owner, "old session failed".into())
             .await;
     });
     tokio::time::timeout(Duration::from_secs(3), async {

@@ -37,6 +37,7 @@ pub fn show_stats_list() -> Value {
         "fast_ring_seconds": crate::node::stats_history::FAST_RING_CAPACITY,
         "slow_ring_minutes": crate::node::stats_history::SLOW_RING_CAPACITY,
         "peer_retention_seconds": crate::node::stats_history::PEER_EVICTION_SECS,
+        "inactive_peer_history_limit": crate::node::stats_history::MAX_INACTIVE_PEER_HISTORIES,
     })
 }
 

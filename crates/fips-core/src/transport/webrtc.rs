@@ -58,7 +58,7 @@ mod send_tests;
 pub use lifecycle::WebRtcResourceSnapshot;
 use lifecycle::{
     ManagedPeer, ManagedPeerConnection, PhysicalPhase, PhysicalReservation, PhysicalReserveError,
-    PhysicalResources,
+    PhysicalResources, WeakPhysicalResources, WebRtcSessionOwner,
 };
 use mdns::SharedMdnsResolver;
 use signaling::FipsSignalSender;
@@ -104,15 +104,17 @@ enum PendingDialOrigin {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CleanupWait {
+    Started,
     Bounded,
-    Physical,
 }
 
 struct PendingDial {
     session_id: String,
+    phase_owner_id: String,
     pc: ManagedPeer,
     created_at_ms: u64,
     origin: PendingDialOrigin,
+    deadline: tokio::time::Instant,
 }
 
 type ConnectionPool = Arc<Mutex<HashMap<TransportAddr, WebRtcConnection>>>;
@@ -165,6 +167,7 @@ pub struct WebRtcTransport {
     outgoing_signal_rx: mpsc::UnboundedReceiver<OutboundLinkNegotiation>,
     signal_task: Option<JoinHandle<()>>,
     dial_tasks: StdMutex<Vec<JoinHandle<Result<(), TransportError>>>>,
+    negotiation: Arc<WebRtcNegotiationCounters>,
     signaling: FipsSignalSender,
     local_pubkey_hex: String,
     stun_servers: Vec<String>,
@@ -213,6 +216,7 @@ impl WebRtcTransport {
             outgoing_signal_rx,
             signal_task: None,
             dial_tasks: StdMutex::new(Vec::new()),
+            negotiation: Arc::new(WebRtcNegotiationCounters::default()),
             signaling,
             local_pubkey_hex,
             stun_servers,
@@ -237,6 +241,7 @@ impl WebRtcTransport {
             ready: Arc::clone(&self.ready),
             seen_sessions: Arc::clone(&self.seen_sessions),
             physical: self.physical.clone(),
+            negotiation: Arc::clone(&self.negotiation),
             local_pubkey_hex: self.local_pubkey_hex.clone(),
             stun_servers: self.stun_servers.clone(),
             signaling: self.signaling.clone(),
@@ -319,22 +324,25 @@ impl WebRtcTransport {
         let mdns_shutdown = self.mdns_resolver.stop().await;
         self.failed.lock().await.clear();
         self.seen_sessions.lock().await.clear();
-        let pending = self
-            .pending
-            .lock()
-            .await
-            .drain()
-            .map(|(_, pending)| pending)
-            .collect::<Vec<_>>();
-        self.ready.lock().await.clear();
-        let connections = self
-            .pool
-            .lock()
-            .await
-            .drain()
-            .map(|(_, connection)| connection)
-            .collect::<Vec<_>>();
-        // Empty both logical owner maps before starting physical close. This
+        // Cleanup and promotion use this same pool -> pending order. Drain
+        // both logical owners and readiness in one epoch so no callback can
+        // reinsert ready state after stop has removed its exact session.
+        let (pending, connections) = {
+            let mut pool = self.pool.lock().await;
+            let mut pending = self.pending.lock().await;
+            let mut ready = self.ready.lock().await;
+            let pending = pending
+                .drain()
+                .map(|(_, pending)| pending)
+                .collect::<Vec<_>>();
+            let connections = pool
+                .drain()
+                .map(|(_, connection)| connection)
+                .collect::<Vec<_>>();
+            ready.clear();
+            (pending, connections)
+        };
+        // Empty logical owner maps before starting physical close. This
         // breaks callback back-reference cycles and lets all peer cleanups run
         // concurrently under the one physical-owner cap.
         for pending in pending {
@@ -355,6 +363,13 @@ impl WebRtcTransport {
                 "WebRTC physical owners did not quiesce: {snapshot:?}"
             )));
         }
+        // Detached deadline tasks hold only weak map references, but one can
+        // remove a pending dial immediately before stop drains it and publish
+        // the failure immediately afterward. Physical quiescence orders after
+        // that cleanup, so this final clear prevents a stopped transport from
+        // retaining a stale connection failure.
+        self.ready.lock().await.clear();
+        self.failed.lock().await.clear();
         if let Err(error) = mdns_shutdown {
             self.state = TransportState::Failed;
             return Err(error);
@@ -413,8 +428,12 @@ impl WebRtcTransport {
 
         let runtime = self.runtime();
         let remote_addr = addr.clone();
+        let deadline =
+            tokio::time::Instant::now() + Duration::from_millis(self.config.connect_timeout_ms());
         let task = tokio::spawn(async move {
-            let result = runtime.start_outbound(remote_addr, reservation).await;
+            let result = runtime
+                .start_outbound(remote_addr, reservation, deadline, None)
+                .await;
             if let Err(error) = &result {
                 trace!(error = %error, "WebRTC outbound setup failed");
             }
@@ -508,15 +527,22 @@ impl WebRtcTransport {
 
     /// Schedule connection cleanup from synchronous node-lifecycle paths.
     pub fn close_connection_detached(&self, addr: &TransportAddr) {
-        spawn_webrtc_session_cleanup(
+        if let Some(task) = self.close_connection_detached_task(addr) {
+            drop(task);
+        }
+    }
+
+    fn close_connection_detached_task(&self, addr: &TransportAddr) -> Option<JoinHandle<()>> {
+        let generation = self.physical.generation(addr)?;
+        Some(spawn_webrtc_session_cleanup(
             Arc::clone(&self.pool),
             Arc::clone(&self.pending),
             Arc::clone(&self.failed),
             Arc::clone(&self.ready),
             addr.clone(),
+            Some(WebRtcSessionOwner::for_generation(generation)),
             None,
-            None,
-        );
+        ))
     }
 }
 
@@ -553,15 +579,18 @@ async fn reserve_physical_for_incoming_offer(
     physical: &PhysicalResources,
     addr: &TransportAddr,
     expires_at_ms: u64,
+    deadline: tokio::time::Instant,
 ) -> Result<PhysicalReservation, PhysicalReserveError> {
     match physical.reserve(addr) {
         Err(PhysicalReserveError::PeerBusy(PhysicalPhase::Closing)) => {
-            let remaining_ms = expires_at_ms.saturating_sub(now_ms()).min(SIGNAL_TTL_MS);
-            if remaining_ms == 0
-                || !physical
-                    .wait_for_peer_release(addr, Duration::from_millis(remaining_ms))
-                    .await
+            let signal_remaining =
+                Duration::from_millis(expires_at_ms.saturating_sub(now_ms()).min(SIGNAL_TTL_MS));
+            let phase_remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let remaining = signal_remaining.min(phase_remaining);
+            if remaining.is_zero()
+                || !physical.wait_for_peer_release(addr, remaining).await
                 || expires_at_ms < now_ms()
+                || tokio::time::Instant::now() >= deadline
                 || !physical.is_accepting()
             {
                 return Err(PhysicalReserveError::PeerBusy(PhysicalPhase::Closing));
@@ -646,43 +675,64 @@ async fn run_physical_peer_cleanup(
     timeout: Duration,
     peer_connection: Arc<RTCPeerConnection>,
     resources: PhysicalResources,
-) {
+) -> bool {
     // Give the normal close path a bounded chance to notify the remote SCTP,
     // DTLS, and ICE stacks. Stopping local ICE first makes a short-lived peer
     // disappear without that terminal handshake, so the remote side can retain
     // the connection and all of its gathered UDP sockets until exhaustion.
     let peer_connection_for_close = Arc::clone(&peer_connection);
-    let mut full_close = tokio::spawn(async move { peer_connection_for_close.close().await });
-    let mut full_close_running = tokio::time::timeout(timeout, &mut full_close)
-        .await
-        .is_err();
+    run_physical_peer_cleanup_with_close(timeout, peer_connection, resources, async move {
+        peer_connection_for_close.close().await
+    })
+    .await
+}
 
-    // Independently stop ICE even when the outer close future reports success.
-    // The library can finish that future after scheduling terminal teardown;
-    // short-lived remote peers otherwise leave gathered UDP sockets behind.
-    let mut ice_stopped = stop_ice_bounded(timeout, &peer_connection).await;
-    if !ice_stopped {
-        resources.note_ice_stop_failure();
-    }
-    if !ice_stopped && full_close_running {
-        full_close.abort();
-        let _ = (&mut full_close).await;
-        full_close_running = false;
-    }
-    while !ice_stopped {
-        tokio::time::sleep(timeout).await;
-        ice_stopped = stop_ice_bounded(timeout, &peer_connection).await;
-        if !ice_stopped {
-            resources.note_ice_stop_failure();
+async fn run_physical_peer_cleanup_with_close<F, E>(
+    timeout: Duration,
+    peer_connection: Arc<RTCPeerConnection>,
+    resources: PhysicalResources,
+    full_close: F,
+) -> bool
+where
+    F: Future<Output = Result<(), E>> + Send + 'static,
+    E: Send + 'static,
+{
+    let mut full_close = tokio::spawn(full_close);
+    let needs_ice_fallback = match tokio::time::timeout(timeout, &mut full_close).await {
+        Ok(Ok(Ok(()))) => false,
+        Ok(Ok(Err(_)) | Err(_)) => true,
+        Err(_) => {
+            // A timed-out full close may still own ICE/SCTP/DTLS resources.
+            // Abort and join it before the one explicit ICE fallback, while
+            // this cleanup job continues to retain the physical permit.
+            full_close.abort();
+            let _ = full_close.await;
+            true
         }
-    }
+    };
 
-    // Full close is not cancellation-safe until ICE has definitely stopped.
-    // Once it has, abort and join any straggler task while retaining the same
-    // physical permit in this cleanup job.
-    if full_close_running {
-        full_close.abort();
-        let _ = full_close.await;
+    finish_physical_peer_cleanup(timeout, peer_connection, resources, !needs_ice_fallback).await
+}
+
+async fn finish_physical_peer_cleanup(
+    timeout: Duration,
+    peer_connection: Arc<RTCPeerConnection>,
+    resources: PhysicalResources,
+    full_close_succeeded: bool,
+) -> bool {
+    let needs_ice_fallback = !full_close_succeeded;
+
+    // webrtc 0.17.1's successful full close awaits data-channel, SCTP, DTLS,
+    // ICE, and ops teardown. Only a failed/timed-out close needs the owned ICE
+    // fallback. Retry fail-closed; capacity is never released on uncertainty.
+    if needs_ice_fallback {
+        loop {
+            if stop_ice_bounded(timeout, &peer_connection).await {
+                break;
+            }
+            resources.note_ice_stop_failure();
+            tokio::time::sleep(timeout).await;
+        }
     }
 
     // A raw peer reference can retain DTLS/SCTP/ICE owners even after their
@@ -694,6 +744,7 @@ async fn run_physical_peer_cleanup(
     while Arc::strong_count(&peer_connection) > 1 {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    needs_ice_fallback
 }
 
 async fn stop_ice_bounded(timeout: Duration, peer_connection: &Arc<RTCPeerConnection>) -> bool {
@@ -713,71 +764,91 @@ async fn stop_ice_bounded(timeout: Duration, peer_connection: &Arc<RTCPeerConnec
 async fn cleanup_webrtc_session(
     owners: &WebRtcSessionOwners,
     addr: &TransportAddr,
-    expected_session: Option<&str>,
+    expected_owner: Option<&WebRtcSessionOwner>,
     failure: Option<String>,
     wait: CleanupWait,
 ) -> bool {
-    let connection = {
+    // Promotion uses this same pool -> pending lock order. Remove from both
+    // maps under one lock epoch so an on_open handoff cannot move the session
+    // into the map cleanup has already scanned.
+    let (connection, pending_dial) = {
         let mut pool = owners.pool.lock().await;
-        if pool.get(addr).is_some_and(|connection| {
-            expected_session.is_none_or(|session| connection.session_id == session)
+        let mut pending = owners.pending.lock().await;
+        let connection = if pool.get(addr).is_some_and(|connection| {
+            expected_owner.is_none_or(|owner| owner.matches(&connection.session_id, &connection.pc))
         }) {
             pool.remove(addr)
         } else {
             None
-        }
-    };
-    let pending_dial = {
-        let mut pending = owners.pending.lock().await;
-        if pending
-            .get(addr)
-            .is_some_and(|dial| expected_session.is_none_or(|session| dial.session_id == session))
-        {
+        };
+        let pending_dial = if pending.get(addr).is_some_and(|dial| {
+            expected_owner.is_none_or(|owner| owner.matches(&dial.session_id, &dial.pc))
+        }) {
             pending.remove(addr)
         } else {
             None
+        };
+        let removed = connection.is_some() || pending_dial.is_some();
+        if removed || expected_owner.is_none() {
+            owners.ready.lock().await.remove(addr);
+            let mut failed = owners.failed.lock().await;
+            failed.remove(addr);
+            if let Some(reason) = failure {
+                failed.insert(addr.clone(), reason);
+            }
         }
+        (connection, pending_dial)
     };
     let removed = connection.is_some() || pending_dial.is_some();
-    if removed || expected_session.is_none() {
-        owners.ready.lock().await.remove(addr);
-        let mut failed = owners.failed.lock().await;
-        failed.remove(addr);
-        if let Some(reason) = failure {
-            failed.insert(addr.clone(), reason);
-        }
-    }
 
-    // Start physical peer cleanup before closing the data channel so normal
-    // replacement does not serially spend two I/O timeout budgets. A fresh
-    // session can await this same completion before reserving the peer slot;
-    // ordinary cleanup stays bounded while the owned cleanup job continues.
+    // RTCPeerConnection::close owns data-channel, SCTP, DTLS, and ICE teardown.
+    // Drop the duplicate data-channel owner before starting that one tracked
+    // physical cleanup path; concurrently closing the same channel can consume
+    // the entire full-close budget on the library's internal channel lock.
     let pending_completion = pending_dial.map(|pending| start_peer_connection_cleanup(pending.pc));
-    let connection_cleanup = connection.map(|connection| {
-        (
-            connection.data_channel,
-            start_peer_connection_cleanup(connection.pc),
-        )
+    let connection_completion = connection.map(|connection| {
+        drop(connection.data_channel);
+        start_peer_connection_cleanup(connection.pc)
     });
     match wait {
+        CleanupWait::Started => {}
         CleanupWait::Bounded => {
             if let Some(completion) = pending_completion {
                 let _ = tokio::time::timeout(WEBRTC_IO_TIMEOUT, completion.wait()).await;
             }
-            if let Some((data_channel, completion)) = connection_cleanup {
-                tokio::join!(close_data_channel_bounded(data_channel), async {
-                    let _ = tokio::time::timeout(WEBRTC_IO_TIMEOUT, completion.wait()).await;
-                });
+            if let Some(completion) = connection_completion {
+                let _ = tokio::time::timeout(WEBRTC_IO_TIMEOUT, completion.wait()).await;
             }
         }
-        CleanupWait::Physical => {
-            if let Some(completion) = pending_completion {
-                completion.wait().await;
-            }
-            if let Some((data_channel, completion)) = connection_cleanup {
-                tokio::join!(close_data_channel_bounded(data_channel), completion.wait());
-            }
-        }
+    }
+    removed
+}
+
+async fn cleanup_terminal_webrtc_session(
+    owners: &WebRtcSessionOwners,
+    addr: &TransportAddr,
+    expected_session: &str,
+    failure: Option<String>,
+    peer_connection: ManagedPeer,
+) -> bool {
+    // A terminal callback must remove the exact logical owner before it can
+    // transition the physical lease to Closing. READY send/mark operations
+    // hold pool across their bounded mutation, so this orders terminal close
+    // wholly before or after them instead of racing RTCPeerConnection::close.
+    let expected_owner = WebRtcSessionOwner::new(expected_session, &peer_connection);
+    let removed = cleanup_webrtc_session(
+        owners,
+        addr,
+        Some(&expected_owner),
+        failure,
+        CleanupWait::Started,
+    )
+    .await;
+    if !removed {
+        // The logical owner may already have been removed by an independent
+        // close path. Retain a mapless physical fallback so the permit and ICE
+        // owner still enter the one tracked cleanup path.
+        drop(start_peer_connection_cleanup(peer_connection));
     }
     removed
 }
@@ -796,29 +867,37 @@ fn incoming_offer_replaces_pending(
 }
 
 async fn evict_pending_webrtc_session_for_offer(
+    pool: &ConnectionPool,
     pending: &PendingPool,
     failed: &FailedPool,
     ready: &ReadyPool,
     addr: &TransportAddr,
-    expected_session: &str,
+    expected_owner: &WebRtcSessionOwner,
 ) -> bool {
     let pending_dial = {
+        let _pool = pool.lock().await;
         let mut pending = pending.lock().await;
-        if pending
+        let pending_dial = if pending
             .get(addr)
-            .is_some_and(|dial| dial.session_id == expected_session)
+            .is_some_and(|dial| expected_owner.matches(&dial.session_id, &dial.pc))
         {
             pending.remove(addr)
         } else {
             None
+        };
+        if pending_dial.is_some() {
+            ready.lock().await.remove(addr);
+            failed.lock().await.remove(addr);
         }
+        pending_dial
     };
     let Some(pending_dial) = pending_dial else {
         return false;
     };
-    ready.lock().await.remove(addr);
-    failed.lock().await.remove(addr);
-    start_peer_connection_cleanup(pending_dial.pc).wait().await;
+    // begin_cleanup transitions the physical generation to Closing before it
+    // returns. The accepted offer then joins the single generation-bound
+    // reserve waiter instead of pinning this signal handler on raw ownership.
+    drop(start_peer_connection_cleanup(pending_dial.pc));
     true
 }
 
@@ -828,9 +907,9 @@ fn spawn_webrtc_session_cleanup(
     failed: FailedPool,
     ready: ReadyPool,
     addr: TransportAddr,
-    expected_session: Option<String>,
+    expected_owner: Option<WebRtcSessionOwner>,
     failure: Option<String>,
-) {
+) -> JoinHandle<()> {
     tokio::spawn(async move {
         let owners = WebRtcSessionOwners {
             pool,
@@ -841,12 +920,12 @@ fn spawn_webrtc_session_cleanup(
         cleanup_webrtc_session(
             &owners,
             &addr,
-            expected_session.as_deref(),
+            expected_owner.as_ref(),
             failure,
             CleanupWait::Bounded,
         )
         .await;
-    });
+    })
 }
 
 async fn accept_webrtc_offer_once(
@@ -878,4 +957,5 @@ async fn accept_webrtc_offer_once(
 
 include!("webrtc_utils.rs");
 include!("webrtc_state_callbacks.rs");
+include!("webrtc_negotiation.rs");
 include!("webrtc_runtime.rs");

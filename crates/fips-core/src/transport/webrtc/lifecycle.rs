@@ -21,6 +21,7 @@ struct PhysicalSlot {
 struct PhysicalState {
     next_generation: u64,
     peers: HashMap<TransportAddr, PhysicalSlot>,
+    offer_handlers: HashSet<TransportAddr>,
     creating: usize,
     active: usize,
     closing: usize,
@@ -74,6 +75,9 @@ pub struct WebRtcResourceSnapshot {
 #[derive(Clone)]
 pub(super) struct PhysicalResources(Arc<PhysicalResourceInner>);
 
+#[derive(Clone)]
+pub(super) struct WeakPhysicalResources(std::sync::Weak<PhysicalResourceInner>);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum PhysicalReserveError {
     Stopped,
@@ -103,6 +107,11 @@ pub(super) struct PhysicalCleanupGuard {
 }
 
 pub(super) struct StragglerWaitGuard(PhysicalResources);
+
+pub(super) struct PhysicalOfferGuard {
+    resources: PhysicalResources,
+    addr: TransportAddr,
+}
 
 struct PhysicalReleaseWaitGuard {
     resources: PhysicalResources,
@@ -147,6 +156,44 @@ pub(super) struct ManagedPeerConnection {
 
 pub(super) type ManagedPeer = Arc<ManagedPeerConnection>;
 
+#[derive(Clone)]
+pub(super) struct WebRtcSessionOwner {
+    pub(super) session_id: Option<String>,
+    pub(super) pc: Option<std::sync::Weak<ManagedPeerConnection>>,
+    pub(super) generation: Option<u64>,
+}
+
+impl WebRtcSessionOwner {
+    pub(super) fn new(session_id: &str, pc: &ManagedPeer) -> Self {
+        Self {
+            session_id: Some(session_id.to_string()),
+            pc: Some(Arc::downgrade(pc)),
+            generation: None,
+        }
+    }
+
+    pub(super) fn for_generation(generation: u64) -> Self {
+        Self {
+            session_id: None,
+            pc: None,
+            generation: Some(generation),
+        }
+    }
+
+    pub(super) fn matches(&self, session_id: &str, pc: &ManagedPeer) -> bool {
+        self.session_id
+            .as_deref()
+            .is_none_or(|expected| expected == session_id)
+            && self
+                .pc
+                .as_ref()
+                .is_none_or(|expected| expected.ptr_eq(&Arc::downgrade(pc)))
+            && self
+                .generation
+                .is_none_or(|expected| pc.physical_generation() == Some(expected))
+    }
+}
+
 impl std::ops::Deref for ManagedPeerConnection {
     type Target = RTCPeerConnection;
 
@@ -170,6 +217,10 @@ impl PhysicalResources {
         }))
     }
 
+    pub(super) fn downgrade(&self) -> WeakPhysicalResources {
+        WeakPhysicalResources(Arc::downgrade(&self.0))
+    }
+
     pub(super) fn start_accepting(&self) {
         self.0.accepting.store(true, Ordering::Release);
     }
@@ -181,6 +232,16 @@ impl PhysicalResources {
 
     pub(super) fn is_accepting(&self) -> bool {
         self.0.accepting.load(Ordering::Acquire)
+    }
+
+    pub(super) fn generation(&self, addr: &TransportAddr) -> Option<u64> {
+        self.0
+            .state
+            .lock()
+            .expect("WebRTC physical state")
+            .peers
+            .get(addr)
+            .map(|slot| slot.generation)
     }
 
     pub(super) fn reserve(
@@ -230,6 +291,20 @@ impl PhysicalResources {
             .peers
             .get(addr)
             .map(|slot| slot.phase)
+    }
+
+    pub(super) fn try_claim_offer(&self, addr: &TransportAddr) -> Option<PhysicalOfferGuard> {
+        if !self.is_accepting() {
+            return None;
+        }
+        let mut state = self.0.state.lock().expect("WebRTC physical state");
+        if !state.offer_handlers.insert(addr.clone()) {
+            return None;
+        }
+        Some(PhysicalOfferGuard {
+            resources: self.clone(),
+            addr: addr.clone(),
+        })
     }
 
     pub(super) fn snapshot(&self) -> WebRtcResourceSnapshot {
@@ -344,6 +419,16 @@ impl PhysicalResources {
             .is_some_and(|slot| slot.replacement_waiter)
     }
 
+    #[cfg(test)]
+    pub(super) fn has_offer_handler(&self, addr: &TransportAddr) -> bool {
+        self.0
+            .state
+            .lock()
+            .expect("WebRTC physical state")
+            .offer_handlers
+            .contains(addr)
+    }
+
     pub(super) fn note_ice_stop_failure(&self) {
         self.0
             .ice_stop_failures_total
@@ -377,6 +462,18 @@ impl Drop for StragglerWaitGuard {
     }
 }
 
+impl Drop for PhysicalOfferGuard {
+    fn drop(&mut self) {
+        self.resources
+            .0
+            .state
+            .lock()
+            .expect("WebRTC physical state")
+            .offer_handlers
+            .remove(&self.addr);
+    }
+}
+
 impl Drop for PhysicalReleaseWaitGuard {
     fn drop(&mut self) {
         let mut state = self
@@ -390,6 +487,12 @@ impl Drop for PhysicalReleaseWaitGuard {
         {
             slot.replacement_waiter = false;
         }
+    }
+}
+
+impl WeakPhysicalResources {
+    pub(super) fn upgrade(&self) -> Option<PhysicalResources> {
+        self.0.upgrade().map(PhysicalResources)
     }
 }
 
@@ -567,6 +670,14 @@ impl ManagedPeerConnection {
 
     pub(super) fn is_closing(&self) -> bool {
         self.lease.lock().expect("WebRTC physical lease").is_none()
+    }
+
+    pub(super) fn physical_generation(&self) -> Option<u64> {
+        self.lease
+            .lock()
+            .expect("WebRTC physical lease")
+            .as_ref()
+            .map(|lease| lease.generation)
     }
 
     pub(super) fn cleanup_completion(&self) -> Arc<CleanupCompletion> {

@@ -980,7 +980,6 @@ impl WebRtcConfig {
     pub fn stun_servers<'a>(&'a self, fallback: &'a [String]) -> Vec<String> {
         self.stun_servers
             .as_ref()
-            .filter(|servers| !servers.is_empty())
             .cloned()
             .unwrap_or_else(|| fallback.to_vec())
     }
