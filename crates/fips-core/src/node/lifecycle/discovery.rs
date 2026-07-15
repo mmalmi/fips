@@ -568,14 +568,14 @@ impl Node {
     /// extracts a scope from the Nostr app tag used by default scoped
     /// discovery.
     pub(in crate::node) fn lan_discovery_scope(&self) -> Option<String> {
-        crate::discovery::local::local_discovery_scope(&self.config)
+        crate::discovery::local::lan_discovery_scope(&self.config)
     }
 
     pub(in crate::node) fn start_local_instance_discovery(&mut self) {
         if !self.config.node.discovery.local.enabled {
             return;
         }
-        let Some(scope) = self.lan_discovery_scope() else {
+        let Some(scope) = crate::discovery::local::local_discovery_scope(&self.config) else {
             debug!("local instance discovery not started: no discovery scope");
             return;
         };

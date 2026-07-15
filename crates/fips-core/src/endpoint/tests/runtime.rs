@@ -782,7 +782,7 @@ async fn blocking_send_batch_to_peer_loopback_endpoint_data_roundtrips() {
 }
 
 #[tokio::test]
-async fn local_capability_snapshot_connects_configured_only_endpoints() {
+async fn local_capability_snapshot_connects_across_product_scopes() {
     const SERVICE_PORT: u16 = 39_018;
     let temp = tempfile::tempdir().expect("temporary local registry");
     let mut config = Config::new();
@@ -795,6 +795,7 @@ async fn local_capability_snapshot_connects_configured_only_endpoints() {
     config.node.discovery.nostr.peerfinding_source =
         crate::config::NostrPeerfindingSource::External;
     config.node.discovery.nostr.advert_relays.clear();
+    config.node.discovery.lan.enabled = false;
     config.node.discovery.local.dir = Some(temp.path().display().to_string());
     assert_eq!(
         config.node.discovery.nostr.policy,
@@ -803,7 +804,8 @@ async fn local_capability_snapshot_connects_configured_only_endpoints() {
 
     let provider = FipsEndpoint::builder()
         .config(config.clone())
-        .discovery_scope("iris-local-v1")
+        .discovery_scope("iris-chat-device-sync-v1:account-a")
+        .local_discovery_scope("iris-local-v1")
         .without_system_tun()
         .bind()
         .await
@@ -828,8 +830,9 @@ async fn local_capability_snapshot_connects_configured_only_endpoints() {
     consumer_udp.outbound_only = Some(true);
     consumer_udp.accept_connections = Some(false);
     let consumer = FipsEndpoint::builder()
+        .local_discovery_scope("iris-local-v1")
         .config(consumer_config)
-        .discovery_scope("iris-local-v1")
+        .discovery_scope("nostr-vpn:private-network")
         .without_system_tun()
         .bind()
         .await

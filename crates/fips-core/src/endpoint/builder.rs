@@ -6,6 +6,7 @@ pub struct FipsEndpointBuilder {
     config: Config,
     identity_nsec: Option<String>,
     discovery_scope: Option<String>,
+    local_discovery_scope: Option<String>,
     local_instance_roles: Vec<crate::discovery::local::LocalInstanceCapability>,
     local_ethernet_interfaces: Vec<String>,
     disable_system_networking: bool,
@@ -20,6 +21,7 @@ impl Default for FipsEndpointBuilder {
             config: Config::new(),
             identity_nsec: None,
             discovery_scope: None,
+            local_discovery_scope: None,
             local_instance_roles: Vec::new(),
             local_ethernet_interfaces: Vec::new(),
             disable_system_networking: true,
@@ -50,6 +52,20 @@ impl FipsEndpointBuilder {
     /// the scope is retained as endpoint metadata.
     pub fn discovery_scope(mut self, scope: impl Into<String>) -> Self {
         self.discovery_scope = Some(scope.into());
+        self
+    }
+
+    /// Set the private same-host composition scope independently of the
+    /// endpoint's public or product discovery scope.
+    ///
+    /// Applications that share this value can discover each other's loopback
+    /// contacts through `~/.fips/instances` without joining the same Nostr,
+    /// LAN, or VPN discovery namespace.
+    pub fn local_discovery_scope(mut self, scope: impl Into<String>) -> Self {
+        let scope = scope.into().trim().to_string();
+        if !scope.is_empty() {
+            self.local_discovery_scope = Some(scope);
+        }
         self
     }
 
@@ -101,6 +117,10 @@ impl FipsEndpointBuilder {
             config.tun.enabled = false;
             config.dns.enabled = false;
             config.node.system_files_enabled = false;
+        }
+        if let Some(scope) = self.local_discovery_scope.as_deref() {
+            config.node.discovery.local.enabled = true;
+            config.node.discovery.local.scope = Some(scope.to_string());
         }
         if let Some(scope) = self.discovery_scope.as_deref() {
             if config

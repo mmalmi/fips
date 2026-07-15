@@ -26,27 +26,39 @@ const ENV_DISABLE: &str = "FIPS_LOCAL_INSTANCE_DISCOVERY";
 static LOCAL_INSTANCE_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 pub(crate) fn local_discovery_scope(config: &crate::Config) -> Option<String> {
-    if let Some(scope) = config.node.discovery.lan.scope.as_deref() {
-        let scope = scope.trim();
-        if !scope.is_empty() {
-            return Some(scope.to_string());
-        }
-    }
+    normalized_scope(config.node.discovery.local.scope.as_deref())
+        .or_else(|| lan_discovery_scope(config))
+}
 
-    let app = config.node.discovery.nostr.app.trim();
-    let scope = app.strip_prefix("fips-overlay-v1:").unwrap_or(app).trim();
-    (!scope.is_empty()).then(|| scope.to_string())
+pub(crate) fn lan_discovery_scope(config: &crate::Config) -> Option<String> {
+    normalized_scope(config.node.discovery.lan.scope.as_deref()).or_else(|| {
+        let app = config.node.discovery.nostr.app.trim();
+        normalized_scope(Some(app.strip_prefix("fips-overlay-v1:").unwrap_or(app)))
+    })
+}
+
+fn normalized_scope(scope: Option<&str>) -> Option<String> {
+    scope
+        .map(str::trim)
+        .filter(|scope| !scope.is_empty())
+        .map(str::to_string)
 }
 
 /// Runtime configuration for the same-host JSON registry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct LocalInstanceDiscoveryConfig {
     /// Master switch. Disabled in plain `Config::default()` so generic FIPS
     /// nodes don't cross-feed through the user's home directory by accident.
     /// Embedded endpoints with a discovery scope enable it explicitly.
     #[serde(default)]
     pub enabled: bool,
+    /// Same-host composition namespace. This is intentionally independent of
+    /// public Nostr application and LAN discovery scopes. When omitted, the
+    /// older LAN/Nostr-derived scope remains the compatibility fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
     /// Optional registry directory. Defaults to `$FIPS_LOCAL_INSTANCE_DIR`,
     /// then `~/.fips/instances`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -72,6 +84,7 @@ impl Default for LocalInstanceDiscoveryConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            scope: None,
             dir: None,
             publish_interval_secs: Self::default_publish_interval_secs(),
             scan_interval_secs: Self::default_scan_interval_secs(),
@@ -682,6 +695,22 @@ mod tests {
             dir: Some(dir.to_string_lossy().to_string()),
             ..LocalInstanceDiscoveryConfig::default()
         }
+    }
+
+    #[test]
+    fn same_host_scope_does_not_replace_lan_scope() {
+        let mut config = Config::new();
+        config.node.discovery.local.scope = Some("iris-local-v1".to_string());
+        config.node.discovery.lan.scope = Some("nostr-vpn:private-network".to_string());
+
+        assert_eq!(
+            local_discovery_scope(&config).as_deref(),
+            Some("iris-local-v1")
+        );
+        assert_eq!(
+            lan_discovery_scope(&config).as_deref(),
+            Some("nostr-vpn:private-network")
+        );
     }
 
     fn record(npub: &str, scope: &str, pid: u32, updated_at_ms: u64) -> LocalInstanceRecord {
