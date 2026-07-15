@@ -72,12 +72,6 @@ cargo run -p fips-sim --example production_mesh -- \
   --stream-bytes 8388608 --background-packets 50000 --summary-only
 ```
 
-Run the heavier benchmark scenario explicitly:
-
-```sh
-cargo bench -p fips-sim --bench production_mesh
-```
-
 The default topology is a regional mesh with stronger backbone links and weaker
 long-haul links. Reports include clean baseline and impaired phases, endpoint
 probe delivery, stream setup counts, chunk-level stream packet delivery/loss, delivered goodput,

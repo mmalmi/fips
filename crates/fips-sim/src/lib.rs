@@ -444,6 +444,8 @@ impl Simulation {
         config.node.routing.mode = self.config.routing_mode;
         config.node.heartbeat_interval_secs = 1;
         config.node.link_dead_timeout_secs = 4;
+        config.node.control.enabled = false;
+        config.node.discovery.lan.enabled = false;
         config.tun.enabled = false;
         config.dns.enabled = false;
         config.transports.sim = TransportInstances::Single(SimTransportConfig {
@@ -903,6 +905,19 @@ impl From<FipsEndpointError> for SimError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn simulated_nodes_do_not_start_host_side_services() {
+        let simulation = Simulation::new(SimConfig {
+            node_count: 2,
+            target_edges: 1,
+            ..SimConfig::default()
+        });
+        let config = simulation.node_config(&simulation.nodes[0]);
+
+        assert!(!config.node.control.enabled);
+        assert!(!config.node.discovery.lan.enabled);
+    }
 
     #[test]
     fn production_sim_uses_real_endpoints_over_sim_transport() {
