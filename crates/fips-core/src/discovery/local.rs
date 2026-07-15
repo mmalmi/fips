@@ -4,8 +4,9 @@
 //! rendezvous anchor. A tiny nonce exchange returns its untrusted public-key
 //! hint; the client then uses the ordinary Noise IK discovered-peer path to
 //! prove ownership. Capabilities are exchanged only through encrypted FSP and
-//! kept in memory; there is no filesystem registry, lease, heartbeat, or trust
-//! exception for loopback.
+//! kept in memory; authenticated announcements refresh short leases so forced
+//! process death expires without filesystem state. Loopback grants no trust
+//! exception.
 
 use std::collections::BTreeMap;
 use std::io;
