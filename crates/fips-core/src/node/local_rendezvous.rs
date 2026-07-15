@@ -212,6 +212,36 @@ impl Node {
         self.local_rendezvous.transport_id
     }
 
+    /// Retire stale fixed-address state only after its replacement completed
+    /// Noise IK and the normal identity ACL.
+    pub(in crate::node) fn retire_replaced_local_anchor(
+        &mut self,
+        authenticated_owner: &NodeAddr,
+        transport_id: TransportId,
+        remote_addr: &TransportAddr,
+    ) {
+        let fixed_addr = TransportAddr::from_socket_addr(self.local_rendezvous.fixed_addr);
+        if self.local_rendezvous.role != Some(LocalRendezvousRole::Client)
+            || self.local_rendezvous.transport_id != Some(transport_id)
+            || remote_addr != &fixed_addr
+        {
+            return;
+        }
+        let replaced = self
+            .peers
+            .values()
+            .filter_map(|peer| {
+                (peer.node_addr() != authenticated_owner
+                    && peer.transport_id() == Some(transport_id)
+                    && peer.current_addr() == Some(&fixed_addr))
+                .then_some(*peer.node_addr())
+            })
+            .collect::<Vec<_>>();
+        for peer in replaced {
+            self.remove_active_peer(&peer);
+        }
+    }
+
     fn authenticated_local_peer(&self, node_addr: &NodeAddr) -> bool {
         self.peers.get(node_addr).is_some_and(|peer| {
             peer.is_healthy()
@@ -244,24 +274,12 @@ impl Node {
         })
     }
 
-    fn local_anchor_connection_pending(&self) -> bool {
-        let Some(transport_id) = self.local_rendezvous.transport_id else {
-            return false;
-        };
-        let fixed_addr = TransportAddr::from_socket_addr(self.local_rendezvous.fixed_addr);
-        self.peers.connection_values().any(|connection| {
-            connection.transport_id() == Some(transport_id)
-                && connection.source_addr() == Some(&fixed_addr)
-        })
-    }
-
     async fn request_local_anchor_key(&mut self) {
-        if self.local_rendezvous.role != Some(LocalRendezvousRole::Client)
-            || self.connected_local_anchor().is_some()
-            || self.local_anchor_connection_pending()
-        {
+        if self.local_rendezvous.role != Some(LocalRendezvousRole::Client) {
             return;
         }
+        // The fixed bind proves only that an owner exists. Probe even while a
+        // prior owner still looks healthy so an abrupt replacement is noticed.
         let Some(transport_id) = self.local_rendezvous.transport_id else {
             return;
         };
@@ -323,6 +341,12 @@ impl Node {
                     return true;
                 }
                 let identity = PeerIdentity::from_pubkey(pubkey);
+                if self
+                    .connected_local_anchor()
+                    .is_some_and(|anchor| anchor.identity.node_addr() == identity.node_addr())
+                {
+                    return true;
+                }
                 if !self.is_connecting_to_peer_on_path(
                     identity.node_addr(),
                     packet.transport_id,

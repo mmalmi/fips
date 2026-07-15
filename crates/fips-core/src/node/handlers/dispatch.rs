@@ -162,6 +162,7 @@ impl Node {
             .dataplane
             .fmp_link_metrics(node_addr, std::time::Instant::now());
         self.remove_dataplane_fmp_owner(node_addr);
+        self.refresh_dataplane_fsp_owner_routes_after_fmp_owner_update(node_addr);
 
         // Log suppressed replay detection summary before teardown
         let suppressed = peer.replay_suppressed_count();

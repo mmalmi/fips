@@ -277,6 +277,11 @@ impl Node {
         }
 
         let peer_node_addr = *peer_identity.node_addr();
+        self.retire_replaced_local_anchor(
+            &peer_node_addr,
+            packet.transport_id,
+            &packet.remote_addr,
+        );
         let peer_npub = peer_identity.npub();
         let preferred_send_addr =
             dial_transport_id

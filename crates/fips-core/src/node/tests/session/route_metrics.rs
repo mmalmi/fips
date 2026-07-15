@@ -31,6 +31,26 @@ fn test_dataplane_fmp_owner_update_refreshes_fsp_owner_wrap_route() {
 }
 
 #[test]
+fn test_active_peer_removal_invalidates_dependent_fsp_wrap_route() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let next_hop = *node.peer_ids().next().expect("fallback peer");
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+
+    assert!(node.sync_dataplane_fmp_owner(&next_hop));
+    node.learn_reverse_route(remote_addr, next_hop);
+    install_established_session_with_mmp(&mut node, &remote);
+    assert!(node.sync_dataplane_fsp_owner_from_current_session(&remote_addr, 0));
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&remote_addr),
+        Some(next_hop)
+    );
+
+    node.remove_active_peer(&next_hop);
+    assert_eq!(node.dataplane.fsp_owner_next_hop(&remote_addr), None);
+}
+
+#[test]
 fn test_incomplete_fsp_route_refresh_preserves_existing_wrap_route() {
     let mut node = make_reply_learned_node_with_tree_peer();
     let next_hop = *node.peer_ids().next().expect("fallback peer");

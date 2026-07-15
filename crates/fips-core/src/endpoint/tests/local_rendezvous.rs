@@ -222,3 +222,65 @@ async fn fixed_loopback_rendezvous_authenticates_capabilities_and_survives_ancho
     wait_for_capability_removal(&consumer, SERVICE_CAPABILITY).await;
     consumer.shutdown().await.expect("consumer shutdown");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fixed_loopback_rendezvous_survives_abrupt_anchor_task_abort() {
+    let rendezvous_addr = reserve_rendezvous_addr();
+    let anchor = bind_local(rendezvous_addr).await;
+    let provider = bind_local(rendezvous_addr).await;
+    let provider_npub = provider.npub().to_string();
+    let provider_service = provider
+        .register_service_receiver_with_capability(LocalInstanceCapability::service(
+            SERVICE_CAPABILITY,
+            SERVICE_PORT,
+        ))
+        .await
+        .expect("register service capability");
+    let consumer = bind_local(rendezvous_addr).await;
+    let consumer_npub = consumer.npub().to_string();
+
+    wait_for_connected_peer(&provider, anchor.npub()).await;
+    wait_for_connected_peer(&consumer, anchor.npub()).await;
+    wait_for_capability(&consumer, SERVICE_CAPABILITY, &provider_npub).await;
+    consumer
+        .send_datagram(
+            PeerIdentity::from_npub(&provider_npub).expect("provider identity"),
+            CONSUMER_PORT,
+            SERVICE_PORT,
+            b"before-abort".to_vec(),
+        )
+        .await
+        .expect("send before anchor abort");
+    receive_service_datagram(&provider_service, b"before-abort").await;
+
+    let anchor_task = anchor
+        .task
+        .lock()
+        .expect("anchor task lock")
+        .take()
+        .expect("running anchor task");
+    anchor_task.abort();
+    assert!(
+        anchor_task
+            .await
+            .expect_err("anchor task should abort")
+            .is_cancelled()
+    );
+
+    assert_loopback_udp(&wait_for_connected_peer(&provider, &consumer_npub).await);
+    assert_loopback_udp(&wait_for_connected_peer(&consumer, &provider_npub).await);
+    wait_for_capability(&consumer, SERVICE_CAPABILITY, &provider_npub).await;
+    consumer
+        .send_datagram(
+            PeerIdentity::from_npub(&provider_npub).expect("provider identity"),
+            CONSUMER_PORT,
+            SERVICE_PORT,
+            b"after-abort".to_vec(),
+        )
+        .await
+        .expect("send after anchor abort");
+    receive_service_datagram(&provider_service, b"after-abort").await;
+
+    provider.shutdown().await.expect("provider shutdown");
+    consumer.shutdown().await.expect("consumer shutdown");
+}
