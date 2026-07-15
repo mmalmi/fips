@@ -88,9 +88,14 @@ impl Node {
             NodeEndpointControlCommand::RegisterService {
                 port,
                 sender,
+                capability,
                 response_tx,
             } => {
-                let _ = response_tx.send(self.endpoint_services.register(port, sender));
+                let registered = self.endpoint_services.register(port, sender);
+                if registered && let Some(capability) = capability {
+                    self.register_local_instance_capability(capability);
+                }
+                let _ = response_tx.send(registered);
             }
             NodeEndpointControlCommand::IngestNostrEvent { event, response_tx } => {
                 let accepted = if event.kind

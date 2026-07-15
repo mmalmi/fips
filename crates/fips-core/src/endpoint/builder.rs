@@ -6,6 +6,7 @@ pub struct FipsEndpointBuilder {
     config: Config,
     identity_nsec: Option<String>,
     discovery_scope: Option<String>,
+    local_instance_roles: Vec<crate::discovery::local::LocalInstanceCapability>,
     local_ethernet_interfaces: Vec<String>,
     disable_system_networking: bool,
     packet_channel_capacity: usize,
@@ -19,6 +20,7 @@ impl Default for FipsEndpointBuilder {
             config: Config::new(),
             identity_nsec: None,
             discovery_scope: None,
+            local_instance_roles: Vec::new(),
             local_ethernet_interfaces: Vec::new(),
             disable_system_networking: true,
             packet_channel_capacity: DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY,
@@ -48,6 +50,19 @@ impl FipsEndpointBuilder {
     /// the scope is retained as endpoint metadata.
     pub fn discovery_scope(mut self, scope: impl Into<String>) -> Self {
         self.discovery_scope = Some(scope.into());
+        self
+    }
+
+    /// Advertise a portless same-host role, such as `fips.egress/1`.
+    /// Empty names are ignored.
+    pub fn local_role(mut self, name: impl Into<String>, priority: i16) -> Self {
+        let name = name.into().trim().to_string();
+        if !name.is_empty() {
+            self.local_instance_roles.push(
+                crate::discovery::local::LocalInstanceCapability::role(name)
+                    .with_priority(priority),
+            );
+        }
         self
     }
 
@@ -88,7 +103,16 @@ impl FipsEndpointBuilder {
             config.node.system_files_enabled = false;
         }
         if let Some(scope) = self.discovery_scope.as_deref() {
-            config.node.discovery.lan.scope = Some(scope.to_string());
+            if config
+                .node
+                .discovery
+                .lan
+                .scope
+                .as_deref()
+                .is_none_or(|scope| scope.trim().is_empty())
+            {
+                config.node.discovery.lan.scope = Some(scope.to_string());
+            }
             config.node.discovery.local.enabled = true;
             apply_default_scoped_discovery(&mut config, scope);
         }
@@ -99,6 +123,7 @@ impl FipsEndpointBuilder {
                 self.discovery_scope.as_deref(),
             );
         }
+        ensure_local_instance_udp_transport(&mut config);
         config
     }
 
@@ -135,6 +160,7 @@ impl FipsEndpointBuilder {
         let config = self.prepared_config();
 
         let mut node = Node::new(config)?;
+        node.set_local_instance_roles(self.local_instance_roles);
         let identity = PeerIdentity::from_pubkey_full(node.identity().pubkey_full());
         let npub = identity.npub();
         let node_addr = *identity.node_addr();
@@ -147,6 +173,7 @@ impl FipsEndpointBuilder {
             None => node.attach_endpoint_data_io(self.packet_channel_capacity)?,
         };
         node.start().await?;
+        let local_instance_registry = node.local_instance_registry_handle();
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let task = spawn_node_task(node, shutdown_rx);
@@ -160,6 +187,7 @@ impl FipsEndpointBuilder {
             node_addr,
             address,
             discovery_scope: self.discovery_scope,
+            local_instance_registry,
             outbound_packets: packet_io.outbound_tx,
             delivered_packets: Arc::new(Mutex::new(packet_io.inbound_rx)),
             endpoint_control_tx,

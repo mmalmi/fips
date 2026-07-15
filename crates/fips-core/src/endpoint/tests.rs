@@ -283,6 +283,7 @@ fn discovery_scope_preserves_explicit_connectivity_config() {
     explicit.node.discovery.nostr.app = "custom-app".to_string();
     explicit.node.discovery.nostr.policy = NostrDiscoveryPolicy::ConfiguredOnly;
     explicit.node.discovery.nostr.share_local_candidates = false;
+    explicit.node.discovery.lan.scope = Some("iris-local-v1".to_string());
     explicit.transports.udp = TransportInstances::Single(UdpConfig {
         bind_addr: Some("127.0.0.1:34567".to_string()),
         advertise_on_nostr: Some(false),
@@ -303,17 +304,37 @@ fn discovery_scope_preserves_explicit_connectivity_config() {
     assert!(!config.node.discovery.nostr.share_local_candidates);
     assert_eq!(
         config.node.discovery.lan.scope.as_deref(),
-        Some("nostr-vpn:test")
+        Some("iris-local-v1")
     );
     assert!(config.node.discovery.local.enabled);
-    let udp = match config.transports.udp {
-        TransportInstances::Single(udp) => udp,
-        TransportInstances::Named(_) => panic!("expected explicit UDP transport"),
+    let TransportInstances::Named(udp) = config.transports.udp else {
+        panic!("expected explicit and local-instance UDP transports");
     };
-    assert_eq!(udp.bind_addr.as_deref(), Some("127.0.0.1:34567"));
-    assert_eq!(udp.bind_addr(), "0.0.0.0:0");
-    assert!(!udp.advertise_on_nostr());
-    assert!(udp.outbound_only());
+    let external = udp.get("default").expect("explicit UDP transport");
+    assert_eq!(external.bind_addr.as_deref(), Some("127.0.0.1:34567"));
+    assert_eq!(external.bind_addr(), "0.0.0.0:0");
+    assert!(!external.advertise_on_nostr());
+    assert!(external.outbound_only());
+    let local = udp.get("local-instance").expect("local UDP transport");
+    assert_eq!(local.bind_addr(), "127.0.0.1:0");
+    assert!(local.accept_connections());
+    assert!(!local.advertise_on_nostr());
+}
+
+#[test]
+fn local_discovery_reuses_accepting_tcp_with_nostr_app_scope() {
+    let mut explicit = Config::new();
+    explicit.node.discovery.local.enabled = true;
+    explicit.node.discovery.nostr.app = "iris-local-v1".to_string();
+    explicit.transports.tcp = TransportInstances::Single(crate::config::TcpConfig {
+        bind_addr: Some("[::]:0".to_string()),
+        ..crate::config::TcpConfig::default()
+    });
+
+    let config = FipsEndpoint::builder().config(explicit).prepared_config();
+
+    assert!(config.transports.udp.is_empty());
+    assert_eq!(config.transports.tcp.len(), 1);
 }
 
 #[tokio::test]

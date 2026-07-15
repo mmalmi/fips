@@ -81,6 +81,19 @@ pub enum FipsEndpointError {
     ServicePortAlreadyRegistered { port: u16 },
 }
 
+/// Errors specific to capability-advertised local service registration.
+#[derive(Debug, Error)]
+pub enum LocalServiceRegistrationError {
+    #[error("local FSP service capability must include a port")]
+    ServiceCapabilityMissingPort,
+
+    #[error("local FSP service capability name must not be empty")]
+    ServiceCapabilityNameEmpty,
+
+    #[error(transparent)]
+    Endpoint(#[from] FipsEndpointError),
+}
+
 /// Source-attributed endpoint data delivered to an embedded application.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FipsEndpointMessage {
@@ -207,6 +220,64 @@ fn apply_default_scoped_discovery(config: &mut Config, scope: &str) {
     });
 }
 
+fn ensure_local_instance_udp_transport(config: &mut Config) {
+    if !config.node.discovery.local.enabled
+        || crate::discovery::local::local_discovery_scope(config).is_none()
+    {
+        return;
+    }
+    let has_accepting_local_udp = config.transports.udp.iter().any(|(_, udp)| {
+        !udp.outbound_only()
+            && udp.accept_connections()
+            && accepts_local_socket_addr(udp.bind_addr())
+    });
+    let has_accepting_local_tcp = config.transports.tcp.iter().any(|(_, tcp)| {
+        tcp.bind_addr
+            .as_deref()
+            .is_some_and(accepts_local_socket_addr)
+    });
+    if has_accepting_local_udp || has_accepting_local_tcp {
+        return;
+    }
+
+    let local = UdpConfig {
+        bind_addr: Some("127.0.0.1:0".to_string()),
+        advertise_on_nostr: Some(false),
+        public: Some(false),
+        outbound_only: Some(false),
+        accept_connections: Some(true),
+        ..UdpConfig::default()
+    };
+    if config.transports.udp.is_empty() {
+        config.transports.udp = TransportInstances::Single(local);
+        return;
+    }
+    let existing = std::mem::take(&mut config.transports.udp);
+    let mut named = match existing {
+        TransportInstances::Single(config) => {
+            let mut map = HashMap::new();
+            map.insert("default".to_string(), config);
+            map
+        }
+        TransportInstances::Named(map) => map,
+    };
+    let mut name = "local-instance".to_string();
+    let mut suffix = 2usize;
+    while named.contains_key(&name) {
+        name = format!("local-instance-{suffix}");
+        suffix += 1;
+    }
+    named.insert(name, local);
+    config.transports.udp = TransportInstances::Named(named);
+}
+
+fn accepts_local_socket_addr(value: &str) -> bool {
+    value
+        .parse::<std::net::SocketAddr>()
+        .is_ok_and(|addr| addr.ip().is_loopback() || addr.ip().is_unspecified())
+        || value.starts_with("localhost:")
+}
+
 fn endpoint_ethernet_config(interface: &str, scope: Option<&str>) -> EthernetConfig {
     EthernetConfig {
         interface: interface.to_string(),
@@ -330,6 +401,7 @@ pub struct FipsEndpoint {
     node_addr: NodeAddr,
     address: FipsAddress,
     discovery_scope: Option<String>,
+    local_instance_registry: Option<crate::discovery::local::LocalInstanceRegistry>,
     outbound_packets: TunOutboundTx,
     delivered_packets: Arc<Mutex<mpsc::Receiver<NodeDeliveredPacket>>>,
     endpoint_control_tx: mpsc::Sender<NodeEndpointControlCommand>,
@@ -398,6 +470,20 @@ impl FipsEndpoint {
         self.discovery_scope.as_deref()
     }
 
+    /// Snapshot reusable services and roles advertised by live same-host FIPS
+    /// instances, including this endpoint. Records are routing hints; callers
+    /// must still authenticate the peer and validate the selected protocol.
+    pub fn local_instance_advertisements(
+        &self,
+    ) -> Result<
+        Vec<crate::discovery::local::LocalInstanceAdvertisement>,
+        crate::discovery::local::LocalInstanceRegistryError,
+    > {
+        self.local_instance_registry
+            .as_ref()
+            .map_or_else(|| Ok(Vec::new()), |registry| registry.live_advertisements())
+    }
+
     /// Send application-owned endpoint payloads to one resolved peer.
     ///
     /// This is the canonical endpoint-data send path for applications that
@@ -419,7 +505,7 @@ impl FipsEndpoint {
     /// negotiation service. Datagrams for unregistered ports are discarded by
     /// the authenticated receive path.
     pub async fn register_service(&self, port: u16) -> Result<(), FipsEndpointError> {
-        self.register_service_with_sender(port, self.inbound_service_tx.clone())
+        self.register_service_with_sender(port, self.inbound_service_tx.clone(), None)
             .await
     }
 
@@ -429,7 +515,29 @@ impl FipsEndpoint {
         port: u16,
     ) -> Result<FipsEndpointServiceReceiver, FipsEndpointError> {
         let (sender, receiver) = EndpointServiceEventSender::channel(self.service_channel_capacity);
-        self.register_service_with_sender(port, sender).await?;
+        self.register_service_with_sender(port, sender, None)
+            .await?;
+        Ok(FipsEndpointServiceReceiver {
+            state: Mutex::new(ServiceReceiveState::new(receiver)),
+        })
+    }
+
+    /// Register and advertise one reusable same-host FSP service. The
+    /// capability becomes visible only after the port registration succeeds.
+    pub async fn register_service_receiver_with_capability(
+        &self,
+        mut capability: crate::discovery::local::LocalInstanceCapability,
+    ) -> Result<FipsEndpointServiceReceiver, LocalServiceRegistrationError> {
+        let Some(port) = capability.fsp_port else {
+            return Err(LocalServiceRegistrationError::ServiceCapabilityMissingPort);
+        };
+        if capability.name.trim().is_empty() {
+            return Err(LocalServiceRegistrationError::ServiceCapabilityNameEmpty);
+        }
+        capability.name = capability.name.trim().to_string();
+        let (sender, receiver) = EndpointServiceEventSender::channel(self.service_channel_capacity);
+        self.register_service_with_sender(port, sender, Some(capability))
+            .await?;
         Ok(FipsEndpointServiceReceiver {
             state: Mutex::new(ServiceReceiveState::new(receiver)),
         })
@@ -439,6 +547,7 @@ impl FipsEndpoint {
         &self,
         port: u16,
         sender: EndpointServiceEventSender,
+        capability: Option<crate::discovery::local::LocalInstanceCapability>,
     ) -> Result<(), FipsEndpointError> {
         if port == crate::node::session_wire::FSP_PORT_IPV6_SHIM
             || port == crate::transport::link_negotiation::LINK_NEGOTIATION_SERVICE_PORT
@@ -453,6 +562,7 @@ impl FipsEndpoint {
                 NodeEndpointControlCommand::RegisterService {
                     port,
                     sender: sender.clone(),
+                    capability,
                     response_tx,
                 },
                 response_rx,
@@ -513,10 +623,11 @@ impl FipsEndpoint {
 
         if *remote.node_addr() == self.node_addr {
             let deliveries_by_port = {
-                let registered = self
+                let mut registered = self
                     .registered_services
                     .lock()
                     .map_err(|_| FipsEndpointError::Closed)?;
+                registered.retain(|_, sender| !sender.is_closed());
                 let mut grouped: HashMap<
                     u16,
                     (

@@ -780,3 +780,111 @@ async fn blocking_send_batch_to_peer_loopback_endpoint_data_roundtrips() {
 
     endpoint.shutdown().await.expect("shutdown should succeed");
 }
+
+#[tokio::test]
+async fn local_capability_snapshot_connects_configured_only_endpoints() {
+    const SERVICE_PORT: u16 = 39_018;
+    let temp = tempfile::tempdir().expect("temporary local registry");
+    let mut config = Config::new();
+    config.transports.udp = crate::config::TransportInstances::Single(UdpConfig {
+        bind_addr: Some("127.0.0.1:0".to_string()),
+        advertise_on_nostr: Some(false),
+        ..UdpConfig::default()
+    });
+    config.node.discovery.nostr.enabled = true;
+    config.node.discovery.nostr.peerfinding_source =
+        crate::config::NostrPeerfindingSource::External;
+    config.node.discovery.nostr.advert_relays.clear();
+    config.node.discovery.local.dir = Some(temp.path().display().to_string());
+    assert_eq!(
+        config.node.discovery.nostr.policy,
+        crate::config::NostrDiscoveryPolicy::ConfiguredOnly
+    );
+
+    let provider = FipsEndpoint::builder()
+        .config(config.clone())
+        .discovery_scope("iris-local-v1")
+        .without_system_tun()
+        .bind()
+        .await
+        .expect("provider should bind");
+    let provider_npub = provider.npub().to_string();
+    let service = provider
+        .register_service_receiver_with_capability(
+            crate::discovery::local::LocalInstanceCapability::service(
+                "hashtree.blob/1",
+                SERVICE_PORT,
+            ),
+        )
+        .await
+        .expect("provider service should register");
+
+    let mut consumer_config = config;
+    let crate::config::TransportInstances::Single(consumer_udp) =
+        &mut consumer_config.transports.udp
+    else {
+        panic!("single consumer UDP config");
+    };
+    consumer_udp.outbound_only = Some(true);
+    consumer_udp.accept_connections = Some(false);
+    let consumer = FipsEndpoint::builder()
+        .config(consumer_config)
+        .discovery_scope("iris-local-v1")
+        .without_system_tun()
+        .bind()
+        .await
+        .expect("consumer should bind");
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if consumer
+                .peers()
+                .await
+                .expect("peer snapshot")
+                .iter()
+                .any(|peer| peer.npub == provider_npub && peer.connected)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("same-host endpoints should connect without public open discovery");
+
+    let adverts = consumer
+        .local_instance_advertisements()
+        .expect("local capability snapshot");
+    let selected = crate::discovery::local::select_capability_provider(&adverts, "hashtree.blob/1")
+        .expect("Hashtree provider advert");
+    assert_eq!(selected.instance.npub, provider_npub);
+    assert_eq!(
+        selected
+            .capability("hashtree.blob/1")
+            .and_then(|capability| capability.fsp_port),
+        Some(SERVICE_PORT)
+    );
+
+    consumer
+        .send_datagram(
+            PeerIdentity::from_npub(&provider_npub).expect("provider identity"),
+            40_000,
+            SERVICE_PORT,
+            b"GET".to_vec(),
+        )
+        .await
+        .expect("same-host service request should send");
+    let mut datagrams = Vec::new();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        service.recv_batch_into(&mut datagrams, 8),
+    )
+    .await
+    .expect("same-host service receive should not time out")
+    .expect("same-host service receiver should stay open");
+    assert_eq!(datagrams[0].source_peer.npub(), consumer.npub());
+    assert_eq!(datagrams[0].data.as_slice(), b"GET");
+
+    consumer.shutdown().await.expect("consumer shutdown");
+    provider.shutdown().await.expect("provider shutdown");
+}

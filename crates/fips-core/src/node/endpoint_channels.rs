@@ -260,6 +260,7 @@ pub(crate) enum NodeEndpointControlCommand {
     RegisterService {
         port: u16,
         sender: EndpointServiceEventSender,
+        capability: Option<crate::discovery::local::LocalInstanceCapability>,
         response_tx: tokio::sync::oneshot::Sender<bool>,
     },
     IngestNostrEvent {

@@ -568,27 +568,7 @@ impl Node {
     /// extracts a scope from the Nostr app tag used by default scoped
     /// discovery.
     pub(in crate::node) fn lan_discovery_scope(&self) -> Option<String> {
-        if let Some(scope) = self.config.node.discovery.lan.scope.as_deref() {
-            let scope = scope.trim();
-            if !scope.is_empty() {
-                return Some(scope.to_string());
-            }
-        }
-
-        let app = self.config.node.discovery.nostr.app.trim();
-        if app.is_empty() {
-            return None;
-        }
-        if let Some(rest) = app.strip_prefix("fips-overlay-v1:") {
-            let scope = rest.trim();
-            if scope.is_empty() {
-                None
-            } else {
-                Some(scope.to_string())
-            }
-        } else {
-            Some(app.to_string())
-        }
+        crate::discovery::local::local_discovery_scope(&self.config)
     }
 
     pub(in crate::node) fn start_local_instance_discovery(&mut self) {
@@ -621,6 +601,19 @@ impl Node {
                 debug!(error = %err, "same-host FIPS instance discovery not started");
             }
         }
+    }
+
+    pub(crate) fn local_instance_registry_handle(
+        &self,
+    ) -> Option<crate::discovery::local::LocalInstanceRegistry> {
+        self.local_instance_registry.clone()
+    }
+
+    pub(crate) fn set_local_instance_roles(
+        &mut self,
+        roles: Vec<crate::discovery::local::LocalInstanceCapability>,
+    ) {
+        self.local_instance_capabilities = roles;
     }
 
     pub(super) fn local_instance_contacts(
@@ -661,14 +654,44 @@ impl Node {
             return;
         };
         let contacts = self.local_instance_contacts();
-        match registry.publish(contacts, now_ms) {
+        match registry.publish_with_capabilities(
+            contacts,
+            self.local_instance_capabilities.clone(),
+            now_ms,
+        ) {
             Ok(()) => {
                 self.last_local_instance_publish_ms = Some(now_ms);
             }
             Err(err) => {
+                self.last_local_instance_publish_ms = None;
                 debug!(error = %err, "failed to publish same-host FIPS instance record");
             }
         }
+    }
+
+    pub(in crate::node) fn register_local_instance_capability(
+        &mut self,
+        capability: crate::discovery::local::LocalInstanceCapability,
+    ) {
+        if !self
+            .local_instance_capabilities
+            .iter()
+            .any(|existing| existing == &capability)
+        {
+            self.local_instance_capabilities.push(capability);
+        }
+        self.publish_local_instance_record(Self::now_ms());
+    }
+
+    fn remove_closed_local_service_capabilities(&mut self) -> bool {
+        let closed_ports = self.endpoint_services.remove_closed();
+        let before = self.local_instance_capabilities.len();
+        self.local_instance_capabilities.retain(|capability| {
+            capability
+                .fsp_port
+                .is_none_or(|port| !closed_ports.contains(&port))
+        });
+        self.local_instance_capabilities.len() != before
     }
 
     pub(super) fn maybe_publish_local_instance_record(&mut self, now_ms: u64) {
@@ -705,10 +728,49 @@ impl Node {
     }
 
     pub(super) fn local_instance_peer_allowed(&self, identity: &PeerIdentity) -> bool {
-        if self.configured_peer(identity.node_addr()).is_some() {
-            return true;
+        // The private same-user registry and explicit local scope are their
+        // own admission boundary. Do not force applications to open public
+        // Nostr discovery merely to compose with another local process.
+        self.config.node.discovery.local.enabled
+            || self.configured_peer(identity.node_addr()).is_some()
+            || self.config.node.discovery.nostr.policy == NostrDiscoveryPolicy::Open
+    }
+
+    pub(in crate::node) fn is_live_local_instance_peer(
+        &self,
+        identity: &PeerIdentity,
+        transport_id: TransportId,
+        remote_addr: &TransportAddr,
+    ) -> bool {
+        let Some(registry) = self.local_instance_registry.as_ref() else {
+            return false;
+        };
+        let Some(remote_addr) = remote_addr
+            .as_str()
+            .and_then(|value| value.parse::<SocketAddr>().ok())
+        else {
+            return false;
+        };
+        if !remote_addr.ip().is_loopback() {
+            return false;
         }
-        self.config.node.discovery.nostr.policy == NostrDiscoveryPolicy::Open
+        let Some(transport) = self
+            .transports
+            .get(&transport_id)
+            .map(|handle| handle.transport_type().name)
+        else {
+            return false;
+        };
+        if transport != "udp" && transport != "tcp" {
+            return false;
+        }
+
+        registry
+            .scan(
+                Self::now_ms(),
+                self.config.node.discovery.local.stale_after_ms(),
+            )
+            .is_ok_and(|records| records.iter().any(|record| record.npub == identity.npub()))
     }
 
     pub(super) fn local_instance_peer_addresses(
@@ -755,11 +817,16 @@ impl Node {
     /// This avoids a per-second filesystem poll while preserving the fast path
     /// for processes launched around the same time.
     pub(in crate::node) async fn poll_local_instance_discovery(&mut self) {
+        let capabilities_withdrawn = self.remove_closed_local_service_capabilities();
         let Some(registry) = self.local_instance_registry.clone() else {
             return;
         };
         let now_ms = Self::now_ms();
-        self.maybe_publish_local_instance_record(now_ms);
+        if capabilities_withdrawn {
+            self.publish_local_instance_record(now_ms);
+        } else {
+            self.maybe_publish_local_instance_record(now_ms);
+        }
         if !self.local_instance_scan_due(now_ms) {
             return;
         }

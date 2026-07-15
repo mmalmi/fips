@@ -361,6 +361,7 @@ pub struct Node {
     /// loopback routing hints only; peer identity is still verified by the
     /// Noise handshake.
     local_instance_registry: Option<crate::discovery::local::LocalInstanceRegistry>,
+    local_instance_capabilities: Vec<crate::discovery::local::LocalInstanceCapability>,
     local_instance_started_at_ms: Option<u64>,
     last_local_instance_publish_ms: Option<u64>,
     last_local_instance_scan_ms: Option<u64>,

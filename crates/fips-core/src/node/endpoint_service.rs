@@ -98,6 +98,10 @@ impl EndpointServiceEventSender {
         }
         Ok(())
     }
+
+    pub(crate) fn is_closed(&self) -> bool {
+        self.tx.is_closed()
+    }
 }
 
 impl EndpointServiceEventReceiver {
@@ -147,6 +151,13 @@ impl EndpointServiceRuntime {
 
     pub(in crate::node) fn is_registered(&self, port: u16) -> bool {
         self.senders.contains_key(&port)
+    }
+
+    pub(in crate::node) fn remove_closed(&mut self) -> Vec<u16> {
+        self.senders
+            .extract_if(|_, sender| sender.is_closed())
+            .map(|(port, _)| port)
+            .collect()
     }
 
     pub(in crate::node) fn deliver(
