@@ -53,6 +53,52 @@ async fn drain_to_quiescence(nodes: &mut [TestNode]) {
     }
 }
 
+fn session_wait_snapshot(nodes: &[TestNode], index: usize, peer: &NodeAddr) -> String {
+    let source = *nodes[index].node.node_addr();
+    let describe = |entry: &crate::node::SessionEntry| {
+        format!(
+            "established={},initiating={},awaiting_msg3={},resends={},handshake_payload={},rekey={}",
+            entry.is_established(),
+            entry.is_initiating(),
+            entry.is_awaiting_msg3(),
+            entry.resend_count(),
+            entry.handshake_payload().is_some(),
+            entry.has_rekey_in_progress(),
+        )
+    };
+    let session = nodes[index].node.get_session(peer).map(describe);
+    let reciprocal = nodes
+        .iter()
+        .find(|node| node.node.node_addr() == peer)
+        .and_then(|node| node.node.get_session(&source))
+        .map(describe);
+    let pending = nodes[index]
+        .node
+        .pending_session_traffic
+        .has_traffic_for(peer);
+    let deferred = nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(node_index, node)| {
+            let count = node.node.deferred_dataplane_control_turns.len();
+            (count > 0).then_some((node_index, count))
+        })
+        .take(16)
+        .collect::<Vec<_>>();
+    let queued_packets = nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(node_index, node)| {
+            let count = node.packet_rx.queued_packets_for_test();
+            (count > 0).then_some((node_index, count))
+        })
+        .take(16)
+        .collect::<Vec<_>>();
+    format!(
+        "source={source}, peer={peer}, session={session:?}, reciprocal={reciprocal:?}, pending={pending}, deferred_control={deferred:?}, queued_packets={queued_packets:?}"
+    )
+}
+
 async fn wait_for_session_established(
     nodes: &mut [TestNode],
     index: usize,
@@ -60,6 +106,8 @@ async fn wait_for_session_established(
     timeout: Duration,
     context: &str,
 ) {
+    let checkpoint_at = tokio::time::Instant::now() + Duration::from_secs(20);
+    let mut checkpoint = None;
     let result = tokio::time::timeout(timeout, async {
         loop {
             if nodes[index]
@@ -68,6 +116,9 @@ async fn wait_for_session_established(
                 .is_some_and(|entry| entry.is_established())
             {
                 return;
+            }
+            if checkpoint.is_none() && tokio::time::Instant::now() >= checkpoint_at {
+                checkpoint = Some(session_wait_snapshot(nodes, index, peer));
             }
 
             process_available_packets(nodes).await;
@@ -86,44 +137,13 @@ async fn wait_for_session_established(
     })
     .await;
     if result.is_err() {
-        let source = *nodes[index].node.node_addr();
-        let session = nodes[index].node.get_session(peer).map(|entry| {
-            format!(
-                "established={},initiating={},awaiting_msg3={},resends={},handshake_payload={},rekey={}",
-                entry.is_established(),
-                entry.is_initiating(),
-                entry.is_awaiting_msg3(),
-                entry.resend_count(),
-                entry.handshake_payload().is_some(),
-                entry.has_rekey_in_progress(),
-            )
-        });
-        let reciprocal = nodes
-            .iter()
-            .find(|node| node.node.node_addr() == peer)
-            .and_then(|node| node.node.get_session(&source))
-            .map(|entry| {
-                format!(
-                    "established={},initiating={},awaiting_msg3={},resends={},handshake_payload={},rekey={}",
-                    entry.is_established(),
-                    entry.is_initiating(),
-                    entry.is_awaiting_msg3(),
-                    entry.resend_count(),
-                    entry.handshake_payload().is_some(),
-                    entry.has_rekey_in_progress(),
-                )
-            });
+        let final_snapshot = session_wait_snapshot(nodes, index, peer);
         let route = nodes[index]
             .node
             .find_next_hop(peer)
             .map(|next_hop| *next_hop.node_addr());
-        let pending = nodes[index]
-            .node
-            .pending_session_traffic
-            .has_traffic_for(peer);
         panic!(
-            "{context}: session did not establish: source={source}, peer={peer}, session={session:?}, reciprocal={reciprocal:?}, route={route:?}, pending={pending}, deferred_control={}",
-            nodes[index].node.deferred_dataplane_control_turns.len(),
+            "{context}: session did not establish: checkpoint={checkpoint:?}, final={final_snapshot}, route={route:?}",
         );
     }
 }

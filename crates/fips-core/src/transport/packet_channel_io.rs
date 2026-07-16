@@ -249,6 +249,19 @@ impl PacketTx {
 }
 
 impl PacketRx {
+    #[cfg(test)]
+    pub(crate) fn queued_packets_for_test(&self) -> usize {
+        self.pending_priority
+            .as_ref()
+            .map_or(0, |packets| packets.batch.packets.len())
+            .saturating_add(
+                self.pending_bulk
+                    .as_ref()
+                    .map_or(0, |packets| packets.batch.packets.len()),
+            )
+            .saturating_add(self.queued_packets.load(Relaxed))
+    }
+
     pub(crate) fn priority_queued_packets(&self) -> usize {
         self.priority_queued_packets.load(Relaxed)
     }
