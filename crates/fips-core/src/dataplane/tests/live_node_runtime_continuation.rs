@@ -155,3 +155,163 @@
         send_transport.stop().await.expect("stop send udp");
         recv_transport.stop().await.expect("stop recv udp");
     }
+
+    async fn pump_live_node_endpoint_first(
+        live_node: &mut DataplaneLiveNode,
+        batch: NodeEndpointDataBatch,
+        endpoint_tx: &EndpointEventSender,
+        transports: &HashMap<TransportId, TransportHandle>,
+        crypto_limit: usize,
+    ) -> DataplaneLiveNodeTurn {
+        let endpoint_limit = batch.drain_cost();
+        let mut raw_source = VecDeque::<DataplaneRawIngress>::new();
+        let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
+        let (_tun_outbound_tx, mut tun_outbound_rx) =
+            crate::upper::tun::tun_outbound_channel(1);
+        live_node
+            .pump_turn_with_firsts_and_transport_batch(
+                None,
+                &mut raw_source,
+                0,
+                DataplaneLiveOutboundFirsts {
+                    endpoint_data_batch: Some(batch),
+                    collect_transport_sent_receipts: true,
+                    ..Default::default()
+                },
+                DataplaneLiveTurnIo {
+                    endpoint_data_rx: &mut endpoint_data_rx,
+                    endpoint_limit,
+                    tun_outbound_rx: &mut tun_outbound_rx,
+                    tun_limit: 0,
+                    endpoint_tx,
+                    transports,
+                    crypto_limit,
+                    transport_send_batch_packets: 8,
+                },
+            )
+            .await
+    }
+
+    #[tokio::test]
+    async fn endpoint_batch_token_survives_deferral_and_fsp_wrap_transport() {
+        let send_transport_id = TransportId::new(178);
+        let recv_transport_id = TransportId::new(179);
+        let source = NodeAddr::from_bytes([0x78; 16]);
+        let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let dest = *remote.node_addr();
+        let next_hop = NodeAddr::from_bytes([0x79; 16]);
+        let fsp_owner = OwnerId::fsp_node(dest);
+        let fmp_owner = OwnerId::fmp_node(next_hop);
+        let send_token = 178;
+        let (recv_packet_tx, _recv_packet_rx) = crate::transport::packet_channel(4);
+        let mut recv_transport = TransportHandle::Udp(crate::transport::udp::UdpTransport::new(
+            recv_transport_id,
+            None,
+            crate::config::UdpConfig {
+                bind_addr: Some("127.0.0.1:0".to_string()),
+                ..Default::default()
+            },
+            recv_packet_tx,
+        ));
+        recv_transport.start().await.expect("start recv udp");
+        let remote_addr = TransportAddr::from_string(
+            &recv_transport
+                .local_addr()
+                .expect("recv udp local addr")
+                .to_string(),
+        );
+        let mut send_transport = unstarted_udp_transport(send_transport_id);
+        send_transport.start().await.expect("start send udp");
+        let fmp_path = TransportPath::live(send_transport_id, remote_addr);
+        let mut transports = HashMap::from([(send_transport_id, send_transport)]);
+        let mut node = crate::Node::new(crate::Config::new()).expect("node");
+        let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
+        let mut live_node = DataplaneLiveNode::new(AdmissionConfig::new(4, 8));
+        let payload = EndpointDataPayload::from_packet_payload(b"tagged endpoint".to_vec())
+            .expect("endpoint payload");
+        let batch = NodeEndpointDataBatch::from_payloads(remote, vec![payload], None)
+            .expect("endpoint batch")
+            .with_send_token(send_token);
+
+        let first = pump_live_node_endpoint_first(
+            &mut live_node,
+            batch,
+            &endpoint_io.event_tx,
+            &transports,
+            0,
+        )
+        .await;
+        assert_eq!(first.deferred_endpoint_data_batches_count(), 1);
+        assert_eq!(first.transport_sent(), 0);
+        let mut deferred = live_node.take_deferred_endpoint_data_batches();
+        assert_eq!(deferred.len(), 1);
+        assert_eq!(deferred[0].send_token(), Some(send_token));
+
+        live_node.register_owner(
+            fsp_owner,
+            OwnerConfig::new(1, 8)
+                .with_next_send_counter(1780)
+                .with_fsp_session_start_ms(0)
+                .with_fsp_send_headers(0, 0),
+        );
+        live_node.register_owner(
+            fmp_owner,
+            OwnerConfig::new(1, 8)
+                .with_next_send_counter(1790)
+                .with_fmp_session_start_ms(0),
+        );
+        live_node.driver.owner_mut(fsp_owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(178), test_key(178)));
+        live_node.driver.owner_mut(fmp_owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(179), test_key(179)));
+        live_node.driver.owner_mut(fmp_owner)
+            .unwrap()
+            .set_active_path(fmp_path);
+        live_node.driver.owner_mut(fsp_owner)
+            .unwrap()
+            .set_fsp_wrap_route(Some(DataplaneFspWrapRoute::new(
+                fmp_owner, 1, 1791, source, dest,
+            )));
+        live_node.routes.register_endpoint_destination(
+            dest,
+            DataplaneEndpointDataRoute::fsp(fsp_owner, 1, 0, 0).with_direct_transport(),
+        );
+
+        let mut turn = pump_live_node_endpoint_first(
+            &mut live_node,
+            deferred.pop().unwrap(),
+            &endpoint_io.event_tx,
+            &transports,
+            2,
+        )
+        .await;
+        for _ in 0..50 {
+            if turn.transport_sent() > 0 {
+                break;
+            }
+            wait_for_live_worker_completion(&live_node).await;
+            turn = pump_live_node_outbound_firsts(
+                &mut live_node,
+                DataplaneLiveOutboundFirsts {
+                    collect_transport_sent_receipts: true,
+                    ..Default::default()
+                },
+                &endpoint_io.event_tx,
+                &transports,
+                2,
+                8,
+            )
+            .await;
+        }
+        let receipts = turn.take_transport_sent_receipts();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].owner, fmp_owner);
+        assert_eq!(receipts[0].send_token, Some(send_token));
+        assert_eq!(receipts[0].fsp_send_receipt.unwrap().owner, fsp_owner);
+
+        send_transport = transports.remove(&send_transport_id).unwrap();
+        send_transport.stop().await.expect("stop send udp");
+        recv_transport.stop().await.expect("stop recv udp");
+    }

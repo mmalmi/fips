@@ -72,14 +72,18 @@ impl DataplaneEndpointDataRoute {
         &self,
         payloads: Vec<EndpointDataPayload>,
         activity_tick: ActivityTick,
+        send_token: Option<u64>,
     ) -> DataplaneEndpointDataBatchRoute {
         let mut result = DataplaneEndpointDataBatchRoute::with_capacity(payloads.len());
         for payload in payloads {
             let (msg_type, body) = payload.into_fsp_payload();
-            result.routed.push(
-                self.build_packet(msg_type, body)
-                    .with_activity_tick(activity_tick),
-            );
+            let mut packet = self
+                .build_packet(msg_type, body)
+                .with_activity_tick(activity_tick);
+            if let Some(send_token) = send_token {
+                packet = packet.with_send_token(send_token);
+            }
+            result.routed.push(packet);
         }
         result
     }
@@ -153,17 +157,21 @@ fn route_endpoint_data_batch_with_route_table<F>(
 ) where
     F: FnMut(Vec<OutboundPacket>),
 {
+    let send_token = batch.send_token();
     let (remote, payloads, queued_at, enqueued_at_ms) = batch.into_parts();
-    let route = routes.route_endpoint_data_batch(remote, payloads, activity_tick);
+    let route = routes.route_endpoint_data_batch(remote, payloads, activity_tick, send_token);
     let deferred_payloads = route.finish_batch(remote, drops, &mut push);
     if let Some(payloads) = deferred_payloads {
-        let batch = NodeEndpointDataBatch::from_payloads_with_enqueued_at_ms(
+        let mut batch = NodeEndpointDataBatch::from_payloads_with_enqueued_at_ms(
             remote,
             payloads,
             queued_at,
             enqueued_at_ms,
         )
         .expect("deferred endpoint batch should remain non-empty");
+        if let Some(send_token) = send_token {
+            batch = batch.with_send_token(send_token);
+        }
         deferred_batches.push(batch);
     }
 }

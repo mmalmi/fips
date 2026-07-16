@@ -115,11 +115,12 @@ impl DataplaneLiveRouteTable {
         remote: PeerIdentity,
         payloads: Vec<EndpointDataPayload>,
         activity_tick: ActivityTick,
+        send_token: Option<u64>,
     ) -> DataplaneEndpointDataBatchRoute {
         let Some(route) = self.endpoint.get(remote.node_addr()) else {
             return DataplaneEndpointDataBatchRoute::deferred(payloads);
         };
-        route.route_payloads(payloads, activity_tick)
+        route.route_payloads(payloads, activity_tick, send_token)
     }
 }
 

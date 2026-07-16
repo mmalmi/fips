@@ -116,6 +116,7 @@ pub(crate) struct NodeEndpointDataBatch {
     payloads: Vec<EndpointDataPayload>,
     queued_at: Option<crate::perf_profile::TraceStamp>,
     enqueued_at_ms: u64,
+    send_token: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -189,7 +190,17 @@ impl NodeEndpointDataBatch {
             payloads,
             queued_at,
             enqueued_at_ms,
+            send_token: None,
         })
+    }
+
+    pub(crate) fn with_send_token(mut self, send_token: u64) -> Self {
+        self.send_token = Some(send_token);
+        self
+    }
+
+    pub(crate) fn send_token(&self) -> Option<u64> {
+        self.send_token
     }
 
     pub(crate) fn drain_cost(&self) -> usize {

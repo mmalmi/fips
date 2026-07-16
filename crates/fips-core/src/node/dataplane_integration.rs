@@ -17,7 +17,7 @@ const DATAPLANE_PENDING_OUTBOUND_CONTROL_CONTINUATION_TURNS: usize = 8;
 const DATAPLANE_PENDING_OUTBOUND_COMPLETION_TIMEOUT: std::time::Duration =
     std::time::Duration::from_millis(100);
 const DATAPLANE_DEFERRED_CONTROL_TURN_DRAIN_LIMIT: usize = 64;
-static DATAPLANE_FMP_LINK_SEND_TOKEN: AtomicU64 = AtomicU64::new(1);
+static DATAPLANE_SEND_TOKEN: AtomicU64 = AtomicU64::new(1);
 
 fn dataplane_static_udp_port_wildcard_addrs(
     addr: &str,
@@ -87,6 +87,35 @@ struct DataplanePendingOutboundPolicy {
     continuation_turns: usize,
 }
 
+struct DataplanePendingSendTokenReceipts {
+    send_token: u64,
+    remaining: usize,
+}
+
+impl DataplanePendingSendTokenReceipts {
+    fn new(send_token: u64, expected: usize) -> Self {
+        Self {
+            send_token,
+            remaining: expected,
+        }
+    }
+
+    fn consume(
+        &mut self,
+        receipts: impl IntoIterator<Item = DataplaneTransportSentReceipt>,
+    ) -> bool {
+        // Receipt collection is enabled only for the synchronous caller's turns.
+        // Non-matching receipts are observational bookkeeping for unrelated
+        // background output, so consume them without acknowledging this batch.
+        let matched = receipts
+            .into_iter()
+            .filter(|receipt| receipt.send_token == Some(self.send_token))
+            .count();
+        self.remaining = self.remaining.saturating_sub(matched);
+        self.remaining == 0
+    }
+}
+
 const DATAPLANE_PENDING_OUTBOUND_FAST_POLICY: DataplanePendingOutboundPolicy =
     DataplanePendingOutboundPolicy {
         continuation_turns: DATAPLANE_PENDING_OUTBOUND_FAST_CONTINUATION_TURNS,
@@ -129,7 +158,7 @@ impl Node {
         if ce_flag {
             flags |= FLAG_CE;
         }
-        let send_token = DATAPLANE_FMP_LINK_SEND_TOKEN.fetch_add(1, Ordering::Relaxed);
+        let send_token = DATAPLANE_SEND_TOKEN.fetch_add(1, Ordering::Relaxed);
 
         let outbound = OutboundPacket::fmp(
             OwnerId::fmp_node(*node_addr),
@@ -231,7 +260,7 @@ impl Node {
         if ce_flag {
             flags |= FLAG_CE;
         }
-        let send_token = DATAPLANE_FMP_LINK_SEND_TOKEN.fetch_add(1, Ordering::Relaxed);
+        let send_token = DATAPLANE_SEND_TOKEN.fetch_add(1, Ordering::Relaxed);
         let packet = OutboundPacket::fmp(
             OwnerId::fmp_node(node_addr),
             send_context.generation(),
@@ -335,18 +364,34 @@ impl Node {
         // route recovery completed. Start the dataplane endpoint queue age when the
         // batch enters dataplane so session establishment latency does not trip the
         // live endpoint stale-bulk guard.
+        let send_token = DATAPLANE_SEND_TOKEN.fetch_add(1, Ordering::Relaxed);
         let batch = NodeEndpointDataBatch::from_payloads(remote, payloads, None)
-            .expect("checked pending endpoint payload batch");
+            .expect("checked pending endpoint payload batch")
+            .with_send_token(send_token);
         let firsts = DataplaneLiveOutboundFirsts {
             endpoint_data_batch: Some(batch),
+            collect_transport_sent_receipts: true,
             ..Default::default()
         };
         let turn = self
             .pump_dataplane_pending_outbound_firsts(firsts, payload_count, 0, payload_count)
             .await;
-        self.finish_dataplane_pending_outbound_turn(dest_addr, "queued endpoint data", turn, false)
-            .await
-            .map(|_| ())
+        let result = self
+            .drive_dataplane_pending_outbound_token_receipts(
+                turn,
+                send_token,
+                payload_count,
+                DATAPLANE_PENDING_OUTBOUND_FAST_POLICY.continuation_turns,
+            )
+            .await;
+        self.process_dataplane_pending_outbound_bookkeeping().await;
+        result.map(|_| ()).map_err(|failure| NodeError::SendFailed {
+            node_addr: *dest_addr,
+            reason: Self::dataplane_pending_outbound_failure_from_stop(
+                "queued endpoint data",
+                &failure,
+            ),
+        })
     }
 
     pub(in crate::node) async fn send_dataplane_fsp_session_msg(
@@ -701,6 +746,76 @@ impl Node {
         }
     }
 
+    async fn drive_dataplane_pending_outbound_token_receipts(
+        &mut self,
+        mut turn: DataplaneLiveNodeTurn,
+        send_token: u64,
+        expected_receipts: usize,
+        continuation_turns: usize,
+    ) -> Result<DataplaneLiveNodeTurn, DataplanePendingOutboundFailure> {
+        let mut pending = DataplanePendingSendTokenReceipts::new(send_token, expected_receipts);
+        let mut awaiting_output = false;
+        for continuation in 0..=continuation_turns {
+            if pending.consume(turn.take_transport_sent_receipts()) {
+                return Ok(turn);
+            }
+
+            let summary = turn.summary();
+            let deferred = turn.deferred_endpoint_data_batches_count() > 0;
+            let failed = turn
+                .drops()
+                .iter()
+                .any(|drop| drop.send_token() == Some(send_token))
+                || turn
+                    .output_drops()
+                    .iter()
+                    .any(|drop| drop.send_token() == Some(send_token));
+            let needs_continuation = Self::dataplane_pending_outbound_needs_continuation(&turn);
+            let made_progress =
+                summary.has_activity() || turn.transport_sent() > 0 || turn.transport_dropped() > 0;
+
+            if failed {
+                return Err(DataplanePendingOutboundFailure::TurnFailed(turn));
+            }
+            if needs_continuation {
+                awaiting_output = true;
+            }
+            if deferred {
+                return Err(DataplanePendingOutboundFailure::Stopped {
+                    turn,
+                    reason: "deferred without transport output",
+                });
+            }
+            if !needs_continuation && !awaiting_output && !made_progress {
+                return Err(DataplanePendingOutboundFailure::Stopped {
+                    turn,
+                    reason: "made no matching transport output progress",
+                });
+            }
+            if continuation == continuation_turns {
+                return Err(DataplanePendingOutboundFailure::Exhausted(turn));
+            }
+
+            if summary.outputs() == 0 {
+                self.wait_for_dataplane_completion().await;
+            }
+            self.defer_dataplane_control_turn(turn);
+            turn = self
+                .pump_dataplane_pending_outbound_firsts(
+                    DataplaneLiveOutboundFirsts {
+                        collect_transport_sent_receipts: true,
+                        ..Default::default()
+                    },
+                    0,
+                    0,
+                    pending.remaining,
+                )
+                .await;
+        }
+
+        unreachable!("bounded pending outbound token receipt loop must return")
+    }
+
     pub(in crate::node) async fn wait_for_dataplane_completion(&self) {
         let notify = self.dataplane.readiness_notify();
         let _ = tokio::time::timeout(
@@ -804,3 +919,37 @@ impl Node {
 include!("dataplane_pending.rs");
 include!("dataplane_owner_sync.rs");
 include!("dataplane_helpers.rs");
+
+#[cfg(test)]
+mod pending_send_token_receipt_tests {
+    use super::*;
+
+    fn receipt(send_token: u64) -> DataplaneTransportSentReceipt {
+        DataplaneTransportSentReceipt {
+            owner: OwnerId::fmp_node(NodeAddr::from_bytes([7; 16])),
+            counter: 0,
+            fmp_timestamp_ms: None,
+            payload_len: 1,
+            fsp_send_receipt: None,
+            send_token: Some(send_token),
+        }
+    }
+
+    #[test]
+    fn unrelated_receipt_does_not_acknowledge_endpoint_batch() {
+        let mut pending = DataplanePendingSendTokenReceipts::new(41, 1);
+
+        assert!(!pending.consume([receipt(40)]));
+        assert_eq!(pending.remaining, 1);
+        assert!(pending.consume([receipt(41)]));
+    }
+
+    #[test]
+    fn endpoint_batch_requires_every_matching_receipt() {
+        let mut pending = DataplanePendingSendTokenReceipts::new(41, 2);
+
+        assert!(!pending.consume([receipt(41), receipt(40)]));
+        assert_eq!(pending.remaining, 1);
+        assert!(pending.consume([receipt(41)]));
+    }
+}

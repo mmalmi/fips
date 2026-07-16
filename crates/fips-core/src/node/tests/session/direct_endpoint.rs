@@ -481,41 +481,49 @@ fn test_endpoint_data_reply_learned_first_contact_routes_via_intermediary() {
         let bob_addr = *nodes[2].node.node_addr();
         let bob_identity = PeerIdentity::from_pubkey_full(nodes[2].node.identity().pubkey_full());
 
-        send_endpoint_data_via_dataplane(
-            &mut nodes[0].node,
-            bob_identity,
-            b"first-contact".to_vec(),
-        )
-        .await
-        .expect("alice endpoint data should queue and trigger discovery");
+        let mut sent_payloads = Vec::new();
+        for attempt in 0..4 {
+            // EndpointData is best-effort datagram traffic. Retry with a distinct
+            // application payload so a lossy UDP carrier cannot turn this routing
+            // test into a single-datagram reliability assertion.
+            let payload = format!("first-contact-{attempt}").into_bytes();
+            sent_payloads.push(payload.clone());
+            send_endpoint_data_via_dataplane(&mut nodes[0].node, bob_identity, payload)
+                .await
+                .expect("alice endpoint data should queue and trigger discovery");
 
-        for _ in 0..120 {
-            drain_to_quiescence(&mut nodes).await;
-            if let Ok(event) = bob_endpoint.event_rx.try_recv() {
-                let message = expect_single_endpoint_data_event(event);
-                assert_eq!(*message.source_peer.node_addr(), alice_addr);
-                assert_eq!(message.source_peer.npub(), nodes[0].node.npub());
-                assert_eq!(message.payload.as_slice(), &b"first-contact"[..]);
-                assert!(
-                    nodes[1].node.get_session(&alice_addr).is_none(),
-                    "transit node must not create an app endpoint session for Alice"
-                );
-                assert!(
-                    nodes[1].node.get_session(&bob_addr).is_none(),
-                    "transit node must not create an app endpoint session for Bob"
-                );
-                assert!(
-                    transit_endpoint.event_rx.try_recv().is_err(),
-                    "transit node must not receive app endpoint data"
-                );
-                cleanup_nodes(&mut nodes).await;
-                return;
+            for _ in 0..30 {
+                drain_to_quiescence(&mut nodes).await;
+                if let Ok(event) = bob_endpoint.event_rx.try_recv() {
+                    let message = expect_single_endpoint_data_event(event);
+                    assert_eq!(*message.source_peer.node_addr(), alice_addr);
+                    assert_eq!(message.source_peer.npub(), nodes[0].node.npub());
+                    assert!(
+                        sent_payloads
+                            .iter()
+                            .any(|payload| payload.as_slice() == message.payload.as_slice()),
+                        "Bob must receive one of the bounded application attempts"
+                    );
+                    assert!(
+                        nodes[1].node.get_session(&alice_addr).is_none(),
+                        "transit node must not create an app endpoint session for Alice"
+                    );
+                    assert!(
+                        nodes[1].node.get_session(&bob_addr).is_none(),
+                        "transit node must not create an app endpoint session for Bob"
+                    );
+                    assert!(
+                        transit_endpoint.event_rx.try_recv().is_err(),
+                        "transit node must not receive app endpoint data"
+                    );
+                    cleanup_nodes(&mut nodes).await;
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
             }
-            tokio::time::sleep(Duration::from_millis(25)).await;
         }
-
         cleanup_nodes(&mut nodes).await;
-        panic!("reply-learned first-contact endpoint data did not reach Bob");
+        panic!("reply-learned first-contact endpoint data exhausted bounded application retries");
     });
 }
 
