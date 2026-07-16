@@ -29,17 +29,17 @@ impl Node {
 
         let inner = &payload[FSP_COMMON_PREFIX_SIZE..];
 
+        // Heap-isolate each handshake phase so the largest phase future does
+        // not inflate every branch of this dispatcher on the worker stack.
         match prefix.phase {
             FSP_PHASE_MSG1 => {
-                self.handle_session_setup(&src_addr, &previous_hop_addr, inner)
-                    .await;
+                Box::pin(self.handle_session_setup(&src_addr, &previous_hop_addr, inner)).await;
             }
             FSP_PHASE_MSG2 => {
-                self.handle_session_ack(&src_addr, inner).await;
+                Box::pin(self.handle_session_ack(&src_addr, inner)).await;
             }
             FSP_PHASE_MSG3 => {
-                self.handle_session_msg3(&src_addr, &previous_hop_addr, inner)
-                    .await;
+                Box::pin(self.handle_session_msg3(&src_addr, &previous_hop_addr, inner)).await;
             }
             FSP_PHASE_ESTABLISHED if prefix.is_unencrypted() => {
                 // Plaintext error signals: read msg_type from first byte after prefix

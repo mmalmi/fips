@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-07-16
+
+### Fixed
+
+- Heap-isolate infrequent session-control handshake futures from the dataplane
+  receive loop, restoring safe headroom on Tokio's default worker stack in
+  debug builds. FMP, FSP, discovery, datagram DFP1, and link-negotiation wire
+  formats are unchanged.
+- Bump `fips-endpoint` to 0.4.6 so embedded consumers select the corrected
+  `fips-core` release.
+
 ## [0.4.5] - 2026-07-16
 
 ### Fixed

@@ -180,7 +180,9 @@ impl Node {
     ) -> bool {
         let (source_addr, previous_hop_addr, _ce_flag, _path_mtu, payload) = ingress.into_parts();
         let delivery = LocalSessionPayload::new(source_addr, previous_hop_addr, payload.as_slice());
-        self.handle_session_payload(delivery).await;
+        // Session control is infrequent. Keep its large debug future off the
+        // dataplane turn's poll frame so a normal Tokio worker stack is ample.
+        Box::pin(self.handle_session_payload(delivery)).await;
         true
     }
 
