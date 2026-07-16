@@ -5,8 +5,8 @@ use crate::config::RoutingMode;
 use crate::node::session::EndToEndState;
 use crate::node::session_wire::FSP_COMMON_PREFIX_SIZE;
 use crate::node::tests::spanning_tree::{
-    TestNode, cleanup_nodes, generate_random_edges, lock_large_network_test,
-    process_available_packets, run_tree_test, run_tree_test_with_mtus, verify_tree_convergence,
+    TestNode, cleanup_nodes, lock_large_network_test, process_available_packets, run_tree_test,
+    run_tree_test_with_mtus, verify_tree_convergence,
 };
 use crate::protocol::{SessionAck, SessionDatagram, SessionReceiverReport, SessionSetup};
 use crate::tree::{ParentDeclaration, TreeCoordinate};

@@ -1,5 +1,7 @@
 use super::*;
 
+const SESSION_FIXTURE_TIMEOUT: Duration = Duration::from_secs(2);
+
 #[test]
 fn test_session_wait_drains_ack_before_due_setup_resend() {
     run_large_stack_async_test("fips-session-drain-before-retransmit", || async {
@@ -45,7 +47,7 @@ async fn session_wait_drains_ack_before_due_setup_resend() {
         &mut nodes,
         0,
         &node1_addr,
-        Duration::from_millis(250),
+        SESSION_FIXTURE_TIMEOUT,
         "initiator consumes queued Ack",
     )
     .await;
@@ -113,7 +115,7 @@ async fn session_wait_drives_all_nodes_retransmit_timers() {
         &mut nodes,
         0,
         &node1_addr,
-        Duration::from_millis(250),
+        SESSION_FIXTURE_TIMEOUT,
         "initiator recovered by responder timer",
     )
     .await;

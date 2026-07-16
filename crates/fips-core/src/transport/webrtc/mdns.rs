@@ -389,7 +389,7 @@ fn normalize_mdns_hostname(hostname: &str) -> Result<String, TransportError> {
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     fn first_non_loopback_ipv4() -> Option<std::net::Ipv4Addr> {
         if_addrs::get_if_addrs()
             .ok()?
@@ -519,7 +519,10 @@ mod tests {
         resolver.stop().await.expect("stop shared resolver");
     }
 
-    #[cfg(unix)]
+    // GitHub's macOS runners do not multicast-loop back this daemon's own
+    // late registration. Linux keeps the live multicast integration; the
+    // platform-neutral resolver/rewrite and lifecycle cases run everywhere.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn registered_hostname_is_resolved_and_rewritten_by_the_shared_owner() {
         let address = first_non_loopback_ipv4().expect("non-loopback IPv4 interface");

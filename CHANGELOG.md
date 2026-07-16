@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   require every packet in the batch to complete, so unrelated background
   output cannot falsely acknowledge a first-contact send. The correlation is
   internal; EndpointData remains best-effort datagram traffic.
+- Recompute split-horizon bloom outputs when an accepted tree declaration
+  changes peer membership, so a filter received before the peer became a tree
+  child is propagated without adding traffic to ordinary ancestry updates.
 - Correct the target-specific macOS package workflow introduced after 0.4.4,
   skip AUR deployment explicitly when its optional credentials are absent,
   and make the Linux dataplane safety gate fail when a selected test was

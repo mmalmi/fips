@@ -178,6 +178,8 @@ impl Node {
             return;
         }
 
+        let was_tree_peer = self.is_tree_peer(from);
+
         // Update peer's tree state in ActivePeer
         if let Some(peer) = self.peers.get_mut(from) {
             peer.update_tree_position(announce.declaration.clone(), announce.ancestry.clone());
@@ -214,14 +216,16 @@ impl Node {
             );
         }
 
-        // Bloom filter exchange initiation is handled at handshake completion
-        // ([handshake.rs] mark_update_needed on the new peer) and on actual
-        // content changes via [bloom.rs::handle_filter_announce]'s
-        // `mark_changed_peers`. Marking the peer on every received TreeAnnounce
-        // is redundant — and under high TreeAnnounce churn (rapid mid-chain
-        // swap propagation) it amplifies bloom traffic proportionally with
-        // the tree announce rate, even when the local outgoing filter
-        // content has not changed.
+        // TreeAnnounce and FilterAnnounce are independent datagrams. If the
+        // accepted declaration changes tree membership, recompute from the new
+        // state so a filter received before that transition reaches the other
+        // peers. Avoid recomputing on ordinary ancestry/sequence updates.
+        if was_tree_peer != self.is_tree_peer(from) {
+            let peer_addrs: Vec<NodeAddr> = self.peers.keys().copied().collect();
+            let peer_filters = self.peer_inbound_filters();
+            self.bloom_state
+                .mark_changed_peers(from, &peer_addrs, &peer_filters);
+        }
 
         // Re-evaluate parent selection with current link costs.
         // Exclude peers without MMP RTT data — they are not yet eligible
@@ -303,6 +307,8 @@ impl Node {
                     self.coord_cache.clear();
                     self.reset_discovery_backoff();
                     self.send_tree_announce_to_all().await;
+                    let all_peers: Vec<NodeAddr> = self.peers.keys().copied().collect();
+                    self.bloom_state.mark_all_updates_needed(all_peers);
                 }
                 return;
             }
@@ -349,18 +355,6 @@ impl Node {
                     "Parent ancestry changed, re-announcing"
                 );
                 self.send_tree_announce_to_all().await;
-
-                // Bloom contents do not depend on path structure, only on
-                // identity sets. Our parent_id is unchanged in this branch,
-                // so our tree-peer set is unchanged and our outgoing filter
-                // content is unchanged. Use mark_changed_peers, which
-                // checks for actual content delta against last_sent_filters,
-                // instead of mark_all_updates_needed, which marks
-                // unconditionally regardless of whether content changed.
-                let peer_addrs: Vec<NodeAddr> = self.peers.keys().copied().collect();
-                let peer_filters = self.peer_inbound_filters();
-                self.bloom_state
-                    .mark_changed_peers(from, &peer_addrs, &peer_filters);
             }
         }
     }

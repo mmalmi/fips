@@ -61,6 +61,95 @@ async fn test_spanning_tree_disconnected() {
     cleanup_nodes(&mut nodes).await;
 }
 
+#[tokio::test]
+async fn filter_received_before_tree_child_marks_changed_outputs() {
+    let edges = [(0, 1), (1, 2), (2, 0)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+
+    let (sender, receiver) = edges
+        .iter()
+        .flat_map(|&(left, right)| [(left, right), (right, left)])
+        .find(|&(sender, receiver)| {
+            let sender_addr = nodes[sender].node.node_addr();
+            !nodes[receiver].node.is_tree_peer(sender_addr)
+                && !nodes[receiver]
+                    .node
+                    .tree_state()
+                    .my_coords()
+                    .contains(sender_addr)
+        })
+        .expect("triangle should have a non-tree edge with a loop-free orientation");
+    let sender_addr = *nodes[sender].node.node_addr();
+    let receiver_addr = *nodes[receiver].node.node_addr();
+    let observer_addr = *nodes[receiver]
+        .node
+        .peers
+        .keys()
+        .find(|addr| **addr != sender_addr && nodes[receiver].node.is_tree_peer(addr))
+        .expect("receiver should have another tree peer");
+    assert!(
+        nodes[receiver]
+            .node
+            .get_peer(&sender_addr)
+            .and_then(|peer| peer.inbound_filter())
+            .is_some(),
+        "the non-tree peer filter should arrive before its child declaration"
+    );
+
+    let before = nodes[receiver]
+        .node
+        .bloom_state
+        .compute_outgoing_filter(&observer_addr, &nodes[receiver].node.peer_inbound_filters());
+    assert!(
+        !before.contains(&sender_addr),
+        "a non-tree peer must not contribute to the outgoing filter"
+    );
+    nodes[receiver]
+        .node
+        .bloom_state
+        .record_sent_filter(observer_addr, before);
+    nodes[receiver].node.bloom_state.clear_pending_updates();
+    assert!(
+        !nodes[receiver]
+            .node
+            .bloom_state
+            .needs_update(&observer_addr)
+    );
+
+    {
+        let sender_node = &mut nodes[sender].node;
+        let sequence = sender_node.tree_state().my_declaration().sequence() + 1;
+        sender_node
+            .tree_state_mut()
+            .set_parent(receiver_addr, sequence, crate::time::now_secs());
+        sender_node.tree_state_mut().recompute_coords();
+        sender_node
+            .tree_state
+            .sign_declaration(&sender_node.identity)
+            .expect("sign child declaration");
+    }
+    let encoded = nodes[sender]
+        .node
+        .build_tree_announce()
+        .expect("build child TreeAnnounce")
+        .encode()
+        .expect("encode child TreeAnnounce");
+    nodes[receiver]
+        .node
+        .handle_tree_announce(&sender_addr, &encoded[1..])
+        .await;
+
+    assert!(nodes[receiver].node.is_tree_peer(&sender_addr));
+    assert!(
+        nodes[receiver]
+            .node
+            .bloom_state
+            .needs_update(&observer_addr),
+        "accepting the child declaration should publish the already-received filter"
+    );
+    cleanup_nodes(&mut nodes).await;
+}
+
 /// Tests that a node ignores a signed TreeAnnounce whose advertised root is not the smallest node_addr in the ancestry.
 #[tokio::test]
 async fn test_rejects_tree_announce_with_inconsistent_root() {

@@ -574,7 +574,8 @@ async fn session_100_nodes() {
 
     let start = Instant::now();
 
-    let edges = generate_random_edges(NUM_NODES, TARGET_EDGES, SEED);
+    let edges =
+        crate::node::tests::spanning_tree::generate_random_edges(NUM_NODES, TARGET_EDGES, SEED);
     let mut nodes = run_tree_test(NUM_NODES, &edges, false).await;
     let sim_network =
         super::sim_harness::replace_session_100_node_carriers(&mut nodes, &edges).await;
