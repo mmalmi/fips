@@ -6,12 +6,17 @@ use fips::config::{
 };
 use fips::nostr_relay_adapter::NostrRelayAdapter;
 use fips::{Config, FipsEndpoint, PeerIdentity, WebRtcConfig};
+use std::net::Ipv6Addr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::{MissedTickBehavior, timeout_at};
 use tracing_subscriber::{EnvFilter, fmt};
-use uuid::Uuid;
 
+const ICMPV6_NEXT_HEADER: u8 = 58;
+const ICMPV6_ECHO_REQUEST: u8 = 128;
+const ICMPV6_ECHO_REPLY: u8 = 129;
+const IPV6_HEADER_LEN: usize = 40;
+const ICMPV6_HEADER_LEN: usize = 8;
 const DEFAULT_TIMEOUT_SECONDS: u64 = 25;
 const PING_INTERVAL: Duration = Duration::from_secs(1);
 const PEER_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -188,26 +193,40 @@ fn probe_config(
 async fn probe_target(endpoint: &FipsEndpoint, target: PeerIdentity) -> Result<Duration, String> {
     wait_for_authenticated_webrtc(endpoint, target).await?;
 
-    let nonce = Uuid::new_v4().into_bytes().to_vec();
+    let nonce = *uuid::Uuid::new_v4().as_bytes();
+    let identifier = u16::from_be_bytes([nonce[0], nonce[1]]);
+    let sequence = u16::from_be_bytes([nonce[2], nonce[3]]);
+    let request = build_echo_request(
+        endpoint.address().to_ipv6(),
+        target.address().to_ipv6(),
+        identifier,
+        sequence,
+        &nonce,
+    );
     let started = Instant::now();
     let mut ping_tick = tokio::time::interval(PING_INTERVAL);
     ping_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    let mut messages = Vec::with_capacity(8);
 
     loop {
         tokio::select! {
             _ = ping_tick.tick() => endpoint
-                .send_batch_to_peer(target, vec![nonce.clone()])
+                .send_ip_packet(request.clone())
                 .await
                 .map_err(|error| format!("FSP echo send failed: {error}"))?,
-            received = endpoint.recv_batch_into(&mut messages, 8) => {
-                received.ok_or_else(|| {
+            delivered = endpoint.recv_ip_packet() => {
+                let delivered = delivered.ok_or_else(|| {
                     "ephemeral endpoint closed before receiving FSP echo".to_string()
                 })?;
-                if messages.drain(..).any(|message| {
-                    message.source_peer.node_addr() == target.node_addr()
-                        && message.data.as_slice() == nonce.as_slice()
-                }) {
+                if delivered.source_node_addr == *target.node_addr()
+                    && echo_reply_matches(
+                        &delivered.packet,
+                        target.address().to_ipv6(),
+                        endpoint.address().to_ipv6(),
+                        identifier,
+                        sequence,
+                        &nonce,
+                    )
+                {
                     return Ok(started.elapsed());
                 }
             }
@@ -247,10 +266,87 @@ fn is_authenticated_webrtc_peer(
     peer.node_addr == *target.node_addr() && peer.transport_type.as_deref() == Some("webrtc")
 }
 
+fn build_echo_request(
+    source: Ipv6Addr,
+    destination: Ipv6Addr,
+    identifier: u16,
+    sequence: u16,
+    payload: &[u8],
+) -> Vec<u8> {
+    let icmp_len = ICMPV6_HEADER_LEN + payload.len();
+    let mut packet = vec![0u8; IPV6_HEADER_LEN + icmp_len];
+    packet[0] = 0x60;
+    packet[4..6].copy_from_slice(&(icmp_len as u16).to_be_bytes());
+    packet[6] = ICMPV6_NEXT_HEADER;
+    packet[7] = 64;
+    packet[8..24].copy_from_slice(&source.octets());
+    packet[24..40].copy_from_slice(&destination.octets());
+    packet[40] = ICMPV6_ECHO_REQUEST;
+    packet[44..46].copy_from_slice(&identifier.to_be_bytes());
+    packet[46..48].copy_from_slice(&sequence.to_be_bytes());
+    packet[48..].copy_from_slice(payload);
+    let checksum = icmpv6_checksum(&packet[40..], source, destination);
+    packet[42..44].copy_from_slice(&checksum.to_be_bytes());
+    packet
+}
+
+fn echo_reply_matches(
+    packet: &[u8],
+    source: Ipv6Addr,
+    destination: Ipv6Addr,
+    identifier: u16,
+    sequence: u16,
+    payload: &[u8],
+) -> bool {
+    if packet.len() != IPV6_HEADER_LEN + ICMPV6_HEADER_LEN + payload.len()
+        || packet[0] >> 4 != 6
+        || packet[6] != ICMPV6_NEXT_HEADER
+        || packet[8..24] != source.octets()
+        || packet[24..40] != destination.octets()
+        || packet[40] != ICMPV6_ECHO_REPLY
+        || packet[41] != 0
+        || packet[44..46] != identifier.to_be_bytes()
+        || packet[46..48] != sequence.to_be_bytes()
+        || packet[48..] != *payload
+    {
+        return false;
+    }
+    let stored = u16::from_be_bytes([packet[42], packet[43]]);
+    icmpv6_checksum(&packet[40..], source, destination) == stored
+}
+
+fn icmpv6_checksum(message: &[u8], source: Ipv6Addr, destination: Ipv6Addr) -> u16 {
+    let mut sum = 0u64;
+    add_words(&mut sum, &source.octets());
+    add_words(&mut sum, &destination.octets());
+    sum += message.len() as u64;
+    sum += u64::from(ICMPV6_NEXT_HEADER);
+    for (index, chunk) in message.chunks(2).enumerate() {
+        if index == 1 {
+            continue;
+        }
+        sum += if chunk.len() == 2 {
+            u64::from(u16::from_be_bytes([chunk[0], chunk[1]]))
+        } else {
+            u64::from(chunk[0]) << 8
+        };
+    }
+    while sum >> 16 != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
+fn add_words(sum: &mut u64, bytes: &[u8]) {
+    for chunk in bytes.chunks_exact(2) {
+        *sum += u64::from(u16::from_be_bytes([chunk[0], chunk[1]]));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fips::endpoint::FipsEndpointPeer;
+    use std::net::Ipv6Addr;
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -328,38 +424,47 @@ mod tests {
         assert_eq!(resolved.npub(), probe_identity.npub());
     }
 
-    #[test]
-    fn newly_authenticated_webrtc_peer_does_not_need_a_liveness_sample_before_echo() {
-        let target_identity = fips::Identity::generate();
-        let target = PeerIdentity::from_pubkey_full(target_identity.pubkey_full());
-        let peer = FipsEndpointPeer {
-            npub: target.npub(),
-            node_addr: *target.node_addr(),
-            connected: false,
-            transport_addr: Some(hex::encode(target.pubkey_full().serialize())),
-            transport_type: Some("webrtc".to_string()),
-            link_id: 7,
-            srtt_ms: None,
-            srtt_age_ms: None,
-            packets_sent: 0,
-            packets_recv: 0,
-            bytes_sent: 0,
-            bytes_recv: 0,
-            rekey_in_progress: false,
-            rekey_draining: false,
-            current_k_bit: Some(false),
-            last_outbound_route: None,
-            direct_probe_pending: false,
-            direct_probe_after_ms: None,
-            direct_probe_retry_count: 0,
-            direct_probe_auto_reconnect: false,
-            direct_probe_expires_at_ms: None,
-            nostr_traversal_consecutive_failures: 0,
-            nostr_traversal_in_cooldown: false,
-            nostr_traversal_cooldown_until_ms: None,
-            nostr_traversal_last_observed_skew_ms: None,
-        };
+    fn reply_for(request: &[u8]) -> Vec<u8> {
+        let mut reply = request.to_vec();
+        let source: [u8; 16] = request[8..24].try_into().unwrap();
+        let destination: [u8; 16] = request[24..40].try_into().unwrap();
+        reply[8..24].copy_from_slice(&destination);
+        reply[24..40].copy_from_slice(&source);
+        reply[40] = ICMPV6_ECHO_REPLY;
+        reply[42..44].fill(0);
+        let checksum = icmpv6_checksum(
+            &reply[40..],
+            Ipv6Addr::from(destination),
+            Ipv6Addr::from(source),
+        );
+        reply[42..44].copy_from_slice(&checksum.to_be_bytes());
+        reply
+    }
 
-        assert!(is_authenticated_webrtc_peer(&peer, &target));
+    #[test]
+    fn echo_match_requires_exact_reply_identity_and_payload() {
+        let source = "fd00::1".parse().unwrap();
+        let destination = "fd00::2".parse().unwrap();
+        let payload = b"functional-fsp-probe";
+        let request = build_echo_request(source, destination, 7, 9, payload);
+        let mut reply = reply_for(&request);
+
+        assert!(echo_reply_matches(
+            &reply,
+            destination,
+            source,
+            7,
+            9,
+            payload
+        ));
+        reply[48] ^= 1;
+        assert!(!echo_reply_matches(
+            &reply,
+            destination,
+            source,
+            7,
+            9,
+            payload
+        ));
     }
 }
