@@ -1,5 +1,6 @@
 //! App-facing FIPS endpoint API.
 
+pub use fips_core::NostrRelayAdapter;
 pub use fips_core::config::{
     Config, ConnectPolicy, EthernetConfig, NostrDiscoveryConfig, NostrDiscoveryPolicy,
     NostrPeerfindingSource, NostrRelayConfig, PeerAddress, PeerAddressProvenance, PeerConfig,

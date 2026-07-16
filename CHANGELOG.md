@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-07-16
+
+### Changed
+
+- Moved the existing bounded kind-21060 Nostr relay carrier into `fips-core`
+  as `NostrRelayAdapter`, so every embedded endpoint can reuse one adapter
+  implementation with application-selected relays and explicit lifecycle
+  ownership. The root `fips` facade and `fips-endpoint` re-export it.
+- Bumped `fips-endpoint` to 0.4.2 so app-facing consumers select
+  `fips-core` 0.4.2. FMP, FSP, discovery, and relay-carrier wire formats are
+  unchanged.
+
 ## [0.4.1] - 2026-07-16
 
 ### Fixed
