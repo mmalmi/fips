@@ -9,6 +9,21 @@ pub(in crate::node) enum TransitNextHopPlan {
 impl Node {
     // === Routing ===
 
+    pub(in crate::node) fn cache_current_root_coords(
+        &mut self,
+        node_addr: NodeAddr,
+        coords: crate::tree::TreeCoordinate,
+        now_ms: u64,
+    ) -> bool {
+        if coords.node_addr() != &node_addr
+            || coords.root_id() != self.tree_state.my_coords().root_id()
+        {
+            return false;
+        }
+        self.coord_cache.insert(node_addr, coords, now_ms);
+        true
+    }
+
     /// Check if a peer is a tree neighbor (parent or child in the spanning tree).
     ///
     /// Returns true if the peer is our current tree parent, or if the peer

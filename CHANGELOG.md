@@ -31,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a healthy direct destination or strict coordinate progress whenever carried
   or current cached coordinates are usable. Established application traffic
   keeps adaptive learned routing, and no FSP wire format changes.
+- Accept plaintext coordinate warmups only when their claimed node and root
+  match the active tree, at both transit and local session handlers, so stale
+  msg1/msg2 or CP coordinates cannot replace a usable loop-free route.
 - Bump `fips-endpoint` to 0.4.6 so embedded consumers select the corrected
   `fips-core` release.
 

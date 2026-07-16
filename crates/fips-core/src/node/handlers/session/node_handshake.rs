@@ -26,8 +26,7 @@ impl Node {
             );
             return;
         }
-        self.coord_cache
-            .insert(*src_addr, setup.src_coords.clone(), Self::now_ms());
+        self.cache_current_root_coords(*src_addr, setup.src_coords.clone(), Self::now_ms());
 
         // Check for existing session with this remote
         if let Some(existing) = self.sessions.get(src_addr) {
@@ -301,8 +300,7 @@ impl Node {
             );
             return;
         }
-        self.coord_cache
-            .insert(*src_addr, ack.src_coords.clone(), Self::now_ms());
+        self.cache_current_root_coords(*src_addr, ack.src_coords.clone(), Self::now_ms());
 
         // Remove the entry to take ownership of the handshake state
         let mut entry = match self.sessions.remove(src_addr) {

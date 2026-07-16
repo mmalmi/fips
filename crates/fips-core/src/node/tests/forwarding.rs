@@ -117,7 +117,7 @@ async fn test_coord_cache_warming_session_setup() {
     let mut node = make_node();
     let src_addr = make_node_addr(0x01);
     let dest_addr = make_node_addr(0x02);
-    let root_addr = make_node_addr(0xF0);
+    let root_addr = *node.tree_state().my_coords().root_id();
 
     let src_coords = TreeCoordinate::from_addrs(vec![src_addr, root_addr]).unwrap();
     let dest_coords = TreeCoordinate::from_addrs(vec![dest_addr, root_addr]).unwrap();
@@ -160,7 +160,7 @@ async fn test_coord_cache_warming_session_ack() {
     let mut node = make_node();
     let src_addr = make_node_addr(0x01);
     let dest_addr = make_node_addr(0x02);
-    let root_addr = make_node_addr(0xF0);
+    let root_addr = *node.tree_state().my_coords().root_id();
 
     let src_coords = TreeCoordinate::from_addrs(vec![src_addr, root_addr]).unwrap();
     let dest_coords = TreeCoordinate::from_addrs(vec![dest_addr, root_addr]).unwrap();
@@ -199,11 +199,55 @@ async fn test_coord_cache_warming_session_ack() {
 }
 
 #[tokio::test]
+async fn test_stale_root_session_ack_does_not_replace_current_root_coords() {
+    let mut node = make_node();
+    let src_addr = make_node_addr(0x01);
+    let dest_addr = make_node_addr(0x02);
+    let current_root = *node.tree_state().my_coords().root_id();
+    let stale_root = make_node_addr(0xF0);
+    assert_ne!(stale_root, current_root);
+
+    let current_dest_coords = TreeCoordinate::from_addrs(vec![dest_addr, current_root]).unwrap();
+    let stale_src_coords = TreeCoordinate::from_addrs(vec![src_addr, stale_root]).unwrap();
+    let stale_dest_coords = TreeCoordinate::from_addrs(vec![dest_addr, stale_root]).unwrap();
+    let now_ms = Node::now_ms();
+    node.coord_cache_mut()
+        .insert(dest_addr, current_dest_coords.clone(), now_ms);
+
+    let ack = SessionAck::new(stale_src_coords, stale_dest_coords);
+    let datagram = SessionDatagram::new(src_addr, dest_addr, ack.encode()).encode();
+    node.handle_session_datagram(authenticated_session_datagram(&datagram[1..], false))
+        .await;
+
+    assert_eq!(
+        node.coord_cache().get(&dest_addr, Node::now_ms()),
+        Some(&current_dest_coords),
+        "stale carried coordinates must not replace a usable current-root route"
+    );
+}
+
+#[test]
+fn test_current_root_coord_cache_rejects_claimed_node_mismatch() {
+    let mut node = make_node();
+    let claimed_addr = make_node_addr(0x01);
+    let different_addr = make_node_addr(0x02);
+    let root = *node.tree_state().my_coords().root_id();
+    let mismatched_coords = TreeCoordinate::from_addrs(vec![different_addr, root]).unwrap();
+
+    assert!(!node.cache_current_root_coords(claimed_addr, mismatched_coords, Node::now_ms()));
+    assert!(
+        node.coord_cache()
+            .get(&claimed_addr, Node::now_ms())
+            .is_none()
+    );
+}
+
+#[tokio::test]
 async fn test_coord_cache_warming_encrypted_msg_with_coords() {
     let mut node = make_node();
     let src_addr = make_node_addr(0x01);
     let dest_addr = make_node_addr(0x02);
-    let root_addr = make_node_addr(0xF0);
+    let root_addr = *node.tree_state().my_coords().root_id();
 
     let src_coords = TreeCoordinate::from_addrs(vec![src_addr, root_addr]).unwrap();
     let dest_coords = TreeCoordinate::from_addrs(vec![dest_addr, root_addr]).unwrap();

@@ -529,13 +529,18 @@ impl Node {
         match prefix.phase {
             FSP_PHASE_MSG1 => match SessionSetup::decode(inner) {
                 Ok(setup) => {
-                    self.coord_cache_mut()
-                        .insert(datagram.src_addr, setup.src_coords, now_ms);
-                    self.coord_cache_mut()
-                        .insert(datagram.dest_addr, setup.dest_coords, now_ms);
+                    let cached_src =
+                        self.cache_current_root_coords(datagram.src_addr, setup.src_coords, now_ms);
+                    let cached_dest = self.cache_current_root_coords(
+                        datagram.dest_addr,
+                        setup.dest_coords,
+                        now_ms,
+                    );
                     debug!(
                         src = %datagram.src_addr,
                         dest = %datagram.dest_addr,
+                        cached_src,
+                        cached_dest,
                         "Cached coords from SessionSetup"
                     );
                 }
@@ -545,13 +550,15 @@ impl Node {
             },
             FSP_PHASE_MSG2 => match SessionAck::decode(inner) {
                 Ok(ack) => {
-                    self.coord_cache_mut()
-                        .insert(datagram.src_addr, ack.src_coords, now_ms);
-                    self.coord_cache_mut()
-                        .insert(datagram.dest_addr, ack.dest_coords, now_ms);
+                    let cached_src =
+                        self.cache_current_root_coords(datagram.src_addr, ack.src_coords, now_ms);
+                    let cached_dest =
+                        self.cache_current_root_coords(datagram.dest_addr, ack.dest_coords, now_ms);
                     debug!(
                         src = %datagram.src_addr,
                         dest = %datagram.dest_addr,
+                        cached_src,
+                        cached_dest,
                         "Cached coords from SessionAck"
                     );
                 }
@@ -567,17 +574,17 @@ impl Node {
                 let coord_data = &datagram.payload[FSP_HEADER_SIZE..];
                 match parse_encrypted_coords(coord_data) {
                     Ok((src_coords, dest_coords, _bytes_consumed)) => {
-                        if let Some(coords) = src_coords {
-                            self.coord_cache_mut()
-                                .insert(datagram.src_addr, coords, now_ms);
-                        }
-                        if let Some(coords) = dest_coords {
-                            self.coord_cache_mut()
-                                .insert(datagram.dest_addr, coords, now_ms);
-                        }
+                        let cached_src = src_coords.is_some_and(|coords| {
+                            self.cache_current_root_coords(datagram.src_addr, coords, now_ms)
+                        });
+                        let cached_dest = dest_coords.is_some_and(|coords| {
+                            self.cache_current_root_coords(datagram.dest_addr, coords, now_ms)
+                        });
                         debug!(
                             src = %datagram.src_addr,
                             dest = %datagram.dest_addr,
+                            cached_src,
+                            cached_dest,
                             "Cached coords from encrypted message"
                         );
                     }
