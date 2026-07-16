@@ -43,7 +43,7 @@
     }
 
     #[test]
-    fn tcp_priority_output_has_a_shorter_bound_than_bulk() {
+    fn tcp_priority_output_keeps_its_short_internal_send_bound() {
         assert_eq!(
             non_udp_transport_send_timeout("tcp", Lane::Priority),
             Some(DATAPLANE_TCP_PRIORITY_SEND_TIMEOUT)

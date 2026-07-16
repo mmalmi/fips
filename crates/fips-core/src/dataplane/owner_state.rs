@@ -310,6 +310,11 @@ impl OwnerState {
         true
     }
 
+    #[cfg(test)]
+    pub(crate) fn fsp_coords_warmup_remaining(&self) -> u8 {
+        self.fsp_coords_warmup_remaining
+    }
+
     pub(crate) fn apply_live_config(&mut self, config: OwnerConfig) {
         if config.generation != self.generation {
             self.rekey(config.generation);

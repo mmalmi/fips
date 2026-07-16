@@ -12,6 +12,27 @@ use std::time::Duration;
 use tracing::{debug, info, warn};
 
 impl Node {
+    /// Whether a newly authenticated candidate is the opposite half of an
+    /// existing bidirectional carrier rather than a distinct alternate path.
+    ///
+    /// Accepted TCP/Tor/BLE/WebRTC connections observe a source address that
+    /// need not equal the listener address used by the outbound half. For the
+    /// same connection-oriented transport, direction is therefore the stable
+    /// cross-connection discriminator; raw remote tuples are not.
+    pub(in crate::node) fn is_connection_oriented_cross_connection(
+        &self,
+        existing_peer: &ActivePeer,
+        candidate_transport_id: crate::transport::TransportId,
+        candidate_is_outbound: bool,
+    ) -> bool {
+        existing_peer.transport_id() == Some(candidate_transport_id)
+            && existing_peer.fmp_mmp_is_initiator() != candidate_is_outbound
+            && self
+                .transports
+                .get(&candidate_transport_id)
+                .is_some_and(|transport| transport.transport_type().connection_oriented)
+    }
+
     /// Returns true if an inbound msg1 should be admitted past the
     /// `accept_connections` gate.
     ///

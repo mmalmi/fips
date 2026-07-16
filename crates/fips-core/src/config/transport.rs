@@ -489,7 +489,7 @@ impl EthernetConfig {
 // TCP Transport Configuration
 // ============================================================================
 
-/// Default TCP MTU (conservative, matches typical Ethernet MSS minus overhead).
+/// Default TCP dataplane/path budget.
 const DEFAULT_TCP_MTU: u16 = 1400;
 
 /// Default TCP connect timeout in milliseconds.
@@ -519,8 +519,9 @@ pub struct TcpConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bind_addr: Option<String>,
 
-    /// Default MTU for TCP connections. Defaults to 1400.
-    /// Per-connection MTU is derived from TCP_MAXSEG when available.
+    /// Dataplane/path budget advertised for TCP routes. Defaults to 1400.
+    /// TCP byte-stream framing is independent of TCP_MAXSEG and is bounded by
+    /// the FMP/FSP wire record's u16 payload length.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mtu: Option<u16>,
 
@@ -647,7 +648,7 @@ const DEFAULT_TOR_COOKIE_PATH: &str = "/var/run/tor/control.authcookie";
 /// establishment can take 30-60s on first connect, plus SOCKS5 handshake).
 const DEFAULT_TOR_CONNECT_TIMEOUT_MS: u64 = 120_000;
 
-/// Default Tor MTU (same as TCP).
+/// Default Tor dataplane/path budget (same as TCP).
 const DEFAULT_TOR_MTU: u16 = 1400;
 
 /// Default max inbound connections via onion service.
@@ -689,7 +690,9 @@ pub struct TorConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connect_timeout_ms: Option<u64>,
 
-    /// Default MTU for Tor connections. Defaults to 1400.
+    /// Dataplane/path budget advertised for Tor routes. Defaults to 1400.
+    /// Tor byte-stream framing is bounded by the FMP/FSP wire record's u16
+    /// payload length, independently of this budget.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mtu: Option<u16>,
 

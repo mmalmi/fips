@@ -230,6 +230,28 @@ fn build_msg1_frame() -> Vec<u8> {
     frame
 }
 
+fn build_direct_fsp_frame(counter: u64, payload_len: u16) -> Vec<u8> {
+    let mut frame =
+        vec![
+            0u8;
+            crate::proto::fsp_wire::FSP_HEADER_SIZE + payload_len as usize + crate::noise::TAG_SIZE
+        ];
+    frame[0] = crate::proto::fsp_wire::FSP_PHASE_ESTABLISHED;
+    frame[1] = crate::proto::fsp_wire::FSP_FLAG_DIRECT_TRANSPORT;
+    frame[2..4].copy_from_slice(&payload_len.to_le_bytes());
+    frame[4..12].copy_from_slice(&counter.to_le_bytes());
+    frame
+}
+
+async fn tcp_pair() -> (TcpStream, TcpStream) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let client = TcpStream::connect(listener.local_addr().unwrap())
+        .await
+        .unwrap();
+    let (server, _) = listener.accept().await.unwrap();
+    (client, server)
+}
+
 #[tokio::test]
 async fn test_send_recv_via_socks5() {
     // Set up a TCP transport as the "destination" with a listener
@@ -251,27 +273,189 @@ async fn test_send_recv_via_socks5() {
     let (tor_tx, _tor_rx) = packet_channel(32);
     let tor_config = TorConfig {
         socks5_addr: Some(proxy_addr.to_string()),
+        mtu: Some(220),
         ..Default::default()
     };
     let mut tor = TorTransport::new(TransportId::new(200), None, tor_config, tor_tx);
     tor.start_async().await.unwrap();
 
-    // Send a valid FMP frame (msg1) through the Tor transport
+    // Establish the test connection with the original FMP handshake-shaped
+    // record, then exercise two direct-FSP records on that same byte stream.
+    let direct = build_direct_fsp_frame(7, 300);
     let frame = build_msg1_frame();
     let target = TransportAddr::from_string(&dest_addr.to_string());
     tor.send_async(&target, &frame).await.unwrap();
-
-    // Receive it on the destination
     let received = tokio::time::timeout(Duration::from_secs(5), dest_rx.recv())
         .await
-        .expect("timeout waiting for packet")
+        .expect("timeout waiting for FMP frame")
         .expect("channel closed");
-
     assert_eq!(received.data.as_slice(), frame.as_slice());
+
+    // Tor's configured MTU is a path/dataplane budget, not a record
+    // delimiter. A larger direct-FSP record and its following frame must
+    // arrive as two exact records.
+    let following = build_direct_fsp_frame(8, 7);
+    tor.send_async(&target, &direct).await.unwrap();
+    tor.send_async(&target, &following).await.unwrap();
+    let mut received_frames = Vec::new();
+    for _ in 0..2 {
+        let received = tokio::time::timeout(Duration::from_secs(5), dest_rx.recv())
+            .await
+            .expect("timeout waiting for packet")
+            .expect("channel closed");
+        received_frames.push(received.data.as_slice().to_vec());
+    }
+    assert_eq!(received_frames, [direct, following]);
 
     // Clean up
     tor.stop_async().await.unwrap();
     dest.stop_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn inbound_receive_loop_bounds_an_incomplete_first_frame() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let _client = TcpStream::connect(listener.local_addr().unwrap())
+        .await
+        .unwrap();
+    let (server, peer_addr) = listener.accept().await.unwrap();
+    let (reader, writer) = server.into_split();
+    let io = Arc::new(StreamConnectionIo::new(writer));
+    let (packet_tx, _packet_rx) = packet_channel(1);
+    let pool = Arc::new(Mutex::new(HashMap::new()));
+    let stats = Arc::new(TorStats::new());
+
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        tasks::tor_receive_loop(
+            reader,
+            tasks::TorReceiveContext {
+                transport_id: TransportId::new(201),
+                remote_addr: TransportAddr::from_string(&peer_addr.to_string()),
+                packet_tx,
+                pool: pool.clone(),
+                stats: stats.clone(),
+                first_frame_timeout: Some(Duration::from_millis(30)),
+                direction: Direction::Inbound,
+                io,
+            },
+        ),
+    )
+    .await
+    .expect("incomplete inbound Tor frame should be bounded");
+
+    assert_eq!(stats.snapshot().recv_errors, 1);
+    assert!(pool.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn stale_receive_cleanup_preserves_successor_generation_and_gauge() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let old_client = TcpStream::connect(listener.local_addr().unwrap())
+        .await
+        .unwrap();
+    let (old_server, _) = listener.accept().await.unwrap();
+    let (old_reader, old_writer) = old_server.into_split();
+    let old_io = Arc::new(StreamConnectionIo::new(old_writer));
+
+    let successor_client = TcpStream::connect(listener.local_addr().unwrap())
+        .await
+        .unwrap();
+    let (successor_server, _) = listener.accept().await.unwrap();
+    let (_successor_reader, successor_writer) = successor_server.into_split();
+    let successor_io = Arc::new(StreamConnectionIo::new(successor_writer));
+    let successor_task = tokio::spawn(std::future::pending::<()>());
+
+    let addr = TransportAddr::from_string("stale-tor-generation.test:443");
+    let pool = Arc::new(Mutex::new(HashMap::new()));
+    pool.lock().await.insert(
+        addr.clone(),
+        TorConnection {
+            io: successor_io.clone(),
+            recv_task: successor_task,
+            direction: Direction::Outbound,
+        },
+    );
+    let stats = Arc::new(TorStats::new());
+    stats.record_pool_outbound_added();
+    let (packet_tx, _packet_rx) = packet_channel(1);
+
+    drop(old_client);
+    tasks::tor_receive_loop(
+        old_reader,
+        tasks::TorReceiveContext {
+            transport_id: TransportId::new(202),
+            remote_addr: addr.clone(),
+            packet_tx,
+            pool: pool.clone(),
+            stats: stats.clone(),
+            first_frame_timeout: None,
+            direction: Direction::Inbound,
+            io: old_io,
+        },
+    )
+    .await;
+
+    let mut pool = pool.lock().await;
+    let successor = pool.get(&addr).expect("stale cleanup removed successor");
+    assert!(Arc::ptr_eq(&successor.io, &successor_io));
+    assert_eq!(stats.snapshot().pool_inbound, 0);
+    assert_eq!(stats.snapshot().pool_outbound, 1);
+    let successor = pool.remove(&addr).unwrap();
+    successor.recv_task.abort();
+    drop(pool);
+    drop(successor_client);
+}
+
+#[tokio::test]
+async fn background_promotion_keeps_open_and_replaces_closed_generation_once() {
+    let (packet_tx, _packet_rx) = packet_channel(1);
+    let transport = TorTransport::new(TransportId::new(203), None, make_config(), packet_tx);
+    let addr = TransportAddr::from_string("promotion-tor-generation.test:443");
+
+    let (_existing_peer, existing_stream) = tcp_pair().await;
+    let (_existing_reader, existing_writer) = existing_stream.into_split();
+    let existing_io = Arc::new(StreamConnectionIo::new(existing_writer));
+    transport.pool.lock().await.insert(
+        addr.clone(),
+        TorConnection {
+            io: existing_io.clone(),
+            recv_task: tokio::spawn(std::future::pending::<()>()),
+            direction: Direction::Outbound,
+        },
+    );
+    transport.stats.record_pool_outbound_added();
+
+    let (_discarded_peer, discarded_candidate) = tcp_pair().await;
+    {
+        let mut pool = transport.pool.lock().await;
+        transport.promote_connection_in_pool(&mut pool, &addr, discarded_candidate);
+        assert!(Arc::ptr_eq(&pool.get(&addr).unwrap().io, &existing_io));
+    }
+    assert_eq!(transport.stats.snapshot().pool_outbound, 1);
+    assert_eq!(
+        transport.connection_state_sync(&addr),
+        ConnectionState::Connected
+    );
+
+    existing_io.mark_closed();
+    let (_replacement_peer, replacement_candidate) = tcp_pair().await;
+    {
+        let mut pool = transport.pool.lock().await;
+        transport.promote_connection_in_pool(&mut pool, &addr, replacement_candidate);
+        let replacement = &pool.get(&addr).unwrap().io;
+        assert!(!Arc::ptr_eq(replacement, &existing_io));
+        assert!(!replacement.is_closed());
+    }
+    assert_eq!(transport.stats.snapshot().pool_outbound, 1);
+    assert_eq!(transport.stats.snapshot().connections_established, 1);
+    assert_eq!(
+        transport.connection_state_sync(&addr),
+        ConnectionState::Connected
+    );
+
+    transport.close_connection_async(&addr).await;
+    assert_eq!(transport.stats.snapshot().pool_outbound, 0);
 }
 
 #[tokio::test]
@@ -307,6 +491,41 @@ async fn test_connect_timeout() {
     let addr = TransportAddr::from_string("10.0.0.1:2121");
     let result = transport.send_async(&addr, &build_msg1_frame()).await;
     assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn completed_background_dial_waits_for_pool_then_promotes_once() {
+    let (packet_tx, _packet_rx) = packet_channel(1);
+    let transport = TorTransport::new(TransportId::new(204), None, make_config(), packet_tx);
+    let remote = TransportAddr::from_string("completed-tor-background.test:443");
+    let (_peer, candidate) = tcp_pair().await;
+    let task = tokio::spawn(async move { Ok::<_, TransportError>(candidate) });
+    while !task.is_finished() {
+        tokio::task::yield_now().await;
+    }
+    transport
+        .connecting
+        .lock()
+        .await
+        .insert(remote.clone(), ConnectingEntry { task });
+
+    let occupied_pool = transport.pool.lock().await;
+    assert_eq!(
+        transport.connection_state_sync(&remote),
+        ConnectionState::Connecting
+    );
+    assert_eq!(transport.connecting.lock().await.len(), 1);
+    drop(occupied_pool);
+
+    assert_eq!(
+        transport.connection_state_sync(&remote),
+        ConnectionState::Connected
+    );
+    assert!(transport.connecting.lock().await.is_empty());
+    assert_eq!(transport.pool.lock().await.len(), 1);
+    assert_eq!(transport.stats.snapshot().pool_outbound, 1);
+    transport.close_connection_async(&remote).await;
+    assert_eq!(transport.stats.snapshot().pool_outbound, 0);
 }
 
 #[tokio::test]

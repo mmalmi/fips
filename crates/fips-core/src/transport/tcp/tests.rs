@@ -40,6 +40,15 @@ async fn unused_loopback_addr(except_port: u16) -> SocketAddr {
     panic!("no unused loopback port found");
 }
 
+async fn tcp_pair() -> (TcpStream, TcpStream) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let client = TcpStream::connect(listener.local_addr().unwrap())
+        .await
+        .unwrap();
+    let (server, _) = listener.accept().await.unwrap();
+    (client, server)
+}
+
 #[tokio::test]
 async fn test_start_stop() {
     let (tx, _rx) = packet_channel(100);
@@ -77,6 +86,8 @@ async fn connect_to_any_addr_tries_later_candidates() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn transport_handle_bounds_a_stalled_tcp_write() {
+    use tokio::io::AsyncReadExt as _;
+
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let remote = listener.local_addr().unwrap();
     let accept = tokio::spawn(async move {
@@ -90,9 +101,16 @@ async fn transport_handle_bounds_a_stalled_tcp_write() {
     config.send_buf_size = Some(16 * 1024);
     let mut transport = TcpTransport::new(TransportId::new(1), None, config, tx);
     transport.start_async().await.unwrap();
-    let handle = crate::transport::TransportHandle::Tcp(transport);
+    let mut handle = crate::transport::TransportHandle::Tcp(transport);
     let remote = TransportAddr::from_string(&remote.to_string());
-    let payload = vec![0u8; 1400];
+    let mut payload =
+        vec![
+            0u8;
+            crate::proto::fsp_wire::FSP_HEADER_SIZE + u16::MAX as usize + crate::noise::TAG_SIZE
+        ];
+    payload[0] = crate::proto::fsp_wire::FSP_PHASE_ESTABLISHED;
+    payload[1] = crate::proto::fsp_wire::FSP_FLAG_DIRECT_TRANSPORT;
+    payload[2..4].copy_from_slice(&u16::MAX.to_le_bytes());
     let started = tokio::time::Instant::now();
     let mut sent = 0usize;
 
@@ -108,6 +126,35 @@ async fn transport_handle_bounds_a_stalled_tcp_write() {
     assert!(sent > 0);
     assert!(started.elapsed() < Duration::from_secs(2));
     accept.abort();
+
+    let crate::transport::TransportHandle::Tcp(tcp) = &handle else {
+        unreachable!("test handle is TCP")
+    };
+    assert!(
+        !tcp.pool.lock().await.contains_key(&remote),
+        "a timed-out partial writer must not remain reusable"
+    );
+
+    let clean_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let clean_remote =
+        TransportAddr::from_string(&clean_listener.local_addr().unwrap().to_string());
+    let clean_frame = build_msg1_frame(0x5a);
+    let expected = clean_frame.clone();
+    let clean_accept = tokio::spawn(async move {
+        let (mut stream, _) = clean_listener.accept().await.unwrap();
+        let mut received = vec![0u8; expected.len()];
+        stream.read_exact(&mut received).await.unwrap();
+        assert_eq!(received, expected);
+    });
+    handle
+        .send(&clean_remote, &clean_frame)
+        .await
+        .expect("a clean connection remains usable after evicting the poisoned writer");
+    timeout(Duration::from_secs(1), clean_accept)
+        .await
+        .expect("clean connection should receive the complete next record")
+        .expect("clean accept task should not panic");
+    handle.stop().await.unwrap();
 }
 
 #[tokio::test]
@@ -205,7 +252,7 @@ async fn test_send_recv() {
 async fn inbound_first_frame_timeout_closes_slowloris_connection() {
     use tokio::io::AsyncWriteExt as _;
 
-    let (tx, _rx) = packet_channel(100);
+    let (tx, mut rx) = packet_channel(100);
     let config = TcpConfig {
         bind_addr: Some("127.0.0.1:0".to_string()),
         first_frame_timeout_ms: Some(50),
@@ -233,8 +280,196 @@ async fn inbound_first_frame_timeout_closes_slowloris_connection() {
     let pool = transport.pool.lock().await;
     assert_eq!(pool.len(), 0);
     drop(pool);
+    assert_eq!(transport.stats.snapshot().pool_inbound, 0);
+
+    let mut successor = TcpStream::connect(addr).await.unwrap();
+    let successor_frame = build_msg1_frame(0x77);
+    successor.write_all(&successor_frame).await.unwrap();
+    let received = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("valid successor should recover the inbound slot")
+        .expect("packet channel should remain open");
+    assert_eq!(received.data.as_slice(), successor_frame.as_slice());
+    drop(successor);
+
+    timeout(Duration::from_secs(1), async {
+        while transport.stats.snapshot().pool_inbound != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("successor EOF should release its exact generation");
 
     transport.stop_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn stale_receive_cleanup_preserves_successor_generation_and_gauge() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let old_client = TcpStream::connect(listener.local_addr().unwrap())
+        .await
+        .unwrap();
+    let (old_server, _) = listener.accept().await.unwrap();
+    let (old_reader, old_writer) = old_server.into_split();
+    let old_io = Arc::new(StreamConnectionIo::new(old_writer));
+
+    let successor_client = TcpStream::connect(listener.local_addr().unwrap())
+        .await
+        .unwrap();
+    let (successor_server, _) = listener.accept().await.unwrap();
+    let (_successor_reader, successor_writer) = successor_server.into_split();
+    let successor_io = Arc::new(StreamConnectionIo::new(successor_writer));
+    let successor_task = tokio::spawn(std::future::pending::<()>());
+
+    let addr = TransportAddr::from_string("stale-generation.test:21211");
+    let pool = Arc::new(Mutex::new(HashMap::new()));
+    pool.lock().await.insert(
+        addr.clone(),
+        TcpConnection {
+            io: successor_io.clone(),
+            recv_task: successor_task,
+            direction: Direction::Outbound,
+        },
+    );
+    let stats = Arc::new(TcpStats::new());
+    stats.record_pool_outbound_added();
+    let (packet_tx, _packet_rx) = packet_channel(1);
+
+    drop(old_client);
+    tcp_receive_loop(
+        old_reader,
+        TcpReceiveContext {
+            transport_id: TransportId::new(44),
+            remote_addr: addr.clone(),
+            packet_tx,
+            pool: pool.clone(),
+            stats: stats.clone(),
+            first_frame_timeout: None,
+            frame_completion_timeout: DEFAULT_FRAME_COMPLETION_TIMEOUT,
+            direction: Direction::Inbound,
+            io: old_io,
+        },
+    )
+    .await;
+
+    let mut pool = pool.lock().await;
+    let successor = pool.get(&addr).expect("stale cleanup removed successor");
+    assert!(Arc::ptr_eq(&successor.io, &successor_io));
+    assert_eq!(stats.snapshot().pool_inbound, 0);
+    assert_eq!(stats.snapshot().pool_outbound, 1);
+    let successor = pool.remove(&addr).unwrap();
+    successor.recv_task.abort();
+    drop(pool);
+    drop(successor_client);
+}
+
+#[tokio::test]
+async fn concurrent_first_sends_share_one_pooled_generation() {
+    use tokio::io::AsyncReadExt as _;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let remote_socket = listener.local_addr().unwrap();
+    let frame_a = build_msg1_frame(0x31);
+    let frame_b = build_msg1_frame(0x42);
+    let expected_a = frame_a.clone();
+    let expected_b = frame_b.clone();
+    let receive = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = timeout(Duration::from_secs(1), listener.accept())
+                .await
+                .expect("candidate connection should arrive")
+                .unwrap();
+            let mut records = vec![0u8; expected_a.len() + expected_b.len()];
+            match timeout(Duration::from_secs(1), stream.read_exact(&mut records)).await {
+                Ok(Ok(_)) => return records,
+                Ok(Err(error)) if error.kind() == std::io::ErrorKind::UnexpectedEof => continue,
+                other => panic!("winning connection did not carry both records: {other:?}"),
+            }
+        }
+        panic!("no winning candidate carried both records")
+    });
+
+    let (packet_tx, _packet_rx) = packet_channel(1);
+    let mut transport = TcpTransport::new(
+        TransportId::new(45),
+        None,
+        make_outbound_config(),
+        packet_tx,
+    );
+    transport.start_async().await.unwrap();
+    let remote = TransportAddr::from_string(&remote_socket.to_string());
+    let (sent_a, sent_b) = tokio::join!(
+        transport.send_async(&remote, &frame_a),
+        transport.send_async(&remote, &frame_b),
+    );
+    sent_a.unwrap();
+    sent_b.unwrap();
+
+    let records = receive.await.unwrap();
+    let (first, second) = records.split_at(frame_a.len());
+    assert!(
+        (first == frame_a && second == frame_b) || (first == frame_b && second == frame_a),
+        "both exact records must traverse the winning generation"
+    );
+    assert_eq!(transport.pool.lock().await.len(), 1);
+    assert_eq!(transport.stats.snapshot().pool_outbound, 1);
+    transport.stop_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn background_promotion_keeps_open_and_replaces_closed_generation_once() {
+    let (packet_tx, _packet_rx) = packet_channel(1);
+    let transport = TcpTransport::new(
+        TransportId::new(46),
+        None,
+        make_outbound_config(),
+        packet_tx,
+    );
+    let addr = TransportAddr::from_string("promotion-generation.test:443");
+
+    let (_existing_peer, existing_stream) = tcp_pair().await;
+    let (_existing_reader, existing_writer) = existing_stream.into_split();
+    let existing_io = Arc::new(StreamConnectionIo::new(existing_writer));
+    transport.pool.lock().await.insert(
+        addr.clone(),
+        TcpConnection {
+            io: existing_io.clone(),
+            recv_task: tokio::spawn(std::future::pending::<()>()),
+            direction: Direction::Outbound,
+        },
+    );
+    transport.stats.record_pool_outbound_added();
+
+    let (_discarded_peer, discarded_candidate) = tcp_pair().await;
+    {
+        let mut pool = transport.pool.lock().await;
+        transport.promote_connection_in_pool(&mut pool, &addr, discarded_candidate);
+        assert!(Arc::ptr_eq(&pool.get(&addr).unwrap().io, &existing_io));
+    }
+    assert_eq!(transport.stats.snapshot().pool_outbound, 1);
+    assert_eq!(
+        transport.connection_state_sync(&addr),
+        ConnectionState::Connected
+    );
+
+    existing_io.mark_closed();
+    let (_replacement_peer, replacement_candidate) = tcp_pair().await;
+    {
+        let mut pool = transport.pool.lock().await;
+        transport.promote_connection_in_pool(&mut pool, &addr, replacement_candidate);
+        let replacement = &pool.get(&addr).unwrap().io;
+        assert!(!Arc::ptr_eq(replacement, &existing_io));
+        assert!(!replacement.is_closed());
+    }
+    assert_eq!(transport.stats.snapshot().pool_outbound, 1);
+    assert_eq!(transport.stats.snapshot().connections_established, 1);
+    assert_eq!(
+        transport.connection_state_sync(&addr),
+        ConnectionState::Connected
+    );
+
+    transport.close_connection_async(&addr).await;
+    assert_eq!(transport.stats.snapshot().pool_outbound, 0);
 }
 
 #[tokio::test]
@@ -503,47 +738,43 @@ async fn test_connection_drop_and_reconnect() {
 }
 
 #[tokio::test]
-async fn test_connect_async_success() {
-    let (tx1, mut rx1) = packet_channel(100);
-    let (tx2, _rx2) = packet_channel(100);
+async fn completed_background_dial_waits_for_pool_then_promotes_once() {
+    let (packet_tx, _packet_rx) = packet_channel(1);
+    let transport = TcpTransport::new(
+        TransportId::new(47),
+        None,
+        make_outbound_config(),
+        packet_tx,
+    );
+    let remote = TransportAddr::from_string("completed-background.test:443");
+    let (_peer, candidate) = tcp_pair().await;
+    let task = tokio::spawn(async move { Ok::<_, TransportError>(candidate) });
+    while !task.is_finished() {
+        tokio::task::yield_now().await;
+    }
+    transport
+        .connecting
+        .lock()
+        .await
+        .insert(remote.clone(), ConnectingEntry { task });
 
-    let mut t1 = TcpTransport::new(TransportId::new(1), None, make_outbound_config(), tx1);
-    let mut t2 = TcpTransport::new(TransportId::new(2), None, make_config(), tx2);
+    let occupied_pool = transport.pool.lock().await;
+    assert_eq!(
+        transport.connection_state_sync(&remote),
+        ConnectionState::Connecting
+    );
+    assert_eq!(transport.connecting.lock().await.len(), 1);
+    drop(occupied_pool);
 
-    t1.start_async().await.unwrap();
-    t2.start_async().await.unwrap();
-
-    let addr2 = t2.local_addr().unwrap();
-    let remote = TransportAddr::from_string(&addr2.to_string());
-
-    // State should be None before connect
-    assert_eq!(t1.connection_state_sync(&remote), ConnectionState::None);
-
-    // Initiate non-blocking connect
-    t1.connect_async(&remote).await.unwrap();
-
-    // Wait for the background connect to complete
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    // Poll state — should be Connected now
-    let state = t1.connection_state_sync(&remote);
-    assert_eq!(state, ConnectionState::Connected);
-
-    // Now send should work (connection already established)
-    let mut msg1 = vec![0xAA; 114];
-    msg1[0] = 0x01;
-    msg1[1] = 0x00;
-    msg1[2..4].copy_from_slice(&110u16.to_le_bytes());
-
-    t1.send_async(&remote, &msg1).await.unwrap();
-
-    let packet = timeout(Duration::from_secs(2), rx1.recv()).await;
-    // We receive on rx1 but that's the wrong receiver — t2's rx gets the packet
-    // Just verify send didn't error
-    drop(packet);
-
-    t1.stop_async().await.unwrap();
-    t2.stop_async().await.unwrap();
+    assert_eq!(
+        transport.connection_state_sync(&remote),
+        ConnectionState::Connected
+    );
+    assert!(transport.connecting.lock().await.is_empty());
+    assert_eq!(transport.pool.lock().await.len(), 1);
+    assert_eq!(transport.stats.snapshot().pool_outbound, 1);
+    transport.close_connection_async(&remote).await;
+    assert_eq!(transport.stats.snapshot().pool_outbound, 0);
 }
 
 #[tokio::test]

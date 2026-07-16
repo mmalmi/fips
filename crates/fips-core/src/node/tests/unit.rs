@@ -3,6 +3,7 @@ use crate::discovery::nostr::{BootstrapEvent, NostrDiscovery};
 use crate::node::wire::{Msg1Header, build_msg2};
 use crate::peer::{ActivePeer, ActivePeerSession, PromotionResult};
 use crate::transport::ReceivedPacket;
+use crate::transport::tcp::TcpTransport;
 use crate::transport::udp::UdpTransport;
 use crate::transport::{TransportHandle, packet_channel};
 

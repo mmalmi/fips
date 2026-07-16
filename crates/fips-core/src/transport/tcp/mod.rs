@@ -26,9 +26,11 @@ pub mod stats;
 pub mod stream;
 mod tasks;
 
+use stream::{DEFAULT_FRAME_COMPLETION_TIMEOUT, validate_stream_record};
 use tasks::{AcceptConfig, TcpReceiveContext, accept_loop, tcp_receive_loop};
 
 use super::resolve_socket_addrs;
+use super::stream_io::{StreamConnectionIo, StreamWriteError};
 use super::{
     ConnectionState, DiscoveredPeer, PacketTx, Transport, TransportAddr, TransportError,
     TransportId, TransportState, TransportType,
@@ -42,12 +44,13 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, trace, warn};
+
+const TCP_SEND_TIMEOUT: Duration = Duration::from_millis(500);
 
 // ============================================================================
 // Connection Pool
@@ -61,8 +64,8 @@ enum Direction {
 
 /// State for a single TCP connection to a peer.
 struct TcpConnection {
-    /// Write half of the split stream.
-    writer: Arc<Mutex<OwnedWriteHalf>>,
+    /// Write side, close signal, and unique pool generation token.
+    io: Arc<StreamConnectionIo<OwnedWriteHalf>>,
     /// Receive task for this connection.
     recv_task: JoinHandle<()>,
     direction: Direction,
@@ -71,13 +74,30 @@ struct TcpConnection {
 /// Shared connection pool.
 type ConnectionPool = Arc<Mutex<HashMap<TransportAddr, TcpConnection>>>;
 
+fn remove_if_current(
+    pool: &mut HashMap<TransportAddr, TcpConnection>,
+    addr: &TransportAddr,
+    io: &Arc<StreamConnectionIo<OwnedWriteHalf>>,
+) -> Option<TcpConnection> {
+    pool.get(addr)
+        .is_some_and(|connection| Arc::ptr_eq(&connection.io, io))
+        .then(|| pool.remove(addr))
+        .flatten()
+}
+
+fn record_pool_removed(stats: &TcpStats, connection: &TcpConnection) {
+    match connection.direction {
+        Direction::Inbound => stats.record_pool_inbound_removed(),
+        Direction::Outbound => stats.record_pool_outbound_removed(),
+    }
+}
+
 /// A pending background connection attempt.
 ///
-/// Holds the JoinHandle for a spawned TCP connect task. The task
-/// produces a configured `TcpStream` and MSS-derived MTU on success.
+/// Holds the JoinHandle for a spawned TCP connect task.
 struct ConnectingEntry {
     /// Background task performing TCP connect + socket configuration.
-    task: JoinHandle<Result<(TcpStream, u16), TransportError>>,
+    task: JoinHandle<Result<TcpStream, TransportError>>,
 }
 
 /// Map of addresses with background connection attempts in progress.
@@ -185,7 +205,6 @@ impl TcpTransport {
             let pool = self.pool.clone();
             let stats = self.stats.clone();
             let cfg = AcceptConfig {
-                mtu: self.config.mtu(),
                 max_inbound: self.config.max_inbound_connections(),
                 nodelay: self.config.nodelay(),
                 keepalive_secs: self.config.keepalive_secs(),
@@ -283,40 +302,50 @@ impl TcpTransport {
         addr: &TransportAddr,
         data: &[u8],
     ) -> Result<usize, TransportError> {
+        self.send_async_with_timeout(addr, data, TCP_SEND_TIMEOUT)
+            .await
+    }
+
+    pub(crate) async fn send_async_with_timeout(
+        &self,
+        addr: &TransportAddr,
+        data: &[u8],
+        send_timeout: Duration,
+    ) -> Result<usize, TransportError> {
         if !self.state.is_operational() {
             return Err(TransportError::NotStarted);
         }
 
-        // Pre-send MTU check: reject oversize packets before writing them
-        // to the TCP stream. Without this, the receiver's FMP stream reader
-        // would see payload_len > max and close the connection, causing a
-        // disruptive reset-reconnect cycle.
-        let mtu = self.config.mtu() as usize;
-        if data.len() > mtu {
-            self.stats.record_mtu_exceeded();
-            return Err(TransportError::MtuExceeded {
-                packet_size: data.len(),
-                mtu: self.config.mtu(),
-            });
+        if let Err(error) = validate_stream_record(data) {
+            self.stats.record_send_error();
+            return Err(TransportError::SendFailed(format!(
+                "invalid FIPS stream record: {error}"
+            )));
         }
+        let deadline = tokio::time::Instant::now() + send_timeout;
 
         // Get or create connection
-        let writer = {
-            let pool = self.pool.lock().await;
-            pool.get(addr).map(|c| c.writer.clone())
+        let io = {
+            let pool = tokio::time::timeout_at(deadline, self.pool.lock())
+                .await
+                .map_err(|_| TransportError::Timeout)?;
+            pool.get(addr).map(|connection| connection.io.clone())
         };
 
-        let writer = match writer {
-            Some(w) => w,
+        let io = match io {
+            Some(io) if !io.is_closed() => io,
             None => {
                 // Connect-on-send
-                self.connect(addr).await?
+                tokio::time::timeout_at(deadline, self.connect(addr))
+                    .await
+                    .map_err(|_| TransportError::Timeout)??
             }
+            Some(_) => tokio::time::timeout_at(deadline, self.connect(addr))
+                .await
+                .map_err(|_| TransportError::Timeout)??,
         };
 
-        // Write packet directly (no framing transformation needed)
-        let mut w = writer.lock().await;
-        match w.write_all(data).await {
+        match io.write_record(data, Some(deadline)).await {
             Ok(()) => {
                 self.stats.record_send(data.len());
                 trace!(
@@ -327,31 +356,43 @@ impl TcpTransport {
                 );
                 Ok(data.len())
             }
-            Err(e) => {
+            Err(error) => {
                 self.stats.record_send_error();
-                drop(w);
-                // Remove failed connection from pool
-                let mut pool = self.pool.lock().await;
-                if let Some(conn) = pool.remove(addr) {
-                    conn.recv_task.abort();
-                    match conn.direction {
-                        Direction::Inbound => self.stats.record_pool_inbound_removed(),
-                        Direction::Outbound => self.stats.record_pool_outbound_removed(),
+                if error.poisons_connection() {
+                    self.remove_failed_connection(addr, &io).await;
+                }
+                match error {
+                    StreamWriteError::LockTimeout | StreamWriteError::WriteTimeout => {
+                        Err(TransportError::Timeout)
+                    }
+                    StreamWriteError::Closed | StreamWriteError::Io(_) => {
+                        Err(TransportError::SendFailed(error.to_string()))
                     }
                 }
-                Err(TransportError::SendFailed(format!("{}", e)))
             }
+        }
+    }
+
+    async fn remove_failed_connection(
+        &self,
+        addr: &TransportAddr,
+        failed_io: &Arc<StreamConnectionIo<OwnedWriteHalf>>,
+    ) {
+        let mut pool = self.pool.lock().await;
+        if let Some(connection) = remove_if_current(&mut pool, addr, failed_io) {
+            connection.recv_task.abort();
+            record_pool_removed(&self.stats, &connection);
         }
     }
 
     /// Establish a new TCP connection to the given address.
     ///
-    /// Configures socket options, reads TCP_MAXSEG for MTU, splits the
-    /// stream, spawns a receive task, and stores in the pool.
+    /// Configures socket options, splits the stream, spawns a receive task,
+    /// and stores it in the pool.
     async fn connect(
         &self,
         addr: &TransportAddr,
-    ) -> Result<Arc<Mutex<OwnedWriteHalf>>, TransportError> {
+    ) -> Result<Arc<StreamConnectionIo<OwnedWriteHalf>>, TransportError> {
         let socket_addrs = resolve_socket_addrs(addr).await?;
         let timeout_ms = self.config.connect_timeout_ms();
 
@@ -374,23 +415,31 @@ impl TcpTransport {
             .map_err(|e| TransportError::StartFailed(format!("into_std: {}", e)))?;
         configure_socket(&std_stream, &self.config)?;
 
-        // Read TCP_MAXSEG for per-connection MTU
-        let mss_mtu = read_mss_mtu(&std_stream, self.config.mtu());
-
         // Convert back to tokio
         let stream = TcpStream::from_std(std_stream)
             .map_err(|e| TransportError::StartFailed(format!("from_std: {}", e)))?;
 
-        // Split and spawn receive task
+        // Reserve the pool slot before spawning the detached receive task.
+        let mut pool_guard = self.pool.lock().await;
+        if let Some(existing) = pool_guard.get(addr)
+            && !existing.io.is_closed()
+        {
+            return Ok(existing.io.clone());
+        }
+        if let Some(closed) = pool_guard.remove(addr) {
+            closed.recv_task.abort();
+            record_pool_removed(&self.stats, &closed);
+        }
+
         let (read_half, write_half) = stream.into_split();
-        let writer = Arc::new(Mutex::new(write_half));
+        let io = Arc::new(StreamConnectionIo::new(write_half));
 
         let transport_id = self.transport_id;
         let packet_tx = self.packet_tx.clone();
-        let pool = self.pool.clone();
+        let recv_pool = self.pool.clone();
         let recv_stats = self.stats.clone();
         let remote_addr = addr.clone();
-        let mtu = mss_mtu;
+        let recv_io = io.clone();
 
         let recv_task = tokio::spawn(async move {
             tcp_receive_loop(
@@ -399,24 +448,24 @@ impl TcpTransport {
                     transport_id,
                     remote_addr,
                     packet_tx,
-                    pool,
-                    mtu,
+                    pool: recv_pool,
                     stats: recv_stats,
                     first_frame_timeout: None,
+                    frame_completion_timeout: DEFAULT_FRAME_COMPLETION_TIMEOUT,
                     direction: Direction::Outbound,
+                    io: recv_io,
                 },
             )
             .await;
         });
 
         let conn = TcpConnection {
-            writer: writer.clone(),
+            io: io.clone(),
             recv_task,
             direction: Direction::Outbound,
         };
 
-        let mut pool = self.pool.lock().await;
-        pool.insert(addr.clone(), conn);
+        pool_guard.insert(addr.clone(), conn);
 
         self.stats.record_connection_established();
         self.stats.record_pool_outbound_added();
@@ -424,11 +473,10 @@ impl TcpTransport {
         debug!(
             transport_id = %self.transport_id,
             remote_addr = %addr,
-            mtu = mss_mtu,
             "TCP connection established (connect-on-send)"
         );
 
-        Ok(writer)
+        Ok(io)
     }
 
     /// Close a specific connection asynchronously.
@@ -455,8 +503,8 @@ impl TcpTransport {
     /// Initiate a non-blocking connection to a remote address.
     ///
     /// Spawns a background task that performs TCP connect with timeout,
-    /// configures socket options, and reads MSS. The connection becomes
-    /// available for `send_async()` once the task completes successfully.
+    /// configures socket options, and makes the connection available for
+    /// `send_async()` once the task completes successfully.
     ///
     /// Poll `connection_state_sync()` to check progress.
     pub async fn connect_async(&self, addr: &TransportAddr) -> Result<(), TransportError> {
@@ -467,7 +515,10 @@ impl TcpTransport {
         // Already established?
         {
             let pool = self.pool.lock().await;
-            if pool.contains_key(addr) {
+            if pool
+                .get(addr)
+                .is_some_and(|connection| !connection.io.is_closed())
+            {
                 return Ok(());
             }
         }
@@ -492,6 +543,21 @@ impl TcpTransport {
             timeout_ms,
             "Initiating background TCP connect"
         );
+
+        // Reserve this address before spawning. Holding the pool guard across
+        // the connecting-map recheck prevents an established generation from
+        // racing the reservation; cancellation before spawn leaves no task.
+        let pool = self.pool.lock().await;
+        if pool
+            .get(addr)
+            .is_some_and(|connection| !connection.io.is_closed())
+        {
+            return Ok(());
+        }
+        let mut connecting = self.connecting.lock().await;
+        if connecting.contains_key(addr) {
+            return Ok(());
+        }
 
         let task = tokio::spawn(async move {
             let stream = match connect_to_any_addr(&socket_addrs, timeout_ms).await {
@@ -522,18 +588,15 @@ impl TcpTransport {
                 .map_err(|e| TransportError::StartFailed(format!("into_std: {}", e)))?;
             configure_socket(&std_stream, &config)?;
 
-            // Read TCP_MAXSEG for per-connection MTU
-            let mss_mtu = read_mss_mtu(&std_stream, config.mtu());
-
             // Convert back to tokio
             let stream = TcpStream::from_std(std_stream)
                 .map_err(|e| TransportError::StartFailed(format!("from_std: {}", e)))?;
 
-            Ok((stream, mss_mtu))
+            Ok(stream)
         });
 
-        let mut connecting = self.connecting.lock().await;
         connecting.insert(addr.clone(), ConnectingEntry { task });
+        drop(pool);
 
         Ok(())
     }
@@ -548,12 +611,20 @@ impl TcpTransport {
     /// Returns `ConnectionState::Connecting` if locks can't be acquired.
     pub fn connection_state_sync(&self, addr: &TransportAddr) -> ConnectionState {
         // Check established pool first
-        if let Ok(pool) = self.pool.try_lock() {
-            if pool.contains_key(addr) {
-                return ConnectionState::Connected;
+        let mut pool = match self.pool.try_lock() {
+            Ok(pool) => pool,
+            Err(_) => return ConnectionState::Connecting,
+        };
+        if pool
+            .get(addr)
+            .is_some_and(|connection| !connection.io.is_closed())
+        {
+            if let Ok(mut connecting) = self.connecting.try_lock()
+                && let Some(entry) = connecting.remove(addr)
+            {
+                entry.task.abort();
             }
-        } else {
-            return ConnectionState::Connecting; // can't tell, assume still going
+            return ConnectionState::Connected;
         }
 
         // Check connecting pool
@@ -577,13 +648,13 @@ impl TcpTransport {
         // now_or_never to get the result without blocking.
         let addr_clone = addr.clone();
         let task = connecting.remove(&addr_clone).unwrap().task;
+        drop(connecting);
 
         // Use futures::FutureExt::now_or_never or block_on for the finished task.
         // Since the task is finished, we can safely poll it.
         match task.now_or_never() {
-            Some(Ok(Ok((stream, mss_mtu)))) => {
-                // Promote to established pool
-                self.promote_connection(addr, stream, mss_mtu);
+            Some(Ok(Ok(stream))) => {
+                self.promote_connection_in_pool(&mut pool, addr, stream);
                 ConnectionState::Connected
             }
             Some(Ok(Err(e))) => ConnectionState::Failed(format!("{}", e)),
@@ -598,19 +669,31 @@ impl TcpTransport {
         }
     }
 
-    /// Promote a completed background connection to the established pool.
-    ///
-    /// Splits the stream, spawns a receive loop, and inserts into the pool.
-    /// Called from `connection_state_sync()` when a background task completes.
-    fn promote_connection(&self, addr: &TransportAddr, stream: TcpStream, mss_mtu: u16) {
+    fn promote_connection_in_pool(
+        &self,
+        pool: &mut HashMap<TransportAddr, TcpConnection>,
+        addr: &TransportAddr,
+        stream: TcpStream,
+    ) {
+        if let Some(existing) = pool.get(addr)
+            && !existing.io.is_closed()
+        {
+            return;
+        }
+        if let Some(closed) = pool.remove(addr) {
+            closed.recv_task.abort();
+            record_pool_removed(&self.stats, &closed);
+        }
+
         let (read_half, write_half) = stream.into_split();
-        let writer = Arc::new(Mutex::new(write_half));
+        let io = Arc::new(StreamConnectionIo::new(write_half));
 
         let transport_id = self.transport_id;
         let packet_tx = self.packet_tx.clone();
-        let pool = self.pool.clone();
+        let recv_pool = self.pool.clone();
         let recv_stats = self.stats.clone();
         let remote_addr = addr.clone();
+        let recv_io = io.clone();
 
         let recv_task = tokio::spawn(async move {
             tcp_receive_loop(
@@ -619,43 +702,31 @@ impl TcpTransport {
                     transport_id,
                     remote_addr,
                     packet_tx,
-                    pool,
-                    mtu: mss_mtu,
+                    pool: recv_pool,
                     stats: recv_stats,
                     first_frame_timeout: None,
+                    frame_completion_timeout: DEFAULT_FRAME_COMPLETION_TIMEOUT,
                     direction: Direction::Outbound,
+                    io: recv_io,
                 },
             )
             .await;
         });
 
         let conn = TcpConnection {
-            writer,
+            io,
             recv_task,
             direction: Direction::Outbound,
         };
 
-        // Use try_lock since we're in a sync context and the pool
-        // should be available (connection_state_sync already checked it)
-        if let Ok(mut pool) = self.pool.try_lock() {
-            pool.insert(addr.clone(), conn);
-            self.stats.record_connection_established();
-            self.stats.record_pool_outbound_added();
-            debug!(
-                transport_id = %self.transport_id,
-                remote_addr = %addr,
-                mtu = mss_mtu,
-                "TCP connection established (background connect)"
-            );
-        } else {
-            // Pool locked — abort the recv task, connection will be retried
-            conn.recv_task.abort();
-            warn!(
-                transport_id = %self.transport_id,
-                remote_addr = %addr,
-                "Failed to promote connection (pool locked)"
-            );
-        }
+        pool.insert(addr.clone(), conn);
+        self.stats.record_pool_outbound_added();
+        self.stats.record_connection_established();
+        debug!(
+            transport_id = %self.transport_id,
+            remote_addr = %addr,
+            "TCP connection established (background connect)"
+        );
     }
 }
 
@@ -677,9 +748,8 @@ impl Transport for TcpTransport {
     }
 
     fn link_mtu(&self, _addr: &TransportAddr) -> u16 {
-        // Per-link MTU would require synchronous pool access.
-        // For now, return the configured default. The async send path
-        // uses the per-connection MSS-derived MTU for validation.
+        // This is the dataplane/path budget. TCP stream record framing uses
+        // the protocol's u16 payload length and is independent of TCP MSS.
         self.config.mtu()
     }
 
@@ -816,38 +886,6 @@ fn configure_accepted_socket(
         .map_err(|e| TransportError::StartFailed(format!("set send buffer: {}", e)))?;
 
     Ok(())
-}
-
-/// Read TCP_MAXSEG and derive per-connection MTU, falling back to default.
-fn read_mss_mtu(stream: &std::net::TcpStream, default_mtu: u16) -> u16 {
-    // Try to read TCP_MAXSEG. Not all platforms support this.
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::unix::io::AsRawFd;
-        unsafe {
-            let mut mss: libc::c_int = 0;
-            let mut len: libc::socklen_t = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
-            let fd = stream.as_raw_fd();
-            let ret = libc::getsockopt(
-                fd,
-                libc::IPPROTO_TCP,
-                libc::TCP_MAXSEG,
-                &mut mss as *mut libc::c_int as *mut libc::c_void,
-                &mut len,
-            );
-            if ret == 0 && mss > 0 {
-                let mss_mtu = (mss as u32).min(u16::MAX as u32) as u16;
-                // Use the smaller of MSS and configured default
-                return mss_mtu.min(default_mtu);
-            }
-        }
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    let _ = stream;
-
-    // Fallback: use configured default MTU
-    default_mtu
 }
 
 // ============================================================================

@@ -6,9 +6,12 @@
 //! This module is deliberately separate from the TCP transport so it can
 //! be reused by the future Tor transport.
 
-use tokio::io::{AsyncRead, AsyncReadExt};
+use std::time::Duration;
 
-use crate::proto::fsp_wire::{FSP_FLAG_DIRECT_TRANSPORT, FSP_FLAG_U, FSP_HEADER_SIZE};
+use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::time::timeout;
+
+use crate::proto::fsp_wire::{FSP_FLAG_CP, FSP_FLAG_DIRECT_TRANSPORT, FSP_FLAG_U, FSP_HEADER_SIZE};
 
 /// FMP phase values (low nibble of byte 0).
 const PHASE_ESTABLISHED: u8 = 0x0;
@@ -26,6 +29,10 @@ const FMP_ESTABLISHED_REMAINING_HEADER: usize = 12;
 const DIRECT_FSP_REMAINING_HEADER: usize = FSP_HEADER_SIZE - PREFIX_SIZE;
 const AEAD_TAG_SIZE: usize = 16;
 
+/// Maximum time allowed to finish a byte-stream record after its first byte.
+/// Waiting for that first byte remains unbounded on established idle links.
+pub(crate) const DEFAULT_FRAME_COMPLETION_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Errors from the FMP stream reader.
 #[derive(Debug)]
 pub enum StreamError {
@@ -33,8 +40,6 @@ pub enum StreamError {
     UnknownVersion(u8),
     /// Unknown FMP phase byte — protocol error, close connection.
     UnknownPhase(u8),
-    /// Direct-FSP marker combined with flags that cannot be direct/encrypted.
-    InvalidDirectFspFlags(u8),
     /// Payload length exceeds the connection's MTU — corrupted or malicious.
     PayloadTooLarge {
         payload_len: u16,
@@ -51,9 +56,6 @@ impl std::fmt::Display for StreamError {
         match self {
             StreamError::UnknownVersion(v) => write!(f, "unknown FMP version: {}", v),
             StreamError::UnknownPhase(p) => write!(f, "unknown FMP phase: 0x{:02x}", p),
-            StreamError::InvalidDirectFspFlags(flags) => {
-                write!(f, "invalid direct FSP flags: 0x{flags:02x}")
-            }
             StreamError::PayloadTooLarge {
                 payload_len,
                 max_payload_len,
@@ -100,33 +102,21 @@ const MSG1_PAYLOAD_LEN: u16 = (MSG1_WIRE_SIZE - PREFIX_SIZE) as u16;
 /// Expected payload_len for msg2: sender_idx(4) + receiver_idx(4) + noise_msg2(57) = 65.
 const MSG2_PAYLOAD_LEN: u16 = (MSG2_WIRE_SIZE - PREFIX_SIZE) as u16;
 
-/// Read one complete FIPS packet from an async reader.
-///
-/// Uses the 4-byte common prefix to determine the total packet size, then
-/// reads the remaining bytes. Established direct-FSP records carry the
-/// `DIRECT_TRANSPORT` flag and have a 12-byte full header; ordinary FMP
-/// established records have a 16-byte full header.
-///
-/// # Arguments
-///
-/// * `reader` - Any async reader (typically an `OwnedReadHalf`)
-/// * `mtu` - The connection's MTU for validation of established frame sizes
-///
-/// # Errors
-///
-/// * `UnknownVersion` — non-zero version nibble (not a FIPS connection)
-/// * `UnknownPhase` — unrecognized phase nibble (protocol error)
-/// * `PayloadTooLarge` — established frame exceeds MTU
-/// * `HandshakeSizeMismatch` — handshake packet has wrong payload_len
-/// * `Io` — underlying read error (including EOF)
-pub async fn read_fmp_packet<R: AsyncRead + Unpin>(
-    reader: &mut R,
-    mtu: u16,
-) -> Result<Vec<u8>, StreamError> {
-    // Read the 4-byte FMP common prefix
-    let mut prefix = [0u8; PREFIX_SIZE];
-    reader.read_exact(&mut prefix).await?;
+fn invalid_data(message: impl Into<String>) -> StreamError {
+    StreamError::Io(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        message.into(),
+    ))
+}
 
+fn completion_timed_out() -> StreamError {
+    StreamError::Io(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "stream frame completion timed out",
+    ))
+}
+
+fn stream_record_len(prefix: &[u8; PREFIX_SIZE]) -> Result<usize, StreamError> {
     let version = prefix[0] >> 4;
     let phase = prefix[0] & 0x0F;
 
@@ -136,28 +126,20 @@ pub async fn read_fmp_packet<R: AsyncRead + Unpin>(
 
     let payload_len = u16::from_le_bytes([prefix[2], prefix[3]]);
 
-    // Compute remaining bytes based on phase
     let remaining = match phase {
         PHASE_ESTABLISHED => {
             let is_direct_fsp = prefix[1] & FSP_FLAG_DIRECT_TRANSPORT != 0;
-            if is_direct_fsp && prefix[1] & FSP_FLAG_U != 0 {
-                return Err(StreamError::InvalidDirectFspFlags(prefix[1]));
+            if is_direct_fsp && prefix[1] & (FSP_FLAG_CP | FSP_FLAG_U) != 0 {
+                return Err(invalid_data(format!(
+                    "invalid direct FSP flags: 0x{:02x}",
+                    prefix[1]
+                )));
             }
             let remaining_header = if is_direct_fsp {
                 DIRECT_FSP_REMAINING_HEADER
             } else {
                 FMP_ESTABLISHED_REMAINING_HEADER
             };
-            // Validate payload_len against MTU:
-            // total packet = selected header + payload_len + 16-byte tag.
-            let max_payload_len =
-                mtu.saturating_sub((remaining_header + PREFIX_SIZE + AEAD_TAG_SIZE) as u16);
-            if payload_len > max_payload_len {
-                return Err(StreamError::PayloadTooLarge {
-                    payload_len,
-                    max_payload_len,
-                });
-            }
             remaining_header + payload_len as usize + AEAD_TAG_SIZE
         }
         PHASE_MSG1 => {
@@ -185,13 +167,90 @@ pub async fn read_fmp_packet<R: AsyncRead + Unpin>(
         }
     };
 
-    // Allocate buffer for the complete packet (prefix + remaining)
-    let total = PREFIX_SIZE + remaining;
+    Ok(PREFIX_SIZE + remaining)
+}
+
+/// Validate that one byte slice is exactly one FIPS byte-stream record.
+pub(crate) fn validate_stream_record(data: &[u8]) -> Result<(), StreamError> {
+    let prefix: [u8; PREFIX_SIZE] = data
+        .get(..PREFIX_SIZE)
+        .ok_or_else(|| {
+            invalid_data(format!(
+                "record size mismatch: expected at least {PREFIX_SIZE}, got {}",
+                data.len()
+            ))
+        })?
+        .try_into()
+        .expect("four-byte prefix slice");
+    let expected = stream_record_len(&prefix)?;
+    if data.len() != expected {
+        return Err(invalid_data(format!(
+            "record size mismatch: expected {expected}, got {}",
+            data.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Read one complete FIPS packet from an async reader.
+///
+/// This preserves the public v0.4.4 API and its MTU validation semantics for
+/// external callers. Transport runtimes use the private timed reader below;
+/// their byte-stream record limit is the protocol's u16 payload field rather
+/// than the advertised path MTU.
+pub async fn read_fmp_packet<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    mtu: u16,
+) -> Result<Vec<u8>, StreamError> {
+    let mut prefix = [0u8; PREFIX_SIZE];
+    reader.read_exact(&mut prefix).await?;
+    let total = stream_record_len(&prefix)?;
+
+    if prefix[0] & 0x0f == PHASE_ESTABLISHED {
+        let payload_len = u16::from_le_bytes([prefix[2], prefix[3]]);
+        let remaining_header = if prefix[1] & FSP_FLAG_DIRECT_TRANSPORT != 0 {
+            DIRECT_FSP_REMAINING_HEADER
+        } else {
+            FMP_ESTABLISHED_REMAINING_HEADER
+        };
+        let max_payload_len =
+            mtu.saturating_sub((PREFIX_SIZE + remaining_header + AEAD_TAG_SIZE) as u16);
+        if payload_len > max_payload_len {
+            return Err(StreamError::PayloadTooLarge {
+                payload_len,
+                max_payload_len,
+            });
+        }
+    }
+
     let mut packet = vec![0u8; total];
     packet[..PREFIX_SIZE].copy_from_slice(&prefix);
     reader.read_exact(&mut packet[PREFIX_SIZE..]).await?;
-
     Ok(packet)
+}
+
+/// Read one complete FIPS packet for a transport byte stream.
+///
+/// An established idle link may wait indefinitely for the first record byte.
+/// Once any byte arrives, the rest of the prefix and body share one absolute
+/// completion deadline, preventing partial-prefix and partial-body stalls.
+pub(crate) async fn read_fmp_packet_with_timeout<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    completion_timeout: Duration,
+) -> Result<Vec<u8>, StreamError> {
+    let mut prefix = [0u8; PREFIX_SIZE];
+    reader.read_exact(&mut prefix[..1]).await?;
+
+    timeout(completion_timeout, async {
+        reader.read_exact(&mut prefix[1..]).await?;
+        let total = stream_record_len(&prefix)?;
+        let mut packet = vec![0u8; total];
+        packet[..PREFIX_SIZE].copy_from_slice(&prefix);
+        reader.read_exact(&mut packet[PREFIX_SIZE..]).await?;
+        Ok::<_, StreamError>(packet)
+    })
+    .await
+    .map_err(|_| completion_timed_out())?
 }
 
 // ============================================================================
@@ -202,6 +261,15 @@ pub async fn read_fmp_packet<R: AsyncRead + Unpin>(
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    const READ_TIMEOUT: Duration = Duration::from_secs(1);
+
+    async fn read_fmp_packet<R: AsyncRead + Unpin>(
+        reader: &mut R,
+        completion_timeout: Duration,
+    ) -> Result<Vec<u8>, StreamError> {
+        read_fmp_packet_with_timeout(reader, completion_timeout).await
+    }
 
     /// Build a minimal established frame with the given payload_len.
     /// Layout: [ver+phase:1][flags:1][payload_len:2 LE][12 bytes header][payload_len bytes][16 bytes tag]
@@ -259,7 +327,7 @@ mod tests {
         let expected = frame.clone();
 
         let mut cursor = Cursor::new(frame);
-        let packet = read_fmp_packet(&mut cursor, 1400).await.unwrap();
+        let packet = read_fmp_packet(&mut cursor, READ_TIMEOUT).await.unwrap();
         assert_eq!(packet, expected);
     }
 
@@ -269,7 +337,7 @@ mod tests {
         let expected = frame.clone();
 
         let mut cursor = Cursor::new(frame);
-        let packet = read_fmp_packet(&mut cursor, 1400).await.unwrap();
+        let packet = read_fmp_packet(&mut cursor, READ_TIMEOUT).await.unwrap();
         assert_eq!(packet.len(), MSG1_WIRE_SIZE);
         assert_eq!(packet, expected);
     }
@@ -280,7 +348,7 @@ mod tests {
         let expected = frame.clone();
 
         let mut cursor = Cursor::new(frame);
-        let packet = read_fmp_packet(&mut cursor, 1400).await.unwrap();
+        let packet = read_fmp_packet(&mut cursor, READ_TIMEOUT).await.unwrap();
         assert_eq!(packet.len(), MSG2_WIRE_SIZE);
         assert_eq!(packet, expected);
     }
@@ -296,13 +364,13 @@ mod tests {
         data.extend_from_slice(&msg2);
 
         let mut cursor = Cursor::new(data);
-        let p1 = read_fmp_packet(&mut cursor, 1400).await.unwrap();
+        let p1 = read_fmp_packet(&mut cursor, READ_TIMEOUT).await.unwrap();
         assert_eq!(p1.len(), MSG1_WIRE_SIZE);
 
-        let p2 = read_fmp_packet(&mut cursor, 1400).await.unwrap();
+        let p2 = read_fmp_packet(&mut cursor, READ_TIMEOUT).await.unwrap();
         assert_eq!(p2, est);
 
-        let p3 = read_fmp_packet(&mut cursor, 1400).await.unwrap();
+        let p3 = read_fmp_packet(&mut cursor, READ_TIMEOUT).await.unwrap();
         assert_eq!(p3.len(), MSG2_WIRE_SIZE);
     }
 
@@ -315,43 +383,62 @@ mod tests {
 
         let mut cursor = Cursor::new(data);
         assert_eq!(
-            read_fmp_packet(&mut cursor, 1400).await.unwrap(),
+            read_fmp_packet(&mut cursor, READ_TIMEOUT).await.unwrap(),
             direct_fsp
         );
-        assert_eq!(read_fmp_packet(&mut cursor, 1400).await.unwrap(), fmp);
+        assert_eq!(
+            read_fmp_packet(&mut cursor, READ_TIMEOUT).await.unwrap(),
+            fmp
+        );
     }
 
     #[tokio::test]
-    async fn direct_fsp_rejects_truncation_and_payload_over_its_mtu_budget() {
-        let direct_overhead = crate::proto::fsp_wire::FSP_HEADER_SIZE + AEAD_TAG_SIZE;
-        let at_mtu = build_direct_fsp_frame((1400 - direct_overhead) as u16);
+    async fn direct_fsp_accepts_full_wire_range_and_rejects_bad_shape_or_flags() {
+        let max_payload = build_direct_fsp_frame(u16::MAX);
         assert_eq!(
-            read_fmp_packet(&mut Cursor::new(at_mtu.clone()), 1400)
+            read_fmp_packet(&mut Cursor::new(max_payload.clone()), READ_TIMEOUT)
                 .await
                 .unwrap(),
-            at_mtu
+            max_payload
         );
 
         let mut truncated = build_direct_fsp_frame(23);
         truncated.pop();
         assert!(matches!(
-            read_fmp_packet(&mut Cursor::new(truncated), 1400).await,
+            read_fmp_packet(&mut Cursor::new(truncated), READ_TIMEOUT).await,
             Err(StreamError::Io(_))
         ));
 
-        let mut oversized = build_direct_fsp_frame((1400 - direct_overhead + 1) as u16);
-        oversized.resize(1600, 0);
+        let mut extra_byte = build_direct_fsp_frame(23);
+        extra_byte.push(0);
         assert!(matches!(
-            read_fmp_packet(&mut Cursor::new(oversized), 1400).await,
-            Err(StreamError::PayloadTooLarge { .. })
+            validate_stream_record(&extra_byte),
+            Err(StreamError::Io(error)) if error.kind() == std::io::ErrorKind::InvalidData
         ));
 
         let mut invalid_flags = build_direct_fsp_frame(23);
         invalid_flags[1] |= crate::proto::fsp_wire::FSP_FLAG_U;
         assert!(matches!(
-            read_fmp_packet(&mut Cursor::new(invalid_flags), 1400).await,
-            Err(StreamError::InvalidDirectFspFlags(_))
+            read_fmp_packet(&mut Cursor::new(invalid_flags), READ_TIMEOUT).await,
+            Err(StreamError::Io(error)) if error.kind() == std::io::ErrorKind::InvalidData
         ));
+
+        let mut invalid_flags = build_direct_fsp_frame(23);
+        invalid_flags[1] |= crate::proto::fsp_wire::FSP_FLAG_CP;
+        assert!(matches!(
+            read_fmp_packet(&mut Cursor::new(invalid_flags), READ_TIMEOUT).await,
+            Err(StreamError::Io(error)) if error.kind() == std::io::ErrorKind::InvalidData
+        ));
+
+        let mut rekey_epoch = build_direct_fsp_frame(23);
+        rekey_epoch[1] |= crate::proto::fsp_wire::FSP_FLAG_K;
+        assert_eq!(
+            read_fmp_packet(&mut Cursor::new(rekey_epoch.clone()), READ_TIMEOUT)
+                .await
+                .unwrap(),
+            rekey_epoch,
+            "DIRECT and the encrypted epoch K bit are compatible"
+        );
     }
 
     #[tokio::test]
@@ -361,7 +448,9 @@ mod tests {
         let mut frame = vec![0u8; 100];
         frame[0] = 0x16;
         let mut cursor = Cursor::new(frame);
-        let err = read_fmp_packet(&mut cursor, 1400).await.unwrap_err();
+        let err = read_fmp_packet(&mut cursor, READ_TIMEOUT)
+            .await
+            .unwrap_err();
         assert!(matches!(err, StreamError::UnknownVersion(1)));
     }
 
@@ -372,25 +461,10 @@ mod tests {
         frame[2..4].copy_from_slice(&10u16.to_le_bytes());
 
         let mut cursor = Cursor::new(frame);
-        let err = read_fmp_packet(&mut cursor, 1400).await.unwrap_err();
+        let err = read_fmp_packet(&mut cursor, READ_TIMEOUT)
+            .await
+            .unwrap_err();
         assert!(matches!(err, StreamError::UnknownPhase(0x5)));
-    }
-
-    #[tokio::test]
-    async fn test_payload_too_large() {
-        // mtu=100, max_payload_len = 100 - 32 = 68
-        let payload_len = 100u16; // exceeds max of 68
-        let mut prefix = [0u8; 4];
-        prefix[0] = 0x00; // established
-        prefix[2..4].copy_from_slice(&payload_len.to_le_bytes());
-
-        // Provide enough bytes for the reader to read prefix
-        let mut data = prefix.to_vec();
-        data.extend_from_slice(&[0u8; 200]); // extra bytes
-
-        let mut cursor = Cursor::new(data);
-        let err = read_fmp_packet(&mut cursor, 100).await.unwrap_err();
-        assert!(matches!(err, StreamError::PayloadTooLarge { .. }));
     }
 
     #[tokio::test]
@@ -401,7 +475,9 @@ mod tests {
         frame[2..4].copy_from_slice(&50u16.to_le_bytes());
 
         let mut cursor = Cursor::new(frame);
-        let err = read_fmp_packet(&mut cursor, 1400).await.unwrap_err();
+        let err = read_fmp_packet(&mut cursor, READ_TIMEOUT)
+            .await
+            .unwrap_err();
         assert!(matches!(
             err,
             StreamError::HandshakeSizeMismatch { phase: 0x1, .. }
@@ -416,7 +492,9 @@ mod tests {
         frame[2..4].copy_from_slice(&50u16.to_le_bytes());
 
         let mut cursor = Cursor::new(frame);
-        let err = read_fmp_packet(&mut cursor, 1400).await.unwrap_err();
+        let err = read_fmp_packet(&mut cursor, READ_TIMEOUT)
+            .await
+            .unwrap_err();
         assert!(matches!(
             err,
             StreamError::HandshakeSizeMismatch { phase: 0x2, .. }
@@ -428,7 +506,9 @@ mod tests {
         // Only 2 bytes available (need 4 for prefix)
         let data = vec![0u8; 2];
         let mut cursor = Cursor::new(data);
-        let err = read_fmp_packet(&mut cursor, 1400).await.unwrap_err();
+        let err = read_fmp_packet(&mut cursor, READ_TIMEOUT)
+            .await
+            .unwrap_err();
         assert!(matches!(err, StreamError::Io(_)));
     }
 
@@ -440,7 +520,9 @@ mod tests {
         data[2..4].copy_from_slice(&MSG1_PAYLOAD_LEN.to_le_bytes());
 
         let mut cursor = Cursor::new(data);
-        let err = read_fmp_packet(&mut cursor, 1400).await.unwrap_err();
+        let err = read_fmp_packet(&mut cursor, READ_TIMEOUT)
+            .await
+            .unwrap_err();
         assert!(matches!(err, StreamError::Io(_)));
     }
 
@@ -452,35 +534,70 @@ mod tests {
         assert_eq!(frame.len(), expected_len);
 
         let mut cursor = Cursor::new(frame.clone());
-        let packet = read_fmp_packet(&mut cursor, 1400).await.unwrap();
+        let packet = read_fmp_packet(&mut cursor, READ_TIMEOUT).await.unwrap();
         assert_eq!(packet.len(), expected_len);
         assert_eq!(packet, frame);
     }
 
     #[tokio::test]
-    async fn test_max_payload_at_mtu_boundary() {
-        // mtu=1400, max_payload_len = 1400 - 32 = 1368
-        let max_payload = 1400u16 - 32;
-        let frame = build_established_frame(max_payload);
+    async fn test_max_fmp_payload_uses_the_full_wire_length() {
+        let frame = build_established_frame(u16::MAX);
 
         let mut cursor = Cursor::new(frame.clone());
-        let packet = read_fmp_packet(&mut cursor, 1400).await.unwrap();
+        let packet = read_fmp_packet(&mut cursor, READ_TIMEOUT).await.unwrap();
         assert_eq!(packet, frame);
+        validate_stream_record(&frame).unwrap();
     }
 
     #[tokio::test]
-    async fn test_payload_one_over_mtu() {
-        // mtu=1400, max_payload_len = 1368, try 1369
-        let over = 1400u16 - 32 + 1;
-        let mut prefix = [0u8; 4];
-        prefix[0] = 0x00; // established
-        prefix[2..4].copy_from_slice(&over.to_le_bytes());
+    async fn public_reader_keeps_the_released_mtu_api_and_error_variant() {
+        let frame = build_established_frame(64);
+        assert_eq!(
+            super::read_fmp_packet(&mut Cursor::new(frame.clone()), 1400)
+                .await
+                .unwrap(),
+            frame
+        );
 
-        let mut data = prefix.to_vec();
-        data.extend_from_slice(&vec![0u8; 2000]);
+        let over_budget = build_established_frame(1369);
+        assert!(matches!(
+            super::read_fmp_packet(&mut Cursor::new(over_budget), 1400).await,
+            Err(StreamError::PayloadTooLarge {
+                payload_len: 1369,
+                max_payload_len: 1368,
+            })
+        ));
+    }
 
-        let mut cursor = Cursor::new(data);
-        let err = read_fmp_packet(&mut cursor, 1400).await.unwrap_err();
-        assert!(matches!(err, StreamError::PayloadTooLarge { .. }));
+    #[tokio::test]
+    async fn idle_wait_is_unbounded_but_partial_prefix_and_body_are_bounded() {
+        let completion = Duration::from_millis(30);
+
+        let (mut writer, mut reader) = tokio::io::duplex(256);
+        let idle_read = tokio::spawn(async move { read_fmp_packet(&mut reader, completion).await });
+        tokio::time::sleep(completion + Duration::from_millis(10)).await;
+        let frame = build_direct_fsp_frame(7);
+        tokio::io::AsyncWriteExt::write_all(&mut writer, &frame)
+            .await
+            .unwrap();
+        assert_eq!(idle_read.await.unwrap().unwrap(), frame);
+
+        let (mut writer, mut reader) = tokio::io::duplex(256);
+        tokio::io::AsyncWriteExt::write_all(&mut writer, &[0x00])
+            .await
+            .unwrap();
+        assert!(matches!(
+            read_fmp_packet(&mut reader, completion).await,
+            Err(StreamError::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut
+        ));
+
+        let (mut writer, mut reader) = tokio::io::duplex(256);
+        tokio::io::AsyncWriteExt::write_all(&mut writer, &[0x00, 0x00, 0x04, 0x00, 0xAA])
+            .await
+            .unwrap();
+        assert!(matches!(
+            read_fmp_packet(&mut reader, completion).await,
+            Err(StreamError::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut
+        ));
     }
 }

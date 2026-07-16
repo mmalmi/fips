@@ -1,6 +1,11 @@
-use super::{ConnectionPool, Direction, TorConnection};
+use super::{
+    ConnectionPool, Direction, StreamConnectionIo, TorConnection, record_pool_removed,
+    remove_if_current,
+};
 use crate::config::TorConfig;
-use crate::transport::tcp::stream::read_fmp_packet;
+use crate::transport::tcp::stream::{
+    DEFAULT_FRAME_COMPLETION_TIMEOUT, read_fmp_packet_with_timeout,
+};
 use crate::transport::{
     PacketBuffer, PacketTx, ReceivedPacket, TransportAddr, TransportError, TransportId,
 };
@@ -10,7 +15,6 @@ use socket2::TcpKeepalive;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
 use tracing::{debug, trace, warn};
 
 // ============================================================================
@@ -27,9 +31,10 @@ pub(super) struct TorReceiveContext {
     pub(super) remote_addr: TransportAddr,
     pub(super) packet_tx: PacketTx,
     pub(super) pool: ConnectionPool,
-    pub(super) mtu: u16,
     pub(super) stats: Arc<TorStats>,
+    pub(super) first_frame_timeout: Option<Duration>,
     pub(super) direction: Direction,
+    pub(super) io: Arc<StreamConnectionIo<tokio::net::tcp::OwnedWriteHalf>>,
 }
 
 pub(super) async fn tor_receive_loop(
@@ -41,9 +46,10 @@ pub(super) async fn tor_receive_loop(
         remote_addr,
         packet_tx,
         pool,
-        mtu,
         stats,
+        first_frame_timeout,
         direction,
+        io,
     } = ctx;
 
     debug!(
@@ -52,9 +58,43 @@ pub(super) async fn tor_receive_loop(
         "Tor receive loop starting"
     );
 
+    let mut first_frame = true;
     loop {
-        match read_fmp_packet(&mut reader, mtu).await {
+        let is_first_frame = first_frame;
+        let read = async {
+            let frame = read_fmp_packet_with_timeout(&mut reader, DEFAULT_FRAME_COMPLETION_TIMEOUT);
+            if is_first_frame {
+                match first_frame_timeout {
+                    Some(limit) => match tokio::time::timeout(limit, frame).await {
+                        Ok(result) => Some(result),
+                        Err(_) => {
+                            stats.record_recv_error();
+                            debug!(
+                                transport_id = %transport_id,
+                                remote_addr = %remote_addr,
+                                timeout_ms = limit.as_millis(),
+                                "Tor inbound connection timed out before its first frame"
+                            );
+                            None
+                        }
+                    },
+                    None => Some(frame.await),
+                }
+            } else {
+                Some(frame.await)
+            }
+        };
+        tokio::pin!(read);
+        let read_result = tokio::select! {
+            result = &mut read => result,
+            () = io.closed() => None,
+        };
+        let Some(read_result) = read_result else {
+            break;
+        };
+        match read_result {
             Ok(data) => {
+                first_frame = false;
                 stats.record_recv(data.len());
 
                 trace!(
@@ -92,16 +132,12 @@ pub(super) async fn tor_receive_loop(
         }
     }
 
-    // Clean up: remove ourselves from the pool and decrement the matching
-    // direction counter only if this task owned the removed entry.
+    io.mark_closed();
     let mut pool_guard = pool.lock().await;
-    let removed = pool_guard.remove(&remote_addr).is_some();
+    let removed = remove_if_current(&mut pool_guard, &remote_addr, &io);
     drop(pool_guard);
-    if removed {
-        match direction {
-            Direction::Inbound => stats.record_pool_inbound_removed(),
-            Direction::Outbound => stats.record_pool_outbound_removed(),
-        }
+    if let Some(connection) = removed {
+        record_pool_removed(&stats, &connection);
     }
 
     debug!(
@@ -157,7 +193,6 @@ pub(super) async fn tor_accept_loop(
     transport_id: TransportId,
     packet_tx: PacketTx,
     pool: ConnectionPool,
-    mtu: u16,
     max_inbound: usize,
     stats: Arc<TorStats>,
 ) {
@@ -225,14 +260,32 @@ pub(super) async fn tor_accept_loop(
 
         let remote_addr = TransportAddr::from_string(&peer_addr.to_string());
 
-        // Split stream and spawn receive task
+        // Resolve ownership before spawning so a fast EOF cannot beat pool
+        // registration or leave a dead generation installed afterward.
+        let mut pool_guard = pool.lock().await;
+        if let Some(existing) = pool_guard.get(&remote_addr)
+            && !existing.io.is_closed()
+        {
+            debug!(
+                transport_id = %transport_id,
+                remote_addr = %remote_addr,
+                "Discarding duplicate inbound Tor connection"
+            );
+            continue;
+        }
+        if let Some(closed) = pool_guard.remove(&remote_addr) {
+            closed.recv_task.abort();
+            record_pool_removed(&stats, &closed);
+        }
+
         let (read_half, write_half) = stream.into_split();
-        let writer = Arc::new(Mutex::new(write_half));
+        let io = Arc::new(StreamConnectionIo::new(write_half));
 
         let recv_pool = pool.clone();
         let recv_stats = stats.clone();
         let recv_addr = remote_addr.clone();
         let recv_tx = packet_tx.clone();
+        let recv_io = io.clone();
 
         let recv_task = tokio::spawn(async move {
             tor_receive_loop(
@@ -242,27 +295,25 @@ pub(super) async fn tor_accept_loop(
                     remote_addr: recv_addr,
                     packet_tx: recv_tx,
                     pool: recv_pool,
-                    mtu,
                     stats: recv_stats,
+                    first_frame_timeout: Some(DEFAULT_FRAME_COMPLETION_TIMEOUT),
                     direction: Direction::Inbound,
+                    io: recv_io,
                 },
             )
             .await;
         });
 
         let conn = TorConnection {
-            writer,
+            io,
             recv_task,
             direction: Direction::Inbound,
         };
 
-        {
-            let mut pool_guard = pool.lock().await;
-            pool_guard.insert(remote_addr.clone(), conn);
-        }
-
-        stats.record_connection_accepted();
+        pool_guard.insert(remote_addr.clone(), conn);
         stats.record_pool_inbound_added();
+        drop(pool_guard);
+        stats.record_connection_accepted();
 
         debug!(
             transport_id = %transport_id,

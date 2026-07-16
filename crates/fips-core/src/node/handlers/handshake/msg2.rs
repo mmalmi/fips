@@ -364,31 +364,46 @@ impl Node {
                 .source_addr()
                 .cloned()
                 .unwrap_or_else(|| packet.remote_addr.clone());
-            let outbound_alternate_path = self.peers.get(&peer_node_addr).is_some_and(|peer| {
-                peer.transport_id() != Some(outbound_transport_id)
-                    || peer.current_addr() != Some(&outbound_addr)
-            });
+            let outbound_remote_epoch = conn.remote_epoch();
+            let (
+                outbound_path_differs,
+                connection_oriented_cross_connection,
+                remote_epoch_changed,
+                active_peer_unusable,
+            ) = self
+                .peers
+                .get(&peer_node_addr)
+                .map(|peer| {
+                    (
+                        peer.transport_id() != Some(outbound_transport_id)
+                            || peer.current_addr() != Some(&outbound_addr),
+                        self.is_connection_oriented_cross_connection(
+                            peer,
+                            outbound_transport_id,
+                            true,
+                        ),
+                        matches!(
+                            (peer.remote_epoch(), outbound_remote_epoch),
+                            (Some(old), Some(new)) if old != new
+                        ),
+                        !peer.is_healthy() || !peer.can_send(),
+                    )
+                })
+                .unwrap_or((false, false, false, false));
+            let existing_path_unusable = active_peer_unusable
+                || self.session_direct_path_blocks_direct_payload(
+                    &peer_node_addr,
+                    packet.timestamp_ms,
+                )
+                || self.session_direct_path_exclusive_trust_expired(
+                    &peer_node_addr,
+                    packet.timestamp_ms,
+                );
+            let outbound_alternate_path = remote_epoch_changed
+                || existing_path_unusable
+                || (outbound_path_differs && !connection_oriented_cross_connection);
 
             if outbound_alternate_path {
-                let outbound_remote_epoch = conn.remote_epoch();
-                let remote_epoch_changed = self.peers.get(&peer_node_addr).is_some_and(|peer| {
-                    matches!(
-                        (peer.remote_epoch(), outbound_remote_epoch),
-                        (Some(old), Some(new)) if old != new
-                    )
-                });
-                let existing_path_unusable = self
-                    .peers
-                    .get(&peer_node_addr)
-                    .is_some_and(|peer| !peer.is_healthy() || !peer.can_send())
-                    || self.session_direct_path_blocks_direct_payload(
-                        &peer_node_addr,
-                        packet.timestamp_ms,
-                    )
-                    || self.session_direct_path_exclusive_trust_expired(
-                        &peer_node_addr,
-                        packet.timestamp_ms,
-                    );
                 let reply_transport_handoff = packet.transport_id != outbound_transport_id;
                 if !remote_epoch_changed
                     && !existing_path_unusable

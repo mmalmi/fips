@@ -595,6 +595,9 @@ impl OwnerState {
         let OutboundWire::Fsp { flags } = &mut packet.wire else {
             return;
         };
+        if *flags & crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT != 0 {
+            return;
+        }
         *flags |= crate::node::session_wire::FSP_FLAG_CP;
         packet.fsp_cleartext_prefix = self.fsp_coords_prefix.clone();
         self.fsp_coords_warmup_remaining = self.fsp_coords_warmup_remaining.saturating_sub(1);
@@ -635,6 +638,15 @@ impl OwnerState {
         let OutboundWire::Fsp { flags } = &mut packet.wire else {
             return;
         };
+        if *flags & crate::node::session_wire::FSP_FLAG_U != 0 {
+            return;
+        }
+        // Coordinates are only useful to FMP transit routing. A direct
+        // carrier has a fixed 12-byte FSP record header, so discard any
+        // pre-attached coordinate prefix without consuming the automatic
+        // warmup budget; it remains available if this owner later routes.
+        *flags &= !crate::node::session_wire::FSP_FLAG_CP;
+        packet.fsp_cleartext_prefix.clear();
         *flags |= crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT;
     }
 

@@ -18,8 +18,6 @@ use super::{
     TransportId, TransportState, TransportType,
 };
 
-const TCP_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
-
 /// Wrapper enum for concrete transport implementations.
 ///
 /// This enables polymorphic transport handling without trait objects,
@@ -137,17 +135,27 @@ impl TransportHandle {
             TransportHandle::Sim(t) => t.send_async(addr, data).await,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             TransportHandle::Ethernet(t) => t.send_async(addr, data).await,
-            TransportHandle::Tcp(t) => {
-                tokio::time::timeout(TCP_SEND_TIMEOUT, t.send_async(addr, data))
-                    .await
-                    .unwrap_or(Err(TransportError::Timeout))
-            }
+            TransportHandle::Tcp(t) => t.send_async(addr, data).await,
             TransportHandle::Tor(t) => t.send_async(addr, data).await,
             #[cfg(feature = "webrtc-transport")]
             // Keep this optional adapter's large future out of every transport send frame.
             TransportHandle::WebRtc(t) => Box::pin(t.send_async(addr, data)).await,
             #[cfg(target_os = "linux")]
             TransportHandle::Ble(t) => t.send_async(addr, data).await,
+        }
+    }
+
+    pub(crate) async fn send_with_timeout(
+        &self,
+        addr: &TransportAddr,
+        data: &[u8],
+        timeout: std::time::Duration,
+    ) -> Result<usize, TransportError> {
+        match self {
+            TransportHandle::Tcp(transport) => {
+                transport.send_async_with_timeout(addr, data, timeout).await
+            }
+            _ => self.send(addr, data).await,
         }
     }
 
@@ -167,6 +175,11 @@ impl TransportHandle {
             #[cfg(target_os = "linux")]
             TransportHandle::Ble(t) => t.transport_id(),
         }
+    }
+
+    /// Whether this carrier uses the shared FMP/FSP byte-stream record reader.
+    pub(crate) fn uses_fips_byte_stream_framing(&self) -> bool {
+        matches!(self, TransportHandle::Tcp(_) | TransportHandle::Tor(_))
     }
 
     /// Get the instance name (if configured as a named instance).

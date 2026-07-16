@@ -1,4 +1,4 @@
-use super::stream::read_fmp_packet;
+use super::stream::{DEFAULT_FRAME_COMPLETION_TIMEOUT, read_fmp_packet_with_timeout};
 use super::*;
 use crate::transport::{PacketBuffer, ReceivedPacket};
 use tokio::time::timeout;
@@ -9,7 +9,6 @@ use tokio::time::timeout;
 
 /// Socket configuration parameters passed to the accept loop.
 pub(super) struct AcceptConfig {
-    pub(super) mtu: u16,
     pub(super) max_inbound: usize,
     pub(super) nodelay: bool,
     pub(super) keepalive_secs: u64,
@@ -28,7 +27,6 @@ pub(super) async fn accept_loop(
     stats: Arc<TcpStats>,
 ) {
     let AcceptConfig {
-        mtu,
         max_inbound,
         nodelay,
         keepalive_secs,
@@ -83,9 +81,6 @@ pub(super) async fn accept_loop(
                     continue;
                 }
 
-                // Read MSS for per-connection MTU
-                let conn_mtu = read_mss_mtu(&std_stream, mtu);
-
                 let stream = match TcpStream::from_std(std_stream) {
                     Ok(s) => s,
                     Err(e) => {
@@ -100,14 +95,32 @@ pub(super) async fn accept_loop(
 
                 let remote_addr = TransportAddr::from_string(&peer_addr.to_string());
 
-                // Split and spawn receive task
+                // Resolve the pool slot before spawning so fast EOF cannot
+                // clean up before this generation owns the slot and gauge.
+                let mut pool_guard = pool.lock().await;
+                if let Some(existing) = pool_guard.get(&remote_addr)
+                    && !existing.io.is_closed()
+                {
+                    debug!(
+                        transport_id = %transport_id,
+                        remote_addr = %remote_addr,
+                        "Discarding duplicate inbound TCP connection"
+                    );
+                    continue;
+                }
+                if let Some(closed) = pool_guard.remove(&remote_addr) {
+                    closed.recv_task.abort();
+                    record_pool_removed(&stats, &closed);
+                }
+
                 let (read_half, write_half) = stream.into_split();
-                let writer = Arc::new(Mutex::new(write_half));
+                let io = Arc::new(StreamConnectionIo::new(write_half));
 
                 let recv_pool = pool.clone();
                 let recv_packet_tx = packet_tx.clone();
                 let recv_stats = stats.clone();
                 let recv_addr = remote_addr.clone();
+                let recv_io = io.clone();
 
                 let recv_task = tokio::spawn(async move {
                     tcp_receive_loop(
@@ -117,31 +130,30 @@ pub(super) async fn accept_loop(
                             remote_addr: recv_addr,
                             packet_tx: recv_packet_tx,
                             pool: recv_pool,
-                            mtu: conn_mtu,
                             stats: recv_stats,
                             first_frame_timeout: first_frame_timeout(first_frame_timeout_ms),
+                            frame_completion_timeout: DEFAULT_FRAME_COMPLETION_TIMEOUT,
                             direction: Direction::Inbound,
+                            io: recv_io,
                         },
                     )
                     .await;
                 });
 
                 let conn = TcpConnection {
-                    writer,
+                    io,
                     recv_task,
                     direction: Direction::Inbound,
                 };
 
-                let mut pool_guard = pool.lock().await;
                 pool_guard.insert(remote_addr.clone(), conn);
-
-                stats.record_connection_accepted();
                 stats.record_pool_inbound_added();
+                drop(pool_guard);
+                stats.record_connection_accepted();
 
                 debug!(
                     transport_id = %transport_id,
                     remote_addr = %remote_addr,
-                    mtu = conn_mtu,
                     "Accepted inbound TCP connection"
                 );
             }
@@ -170,10 +182,11 @@ pub(super) struct TcpReceiveContext {
     pub(super) remote_addr: TransportAddr,
     pub(super) packet_tx: PacketTx,
     pub(super) pool: ConnectionPool,
-    pub(super) mtu: u16,
     pub(super) stats: Arc<TcpStats>,
     pub(super) first_frame_timeout: Option<Duration>,
+    pub(super) frame_completion_timeout: Duration,
     pub(super) direction: Direction,
+    pub(super) io: Arc<StreamConnectionIo<tokio::net::tcp::OwnedWriteHalf>>,
 }
 
 pub(super) async fn tcp_receive_loop(
@@ -185,10 +198,11 @@ pub(super) async fn tcp_receive_loop(
         remote_addr,
         packet_tx,
         pool,
-        mtu,
         stats,
         first_frame_timeout,
+        frame_completion_timeout,
         direction,
+        io,
     } = ctx;
 
     debug!(
@@ -199,25 +213,43 @@ pub(super) async fn tcp_receive_loop(
 
     let mut first_frame = true;
     loop {
-        let read_result = if first_frame {
-            match first_frame_timeout {
-                Some(limit) => match timeout(limit, read_fmp_packet(&mut reader, mtu)).await {
-                    Ok(result) => result,
-                    Err(_) => {
-                        stats.record_first_frame_timeout();
-                        debug!(
-                            transport_id = %transport_id,
-                            remote_addr = %remote_addr,
-                            timeout_ms = limit.as_millis(),
-                            "TCP inbound connection timed out before first complete FMP frame"
-                        );
-                        break;
-                    }
-                },
-                None => read_fmp_packet(&mut reader, mtu).await,
+        let is_first_frame = first_frame;
+        let read = async {
+            if is_first_frame {
+                match first_frame_timeout {
+                    Some(limit) => match timeout(
+                        limit,
+                        read_fmp_packet_with_timeout(&mut reader, frame_completion_timeout),
+                    )
+                    .await
+                    {
+                        Ok(result) => Some(result),
+                        Err(_) => {
+                            stats.record_first_frame_timeout();
+                            debug!(
+                                transport_id = %transport_id,
+                                remote_addr = %remote_addr,
+                                timeout_ms = limit.as_millis(),
+                                "TCP inbound connection timed out before first complete FMP frame"
+                            );
+                            None
+                        }
+                    },
+                    None => Some(
+                        read_fmp_packet_with_timeout(&mut reader, frame_completion_timeout).await,
+                    ),
+                }
+            } else {
+                Some(read_fmp_packet_with_timeout(&mut reader, frame_completion_timeout).await)
             }
-        } else {
-            read_fmp_packet(&mut reader, mtu).await
+        };
+        tokio::pin!(read);
+        let read_result = tokio::select! {
+            result = &mut read => result,
+            () = io.closed() => None,
+        };
+        let Some(read_result) = read_result else {
+            break;
         };
 
         match read_result {
@@ -261,16 +293,12 @@ pub(super) async fn tcp_receive_loop(
         }
     }
 
-    // Clean up: remove ourselves from the pool and decrement the matching
-    // direction counter only if this task owned the removed entry.
+    io.mark_closed();
     let mut pool_guard = pool.lock().await;
-    let removed = pool_guard.remove(&remote_addr).is_some();
+    let removed = remove_if_current(&mut pool_guard, &remote_addr, &io);
     drop(pool_guard);
-    if removed {
-        match direction {
-            Direction::Inbound => stats.record_pool_inbound_removed(),
-            Direction::Outbound => stats.record_pool_outbound_removed(),
-        }
+    if let Some(connection) = removed {
+        record_pool_removed(&stats, &connection);
     }
 
     debug!(

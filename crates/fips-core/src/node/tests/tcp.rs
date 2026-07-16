@@ -161,6 +161,145 @@ async fn tcp_direct_fsp_endpoint_data_is_bidirectional() {
         b"tcp-pong"
     );
 
+    // TUN output follows the ordinary auto-coordinate warmup path. On a
+    // direct TCP carrier it must still remain one unambiguous direct-FSP
+    // stream record rather than combining DIRECT with a coordinate prefix.
+    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
+    nodes[1].node.tun_tx = Some(tun_tx);
+    let ipv6_packet = super::session::build_ipv6_packet(
+        identity_0.address(),
+        identity_1.address(),
+        b"tcp-direct-tun",
+    );
+    super::session::send_tun_packet_via_dataplane(&mut nodes, 0, ipv6_packet.clone()).await;
+    let delivered = super::session::recv_tun_packet_while_draining(
+        &mut nodes,
+        &tun_rx,
+        Duration::from_secs(5),
+        "TCP direct TUN packet",
+    )
+    .await;
+    assert_eq!(delivered, ipv6_packet);
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+/// Simultaneous TCP dials use different socket tuples on each host: the
+/// outbound side names the listener while the accepted side observes an
+/// ephemeral source port. They are still the two halves of one logical
+/// cross-connection and must converge on the NodeAddr direction tie-breaker.
+#[tokio::test]
+async fn tcp_simultaneous_dials_converge_and_carry_direct_fsp() {
+    let mut nodes = vec![make_test_node_tcp().await, make_test_node_tcp().await];
+
+    initiate_handshake(&mut nodes, 0, 1).await;
+    initiate_handshake(&mut nodes, 1, 0).await;
+    assert!(drain_all_packets(&mut nodes, false).await > 0);
+
+    let addr_0 = *nodes[0].node.node_addr();
+    let addr_1 = *nodes[1].node.node_addr();
+    let node_0_is_smaller = addr_0 < addr_1;
+    assert_eq!(
+        nodes[0]
+            .node
+            .get_peer(&addr_1)
+            .expect("node 0 authenticated peer")
+            .fmp_mmp_is_initiator(),
+        node_0_is_smaller,
+        "only the smaller NodeAddr keeps its outbound TCP session"
+    );
+    assert_eq!(
+        nodes[1]
+            .node
+            .get_peer(&addr_0)
+            .expect("node 1 authenticated peer")
+            .fmp_mmp_is_initiator(),
+        !node_0_is_smaller,
+        "the larger NodeAddr keeps the matching inbound TCP session"
+    );
+
+    populate_all_coord_caches(&mut nodes);
+    let mut endpoint_1 = nodes[1]
+        .node
+        .attach_endpoint_data_io(8)
+        .expect("node 1 endpoint data I/O");
+    let identity_1 = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
+    super::session::send_endpoint_data_via_dataplane(
+        &mut nodes[0].node,
+        identity_1,
+        b"simultaneous-tcp".to_vec(),
+    )
+    .await
+    .expect("direct FSP over the converged TCP carrier should start");
+    let data = super::session::recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut endpoint_1.event_rx,
+        Duration::from_secs(5),
+        "simultaneous TCP direct FSP",
+    )
+    .await;
+    assert_eq!(
+        super::session::expect_single_endpoint_data_event(data)
+            .payload
+            .as_slice(),
+        b"simultaneous-tcp"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+/// A configured listener address and an accepted stream's ephemeral source
+/// address name the same bidirectional TCP carrier. A later duplicate dial by
+/// the larger node must not be mistaken for a higher-priority path refresh.
+#[tokio::test]
+async fn tcp_late_reverse_dial_preserves_cross_connection_owner() {
+    let mut nodes = vec![make_test_node_tcp().await, make_test_node_tcp().await];
+    configure_tcp_reconnect_pair(&mut nodes).await;
+
+    let node_0_addr = *nodes[0].node.node_addr();
+    let node_1_addr = *nodes[1].node.node_addr();
+    let (smaller, larger) = if node_0_addr < node_1_addr {
+        (0, 1)
+    } else {
+        (1, 0)
+    };
+
+    initiate_handshake(&mut nodes, smaller, larger).await;
+    assert!(drain_all_packets(&mut nodes, false).await > 0);
+    assert!(
+        nodes[smaller]
+            .node
+            .get_peer(nodes[larger].node.node_addr())
+            .expect("smaller node peer")
+            .fmp_mmp_is_initiator()
+    );
+    assert!(
+        !nodes[larger]
+            .node
+            .get_peer(nodes[smaller].node.node_addr())
+            .expect("larger node peer")
+            .fmp_mmp_is_initiator()
+    );
+
+    initiate_handshake(&mut nodes, larger, smaller).await;
+    assert!(drain_all_packets(&mut nodes, false).await > 0);
+    assert!(
+        nodes[smaller]
+            .node
+            .get_peer(nodes[larger].node.node_addr())
+            .expect("smaller node peer after reverse dial")
+            .fmp_mmp_is_initiator(),
+        "smaller node must retain the outbound session"
+    );
+    assert!(
+        !nodes[larger]
+            .node
+            .get_peer(nodes[smaller].node.node_addr())
+            .expect("larger node peer after reverse dial")
+            .fmp_mmp_is_initiator(),
+        "larger node must retain the inbound session"
+    );
+
     cleanup_nodes(&mut nodes).await;
 }
 

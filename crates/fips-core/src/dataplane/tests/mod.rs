@@ -9,6 +9,7 @@ include!("aead_completion.rs");
 include!("aead_completion_tail.rs");
 include!("live_routes_and_outputs.rs");
 include!("live_node_runtime.rs");
+include!("stream_transport.rs");
 include!("live_node_runtime_continuation.rs");
 include!("live_node_runtime_tail.rs");
 include!("live_node_session_ingress.rs");

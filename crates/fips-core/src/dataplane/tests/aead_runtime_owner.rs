@@ -449,7 +449,8 @@ fn direct_fsp_endpoint_data_seals_payloads_to_transport() {
         owner,
         OwnerConfig::new(1, 8)
             .with_next_send_counter(90)
-            .with_fsp_session_start_ms(2_000),
+            .with_fsp_session_start_ms(2_000)
+            .with_fsp_coords_warmup(2, empty_fsp_coords_prefix()),
     );
     driver
         .owner_mut(owner)
@@ -497,6 +498,16 @@ fn direct_fsp_endpoint_data_seals_payloads_to_transport() {
             header.flags() & crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT,
             crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT
         );
+        assert_eq!(
+            header.flags() & crate::node::session_wire::FSP_FLAG_CP,
+            0,
+            "a direct carrier has no transit coordinate prefix"
+        );
+        assert_eq!(
+            header.ciphertext_offset() as usize,
+            FSP_HEADER_SIZE,
+            "direct FSP keeps the fixed stream-record header"
+        );
         let plaintext = open_sealed_output(output, key);
         let (_timestamp, msg_type, _inner_flags, body) =
             crate::node::session_wire::fsp_strip_inner_header(&plaintext).unwrap();
@@ -506,6 +517,14 @@ fn direct_fsp_endpoint_data_seals_payloads_to_transport() {
         );
         assert_eq!(body, expected);
     }
+    assert_eq!(
+        driver
+            .owner_mut(owner)
+            .unwrap()
+            .fsp_coords_warmup_remaining(),
+        2,
+        "direct packets preserve warmup budget for a later routed path"
+    );
 }
 
 #[test]

@@ -24,6 +24,7 @@ mod handle;
 pub(crate) mod link_negotiation;
 mod packet_channel;
 mod resolve;
+mod stream_io;
 
 #[cfg(test)]
 mod tests;

@@ -160,6 +160,148 @@ async fn handle_msg2_replaces_quiet_static_path_with_authenticated_alternate() {
 }
 
 #[tokio::test]
+async fn handle_msg2_treats_late_reverse_tcp_dial_as_duplicate_carrier() {
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(1);
+    let mut tcp = TcpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::TcpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    tcp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Tcp(tcp));
+
+    let peer_full = loop {
+        let candidate = Identity::generate();
+        if candidate.node_addr() < node.node_addr() {
+            break candidate;
+        }
+    };
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_node_addr = *peer_identity.node_addr();
+    assert!(
+        !crate::peer::cross_connection_winner(node.node_addr(), &peer_node_addr, true),
+        "the larger local node's duplicate outbound must lose"
+    );
+
+    let accepted_source = TransportAddr::from_string("127.0.0.1:40002");
+    let listener_addr = TransportAddr::from_string("127.0.0.1:8443");
+    node.config.peers = vec![crate::config::PeerConfig {
+        npub: peer_full.npub(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::with_priority(
+            "tcp",
+            listener_addr.to_string(),
+            20,
+        )],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    }];
+    refresh_configured_peer_cache_for_test(&mut node);
+
+    let old_link_id = LinkId::new(10);
+    let old_our_index = SessionIndex::new(11);
+    let old_their_index = SessionIndex::new(12);
+    let old_session =
+        make_test_fmp_session(&node.identity, &peer_full, node.startup_epoch, [0x11; 8]);
+    let old_peer = ActivePeer::with_session(
+        peer_identity,
+        old_link_id,
+        1_000,
+        ActivePeerSession {
+            session: old_session,
+            our_index: old_our_index,
+            their_index: old_their_index,
+            transport_id,
+            current_addr: accepted_source.clone(),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: false,
+            remote_epoch: Some([0x11; 8]),
+        },
+    );
+    node.peers.insert(peer_node_addr, old_peer);
+    node.peers
+        .insert_session_index((transport_id, old_our_index.as_u32()), peer_node_addr);
+    node.links.insert(
+        old_link_id,
+        Link::connectionless(
+            old_link_id,
+            transport_id,
+            accepted_source.clone(),
+            LinkDirection::Inbound,
+            Duration::from_millis(100),
+        ),
+    );
+    node.links
+        .insert_addr((transport_id, accepted_source.clone()), old_link_id);
+
+    let new_link_id = LinkId::new(11);
+    let mut new_conn = PeerConnection::outbound(new_link_id, peer_identity, 2_000);
+    let msg1 = new_conn
+        .start_handshake(node.identity.keypair(), node.startup_epoch, 2_000)
+        .unwrap();
+    let new_our_index = node.index_allocator.allocate().unwrap();
+    new_conn.set_our_index(new_our_index);
+    new_conn.set_transport_id(transport_id);
+    new_conn.set_source_addr(listener_addr.clone());
+    node.links.insert(
+        new_link_id,
+        Link::connectionless(
+            new_link_id,
+            transport_id,
+            listener_addr.clone(),
+            LinkDirection::Outbound,
+            Duration::from_millis(100),
+        ),
+    );
+    node.links
+        .insert_addr((transport_id, listener_addr.clone()), new_link_id);
+    node.peers.insert_connection(new_link_id, new_conn);
+    node.pending_outbound
+        .insert((transport_id, new_our_index.as_u32()), new_link_id);
+
+    let mut responder = PeerConnection::inbound(LinkId::new(99), 2_000);
+    let noise_msg2 = responder
+        .receive_handshake_init(peer_full.keypair(), [0x11; 8], &msg1, 2_000)
+        .unwrap();
+    let new_their_index = SessionIndex::new(77);
+    let packet = ReceivedPacket::with_timestamp(
+        transport_id,
+        listener_addr.clone(),
+        crate::transport::PacketBuffer::new(build_msg2(
+            new_their_index,
+            new_our_index,
+            &noise_msg2,
+        )),
+        2_100,
+    );
+
+    node.handle_msg2(packet).await;
+
+    let active = node.get_peer(&peer_node_addr).unwrap();
+    assert_eq!(active.link_id(), old_link_id);
+    assert_eq!(active.current_addr(), Some(&accepted_source));
+    assert_eq!(active.our_index(), Some(old_our_index));
+    assert_eq!(active.their_index(), Some(old_their_index));
+    assert!(!active.fmp_mmp_is_initiator());
+    assert!(!node.links.contains_key(&new_link_id));
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
 async fn authenticated_packet_rotates_configured_static_path_to_observed_source() {
     let local_identity = Identity::generate();
     let peer_full = Identity::generate();

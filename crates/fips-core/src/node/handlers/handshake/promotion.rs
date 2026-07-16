@@ -65,10 +65,14 @@ impl Node {
         if let Some(existing_peer) = self.peers.get(&peer_node_addr) {
             let existing_link_id = existing_peer.link_id();
             let existing_path_unusable = !existing_peer.is_healthy() || !existing_peer.can_send();
+            let connection_oriented_cross_connection = self
+                .is_connection_oriented_cross_connection(existing_peer, transport_id, is_outbound);
             let outbound_alternate_path = is_outbound
+                && !connection_oriented_cross_connection
                 && (existing_peer.transport_id() != Some(transport_id)
                     || existing_peer.current_addr() != Some(&current_addr));
             let inbound_alternate_path = !is_outbound
+                && !connection_oriented_cross_connection
                 && (existing_peer.transport_id() != Some(transport_id)
                     || existing_peer.current_addr() != Some(&current_addr));
             let late_inbound_refresh_for_active_outbound = inbound_alternate_path
@@ -110,11 +114,13 @@ impl Node {
             // win instead of applying the simultaneous-handshake tie-breaker to
             // a path we already marked unusable.
             //
-            // A completed handshake on a different transport tuple is also not
-            // a symmetric cross-connection when it is an explicit alternate-path
-            // refresh. Same-tuple races must stay on the deterministic
-            // cross-connection tie-breaker; otherwise both peers can accept the
-            // responder half and keep sending to stale receiver indices.
+            // A completed handshake on a genuinely different path is also not
+            // a symmetric cross-connection when it is an explicit alternate-
+            // path refresh. For connection-oriented transports, however, the
+            // listener and accepted-stream source tuples naturally differ; an
+            // opposite-direction candidate on the same transport still uses
+            // the deterministic NodeAddr tie-breaker. UDP tuple changes remain
+            // eligible path refreshes.
             let this_wins = remote_epoch_changed
                 || existing_path_unusable
                 || late_inbound_refresh_for_active_outbound

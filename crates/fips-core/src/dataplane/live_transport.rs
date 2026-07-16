@@ -314,7 +314,12 @@ async fn send_non_udp_transport_plan_group(
         ..
     } = group;
     for output in outputs {
-        match dataplane_direct_fsp_transport_output(output) {
+        let output = if transport.uses_fips_byte_stream_framing() {
+            DataplaneDirectFspTransportOutput::Whole(output)
+        } else {
+            dataplane_direct_fsp_transport_output(output)
+        };
+        match output {
             DataplaneDirectFspTransportOutput::Whole(output) => {
                 match send_non_udp_transport_payload(
                     transport,
@@ -380,23 +385,18 @@ async fn send_non_udp_transport_payload(
     lane: Lane,
     payload: &[u8],
 ) -> Result<usize, TransportError> {
-    let send = transport.send(remote_addr, payload);
-    let Some(timeout) = non_udp_transport_send_timeout(transport.transport_type().name, lane) else {
-        return send.await;
-    };
-    tokio::time::timeout(timeout, send)
-        .await
-        .unwrap_or(Err(TransportError::Timeout))
+    if let Some(timeout) = non_udp_transport_send_timeout(transport.transport_type().name, lane) {
+        return transport
+            .send_with_timeout(remote_addr, payload, timeout)
+            .await;
+    }
+    transport.send(remote_addr, payload).await
 }
 
 fn non_udp_transport_send_timeout(
     transport_type: &str,
     lane: Lane,
 ) -> Option<std::time::Duration> {
-    // A peer that stops reading TCP must not park the single-thread node loop
-    // while it is sending heartbeats, MMP, or other priority control frames.
-    // Bulk traffic relies on the transport's longer stall bound so ordinary
-    // TCP backpressure does not consume the priority control-frame budget.
     (transport_type == "tcp" && lane == Lane::Priority)
         .then_some(DATAPLANE_TCP_PRIORITY_SEND_TIMEOUT)
 }

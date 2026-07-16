@@ -33,10 +33,12 @@ mod trait_impl;
 #[cfg(test)]
 mod tests;
 
+use super::stream_io::{StreamConnectionIo, StreamWriteError};
 use super::{
     ConnectionState, PacketTx, TransportAddr, TransportError, TransportId, TransportState,
 };
 use crate::config::TorConfig;
+use crate::transport::tcp::stream::validate_stream_record;
 pub use address::TorAddr;
 use address::{parse_tor_addr, validate_host_port};
 use control::{ControlAuth, TorControlClient, TorMonitoringInfo};
@@ -49,7 +51,6 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
@@ -70,8 +71,8 @@ enum Direction {
 
 /// State for a single Tor connection to a peer.
 struct TorConnection {
-    /// Write half of the split stream.
-    writer: Arc<Mutex<OwnedWriteHalf>>,
+    /// Write side, close signal, and unique pool generation token.
+    io: Arc<StreamConnectionIo<OwnedWriteHalf>>,
     /// Receive task for this connection.
     recv_task: JoinHandle<()>,
     direction: Direction,
@@ -80,13 +81,31 @@ struct TorConnection {
 /// Shared connection pool.
 type ConnectionPool = Arc<Mutex<HashMap<TransportAddr, TorConnection>>>;
 
+fn remove_if_current(
+    pool: &mut HashMap<TransportAddr, TorConnection>,
+    addr: &TransportAddr,
+    io: &Arc<StreamConnectionIo<OwnedWriteHalf>>,
+) -> Option<TorConnection> {
+    pool.get(addr)
+        .is_some_and(|connection| Arc::ptr_eq(&connection.io, io))
+        .then(|| pool.remove(addr))
+        .flatten()
+}
+
+fn record_pool_removed(stats: &TorStats, connection: &TorConnection) {
+    match connection.direction {
+        Direction::Inbound => stats.record_pool_inbound_removed(),
+        Direction::Outbound => stats.record_pool_outbound_removed(),
+    }
+}
+
 /// A pending background connection attempt.
 ///
 /// Holds the JoinHandle for a spawned SOCKS5 connect task. The task
-/// produces a configured `TcpStream` and MTU on success.
+/// produces a configured `TcpStream` on success.
 struct ConnectingEntry {
     /// Background task performing SOCKS5 connect + socket configuration.
-    task: JoinHandle<Result<(TcpStream, u16), TransportError>>,
+    task: JoinHandle<Result<TcpStream, TransportError>>,
 }
 
 /// Map of addresses with background connection attempts in progress.
@@ -335,21 +354,11 @@ impl TorTransport {
         let transport_id = self.transport_id;
         let packet_tx = self.packet_tx.clone();
         let pool = self.pool.clone();
-        let mtu = self.config.mtu();
         let max_inbound = self.config.max_inbound_connections();
         let stats = self.stats.clone();
 
         let accept_handle = tokio::spawn(async move {
-            tor_accept_loop(
-                listener,
-                transport_id,
-                packet_tx,
-                pool,
-                mtu,
-                max_inbound,
-                stats,
-            )
-            .await;
+            tor_accept_loop(listener, transport_id, packet_tx, pool, max_inbound, stats).await;
         });
 
         self.accept_task = Some(accept_handle);
@@ -511,33 +520,29 @@ impl TorTransport {
             return Err(TransportError::NotStarted);
         }
 
-        // Pre-send MTU check
-        let mtu = self.config.mtu() as usize;
-        if data.len() > mtu {
-            self.stats.record_mtu_exceeded();
-            return Err(TransportError::MtuExceeded {
-                packet_size: data.len(),
-                mtu: self.config.mtu(),
-            });
+        if let Err(error) = validate_stream_record(data) {
+            self.stats.record_send_error();
+            return Err(TransportError::SendFailed(format!(
+                "invalid FIPS stream record: {error}"
+            )));
         }
 
         // Get or create connection
-        let writer = {
+        let io = {
             let pool = self.pool.lock().await;
-            pool.get(addr).map(|c| c.writer.clone())
+            pool.get(addr).map(|connection| connection.io.clone())
         };
 
-        let writer = match writer {
-            Some(w) => w,
+        let io = match io {
+            Some(io) if !io.is_closed() => io,
             None => {
                 // Connect-on-send
                 self.connect(addr).await?
             }
+            Some(_) => self.connect(addr).await?,
         };
 
-        // Write packet directly (no framing transformation needed)
-        let mut w = writer.lock().await;
-        match w.write_all(data).await {
+        match io.write_record(data, None).await {
             Ok(()) => {
                 self.stats.record_send(data.len());
                 trace!(
@@ -548,20 +553,32 @@ impl TorTransport {
                 );
                 Ok(data.len())
             }
-            Err(e) => {
+            Err(error) => {
                 self.stats.record_send_error();
-                drop(w);
-                // Remove failed connection from pool
-                let mut pool = self.pool.lock().await;
-                if let Some(conn) = pool.remove(addr) {
-                    conn.recv_task.abort();
-                    match conn.direction {
-                        Direction::Inbound => self.stats.record_pool_inbound_removed(),
-                        Direction::Outbound => self.stats.record_pool_outbound_removed(),
+                if error.poisons_connection() {
+                    self.remove_failed_connection(addr, &io).await;
+                }
+                match error {
+                    StreamWriteError::LockTimeout | StreamWriteError::WriteTimeout => {
+                        Err(TransportError::Timeout)
+                    }
+                    StreamWriteError::Closed | StreamWriteError::Io(_) => {
+                        Err(TransportError::SendFailed(error.to_string()))
                     }
                 }
-                Err(TransportError::SendFailed(format!("{}", e)))
             }
+        }
+    }
+
+    async fn remove_failed_connection(
+        &self,
+        addr: &TransportAddr,
+        failed_io: &Arc<StreamConnectionIo<OwnedWriteHalf>>,
+    ) {
+        let mut pool = self.pool.lock().await;
+        if let Some(connection) = remove_if_current(&mut pool, addr, failed_io) {
+            connection.recv_task.abort();
+            record_pool_removed(&self.stats, &connection);
         }
     }
 
@@ -573,7 +590,7 @@ impl TorTransport {
     async fn connect(
         &self,
         addr: &TransportAddr,
-    ) -> Result<Arc<Mutex<OwnedWriteHalf>>, TransportError> {
+    ) -> Result<Arc<StreamConnectionIo<OwnedWriteHalf>>, TransportError> {
         let tor_addr = parse_tor_addr(addr)?;
         let proxy_addr = self.config.socks5_addr();
         let timeout_ms = self.config.connect_timeout_ms();
@@ -651,17 +668,28 @@ impl TorTransport {
         let stream = TcpStream::from_std(std_stream)
             .map_err(|e| TransportError::StartFailed(format!("from_std: {}", e)))?;
 
-        // Split and spawn receive task
+        // Own the slot before spawning so cancellation or EOF cannot leave an
+        // unregistered receive task behind.
+        let mut pool_guard = self.pool.lock().await;
+        if let Some(existing) = pool_guard.get(addr)
+            && !existing.io.is_closed()
+        {
+            return Ok(existing.io.clone());
+        }
+        if let Some(closed) = pool_guard.remove(addr) {
+            closed.recv_task.abort();
+            record_pool_removed(&self.stats, &closed);
+        }
+
         let (read_half, write_half) = stream.into_split();
-        let writer = Arc::new(Mutex::new(write_half));
+        let io = Arc::new(StreamConnectionIo::new(write_half));
 
         let transport_id = self.transport_id;
         let packet_tx = self.packet_tx.clone();
-        let pool = self.pool.clone();
+        let recv_pool = self.pool.clone();
         let recv_stats = self.stats.clone();
         let remote_addr = addr.clone();
-        let mtu = self.config.mtu();
-
+        let recv_io = io.clone();
         let recv_task = tokio::spawn(async move {
             tor_receive_loop(
                 read_half,
@@ -669,26 +697,26 @@ impl TorTransport {
                     transport_id,
                     remote_addr,
                     packet_tx,
-                    pool,
-                    mtu,
+                    pool: recv_pool,
                     stats: recv_stats,
+                    first_frame_timeout: None,
                     direction: Direction::Outbound,
+                    io: recv_io,
                 },
             )
             .await;
         });
 
         let conn = TorConnection {
-            writer: writer.clone(),
+            io: io.clone(),
             recv_task,
             direction: Direction::Outbound,
         };
 
-        let mut pool = self.pool.lock().await;
-        pool.insert(addr.clone(), conn);
-
-        self.stats.record_connection_established();
+        pool_guard.insert(addr.clone(), conn);
         self.stats.record_pool_outbound_added();
+        drop(pool_guard);
+        self.stats.record_connection_established();
 
         info!(
             transport_id = %self.transport_id,
@@ -697,7 +725,7 @@ impl TorTransport {
             "Tor circuit established via SOCKS5"
         );
 
-        Ok(writer)
+        Ok(io)
     }
 
     /// Initiate a non-blocking connection to a remote address.
@@ -711,22 +739,6 @@ impl TorTransport {
     pub async fn connect_async(&self, addr: &TransportAddr) -> Result<(), TransportError> {
         if !self.state.is_operational() {
             return Err(TransportError::NotStarted);
-        }
-
-        // Already established?
-        {
-            let pool = self.pool.lock().await;
-            if pool.contains_key(addr) {
-                return Ok(());
-            }
-        }
-
-        // Already connecting?
-        {
-            let connecting = self.connecting.lock().await;
-            if connecting.contains_key(addr) {
-                return Ok(());
-            }
         }
 
         let tor_addr = parse_tor_addr(addr)?;
@@ -745,6 +757,21 @@ impl TorTransport {
 
         // Stream isolation key for this destination
         let isolation_key = addr.to_string();
+
+        // Reserve this address before spawning. Holding the pool guard across
+        // the connecting-map recheck prevents an established generation from
+        // racing the reservation; cancellation before spawn leaves no task.
+        let pool = self.pool.lock().await;
+        if pool
+            .get(addr)
+            .is_some_and(|connection| !connection.io.is_closed())
+        {
+            return Ok(());
+        }
+        let mut connecting = self.connecting.lock().await;
+        if connecting.contains_key(addr) {
+            return Ok(());
+        }
 
         let task = tokio::spawn(async move {
             // SOCKS5 CONNECT through proxy with timeout.
@@ -800,17 +827,15 @@ impl TorTransport {
                 .map_err(|e| TransportError::StartFailed(format!("into_std: {}", e)))?;
             configure_socket(&std_stream, &config)?;
 
-            let mtu = config.mtu();
-
             // Convert back to tokio
             let stream = TcpStream::from_std(std_stream)
                 .map_err(|e| TransportError::StartFailed(format!("from_std: {}", e)))?;
 
-            Ok((stream, mtu))
+            Ok(stream)
         });
 
-        let mut connecting = self.connecting.lock().await;
         connecting.insert(addr.clone(), ConnectingEntry { task });
+        drop(pool);
 
         Ok(())
     }
@@ -825,12 +850,20 @@ impl TorTransport {
     /// Returns `ConnectionState::Connecting` if locks can't be acquired.
     pub fn connection_state_sync(&self, addr: &TransportAddr) -> ConnectionState {
         // Check established pool first
-        if let Ok(pool) = self.pool.try_lock() {
-            if pool.contains_key(addr) {
-                return ConnectionState::Connected;
+        let mut pool = match self.pool.try_lock() {
+            Ok(pool) => pool,
+            Err(_) => return ConnectionState::Connecting,
+        };
+        if pool
+            .get(addr)
+            .is_some_and(|connection| !connection.io.is_closed())
+        {
+            if let Ok(mut connecting) = self.connecting.try_lock()
+                && let Some(entry) = connecting.remove(addr)
+            {
+                entry.task.abort();
             }
-        } else {
-            return ConnectionState::Connecting; // can't tell, assume still going
+            return ConnectionState::Connected;
         }
 
         // Check connecting pool
@@ -852,12 +885,12 @@ impl TorTransport {
         // Task is done — take the result and remove from connecting pool.
         let addr_clone = addr.clone();
         let task = connecting.remove(&addr_clone).unwrap().task;
+        drop(connecting);
 
         // Since the task is finished, we can safely poll it with now_or_never.
         match task.now_or_never() {
-            Some(Ok(Ok((stream, mtu)))) => {
-                // Promote to established pool
-                self.promote_connection(addr, stream, mtu);
+            Some(Ok(Ok(stream))) => {
+                self.promote_connection_in_pool(&mut pool, addr, stream);
                 ConnectionState::Connected
             }
             Some(Ok(Err(e))) => ConnectionState::Failed(format!("{}", e)),
@@ -872,19 +905,31 @@ impl TorTransport {
         }
     }
 
-    /// Promote a completed background connection to the established pool.
-    ///
-    /// Splits the stream, spawns a receive loop, and inserts into the pool.
-    /// Called from `connection_state_sync()` when a background task completes.
-    fn promote_connection(&self, addr: &TransportAddr, stream: TcpStream, mtu: u16) {
+    fn promote_connection_in_pool(
+        &self,
+        pool: &mut HashMap<TransportAddr, TorConnection>,
+        addr: &TransportAddr,
+        stream: TcpStream,
+    ) {
+        if let Some(existing) = pool.get(addr)
+            && !existing.io.is_closed()
+        {
+            return;
+        }
+        if let Some(closed) = pool.remove(addr) {
+            closed.recv_task.abort();
+            record_pool_removed(&self.stats, &closed);
+        }
+
         let (read_half, write_half) = stream.into_split();
-        let writer = Arc::new(Mutex::new(write_half));
+        let io = Arc::new(StreamConnectionIo::new(write_half));
 
         let transport_id = self.transport_id;
         let packet_tx = self.packet_tx.clone();
-        let pool = self.pool.clone();
+        let recv_pool = self.pool.clone();
         let recv_stats = self.stats.clone();
         let remote_addr = addr.clone();
+        let recv_io = io.clone();
 
         let recv_task = tokio::spawn(async move {
             tor_receive_loop(
@@ -893,41 +938,30 @@ impl TorTransport {
                     transport_id,
                     remote_addr,
                     packet_tx,
-                    pool,
-                    mtu,
+                    pool: recv_pool,
                     stats: recv_stats,
+                    first_frame_timeout: None,
                     direction: Direction::Outbound,
+                    io: recv_io,
                 },
             )
             .await;
         });
 
         let conn = TorConnection {
-            writer,
+            io,
             recv_task,
             direction: Direction::Outbound,
         };
 
-        // Use try_lock since we're in a sync context and the pool
-        // should be available (connection_state_sync already checked it)
-        if let Ok(mut pool) = self.pool.try_lock() {
-            pool.insert(addr.clone(), conn);
-            self.stats.record_connection_established();
-            self.stats.record_pool_outbound_added();
-            debug!(
-                transport_id = %self.transport_id,
-                remote_addr = %addr,
-                "Tor connection established (background connect)"
-            );
-        } else {
-            // Pool locked — abort the recv task, connection will be retried
-            conn.recv_task.abort();
-            warn!(
-                transport_id = %self.transport_id,
-                remote_addr = %addr,
-                "Failed to promote Tor connection (pool locked)"
-            );
-        }
+        pool.insert(addr.clone(), conn);
+        self.stats.record_pool_outbound_added();
+        self.stats.record_connection_established();
+        debug!(
+            transport_id = %self.transport_id,
+            remote_addr = %addr,
+            "Tor connection established (background connect)"
+        );
     }
 
     /// Close a specific connection asynchronously.

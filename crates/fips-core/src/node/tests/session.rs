@@ -323,12 +323,16 @@ fn enqueue_tun_packet_via_dataplane(nodes: &mut [TestNode], index: usize, packet
         .expect("enqueue TUN outbound packet");
 }
 
-async fn send_tun_packet_via_dataplane(nodes: &mut [TestNode], index: usize, packet: Vec<u8>) {
+pub(super) async fn send_tun_packet_via_dataplane(
+    nodes: &mut [TestNode],
+    index: usize,
+    packet: Vec<u8>,
+) {
     enqueue_tun_packet_via_dataplane(nodes, index, packet);
     process_available_packets(nodes).await;
 }
 
-async fn recv_tun_packet_while_draining(
+pub(super) async fn recv_tun_packet_while_draining(
     nodes: &mut [TestNode],
     rx: &crate::upper::tun::TunRx,
     timeout: Duration,
@@ -401,7 +405,7 @@ async fn wait_drop_queued_packets_for_node(node: &mut TestNode) -> usize {
 }
 
 /// Build a minimal valid IPv6 packet with given source and destination addresses.
-fn build_ipv6_packet(
+pub(super) fn build_ipv6_packet(
     src: &crate::FipsAddress,
     dst: &crate::FipsAddress,
     payload: &[u8],
