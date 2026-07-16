@@ -67,12 +67,7 @@ async fn wait_for_session_established(
                 return;
             }
 
-            let now_ms = Node::now_ms();
-            nodes[index]
-                .node
-                .resend_pending_session_handshakes(now_ms)
-                .await;
-            nodes[index].node.resend_pending_session_msg3(now_ms).await;
+            run_session_retransmit_work(nodes).await;
             process_available_packets(nodes).await;
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -183,9 +178,12 @@ where
 }
 
 async fn run_session_retransmit_work(nodes: &mut [TestNode]) {
+    // Synthetic nodes have no independent RX loops, so mirror the session
+    // maintenance each live node would run on its own fast timer.
     let now_ms = Node::now_ms();
     for node in nodes {
         node.node.resend_pending_session_handshakes(now_ms).await;
+        node.node.resend_pending_session_msg3(now_ms).await;
         node.node.check_pending_lookups(now_ms).await;
     }
 }
