@@ -143,6 +143,31 @@ fn simultaneous_webrtc_upgrade_preserves_shared_physical_carrier() {
             expect_single_endpoint_data_event(event).payload.as_slice(),
             b"survives-cross-connection-resolution"
         );
+
+        let mut endpoint_a = nodes[0]
+            .node
+            .attach_endpoint_data_io(8)
+            .expect("node A endpoint I/O");
+        let endpoint_identity_a =
+            PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
+        send_endpoint_data_via_dataplane(
+            &mut nodes[1].node,
+            endpoint_identity_a,
+            b"survives-reverse-cross-connection-resolution".to_vec(),
+        )
+        .await
+        .expect("queue reverse endpoint data after WebRTC promotion");
+        let event = recv_endpoint_event_while_draining(
+            &mut nodes,
+            &mut endpoint_a.event_rx,
+            Duration::from_secs(10),
+            "reverse endpoint data over promoted WebRTC carrier",
+        )
+        .await;
+        assert_eq!(
+            expect_single_endpoint_data_event(event).payload.as_slice(),
+            b"survives-reverse-cross-connection-resolution"
+        );
         assert!(active_path_is_webrtc(
             &nodes[0].node,
             &node_b_addr,
