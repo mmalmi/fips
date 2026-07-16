@@ -75,7 +75,7 @@ async fn process_dataplane_turn(
     let mut active_turns = 0usize;
     let had_activity = turn.has_activity();
     let mut dispatched = turn.summary().dispatched();
-    let processed = node.node.process_dataplane_control_ingress(&mut turn).await;
+    let processed = finish_synthetic_dataplane_turn(&mut node.node, &mut turn).await;
     if had_activity || processed > 0 {
         active_turns = active_turns.saturating_add(1);
     }
@@ -105,10 +105,8 @@ async fn process_dataplane_turn(
         };
         let completion_had_activity = completion_turn.has_activity();
         dispatched = completion_turn.summary().dispatched();
-        let completion_processed = node
-            .node
-            .process_dataplane_control_ingress(&mut completion_turn)
-            .await;
+        let completion_processed =
+            finish_synthetic_dataplane_turn(&mut node.node, &mut completion_turn).await;
         if completion_had_activity || completion_processed > 0 {
             active_turns = active_turns.saturating_add(1);
         } else {
@@ -120,6 +118,17 @@ async fn process_dataplane_turn(
     node.node.tun_outbound_rx = tun_outbound_rx_slot.take();
 
     active_turns
+}
+
+async fn finish_synthetic_dataplane_turn(
+    node: &mut Node,
+    turn: &mut crate::dataplane::DataplaneLiveNodeTurn,
+) -> usize {
+    // Mirror the live RX loop: control handlers can enqueue a nested turn, and
+    // leaving that turn behind can strand an otherwise established FSP flow.
+    node.process_dataplane_control_ingress(turn)
+        .await
+        .saturating_add(node.drain_deferred_dataplane_control_turns().await)
 }
 
 /// Drain all packet channels across all nodes until quiescence.

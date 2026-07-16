@@ -216,10 +216,40 @@ pub(super) async fn recv_endpoint_event_while_draining(
             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
         }
 
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "{context}: endpoint data should not time out"
-        );
+        if tokio::time::Instant::now() >= deadline {
+            let snapshots = nodes
+                .iter()
+                .enumerate()
+                .map(|(index, node)| {
+                    let sessions = node
+                        .node
+                        .sessions
+                        .iter()
+                        .map(|(peer, entry)| {
+                            format!(
+                                "{peer}:established={},initiating={},awaiting_msg3={},resends={},handshake_payload={}",
+                                entry.is_established(),
+                                entry.is_initiating(),
+                                entry.is_awaiting_msg3(),
+                                entry.resend_count(),
+                                entry.handshake_payload().is_some(),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    let pending = node
+                        .node
+                        .pending_session_traffic
+                        .destinations()
+                        .map(|peer| peer.to_string())
+                        .collect::<Vec<_>>();
+                    format!(
+                        "node={index}, sessions={sessions:?}, pending={pending:?}, deferred_control={}",
+                        node.node.deferred_dataplane_control_turns.len(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            panic!("{context}: endpoint data should not time out: {snapshots:#?}");
+        }
         run_session_retransmit_work(nodes).await;
         process_available_packets(nodes).await;
         tokio::time::sleep(Duration::from_millis(10)).await;

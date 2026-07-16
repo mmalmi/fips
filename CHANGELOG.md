@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   receive loop, restoring safe headroom on Tokio's default worker stack in
   debug builds. FMP, FSP, discovery, datagram DFP1, and link-negotiation wire
   formats are unchanged.
+- Make the synthetic topology harness drain nested dataplane-control turns like
+  the live receive loop, so an established multi-hop endpoint flow cannot be
+  stranded behind unserviced deferred work during release tests.
 - Bump `fips-endpoint` to 0.4.6 so embedded consumers select the corrected
   `fips-core` release.
 
