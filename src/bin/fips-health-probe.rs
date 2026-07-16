@@ -148,26 +148,49 @@ fn probe_config(target: &PeerIdentity, relays: &[String], app: &str, timeout_sec
         ..Default::default()
     });
     config.transports.nostr_relay = TransportInstances::Single(NostrRelayConfig::default());
-    config.peers = vec![PeerConfig {
-        npub: target.npub(),
-        addresses: vec![
-            PeerAddress::with_priority(
-                "webrtc",
-                hex::encode(target.pubkey_full().serialize()),
-                100,
-            ),
-            PeerAddress::with_priority("nostr_relay", target.npub(), 250),
-        ],
-        auto_reconnect: false,
-        discovery_fallback_transit: false,
-        ..Default::default()
-    }];
+    config.peers = vec![probe_peer_config(target, false)];
     config
 }
 
-async fn probe_target(endpoint: &FipsEndpoint, target: PeerIdentity) -> Result<Duration, String> {
-    wait_for_authenticated_webrtc(endpoint, target).await?;
+fn probe_peer_config(target: &PeerIdentity, include_webrtc: bool) -> PeerConfig {
+    let mut addresses = Vec::with_capacity(usize::from(include_webrtc) + 1);
+    if include_webrtc {
+        addresses.push(PeerAddress::with_priority(
+            "webrtc",
+            hex::encode(target.pubkey_full().serialize()),
+            100,
+        ));
+    }
+    addresses.push(PeerAddress::with_priority(
+        "nostr_relay",
+        target.npub(),
+        250,
+    ));
+    PeerConfig {
+        npub: target.npub(),
+        addresses,
+        auto_reconnect: false,
+        discovery_fallback_transit: false,
+        ..Default::default()
+    }
+}
 
+async fn probe_target(endpoint: &FipsEndpoint, target: PeerIdentity) -> Result<Duration, String> {
+    wait_for_authenticated_transport(endpoint, target, "nostr_relay").await?;
+    probe_echo(endpoint, target, "Nostr relay bootstrap").await?;
+    endpoint
+        .update_peers(vec![probe_peer_config(&target, true)])
+        .await
+        .map_err(|error| format!("could not start staged WebRTC upgrade: {error}"))?;
+    wait_for_authenticated_transport(endpoint, target, "webrtc").await?;
+    probe_echo(endpoint, target, "WebRTC").await
+}
+
+async fn probe_echo(
+    endpoint: &FipsEndpoint,
+    target: PeerIdentity,
+    transport: &str,
+) -> Result<Duration, String> {
     let nonce = Uuid::new_v4().into_bytes().to_vec();
     let started = Instant::now();
     let mut ping_tick = tokio::time::interval(PING_INTERVAL);
@@ -179,7 +202,7 @@ async fn probe_target(endpoint: &FipsEndpoint, target: PeerIdentity) -> Result<D
             _ = ping_tick.tick() => endpoint
                 .send_batch_to_peer(target, vec![nonce.clone()])
                 .await
-                .map_err(|error| format!("FSP echo send failed: {error}"))?,
+                .map_err(|error| format!("{transport} FSP echo send failed: {error}"))?,
             received = endpoint.recv_batch_into(&mut messages, 8) => {
                 received.ok_or_else(|| {
                     "ephemeral endpoint closed before receiving FSP echo".to_string()
@@ -195,9 +218,10 @@ async fn probe_target(endpoint: &FipsEndpoint, target: PeerIdentity) -> Result<D
     }
 }
 
-async fn wait_for_authenticated_webrtc(
+async fn wait_for_authenticated_transport(
     endpoint: &FipsEndpoint,
     target: PeerIdentity,
+    transport: &str,
 ) -> Result<(), String> {
     let mut poll = tokio::time::interval(PEER_POLL_INTERVAL);
     poll.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -210,7 +234,7 @@ async fn wait_for_authenticated_webrtc(
         if let Some(peer) = peers
             .iter()
             .find(|peer| peer.node_addr == *target.node_addr() && peer.connected)
-            && peer.transport_type.as_deref() == Some("webrtc")
+            && peer.transport_type.as_deref() == Some(transport)
         {
             return Ok(());
         }
@@ -243,11 +267,10 @@ mod tests {
     }
 
     #[test]
-    fn probe_config_is_ephemeral_targeted_and_bootstraps_webrtc_over_relay() {
+    fn probe_config_is_ephemeral_targeted_and_bootstraps_fsp_before_webrtc() {
         let target_identity = fips::Identity::generate();
         let target = PeerIdentity::from_pubkey_full(target_identity.pubkey_full());
         let target_npub = target.npub();
-        let target_webrtc_addr = hex::encode(target_identity.pubkey_full().serialize());
         let relay = "wss://relay.example".to_string();
         let config = probe_config(&target, std::slice::from_ref(&relay), "health", 20);
 
@@ -260,11 +283,9 @@ mod tests {
         assert_eq!(config.node.discovery.nostr.advert_relays, vec![relay]);
         assert_eq!(config.peers.len(), 1);
         assert_eq!(config.peers[0].npub, target_npub);
-        assert_eq!(config.peers[0].addresses.len(), 2);
-        assert_eq!(config.peers[0].addresses[0].transport, "webrtc");
-        assert_eq!(config.peers[0].addresses[0].addr, target_webrtc_addr);
-        assert_eq!(config.peers[0].addresses[1].transport, "nostr_relay");
-        assert_eq!(config.peers[0].addresses[1].addr, target_npub);
+        assert_eq!(config.peers[0].addresses.len(), 1);
+        assert_eq!(config.peers[0].addresses[0].transport, "nostr_relay");
+        assert_eq!(config.peers[0].addresses[0].addr, target_npub);
         assert!(config.transports.udp.is_empty());
         assert!(!config.transports.nostr_relay.is_empty());
         let TransportInstances::Single(webrtc) = config.transports.webrtc else {
@@ -273,5 +294,21 @@ mod tests {
         assert!(webrtc.auto_connect());
         assert!(!webrtc.accept_connections());
         assert!(!webrtc.advertise_on_nostr());
+    }
+
+    #[test]
+    fn staged_upgrade_adds_webrtc_without_removing_the_bootstrap_path() {
+        let target_identity = fips::Identity::generate();
+        let target = PeerIdentity::from_pubkey_full(target_identity.pubkey_full());
+        let peer = probe_peer_config(&target, true);
+
+        assert_eq!(peer.addresses.len(), 2);
+        assert_eq!(peer.addresses[0].transport, "webrtc");
+        assert_eq!(
+            peer.addresses[0].addr,
+            hex::encode(target_identity.pubkey_full().serialize())
+        );
+        assert_eq!(peer.addresses[1].transport, "nostr_relay");
+        assert_eq!(peer.addresses[1].addr, target.npub());
     }
 }
