@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Make the synthetic topology harness drain nested dataplane-control turns like
   the live receive loop, so an established multi-hop endpoint flow cannot be
   stranded behind unserviced deferred work during release tests.
+- Replay registered local capabilities immediately when their authenticated
+  FSP link becomes ready, and immediately forward an anchor's retained service
+  directory to later consumers. Periodic maintenance remains lease repair,
+  not a prerequisite for discovery readiness.
+- When a learned transit route is non-progressing or points back to the
+  incoming hop, try a cached, strictly coordinate-progressing tree route that
+  excludes that hop. If no safe fallback exists, preserve loop suppression
+  and drop the packet instead of continuing a cycle; locally originated
+  learned routes remain unaffected.
 - Bump `fips-endpoint` to 0.4.6 so embedded consumers select the corrected
   `fips-core` release.
 

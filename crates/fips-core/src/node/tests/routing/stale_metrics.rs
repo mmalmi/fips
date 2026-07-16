@@ -172,6 +172,31 @@ fn test_transit_prefers_adjacent_destination_over_learned_route_back_to_previous
 }
 
 #[test]
+fn test_transit_rejects_declared_destination_equal_to_previous_hop() {
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+    let previous_link = LinkId::new(1);
+    let (previous_conn, previous_id) =
+        make_completed_connection(&mut node, previous_link, transport_id, 1000);
+    let previous_hop = *previous_id.node_addr();
+    node.add_connection(previous_conn).unwrap();
+    node.promote_connection(previous_link, previous_id, 2000)
+        .unwrap();
+
+    assert_eq!(
+        node.find_next_hop(&previous_hop)
+            .map(|peer| *peer.node_addr()),
+        Some(previous_hop),
+        "fixture requires a healthy direct route to the declared destination"
+    );
+    assert!(
+        node.find_transit_next_hop(&previous_hop, &previous_hop)
+            .is_none(),
+        "a transit packet whose destination equals its incoming hop must not bounce back"
+    );
+}
+
+#[test]
 fn test_transit_rejects_learned_route_back_to_previous_hop() {
     let mut config = Config::new();
     config.node.routing.mode = RoutingMode::ReplyLearned;
@@ -249,6 +274,111 @@ fn test_transit_uses_coordinate_fallback_instead_of_learned_reverse_loop() {
         node.find_transit_next_hop(&dest, &previous_hop),
         Some(fallback_hop),
         "transit must use the loop-free coordinate route instead of dropping into its learned reverse path"
+    );
+}
+
+#[test]
+fn test_transit_escapes_multi_hop_learned_cycle_via_coordinate_progress() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let transport_id = TransportId::new(1);
+    let my_addr = *node.node_addr();
+
+    let previous_link = LinkId::new(1);
+    let (previous_conn, previous_id) =
+        make_completed_connection(&mut node, previous_link, transport_id, 1000);
+    let previous_hop = *previous_id.node_addr();
+    node.add_connection(previous_conn).unwrap();
+    node.promote_connection(previous_link, previous_id, 2000)
+        .unwrap();
+
+    let cycle_link = LinkId::new(2);
+    let (cycle_conn, cycle_id) =
+        make_completed_connection(&mut node, cycle_link, transport_id, 1000);
+    let cycle_hop = *cycle_id.node_addr();
+    node.add_connection(cycle_conn).unwrap();
+    node.promote_connection(cycle_link, cycle_id, 2000).unwrap();
+
+    let fallback_link = LinkId::new(3);
+    let (fallback_conn, fallback_id) =
+        make_completed_connection(&mut node, fallback_link, transport_id, 1000);
+    let fallback_hop = *fallback_id.node_addr();
+    node.add_connection(fallback_conn).unwrap();
+    node.promote_connection(fallback_link, fallback_id, 2000)
+        .unwrap();
+
+    for peer in [previous_hop, cycle_hop, fallback_hop] {
+        node.tree_state_mut().update_peer(
+            ParentDeclaration::new(peer, my_addr, 1, 1000),
+            TreeCoordinate::from_addrs(vec![peer, my_addr]).unwrap(),
+        );
+    }
+
+    let dest = make_node_addr(0xDD);
+    let dest_coords = TreeCoordinate::from_addrs(vec![dest, fallback_hop, my_addr]).unwrap();
+    node.coord_cache_mut()
+        .insert(dest, dest_coords, Node::now_ms());
+    node.learn_reverse_route(dest, cycle_hop);
+
+    assert_ne!(
+        cycle_hop, previous_hop,
+        "cycle must span more than two hops"
+    );
+    assert_eq!(
+        node.find_next_hop(&dest).map(|peer| *peer.node_addr()),
+        Some(cycle_hop),
+        "fixture must select a learned hop that can continue a multi-hop cycle"
+    );
+    assert_eq!(
+        node.find_transit_next_hop(&dest, &previous_hop),
+        Some(fallback_hop),
+        "transit must reject a non-progressing learned hop and use the strict coordinate fallback"
+    );
+}
+
+#[test]
+fn test_transit_drops_multi_hop_learned_cycle_without_progress_fallback() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let transport_id = TransportId::new(1);
+    let my_addr = *node.node_addr();
+
+    let previous_link = LinkId::new(1);
+    let (previous_conn, previous_id) =
+        make_completed_connection(&mut node, previous_link, transport_id, 1000);
+    let previous_hop = *previous_id.node_addr();
+    node.add_connection(previous_conn).unwrap();
+    node.promote_connection(previous_link, previous_id, 2000)
+        .unwrap();
+
+    let cycle_link = LinkId::new(2);
+    let (cycle_conn, cycle_id) =
+        make_completed_connection(&mut node, cycle_link, transport_id, 1000);
+    let cycle_hop = *cycle_id.node_addr();
+    node.add_connection(cycle_conn).unwrap();
+    node.promote_connection(cycle_link, cycle_id, 2000).unwrap();
+
+    for peer in [previous_hop, cycle_hop] {
+        node.tree_state_mut().update_peer(
+            ParentDeclaration::new(peer, my_addr, 1, 1000),
+            TreeCoordinate::from_addrs(vec![peer, my_addr]).unwrap(),
+        );
+    }
+
+    let dest = make_node_addr(0xDD);
+    let unavailable_progress_hop = make_node_addr(0xEE);
+    let dest_coords =
+        TreeCoordinate::from_addrs(vec![dest, unavailable_progress_hop, my_addr]).unwrap();
+    node.coord_cache_mut()
+        .insert(dest, dest_coords, Node::now_ms());
+    node.learn_reverse_route(dest, cycle_hop);
+
+    assert_ne!(cycle_hop, previous_hop);
+    assert!(
+        node.find_transit_next_hop(&dest, &previous_hop).is_none(),
+        "transit must drop rather than continue a multi-hop learned cycle when no strict coordinate fallback exists"
     );
 }
 

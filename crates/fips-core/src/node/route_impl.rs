@@ -304,26 +304,43 @@ impl Node {
         else {
             return TransitNextHopPlan::NoRoute;
         };
-        if &next_hop_addr == previous_hop {
-            let now_ms = Self::now_ms();
-            let coordinate_fallback = self
-                .coord_cache
-                .get_and_touch(dest_node_addr, now_ms)
-                .cloned()
-                .and_then(|dest_coords| {
-                    self.select_tree_payload_candidate_avoiding(
-                        &dest_coords,
-                        dest_node_addr,
-                        false,
-                        Some(previous_hop),
-                    )
-                });
-            if let Some(next_hop_addr) = coordinate_fallback {
-                return TransitNextHopPlan::Route(next_hop_addr);
-            }
-            return TransitNextHopPlan::Loop(next_hop_addr);
+        if next_hop_addr == *dest_node_addr && &next_hop_addr != previous_hop {
+            return TransitNextHopPlan::Route(next_hop_addr);
         }
-        TransitNextHopPlan::Route(next_hop_addr)
+
+        let now_ms = Self::now_ms();
+        let dest_coords = self
+            .coord_cache
+            .get_and_touch(dest_node_addr, now_ms)
+            .cloned();
+        let selected_strictly_progresses = dest_coords.as_ref().is_some_and(|dest_coords| {
+            self.tree_state.my_coords().root_id() == dest_coords.root_id()
+                && self
+                    .tree_state
+                    .peer_coords(&next_hop_addr)
+                    .is_some_and(|peer_coords| {
+                        peer_coords.distance_to(dest_coords)
+                            < self.tree_state.my_coords().distance_to(dest_coords)
+                    })
+        });
+
+        if &next_hop_addr != previous_hop && (dest_coords.is_none() || selected_strictly_progresses)
+        {
+            return TransitNextHopPlan::Route(next_hop_addr);
+        }
+
+        let coordinate_fallback = dest_coords.and_then(|dest_coords| {
+            self.select_tree_payload_candidate_avoiding(
+                &dest_coords,
+                dest_node_addr,
+                false,
+                Some(previous_hop),
+            )
+        });
+        if let Some(next_hop_addr) = coordinate_fallback {
+            return TransitNextHopPlan::Route(next_hop_addr);
+        }
+        TransitNextHopPlan::Loop(next_hop_addr)
     }
 
     #[cfg(test)]
