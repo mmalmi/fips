@@ -21,8 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Converge simultaneous opposite-direction TCP or Tor connections on the same
   deterministic authenticated session even though their listener and
   ephemeral socket tuples differ, while preserving tuple-sensitive UDP paths.
+- Correlate queued endpoint batches with their own transport receipts and
+  require every packet in the batch to complete, so unrelated background
+  output cannot falsely acknowledge a first-contact send. The correlation is
+  internal; EndpointData remains best-effort datagram traffic.
 - Correct the target-specific macOS package workflow introduced after 0.4.4,
-  and skip AUR deployment explicitly when its optional credentials are absent.
+  skip AUR deployment explicitly when its optional credentials are absent,
+  and make the Linux dataplane safety gate fail when a selected test was
+  renamed or removed instead of accepting a zero-test run.
 - Bump `fips-endpoint` to 0.4.5 so embedded consumers select the corrected
   `fips-core` release. FMP, FSP, discovery, datagram DFP1, and
   link-negotiation wire formats are unchanged.
