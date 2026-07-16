@@ -244,7 +244,8 @@ dump_lan_diagnostics() {
     dump_container_state fips-nat-stun
 }
 
-trap 'echo ""; echo "NAT test interrupted"; cleanup; exit 130' INT TERM
+trap cleanup EXIT
+trap 'echo ""; echo "NAT test interrupted"; exit 130' INT TERM
 
 require_test_image() {
     if ! docker image inspect fips-test:latest >/dev/null 2>&1; then
