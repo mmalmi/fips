@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-07-16
+
+### Fixed
+
+- Frame direct FSP records over TCP and Tor as one bounded byte-stream record,
+  using the FSP header and authenticated payload length instead of the FMP
+  header or datagram DFP fragmentation. Configured path MTU remains a routing
+  budget and no longer truncates valid stream records.
+- Bound partially received and partially written stream records without
+  disconnecting healthy established links merely because they are idle, and
+  synchronously discard a writer after cancellation or partial-write failure.
+- Converge simultaneous opposite-direction TCP or Tor connections on the same
+  deterministic authenticated session even though their listener and
+  ephemeral socket tuples differ, while preserving tuple-sensitive UDP paths.
+- Correct the target-specific macOS package workflow introduced after 0.4.4,
+  and skip AUR deployment explicitly when its optional credentials are absent.
+- Bump `fips-endpoint` to 0.4.5 so embedded consumers select the corrected
+  `fips-core` release. FMP, FSP, discovery, datagram DFP1, and
+  link-negotiation wire formats are unchanged.
+
 ## [0.4.4] - 2026-07-16
 
 ### Fixed
