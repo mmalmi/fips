@@ -7,8 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-07-16
+
 ### Fixed
 
+- Canonicalize WebRTC transport addresses to the even compressed form of their
+  Nostr x-only identity before Node and transport state, so legacy `02`/`03`
+  hints correlate with the same authenticated peer and use one glare order.
+- Preserve a shared WebRTC data channel when simultaneous Noise handshakes
+  converge on one logical winner, and keep the winning address dispatch live.
+- Stop a healthy Nostr-relay bootstrap path from redialing itself or inventing
+  an unadvertised UDP traversal attempt while it upgrades to an advertised
+  direct path.
 - Keep the functional health probe retrying its direct WebRTC upgrade after
   Nostr-relay bootstrap, so an early offer cannot consume the whole probe
   window before the relay carrier is authenticated.
@@ -16,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   requiring the standalone daemon to reflect application-owned endpoint data.
   The echo starts as soon as the WebRTC path is authenticated and supplies its
   own post-handshake liveness evidence.
+- Bump `fips-endpoint` to 0.4.4 so embedded consumers select the corrected
+  `fips-core` release. FMP, FSP, discovery, and link-negotiation wire formats
+  are unchanged.
 
 ## [0.4.3] - 2026-07-16
 
