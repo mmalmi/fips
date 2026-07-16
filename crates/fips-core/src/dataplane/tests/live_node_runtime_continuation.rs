@@ -53,7 +53,8 @@
             0,
             PacketBuffer::new(b"continuation".to_vec()),
         )
-        .with_activity_tick(ActivityTick::new(1_234));
+        .with_activity_tick(ActivityTick::new(1_234))
+        .with_send_token(176);
         let mut first = pump_live_node_outbound_firsts(
             &mut live_node,
             DataplaneLiveOutboundFirsts {
@@ -132,6 +133,7 @@
         assert_eq!(sent_receipts.len(), 1);
         let sent = sent_receipts.pop().unwrap();
         assert_eq!(sent.owner, owner);
+        assert_eq!(sent.send_token, Some(176));
         assert_eq!(sent.counter, 1760);
         assert_eq!(sent.fmp_timestamp_ms, Some(234));
         assert!(sent.payload_len > b"continuation".len());

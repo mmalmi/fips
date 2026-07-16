@@ -387,7 +387,6 @@ pub(crate) enum DataplaneOutputError {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DataplaneOutputDrop {
-    owner: OwnerId,
     send_token: Option<u64>,
     payload_len: usize,
     reason: DataplaneOutputError,
@@ -396,15 +395,10 @@ pub(crate) struct DataplaneOutputDrop {
 impl DataplaneOutputDrop {
     pub(crate) fn from_output(output: &PacketOutput, reason: DataplaneOutputError) -> Self {
         Self {
-            owner: output.owner,
             send_token: output.send_token,
             payload_len: output.payload.len(),
             reason,
         }
-    }
-
-    pub(crate) fn owner(&self) -> OwnerId {
-        self.owner
     }
 
     pub(crate) fn send_token(&self) -> Option<u64> {
