@@ -18,7 +18,21 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || !contains(github.ref_name, '-')
 
     steps:
+      - name: Check AUR credentials
+        id: aur-credentials
+        env:
+          AUR_EMAIL: ${{ secrets.AUR_EMAIL }}
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          if [ -n "$AUR_EMAIL" ] && [ -n "$AUR_SSH_PRIVATE_KEY" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::AUR credentials are not configured; skipping AUR publication."
+          fi
+
       - name: Resolve release tag
+        if: steps.aur-credentials.outputs.configured == 'true'
         id: tag
         env:
           INPUT_TAG: ${{ inputs.tag }}
@@ -41,10 +55,12 @@ jobs:
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v4
+        if: steps.aur-credentials.outputs.configured == 'true'
         with:
           ref: ${{ steps.tag.outputs.tag }}
 
       - name: Patch PKGBUILD with pkgver and b2sums
+        if: steps.aur-credentials.outputs.configured == 'true'
         env:
           TAG: ${{ steps.tag.outputs.tag }}
           VERSION: ${{ steps.tag.outputs.version }}
@@ -77,6 +93,10 @@ jobs:
           awk '/^b2sums=\(/,/\)$/' packaging/aur/PKGBUILD
 
       - name: Publish to AUR
+        if: steps.aur-credentials.outputs.configured == 'true'
+        env:
+          AUR_EMAIL: ${{ secrets.AUR_EMAIL }}
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
         uses: KSXGitHub/github-actions-deploy-aur@v4.1.2
         with:
           pkgname: fips
@@ -87,6 +107,6 @@ jobs:
             packaging/aur/fips.tmpfiles
             packaging/aur/fips.install
           commit_username: ${{ github.repository_owner }}
-          commit_email: ${{ secrets.AUR_EMAIL }}
-          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_email: ${{ env.AUR_EMAIL }}
+          ssh_private_key: ${{ env.AUR_SSH_PRIVATE_KEY }}
           commit_message: "Update to ${{ steps.tag.outputs.tag }}"

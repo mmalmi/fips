@@ -17,9 +17,24 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Check AUR credentials
+        id: aur-credentials
+        env:
+          AUR_EMAIL: ${{ secrets.AUR_EMAIL }}
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          if [ -n "$AUR_EMAIL" ] && [ -n "$AUR_SSH_PRIVATE_KEY" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::AUR credentials are not configured; skipping AUR publication."
+          fi
+
       - uses: actions/checkout@v4
+        if: steps.aur-credentials.outputs.configured == 'true'
 
       - name: Patch PKGBUILD-git b2sums for local assets
+        if: steps.aur-credentials.outputs.configured == 'true'
         run: |
           set -euo pipefail
           SYSUSERS_SUM=$(b2sum packaging/aur/fips.sysusers | awk '{print $1}')
@@ -42,6 +57,10 @@ jobs:
           awk '/^b2sums=\(/,/\)$/' packaging/aur/PKGBUILD-git
 
       - name: Publish to AUR
+        if: steps.aur-credentials.outputs.configured == 'true'
+        env:
+          AUR_EMAIL: ${{ secrets.AUR_EMAIL }}
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
         uses: KSXGitHub/github-actions-deploy-aur@v4.1.2
         with:
           pkgname: fips-git
@@ -52,6 +71,6 @@ jobs:
             packaging/aur/fips.tmpfiles
             packaging/aur/fips.install
           commit_username: ${{ github.repository_owner }}
-          commit_email: ${{ secrets.AUR_EMAIL }}
-          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_email: ${{ env.AUR_EMAIL }}
+          ssh_private_key: ${{ env.AUR_SSH_PRIVATE_KEY }}
           commit_message: "Update PKGBUILD-git (${{ github.sha }})"
