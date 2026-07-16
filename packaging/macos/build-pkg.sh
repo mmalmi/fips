@@ -11,6 +11,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PACKAGING_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PROJECT_ROOT="$(cd "${PACKAGING_DIR}/.." && pwd)"
+# shellcheck source=package-lib.sh
+source "${SCRIPT_DIR}/package-lib.sh"
 
 usage() {
     cat <<'EOF'
@@ -55,8 +57,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 VERSION="${VERSION_OVERRIDE:-$(grep '^version' "${PROJECT_ROOT}/Cargo.toml" | head -1 | sed 's/.*"\(.*\)"/\1/')}"
-ARCH="$(uname -m)"
-PKG_NAME="fips-${VERSION}-macos-${ARCH}"
+ARCH="$(macos_arch_for_target "${TARGET_TRIPLE:-$(uname -m)}")"
+PKG_NAME="$(macos_package_name "${VERSION}" "${ARCH}")"
 DEPLOY_DIR="${PROJECT_ROOT}/deploy"
 STAGING_DIR="$(mktemp -d)"
 SCRIPTS_DIR="$(mktemp -d)"
@@ -83,6 +85,7 @@ for bin in fips fipsctl fipstop; do
         echo "Missing binary: ${BINARY_DIR}/${bin}" >&2
         exit 1
     fi
+    macos_require_thin_arch "${BINARY_DIR}/${bin}" "${ARCH}"
 done
 
 # Stage the payload (mirrors installed filesystem layout)
@@ -185,11 +188,11 @@ pkgbuild \
     --identifier com.fips.pkg \
     --version "${VERSION}" \
     --ownership recommended \
-    "${DEPLOY_DIR}/${PKG_NAME}.pkg"
+    "${DEPLOY_DIR}/${PKG_NAME}"
 
 echo ""
-echo "Package built: deploy/${PKG_NAME}.pkg"
-ls -lh "${DEPLOY_DIR}/${PKG_NAME}.pkg"
+echo "Package built: deploy/${PKG_NAME}"
+ls -lh "${DEPLOY_DIR}/${PKG_NAME}"
 echo ""
-echo "Install with: sudo installer -pkg deploy/${PKG_NAME}.pkg -target /"
+echo "Install with: sudo installer -pkg deploy/${PKG_NAME} -target /"
 echo "Remove with:  sudo packaging/macos/uninstall.sh"

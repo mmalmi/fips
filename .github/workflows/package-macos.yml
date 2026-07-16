@@ -23,6 +23,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Test macOS package architecture logic
+        run: bash packaging/macos/tests/package-arch.sh
+
       - name: Derive macOS package version
         id: macos_version
         shell: bash
@@ -101,9 +104,9 @@ jobs:
         run: |
           : ${GITHUB_OUTPUT:=/tmp/github_output}
 
-          PKG_FILE=$(find deploy -maxdepth 1 -type f -name "fips-*-macos-*.pkg" | sort | head -n 1)
-          if [[ -z "$PKG_FILE" ]]; then
-            echo "Missing macOS package" >&2
+          PKG_FILE="deploy/fips-${{ needs.determine-versioning.outputs.macos_package_version }}-macos-${{ matrix.arch }}.pkg"
+          if [[ ! -f "$PKG_FILE" ]]; then
+            echo "Missing expected macOS package: $PKG_FILE" >&2
             exit 1
           fi
 
@@ -117,6 +120,7 @@ jobs:
           EXPAND_DIR="$(mktemp -d)/expanded"
           PAYLOAD_DIR="$(mktemp -d)/payload"
           fail=0
+          source packaging/macos/package-lib.sh
 
           echo "==> Verifying $PKG"
 
@@ -140,20 +144,17 @@ jobs:
           fi
 
           # 2) Binary at canonical install path (./usr/local/bin/fips inside payload)
-          BIN_PATH="$PAYLOAD_DIR/usr/local/bin/fips"
-          if [[ -f "$BIN_PATH" ]]; then
-            echo "PASS: binary present at usr/local/bin/fips"
-          else
-            echo "FAIL: binary missing at usr/local/bin/fips"
-            echo "  fallback search:"
-            find "$PAYLOAD_DIR" -name fips -type f -print || true
-            fail=1
-          fi
-          for extra in fipsctl fipstop; do
-            if [[ -f "$PAYLOAD_DIR/usr/local/bin/$extra" ]]; then
-              echo "PASS: binary present at usr/local/bin/$extra"
+          for bin in fips fipsctl fipstop; do
+            BIN_PATH="$PAYLOAD_DIR/usr/local/bin/$bin"
+            if [[ -f "$BIN_PATH" ]]; then
+              echo "PASS: binary present at usr/local/bin/$bin"
+              if macos_require_thin_arch "$BIN_PATH" "${{ matrix.arch }}"; then
+                echo "PASS: $bin architecture is ${{ matrix.arch }}"
+              else
+                fail=1
+              fi
             else
-              echo "FAIL: binary missing at usr/local/bin/$extra"
+              echo "FAIL: binary missing at usr/local/bin/$bin"
               fail=1
             fi
           done
@@ -220,10 +221,12 @@ jobs:
       - name: Generate macOS release checksums
         run: |
           cd dist
-          find . -maxdepth 1 -type f -name '*.pkg' -printf '%P\n' \
-            | LC_ALL=C sort \
-            | xargs sha256sum \
-            > checksums-macos.txt
+          VERSION="${GITHUB_REF_NAME#v}"
+          ARM_PKG="fips-${VERSION}-macos-arm64.pkg"
+          X86_PKG="fips-${VERSION}-macos-x86_64.pkg"
+          test -f "$ARM_PKG"
+          test -f "$X86_PKG"
+          sha256sum "$ARM_PKG" "$X86_PKG" > checksums-macos.txt
 
       - name: Wait for tag release
         env:
@@ -247,5 +250,4 @@ jobs:
           gh release upload "${GITHUB_REF_NAME}" \
             dist/*.pkg \
             dist/checksums-macos.txt \
-            --clobber \
             --repo "${GITHUB_REPOSITORY}"
