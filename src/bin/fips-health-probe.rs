@@ -175,7 +175,10 @@ fn probe_config(
             ),
             PeerAddress::with_priority("nostr_relay", target.npub(), 250),
         ],
-        auto_reconnect: false,
+        // The first WebRTC offer can precede relay-carrier authentication on
+        // a freshly started or busy daemon. Keep retrying the direct upgrade
+        // after the relay fallback becomes active.
+        auto_reconnect: true,
         discovery_fallback_transit: false,
         ..Default::default()
     }];
@@ -284,6 +287,10 @@ mod tests {
         );
         assert_eq!(config.peers[0].addresses[1].transport, "nostr_relay");
         assert_eq!(config.peers[0].addresses[1].addr, target_npub);
+        assert!(
+            config.peers[0].auto_reconnect,
+            "relay bootstrap must keep retrying the direct WebRTC upgrade"
+        );
         assert!(config.transports.udp.is_empty());
         assert!(!config.transports.nostr_relay.is_empty());
         let TransportInstances::Single(webrtc) = config.transports.webrtc else {

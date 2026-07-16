@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep the functional health probe retrying its direct WebRTC upgrade after
+  Nostr-relay bootstrap, so an early offer cannot consume the whole probe
+  window before the relay carrier is authenticated.
+
 ## [0.4.3] - 2026-07-16
 
 ### Fixed
