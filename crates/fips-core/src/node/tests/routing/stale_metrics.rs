@@ -1,4 +1,6 @@
 use super::*;
+use crate::protocol::SessionMsg3;
+use crate::{SessionAck, SessionDatagram, SessionSetup};
 
 #[tokio::test]
 async fn test_stale_mmp_receiver_reports_do_not_change_route_choice() {
@@ -380,6 +382,151 @@ fn test_transit_drops_multi_hop_learned_cycle_without_progress_fallback() {
         node.find_transit_next_hop(&dest, &previous_hop).is_none(),
         "transit must drop rather than continue a multi-hop learned cycle when no strict coordinate fallback exists"
     );
+}
+
+fn learned_leaf_handshake_fixture() -> (Node, NodeAddr, NodeAddr, NodeAddr, NodeAddr, TreeCoordinate)
+{
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let transport_id = TransportId::new(1);
+    let my_addr = *node.node_addr();
+
+    let leaf_link = LinkId::new(1);
+    let (leaf_conn, leaf_id) = make_completed_connection(&mut node, leaf_link, transport_id, 1000);
+    let learned_leaf = *leaf_id.node_addr();
+    node.add_connection(leaf_conn).unwrap();
+    node.promote_connection(leaf_link, leaf_id, 2000).unwrap();
+
+    let progress_link = LinkId::new(2);
+    let (progress_conn, progress_id) =
+        make_completed_connection(&mut node, progress_link, transport_id, 1000);
+    let progress_hop = *progress_id.node_addr();
+    node.add_connection(progress_conn).unwrap();
+    node.promote_connection(progress_link, progress_id, 2000)
+        .unwrap();
+
+    for peer in [learned_leaf, progress_hop] {
+        node.tree_state_mut().update_peer(
+            ParentDeclaration::new(peer, my_addr, 1, 1000),
+            TreeCoordinate::from_addrs(vec![peer, my_addr]).unwrap(),
+        );
+    }
+
+    let dest = make_node_addr(0xDD);
+    let dest_coords = TreeCoordinate::from_addrs(vec![dest, progress_hop, my_addr]).unwrap();
+    node.coord_cache_mut()
+        .insert(dest, dest_coords.clone(), Node::now_ms());
+    node.learn_reverse_route(dest, learned_leaf);
+
+    (node, my_addr, learned_leaf, progress_hop, dest, dest_coords)
+}
+
+#[test]
+fn test_session_ack_origin_uses_progress_route_instead_of_learned_leaf() {
+    let (mut node, my_addr, learned_leaf, progress_hop, dest, dest_coords) =
+        learned_leaf_handshake_fixture();
+
+    assert_eq!(
+        node.find_next_hop(&dest).map(|peer| *peer.node_addr()),
+        Some(learned_leaf),
+        "generic application routing should retain the learned path"
+    );
+
+    let ack = SessionAck::new(node.tree_state().my_coords().clone(), dest_coords.clone()).encode();
+    let mut datagram = SessionDatagram::new(my_addr, dest, ack);
+    let route = node
+        .resolve_session_datagram_runtime_route(&mut datagram)
+        .expect("handshake route");
+    assert_eq!(
+        route.next_hop_addr, progress_hop,
+        "handshake control must not originate through a non-progressing learned leaf"
+    );
+
+    let setup =
+        SessionSetup::new(node.tree_state().my_coords().clone(), dest_coords.clone()).encode();
+    let mut setup_datagram = SessionDatagram::new(my_addr, dest, setup);
+    assert_eq!(
+        node.resolve_session_datagram_runtime_route(&mut setup_datagram)
+            .expect("setup route")
+            .next_hop_addr,
+        progress_hop,
+        "msg1 must use strict progress when it carries usable destination coordinates"
+    );
+
+    let msg3 = SessionMsg3::new(vec![0; 73]).encode();
+    let mut msg3_datagram = SessionDatagram::new(my_addr, dest, msg3);
+    assert_eq!(
+        node.resolve_session_datagram_runtime_route(&mut msg3_datagram)
+            .expect("msg3 route")
+            .next_hop_addr,
+        progress_hop,
+        "msg3 must use the current cached destination coordinates"
+    );
+
+    let mut application_datagram = SessionDatagram::new(my_addr, dest, vec![0, 0, 0, 0]);
+    let application_route = node
+        .resolve_session_datagram_runtime_route(&mut application_datagram)
+        .expect("application route");
+    assert_eq!(
+        application_route.next_hop_addr, learned_leaf,
+        "established application data must retain adaptive learned routing"
+    );
+
+    node.coord_cache_mut().remove(&dest);
+    let unknown_dest_setup = SessionSetup::new(
+        node.tree_state().my_coords().clone(),
+        node.tree_state().my_coords().clone(),
+    )
+    .encode();
+    let mut unknown_dest_datagram = SessionDatagram::new(my_addr, dest, unknown_dest_setup);
+    let unknown_dest_route = node
+        .resolve_session_datagram_runtime_route(&mut unknown_dest_datagram)
+        .expect("unknown-coordinate setup route");
+    assert_eq!(
+        unknown_dest_route.next_hop_addr, learned_leaf,
+        "handshake setup must retain learned fallback when destination coordinates are unknown"
+    );
+}
+
+#[test]
+fn test_session_ack_uses_current_cache_when_carried_root_is_stale() {
+    let (mut node, my_addr, _learned_leaf, progress_hop, dest, _dest_coords) =
+        learned_leaf_handshake_fixture();
+    let stale_root = make_node_addr(0xFA);
+    let stale_dest_coords = TreeCoordinate::from_addrs(vec![dest, progress_hop, stale_root])
+        .expect("stale-root coordinates");
+    assert_ne!(
+        stale_dest_coords.root_id(),
+        node.tree_state().my_coords().root_id(),
+        "fixture requires carried coordinates from an obsolete tree root"
+    );
+
+    let ack = SessionAck::new(node.tree_state().my_coords().clone(), stale_dest_coords).encode();
+    let mut datagram = SessionDatagram::new(my_addr, dest, ack);
+    let route = node
+        .resolve_session_datagram_runtime_route(&mut datagram)
+        .expect("current cached coordinates should recover stale carried coordinates");
+    assert_eq!(route.next_hop_addr, progress_hop);
+}
+
+#[test]
+fn test_session_ack_does_not_fall_back_to_learned_route_without_progress_hop() {
+    let (mut node, my_addr, _learned_leaf, _progress_hop, dest, _dest_coords) =
+        learned_leaf_handshake_fixture();
+    let unavailable_progress_hop = make_node_addr(0xEE);
+    let blocked_dest_coords =
+        TreeCoordinate::from_addrs(vec![dest, unavailable_progress_hop, *node.node_addr()])
+            .expect("blocked destination coordinates");
+    node.coord_cache_mut()
+        .insert(dest, blocked_dest_coords.clone(), Node::now_ms());
+
+    let ack = SessionAck::new(node.tree_state().my_coords().clone(), blocked_dest_coords).encode();
+    let mut datagram = SessionDatagram::new(my_addr, dest, ack);
+    let error = node
+        .resolve_session_datagram_runtime_route(&mut datagram)
+        .expect_err("usable coordinates without a progress hop must not use learned fallback");
+    assert!(matches!(error, NodeError::SendFailed { .. }));
 }
 
 // === No route ===

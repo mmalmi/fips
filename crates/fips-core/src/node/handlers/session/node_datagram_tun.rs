@@ -160,7 +160,73 @@ impl Node {
         self.schedule_local_route_retry(dest_addr, now_ms);
     }
 
-    fn resolve_session_datagram_runtime_route(
+    pub(in crate::node) fn resolve_session_handshake_runtime_route(
+        &mut self,
+        datagram: &mut SessionDatagram,
+    ) -> Result<SessionDatagramRuntimeRoute, NodeError> {
+        let dest_addr = datagram.dest_addr;
+        if self
+            .peers
+            .get(&dest_addr)
+            .is_some_and(|peer| peer.is_healthy() && peer.can_send())
+        {
+            return Ok(self.prepare_session_datagram_runtime_route(datagram, dest_addr));
+        }
+
+        let prefix = FspCommonPrefix::parse(&datagram.payload);
+        let inner = datagram.payload.get(FSP_COMMON_PREFIX_SIZE..);
+        let carried_dest_coords = match (prefix.map(|prefix| prefix.phase), inner) {
+            (Some(FSP_PHASE_MSG1), Some(inner)) => SessionSetup::decode(inner)
+                .ok()
+                .map(|setup| setup.dest_coords),
+            (Some(FSP_PHASE_MSG2), Some(inner)) => SessionAck::decode(inner)
+                .ok()
+                .map(|ack| ack.dest_coords),
+            _ => None,
+        };
+        let current_root = *self.tree_state.my_coords().root_id();
+        let usable_carried_coords = carried_dest_coords.filter(|coords| {
+            coords.node_addr() == &dest_addr && coords.root_id() == &current_root
+        });
+        let usable_dest_coords = usable_carried_coords.or_else(|| {
+            self.coord_cache
+                .get_and_touch(&dest_addr, Self::now_ms())
+                .filter(|coords| {
+                    coords.node_addr() == &dest_addr && coords.root_id() == &current_root
+                })
+                .cloned()
+        });
+        if let Some(dest_coords) = usable_dest_coords {
+            if let Some(next_hop_addr) =
+                self.select_tree_payload_candidate(&dest_coords, &dest_addr, false)
+            {
+                return Ok(self.prepare_session_datagram_runtime_route(datagram, next_hop_addr));
+            }
+            return Err(NodeError::SendFailed {
+                node_addr: dest_addr,
+                reason: "no loop-free route to destination".into(),
+            });
+        }
+
+        self.resolve_generic_session_datagram_runtime_route(datagram)
+    }
+
+    pub(in crate::node) fn resolve_session_datagram_runtime_route(
+        &mut self,
+        datagram: &mut SessionDatagram,
+    ) -> Result<SessionDatagramRuntimeRoute, NodeError> {
+        if FspCommonPrefix::parse(&datagram.payload).is_some_and(|prefix| {
+            matches!(
+                prefix.phase,
+                FSP_PHASE_MSG1 | FSP_PHASE_MSG2 | FSP_PHASE_MSG3
+            )
+        }) {
+            return self.resolve_session_handshake_runtime_route(datagram);
+        }
+        self.resolve_generic_session_datagram_runtime_route(datagram)
+    }
+
+    fn resolve_generic_session_datagram_runtime_route(
         &mut self,
         datagram: &mut SessionDatagram,
     ) -> Result<SessionDatagramRuntimeRoute, NodeError> {

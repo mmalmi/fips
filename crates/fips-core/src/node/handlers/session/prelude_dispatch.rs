@@ -708,8 +708,8 @@ fn clear_dataplane_confirmed_retransmits_for(node: &mut Node, source_addr: &Node
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SessionDatagramRuntimeRoute {
-    dest_addr: NodeAddr,
-    next_hop_addr: NodeAddr,
-    path_mtu: u16,
+pub(in crate::node) struct SessionDatagramRuntimeRoute {
+    pub(in crate::node) dest_addr: NodeAddr,
+    pub(in crate::node) next_hop_addr: NodeAddr,
+    pub(in crate::node) path_mtu: u16,
 }

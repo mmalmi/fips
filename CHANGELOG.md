@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.6] - 2026-07-16
+## [0.4.6] - 2026-07-17
 
 ### Fixed
 
@@ -27,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   excludes that hop. If no safe fallback exists, preserve loop suppression
   and drop the packet instead of continuing a cycle; locally originated
   learned routes remain unaffected.
+- Route FSP handshake control (msg1/msg2/msg3, including retransmits) through
+  a healthy direct destination or strict coordinate progress whenever carried
+  or current cached coordinates are usable. Established application traffic
+  keeps adaptive learned routing, and no FSP wire format changes.
 - Bump `fips-endpoint` to 0.4.6 so embedded consumers select the corrected
   `fips-core` release.
 
