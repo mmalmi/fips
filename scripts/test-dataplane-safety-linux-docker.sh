@@ -18,10 +18,11 @@ DEFAULT_FILTERS=(
   rx_loop_data_drain_stats_owns_counts_total_and_pressure
   rx_loop_maintenance_state_owns_activity_window_and_timeout_skip
   rx_loop_maintenance_plan_owns_pressure_skip_and_timeout_budget
-  endpoint_command_owns_lane_selected_at_construction
-  endpoint_send_command_owns_payload_lane_and_queue_stamp
-  endpoint_data_payload_owns_drop_policy_selected_at_construction
-  endpoint_data_send_owns_remote_identity_and_payload_policy
+  endpoint_data_batches_charge_drain_budget_by_small_packet_groups
+  endpoint_data_drop_accounting_counts_packets_not_drain_quanta
+  endpoint_data_batch_enqueue_drops_when_full
+  endpoint_data_batch_lane_charges_batches_by_drain_cost
+  endpoint_data_batch_owns_payload_bytes_and_queue_stamp
   pending_endpoint_data_queue_owns_drop_oldest_policy
   pending_tun_packet_queue_owns_drop_oldest_policy
   pending_session_traffic_queues_own_destination_admission
@@ -43,17 +44,14 @@ DEFAULT_FILTERS=(
   peer_lifecycle_registry_owns_current_session_index_repair
   peer_lifecycle_registry_owns_current_session_replacement_and_index_handoff
   peer_lifecycle_registry_owns_pending_rekey_session_and_index_registration
-  peer_lifecycle_registry_owns_authenticated_fmp_receive_bookkeeping
-  peer_lifecycle_registry_owns_fmp_send_bookkeeping
-  session_registry_owns_fsp_send_bookkeeping
-  identity_cache_owns_prefix_validation_lru_touch_and_lookup_views
-  configured_peer_send_weights_own_identity_parse_and_default_policy
+  peer_lifecycle_registry_owns_authenticated_fmp_receive_path_bookkeeping
+  peer_lifecycle_registry_owns_fmp_send_link_stats_bookkeeping
+  identity_cache_validates_claims_touches_lru_and_keeps_lookup_views
+  configured_peers_own_identity_parse_and_default_policy
   learned_route_fallback_exploration_owns_interval_dedup_and_expiry
   pending_session_queues_drop_oldest_per_destination
   pending_session_queues_reject_new_destinations_at_cap
-  endpoint_command_tx_helper_classifies_priority_and_bulk_payloads
-  endpoint_payload_traffic_classifier_prioritizes_control_sized_packets
-  endpoint_payload_traffic_classifier_prioritizes_ipv4_icmp_ping
+  fmp_bulk_classifier_detects_established_session_datagrams
   test_reply_learned_prefers_live_mesh_route_over_stale_direct_peer
   test_reply_learned_prefers_live_mesh_route_over_session_degraded_direct_peer
   test_reply_learned_keeps_configured_static_direct_peer_over_lower_cost_fallback
@@ -90,8 +88,32 @@ docker run --rm \
       rm -rf /var/lib/apt/lists/*
     fi
     export CARGO_TARGET_DIR=/cargo-target
+    messages="$(mktemp)"
+    trap '\''rm -f "$messages"'\'' EXIT
+    cargo test -p fips-core --lib --locked --no-run --message-format=json >"$messages"
+    test_bin="$(
+      grep '\''"name":"fips_core"'\'' "$messages" \
+        | sed -n '\''s/.*"executable":"\([^"]*\)".*/\1/p'\'' \
+        | tail -n 1
+    )"
+    if [[ -z "$test_bin" || ! -x "$test_bin" ]]; then
+      echo "failed to resolve the fips-core library test binary" >&2
+      exit 1
+    fi
+    test_list="$($test_bin --list --format terse)"
     for filter in "$@"; do
-      echo "--- cargo test -p fips-core ${filter} ---"
-      cargo test -p fips-core "$filter"
+      matches=()
+      while IFS= read -r line; do
+        test_name="${line%: test}"
+        if [[ "$test_name" == "$filter" || "$test_name" == *"::$filter" ]]; then
+          matches+=("$test_name")
+        fi
+      done <<<"$test_list"
+      if [[ "${#matches[@]}" -ne 1 ]]; then
+        echo "filter must resolve to exactly one test: $filter (${#matches[@]} matches)" >&2
+        exit 1
+      fi
+      echo "--- ${matches[0]} ---"
+      "$test_bin" --exact "${matches[0]}"
     done
   ' bash "${FILTERS[@]}"
