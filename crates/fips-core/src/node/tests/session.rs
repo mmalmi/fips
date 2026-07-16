@@ -60,7 +60,7 @@ async fn wait_for_session_established(
     timeout: Duration,
     context: &str,
 ) {
-    tokio::time::timeout(timeout, async {
+    let result = tokio::time::timeout(timeout, async {
         loop {
             if nodes[index]
                 .node
@@ -84,8 +84,48 @@ async fn wait_for_session_established(
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
-    .await
-    .unwrap_or_else(|_| panic!("{context}: session did not establish"));
+    .await;
+    if result.is_err() {
+        let source = *nodes[index].node.node_addr();
+        let session = nodes[index].node.get_session(peer).map(|entry| {
+            format!(
+                "established={},initiating={},awaiting_msg3={},resends={},handshake_payload={},rekey={}",
+                entry.is_established(),
+                entry.is_initiating(),
+                entry.is_awaiting_msg3(),
+                entry.resend_count(),
+                entry.handshake_payload().is_some(),
+                entry.has_rekey_in_progress(),
+            )
+        });
+        let reciprocal = nodes
+            .iter()
+            .find(|node| node.node.node_addr() == peer)
+            .and_then(|node| node.node.get_session(&source))
+            .map(|entry| {
+                format!(
+                    "established={},initiating={},awaiting_msg3={},resends={},handshake_payload={},rekey={}",
+                    entry.is_established(),
+                    entry.is_initiating(),
+                    entry.is_awaiting_msg3(),
+                    entry.resend_count(),
+                    entry.handshake_payload().is_some(),
+                    entry.has_rekey_in_progress(),
+                )
+            });
+        let route = nodes[index]
+            .node
+            .find_next_hop(peer)
+            .map(|next_hop| *next_hop.node_addr());
+        let pending = nodes[index]
+            .node
+            .pending_session_traffic
+            .has_traffic_for(peer);
+        panic!(
+            "{context}: session did not establish: source={source}, peer={peer}, session={session:?}, reciprocal={reciprocal:?}, route={route:?}, pending={pending}, deferred_control={}",
+            nodes[index].node.deferred_dataplane_control_turns.len(),
+        );
+    }
 }
 
 async fn wait_for_session_rekey_complete(

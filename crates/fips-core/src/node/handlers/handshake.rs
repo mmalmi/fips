@@ -588,6 +588,8 @@ impl Node {
                         // Schedule filter announce (sent on next tick via debounce)
                         self.bloom_state.mark_update_needed(node_addr);
                         self.reset_discovery_backoff();
+                        Box::pin(self.sync_local_rendezvous_after_peer_authenticated(&node_addr))
+                            .await;
                     }
                     PromotionResult::CrossConnectionWon {
                         loser_link_id,
@@ -616,6 +618,8 @@ impl Node {
                         // Schedule filter announce (sent on next tick via debounce)
                         self.bloom_state.mark_update_needed(node_addr);
                         self.reset_discovery_backoff();
+                        Box::pin(self.sync_local_rendezvous_after_peer_authenticated(&node_addr))
+                            .await;
                     }
                     PromotionResult::CrossConnectionLost { winner_link_id } => {
                         self.close_cross_connection_loser_physical_path(

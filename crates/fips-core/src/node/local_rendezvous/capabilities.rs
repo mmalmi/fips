@@ -174,7 +174,7 @@ impl Node {
         self.local_rendezvous.directory.replace(adverts);
     }
 
-    pub(super) async fn broadcast_local_roster(&mut self) {
+    pub(in crate::node) async fn broadcast_local_roster(&mut self) {
         let message = LocalCapabilityMessage::Roster {
             anchor_epoch: self.startup_epoch,
             revision: self.local_rendezvous.roster_revision,
@@ -198,13 +198,13 @@ impl Node {
         &mut self,
         source_addr: &NodeAddr,
         payload: &[u8],
-    ) {
+    ) -> bool {
         if !self.authenticated_local_peer(source_addr) {
-            return;
+            return false;
         }
         let Ok(message) = LocalCapabilityMessage::decode(payload) else {
             debug!(peer = %self.peer_display_name(source_addr), "Malformed local capability message");
-            return;
+            return false;
         };
         match message {
             LocalCapabilityMessage::Announce {
@@ -213,10 +213,10 @@ impl Node {
                 capabilities,
             } if self.local_rendezvous.role == Some(LocalRendezvousRole::Anchor) => {
                 let Some(peer) = self.peers.get(source_addr) else {
-                    return;
+                    return false;
                 };
                 if peer.remote_epoch() != Some(process_epoch) {
-                    return;
+                    return false;
                 }
                 let identity = *peer.identity();
                 let now = crate::time::instant_now();
@@ -236,7 +236,7 @@ impl Node {
                             .saturating_sub(1)
                     {
                         debug!(peer = %self.peer_display_name(source_addr), "Local capability provider limit reached");
-                        return;
+                        return false;
                     }
                     self.local_rendezvous.providers.insert(
                         *source_addr,
@@ -249,6 +249,9 @@ impl Node {
                         self.local_rendezvous.roster_revision.saturating_add(1);
                     self.local_rendezvous.roster_dirty = true;
                     self.refresh_anchor_directory();
+                    true
+                } else {
+                    false
                 }
             }
             LocalCapabilityMessage::Roster {
@@ -257,12 +260,12 @@ impl Node {
                 providers,
             } if self.local_rendezvous.role == Some(LocalRendezvousRole::Client) => {
                 let Some(anchor) = self.local_rendezvous.anchor_peer else {
-                    return;
+                    return false;
                 };
                 if anchor.identity.node_addr() != source_addr
                     || anchor.startup_epoch != anchor_epoch
                 {
-                    return;
+                    return false;
                 }
                 let fresh =
                     self.local_rendezvous
@@ -271,7 +274,7 @@ impl Node {
                             epoch != anchor_epoch || revision > old_revision
                         });
                 if !fresh {
-                    return;
+                    return false;
                 }
                 let mut adverts = providers
                     .into_iter()
@@ -292,8 +295,9 @@ impl Node {
                 );
                 self.local_rendezvous.directory.replace(adverts);
                 self.local_rendezvous.accepted_roster = Some((anchor_epoch, revision));
+                false
             }
-            _ => {}
+            _ => false,
         }
     }
 

@@ -328,6 +328,39 @@ impl Node {
         })
     }
 
+    /// Start the authenticated capability exchange as part of local-link
+    /// readiness. Periodic rendezvous maintenance refreshes leases, but a
+    /// registered service must not wait for that maintenance lane before its
+    /// first advertisement can establish the FSP control session.
+    pub(in crate::node) async fn sync_local_rendezvous_after_peer_authenticated(
+        &mut self,
+        node_addr: &NodeAddr,
+    ) {
+        if !self.authenticated_local_peer(node_addr) {
+            return;
+        }
+        match self.local_rendezvous.role {
+            Some(LocalRendezvousRole::Client) => {
+                let Some(anchor) = self.connected_local_anchor() else {
+                    return;
+                };
+                if anchor.identity.node_addr() != node_addr {
+                    return;
+                }
+                self.local_rendezvous.anchor_peer = Some(anchor);
+                self.local_rendezvous.accepted_roster = None;
+                self.local_rendezvous.last_capability_sync_ms = 0;
+                self.announce_local_capabilities(anchor.identity).await;
+            }
+            Some(LocalRendezvousRole::Anchor) => {
+                // A later client needs the retained provider directory even
+                // when no provider capability changed during this link setup.
+                self.broadcast_local_roster().await;
+            }
+            None => {}
+        }
+    }
+
     async fn request_local_anchor_key(&mut self) {
         if self.local_rendezvous.role != Some(LocalRendezvousRole::Client) {
             return;

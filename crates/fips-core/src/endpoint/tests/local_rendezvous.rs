@@ -14,6 +14,7 @@ const LOCAL_PROVIDER_CHILD: &str = "FIPS_LOCAL_PROVIDER_CHILD";
 const LOCAL_PROVIDER_ADDR: &str = "FIPS_LOCAL_PROVIDER_ADDR";
 const LOCAL_PROVIDER_READY: &str = "FIPS_LOCAL_PROVIDER_READY";
 const LOCAL_PROVIDER_STOP: &str = "FIPS_LOCAL_PROVIDER_STOP";
+const LOCAL_CAPABILITY_REPLAY_CHILD: &str = "FIPS_LOCAL_CAPABILITY_REPLAY_CHILD";
 
 fn reserve_rendezvous_addr() -> SocketAddrV4 {
     let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("reserve loopback UDP port");
@@ -43,6 +44,56 @@ async fn bind_local(rendezvous_addr: SocketAddrV4) -> FipsEndpoint {
         .bind()
         .await
         .expect("bind local FIPS endpoint")
+}
+
+async fn registered_capability_before_local_link() {
+    let rendezvous_addr = reserve_rendezvous_addr();
+    let anchor = bind_local(rendezvous_addr).await;
+    let provider = bind_local(rendezvous_addr).await;
+    let provider_npub = provider.npub().to_string();
+    let provider_service = provider
+        .register_service_receiver_with_capability(LocalInstanceCapability::service(
+            SERVICE_CAPABILITY,
+            SERVICE_PORT,
+        ))
+        .await
+        .expect("register service capability before authentication");
+    let consumer = bind_local(rendezvous_addr).await;
+
+    wait_for_connected_peer(&provider, anchor.npub()).await;
+    wait_for_connected_peer(&consumer, anchor.npub()).await;
+    wait_for_capability(&consumer, SERVICE_CAPABILITY, &provider_npub).await;
+
+    drop(provider_service);
+    consumer.shutdown().await.expect("consumer shutdown");
+    provider.shutdown().await.expect("provider shutdown");
+    anchor.shutdown().await.expect("anchor shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn registered_capability_replays_after_authentication_without_slow_maintenance() {
+    if std::env::var_os(LOCAL_CAPABILITY_REPLAY_CHILD).is_some() {
+        registered_capability_before_local_link().await;
+        return;
+    }
+
+    let status = tokio::time::timeout(
+        CONVERGENCE_TIMEOUT,
+        tokio::process::Command::new(std::env::current_exe().expect("test binary"))
+            .arg("registered_capability_replays_after_authentication_without_slow_maintenance")
+            .arg("--nocapture")
+            .arg("--test-threads=1")
+            .env(LOCAL_CAPABILITY_REPLAY_CHILD, "1")
+            .env("FIPS_FAULT_INJECT_RX_LOOP_SLOW_MAINTENANCE_MS", "5000")
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status(),
+    )
+    .await
+    .expect("isolated capability replay test timed out")
+    .expect("run isolated capability replay test");
+    assert!(status.success(), "isolated capability replay test failed");
 }
 
 async fn wait_for_connected_peer(endpoint: &FipsEndpoint, npub: &str) -> FipsEndpointPeer {
