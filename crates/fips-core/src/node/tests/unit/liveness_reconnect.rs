@@ -221,6 +221,79 @@ fn queue_active_fallback_direct_retries_seeds_configured_relayed_peer() {
 }
 
 #[test]
+fn healthy_configured_nostr_relay_peer_keeps_direct_upgrade_retry() {
+    use crate::Transport;
+    use crate::config::NostrRelayConfig;
+    use crate::transport::nostr_relay::NostrRelayTransport;
+
+    let local_identity = Identity::generate();
+    let peer_identity = Identity::generate();
+    let peer = PeerIdentity::from_pubkey_full(peer_identity.pubkey_full());
+    let peer_addr = *peer.node_addr();
+    let peer_npub = peer.npub().to_string();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_npub.clone(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::with_priority(
+            "nostr_relay",
+            peer_npub.clone(),
+            250,
+        )],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: false,
+    };
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.peers.push(peer_config.clone());
+    let mut node = Node::with_identity(local_identity, config).expect("node");
+    let relay_transport_id = TransportId::new(1);
+    let (packet_tx, _packet_rx) = packet_channel(8);
+    let mut relay = NostrRelayTransport::new(
+        relay_transport_id,
+        None,
+        NostrRelayConfig::default(),
+        packet_tx,
+        &node.identity,
+    )
+    .expect("relay transport");
+    relay.start().expect("start relay transport");
+    node.transports.insert(
+        relay_transport_id,
+        TransportHandle::NostrRelay(Box::new(relay)),
+    );
+    let active = make_active_test_peer(
+        &node,
+        &peer_identity,
+        relay_transport_id,
+        LinkId::new(7),
+        crate::transport::TransportAddr::from_string(&peer_npub),
+        crate::utils::index::SessionIndex::new(11),
+        crate::utils::index::SessionIndex::new(12),
+    );
+    node.peers.insert(peer_addr, active);
+    let now_ms = Node::now_ms();
+    seed_dataplane_fsp_data_rx_for_test(&mut node, peer_addr, peer_addr, now_ms);
+    assert!(node.active_peer_has_fresh_endpoint_data_liveness(&peer_addr));
+
+    node.queue_active_fallback_direct_retries();
+
+    let state = node
+        .retry_pending
+        .get(&peer_addr)
+        .expect("a relay carrier must not suppress better direct-path retries");
+    assert_eq!(state.peer_config.npub, peer_config.npub);
+    assert!(state.reconnect);
+
+    node.clear_retry_unless_direct_refresh_needed(&peer_addr);
+    assert!(
+        node.retry_pending.contains_key(&peer_addr),
+        "fresh application traffic over the relay must not cancel the direct-path upgrade"
+    );
+}
+
+#[test]
 fn queue_active_fallback_direct_retries_skips_non_reconnect_transit_peer() {
     let peer_identity = Identity::generate();
     let peer_config = crate::config::PeerConfig {

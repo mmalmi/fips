@@ -558,12 +558,7 @@ impl Node {
                 skipped_self = skipped_self.saturating_add(1);
                 continue;
             }
-            let active_relay_fallback = self
-                .peers
-                .get(&node_addr)
-                .and_then(|peer| peer.transport_id())
-                .and_then(|transport_id| self.transports.get(&transport_id))
-                .is_some_and(|transport| transport.transport_type().name == "nostr_relay");
+            let active_relay_fallback = self.active_peer_uses_nostr_relay(&node_addr);
             if self.peers.contains_key(&node_addr) && !active_relay_fallback {
                 skipped_connected = skipped_connected.saturating_add(1);
                 continue;

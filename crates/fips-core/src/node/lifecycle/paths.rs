@@ -212,6 +212,10 @@ impl Node {
             return true;
         }
 
+        if self.active_peer_uses_nostr_relay(peer_node_addr) {
+            return true;
+        }
+
         let static_addresses = self.static_peer_addresses(peer_config);
         if !static_addresses.is_empty() {
             let Some(peer) = self.peers.get(peer_node_addr) else {
@@ -287,6 +291,10 @@ impl Node {
             return;
         }
 
+        if self.active_peer_uses_nostr_relay(peer_node_addr) {
+            return;
+        }
+
         if self.active_peer_has_fresh_endpoint_data_liveness(peer_node_addr)
             || (!self.active_peer_uses_bootstrap_transport(peer_node_addr)
                 && self.active_peer_has_fresh_link_liveness(peer_node_addr))
@@ -351,6 +359,16 @@ impl Node {
             .get(peer_node_addr)
             .and_then(|peer| peer.transport_id())
             .is_some_and(|transport_id| self.bootstrap_transports.contains(&transport_id))
+    }
+
+    pub(in crate::node) fn active_peer_uses_nostr_relay(&self, peer_node_addr: &NodeAddr) -> bool {
+        self.peers
+            .get(peer_node_addr)
+            .and_then(|peer| peer.transport_id())
+            .and_then(|transport_id| self.transports.get(&transport_id))
+            .is_some_and(|transport| {
+                matches!(transport, crate::transport::TransportHandle::NostrRelay(_))
+            })
     }
 
     pub(in crate::node) fn active_peer_needs_same_path_refresh(
