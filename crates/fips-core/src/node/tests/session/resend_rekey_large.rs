@@ -622,6 +622,11 @@ async fn session_100_nodes() {
         wait_for_session_established(&mut nodes, src, &dest_addr, PHASE_TIMEOUT, &context).await;
         let context = format!("session {src}->{dst} responder");
         wait_for_session_established(&mut nodes, dst, &src_addr, PHASE_TIMEOUT, &context).await;
+        // The live runtime clears these retained Ack/msg3 payloads after
+        // authenticated traffic. This stress test deliberately defers all
+        // traffic until every pair is established, so quiesce the pair once
+        // the harness has observed both endpoints complete the handshake.
+        settle_session_handshake_retransmits(&mut nodes, src, &dest_addr, dst, &src_addr);
     }
     let session_time = session_start.elapsed();
 
