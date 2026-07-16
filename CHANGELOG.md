@@ -7,11 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-07-16
+
 ### Fixed
 
+- Keep authenticated Nostr-relay links classified as fallback paths, so fresh
+  application traffic cannot suppress automatic UDP, TCP, or WebRTC upgrades.
+  Link negotiation continues over the ordinary authenticated FSP port 257;
+  no FMP, FSP, discovery, or relay-carrier wire format changed.
+- Stage the functional health probe through an authenticated Nostr-relay FSP
+  echo before starting WebRTC, so relay and session startup time cannot consume
+  the WebRTC negotiation window on a freshly started or busy daemon.
 - Accept `FIPS_HEALTH_SECRET` for a stable functional-probe identity, allowing
   operators to configure the probe as a trusted peer so a full public-peer
   admission budget cannot reject the health check before WebRTC negotiation.
+- Bump `fips-endpoint` to 0.4.3 so app-facing consumers select the corrected
+  `fips-core` release.
 
 ## [0.4.2] - 2026-07-16
 
