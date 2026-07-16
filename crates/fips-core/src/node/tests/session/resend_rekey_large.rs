@@ -547,6 +547,7 @@ async fn rekey_msg1_exhaustion_allows_peer_msg1_to_converge() {
     cleanup_nodes(&mut nodes).await;
 }
 
+#[cfg(feature = "sim-transport")]
 #[test]
 fn test_session_100_nodes() {
     run_large_stack_async_test("fips-session-100-nodes", || async {
@@ -554,6 +555,7 @@ fn test_session_100_nodes() {
     });
 }
 
+#[cfg(feature = "sim-transport")]
 async fn session_100_nodes() {
     let _guard = lock_large_network_test().await;
 
@@ -574,6 +576,8 @@ async fn session_100_nodes() {
 
     let edges = generate_random_edges(NUM_NODES, TARGET_EDGES, SEED);
     let mut nodes = run_tree_test(NUM_NODES, &edges, false).await;
+    let sim_network =
+        super::sim_harness::replace_session_100_node_carriers(&mut nodes, &edges).await;
     verify_tree_convergence(&nodes);
     populate_all_coord_caches(&mut nodes);
 
@@ -954,8 +958,18 @@ async fn session_100_nodes() {
          but {} responding, {} initiating",
         total_sessions, total_responding, total_initiating
     );
+    let sim_stats = sim_network.stats();
+    assert_eq!(
+        sim_stats.packets_dropped_loss
+            + sim_stats.packets_dropped_egress
+            + sim_stats.packets_dropped_down
+            + sim_stats.packets_dropped_no_route,
+        0,
+        "Sim underlay should not drop packets"
+    );
 
     cleanup_nodes(&mut nodes).await;
+    crate::unregister_sim_network(super::sim_harness::SESSION_100_NODE_NETWORK);
 }
 
 // ============================================================================

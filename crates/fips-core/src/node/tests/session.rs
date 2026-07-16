@@ -25,6 +25,8 @@ mod remote_restart;
 mod resend_rekey_large;
 mod retransmit_harness;
 mod route_metrics;
+#[cfg(feature = "sim-transport")]
+mod sim_harness;
 mod tun_outbound_core;
 mod tun_outbound_tail;
 #[cfg(feature = "webrtc-transport")]
@@ -60,6 +62,15 @@ async fn wait_for_session_established(
 ) {
     tokio::time::timeout(timeout, async {
         loop {
+            if nodes[index]
+                .node
+                .get_session(peer)
+                .is_some_and(|entry| entry.is_established())
+            {
+                return;
+            }
+
+            process_available_packets(nodes).await;
             if nodes[index]
                 .node
                 .get_session(peer)
