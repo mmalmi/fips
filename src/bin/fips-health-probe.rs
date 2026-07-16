@@ -227,19 +227,30 @@ async fn wait_for_authenticated_webrtc(
             .peers()
             .await
             .map_err(|error| format!("peer state query failed: {error}"))?;
-        if let Some(peer) = peers
+        if peers
             .iter()
-            .find(|peer| peer.node_addr == *target.node_addr() && peer.connected)
-            && peer.transport_type.as_deref() == Some("webrtc")
+            .any(|peer| is_authenticated_webrtc_peer(peer, &target))
         {
             return Ok(());
         }
     }
 }
 
+fn is_authenticated_webrtc_peer(
+    peer: &fips::endpoint::FipsEndpointPeer,
+    target: &PeerIdentity,
+) -> bool {
+    // Peer snapshots only contain authenticated node peers. A newly promoted
+    // alternate path may not yet have a post-handshake receive sample, so its
+    // liveness-oriented `connected` flag remains false until the first FMP/FSP
+    // packet. Start the echo at promotion; the echo itself proves liveness.
+    peer.node_addr == *target.node_addr() && peer.transport_type.as_deref() == Some("webrtc")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fips::endpoint::FipsEndpointPeer;
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -315,5 +326,40 @@ mod tests {
         )
         .expect("configured health identity must resolve");
         assert_eq!(resolved.npub(), probe_identity.npub());
+    }
+
+    #[test]
+    fn newly_authenticated_webrtc_peer_does_not_need_a_liveness_sample_before_echo() {
+        let target_identity = fips::Identity::generate();
+        let target = PeerIdentity::from_pubkey_full(target_identity.pubkey_full());
+        let peer = FipsEndpointPeer {
+            npub: target.npub(),
+            node_addr: *target.node_addr(),
+            connected: false,
+            transport_addr: Some(hex::encode(target.pubkey_full().serialize())),
+            transport_type: Some("webrtc".to_string()),
+            link_id: 7,
+            srtt_ms: None,
+            srtt_age_ms: None,
+            packets_sent: 0,
+            packets_recv: 0,
+            bytes_sent: 0,
+            bytes_recv: 0,
+            rekey_in_progress: false,
+            rekey_draining: false,
+            current_k_bit: Some(false),
+            last_outbound_route: None,
+            direct_probe_pending: false,
+            direct_probe_after_ms: None,
+            direct_probe_retry_count: 0,
+            direct_probe_auto_reconnect: false,
+            direct_probe_expires_at_ms: None,
+            nostr_traversal_consecutive_failures: 0,
+            nostr_traversal_in_cooldown: false,
+            nostr_traversal_cooldown_until_ms: None,
+            nostr_traversal_last_observed_skew_ms: None,
+        };
+
+        assert!(is_authenticated_webrtc_peer(&peer, &target));
     }
 }
