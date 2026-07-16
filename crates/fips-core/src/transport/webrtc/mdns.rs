@@ -524,7 +524,6 @@ mod tests {
     async fn registered_hostname_is_resolved_and_rewritten_by_the_shared_owner() {
         let address = first_non_loopback_ipv4().expect("non-loopback IPv4 interface");
         let hostname = format!("fips-webrtc-{}.local.", random_session_id());
-        let server = ServiceDaemon::new().expect("mDNS test responder");
         let service = mdns_sd::ServiceInfo::new(
             "_fips-wrtc._udp.local.",
             "shared-resolver",
@@ -535,6 +534,13 @@ mod tests {
         )
         .expect("mDNS test service");
         let resolver = SharedMdnsResolver::new(true, 4).expect("shared resolver");
+        let server = resolver
+            .0
+            .as_ref()
+            .expect("enabled shared resolver")
+            .daemon()
+            .expect("shared resolver daemon");
+        let monitor = server.monitor().expect("monitor shared resolver daemon");
         let sdp = format!(
             "v=0\r\na=candidate:1 1 UDP 1 {} 5000 typ host\r\n",
             hostname.trim_end_matches('.')
@@ -548,10 +554,25 @@ mod tests {
         })
         .await
         .expect("shared resolver query starts");
-        // Browser hostnames can be registered immediately before the offer is
-        // sent. Exercise the standard third mDNS query at three seconds.
-        tokio::time::sleep(Duration::from_millis(2_100)).await;
+        // Register after the standard one-second retry, then wait for the
+        // shared daemon to announce before its third query at three seconds.
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
         server.register(service).expect("register mDNS test host");
+        tokio::time::timeout(Duration::from_millis(1_500), async {
+            loop {
+                match monitor.recv_async().await {
+                    Ok(mdns_sd::DaemonEvent::Announce(service, _))
+                        if service.starts_with("shared-resolver.") =>
+                    {
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(error) => panic!("mDNS monitor stopped before announce: {error}"),
+                }
+            }
+        })
+        .await
+        .expect("shared daemon announces registered host before third query");
 
         let rewritten = resolve_task
             .await
@@ -562,11 +583,5 @@ mod tests {
         assert_eq!(resolver.snapshot().owner_count, 1);
         resolver.stop().await.expect("stop shared resolver");
         assert_eq!(resolver.snapshot().owner_count, 0);
-
-        let shutdown = server.shutdown().expect("stop mDNS test responder");
-        assert!(matches!(
-            tokio::time::timeout(Duration::from_secs(1), shutdown.recv_async()).await,
-            Ok(Ok(DaemonStatus::Shutdown))
-        ));
     }
 }

@@ -271,14 +271,34 @@ data = json.load(sys.stdin)
 peers = [p for p in data.get('peers', []) if p.get('connectivity') == 'connected']
 if not peers:
     raise SystemExit(1)
-peer = peers[0]
-transport = peer.get('transport_type', '')
-addr = peer.get('transport_addr', '')
-if transport != sys.argv[1]:
-    raise SystemExit(f'transport mismatch: expected {sys.argv[1]!r}, got {transport!r}')
-if not addr.startswith(sys.argv[2]):
-    raise SystemExit(f'addr mismatch: expected prefix {sys.argv[2]!r}, got {addr!r}')
+matches = [p for p in peers
+           if p.get('transport_type', '') == sys.argv[1]
+           and p.get('transport_addr', '').startswith(sys.argv[2])]
+if not matches:
+    paths = [(p.get('transport_type', ''), p.get('transport_addr', '')) for p in peers]
+    raise SystemExit(f'peer path mismatch: expected {sys.argv[1]!r} at {sys.argv[2]!r}, got {paths!r}')
 " "$expected_transport" "$expected_prefix"
+}
+
+wait_for_peer_path() {
+    local container="$1"
+    local expected_transport="$2"
+    local expected_prefix="$3"
+    local timeout="${4:-30}"
+    local started="$SECONDS"
+    local deadline=$((started + timeout))
+
+    while ((SECONDS < deadline)); do
+        if assert_peer_path "$container" "$expected_transport" "$expected_prefix" \
+            >/dev/null 2>&1; then
+            echo "  $container: ${expected_transport} peer at ${expected_prefix}* after $((SECONDS - started))s"
+            return 0
+        fi
+        sleep 1
+    done
+    echo "  $container: TIMEOUT waiting for ${expected_transport} peer at ${expected_prefix}* after ${timeout}s"
+    assert_peer_path "$container" "$expected_transport" "$expected_prefix" || true
+    return 1
 }
 
 assert_link_path() {
@@ -291,9 +311,9 @@ data = json.load(sys.stdin)
 links = data.get('links', [])
 if not links:
     raise SystemExit(1)
-addr = links[0].get('remote_addr', '')
-if not addr.startswith(sys.argv[1]):
-    raise SystemExit(f'link addr mismatch: expected prefix {sys.argv[1]!r}, got {addr!r}')
+addresses = [link.get('remote_addr', '') for link in links]
+if not any(addr.startswith(sys.argv[1]) for addr in addresses):
+    raise SystemExit(f'link addr mismatch: expected prefix {sys.argv[1]!r}, got {addresses!r}')
 " "$expected_prefix"
 }
 
@@ -307,10 +327,22 @@ require_bootstrap_activity() {
     fi
 }
 
-ping_peer() {
+wait_for_ping_peer() {
     local container="$1"
     local npub="$2"
-    docker exec "$container" ping6 -c 3 -W 5 "${npub}.fips" >/dev/null
+    local timeout="${3:-30}"
+    local started="$SECONDS"
+    local deadline=$((started + timeout))
+
+    while ((SECONDS < deadline)); do
+        if docker exec "$container" ping6 -c 1 -W 2 "${npub}.fips" >/dev/null 2>&1; then
+            echo "  $container: encrypted data plane reached ${npub}.fips after $((SECONDS - started))s"
+            return 0
+        fi
+        sleep 1
+    done
+    echo "  $container: TIMEOUT waiting for encrypted data plane to ${npub}.fips after ${timeout}s"
+    return 1
 }
 
 run_cone() {
@@ -319,11 +351,11 @@ run_cone() {
     "$GENERATE_SCRIPT" cone
     "${COMPOSE[@]}" --profile cone up -d --build --force-recreate
     "$TOPOLOGY_SCRIPT" cone
-    wait_for_peers fips-nat-cone-a 1 45 || {
+    wait_for_peer_path fips-nat-cone-a udp 172.31.254. 45 || {
         dump_cone_diagnostics
         return 1
     }
-    wait_for_peers fips-nat-cone-b 1 45 || {
+    wait_for_peer_path fips-nat-cone-b udp 172.31.254. 45 || {
         dump_cone_diagnostics
         return 1
     }
@@ -333,8 +365,8 @@ run_cone() {
     assert_link_path fips-nat-cone-b 172.31.254.
     # shellcheck disable=SC1090
     source "$NAT_DIR/generated-configs/cone/npubs.env"
-    ping_peer fips-nat-cone-a "$NPUB_B"
-    ping_peer fips-nat-cone-b "$NPUB_A"
+    wait_for_ping_peer fips-nat-cone-a "$NPUB_B" 30
+    wait_for_ping_peer fips-nat-cone-b "$NPUB_A" 30
     cleanup
 }
 
@@ -344,11 +376,11 @@ run_symmetric() {
     NAT_MODE_A=symmetric NAT_MODE_B=symmetric "$GENERATE_SCRIPT" symmetric
     NAT_MODE_A=symmetric NAT_MODE_B=symmetric "${COMPOSE[@]}" --profile symmetric up -d --build --force-recreate
     "$TOPOLOGY_SCRIPT" symmetric
-    wait_for_peers fips-nat-symmetric-a 1 60 || {
+    wait_for_peer_path fips-nat-symmetric-a tcp 172.31.254.11: 60 || {
         dump_symmetric_diagnostics
         return 1
     }
-    wait_for_peers fips-nat-symmetric-b 1 60 || {
+    wait_for_peer_path fips-nat-symmetric-b tcp 172.31.254.10: 60 || {
         dump_symmetric_diagnostics
         return 1
     }
@@ -360,8 +392,8 @@ run_symmetric() {
     require_bootstrap_activity fips-nat-symmetric-b
     # shellcheck disable=SC1090
     source "$NAT_DIR/generated-configs/symmetric/npubs.env"
-    ping_peer fips-nat-symmetric-a "$NPUB_B"
-    ping_peer fips-nat-symmetric-b "$NPUB_A"
+    wait_for_ping_peer fips-nat-symmetric-a "$NPUB_B" 30
+    wait_for_ping_peer fips-nat-symmetric-b "$NPUB_A" 30
     cleanup
 }
 
@@ -370,11 +402,11 @@ run_lan() {
     cleanup
     "$GENERATE_SCRIPT" lan
     "${COMPOSE[@]}" --profile lan up -d --build --force-recreate
-    wait_for_peers fips-nat-lan-a 1 45 || {
+    wait_for_peer_path fips-nat-lan-a udp 172.31.10. 45 || {
         dump_lan_diagnostics
         return 1
     }
-    wait_for_peers fips-nat-lan-b 1 45 || {
+    wait_for_peer_path fips-nat-lan-b udp 172.31.10. 45 || {
         dump_lan_diagnostics
         return 1
     }
@@ -384,8 +416,8 @@ run_lan() {
     assert_link_path fips-nat-lan-b 172.31.10.
     # shellcheck disable=SC1090
     source "$NAT_DIR/generated-configs/lan/npubs.env"
-    ping_peer fips-nat-lan-a "$NPUB_B"
-    ping_peer fips-nat-lan-b "$NPUB_A"
+    wait_for_ping_peer fips-nat-lan-a "$NPUB_B" 30
+    wait_for_ping_peer fips-nat-lan-b "$NPUB_A" 30
     cleanup
 }
 

@@ -778,4 +778,8 @@ fn merge_yaml_value(base: &mut serde_yaml::Value, overlay: serde_yaml::Value) {
 mod tests;
 
 #[cfg(test)]
+#[path = "tests/socket_defaults.rs"]
+mod socket_default_tests;
+
+#[cfg(test)]
 mod webrtc_budget_tests;

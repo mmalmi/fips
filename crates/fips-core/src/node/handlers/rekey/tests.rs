@@ -5,7 +5,6 @@ use crate::peer::{ActivePeer, ActivePeerSession};
 use crate::transport::{LinkId, LinkStats, TransportAddr, TransportId};
 use crate::utils::index::SessionIndex;
 use crate::{Identity, NodeAddr, PeerIdentity};
-use std::time::Instant;
 
 fn node_addr(byte: u8) -> NodeAddr {
     let mut bytes = [0u8; 16];
@@ -164,7 +163,7 @@ fn peer_lifecycle_registry_owns_fmp_rekey_tick_selection() {
     let cutover_peer = Identity::generate();
     let responder_pending_peer = Identity::generate();
     let drain_peer = Identity::generate();
-    let aged_peer = Identity::generate();
+    let timer_peer = Identity::generate();
     let counter_peer = Identity::generate();
     let in_progress_peer = Identity::generate();
     let dampened_peer = Identity::generate();
@@ -187,10 +186,11 @@ fn peer_lifecycle_registry_owns_fmp_rekey_tick_selection() {
     arm_completed_fmp_rekey(&mut drain, &local, &drain_peer, 3, true);
     assert!(drain.cutover_to_new_session().is_some());
 
-    let mut aged = active_fmp_peer(&local, &aged_peer, 4);
-    aged.set_session_established_at_for_test(
-        Instant::now() - Duration::from_secs(REKEY_DAMPENING_SECS + 20_000),
-    );
+    let mut timer = active_fmp_peer(&local, &timer_peer, 4);
+    // Make only this peer's time threshold due without subtracting a large
+    // duration from `Instant::now()`. Fresh Windows runners can have less
+    // monotonic uptime than that subtraction and panic before the assertion.
+    timer.set_rekey_jitter_secs_for_test(-10_000);
 
     let mut counter = active_fmp_peer(&local, &counter_peer, 5);
     counter
@@ -214,7 +214,7 @@ fn peer_lifecycle_registry_owns_fmp_rekey_tick_selection() {
     peers.insert(*cutover_peer.node_addr(), cutover);
     peers.insert(*responder_pending_peer.node_addr(), responder_pending);
     peers.insert(*drain_peer.node_addr(), drain);
-    peers.insert(*aged_peer.node_addr(), aged);
+    peers.insert(*timer_peer.node_addr(), timer);
     peers.insert(*counter_peer.node_addr(), counter);
     peers.insert(*in_progress_peer.node_addr(), in_progress);
     peers.insert(*dampened_peer.node_addr(), dampened);
@@ -228,7 +228,7 @@ fn peer_lifecycle_registry_owns_fmp_rekey_tick_selection() {
 
     assert_eq!(plan.cutover, vec![*cutover_peer.node_addr()]);
     assert_eq!(plan.drain, vec![*drain_peer.node_addr()]);
-    let mut expected_initiate = vec![*aged_peer.node_addr(), *counter_peer.node_addr()];
+    let mut expected_initiate = vec![*timer_peer.node_addr(), *counter_peer.node_addr()];
     expected_initiate.sort();
     assert_eq!(plan.initiate, expected_initiate);
 }

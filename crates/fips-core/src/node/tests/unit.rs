@@ -21,6 +21,7 @@ mod retry_paths;
 mod session_registry;
 mod update_peers_core;
 mod update_peers_paths;
+mod update_peers_promotion;
 
 fn refresh_configured_peer_cache_for_test(node: &mut Node) {
     node.configured_peers = ConfiguredPeerLookup::from_config(&node.config);

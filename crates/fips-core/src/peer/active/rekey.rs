@@ -13,6 +13,11 @@ impl ActivePeer {
         self.session_established_at = instant;
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_rekey_jitter_secs_for_test(&mut self, seconds: i64) {
+        self.rekey_jitter_secs = seconds;
+    }
+
     /// Per-session symmetric rekey-timer jitter offset (seconds).
     pub fn rekey_jitter_secs(&self) -> i64 {
         self.rekey_jitter_secs
