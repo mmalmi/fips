@@ -162,8 +162,8 @@ pub(super) async fn accept_loop(
 
 /// Per-connection TCP receive loop.
 ///
-/// Reads complete FMP packets using the stream reader, delivers them to
-/// the node via the packet channel. On error or EOF, removes the
+/// Reads complete FMP or direct-FSP packets using the stream reader, delivers
+/// them to the node via the packet channel. On error or EOF, removes the
 /// connection from the pool and exits.
 pub(super) struct TcpReceiveContext {
     pub(super) transport_id: TransportId,

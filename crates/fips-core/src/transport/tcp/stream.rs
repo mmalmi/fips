@@ -1,12 +1,14 @@
-//! FMP-Aware Stream Reader
+//! FIPS Stream Reader
 //!
 //! Recovers FIPS packet boundaries from a TCP byte stream using the
-//! existing 4-byte FMP common prefix `[ver+phase:1][flags:1][payload_len:2 LE]`.
+//! shared 4-byte FMP/FSP prefix `[ver+phase:1][flags:1][payload_len:2 LE]`.
 //!
 //! This module is deliberately separate from the TCP transport so it can
 //! be reused by the future Tor transport.
 
 use tokio::io::{AsyncRead, AsyncReadExt};
+
+use crate::proto::fsp_wire::{FSP_FLAG_DIRECT_TRANSPORT, FSP_FLAG_U, FSP_HEADER_SIZE};
 
 /// FMP phase values (low nibble of byte 0).
 const PHASE_ESTABLISHED: u8 = 0x0;
@@ -20,7 +22,8 @@ const PREFIX_SIZE: usize = 4;
 /// The full established header is 16 bytes (PREFIX_SIZE + 12), so after reading
 /// the 4-byte prefix, 12 more header bytes remain. Then payload_len bytes of
 /// ciphertext, then 16 bytes of AEAD tag.
-const ESTABLISHED_REMAINING_HEADER: usize = 12;
+const FMP_ESTABLISHED_REMAINING_HEADER: usize = 12;
+const DIRECT_FSP_REMAINING_HEADER: usize = FSP_HEADER_SIZE - PREFIX_SIZE;
 const AEAD_TAG_SIZE: usize = 16;
 
 /// Errors from the FMP stream reader.
@@ -30,6 +33,8 @@ pub enum StreamError {
     UnknownVersion(u8),
     /// Unknown FMP phase byte — protocol error, close connection.
     UnknownPhase(u8),
+    /// Direct-FSP marker combined with flags that cannot be direct/encrypted.
+    InvalidDirectFspFlags(u8),
     /// Payload length exceeds the connection's MTU — corrupted or malicious.
     PayloadTooLarge {
         payload_len: u16,
@@ -46,6 +51,9 @@ impl std::fmt::Display for StreamError {
         match self {
             StreamError::UnknownVersion(v) => write!(f, "unknown FMP version: {}", v),
             StreamError::UnknownPhase(p) => write!(f, "unknown FMP phase: 0x{:02x}", p),
+            StreamError::InvalidDirectFspFlags(flags) => {
+                write!(f, "invalid direct FSP flags: 0x{flags:02x}")
+            }
             StreamError::PayloadTooLarge {
                 payload_len,
                 max_payload_len,
@@ -92,10 +100,12 @@ const MSG1_PAYLOAD_LEN: u16 = (MSG1_WIRE_SIZE - PREFIX_SIZE) as u16;
 /// Expected payload_len for msg2: sender_idx(4) + receiver_idx(4) + noise_msg2(57) = 65.
 const MSG2_PAYLOAD_LEN: u16 = (MSG2_WIRE_SIZE - PREFIX_SIZE) as u16;
 
-/// Read one complete FMP packet from an async reader.
+/// Read one complete FIPS packet from an async reader.
 ///
-/// Uses the 4-byte FMP common prefix to determine the total packet size,
-/// then reads the remaining bytes. Returns the complete packet as a `Vec<u8>`.
+/// Uses the 4-byte common prefix to determine the total packet size, then
+/// reads the remaining bytes. Established direct-FSP records carry the
+/// `DIRECT_TRANSPORT` flag and have a 12-byte full header; ordinary FMP
+/// established records have a 16-byte full header.
 ///
 /// # Arguments
 ///
@@ -129,20 +139,26 @@ pub async fn read_fmp_packet<R: AsyncRead + Unpin>(
     // Compute remaining bytes based on phase
     let remaining = match phase {
         PHASE_ESTABLISHED => {
+            let is_direct_fsp = prefix[1] & FSP_FLAG_DIRECT_TRANSPORT != 0;
+            if is_direct_fsp && prefix[1] & FSP_FLAG_U != 0 {
+                return Err(StreamError::InvalidDirectFspFlags(prefix[1]));
+            }
+            let remaining_header = if is_direct_fsp {
+                DIRECT_FSP_REMAINING_HEADER
+            } else {
+                FMP_ESTABLISHED_REMAINING_HEADER
+            };
             // Validate payload_len against MTU:
-            // total packet = 16 (header) + payload_len + 16 (tag) = payload_len + 32
-            // max_payload_len = mtu - 32
-            let max_payload_len = mtu.saturating_sub(
-                (ESTABLISHED_REMAINING_HEADER + PREFIX_SIZE + AEAD_TAG_SIZE) as u16,
-            );
+            // total packet = selected header + payload_len + 16-byte tag.
+            let max_payload_len =
+                mtu.saturating_sub((remaining_header + PREFIX_SIZE + AEAD_TAG_SIZE) as u16);
             if payload_len > max_payload_len {
                 return Err(StreamError::PayloadTooLarge {
                     payload_len,
                     max_payload_len,
                 });
             }
-            // remaining = 12 (rest of header) + payload_len + 16 (AEAD tag)
-            ESTABLISHED_REMAINING_HEADER + payload_len as usize + AEAD_TAG_SIZE
+            remaining_header + payload_len as usize + AEAD_TAG_SIZE
         }
         PHASE_MSG1 => {
             if payload_len != MSG1_PAYLOAD_LEN {
@@ -191,7 +207,7 @@ mod tests {
     /// Layout: [ver+phase:1][flags:1][payload_len:2 LE][12 bytes header][payload_len bytes][16 bytes tag]
     fn build_established_frame(payload_len: u16) -> Vec<u8> {
         let total =
-            PREFIX_SIZE + ESTABLISHED_REMAINING_HEADER + payload_len as usize + AEAD_TAG_SIZE;
+            PREFIX_SIZE + FMP_ESTABLISHED_REMAINING_HEADER + payload_len as usize + AEAD_TAG_SIZE;
         let mut frame = vec![0u8; total];
         frame[0] = 0x00; // ver=0, phase=0 (established)
         frame[1] = 0x00; // flags
@@ -199,6 +215,21 @@ mod tests {
         // Fill remaining with pattern for verification
         for (i, byte) in frame[PREFIX_SIZE..total].iter_mut().enumerate() {
             *byte = ((PREFIX_SIZE + i) & 0xFF) as u8;
+        }
+        frame
+    }
+
+    /// Build an established direct-FSP frame. Its full cleartext header is
+    /// four bytes shorter than an established FMP frame.
+    fn build_direct_fsp_frame(payload_len: u16) -> Vec<u8> {
+        let remaining_header = crate::proto::fsp_wire::FSP_HEADER_SIZE - PREFIX_SIZE;
+        let total = PREFIX_SIZE + remaining_header + payload_len as usize + AEAD_TAG_SIZE;
+        let mut frame = vec![0u8; total];
+        frame[0] = 0x00;
+        frame[1] = crate::proto::fsp_wire::FSP_FLAG_DIRECT_TRANSPORT;
+        frame[2..4].copy_from_slice(&payload_len.to_le_bytes());
+        for (i, byte) in frame[PREFIX_SIZE..total].iter_mut().enumerate() {
+            *byte = (0x80 | ((PREFIX_SIZE + i) & 0x7F)) as u8;
         }
         frame
     }
@@ -273,6 +304,54 @@ mod tests {
 
         let p3 = read_fmp_packet(&mut cursor, 1400).await.unwrap();
         assert_eq!(p3.len(), MSG2_WIRE_SIZE);
+    }
+
+    #[tokio::test]
+    async fn direct_fsp_and_fmp_frames_keep_exact_stream_boundaries() {
+        let direct_fsp = build_direct_fsp_frame(23);
+        let fmp = build_established_frame(31);
+        let mut data = direct_fsp.clone();
+        data.extend_from_slice(&fmp);
+
+        let mut cursor = Cursor::new(data);
+        assert_eq!(
+            read_fmp_packet(&mut cursor, 1400).await.unwrap(),
+            direct_fsp
+        );
+        assert_eq!(read_fmp_packet(&mut cursor, 1400).await.unwrap(), fmp);
+    }
+
+    #[tokio::test]
+    async fn direct_fsp_rejects_truncation_and_payload_over_its_mtu_budget() {
+        let direct_overhead = crate::proto::fsp_wire::FSP_HEADER_SIZE + AEAD_TAG_SIZE;
+        let at_mtu = build_direct_fsp_frame((1400 - direct_overhead) as u16);
+        assert_eq!(
+            read_fmp_packet(&mut Cursor::new(at_mtu.clone()), 1400)
+                .await
+                .unwrap(),
+            at_mtu
+        );
+
+        let mut truncated = build_direct_fsp_frame(23);
+        truncated.pop();
+        assert!(matches!(
+            read_fmp_packet(&mut Cursor::new(truncated), 1400).await,
+            Err(StreamError::Io(_))
+        ));
+
+        let mut oversized = build_direct_fsp_frame((1400 - direct_overhead + 1) as u16);
+        oversized.resize(1600, 0);
+        assert!(matches!(
+            read_fmp_packet(&mut Cursor::new(oversized), 1400).await,
+            Err(StreamError::PayloadTooLarge { .. })
+        ));
+
+        let mut invalid_flags = build_direct_fsp_frame(23);
+        invalid_flags[1] |= crate::proto::fsp_wire::FSP_FLAG_U;
+        assert!(matches!(
+            read_fmp_packet(&mut Cursor::new(invalid_flags), 1400).await,
+            Err(StreamError::InvalidDirectFspFlags(_))
+        ));
     }
 
     #[tokio::test]
@@ -369,7 +448,7 @@ mod tests {
     async fn test_zero_payload_established() {
         // payload_len = 0 is valid (header-only encrypted frame with tag)
         let frame = build_established_frame(0);
-        let expected_len = PREFIX_SIZE + ESTABLISHED_REMAINING_HEADER + AEAD_TAG_SIZE;
+        let expected_len = PREFIX_SIZE + FMP_ESTABLISHED_REMAINING_HEADER + AEAD_TAG_SIZE;
         assert_eq!(frame.len(), expected_len);
 
         let mut cursor = Cursor::new(frame.clone());

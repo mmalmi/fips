@@ -18,9 +18,9 @@
 //!
 //! ## Framing
 //!
-//! Uses the existing 4-byte FMP common prefix to recover packet boundaries.
-//! No additional framing overhead — packets are written directly to the
-//! TCP stream and the receiver uses phase-dependent size computation.
+//! Uses the shared 4-byte FMP/FSP common prefix to recover packet boundaries.
+//! No additional framing overhead — packets are written directly to the TCP
+//! stream and the receiver uses phase- and direct-transport-aware sizes.
 
 pub mod stats;
 pub mod stream;

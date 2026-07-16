@@ -97,6 +97,73 @@ async fn test_tcp_two_node_handshake() {
     cleanup_nodes(&mut nodes).await;
 }
 
+/// Direct FSP application data retains its shorter record boundary when the
+/// authenticated peer path is a real TCP byte stream.
+#[tokio::test]
+async fn tcp_direct_fsp_endpoint_data_is_bidirectional() {
+    let mut nodes = vec![make_test_node_tcp().await, make_test_node_tcp().await];
+
+    initiate_handshake(&mut nodes, 0, 1).await;
+    assert!(drain_all_packets(&mut nodes, false).await > 0);
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+
+    let mut endpoint_0 = nodes[0]
+        .node
+        .attach_endpoint_data_io(8)
+        .expect("node 0 endpoint data I/O");
+    let mut endpoint_1 = nodes[1]
+        .node
+        .attach_endpoint_data_io(8)
+        .expect("node 1 endpoint data I/O");
+    let identity_0 = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
+    let identity_1 = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
+
+    super::session::send_endpoint_data_via_dataplane(
+        &mut nodes[0].node,
+        identity_1,
+        b"tcp-ping".to_vec(),
+    )
+    .await
+    .expect("TCP endpoint ping should start");
+    let ping = super::session::recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut endpoint_1.event_rx,
+        Duration::from_secs(5),
+        "TCP endpoint ping",
+    )
+    .await;
+    assert_eq!(
+        super::session::expect_single_endpoint_data_event(ping)
+            .payload
+            .as_slice(),
+        b"tcp-ping"
+    );
+
+    super::session::send_endpoint_data_via_dataplane(
+        &mut nodes[1].node,
+        identity_0,
+        b"tcp-pong".to_vec(),
+    )
+    .await
+    .expect("TCP endpoint pong should start");
+    let pong = super::session::recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut endpoint_0.event_rx,
+        Duration::from_secs(5),
+        "TCP endpoint pong",
+    )
+    .await;
+    assert_eq!(
+        super::session::expect_single_endpoint_data_event(pong)
+            .payload
+            .as_slice(),
+        b"tcp-pong"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
 /// Three TCP nodes in a chain converge to a consistent spanning tree.
 ///
 /// Chain: 0 -- 1 -- 2. Verifies tree convergence, peer counts, and

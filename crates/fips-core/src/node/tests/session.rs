@@ -190,7 +190,7 @@ async fn run_session_retransmit_work(nodes: &mut [TestNode]) {
     }
 }
 
-async fn recv_endpoint_event_while_draining(
+pub(super) async fn recv_endpoint_event_while_draining(
     nodes: &mut [TestNode],
     rx: &mut EndpointEventReceiver,
     timeout: Duration,
@@ -242,7 +242,7 @@ async fn recv_service_event_while_draining(
     }
 }
 
-fn expect_single_endpoint_data_event(
+pub(super) fn expect_single_endpoint_data_event(
     event: NodeEndpointEvent,
 ) -> crate::node::EndpointDataDelivery {
     match event {
@@ -255,7 +255,7 @@ fn expect_single_endpoint_data_event(
     }
 }
 
-async fn send_endpoint_data_via_dataplane(
+pub(super) async fn send_endpoint_data_via_dataplane(
     node: &mut Node,
     remote: PeerIdentity,
     payload: Vec<u8>,
