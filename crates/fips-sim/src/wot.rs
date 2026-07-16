@@ -29,7 +29,7 @@ const DEFAULT_DISCOVERY_APP: &str = "fips-overlay-v1";
 const WOT_NOSTR_EVENT_STREAM: &str = "nostr.events.v1";
 const WOT_PROBE_NETWORK_SEED: u64 = 0x66_69_70_73_77_6f_74;
 const WOT_PROBE_LOCAL_ADDR: &str = "wot-probe-local";
-const WOT_PROBE_CONVERGENCE_MS: u64 = 800;
+const WOT_PROBE_CONVERGENCE_TIMEOUT_SECS: u64 = 8;
 const WOT_PROBE_TIMEOUT_MS: u64 = 2_000;
 
 /// Configuration for the deterministic open-discovery WoT admission scenario.

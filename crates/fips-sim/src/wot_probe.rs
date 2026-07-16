@@ -120,8 +120,7 @@ impl WotProbeRuntime {
             );
         }
 
-        tokio::time::sleep(Duration::from_millis(WOT_PROBE_CONVERGENCE_MS)).await;
-        Ok(Self {
+        let runtime = Self {
             network_id,
             network,
             local: WotProbeEndpoint {
@@ -129,7 +128,48 @@ impl WotProbeRuntime {
                 endpoint: local_endpoint,
             },
             peers: peer_endpoints,
-        })
+        };
+        runtime.wait_for_authenticated_links().await?;
+        Ok(runtime)
+    }
+
+    async fn wait_for_authenticated_links(&self) -> Result<(), String> {
+        tokio::time::timeout(
+            Duration::from_secs(WOT_PROBE_CONVERGENCE_TIMEOUT_SECS),
+            async {
+                loop {
+                    let local_peers = self
+                        .local
+                        .endpoint
+                        .peers()
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    let local_ready = self.peers.values().all(|remote| {
+                        local_peers.iter().any(|peer| {
+                            peer.connected && peer.node_addr == *remote.peer_identity.node_addr()
+                        })
+                    });
+                    let mut remotes_ready = true;
+                    for remote in self.peers.values() {
+                        let remote_peers = remote
+                            .endpoint
+                            .peers()
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        remotes_ready &= remote_peers.iter().any(|peer| {
+                            peer.connected
+                                && peer.node_addr == *self.local.peer_identity.node_addr()
+                        });
+                    }
+                    if local_ready && remotes_ready {
+                        return Ok::<(), String>(());
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            },
+        )
+        .await
+        .map_err(|_| "timed out waiting for authenticated WoT probe links".to_string())?
     }
 
     async fn observed_rating_for_probe(
