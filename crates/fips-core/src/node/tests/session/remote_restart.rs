@@ -44,6 +44,11 @@ async fn recovery_rekey_replaces_session_after_remote_restart() {
         "restarted peer initial session",
     )
     .await;
+    let original_handshake_hash = *nodes[0]
+        .node
+        .get_session(&restarted_addr)
+        .and_then(|session| session.handshake_hash())
+        .expect("initial session should have a handshake hash");
 
     nodes[1].node.remove_dataplane_fsp_owner(&survivor_addr);
     assert!(nodes[1].node.remove_session(&survivor_addr).is_some());
@@ -53,18 +58,33 @@ async fn recovery_rekey_replaces_session_after_remote_restart() {
         nodes[0].node.initiate_session_rekey(&restarted_addr).await,
         "survivor should start recovery handshake"
     );
-    assert!(wait_process_packets_for_node(&mut nodes, 1).await > 0);
-    assert!(wait_process_packets_for_node(&mut nodes, 0).await > 0);
+    wait_for_session_established(
+        &mut nodes,
+        1,
+        &survivor_addr,
+        Duration::from_secs(10),
+        "restarted peer recovery session",
+    )
+    .await;
 
     let survivor_session = nodes[0].node.get_session(&restarted_addr).unwrap();
     assert!(survivor_session.is_established());
     assert!(!survivor_session.current_k_bit());
     assert!(survivor_session.pending_new_session().is_none());
 
-    assert!(wait_process_packets_for_node(&mut nodes, 1).await > 0);
     let restarted_session = nodes[1].node.get_session(&survivor_addr).unwrap();
     assert!(restarted_session.is_established());
     assert!(!restarted_session.current_k_bit());
+    assert_ne!(
+        survivor_session.handshake_hash(),
+        Some(&original_handshake_hash),
+        "the survivor must replace the stale session"
+    );
+    assert_eq!(
+        survivor_session.handshake_hash(),
+        restarted_session.handshake_hash(),
+        "both peers must install the same recovery session"
+    );
 
     let mut restarted_endpoint = nodes[1]
         .node
