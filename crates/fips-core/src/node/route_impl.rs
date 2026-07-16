@@ -305,6 +305,22 @@ impl Node {
             return TransitNextHopPlan::NoRoute;
         };
         if &next_hop_addr == previous_hop {
+            let now_ms = Self::now_ms();
+            let coordinate_fallback = self
+                .coord_cache
+                .get_and_touch(dest_node_addr, now_ms)
+                .cloned()
+                .and_then(|dest_coords| {
+                    self.select_tree_payload_candidate_avoiding(
+                        &dest_coords,
+                        dest_node_addr,
+                        false,
+                        Some(previous_hop),
+                    )
+                });
+            if let Some(next_hop_addr) = coordinate_fallback {
+                return TransitNextHopPlan::Route(next_hop_addr);
+            }
             return TransitNextHopPlan::Loop(next_hop_addr);
         }
         TransitNextHopPlan::Route(next_hop_addr)
@@ -362,6 +378,21 @@ impl Node {
         direct_dest: &NodeAddr,
         direct_payload_eligible: bool,
     ) -> Option<NodeAddr> {
+        self.select_tree_payload_candidate_avoiding(
+            dest_coords,
+            direct_dest,
+            direct_payload_eligible,
+            None,
+        )
+    }
+
+    fn select_tree_payload_candidate_avoiding(
+        &self,
+        dest_coords: &crate::tree::TreeCoordinate,
+        direct_dest: &NodeAddr,
+        direct_payload_eligible: bool,
+        excluded: Option<&NodeAddr>,
+    ) -> Option<NodeAddr> {
         if self.tree_state.my_coords().root_id() != dest_coords.root_id() {
             return None;
         }
@@ -370,6 +401,9 @@ impl Node {
         let mut best: Option<(NodeAddr, usize)> = None;
 
         for (peer_addr, peer) in &self.peers {
+            if excluded == Some(peer_addr) {
+                continue;
+            }
             if peer_addr == direct_dest {
                 if !direct_payload_eligible {
                     continue;

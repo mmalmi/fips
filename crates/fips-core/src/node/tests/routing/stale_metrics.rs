@@ -202,6 +202,56 @@ fn test_transit_rejects_learned_route_back_to_previous_hop() {
     );
 }
 
+#[test]
+fn test_transit_uses_coordinate_fallback_instead_of_learned_reverse_loop() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let transport_id = TransportId::new(1);
+    let my_addr = *node.node_addr();
+
+    let previous_link = LinkId::new(1);
+    let (previous_conn, previous_id) =
+        make_completed_connection(&mut node, previous_link, transport_id, 1000);
+    let previous_hop = *previous_id.node_addr();
+    node.add_connection(previous_conn).unwrap();
+    node.promote_connection(previous_link, previous_id, 2000)
+        .unwrap();
+
+    let fallback_link = LinkId::new(2);
+    let (fallback_conn, fallback_id) =
+        make_completed_connection(&mut node, fallback_link, transport_id, 1000);
+    let fallback_hop = *fallback_id.node_addr();
+    node.add_connection(fallback_conn).unwrap();
+    node.promote_connection(fallback_link, fallback_id, 2000)
+        .unwrap();
+
+    node.tree_state_mut().update_peer(
+        ParentDeclaration::new(previous_hop, my_addr, 1, 1000),
+        TreeCoordinate::from_addrs(vec![previous_hop, my_addr]).unwrap(),
+    );
+    node.tree_state_mut().update_peer(
+        ParentDeclaration::new(fallback_hop, my_addr, 1, 1000),
+        TreeCoordinate::from_addrs(vec![fallback_hop, my_addr]).unwrap(),
+    );
+    let dest = make_node_addr(0xDD);
+    let dest_coords = TreeCoordinate::from_addrs(vec![dest, fallback_hop, my_addr]).unwrap();
+    node.coord_cache_mut()
+        .insert(dest, dest_coords, Node::now_ms());
+    node.learn_reverse_route(dest, previous_hop);
+
+    assert_eq!(
+        node.find_next_hop(&dest).map(|peer| *peer.node_addr()),
+        Some(previous_hop),
+        "fixture must select the learned route before transit excludes its previous hop"
+    );
+    assert_eq!(
+        node.find_transit_next_hop(&dest, &previous_hop),
+        Some(fallback_hop),
+        "transit must use the loop-free coordinate route instead of dropping into its learned reverse path"
+    );
+}
+
 // === No route ===
 
 #[test]
