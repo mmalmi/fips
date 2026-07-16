@@ -26,6 +26,8 @@ mod resend_rekey_large;
 mod route_metrics;
 mod tun_outbound_core;
 mod tun_outbound_tail;
+#[cfg(feature = "webrtc-transport")]
+mod webrtc_upgrade;
 
 // ============================================================================
 // Unit tests: SessionEntry data structure

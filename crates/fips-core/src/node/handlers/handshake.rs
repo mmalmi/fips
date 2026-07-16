@@ -576,14 +576,11 @@ impl Node {
                         if let Some(peer) = self.peers.get_mut(&node_addr) {
                             peer.set_handshake_msg2(wire_msg2.clone());
                         }
-                        // Close the losing TCP connection (no-op for connectionless)
-                        if let Some(loser_link) = self.links.get(&loser_link_id) {
-                            let loser_tid = loser_link.transport_id();
-                            let loser_addr = loser_link.remote_addr().clone();
-                            if let Some(transport) = self.transports.get(&loser_tid) {
-                                transport.close_connection(&loser_addr).await;
-                            }
-                        }
+                        self.close_cross_connection_loser_physical_path(
+                            loser_link_id,
+                            Some(link_id),
+                        )
+                        .await;
                         // Clean up the losing connection's link
                         self.remove_link(&loser_link_id);
                         debug!(
@@ -600,10 +597,11 @@ impl Node {
                         self.reset_discovery_backoff();
                     }
                     PromotionResult::CrossConnectionLost { winner_link_id } => {
-                        // Close the losing TCP connection (no-op for connectionless)
-                        if let Some(transport) = self.transports.get(&packet.transport_id) {
-                            transport.close_connection(&packet.remote_addr).await;
-                        }
+                        self.close_cross_connection_loser_physical_path(
+                            link_id,
+                            Some(winner_link_id),
+                        )
+                        .await;
                         // This connection lost — clean up its link
                         self.remove_link(&link_id);
                         // Restore address dispatch for the winner's link
@@ -653,6 +651,45 @@ impl Node {
             }
         }
         None
+    }
+
+    /// Close the losing logical connection's physical carrier unless the
+    /// winning logical connection uses that exact carrier too.
+    ///
+    /// TCP cross-connections own distinct sockets, while WebRTC can carry both
+    /// simultaneous Noise handshakes over one authenticated data channel. In
+    /// the latter case, closing the logical loser must not tear down the
+    /// physical winner.
+    async fn close_cross_connection_loser_physical_path(
+        &self,
+        loser_link_id: LinkId,
+        winner_link_id: Option<LinkId>,
+    ) {
+        let Some(loser_link) = self.links.get(&loser_link_id) else {
+            return;
+        };
+        let loser_path = (loser_link.transport_id(), loser_link.remote_addr().clone());
+        let winner_path = winner_link_id.and_then(|winner_link_id| {
+            self.links.get(&winner_link_id).map(|winner_link| {
+                (
+                    winner_link.transport_id(),
+                    winner_link.remote_addr().clone(),
+                )
+            })
+        });
+        if winner_path.as_ref() == Some(&loser_path) {
+            return;
+        }
+        if let Some(transport) = self.transports.get(&loser_path.0) {
+            transport.close_connection(&loser_path.1).await;
+        }
+    }
+
+    fn restore_link_address(&mut self, link_id: LinkId) {
+        if let Some(link) = self.links.get(&link_id) {
+            self.links
+                .insert_addr((link.transport_id(), link.remote_addr().clone()), link_id);
+        }
     }
 }
 

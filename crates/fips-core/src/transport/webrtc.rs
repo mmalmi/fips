@@ -125,6 +125,11 @@ type FailedPool = Arc<Mutex<HashMap<TransportAddr, String>>>;
 type ReadyPool = Arc<Mutex<HashSet<TransportAddr>>>;
 type SeenSessionPool = Arc<Mutex<HashMap<(TransportAddr, String), u64>>>;
 
+#[cfg(test)]
+fn test_webrtc_addr(identity: &crate::Identity) -> TransportAddr {
+    TransportAddr::from_string(&canonical_webrtc_pubkey_hex(identity.pubkey_full()))
+}
+
 #[derive(Clone)]
 struct WebRtcSessionOwners {
     pool: ConnectionPool,
@@ -190,7 +195,7 @@ impl WebRtcTransport {
         identity: &crate::Identity,
         nostr_config: &NostrDiscoveryConfig,
     ) -> Result<Self, TransportError> {
-        let local_pubkey_hex = hex::encode(identity.pubkey_full().serialize());
+        let local_pubkey_hex = canonical_webrtc_pubkey_hex(identity.pubkey_full());
         let stun_servers = config.stun_servers(&nostr_config.stun_servers);
         validate_webrtc_candidate_socket_budget(config.max_connections(), &stun_servers)
             .map_err(TransportError::StartFailed)?;
@@ -262,7 +267,9 @@ impl WebRtcTransport {
     }
 
     #[cfg(test)]
-    fn use_canonical_loopback_candidate_profile(&mut self) -> Result<(), TransportError> {
+    pub(crate) fn use_canonical_loopback_candidate_profile(
+        &mut self,
+    ) -> Result<(), TransportError> {
         let policy = CandidateAddressPolicy::loopback_udp4();
         self.api = policy.build_api()?;
         self.candidate_policy = policy;
@@ -405,6 +412,7 @@ impl WebRtcTransport {
         addr: &TransportAddr,
         data: &[u8],
     ) -> Result<usize, TransportError> {
+        let addr = canonical_webrtc_addr(addr)?;
         if data.len() > self.config.mtu() as usize {
             return Err(TransportError::MtuExceeded {
                 packet_size: data.len(),
@@ -413,28 +421,28 @@ impl WebRtcTransport {
         }
         let data_channel = {
             let pool = self.pool.lock().await;
-            pool.get(addr).map(|conn| Arc::clone(&conn.data_channel))
+            pool.get(&addr).map(|conn| Arc::clone(&conn.data_channel))
         }
         .ok_or_else(|| TransportError::SendFailed(format!("no WebRTC connection to {addr}")))?;
 
         bounded_webrtc_send(
             WEBRTC_IO_TIMEOUT,
             data_channel.send(&Bytes::copy_from_slice(data)),
-            || self.close_connection_async(addr),
+            || self.close_connection_async(&addr),
         )
         .await
     }
 
     /// Initiate a non-blocking WebRTC dial.
     pub async fn connect_async(&self, addr: &TransportAddr) -> Result<(), TransportError> {
-        validate_compressed_pubkey_addr(addr)?;
-        if self.pool.lock().await.contains_key(addr) {
+        let addr = canonical_webrtc_addr(addr)?;
+        if self.pool.lock().await.contains_key(&addr) {
             return Ok(());
         }
-        if self.pending.lock().await.contains_key(addr) {
+        if self.pending.lock().await.contains_key(&addr) {
             return Ok(());
         }
-        let reservation = match self.physical.reserve(addr) {
+        let reservation = match self.physical.reserve(&addr) {
             Ok(reservation) => reservation,
             Err(PhysicalReserveError::PeerBusy(
                 PhysicalPhase::Creating | PhysicalPhase::Active,
@@ -445,10 +453,10 @@ impl WebRtcTransport {
                 | PhysicalReserveError::PeerBusy(PhysicalPhase::Closing),
             ) => return Err(TransportError::ConnectionRefused),
         };
-        self.failed.lock().await.remove(addr);
+        self.failed.lock().await.remove(&addr);
 
         let runtime = self.runtime();
-        let remote_addr = addr.clone();
+        let remote_addr = addr;
         let deadline =
             tokio::time::Instant::now() + Duration::from_millis(self.config.connect_timeout_ms());
         let task = tokio::spawn(async move {
@@ -499,7 +507,7 @@ impl WebRtcTransport {
         let (sender_xonly, _) = source.x_only_public_key();
         let sender = PublicKey::from_slice(&sender_xonly.serialize())
             .map_err(|error| TransportError::InvalidAddress(error.to_string()))?;
-        let sender_full_hex = hex::encode(source.serialize());
+        let sender_full_hex = canonical_webrtc_pubkey_hex(source);
         self.signal_tx
             .send(IncomingSignal {
                 signal,
@@ -511,13 +519,17 @@ impl WebRtcTransport {
 
     /// Query connection state synchronously.
     pub fn connection_state_sync(&self, addr: &TransportAddr) -> ConnectionState {
+        let addr = match canonical_webrtc_addr(addr) {
+            Ok(addr) => addr,
+            Err(error) => return ConnectionState::Failed(error.to_string()),
+        };
         let pool = match self.pool.try_lock() {
             Ok(pool) => pool,
             Err(_) => return ConnectionState::Connecting,
         };
-        if pool.contains_key(addr) {
+        if pool.contains_key(&addr) {
             return match self.ready.try_lock() {
-                Ok(ready) if ready.contains(addr) => ConnectionState::Connected,
+                Ok(ready) if ready.contains(&addr) => ConnectionState::Connected,
                 _ => ConnectionState::Connecting,
             };
         }
@@ -527,13 +539,13 @@ impl WebRtcTransport {
             Ok(failed) => failed,
             Err(_) => return ConnectionState::Connecting,
         };
-        if let Some(reason) = failed.get(addr) {
+        if let Some(reason) = failed.get(&addr) {
             return ConnectionState::Failed(reason.clone());
         }
         drop(failed);
 
         match self.pending.try_lock() {
-            Ok(pending) if pending.contains_key(addr) => ConnectionState::Connecting,
+            Ok(pending) if pending.contains_key(&addr) => ConnectionState::Connecting,
             Ok(_) => ConnectionState::None,
             Err(_) => ConnectionState::Connecting,
         }
@@ -541,9 +553,12 @@ impl WebRtcTransport {
 
     /// Close a WebRTC connection.
     pub async fn close_connection_async(&self, addr: &TransportAddr) {
+        let Ok(addr) = canonical_webrtc_addr(addr) else {
+            return;
+        };
         let owners =
             WebRtcSessionOwners::from_refs(&self.pool, &self.pending, &self.failed, &self.ready);
-        cleanup_webrtc_session(&owners, addr, None, None, CleanupWait::Bounded).await;
+        cleanup_webrtc_session(&owners, &addr, None, None, CleanupWait::Bounded).await;
     }
 
     /// Schedule connection cleanup from synchronous node-lifecycle paths.
@@ -554,13 +569,14 @@ impl WebRtcTransport {
     }
 
     fn close_connection_detached_task(&self, addr: &TransportAddr) -> Option<JoinHandle<()>> {
-        let generation = self.physical.generation(addr)?;
+        let addr = canonical_webrtc_addr(addr).ok()?;
+        let generation = self.physical.generation(&addr)?;
         Some(spawn_webrtc_session_cleanup(
             Arc::clone(&self.pool),
             Arc::clone(&self.pending),
             Arc::clone(&self.failed),
             Arc::clone(&self.ready),
-            addr.clone(),
+            addr,
             Some(WebRtcSessionOwner::for_generation(generation)),
             None,
         ))
@@ -868,7 +884,9 @@ fn incoming_offer_replaces_pending(
 ) -> bool {
     match pending_origin {
         PendingDialOrigin::Remote => incoming_created_at_ms > pending_created_at_ms,
-        PendingDialOrigin::Local => local_pubkey_hex > remote_pubkey_hex,
+        PendingDialOrigin::Local => {
+            webrtc_xonly_order_key(local_pubkey_hex) > webrtc_xonly_order_key(remote_pubkey_hex)
+        }
     }
 }
 

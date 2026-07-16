@@ -94,7 +94,12 @@ impl Node {
                     }
                     endpoints.push(OverlayEndpointAdvert {
                         transport: OverlayTransportKind::WebRtc,
-                        addr: hex::encode(self.identity.pubkey_full().serialize()),
+                        addr: hex::encode(
+                            self.identity
+                                .pubkey()
+                                .public_key(secp256k1::Parity::Even)
+                                .serialize(),
+                        ),
                     });
                 }
                 "tcp" => {

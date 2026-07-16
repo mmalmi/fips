@@ -1,6 +1,17 @@
 use super::*;
 
 impl Node {
+    pub(super) fn canonical_transport_addr(
+        &self,
+        transport_id: TransportId,
+        addr: TransportAddr,
+    ) -> Result<TransportAddr, crate::transport::TransportError> {
+        match self.transports.get(&transport_id) {
+            Some(transport) => transport.canonical_addr(&addr),
+            None => Ok(addr),
+        }
+    }
+
     async fn recover_udp_transport_after_local_route_failure(&mut self, transport_id: TransportId) {
         let Some(crate::transport::TransportHandle::Udp(transport)) =
             self.transports.get_mut(&transport_id)
@@ -461,7 +472,9 @@ impl Node {
             self.find_transport_for_type(&candidate.transport)?
         };
 
-        Some((transport_id, TransportAddr::from_string(&candidate.addr)))
+        let addr = TransportAddr::from_string(&candidate.addr);
+        let addr = self.canonical_transport_addr(transport_id, addr).ok()?;
+        Some((transport_id, addr))
     }
 
     /// Initiate a connection to a peer on a specific transport and address.
@@ -480,6 +493,9 @@ impl Node {
         remote_addr: TransportAddr,
         peer_identity: PeerIdentity,
     ) -> Result<(), NodeError> {
+        let remote_addr = self
+            .canonical_transport_addr(transport_id, remote_addr)
+            .map_err(NodeError::from_transport_error)?;
         let peer_node_addr = *peer_identity.node_addr();
 
         if self.is_connecting_to_peer_on_path(&peer_node_addr, transport_id, &remote_addr) {

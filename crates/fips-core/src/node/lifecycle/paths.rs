@@ -70,13 +70,14 @@ impl Node {
             candidates.push(candidate);
             Self::sort_peer_address_candidates(&mut candidates);
         }
-        let should_try_nostr =
-            self.active_peer_should_keep_direct_retry(&peer_node_addr, peer_config);
+        let healthy_relay_upgrade = self.active_peer_uses_nostr_relay(&peer_node_addr)
+            && self.peers.get(&peer_node_addr).is_some_and(|peer| {
+                peer.is_healthy()
+                    && peer.can_send()
+                    && !self.active_peer_needs_same_path_refresh(&peer_node_addr)
+            });
 
         if candidates.is_empty() {
-            if should_try_nostr && self.request_nostr_bootstrap(peer_config).await {
-                return Ok(true);
-            }
             return Err(NodeError::NoTransportForType(format!(
                 "no addresses known for {}",
                 peer_config.npub
@@ -86,40 +87,19 @@ impl Node {
         let alternatives: Vec<_> = candidates
             .into_iter()
             .filter(|addr| {
-                same_path_refresh_needed
-                    || !self.active_peer_matches_candidate(&peer_node_addr, addr)
+                !(healthy_relay_upgrade && addr.transport == "nostr_relay")
+                    && (same_path_refresh_needed
+                        || !self.active_peer_matches_candidate(&peer_node_addr, addr))
             })
             .collect();
 
         if alternatives.is_empty() {
-            if should_try_nostr && self.request_nostr_bootstrap(peer_config).await {
-                return Ok(true);
-            }
             return Ok(false);
         }
 
-        let needs_separate_nostr_attempt = should_try_nostr
-            && !alternatives
-                .iter()
-                .any(|addr| addr.transport == "udp" && addr.addr.eq_ignore_ascii_case("nat"));
-        let address_result = self
-            .attempt_peer_address_list(peer_config, peer_identity, true, &alternatives)
-            .await;
-        let nostr_attempted =
-            needs_separate_nostr_attempt && self.request_nostr_bootstrap(peer_config).await;
-
-        match address_result {
-            Ok(()) => Ok(true),
-            Err(err) if nostr_attempted => {
-                debug!(
-                    npub = %peer_config.npub,
-                    error = %err,
-                    "Static active-peer direct-path alternatives failed; Nostr traversal still queued"
-                );
-                Ok(true)
-            }
-            Err(err) => Err(err),
-        }
+        self.attempt_peer_address_list(peer_config, peer_identity, true, &alternatives)
+            .await
+            .map(|()| true)
     }
 
     pub(in crate::node) async fn peer_address_candidates(

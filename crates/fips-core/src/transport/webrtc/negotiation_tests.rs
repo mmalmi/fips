@@ -85,11 +85,131 @@ fn offer_expiry_and_responder_deadline_preserve_the_original_phase_budget() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn incoming_glare_winner_waits_for_creating_outbound_owner() {
+    let (remote, local) = loop {
+        let first = crate::Identity::generate();
+        let second = crate::Identity::generate();
+        if canonical_webrtc_pubkey_hex(first.pubkey_full())
+            < canonical_webrtc_pubkey_hex(second.pubkey_full())
+        {
+            break (first, second);
+        }
+    };
+    let remote_full_key = remote.pubkey_full();
+    let remote_addr = test_webrtc_addr(&remote);
+    let (remote_xonly, _) = remote_full_key.x_only_public_key();
+    let (packet_tx, _packet_rx) = packet_channel(1);
+    let mut transport = WebRtcTransport::new(
+        TransportId::new(107),
+        None,
+        WebRtcConfig {
+            accept_connections: Some(true),
+            max_connections: Some(1),
+            connect_timeout_ms: Some(2_000),
+            ice_gather_timeout_ms: Some(1_000),
+            resolve_mdns_candidates: Some(false),
+            stun_servers: Some(Vec::new()),
+            ..WebRtcConfig::default()
+        },
+        packet_tx,
+        &local,
+        &NostrDiscoveryConfig::default(),
+    )
+    .expect("WebRTC transport");
+    transport
+        .use_canonical_loopback_candidate_profile()
+        .expect("real UDP4 loopback candidate profile");
+
+    let offer_pc = CandidateAddressPolicy::loopback_udp4()
+        .build_api()
+        .expect("offer API")
+        .new_peer_connection(RTCConfiguration::default())
+        .await
+        .expect("offer peer connection");
+    offer_pc
+        .create_data_channel("creating-glare", None)
+        .await
+        .expect("offer data channel");
+    let offer = offer_pc.create_offer(None).await.expect("offer");
+    let mut gathering = offer_pc.gathering_complete_promise().await;
+    offer_pc
+        .set_local_description(offer)
+        .await
+        .expect("offer local description");
+    wait_for_ice_gathering(Duration::from_secs(1), &mut gathering)
+        .await
+        .expect("complete offer gathering");
+    let offer_sdp = offer_pc
+        .local_description()
+        .await
+        .expect("complete local offer")
+        .sdp;
+
+    // Reserve the outbound physical slot before PendingDial exists, matching
+    // connect_async's Creating window. The incoming identity is the stable
+    // glare winner and must wait for this owner to publish or release.
+    let creating = transport
+        .physical
+        .reserve(&remote_addr)
+        .expect("outbound Creating reservation");
+    let now = now_ms();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let runtime = transport.runtime();
+    let handler = tokio::spawn(async move {
+        runtime
+            .handle_offer(
+                WebRtcSignal {
+                    version: crate::transport::link_negotiation::LINK_NEGOTIATION_VERSION,
+                    negotiation_id: "creating-glare-winner".into(),
+                    link_type: "webrtc".into(),
+                    kind: LinkNegotiationKind::Offer,
+                    created_at_ms: now,
+                    expires_at_ms: now + 2_000,
+                    payload: WebRtcSignalPayload {
+                        sdp: Some(offer_sdp),
+                        candidates: None,
+                    },
+                },
+                PublicKey::from_slice(&remote_xonly.serialize()).expect("Nostr key"),
+                hex::encode(remote_full_key.serialize()),
+                deadline,
+            )
+            .await
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !handler.is_finished(),
+        "the deterministic incoming glare winner must not be rejected during Creating"
+    );
+    drop(creating);
+    let result = tokio::time::timeout(Duration::from_secs(2), handler)
+        .await
+        .expect("offer handler completes after Creating owner releases")
+        .expect("offer handler task");
+    assert!(result.is_ok(), "incoming winner result: {result:?}");
+    assert!(transport
+        .drain_link_negotiations(8)
+        .into_iter()
+        .map(|outbound| LinkNegotiationMessage::decode(&outbound.payload).expect("signal"))
+        .any(|message| message.kind == LinkNegotiationKind::Answer));
+
+    transport.close_connection_async(&remote_addr).await;
+    offer_pc.close().await.expect("close offer peer");
+    assert!(
+        transport
+            .physical
+            .wait_for_quiescence(Duration::from_secs(3))
+            .await
+    );
+}
+
 #[tokio::test]
 async fn inherited_outbound_deadline_is_never_restarted() {
     let local = crate::Identity::generate();
     let remote = crate::Identity::generate();
-    let remote_addr = TransportAddr::from_string(&hex::encode(remote.pubkey_full().serialize()));
+    let remote_addr = test_webrtc_addr(&remote);
     let (packet_tx, _packet_rx) = packet_channel(1);
     let transport = WebRtcTransport::new(
         TransportId::new(89),
@@ -145,7 +265,7 @@ async fn inherited_outbound_deadline_is_never_restarted() {
 async fn old_connect_timeout_cannot_remove_same_id_successor() {
     let local = crate::Identity::generate();
     let remote = crate::Identity::generate();
-    let remote_addr = TransportAddr::from_string(&hex::encode(remote.pubkey_full().serialize()));
+    let remote_addr = test_webrtc_addr(&remote);
     let successor_slot = TransportAddr::from_string("timeout-successor-physical-slot");
     let (packet_tx, _packet_rx) = packet_channel(1);
     let transport = WebRtcTransport::new(
@@ -248,7 +368,7 @@ async fn expired_answer_after_connect_timer_counts_one_phase_timeout() {
     let local = crate::Identity::generate();
     let remote = crate::Identity::generate();
     let remote_full_key = remote.pubkey_full();
-    let remote_addr = TransportAddr::from_string(&hex::encode(remote_full_key.serialize()));
+    let remote_addr = test_webrtc_addr(&remote);
     let (remote_xonly, _) = remote_full_key.x_only_public_key();
     let (packet_tx, _packet_rx) = packet_channel(1);
     let transport = WebRtcTransport::new(
@@ -334,7 +454,7 @@ async fn locked_answer_queue_deadline_records_exactly_one_timeout() {
     let local = crate::Identity::generate();
     let remote = crate::Identity::generate();
     let remote_full_key = remote.pubkey_full();
-    let remote_addr = TransportAddr::from_string(&hex::encode(remote_full_key.serialize()));
+    let remote_addr = test_webrtc_addr(&remote);
     let (remote_xonly, _) = remote_full_key.x_only_public_key();
     let (packet_tx, _packet_rx) = packet_channel(1);
     let mut transport = WebRtcTransport::new(
@@ -450,7 +570,7 @@ async fn replacement_deadline_queues_no_late_answer_or_successor() {
     let local = crate::Identity::generate();
     let remote = crate::Identity::generate();
     let remote_full_key = remote.pubkey_full();
-    let remote_addr = TransportAddr::from_string(&hex::encode(remote_full_key.serialize()));
+    let remote_addr = test_webrtc_addr(&remote);
     let (remote_xonly, _) = remote_full_key.x_only_public_key();
     let (packet_tx, _packet_rx) = packet_channel(1);
     let mut transport = WebRtcTransport::new(
@@ -578,7 +698,7 @@ async fn one_same_peer_offer_is_admitted_before_expensive_mdns_work() {
     let local = crate::Identity::generate();
     let remote = crate::Identity::generate();
     let remote_full_key = remote.pubkey_full();
-    let remote_addr = TransportAddr::from_string(&hex::encode(remote_full_key.serialize()));
+    let remote_addr = test_webrtc_addr(&remote);
     let (remote_xonly, _) = remote_full_key.x_only_public_key();
     let (packet_tx, _packet_rx) = packet_channel(1);
     let transport = WebRtcTransport::new(

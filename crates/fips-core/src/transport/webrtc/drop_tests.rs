@@ -74,7 +74,7 @@ async fn transport_drop_breaks_callback_cycles_and_completes_physical_cleanup() 
 async fn pending_timeout_does_not_retain_transport_after_drop() {
     let identity = crate::Identity::generate();
     let remote = crate::Identity::generate();
-    let remote_addr = TransportAddr::from_string(&hex::encode(remote.pubkey_full().serialize()));
+    let remote_addr = test_webrtc_addr(&remote);
     let (packet_tx, _packet_rx) = packet_channel(1);
     let transport = WebRtcTransport::new(
         TransportId::new(79),
@@ -162,8 +162,7 @@ async fn direct_drop_aborts_live_signal_and_dial_owners() {
     let identity = crate::Identity::generate();
     let inbound = crate::Identity::generate();
     let outbound = crate::Identity::generate();
-    let outbound_addr =
-        TransportAddr::from_string(&hex::encode(outbound.pubkey_full().serialize()));
+    let outbound_addr = test_webrtc_addr(&outbound);
     let (packet_tx, _packet_rx) = packet_channel(1);
     let mut transport = WebRtcTransport::new(
         TransportId::new(82),
@@ -249,7 +248,7 @@ async fn pending_handoff_transport(
 ) {
     let identity = crate::Identity::generate();
     let remote = crate::Identity::generate();
-    let addr = TransportAddr::from_string(&hex::encode(remote.pubkey_full().serialize()));
+    let addr = test_webrtc_addr(&remote);
     let (packet_tx, _packet_rx) = packet_channel(1);
     let transport = WebRtcTransport::new(
         TransportId::new(transport_id),

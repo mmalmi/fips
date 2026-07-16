@@ -303,6 +303,19 @@ impl Node {
                 (tid, TransportAddr::from_string(&addr.addr))
             };
 
+            let remote_addr = match self.canonical_transport_addr(transport_id, remote_addr) {
+                Ok(remote_addr) => remote_addr,
+                Err(error) => {
+                    debug!(
+                        transport = %addr.transport,
+                        addr = %addr.addr,
+                        error = %error,
+                        "Invalid transport address"
+                    );
+                    continue;
+                }
+            };
+
             if self.is_connecting_to_peer_on_path(&peer_node_addr, transport_id, &remote_addr) {
                 attempted = true;
                 debug!(

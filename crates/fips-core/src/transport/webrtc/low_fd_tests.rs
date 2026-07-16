@@ -560,14 +560,16 @@ fn ordered_identities() -> (crate::Identity, crate::Identity) {
     loop {
         let churn = crate::Identity::generate();
         let stable = crate::Identity::generate();
-        if hex::encode(churn.pubkey_full().serialize()) < hex::encode(stable.pubkey_full().serialize()) {
+        if canonical_webrtc_pubkey_hex(churn.pubkey_full())
+            < canonical_webrtc_pubkey_hex(stable.pubkey_full())
+        {
             return (churn, stable);
         }
     }
 }
 
 fn identity_addr(identity: &crate::Identity) -> TransportAddr {
-    TransportAddr::from_string(&hex::encode(identity.pubkey_full().serialize()))
+    test_webrtc_addr(identity)
 }
 
 fn new_transport(id: u32, identity: &crate::Identity, config: &WebRtcConfig) -> (WebRtcTransport, crate::transport::PacketRx) {

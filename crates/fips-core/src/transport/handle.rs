@@ -48,6 +48,20 @@ pub enum TransportHandle {
 }
 
 impl TransportHandle {
+    /// Normalize transport-specific addresses before Node stores or compares
+    /// them. Most transports have one textual identity; WebRTC uses Nostr's
+    /// x-only identity and therefore collapses legacy 02/03 compressed forms.
+    pub(crate) fn canonical_addr(
+        &self,
+        addr: &TransportAddr,
+    ) -> Result<TransportAddr, TransportError> {
+        match self {
+            #[cfg(feature = "webrtc-transport")]
+            TransportHandle::WebRtc(_) => super::webrtc::canonical_webrtc_addr(addr),
+            _ => Ok(addr.clone()),
+        }
+    }
+
     /// Drain adapter negotiations that must travel over the standard FSP
     /// link-negotiation service.
     #[cfg(feature = "webrtc-transport")]

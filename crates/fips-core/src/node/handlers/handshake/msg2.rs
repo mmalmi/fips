@@ -409,11 +409,14 @@ impl Node {
                     if let Some(idx) = outbound_our_index {
                         let _ = self.index_allocator.free(idx);
                     }
-                    if let Some(transport) = self.transports.get(&outbound_transport_id) {
-                        transport.close_connection(&outbound_addr).await;
-                    }
+                    let winner_link_id = self.peers.get(&peer_node_addr).map(|peer| peer.link_id());
+                    self.close_cross_connection_loser_physical_path(link_id, winner_link_id)
+                        .await;
                     if let Some(link) = self.remove_link(&link_id) {
                         self.cleanup_bootstrap_transport_if_unused(link.transport_id());
+                    }
+                    if let Some(winner_link_id) = winner_link_id {
+                        self.restore_link_address(winner_link_id);
                     }
                     return;
                 }
@@ -510,16 +513,12 @@ impl Node {
 
                 self.pending_outbound.remove(&key);
                 let loser_link_id = replacement.old_link_id;
-                if let Some(loser_link) = self.links.get(&loser_link_id) {
-                    let loser_tid = loser_link.transport_id();
-                    let loser_addr = loser_link.remote_addr().clone();
-                    if let Some(transport) = self.transports.get(&loser_tid) {
-                        transport.close_connection(&loser_addr).await;
-                    }
-                }
+                self.close_cross_connection_loser_physical_path(loser_link_id, Some(link_id))
+                    .await;
                 if let Some(loser_link) = self.remove_link(&loser_link_id) {
                     self.cleanup_bootstrap_transport_if_unused(loser_link.transport_id());
                 }
+                self.restore_link_address(link_id);
 
                 debug!(
                     peer = %display_name,
@@ -607,16 +606,12 @@ impl Node {
 
                 self.pending_outbound.remove(&key);
                 let loser_link_id = replacement.old_link_id;
-                if let Some(loser_link) = self.links.get(&loser_link_id) {
-                    let loser_tid = loser_link.transport_id();
-                    let loser_addr = loser_link.remote_addr().clone();
-                    if let Some(transport) = self.transports.get(&loser_tid) {
-                        transport.close_connection(&loser_addr).await;
-                    }
-                }
+                self.close_cross_connection_loser_physical_path(loser_link_id, Some(link_id))
+                    .await;
                 if let Some(loser_link) = self.remove_link(&loser_link_id) {
                     self.cleanup_bootstrap_transport_if_unused(loser_link.transport_id());
                 }
+                self.restore_link_address(link_id);
             } else {
                 // We're the larger node. Keep our inbound session (it pairs
                 // with the peer's outbound, which is the winning handshake).
@@ -649,16 +644,14 @@ impl Node {
                 );
 
                 self.pending_outbound.remove(&key);
-                // Close the losing TCP connection (no-op for connectionless)
-                if let Some(link) = self.links.get(&link_id) {
-                    let tid = link.transport_id();
-                    let addr = link.remote_addr().clone();
-                    if let Some(transport) = self.transports.get(&tid) {
-                        transport.close_connection(&addr).await;
-                    }
-                }
+                let winner_link_id = self.peers.get(&peer_node_addr).map(|peer| peer.link_id());
+                self.close_cross_connection_loser_physical_path(link_id, winner_link_id)
+                    .await;
                 if let Some(link) = self.remove_link(&link_id) {
                     self.cleanup_bootstrap_transport_if_unused(link.transport_id());
+                }
+                if let Some(winner_link_id) = winner_link_id {
+                    self.restore_link_address(winner_link_id);
                 }
             }
 
@@ -696,14 +689,11 @@ impl Node {
                         loser_link_id,
                         node_addr,
                     } => {
-                        // Close the losing TCP connection (no-op for connectionless)
-                        if let Some(loser_link) = self.links.get(&loser_link_id) {
-                            let loser_tid = loser_link.transport_id();
-                            let loser_addr = loser_link.remote_addr().clone();
-                            if let Some(transport) = self.transports.get(&loser_tid) {
-                                transport.close_connection(&loser_addr).await;
-                            }
-                        }
+                        self.close_cross_connection_loser_physical_path(
+                            loser_link_id,
+                            Some(link_id),
+                        )
+                        .await;
                         // Clean up the losing connection's link
                         self.remove_link(&loser_link_id);
                         // Ensure address dispatch points to the winning link
@@ -725,10 +715,11 @@ impl Node {
                         self.reset_discovery_backoff();
                     }
                     PromotionResult::CrossConnectionLost { winner_link_id } => {
-                        // Close the losing TCP connection (no-op for connectionless)
-                        if let Some(transport) = self.transports.get(&packet.transport_id) {
-                            transport.close_connection(&packet.remote_addr).await;
-                        }
+                        self.close_cross_connection_loser_physical_path(
+                            link_id,
+                            Some(winner_link_id),
+                        )
+                        .await;
                         // This connection lost — clean up its link
                         self.remove_link(&link_id);
                         // Ensure address dispatch points to the winner's link

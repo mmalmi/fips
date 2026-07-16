@@ -217,12 +217,20 @@ impl WebRtcRuntime {
     }
 
     async fn handle_incoming_signal(&self, incoming: IncomingSignal) -> Result<(), TransportError> {
-        let signal = incoming.signal;
+        let IncomingSignal {
+            signal,
+            sender,
+            sender_full_hex,
+        } = incoming;
+        let sender_full_hex = canonical_webrtc_addr(&TransportAddr::from_string(
+            &sender_full_hex,
+        ))?
+        .to_string();
         debug!(
             transport_id = %self.transport_id,
             kind = ?signal.kind,
             negotiation = %signal.negotiation_id,
-            sender = %incoming.sender_full_hex,
+            sender = %sender_full_hex,
             "WebRTC signal received"
         );
         if let Err(error) = self.validate_signal(&signal) {
@@ -230,7 +238,7 @@ impl WebRtcRuntime {
                 && matches!(error, TransportError::Timeout)
             {
                 self.negotiation.record_late_answer_rejected();
-                let addr = TransportAddr::from_string(&incoming.sender_full_hex);
+                let addr = TransportAddr::from_string(&sender_full_hex);
                 let expected_owner = self
                     .pending
                     .lock()
@@ -257,7 +265,7 @@ impl WebRtcRuntime {
         }
         match signal.kind {
             LinkNegotiationKind::Offer => {
-                let remote_addr = TransportAddr::from_string(&incoming.sender_full_hex);
+                let remote_addr = TransportAddr::from_string(&sender_full_hex);
                 let phase_owner_id = signal.negotiation_id.clone();
                 let monotonic_now = tokio::time::Instant::now();
                 let deadline = deadline_from_signal(
@@ -270,8 +278,8 @@ impl WebRtcRuntime {
                     deadline,
                     self.handle_offer(
                         signal,
-                        incoming.sender,
-                        incoming.sender_full_hex,
+                        sender,
+                        sender_full_hex,
                         deadline,
                     ),
                 )
@@ -291,11 +299,9 @@ impl WebRtcRuntime {
                     }
                 }
             }
-            LinkNegotiationKind::Answer => {
-                self.handle_answer(signal, &incoming.sender_full_hex).await
-            }
+            LinkNegotiationKind::Answer => self.handle_answer(signal, &sender_full_hex).await,
             LinkNegotiationKind::Reject => {
-                let addr = TransportAddr::from_string(&incoming.sender_full_hex);
+                let addr = TransportAddr::from_string(&sender_full_hex);
                 let expected_owner = self
                     .pending
                     .lock()
@@ -326,14 +332,31 @@ impl WebRtcRuntime {
         sender_full_hex: String,
         deadline: tokio::time::Instant,
     ) -> Result<(), TransportError> {
+        let sender_full_hex = canonical_webrtc_addr(&TransportAddr::from_string(
+            &sender_full_hex,
+        ))?
+        .to_string();
         let remote_addr = TransportAddr::from_string(&sender_full_hex);
-        let pending = self.pending.lock().await.get(&remote_addr).map(|pending| {
+        let mut pending = self.pending.lock().await.get(&remote_addr).map(|pending| {
             (
                 WebRtcSessionOwner::new(&pending.session_id, &pending.pc),
                 pending.created_at_ms,
                 pending.origin,
             )
         });
+        if pending.is_none()
+            && self.physical.phase(&remote_addr) == Some(PhysicalPhase::Creating)
+        {
+            if !incoming_offer_wins_glare(&self.local_pubkey_hex, &sender_full_hex) {
+                let _ = self
+                    .send_reject(sender_xonly, signal.negotiation_id)
+                    .await;
+                return Err(TransportError::ConnectionRefused);
+            }
+            pending = self
+                .wait_for_creating_outbound_owner(&remote_addr, deadline)
+                .await;
+        }
         if !self.config.accept_connections() && pending.is_none() {
             let _ = self
                 .send_reject(sender_xonly, signal.negotiation_id.clone())
@@ -620,6 +643,34 @@ impl WebRtcRuntime {
         result
     }
 
+    async fn wait_for_creating_outbound_owner(
+        &self,
+        remote_addr: &TransportAddr,
+        deadline: tokio::time::Instant,
+    ) -> Option<(WebRtcSessionOwner, u64, PendingDialOrigin)> {
+        loop {
+            if let Some(pending) = self.pending.lock().await.get(remote_addr).map(|pending| {
+                (
+                    WebRtcSessionOwner::new(&pending.session_id, &pending.pc),
+                    pending.created_at_ms,
+                    pending.origin,
+                )
+            }) {
+                return Some(pending);
+            }
+            match self.physical.phase(remote_addr) {
+                Some(PhysicalPhase::Creating) => {}
+                Some(PhysicalPhase::Active) if !self.pool.lock().await.contains_key(remote_addr) => {
+                }
+                _ => return None,
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
     async fn try_reserve_pending(
         &self,
         addr: &TransportAddr,
@@ -645,7 +696,8 @@ impl WebRtcRuntime {
         signal: WebRtcSignal,
         sender_full_hex: &str,
     ) -> Result<(), TransportError> {
-        let remote_addr = TransportAddr::from_string(sender_full_hex);
+        let remote_addr =
+            canonical_webrtc_addr(&TransportAddr::from_string(sender_full_hex))?;
         let pending_session = {
             let pending = self.pending.lock().await;
             pending.get(&remote_addr).map(|pending| {
@@ -753,8 +805,12 @@ impl WebRtcRuntime {
 
 }
 
+fn webrtc_xonly_order_key(compressed_pubkey_hex: &str) -> &str {
+    compressed_pubkey_hex.get(2..).unwrap_or(compressed_pubkey_hex)
+}
+
 fn incoming_offer_wins_glare(local_pubkey_hex: &str, remote_pubkey_hex: &str) -> bool {
-    remote_pubkey_hex < local_pubkey_hex
+    webrtc_xonly_order_key(remote_pubkey_hex) < webrtc_xonly_order_key(local_pubkey_hex)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

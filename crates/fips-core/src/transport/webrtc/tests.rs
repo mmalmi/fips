@@ -1,6 +1,13 @@
 use super::*;
 use crate::packet_channel;
 
+fn fixed_compressed_pubkey(secret_scalar: u8) -> String {
+    let mut secret = [0u8; 32];
+    secret[31] = secret_scalar;
+    let identity = crate::Identity::from_secret_bytes(&secret).expect("fixed test identity");
+    hex::encode(identity.pubkey_full().serialize())
+}
+
 #[cfg(unix)]
 const DISABLED_MDNS_ISOLATION_CHILD: &str = "FIPS_DISABLED_MDNS_ISOLATION_CHILD";
 #[cfg(unix)]
@@ -358,6 +365,25 @@ fn simultaneous_webrtc_offers_have_one_deterministic_winner() {
         pooled_replacement_disposition(smaller, larger),
         PooledOfferDisposition::Redial
     );
+
+    // FIPS/Nostr identities are x-only. Legacy adverts may carry either
+    // compressed parity for the same identity, so glare cannot order on the
+    // 02/03 prefix or the two peers can select opposite owners.
+    let odd_smaller = fixed_compressed_pubkey(22);
+    let even_larger = fixed_compressed_pubkey(1);
+    assert!(odd_smaller.starts_with("03"));
+    assert!(even_larger.starts_with("02"));
+    assert!(odd_smaller[2..] < even_larger[2..]);
+    assert!(!incoming_offer_wins_glare(&odd_smaller, &even_larger));
+    assert!(incoming_offer_wins_glare(&even_larger, &odd_smaller));
+    assert_eq!(
+        pooled_replacement_disposition(&odd_smaller, &even_larger),
+        PooledOfferDisposition::Redial
+    );
+    assert_eq!(
+        pooled_replacement_disposition(&even_larger, &odd_smaller),
+        PooledOfferDisposition::Accept
+    );
 }
 
 #[tokio::test]
@@ -427,6 +453,23 @@ fn pending_offer_conflicts_choose_the_newest_offer_or_stable_initiator() {
     assert!(!incoming_offer_replaces_pending(
         lower,
         higher,
+        PendingDialOrigin::Local,
+        100,
+        100,
+    ));
+
+    let odd_lower = fixed_compressed_pubkey(22);
+    let even_higher = fixed_compressed_pubkey(1);
+    assert!(!incoming_offer_replaces_pending(
+        &odd_lower,
+        &even_higher,
+        PendingDialOrigin::Local,
+        100,
+        100,
+    ));
+    assert!(incoming_offer_replaces_pending(
+        &even_higher,
+        &odd_lower,
         PendingDialOrigin::Local,
         100,
         100,
