@@ -9,9 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Stage the functional health probe through an authenticated Nostr-relay FSP
-  echo before starting WebRTC, so relay and session startup time cannot consume
-  the WebRTC negotiation window on a freshly started or busy daemon.
+- Accept `FIPS_HEALTH_SECRET` for a stable functional-probe identity, allowing
+  operators to configure the probe as a trusted peer so a full public-peer
+  admission budget cannot reject the health check before WebRTC negotiation.
 
 ## [0.4.2] - 2026-07-16
 

@@ -154,13 +154,17 @@ and maintainer guide.
 
 ## Functional health probe
 
-Debian packages include `fips-health-probe`, which creates a fresh ephemeral
+Debian packages include `fips-health-probe`, which creates an ephemeral
 endpoint and requires a configured target to complete Nostr discovery,
-authenticated WebRTC/FMP setup, and a target-attributed ICMPv6 echo over FSP.
-It never contains a built-in gateway identity and does not restart the daemon.
+authenticated WebRTC/FMP setup, and a target-attributed echo over FSP. Set
+`FIPS_HEALTH_SECRET` to reuse a stable probe identity when the target's public
+peer admission can be full, then add that identity's npub to the target
+daemon's `peers` list. The probe never contains a built-in gateway identity
+and does not restart the daemon.
 
 To opt in, copy
 `/usr/share/doc/fips/fips-health-probe.env.example` to
-`/etc/fips/fips-health-probe.env`, set `FIPS_HEALTH_TARGET_NPUB`, and enable
+`/etc/fips/fips-health-probe.env`, set `FIPS_HEALTH_TARGET_NPUB`, protect the
+file as `root:root` mode `0600` if it contains `FIPS_HEALTH_SECRET`, and enable
 `fips-healthcheck.timer`. Without that file the packaged timer is safely
 skipped.
