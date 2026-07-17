@@ -11,10 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Heap-isolate infrequent session-control handshake futures from the dataplane
-  receive loop, restoring safe headroom on Tokio's default worker stack in
-  debug builds. FMP, FSP, discovery, datagram DFP1, and link-negotiation wire
-  formats are unchanged.
+- Heap-isolate infrequent FMP and FSP handshake futures from the dataplane
+  receive loop and move authenticated local-capability bootstrap onto the next
+  event-driven readiness turn, restoring safe headroom on Tokio's default
+  worker stack in debug builds. FMP, FSP, discovery, datagram DFP1, and
+  link-negotiation wire formats are unchanged.
 - Make the synthetic topology harness drain nested dataplane-control turns like
   the live receive loop, so an established multi-hop endpoint flow cannot be
   stranded behind unserviced deferred work during release tests.

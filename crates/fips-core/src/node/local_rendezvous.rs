@@ -103,6 +103,7 @@ pub(super) struct LocalRendezvous {
     capabilities: Vec<LocalInstanceCapability>,
     capability_revision: u64,
     last_capability_sync_ms: u64,
+    authenticated_sync_pending: bool,
     providers: HashMap<NodeAddr, ProviderState>,
     roster_revision: u64,
     roster_dirty: bool,
@@ -136,6 +137,7 @@ impl LocalRendezvous {
             capabilities: Vec::new(),
             capability_revision: 1,
             last_capability_sync_ms: 0,
+            authenticated_sync_pending: false,
             providers: HashMap::new(),
             roster_revision: 1,
             roster_dirty: true,
@@ -237,6 +239,7 @@ impl Node {
         self.local_rendezvous.roster_dirty = true;
         self.local_rendezvous.accepted_roster = None;
         self.local_rendezvous.last_capability_sync_ms = 0;
+        self.local_rendezvous.authenticated_sync_pending = false;
         self.local_rendezvous.schedule_retry(Self::now_ms());
         self.local_rendezvous.directory.replace([self
             .local_rendezvous
@@ -328,11 +331,11 @@ impl Node {
         })
     }
 
-    /// Start the authenticated capability exchange as part of local-link
-    /// readiness. Periodic rendezvous maintenance refreshes leases, but a
-    /// registered service must not wait for that maintenance lane before its
-    /// first advertisement can establish the FSP control session.
-    pub(in crate::node) async fn sync_local_rendezvous_after_peer_authenticated(
+    /// Schedule the authenticated capability exchange as part of local-link
+    /// readiness. The rx-loop readiness lane flushes it on the next turn, so a
+    /// registered service does not wait for periodic maintenance and the FSP
+    /// setup cannot recurse through the active FMP handshake poll stack.
+    pub(in crate::node) fn schedule_local_rendezvous_after_peer_authenticated(
         &mut self,
         node_addr: &NodeAddr,
     ) {
@@ -347,6 +350,25 @@ impl Node {
                 if anchor.identity.node_addr() != node_addr {
                     return;
                 }
+            }
+            Some(LocalRendezvousRole::Anchor) => {}
+            None => return,
+        }
+        self.local_rendezvous.authenticated_sync_pending = true;
+        self.dataplane.readiness_notify().notify_one();
+    }
+
+    pub(in crate::node) async fn flush_pending_local_rendezvous_sync(&mut self) -> bool {
+        // Clear before awaiting: a new authentication edge during this flush
+        // sets the bit again and Notify retains a permit for the next turn.
+        if !std::mem::take(&mut self.local_rendezvous.authenticated_sync_pending) {
+            return false;
+        }
+        match self.local_rendezvous.role {
+            Some(LocalRendezvousRole::Client) => {
+                let Some(anchor) = self.connected_local_anchor() else {
+                    return false;
+                };
                 self.local_rendezvous.anchor_peer = Some(anchor);
                 self.local_rendezvous.accepted_roster = None;
                 self.local_rendezvous.last_capability_sync_ms = 0;
@@ -357,8 +379,9 @@ impl Node {
                 // when no provider capability changed during this link setup.
                 self.broadcast_local_roster().await;
             }
-            None => {}
+            None => return false,
         }
+        true
     }
 
     async fn request_local_anchor_key(&mut self) {

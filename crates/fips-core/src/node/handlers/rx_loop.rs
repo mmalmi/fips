@@ -351,6 +351,7 @@ impl Node {
                     ).await;
                 }
                 _ = dataplane_readiness_notify.notified() => {
+                    Box::pin(self.flush_pending_local_rendezvous_sync()).await;
                     let mut dataplane_io = dataplane_runtime.io();
                     self.service_dataplane_completion_turns(
                         &mut dataplane_io,

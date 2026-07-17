@@ -717,7 +717,7 @@ impl Node {
         }
         self.bloom_state.mark_update_needed(*node_addr);
         self.reset_discovery_backoff();
-        Box::pin(self.sync_local_rendezvous_after_peer_authenticated(node_addr)).await;
+        self.schedule_local_rendezvous_after_peer_authenticated(node_addr);
     }
 
     /// Find stored msg2 bytes for a given link (pre- or post-promotion).

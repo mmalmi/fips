@@ -217,11 +217,13 @@ impl Node {
 
         match prefix.phase {
             PHASE_MSG1 => {
-                self.handle_msg1(packet).await;
+                // Heap-isolate the large handshake futures from the nested
+                // dataplane turn frame on finite Tokio worker stacks.
+                Box::pin(self.handle_msg1(packet)).await;
                 true
             }
             PHASE_MSG2 => {
-                self.handle_msg2(packet).await;
+                Box::pin(self.handle_msg2(packet)).await;
                 true
             }
             _ => {
