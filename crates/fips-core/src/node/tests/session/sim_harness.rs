@@ -71,6 +71,15 @@ pub(super) async fn replace_session_100_node_carriers(
 ) -> crate::SimNetwork {
     quiesce_synthetic_dataplanes(nodes).await;
 
+    let sim_addresses = (0..nodes.len())
+        .map(|index| TransportAddr::from_string(&format!("session-node-{index}")))
+        .collect::<Vec<_>>();
+    let address_by_node = nodes
+        .iter()
+        .zip(&sim_addresses)
+        .map(|(node, addr)| (*node.node.node_addr(), addr.clone()))
+        .collect::<std::collections::HashMap<_, _>>();
+
     let network = crate::SimNetwork::new(42);
     network.set_default_link(crate::SimLink {
         up: false,
@@ -78,14 +87,14 @@ pub(super) async fn replace_session_100_node_carriers(
     });
     for &(left, right) in edges {
         network.set_link(
-            nodes[left].addr.as_str().expect("sim address"),
-            nodes[right].addr.as_str().expect("sim address"),
+            sim_addresses[left].as_str().expect("sim address"),
+            sim_addresses[right].as_str().expect("sim address"),
             crate::SimLink::default(),
         );
     }
     crate::register_sim_network(SESSION_100_NODE_NETWORK, network.clone());
 
-    for node in nodes {
+    for (index, node) in nodes.iter_mut().enumerate() {
         let mut old_transport = node
             .node
             .transports
@@ -95,6 +104,45 @@ pub(super) async fn replace_session_100_node_carriers(
             .stop()
             .await
             .expect("UDP test transport should stop");
+
+        let peer_addrs = node.node.peers.keys().copied().collect::<Vec<_>>();
+        for peer_addr in peer_addrs {
+            let remote_addr = address_by_node
+                .get(&peer_addr)
+                .expect("topology peer has a Sim address")
+                .clone();
+            let link_id = node
+                .node
+                .get_peer(&peer_addr)
+                .expect("topology peer retained")
+                .link_id();
+            let old_link = node
+                .node
+                .links
+                .remove(&link_id)
+                .expect("topology peer link retained");
+            let mut new_link = Link::new_with_timestamp(
+                link_id,
+                node.transport_id,
+                remote_addr.clone(),
+                old_link.direction(),
+                old_link.base_rtt(),
+                old_link.created_at(),
+            );
+            *new_link.stats_mut() = old_link.stats().clone();
+            match old_link.state() {
+                crate::transport::LinkState::Connected => new_link.set_connected(),
+                crate::transport::LinkState::Disconnected => new_link.set_disconnected(),
+                crate::transport::LinkState::Failed => new_link.set_failed(),
+                crate::transport::LinkState::Connecting => {}
+            }
+            node.node.links.insert(link_id, new_link);
+            let peer = node.node.get_peer_mut(&peer_addr).expect("topology peer");
+            peer.set_current_addr(node.transport_id, &remote_addr);
+            peer.clear_preferred_send_addr();
+        }
+
+        node.addr = sim_addresses[index].clone();
 
         let (packet_tx, packet_rx) = crate::packet_channel(256);
         let config = crate::SimTransportConfig {
@@ -109,6 +157,12 @@ pub(super) async fn replace_session_100_node_carriers(
         node.node
             .transports
             .insert(node.transport_id, crate::TransportHandle::Sim(transport));
+        for peer_addr in node.node.peers.keys().copied().collect::<Vec<_>>() {
+            assert!(
+                node.node.sync_dataplane_fmp_owner(&peer_addr),
+                "retargeted Sim peer owner should install"
+            );
+        }
     }
 
     network
