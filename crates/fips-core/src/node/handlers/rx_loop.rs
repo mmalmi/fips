@@ -457,7 +457,7 @@ impl Node {
             )
             .await;
         let drained_packets = Self::dataplane_packet_activity(&turn);
-        let control_drained = self.process_dataplane_control_ingress(&mut turn).await;
+        let control_drained = Box::pin(self.process_dataplane_control_ingress(&mut turn)).await;
         RxLoopDataDrainStats::new(
             drained_packets,
             turn.tun_source_drained(),
@@ -643,10 +643,9 @@ impl Node {
         control_query_budget: usize,
     ) -> usize {
         let had_activity = turn.has_activity();
-        let control_drained = self
-            .process_dataplane_control_ingress(turn)
+        let control_drained = Box::pin(self.process_dataplane_control_ingress(turn))
             .await
-            .saturating_add(self.drain_deferred_dataplane_control_turns().await);
+            .saturating_add(Box::pin(self.drain_deferred_dataplane_control_turns()).await);
         if control_drained > 0 && self.dataplane.has_deferred_raw_ingress() {
             self.dataplane.readiness_notify().notify_one();
         }

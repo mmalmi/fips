@@ -485,8 +485,8 @@ impl Node {
             let Some(mut turn) = self.deferred_dataplane_control_turns.pop_front() else {
                 break;
             };
-            processed =
-                processed.saturating_add(self.process_dataplane_control_ingress(&mut turn).await);
+            processed = processed
+                .saturating_add(Box::pin(self.process_dataplane_control_ingress(&mut turn)).await);
             turns = turns.saturating_add(1);
         }
         if !self.deferred_dataplane_control_turns.is_empty() {
