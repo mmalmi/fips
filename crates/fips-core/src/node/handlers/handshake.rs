@@ -1,6 +1,5 @@
 //! Handshake handlers and connection promotion.
 
-use crate::PeerIdentity;
 use crate::node::acl::PeerAclContext;
 use crate::node::wire::{Msg1Header, Msg2Header, build_msg2};
 use crate::node::{Node, NodeError};
@@ -8,6 +7,7 @@ use crate::peer::{
     ActivePeer, ActivePeerSession, PeerConnection, PromotionResult, cross_connection_winner,
 };
 use crate::transport::{Link, LinkDirection, LinkId, ReceivedPacket};
+use crate::{NodeAddr, PeerIdentity};
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
@@ -384,31 +384,10 @@ impl Node {
                             };
                             let pending_fmp_open = noise_session.recv_cipher_clone();
 
-                            // Send msg2 response using the new handshake
+                            // Stage the pending session, receiver index, route,
+                            // and receive epoch before advertising that index.
                             let wire_msg2 =
                                 build_msg2(our_new_index, header.sender_idx, &msg2_response);
-                            if let Some(transport) = self.transports.get(&packet.transport_id) {
-                                match transport.send(&packet.remote_addr, &wire_msg2).await {
-                                    Ok(_) => {
-                                        debug!(
-                                            peer = %self.peer_display_name(&peer_node_addr),
-                                            new_our_index = %our_new_index,
-                                            "Sent rekey msg2 response"
-                                        );
-                                    }
-                                    Err(e) => {
-                                        warn!(
-                                            peer = %self.peer_display_name(&peer_node_addr),
-                                            error = %e,
-                                            "Failed to send rekey msg2"
-                                        );
-                                        let _ = self.index_allocator.free(our_new_index);
-                                        self.msg1_rate_limiter.complete_handshake();
-                                        return;
-                                    }
-                                }
-                            }
-
                             let Some(registered) =
                                 self.peers.install_pending_rekey_session_and_index(
                                     &peer_node_addr,
@@ -434,13 +413,61 @@ impl Node {
                                 &registered,
                                 "responder_pending_rekey",
                             );
-                            let _ = self.sync_dataplane_fmp_owner(&peer_node_addr);
-                            if let Some(open) = pending_fmp_open {
-                                let _ = self.install_dataplane_fmp_pending_receive_epoch(
+                            let route_ready = self.sync_dataplane_fmp_owner(&peer_node_addr)
+                                && self.dataplane_has_fmp_owner(&peer_node_addr);
+                            let epoch_ready = pending_fmp_open.is_some_and(|open| {
+                                self.install_dataplane_fmp_pending_receive_epoch(
                                     &peer_node_addr,
                                     pending_fmp_k_bit,
                                     open,
+                                )
+                            });
+                            if !(route_ready && epoch_ready) {
+                                warn!(
+                                    peer = %self.peer_display_name(&peer_node_addr),
+                                    route_ready,
+                                    epoch_ready,
+                                    "Could not stage responder rekey receiver ownership"
                                 );
+                                self.abandon_fmp_rekey_for_peer(
+                                    &peer_node_addr,
+                                    "responder ownership staging failed",
+                                );
+                                self.peers.remove_connection(&link_id);
+                                self.links.remove(&link_id);
+                                self.msg1_rate_limiter.complete_handshake();
+                                return;
+                            }
+
+                            let send_result = match self.transports.get(&packet.transport_id) {
+                                Some(transport) => {
+                                    transport.send(&packet.remote_addr, &wire_msg2).await
+                                }
+                                None => Err(crate::transport::TransportError::NotStarted),
+                            };
+                            match send_result {
+                                Ok(_) => {
+                                    debug!(
+                                        peer = %self.peer_display_name(&peer_node_addr),
+                                        new_our_index = %our_new_index,
+                                        "Sent rekey msg2 after installing receiver ownership"
+                                    );
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        peer = %self.peer_display_name(&peer_node_addr),
+                                        error = %e,
+                                        "Failed to send staged rekey msg2"
+                                    );
+                                    self.abandon_fmp_rekey_for_peer(
+                                        &peer_node_addr,
+                                        "responder Msg2 send failed",
+                                    );
+                                    self.peers.remove_connection(&link_id);
+                                    self.links.remove(&link_id);
+                                    self.msg1_rate_limiter.complete_handshake();
+                                    return;
+                                }
                             }
 
                             // Clean up any temporary connection/link state from this path.
@@ -459,20 +486,45 @@ impl Node {
                         // node epoch is unchanged; replaying the bootstrap
                         // path's msg2 would address the wrong pending handshake
                         // and permanently stall the upgrade.
-                        if existing_peer.their_index() == Some(header.sender_idx)
-                            && let Some(msg2) = existing_peer.handshake_msg2().map(|m| m.to_vec())
-                            && let Some(transport) = self.transports.get(&packet.transport_id)
-                        {
-                            match transport.send(&packet.remote_addr, &msg2).await {
-                                Ok(_) => debug!(
+                        let duplicate_msg2 = (existing_peer.their_index()
+                            == Some(header.sender_idx))
+                        .then(|| existing_peer.handshake_msg2().map(|msg2| msg2.to_vec()))
+                        .flatten();
+                        if let Some(msg2) = duplicate_msg2 {
+                            let route_ready =
+                                self.ensure_owned_msg2_receiver_route(&peer_node_addr);
+                            let sent = if !route_ready {
+                                warn!(
                                     peer = %self.peer_display_name(&peer_node_addr),
-                                    "Resent msg2 for duplicate msg1 (same epoch)"
-                                ),
-                                Err(e) => debug!(
-                                    peer = %self.peer_display_name(&peer_node_addr),
-                                    error = %e,
-                                    "Failed to resend msg2"
-                                ),
+                                    "Suppressing duplicate Msg2 until its receiver route is owned"
+                                );
+                                false
+                            } else {
+                                match self.transports.get(&packet.transport_id) {
+                                    Some(transport) => {
+                                        match transport.send(&packet.remote_addr, &msg2).await {
+                                            Ok(_) => {
+                                                debug!(
+                                                    peer = %self.peer_display_name(&peer_node_addr),
+                                                    "Resent msg2 for duplicate msg1 (same epoch)"
+                                                );
+                                                true
+                                            }
+                                            Err(e) => {
+                                                debug!(
+                                                    peer = %self.peer_display_name(&peer_node_addr),
+                                                    error = %e,
+                                                    "Failed to resend msg2"
+                                                );
+                                                false
+                                            }
+                                        }
+                                    }
+                                    None => false,
+                                }
+                            };
+                            if sent {
+                                Box::pin(self.complete_owned_msg2_bootstrap(&peer_node_addr)).await;
                             }
                             self.msg1_rate_limiter.complete_handshake();
                             return;
@@ -531,129 +583,141 @@ impl Node {
         self.links.insert(link_id, link);
         self.peers.insert_connection(link_id, conn);
 
-        // Build and send msg2 response, storing for potential resend
+        // Build msg2 and retain it on the pending connection. Ownership and
+        // the dataplane receive route must be installed before this index is
+        // advertised to the peer.
         let wire_msg2 = build_msg2(our_index, header.sender_idx, &msg2_response);
         if let Some(conn) = self.peers.get_connection_mut(&link_id) {
             conn.set_handshake_msg2(wire_msg2.clone());
         }
 
-        if let Some(transport) = self.transports.get(&packet.transport_id) {
-            match transport.send(&packet.remote_addr, &wire_msg2).await {
-                Ok(bytes) => {
-                    debug!(
-                        link_id = %link_id,
-                        our_index = %our_index,
-                        their_index = %header.sender_idx,
-                        bytes,
-                        "Sent msg2 response"
+        // Responder handshake is complete after receive_handshake_init (Noise IK
+        // pattern: responder processes msg1 and generates msg2 in one step).
+        // Promote first so a winning receiver index is owned and routed before
+        // the peer can answer Msg2 with an Established frame. Losing inbound
+        // candidates must never advertise their already-freed index.
+        let (node_addr, loser_link_id) =
+            match self.promote_connection(link_id, peer_identity, packet.timestamp_ms) {
+                Ok(PromotionResult::Promoted(node_addr)) => (node_addr, None),
+                Ok(PromotionResult::CrossConnectionWon {
+                    loser_link_id,
+                    node_addr,
+                }) => (node_addr, Some(loser_link_id)),
+                Ok(PromotionResult::CrossConnectionLost { winner_link_id }) => {
+                    self.close_cross_connection_loser_physical_path(link_id, Some(winner_link_id))
+                        .await;
+                    self.remove_link(&link_id);
+                    self.links.insert_addr(
+                        (packet.transport_id, packet.remote_addr.clone()),
+                        winner_link_id,
                     );
+                    debug!(
+                        winner_link_id = %winner_link_id,
+                        "Inbound cross-connection lost without advertising its receiver index"
+                    );
+                    self.msg1_rate_limiter.complete_handshake();
+                    return;
                 }
                 Err(e) => {
                     warn!(
                         link_id = %link_id,
                         error = %e,
-                        "Failed to send msg2"
+                        "Failed to promote inbound connection"
                     );
-                    // Clean up on failure
-                    self.peers.remove_connection(&link_id);
-                    self.links.remove(&link_id);
+                    // Clean up on promotion failure
+                    self.remove_link(&link_id);
                     let _ = self.index_allocator.free(our_index);
                     self.msg1_rate_limiter.complete_handshake();
                     return;
                 }
-            }
+            };
+
+        // Retain Msg2 on the owned active peer before sending. If this send
+        // fails, duplicate Msg1 can safely retry without allocating or
+        // advertising another receiver index.
+        if let Some(peer) = self.peers.get_mut(&node_addr) {
+            peer.set_handshake_msg2(wire_msg2.clone());
         }
 
-        // Responder handshake is complete after receive_handshake_init (Noise IK
-        // pattern: responder processes msg1 and generates msg2 in one step).
-        // Promote the connection to active peer now.
-        match self.promote_connection(link_id, peer_identity, packet.timestamp_ms) {
-            Ok(result) => {
-                match result {
-                    PromotionResult::Promoted(node_addr) => {
-                        // Store msg2 on peer for resend on duplicate msg1
-                        if let Some(peer) = self.peers.get_mut(&node_addr) {
-                            peer.set_handshake_msg2(wire_msg2.clone());
-                        }
+        let receiver_route_owned = self.ensure_owned_msg2_receiver_route(&node_addr);
+        let msg2_sent = if !receiver_route_owned {
+            warn!(
+                peer = %self.peer_display_name(&node_addr),
+                our_index = %our_index,
+                "Suppressing Msg2 because its receiver route is not owned"
+            );
+            false
+        } else {
+            match self.transports.get(&packet.transport_id) {
+                Some(transport) => match transport.send(&packet.remote_addr, &wire_msg2).await {
+                    Ok(bytes) => {
                         debug!(
-                            peer = %self.peer_display_name(&node_addr),
                             link_id = %link_id,
                             our_index = %our_index,
-                            "Inbound peer promoted to active"
+                            their_index = %header.sender_idx,
+                            bytes,
+                            "Sent msg2 response after installing receiver route"
                         );
-                        // Send initial tree announce to new peer
-                        if let Err(e) = self.send_tree_announce_to_peer(&node_addr).await {
-                            debug!(peer = %self.peer_display_name(&node_addr), error = %e, "Failed to send initial TreeAnnounce");
-                        }
-                        // Schedule filter announce (sent on next tick via debounce)
-                        self.bloom_state.mark_update_needed(node_addr);
-                        self.reset_discovery_backoff();
-                        Box::pin(self.sync_local_rendezvous_after_peer_authenticated(&node_addr))
-                            .await;
+                        true
                     }
-                    PromotionResult::CrossConnectionWon {
-                        loser_link_id,
-                        node_addr,
-                    } => {
-                        // Store msg2 on peer for resend on duplicate msg1
-                        if let Some(peer) = self.peers.get_mut(&node_addr) {
-                            peer.set_handshake_msg2(wire_msg2.clone());
-                        }
-                        self.close_cross_connection_loser_physical_path(
-                            loser_link_id,
-                            Some(link_id),
-                        )
-                        .await;
-                        // Clean up the losing connection's link
-                        self.remove_link(&loser_link_id);
-                        debug!(
-                            peer = %self.peer_display_name(&node_addr),
-                            loser_link_id = %loser_link_id,
-                            "Inbound cross-connection won, loser link cleaned up"
+                    Err(e) => {
+                        warn!(
+                            link_id = %link_id,
+                            error = %e,
+                            "Failed to send owned msg2; retaining it for duplicate-msg1 retry"
                         );
-                        // Send initial tree announce to peer (new or reconnected)
-                        if let Err(e) = self.send_tree_announce_to_peer(&node_addr).await {
-                            debug!(peer = %self.peer_display_name(&node_addr), error = %e, "Failed to send initial TreeAnnounce");
-                        }
-                        // Schedule filter announce (sent on next tick via debounce)
-                        self.bloom_state.mark_update_needed(node_addr);
-                        self.reset_discovery_backoff();
-                        Box::pin(self.sync_local_rendezvous_after_peer_authenticated(&node_addr))
-                            .await;
+                        false
                     }
-                    PromotionResult::CrossConnectionLost { winner_link_id } => {
-                        self.close_cross_connection_loser_physical_path(
-                            link_id,
-                            Some(winner_link_id),
-                        )
-                        .await;
-                        // This connection lost — clean up its link
-                        self.remove_link(&link_id);
-                        // Restore address dispatch for the winner's link
-                        self.links.insert_addr(
-                            (packet.transport_id, packet.remote_addr.clone()),
-                            winner_link_id,
-                        );
-                        debug!(
-                            winner_link_id = %winner_link_id,
-                            "Inbound cross-connection lost, keeping existing"
-                        );
-                    }
+                },
+                None => {
+                    warn!(
+                        link_id = %link_id,
+                        "Msg2 transport disappeared; retaining owned response for retry"
+                    );
+                    false
                 }
             }
-            Err(e) => {
-                warn!(
-                    link_id = %link_id,
-                    error = %e,
-                    "Failed to promote inbound connection"
-                );
-                // Clean up on promotion failure
-                self.remove_link(&link_id);
-                let _ = self.index_allocator.free(our_index);
-            }
+        };
+
+        if let Some(loser_link_id) = loser_link_id {
+            self.close_cross_connection_loser_physical_path(loser_link_id, Some(link_id))
+                .await;
+            self.remove_link(&loser_link_id);
+            debug!(
+                peer = %self.peer_display_name(&node_addr),
+                loser_link_id = %loser_link_id,
+                "Inbound cross-connection won, loser link cleaned up"
+            );
+        } else {
+            debug!(
+                peer = %self.peer_display_name(&node_addr),
+                link_id = %link_id,
+                our_index = %our_index,
+                "Inbound peer promoted before Msg2 advertisement"
+            );
+        }
+
+        if msg2_sent {
+            Box::pin(self.complete_owned_msg2_bootstrap(&node_addr)).await;
         }
 
         self.msg1_rate_limiter.complete_handshake();
+    }
+
+    fn ensure_owned_msg2_receiver_route(&mut self, node_addr: &NodeAddr) -> bool {
+        if !self.ensure_current_session_index_registered(node_addr, "owned Msg2 advertisement") {
+            return false;
+        }
+        self.sync_dataplane_fmp_owner(node_addr) && self.dataplane_has_fmp_owner(node_addr)
+    }
+
+    async fn complete_owned_msg2_bootstrap(&mut self, node_addr: &NodeAddr) {
+        if let Err(e) = self.send_tree_announce_to_peer(node_addr).await {
+            debug!(peer = %self.peer_display_name(node_addr), error = %e, "Failed to send initial TreeAnnounce");
+        }
+        self.bloom_state.mark_update_needed(*node_addr);
+        self.reset_discovery_backoff();
+        Box::pin(self.sync_local_rendezvous_after_peer_authenticated(node_addr)).await;
     }
 
     /// Find stored msg2 bytes for a given link (pre- or post-promotion).

@@ -325,3 +325,297 @@ fn test_resend_count_tracking() {
     assert_eq!(conn.resend_count(), 2);
     assert_eq!(conn.next_resend_at_ms(), 8000);
 }
+
+#[cfg(feature = "sim-transport")]
+#[tokio::test]
+async fn owned_msg2_send_failure_retries_without_index_leak_and_bootstraps() {
+    use crate::config::SimTransportConfig;
+    use crate::dataplane::FmpWireHeader;
+    use crate::node::wire::{Msg2Header, build_msg1};
+    use crate::protocol::LinkMessageType;
+    use crate::transport::TransportHandle;
+    use crate::{ReceivedPacket, SimNetwork, SimTransport};
+
+    let mut responder = make_node();
+    let initiator = Identity::generate();
+    let initiator_peer = PeerIdentity::from_pubkey_full(initiator.pubkey_full());
+    let initiator_addr = *initiator_peer.node_addr();
+    let transport_id = TransportId::new(1);
+    let network_name = format!("owned-msg2-retry-{}", responder.node_addr());
+    let network = SimNetwork::new(7);
+    crate::register_sim_network(network_name.clone(), network);
+
+    let (initiator_packet_tx, mut initiator_packet_rx) = packet_channel(16);
+    let mut initiator_transport = SimTransport::new(
+        transport_id,
+        None,
+        SimTransportConfig {
+            network: Some(network_name.clone()),
+            addr: Some("initiator".to_string()),
+            ..Default::default()
+        },
+        initiator_packet_tx,
+    );
+    initiator_transport.start_async().await.unwrap();
+
+    let (responder_packet_tx, _responder_packet_rx) = packet_channel(16);
+    let responder_transport = SimTransport::new(
+        transport_id,
+        None,
+        SimTransportConfig {
+            network: Some(network_name.clone()),
+            addr: Some("responder".to_string()),
+            ..Default::default()
+        },
+        responder_packet_tx,
+    );
+    responder
+        .transports
+        .insert(transport_id, TransportHandle::Sim(responder_transport));
+
+    let sender_index = SessionIndex::new(77);
+    let mut initiator_handshake = crate::noise::HandshakeState::new_initiator(
+        initiator.keypair(),
+        responder.identity.pubkey_full(),
+    );
+    initiator_handshake.set_local_epoch([0xA1; 8]);
+    let msg1 = initiator_handshake.write_message_1().unwrap();
+    let wire_msg1 = build_msg1(sender_index, &msg1);
+    let remote_addr = TransportAddr::from_string("initiator");
+
+    responder
+        .handle_msg1(ReceivedPacket::with_timestamp(
+            transport_id,
+            remote_addr.clone(),
+            crate::transport::PacketBuffer::new(wire_msg1.clone()),
+            1_000,
+        ))
+        .await;
+
+    let owned_index = responder
+        .get_peer(&initiator_addr)
+        .and_then(ActivePeer::our_index)
+        .expect("failed first send must retain the authenticated peer and owned index");
+    assert!(
+        responder
+            .peers
+            .contains_session_index(&(transport_id, owned_index.as_u32())),
+        "owned receiver index must be registered before Msg2 can be retried"
+    );
+    assert!(responder.dataplane_has_fmp_owner(&initiator_addr));
+    assert_eq!(responder.index_allocator.count(), 1);
+    assert!(initiator_packet_rx.try_recv().is_err());
+
+    match responder.transports.get_mut(&transport_id).unwrap() {
+        TransportHandle::Sim(transport) => transport.start_async().await.unwrap(),
+        _ => unreachable!("sim transport fixture"),
+    }
+    responder
+        .handle_msg1(ReceivedPacket::with_timestamp(
+            transport_id,
+            remote_addr,
+            crate::transport::PacketBuffer::new(wire_msg1),
+            1_001,
+        ))
+        .await;
+
+    let mut msg2 = None;
+    let mut established = None;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    while tokio::time::Instant::now() < deadline && (msg2.is_none() || established.is_none()) {
+        let packet = tokio::time::timeout(Duration::from_millis(100), initiator_packet_rx.recv())
+            .await
+            .ok()
+            .flatten();
+        let Some(packet) = packet else {
+            continue;
+        };
+        if Msg2Header::parse(packet.data.as_slice()).is_some() {
+            msg2 = Some(packet.data.as_slice().to_vec());
+        } else if FmpWireHeader::parse(packet.data.as_slice()).is_ok() {
+            established = Some(packet.data.as_slice().to_vec());
+        }
+    }
+
+    let msg2 = msg2.expect("duplicate Msg1 must resend the retained owned Msg2");
+    let msg2_header = Msg2Header::parse(&msg2).expect("valid Msg2");
+    assert_eq!(msg2_header.sender_idx, owned_index);
+    initiator_handshake
+        .read_message_2(&msg2[msg2_header.noise_msg2_offset..])
+        .unwrap();
+    let mut session = initiator_handshake.into_session().unwrap();
+    let established = established.expect("successful Msg2 retry must run tree bootstrap");
+    let header = FmpWireHeader::parse(&established).unwrap();
+    let plaintext = session
+        .decrypt_with_replay_check_and_aad(
+            &established[crate::node::wire::ESTABLISHED_HEADER_SIZE..],
+            header.counter(),
+            &established[..crate::node::wire::ESTABLISHED_HEADER_SIZE],
+        )
+        .expect("post-auth tree bootstrap must use the complementary FMP session");
+    assert_eq!(
+        plaintext.get(4).copied(),
+        Some(LinkMessageType::TreeAnnounce.to_byte())
+    );
+    assert!(responder.bloom_state.needs_update(&initiator_addr));
+    assert_eq!(responder.index_allocator.count(), 1);
+    assert!(responder.get_peer(&initiator_addr).is_some());
+
+    match responder.transports.get_mut(&transport_id).unwrap() {
+        TransportHandle::Sim(transport) => transport.stop_async().await.unwrap(),
+        _ => unreachable!("sim transport fixture"),
+    }
+    initiator_transport.stop_async().await.unwrap();
+    crate::unregister_sim_network(&network_name);
+}
+
+#[cfg(feature = "sim-transport")]
+#[tokio::test]
+async fn losing_inbound_candidate_never_advertises_its_receiver_index() {
+    use crate::config::SimTransportConfig;
+    use crate::node::wire::build_msg1;
+    use crate::peer::{ActivePeer, ActivePeerSession, cross_connection_winner};
+    use crate::transport::{LinkStats, TransportHandle};
+    use crate::{ReceivedPacket, SimNetwork, SimTransport};
+
+    let mut responder = make_node();
+    let initiator = loop {
+        let candidate = Identity::generate();
+        if !cross_connection_winner(responder.node_addr(), candidate.node_addr(), false) {
+            break candidate;
+        }
+    };
+    let initiator_peer = PeerIdentity::from_pubkey_full(initiator.pubkey_full());
+    let initiator_addr = *initiator_peer.node_addr();
+    let transport_id = TransportId::new(1);
+    let link_id = responder.allocate_link_id();
+    let remote_addr = TransportAddr::from_string("initiator");
+    let old_our_index = responder.index_allocator.allocate().unwrap();
+    let old_their_index = SessionIndex::new(20);
+
+    let mut old_initiator = crate::noise::HandshakeState::new_initiator(
+        initiator.keypair(),
+        responder.identity.pubkey_full(),
+    );
+    let mut old_responder =
+        crate::noise::HandshakeState::new_responder(responder.identity.keypair());
+    old_initiator.set_local_epoch([0xA1; 8]);
+    old_responder.set_local_epoch(responder.startup_epoch);
+    let old_msg1 = old_initiator.write_message_1().unwrap();
+    old_responder.read_message_1(&old_msg1).unwrap();
+    let old_msg2 = old_responder.write_message_2().unwrap();
+    old_initiator.read_message_2(&old_msg2).unwrap();
+    let old_session = old_responder.into_session().unwrap();
+
+    let active = ActivePeer::with_session(
+        initiator_peer,
+        link_id,
+        1_000,
+        ActivePeerSession {
+            session: old_session,
+            our_index: old_our_index,
+            their_index: old_their_index,
+            transport_id,
+            current_addr: remote_addr.clone(),
+            link_stats: LinkStats::new(),
+            is_initiator: false,
+            remote_epoch: Some([0xA1; 8]),
+        },
+    );
+    responder
+        .peers
+        .insert_with_current_session_index(initiator_addr, active);
+    responder.links.insert(
+        link_id,
+        Link::connectionless(
+            link_id,
+            transport_id,
+            remote_addr.clone(),
+            LinkDirection::Inbound,
+            Duration::from_millis(1),
+        ),
+    );
+    responder
+        .links
+        .insert_addr((transport_id, remote_addr.clone()), link_id);
+    assert!(responder.sync_dataplane_fmp_owner(&initiator_addr));
+
+    let network_name = format!("losing-inbound-msg2-{}", responder.node_addr());
+    crate::register_sim_network(network_name.clone(), SimNetwork::new(9));
+    let (initiator_packet_tx, mut initiator_packet_rx) = packet_channel(8);
+    let mut initiator_transport = SimTransport::new(
+        transport_id,
+        None,
+        SimTransportConfig {
+            network: Some(network_name.clone()),
+            addr: Some("initiator".to_string()),
+            ..Default::default()
+        },
+        initiator_packet_tx,
+    );
+    initiator_transport.start_async().await.unwrap();
+    let (responder_packet_tx, _responder_packet_rx) = packet_channel(8);
+    let mut responder_transport = SimTransport::new(
+        transport_id,
+        None,
+        SimTransportConfig {
+            network: Some(network_name.clone()),
+            addr: Some("responder".to_string()),
+            ..Default::default()
+        },
+        responder_packet_tx,
+    );
+    responder_transport.start_async().await.unwrap();
+    responder
+        .transports
+        .insert(transport_id, TransportHandle::Sim(responder_transport));
+
+    let candidate_index = SessionIndex::new(77);
+    let mut candidate = crate::noise::HandshakeState::new_initiator(
+        initiator.keypair(),
+        responder.identity.pubkey_full(),
+    );
+    candidate.set_local_epoch([0xA1; 8]);
+    let candidate_msg1 = candidate.write_message_1().unwrap();
+    responder
+        .handle_msg1(ReceivedPacket::with_timestamp(
+            transport_id,
+            remote_addr,
+            crate::transport::PacketBuffer::new(build_msg1(candidate_index, &candidate_msg1)),
+            1_001,
+        ))
+        .await;
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), initiator_packet_rx.recv())
+            .await
+            .is_err(),
+        "a losing inbound candidate must not advertise an index promotion already freed"
+    );
+    let retained = responder.get_peer(&initiator_addr).unwrap();
+    assert_eq!(retained.our_index(), Some(old_our_index));
+    assert_eq!(retained.their_index(), Some(old_their_index));
+    assert!(
+        responder
+            .peers
+            .contains_session_index(&(transport_id, old_our_index.as_u32()))
+    );
+    assert!(responder.dataplane_has_fmp_owner(&initiator_addr));
+    assert!(responder.get_link(&link_id).is_some());
+    assert_eq!(
+        responder.find_link_by_addr(transport_id, &TransportAddr::from_string("initiator")),
+        Some(link_id)
+    );
+    assert_eq!(
+        responder.index_allocator.count(),
+        1,
+        "losing inbound promotion must free its local candidate index"
+    );
+
+    match responder.transports.get_mut(&transport_id).unwrap() {
+        TransportHandle::Sim(transport) => transport.stop_async().await.unwrap(),
+        _ => unreachable!("sim transport fixture"),
+    }
+    initiator_transport.stop_async().await.unwrap();
+    crate::unregister_sim_network(&network_name);
+}

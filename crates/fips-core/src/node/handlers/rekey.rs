@@ -508,6 +508,7 @@ impl Node {
             self.deregister_session_index((tid, idx.as_u32()));
         }
         let _ = self.index_allocator.free(idx);
+        let _ = self.sync_dataplane_fmp_owner(node_addr);
         debug!(
             peer = %peer_name,
             reason,
@@ -629,12 +630,32 @@ impl Node {
 
         let wire_msg1 = build_msg1(our_index, &noise_msg1);
 
-        // Send msg1 on the existing link (same transport + address)
-        let Some(transport) = self.transports.get(&initiation.transport_id) else {
+        // Stage handshake dispatch before advertising our receiver index. A
+        // fast Msg2 must always resolve to this in-progress rekey.
+        let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
+        let now_ms = Self::now_ms();
+        if !self.peers.record_fmp_rekey_initiated(
+            node_addr,
+            hs,
+            our_index,
+            wire_msg1.clone(),
+            now_ms + resend_interval,
+        ) {
             let _ = self.index_allocator.free(our_index);
             return false;
+        }
+        self.pending_outbound.insert(
+            (initiation.transport_id, our_index.as_u32()),
+            initiation.link_id,
+        );
+
+        // Send msg1 on the existing link (same transport + address). Roll
+        // back every staged owner on failure so no unadvertised index leaks.
+        let send_result = match self.transports.get(&initiation.transport_id) {
+            Some(transport) => transport.send(&initiation.remote_addr, &wire_msg1).await,
+            None => Err(crate::transport::TransportError::NotStarted),
         };
-        match transport.send(&initiation.remote_addr, &wire_msg1).await {
+        match send_result {
             Ok(_) => {
                 debug!(
                     peer = %self.peer_display_name(node_addr),
@@ -648,30 +669,10 @@ impl Node {
                     error = %e,
                     "Failed to send rekey msg1"
                 );
-                let _ = self.index_allocator.free(our_index);
+                self.abandon_fmp_rekey_for_peer(node_addr, "initial Msg1 send failed");
                 return false;
             }
         }
-
-        // Store handshake state on the ActivePeer (not a separate PeerConnection)
-        let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
-        let now_ms = Self::now_ms();
-        if !self.peers.record_fmp_rekey_initiated(
-            node_addr,
-            hs,
-            our_index,
-            wire_msg1,
-            now_ms + resend_interval,
-        ) {
-            let _ = self.index_allocator.free(our_index);
-            return false;
-        }
-
-        // Register in pending_outbound for msg2 dispatch (maps to existing link)
-        self.pending_outbound.insert(
-            (initiation.transport_id, our_index.as_u32()),
-            initiation.link_id,
-        );
         true
     }
 

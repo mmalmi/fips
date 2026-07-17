@@ -99,6 +99,69 @@ async fn fmp_rekey_msg1_resend_budget_zero_abandons_immediately() {
     );
 }
 
+#[cfg(feature = "sim-transport")]
+#[tokio::test]
+async fn failed_initial_fmp_rekey_send_rolls_back_dispatch_and_index() {
+    let mut node = make_node();
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_node_addr = *peer_identity.node_addr();
+    let transport_id = TransportId::new(1);
+    let link_id = node.allocate_link_id();
+    let remote_addr = TransportAddr::from_string("peer");
+    let current_our_index = node.index_allocator.allocate().unwrap();
+    let current_their_index = SessionIndex::new(20);
+    let active = make_active_test_peer(
+        &node,
+        &peer_full,
+        transport_id,
+        link_id,
+        remote_addr.clone(),
+        current_our_index,
+        current_their_index,
+    );
+    node.peers
+        .insert_with_current_session_index(peer_node_addr, active);
+    node.links.insert(
+        link_id,
+        Link::connectionless(
+            link_id,
+            transport_id,
+            remote_addr,
+            LinkDirection::Outbound,
+            Duration::from_millis(1),
+        ),
+    );
+    assert!(node.sync_dataplane_fmp_owner(&peer_node_addr));
+
+    let (packet_tx, _packet_rx) = packet_channel(8);
+    node.transports.insert(
+        transport_id,
+        TransportHandle::Sim(crate::SimTransport::new(
+            transport_id,
+            None,
+            crate::config::SimTransportConfig {
+                network: Some("unstarted-rekey-send".to_string()),
+                addr: Some("local".to_string()),
+                ..Default::default()
+            },
+            packet_tx,
+        )),
+    );
+
+    assert!(!node.initiate_rekey(&peer_node_addr).await);
+    let peer = node.get_peer(&peer_node_addr).unwrap();
+    assert!(!peer.rekey_in_progress());
+    assert_eq!(peer.rekey_our_index(), None);
+    assert!(node.pending_outbound.is_empty());
+    assert_eq!(node.index_allocator.count(), 1);
+    assert!(
+        node.peers
+            .contains_session_index(&(transport_id, current_our_index.as_u32()))
+    );
+    assert!(node.dataplane_has_fmp_owner(&peer_node_addr));
+}
+
 #[tokio::test]
 async fn fmp_rekey_msg1_resend_records_count_and_backoff() {
     let mut node = make_node();
