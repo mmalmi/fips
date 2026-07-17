@@ -488,13 +488,19 @@ async fn handle_msg1_treats_same_epoch_stale_peer_as_recovery() {
 #[tokio::test]
 async fn handle_msg1_uses_fresh_msg2_for_same_epoch_alternate_path() {
     use crate::config::NostrRelayConfig;
+    use crate::peer::cross_connection_winner;
     use crate::transport::nostr_relay::NostrRelayTransport;
     use crate::Transport;
     use base64::Engine as _;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
     let mut node = make_node();
-    let peer_identity_full = Identity::generate();
+    let peer_identity_full = loop {
+        let candidate = Identity::generate();
+        if cross_connection_winner(node.node_addr(), candidate.node_addr(), false) {
+            break candidate;
+        }
+    };
     let peer_identity = PeerIdentity::from_pubkey_full(peer_identity_full.pubkey_full());
     let peer_node_addr = *peer_identity.node_addr();
     let old_link_id = LinkId::new(7);
