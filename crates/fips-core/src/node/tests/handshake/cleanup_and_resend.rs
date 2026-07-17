@@ -604,3 +604,138 @@ async fn losing_inbound_candidate_never_advertises_its_receiver_index() {
     initiator_transport.stop_async().await.unwrap();
     crate::unregister_sim_network(&network_name);
 }
+
+#[cfg(feature = "sim-transport")]
+#[tokio::test]
+async fn failed_responder_rekey_msg2_rolls_back_pending_receiver_ownership() {
+    use crate::node::wire::build_msg1;
+    use crate::peer::{ActivePeer, ActivePeerSession};
+    use crate::transport::{LinkStats, TransportHandle};
+    use crate::{ReceivedPacket, SimNetwork};
+
+    let mut responder = make_node();
+    responder.config.node.rekey.enabled = true;
+    let initiator = Identity::generate();
+    let initiator_peer = PeerIdentity::from_pubkey_full(initiator.pubkey_full());
+    let initiator_addr = *initiator_peer.node_addr();
+    let transport_id = TransportId::new(1);
+    let retained_link_id = responder.allocate_link_id();
+    let remote_addr = TransportAddr::from_string("initiator");
+    let current_our_index = responder.index_allocator.allocate().unwrap();
+    let current_their_index = SessionIndex::new(20);
+    let remote_epoch = [0xA1; 8];
+
+    let mut current_initiator = crate::noise::HandshakeState::new_initiator(
+        initiator.keypair(),
+        responder.identity.pubkey_full(),
+    );
+    let mut current_responder =
+        crate::noise::HandshakeState::new_responder(responder.identity.keypair());
+    current_initiator.set_local_epoch(remote_epoch);
+    current_responder.set_local_epoch(responder.startup_epoch);
+    let current_msg1 = current_initiator.write_message_1().unwrap();
+    current_responder.read_message_1(&current_msg1).unwrap();
+    let current_msg2 = current_responder.write_message_2().unwrap();
+    current_initiator.read_message_2(&current_msg2).unwrap();
+    let current_session = current_responder.into_session().unwrap();
+
+    let mut active = ActivePeer::with_session(
+        initiator_peer,
+        retained_link_id,
+        1_000,
+        ActivePeerSession {
+            session: current_session,
+            our_index: current_our_index,
+            their_index: current_their_index,
+            transport_id,
+            current_addr: remote_addr.clone(),
+            link_stats: LinkStats::new(),
+            is_initiator: false,
+            remote_epoch: Some(remote_epoch),
+        },
+    );
+    active.set_session_established_at_for_test(std::time::Instant::now() - Duration::from_secs(31));
+    responder
+        .peers
+        .insert_with_current_session_index(initiator_addr, active);
+    responder.links.insert(
+        retained_link_id,
+        Link::connectionless(
+            retained_link_id,
+            transport_id,
+            remote_addr.clone(),
+            LinkDirection::Inbound,
+            Duration::from_millis(1),
+        ),
+    );
+    responder
+        .links
+        .insert_addr((transport_id, remote_addr.clone()), retained_link_id);
+    assert!(responder.sync_dataplane_fmp_owner(&initiator_addr));
+
+    let network_name = format!("responder-rekey-rollback-{}", responder.node_addr());
+    crate::register_sim_network(network_name.clone(), SimNetwork::new(11));
+    let (mut initiator_transport, mut initiator_packet_rx) =
+        sim_test_transport(&network_name, "initiator", transport_id, 8);
+    initiator_transport.start_async().await.unwrap();
+    let (responder_transport, _responder_packet_rx) =
+        sim_test_transport(&network_name, "responder", transport_id, 8);
+    responder
+        .transports
+        .insert(transport_id, TransportHandle::Sim(responder_transport));
+
+    let rekey_their_index = SessionIndex::new(77);
+    let mut rekey_initiator = crate::noise::HandshakeState::new_initiator(
+        initiator.keypair(),
+        responder.identity.pubkey_full(),
+    );
+    rekey_initiator.set_local_epoch(remote_epoch);
+    let rekey_msg1 = rekey_initiator.write_message_1().unwrap();
+    responder
+        .handle_msg1(ReceivedPacket::with_timestamp(
+            transport_id,
+            remote_addr.clone(),
+            crate::transport::PacketBuffer::new(build_msg1(rekey_their_index, &rekey_msg1)),
+            1_001,
+        ))
+        .await;
+
+    assert!(initiator_packet_rx.try_recv().is_err());
+    let retained = responder.get_peer(&initiator_addr).unwrap();
+    assert_eq!(retained.link_id(), retained_link_id);
+    assert_eq!(retained.our_index(), Some(current_our_index));
+    assert_eq!(retained.their_index(), Some(current_their_index));
+    assert!(retained.has_session());
+    assert!(retained.pending_new_session().is_none());
+    assert_eq!(retained.pending_our_index(), None);
+    assert_eq!(retained.pending_their_index(), None);
+    assert!(responder.pending_outbound.is_empty());
+    assert_eq!(responder.index_allocator.count(), 1);
+    assert!(responder.index_allocator.is_allocated(current_our_index));
+    assert!(
+        responder
+            .peers
+            .contains_session_index(&(transport_id, current_our_index.as_u32()))
+    );
+    assert_eq!(
+        responder.peers.session_index_count(),
+        1,
+        "failed responder Msg2 must remove its staged receiver-index dispatch"
+    );
+    assert!(responder.dataplane_has_fmp_owner(&initiator_addr));
+    assert!(
+        !responder
+            .dataplane
+            .fmp_owner_has_pending_receive_epoch(&initiator_addr, !retained.current_k_bit()),
+        "failed responder Msg2 must remove the staged dataplane receive epoch"
+    );
+    assert!(responder.get_link(&retained_link_id).is_some());
+    assert_eq!(
+        responder.find_link_by_addr(transport_id, &remote_addr),
+        Some(retained_link_id)
+    );
+    assert_eq!(responder.connection_count(), 0);
+
+    initiator_transport.stop_async().await.unwrap();
+    crate::unregister_sim_network(&network_name);
+}

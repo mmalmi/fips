@@ -192,6 +192,14 @@ impl Node {
             .is_ok()
     }
 
+    pub(in crate::node) fn clear_dataplane_fmp_pending_receive_epoch(
+        &mut self,
+        node_addr: &NodeAddr,
+    ) -> bool {
+        self.dataplane
+            .clear_fmp_owner_pending_receive_epoch(node_addr)
+    }
+
     pub(in crate::node) fn promote_dataplane_authenticated_pending_fmp_epoch(
         &mut self,
         node_addr: &NodeAddr,

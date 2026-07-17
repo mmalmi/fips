@@ -174,6 +174,10 @@ impl DataplaneTurnDriver {
             .owner_has_fmp_pending_receive_epoch(owner, received_k_bit)
     }
 
+    pub(crate) fn clear_owner_fmp_pending_receive_epoch(&mut self, owner: OwnerId) -> bool {
+        self.mover.clear_owner_fmp_pending_receive_epoch(owner)
+    }
+
     pub(crate) fn owner_fsp_mmp_snapshot(
         &self,
         owner: OwnerId,

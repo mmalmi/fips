@@ -222,6 +222,16 @@ impl OwnerState {
             && self.pending_fmp_replay_window.is_some()
     }
 
+    pub(crate) fn clear_fmp_pending_receive_epoch(&mut self) -> bool {
+        if self.owner.protocol() != PacketProtocol::Fmp {
+            return false;
+        }
+        self.pending_fmp_open = None;
+        self.pending_fmp_k_bit = None;
+        self.pending_fmp_replay_window = None;
+        true
+    }
+
     pub(crate) fn install_fsp_pending_receive_epoch(
         &mut self,
         pending_k_bit: bool,

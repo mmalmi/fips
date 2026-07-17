@@ -508,6 +508,7 @@ impl Node {
             self.deregister_session_index((tid, idx.as_u32()));
         }
         let _ = self.index_allocator.free(idx);
+        let _ = self.clear_dataplane_fmp_pending_receive_epoch(node_addr);
         let _ = self.sync_dataplane_fmp_owner(node_addr);
         debug!(
             peer = %peer_name,
