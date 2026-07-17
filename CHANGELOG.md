@@ -34,6 +34,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Accept plaintext coordinate warmups only when their claimed node and root
   match the active tree, at both transit and local session handlers, so stale
   msg1/msg2 or CP coordinates cannot replace a usable loop-free route.
+- Install FMP receiver-index and dataplane-route ownership before advertising
+  Msg2. Losing inbound candidates advertise nothing, transient initial Msg2
+  failures retain one retryable owned session, and failed initiator or
+  responder rekeys roll back staged indices and pending crypto epochs while
+  preserving the current authenticated session.
+- Keep ordinary kernel-assigned UDP endpoints uniquely owned for their live
+  socket lifetime. Explicitly requested nonzero ordinary ports retain their
+  restart-friendly reuse behavior.
+- Give the synthetic 100-node carrier deterministic unique endpoint identities
+  and reject duplicate Sim endpoint registration instead of silently replacing
+  its previous owner.
 - Bump `fips-endpoint` to 0.4.6 so embedded consumers select the corrected
   `fips-core` release.
 
