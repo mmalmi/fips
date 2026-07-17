@@ -156,6 +156,46 @@ fn exclusive_udp_socket_rejects_a_reusable_second_bind() {
     );
 }
 
+#[test]
+fn ordinary_ephemeral_udp_socket_owns_its_assigned_address_while_live() {
+    let owner = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 65_536, 65_536)
+        .expect("bind ordinary ephemeral UDP owner");
+    let assigned = owner.local_addr();
+
+    assert!(
+        UdpRawSocket::open(assigned, 65_536, 65_536).is_err(),
+        "a live ordinary ephemeral socket must own its assigned address"
+    );
+}
+
+#[test]
+fn live_ordinary_ephemeral_udp_sockets_receive_unique_addresses() {
+    let sockets = (0..64)
+        .map(|_| {
+            UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 65_536, 65_536)
+                .expect("bind ordinary ephemeral UDP socket")
+        })
+        .collect::<Vec<_>>();
+    let addresses = sockets
+        .iter()
+        .map(UdpRawSocket::local_addr)
+        .collect::<std::collections::HashSet<_>>();
+
+    assert_eq!(addresses.len(), sockets.len());
+}
+
+#[test]
+fn explicit_nonzero_ordinary_udp_port_remains_reusable() {
+    let probe = std::net::UdpSocket::bind("127.0.0.1:0").expect("probe reusable UDP port");
+    let addr = probe.local_addr().expect("probe local address");
+    drop(probe);
+
+    let first = UdpRawSocket::open(addr, 65_536, 65_536).expect("first ordinary bind");
+    let second = UdpRawSocket::open(addr, 65_536, 65_536).expect("second ordinary bind");
+    assert_eq!(first.local_addr(), addr);
+    assert_eq!(second.local_addr(), addr);
+}
+
 #[tokio::test]
 async fn test_async_udp_socket_send_recv() {
     let sock1 = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 65536, 65536)

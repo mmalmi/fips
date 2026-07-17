@@ -8,7 +8,12 @@
             recv_buf_size: usize,
             send_buf_size: usize,
         ) -> Result<Self, TransportError> {
-            Self::open_inner(bind_addr, recv_buf_size, send_buf_size, true)
+            // A kernel-assigned endpoint must remain unique while this socket
+            // is live. Reuse is only meaningful for an explicitly requested
+            // ordinary port; enabling it before a port-0 bind lets multiple
+            // sockets receive the same assigned address on some Unix kernels.
+            let reusable = bind_addr.port() != 0;
+            Self::open_inner(bind_addr, recv_buf_size, send_buf_size, reusable)
         }
 
         /// Create a UDP socket whose address cannot be shared by another

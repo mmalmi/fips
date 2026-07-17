@@ -68,7 +68,7 @@ mod platform {
             bind_addr: SocketAddr,
             recv_buf_size: usize,
             send_buf_size: usize,
-            exclusive: bool,
+            requested_exclusive: bool,
         ) -> Result<Self, TransportError> {
             let domain = if bind_addr.is_ipv4() {
                 Domain::IPV4
@@ -82,6 +82,10 @@ mod platform {
                 TransportError::StartFailed(format!("set nonblocking failed: {}", e))
             })?;
 
+            // A kernel-assigned endpoint must remain unique while this socket
+            // is live. Explicit nonzero ordinary ports retain restart-friendly
+            // reuse, while port 0 uses Windows' exclusive-address lock.
+            let exclusive = requested_exclusive || bind_addr.port() == 0;
             if exclusive {
                 set_windows_exclusive_addr_use(&sock)?;
             } else {
