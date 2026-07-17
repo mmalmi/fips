@@ -327,14 +327,36 @@ fn test_resend_count_tracking() {
 }
 
 #[cfg(feature = "sim-transport")]
+fn sim_test_transport(
+    network: &str,
+    addr: &str,
+    transport_id: TransportId,
+    capacity: usize,
+) -> (crate::SimTransport, crate::transport::PacketRx) {
+    let (packet_tx, packet_rx) = packet_channel(capacity);
+    (
+        crate::SimTransport::new(
+            transport_id,
+            None,
+            crate::config::SimTransportConfig {
+                network: Some(network.to_string()),
+                addr: Some(addr.to_string()),
+                ..Default::default()
+            },
+            packet_tx,
+        ),
+        packet_rx,
+    )
+}
+
+#[cfg(feature = "sim-transport")]
 #[tokio::test]
 async fn owned_msg2_send_failure_retries_without_index_leak_and_bootstraps() {
-    use crate::config::SimTransportConfig;
     use crate::dataplane::FmpWireHeader;
     use crate::node::wire::{Msg2Header, build_msg1};
     use crate::protocol::LinkMessageType;
     use crate::transport::TransportHandle;
-    use crate::{ReceivedPacket, SimNetwork, SimTransport};
+    use crate::{ReceivedPacket, SimNetwork};
 
     let mut responder = make_node();
     let initiator = Identity::generate();
@@ -345,30 +367,12 @@ async fn owned_msg2_send_failure_retries_without_index_leak_and_bootstraps() {
     let network = SimNetwork::new(7);
     crate::register_sim_network(network_name.clone(), network);
 
-    let (initiator_packet_tx, mut initiator_packet_rx) = packet_channel(16);
-    let mut initiator_transport = SimTransport::new(
-        transport_id,
-        None,
-        SimTransportConfig {
-            network: Some(network_name.clone()),
-            addr: Some("initiator".to_string()),
-            ..Default::default()
-        },
-        initiator_packet_tx,
-    );
+    let (mut initiator_transport, mut initiator_packet_rx) =
+        sim_test_transport(&network_name, "initiator", transport_id, 16);
     initiator_transport.start_async().await.unwrap();
 
-    let (responder_packet_tx, _responder_packet_rx) = packet_channel(16);
-    let responder_transport = SimTransport::new(
-        transport_id,
-        None,
-        SimTransportConfig {
-            network: Some(network_name.clone()),
-            addr: Some("responder".to_string()),
-            ..Default::default()
-        },
-        responder_packet_tx,
-    );
+    let (responder_transport, _responder_packet_rx) =
+        sim_test_transport(&network_name, "responder", transport_id, 16);
     responder
         .transports
         .insert(transport_id, TransportHandle::Sim(responder_transport));
@@ -472,11 +476,10 @@ async fn owned_msg2_send_failure_retries_without_index_leak_and_bootstraps() {
 #[cfg(feature = "sim-transport")]
 #[tokio::test]
 async fn losing_inbound_candidate_never_advertises_its_receiver_index() {
-    use crate::config::SimTransportConfig;
     use crate::node::wire::build_msg1;
     use crate::peer::{ActivePeer, ActivePeerSession, cross_connection_winner};
     use crate::transport::{LinkStats, TransportHandle};
-    use crate::{ReceivedPacket, SimNetwork, SimTransport};
+    use crate::{ReceivedPacket, SimNetwork};
 
     let mut responder = make_node();
     let initiator = loop {
@@ -542,29 +545,11 @@ async fn losing_inbound_candidate_never_advertises_its_receiver_index() {
 
     let network_name = format!("losing-inbound-msg2-{}", responder.node_addr());
     crate::register_sim_network(network_name.clone(), SimNetwork::new(9));
-    let (initiator_packet_tx, mut initiator_packet_rx) = packet_channel(8);
-    let mut initiator_transport = SimTransport::new(
-        transport_id,
-        None,
-        SimTransportConfig {
-            network: Some(network_name.clone()),
-            addr: Some("initiator".to_string()),
-            ..Default::default()
-        },
-        initiator_packet_tx,
-    );
+    let (mut initiator_transport, mut initiator_packet_rx) =
+        sim_test_transport(&network_name, "initiator", transport_id, 8);
     initiator_transport.start_async().await.unwrap();
-    let (responder_packet_tx, _responder_packet_rx) = packet_channel(8);
-    let mut responder_transport = SimTransport::new(
-        transport_id,
-        None,
-        SimTransportConfig {
-            network: Some(network_name.clone()),
-            addr: Some("responder".to_string()),
-            ..Default::default()
-        },
-        responder_packet_tx,
-    );
+    let (mut responder_transport, _responder_packet_rx) =
+        sim_test_transport(&network_name, "responder", transport_id, 8);
     responder_transport.start_async().await.unwrap();
     responder
         .transports
