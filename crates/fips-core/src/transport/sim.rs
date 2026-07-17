@@ -193,8 +193,18 @@ impl SimNetwork {
         self.inner.lock().expect("sim network lock").stats.clone()
     }
 
-    fn register_endpoint(&self, addr: String, transport_id: TransportId, packet_tx: PacketTx) {
+    fn register_endpoint(
+        &self,
+        addr: String,
+        transport_id: TransportId,
+        packet_tx: PacketTx,
+    ) -> Result<(), TransportError> {
         let mut inner = self.inner.lock().expect("sim network lock");
+        if inner.endpoints.contains_key(&addr) {
+            return Err(TransportError::StartFailed(format!(
+                "sim address '{addr}' is already registered"
+            )));
+        }
         inner.node_behaviors.entry(addr.clone()).or_default();
         inner.endpoints.insert(
             addr,
@@ -203,6 +213,7 @@ impl SimNetwork {
                 packet_tx,
             },
         );
+        Ok(())
     }
 
     fn unregister_endpoint(&self, addr: &str) {
@@ -399,7 +410,12 @@ impl SimTransport {
                 )
             })?;
 
-        network.register_endpoint(addr.clone(), self.transport_id, self.packet_tx.clone());
+        if let Err(error) =
+            network.register_endpoint(addr.clone(), self.transport_id, self.packet_tx.clone())
+        {
+            self.state = TransportState::Failed;
+            return Err(error);
+        }
         self.network = Some(network);
         self.local_addr = Some(addr);
         self.state = TransportState::Up;
