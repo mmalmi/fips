@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.7] - 2026-07-18
+
+### Fixed
+
+- Pace repeated background direct-path upgrades at a deterministic jittered
+  10–20 second cadence while a healthy routed fallback remains active. Actual
+  link-dead recovery stays on its fast retry path, while unreachable static
+  candidates no longer trigger a continuous handshake/discovery loop.
+- Bump `fips-endpoint` to 0.4.7 so embedded consumers select the corrected
+  `fips-core` release. FMP, FSP, discovery, datagram DFP1, and link-negotiation
+  wire formats are unchanged.
+
 ## [0.4.6] - 2026-07-17
 
 ### Fixed

@@ -257,7 +257,7 @@ impl Node {
                                     .request_advert_stale_check(peer_config.npub.clone())
                                     .await;
                             }
-                            self.schedule_link_dead_reprobe(node_addr, now_ms);
+                            self.schedule_active_direct_refresh_retry(node_addr, now_ms);
                         } else {
                             debug!(
                                 npub = %peer_config.npub,

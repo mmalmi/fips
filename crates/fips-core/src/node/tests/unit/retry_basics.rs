@@ -339,8 +339,8 @@ async fn established_fallback_session_direct_refresh_stays_out_of_peer_backoff()
         "a live fallback FIPS session should keep direct refresh out of peer-level exponential backoff"
     );
     assert!(
-        (1_500..=2_500).contains(&retry.retry_after_ms),
-        "fallback direct refresh should be quickly re-probed, got {}",
+        (11_000..=21_000).contains(&retry.retry_after_ms),
+        "fallback direct refresh should be paced after an attempt, got {}",
         retry.retry_after_ms
     );
 
@@ -514,7 +514,7 @@ fn test_schedule_retry_keeps_connected_bootstrap_peer_refreshable() {
 }
 
 #[test]
-fn test_schedule_retry_active_fallback_uses_quick_direct_reprobe() {
+fn test_schedule_retry_active_fallback_paces_direct_reprobe() {
     let peer_full = Identity::generate();
     let peer_npub = peer_full.npub();
     let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
@@ -554,8 +554,8 @@ fn test_schedule_retry_active_fallback_uses_quick_direct_reprobe() {
         "active fallback direct refresh must not inherit peer-level exponential backoff"
     );
     assert!(
-        (3_500..=4_500).contains(&state.retry_after_ms),
-        "active fallback direct refresh should use a quick jittered reprobe, got {}",
+        (13_000..=23_000).contains(&state.retry_after_ms),
+        "active fallback direct refresh should use a paced jittered reprobe, got {}",
         state.retry_after_ms
     );
 }

@@ -18,6 +18,8 @@ const LOCAL_ROUTE_RETRY_DELAY_MS: u64 = 2_000;
 const LINK_DEAD_DIRECT_REPROBE_DELAY_MS: u64 = 500;
 const LINK_DEAD_DIRECT_REPROBE_JITTER_MS: u64 = 1_000;
 const QUIET_TRAVERSAL_DIRECT_REFRESH_JITTER_MS: u64 = 10_000;
+const ACTIVE_DIRECT_REFRESH_RETRY_DELAY_MS: u64 = 10_000;
+const ACTIVE_DIRECT_REFRESH_RETRY_JITTER_MS: u64 = 10_000;
 const ACTIVE_DIRECT_REFRESH_NO_TRANSPORT_COOLDOWN_MS: u64 = 30_000;
 
 fn node_addr_jitter_ms(node_addr: &NodeAddr, max_ms: u64) -> u64 {
@@ -32,6 +34,13 @@ fn link_dead_reprobe_jitter_ms(node_addr: &NodeAddr) -> u64 {
 
 fn quiet_traversal_refresh_jitter_ms(node_addr: &NodeAddr) -> u64 {
     node_addr_jitter_ms(node_addr, QUIET_TRAVERSAL_DIRECT_REFRESH_JITTER_MS)
+}
+
+fn active_direct_refresh_retry_delay_ms(node_addr: &NodeAddr) -> u64 {
+    ACTIVE_DIRECT_REFRESH_RETRY_DELAY_MS.saturating_add(node_addr_jitter_ms(
+        node_addr,
+        ACTIVE_DIRECT_REFRESH_RETRY_JITTER_MS,
+    ))
 }
 
 /// Tracks retry state for a peer across connection attempts.
@@ -279,11 +288,11 @@ impl Node {
                 return;
             }
 
-            self.schedule_link_dead_reprobe(node_addr, now_ms);
+            self.schedule_active_direct_refresh_retry(node_addr, now_ms);
             return;
         }
         if self.has_established_fallback_session(&node_addr) {
-            self.schedule_link_dead_reprobe(node_addr, now_ms);
+            self.schedule_active_direct_refresh_retry(node_addr, now_ms);
             return;
         }
 
@@ -624,6 +633,33 @@ impl Node {
         );
     }
 
+    pub(in crate::node) fn schedule_active_direct_refresh_retry(
+        &mut self,
+        node_addr: NodeAddr,
+        now_ms: u64,
+    ) {
+        let delay_ms = active_direct_refresh_retry_delay_ms(&node_addr);
+        let retry_after_ms = now_ms.saturating_add(delay_ms);
+        let peer_name = self.peer_display_name(&node_addr);
+        if !self.retry_pending.contains_key(&node_addr) {
+            self.schedule_link_dead_reprobe(node_addr, now_ms);
+        }
+        let Some(state) = self.retry_pending.get_mut(&node_addr) else {
+            return;
+        };
+
+        state.reconnect = true;
+        state.retry_count = 0;
+        state.retry_after_ms = retry_after_ms;
+        state.expires_at_ms = None;
+
+        debug!(
+            peer = %peer_name,
+            delay_ms,
+            "Pacing repeated direct refresh while fallback remains active"
+        );
+    }
+
     async fn active_direct_refresh_has_concrete_candidate(&self, peer_config: &PeerConfig) -> bool {
         self.peer_address_candidates(peer_config)
             .await
@@ -800,7 +836,7 @@ impl Node {
                 match refresh_result {
                     Ok(true) => {
                         if has_concrete_direct_candidate {
-                            self.schedule_link_dead_reprobe(node_addr, now_ms);
+                            self.schedule_active_direct_refresh_retry(node_addr, now_ms);
                             debug!(
                                 peer = %self.peer_display_name(&node_addr),
                                 "Direct-path retry initiated while preserving active fallback peer"
@@ -845,7 +881,7 @@ impl Node {
                                 node_addr, now_ms,
                             );
                         } else {
-                            self.schedule_link_dead_reprobe(node_addr, now_ms);
+                            self.schedule_active_direct_refresh_retry(node_addr, now_ms);
                         }
                     }
                 }
