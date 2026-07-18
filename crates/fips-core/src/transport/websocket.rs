@@ -12,6 +12,7 @@ use super::{
 };
 use crate::Identity;
 use crate::config::WebSocketConfig;
+use crate::dataplane::validate_direct_fsp_transport_fragment;
 use crate::discovery::local_udp::LocalKeyHint;
 use futures::{SinkExt, StreamExt};
 use rand::RngExt;
@@ -297,9 +298,7 @@ impl WebSocketTransport {
                 mtu: self.config.max_frame_bytes().min(u16::MAX as usize) as u16,
             });
         }
-        validate_stream_record(data).map_err(|error| {
-            TransportError::SendFailed(format!("invalid FIPS physical record: {error}"))
-        })?;
+        validate_websocket_record(data).map_err(TransportError::SendFailed)?;
         let tx = self
             .runtime
             .pool
@@ -677,7 +676,7 @@ where
                     continue;
                 }
                 if data.len() > runtime.config.max_frame_bytes()
-                    || validate_stream_record(&data).is_err()
+                    || validate_websocket_record(&data).is_err()
                 {
                     runtime.stats.invalid_frames.fetch_add(1, Ordering::Relaxed);
                     break Err(TransportError::RecvFailed(
@@ -771,6 +770,14 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn validate_websocket_record(data: &[u8]) -> Result<(), String> {
+    if validate_direct_fsp_transport_fragment(data) {
+        return Ok(());
+    }
+    validate_stream_record(data)
+        .map_err(|error| format!("invalid FIPS physical record: {error}"))
 }
 
 #[cfg(test)]

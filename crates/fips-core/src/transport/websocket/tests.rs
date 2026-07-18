@@ -1,4 +1,18 @@
 use super::*;
+
+#[test]
+fn websocket_record_validation_accepts_bounded_direct_fsp_fragments() {
+    let mut fragment = vec![0u8; 24];
+    fragment[..4].copy_from_slice(b"DFP1");
+    fragment[4..12].copy_from_slice(&7u64.to_le_bytes());
+    fragment[12..16].copy_from_slice(&100u32.to_le_bytes());
+    fragment[16..18].copy_from_slice(&0u16.to_le_bytes());
+    fragment[18..20].copy_from_slice(&2u16.to_le_bytes());
+
+    assert!(validate_websocket_record(&fragment).is_ok());
+    fragment[18..20].copy_from_slice(&1u16.to_le_bytes());
+    assert!(validate_websocket_record(&fragment).is_err());
+}
 use crate::node::wire::build_msg1;
 use crate::transport::packet_channel;
 use crate::utils::index::SessionIndex;

@@ -717,11 +717,6 @@ async fn failed_responder_rekey_msg2_rolls_back_pending_receiver_ownership() {
             .peers
             .contains_session_index(&(transport_id, current_our_index.as_u32()))
     );
-    assert_eq!(
-        responder.peers.session_index_count(),
-        1,
-        "failed responder Msg2 must remove its staged receiver-index dispatch"
-    );
     assert!(responder.dataplane_has_fmp_owner(&initiator_addr));
     assert!(
         !responder

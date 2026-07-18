@@ -331,6 +331,16 @@ fn valid_direct_fsp_transport_fragment_header(
         && header.fragment_index < header.fragment_count
 }
 
+pub(crate) fn validate_direct_fsp_transport_fragment(data: &[u8]) -> bool {
+    let Some(header) = parse_direct_fsp_transport_fragment_header_after_magic(data) else {
+        return false;
+    };
+    dataplane_direct_fsp_transport_fragment_is_fragment(data)
+        && valid_direct_fsp_transport_fragment_header(header)
+        && data.len() > DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN
+        && data.len() - DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN <= header.total_len
+}
+
 fn dataplane_direct_fsp_transport_output(
     output: PacketOutput,
 ) -> DataplaneDirectFspTransportOutput {

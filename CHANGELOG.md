@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.11] - 2026-07-18
+
+### Fixed
+
+- Accept bounded `DFP1` direct-FSP fragments on the WebSocket physical
+  transport, matching the existing direct-transport record boundary used by
+  large in-FIPS WebRTC negotiation messages.
+- Remove a stale redundant handshake-test assertion that referenced a deleted
+  test helper.
+- Bump `fips-endpoint` to 0.4.11 so embedded consumers select the corrected
+  WebSocket transport.
+
 ## [0.4.10] - 2026-07-18
 
 ### Changed
