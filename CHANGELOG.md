@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.9] - 2026-07-18
+
+### Fixed
+
+- Preserve queued endpoint datagrams while an in-progress FSP handshake owns
+  the destination, so discovery exhaustion cannot discard traffic before a
+  simultaneous initiator/responder handshake establishes. The existing FSP
+  handshake timeout remains the authoritative cleanup path.
+- Bump `fips-endpoint` to 0.4.9 so embedded consumers select the corrected
+  `fips-core` release. FMP, FSP, discovery, datagram DFP1, and
+  link-negotiation wire formats and timeout values are unchanged.
+
 ## [0.4.8] - 2026-07-18
 
 ### Fixed
