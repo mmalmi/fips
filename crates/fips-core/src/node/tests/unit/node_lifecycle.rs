@@ -656,6 +656,64 @@ fn test_promote_nonconfigured_open_discovery_peer_blocks_fallback_transit() {
     );
 }
 
+#[tokio::test]
+async fn test_promote_explicit_websocket_seed_allows_open_discovery_fallback_transit() {
+    use crate::config::WebSocketConfig;
+    use crate::transport::websocket::WebSocketTransport;
+
+    let mut node = make_node();
+    node.config.node.discovery.nostr.policy = crate::config::NostrDiscoveryPolicy::Open;
+    node.config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;
+    let transport_id = TransportId::new(1);
+    let seed_url = "wss://seed.example/fips";
+    let (packet_tx, _packet_rx) = packet_channel(8);
+    let websocket = WebSocketTransport::new(
+        transport_id,
+        None,
+        WebSocketConfig {
+            seed_urls: vec![seed_url.to_string()],
+            ..WebSocketConfig::default()
+        },
+        packet_tx,
+        &node.identity,
+    );
+    node.transports.insert(
+        transport_id,
+        TransportHandle::WebSocket(Box::new(websocket)),
+    );
+
+    let link_id = LinkId::new(1);
+    let (mut conn, identity) = make_completed_connection(&mut node, link_id, transport_id, 1000);
+    let node_addr = *identity.node_addr();
+    conn.set_source_addr(TransportAddr::from_string(seed_url));
+
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, identity, 2000).unwrap();
+
+    assert!(
+        !node.discovery_fallback_transit.is_blocked(&node_addr),
+        "an explicitly configured WebSocket seed is intended first-contact transit"
+    );
+
+    let target = Identity::generate();
+    let target_identity = PeerIdentity::from_pubkey_full(target.pubkey_full());
+    node.config.peers.push(crate::config::PeerConfig {
+        npub: target_identity.npub(),
+        alias: None,
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    });
+    refresh_configured_peer_cache_for_test(&mut node);
+
+    assert_eq!(
+        node.initiate_lookup(target_identity.node_addr(), 8).await,
+        1,
+        "the addressless roster target lookup must leave through the explicit seed"
+    );
+}
+
 #[test]
 fn discovery_fallback_transit_owns_target_exception_block_and_bootstrap_policy() {
     let peer = make_node_addr(0xD1);

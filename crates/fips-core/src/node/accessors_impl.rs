@@ -836,13 +836,26 @@ impl Node {
         })
     }
 
-    pub(crate) fn discovery_fallback_transit_for_promotion(&self, peer_addr: &NodeAddr) -> bool {
+    pub(crate) fn discovery_fallback_transit_for_promotion(
+        &self,
+        peer_addr: &NodeAddr,
+        transport_id: TransportId,
+        current_addr: &TransportAddr,
+    ) -> bool {
         if let Some(retry_state) = self.retry_pending.get(peer_addr) {
             return retry_state.peer_config.discovery_fallback_transit;
         }
 
         if let Some(allowed) = self.configured_discovery_fallback_transit(peer_addr) {
             return allowed;
+        }
+
+        if self
+            .transports
+            .get(&transport_id)
+            .is_some_and(|transport| transport.is_configured_seed_addr(current_addr))
+        {
+            return true;
         }
 
         self.config.node.discovery.nostr.policy != crate::config::NostrDiscoveryPolicy::Open

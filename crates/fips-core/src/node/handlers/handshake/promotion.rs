@@ -58,8 +58,11 @@ impl Node {
         let peer_node_addr = *verified_identity.node_addr();
         let is_outbound = connection.is_outbound();
         let current_addr = observed_addr;
-        let discovery_fallback_transit_allowed =
-            self.discovery_fallback_transit_for_promotion(&peer_node_addr);
+        let discovery_fallback_transit_allowed = self.discovery_fallback_transit_for_promotion(
+            &peer_node_addr,
+            transport_id,
+            &current_addr,
+        );
 
         // Check for cross-connection
         if let Some(existing_peer) = self.peers.get(&peer_node_addr) {

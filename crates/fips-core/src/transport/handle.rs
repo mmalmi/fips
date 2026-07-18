@@ -46,6 +46,13 @@ pub enum TransportHandle {
 }
 
 impl TransportHandle {
+    pub(crate) fn is_configured_seed_addr(&self, addr: &TransportAddr) -> bool {
+        match self {
+            TransportHandle::WebSocket(transport) => transport.is_configured_seed_addr(addr),
+            _ => false,
+        }
+    }
+
     /// Normalize transport-specific addresses before Node stores or compares
     /// them. Most transports have one textual identity; WebRTC uses Nostr's
     /// x-only identity and therefore collapses legacy 02/03 compressed forms.

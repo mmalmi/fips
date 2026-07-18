@@ -203,6 +203,15 @@ impl WebSocketTransport {
         self.config.public_url.as_deref()
     }
 
+    pub(crate) fn is_configured_seed_addr(&self, addr: &TransportAddr) -> bool {
+        addr.as_str().is_some_and(|candidate| {
+            self.config
+                .seed_urls
+                .iter()
+                .any(|seed_url| seed_url == candidate)
+        })
+    }
+
     pub fn stats(&self) -> WebSocketStatsSnapshot {
         self.runtime.stats.snapshot()
     }
@@ -776,8 +785,7 @@ fn validate_websocket_record(data: &[u8]) -> Result<(), String> {
     if validate_direct_fsp_transport_fragment(data) {
         return Ok(());
     }
-    validate_stream_record(data)
-        .map_err(|error| format!("invalid FIPS physical record: {error}"))
+    validate_stream_record(data).map_err(|error| format!("invalid FIPS physical record: {error}"))
 }
 
 #[cfg(test)]
