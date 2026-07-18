@@ -627,7 +627,7 @@ async fn external_peerfinding_never_queries_configured_advert_relays() {
 }
 
 #[tokio::test]
-async fn externally_ingested_cache_resolves_before_relay_fallback() {
+async fn externally_ingested_cache_resolves_without_internal_relay_client() {
     let peer = nostr::Keys::generate();
     let peer_npub = peer.public_key().to_bech32().expect("peer npub");
     let discovery = NostrDiscovery::new_for_test_with_config(NostrDiscoveryConfig {
@@ -647,7 +647,7 @@ async fn externally_ingested_cache_resolves_before_relay_fallback() {
     let endpoints = discovery
         .advert_endpoints_for_peer(&peer_npub)
         .await
-        .expect("cache should resolve before relay fallback");
+        .expect("external cache should resolve without an internal relay client");
 
     assert_eq!(
         endpoints,

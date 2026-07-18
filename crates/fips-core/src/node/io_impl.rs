@@ -1,34 +1,6 @@
 use super::*;
 
 impl Node {
-    /// Attach application-owned I/O for the Nostr relay fallback transport.
-    ///
-    /// The returned handle is safe to use while [`Node::run_rx_loop`] owns the
-    /// node. Relay selection and connections remain in the embedding
-    /// application. This must be called before [`Node::start`].
-    pub fn attach_nostr_relay_io(
-        &mut self,
-        capacity: usize,
-    ) -> Result<crate::endpoint::NostrRelayIo, NodeError> {
-        if self.state != NodeState::Created {
-            return Err(NodeError::Config(ConfigError::Validation(
-                "Nostr relay I/O must be attached before node start".to_string(),
-            )));
-        }
-        if self.endpoint_control_rx.is_some() {
-            return Err(NodeError::Config(ConfigError::Validation(
-                "node application control I/O is already attached".to_string(),
-            )));
-        }
-
-        let (control_tx, control_rx) = tokio::sync::mpsc::channel(capacity.max(1));
-        self.endpoint_control_rx = Some(control_rx);
-        Ok(crate::endpoint::NostrRelayIo::new(
-            self.identity.npub(),
-            control_tx,
-        ))
-    }
-
     /// Get the TUN packet sender channel.
     ///
     /// Returns None if TUN is not active or the node hasn't been started.

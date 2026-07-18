@@ -35,56 +35,6 @@ const DEFAULT_UDP_BIND_ADDR: &str = "0.0.0.0:2121";
 /// Default UDP MTU (IPv6 minimum).
 const DEFAULT_UDP_MTU: u16 = 1280;
 
-/// Default MTU for FIPS datagrams carried by ephemeral Nostr relay events.
-const DEFAULT_NOSTR_RELAY_MTU: u16 = 1280;
-
-/// Default number of signed relay events waiting for the application adapter.
-const DEFAULT_NOSTR_RELAY_PENDING_EVENTS: usize = 1024;
-
-/// Ephemeral Nostr relay fallback transport configuration.
-///
-/// Relay URLs deliberately do not live here. The embedding application owns
-/// relay selection and delivery through the external Nostr relay adapter.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NostrRelayConfig {
-    /// Maximum FIPS wire datagram size before base64 encoding.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mtu: Option<u16>,
-
-    /// Whether public Nostr adverts should auto-connect over this fallback.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auto_connect: Option<bool>,
-
-    /// Accept inbound FIPS handshakes received through relay events.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accept_connections: Option<bool>,
-
-    /// Maximum signed events waiting for the external relay adapter.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_pending_events: Option<usize>,
-}
-
-impl NostrRelayConfig {
-    pub fn mtu(&self) -> u16 {
-        self.mtu.unwrap_or(DEFAULT_NOSTR_RELAY_MTU)
-    }
-
-    pub fn auto_connect(&self) -> bool {
-        self.auto_connect.unwrap_or(true)
-    }
-
-    pub fn accept_connections(&self) -> bool {
-        self.accept_connections.unwrap_or(true)
-    }
-
-    pub fn max_pending_events(&self) -> usize {
-        self.max_pending_events
-            .unwrap_or(DEFAULT_NOSTR_RELAY_PENDING_EVENTS)
-            .max(1)
-    }
-}
-
 /// Default UDP receive buffer size (16 MiB).
 ///
 /// At sustained multi-Gbps single-stream the kernel UDP queue
@@ -511,6 +461,25 @@ const DEFAULT_TCP_SEND_BUF: usize = 2 * 1024 * 1024;
 /// Default maximum inbound TCP connections.
 const DEFAULT_TCP_MAX_INBOUND: usize = 256;
 
+/// Default WebSocket path accepted by the native plain-WS listener.
+const DEFAULT_WEBSOCKET_PATH: &str = "/fips";
+
+/// Default WebSocket FIPS path MTU.
+const DEFAULT_WEBSOCKET_MTU: u16 = 1400;
+
+/// Largest legal FIPS record plus conservative header room.
+const DEFAULT_WEBSOCKET_MAX_FRAME_BYTES: usize = 66 * 1024;
+
+const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_WEBSOCKET_KEY_HINT_TIMEOUT_MS: u64 = 3_000;
+const DEFAULT_WEBSOCKET_RECONNECT_INITIAL_MS: u64 = 1_000;
+const DEFAULT_WEBSOCKET_RECONNECT_MAX_MS: u64 = 30_000;
+const DEFAULT_WEBSOCKET_MAX_CONNECTIONS: usize = 256;
+const DEFAULT_WEBSOCKET_MAX_INBOUND: usize = 128;
+const DEFAULT_WEBSOCKET_MAX_SEND_QUEUE: usize = 256;
+const DEFAULT_WEBSOCKET_PING_INTERVAL_SECS: u64 = 20;
+const DEFAULT_WEBSOCKET_IDLE_TIMEOUT_SECS: u64 = 90;
+
 /// TCP transport instance configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -629,6 +598,245 @@ impl TcpConfig {
         let bind_port = parse_bind_port(self.bind_addr.as_deref()?)?;
         parse_external_advert_addr(raw, bind_port)
     }
+}
+
+/// WebSocket physical transport configuration.
+///
+/// The native listener intentionally speaks plain WebSocket so deployments can
+/// bind it to localhost or a private interface and terminate TLS in a reverse
+/// proxy. Clients use explicit `wss://` seed URLs; plaintext `ws://` seeds are
+/// accepted only for loopback development and tests. A bounded nonce/key-hint
+/// exchange identifies a URL-only seed before Noise IK; after that exchange,
+/// every binary WebSocket message carries exactly one bounded FIPS physical
+/// record.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebSocketConfig {
+    /// Optional native plain-WS listener address. Unset means client-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind_addr: Option<String>,
+
+    /// Public `wss://` URL advertised for this listener, separate from bind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_url: Option<String>,
+
+    /// One or more explicit first-adjacency seed URLs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub seed_urls: Vec<String>,
+
+    /// HTTP path accepted by the native listener. Defaults to `/fips`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+
+    /// Dataplane/path budget. Defaults to 1400 bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mtu: Option<u16>,
+
+    /// Maximum binary WebSocket message size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_frame_bytes: Option<usize>,
+
+    /// Maximum queued outbound records per connection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_send_queue: Option<usize>,
+
+    /// Maximum total WebSocket connections for this transport instance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_connections: Option<usize>,
+
+    /// Maximum simultaneous inbound WebSocket connections.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_inbound_connections: Option<usize>,
+
+    /// Outbound TCP/TLS/WebSocket connect timeout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connect_timeout_ms: Option<u64>,
+
+    /// Time allowed for the untrusted seed-key hint exchange.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_hint_timeout_ms: Option<u64>,
+
+    /// Initial reconnect delay for configured seeds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconnect_initial_ms: Option<u64>,
+
+    /// Maximum reconnect delay for configured seeds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconnect_max_ms: Option<u64>,
+
+    /// WebSocket ping interval. Zero disables transport pings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ping_interval_secs: Option<u64>,
+
+    /// Close connections with no received frame for this long. Zero disables.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_secs: Option<u64>,
+
+    /// Accept fresh inbound Noise IK handshakes. Defaults to true whenever the
+    /// transport has a listener or seed URL. WebSocket dial direction does not
+    /// constrain FIPS session direction on an established routed adjacency.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accept_connections: Option<bool>,
+}
+
+impl WebSocketConfig {
+    pub fn path(&self) -> &str {
+        self.path.as_deref().unwrap_or(DEFAULT_WEBSOCKET_PATH)
+    }
+
+    pub fn mtu(&self) -> u16 {
+        self.mtu.unwrap_or(DEFAULT_WEBSOCKET_MTU)
+    }
+
+    pub fn max_frame_bytes(&self) -> usize {
+        self.max_frame_bytes
+            .unwrap_or(DEFAULT_WEBSOCKET_MAX_FRAME_BYTES)
+    }
+
+    pub fn max_send_queue(&self) -> usize {
+        self.max_send_queue
+            .unwrap_or(DEFAULT_WEBSOCKET_MAX_SEND_QUEUE)
+            .max(1)
+    }
+
+    pub fn max_connections(&self) -> usize {
+        self.max_connections
+            .unwrap_or(DEFAULT_WEBSOCKET_MAX_CONNECTIONS)
+            .max(1)
+    }
+
+    pub fn max_inbound_connections(&self) -> usize {
+        self.max_inbound_connections
+            .unwrap_or(DEFAULT_WEBSOCKET_MAX_INBOUND)
+            .max(1)
+            .min(self.max_connections())
+    }
+
+    pub fn connect_timeout_ms(&self) -> u64 {
+        self.connect_timeout_ms
+            .unwrap_or(DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS)
+            .max(1)
+    }
+
+    pub fn key_hint_timeout_ms(&self) -> u64 {
+        self.key_hint_timeout_ms
+            .unwrap_or(DEFAULT_WEBSOCKET_KEY_HINT_TIMEOUT_MS)
+            .max(1)
+    }
+
+    pub fn reconnect_initial_ms(&self) -> u64 {
+        self.reconnect_initial_ms
+            .unwrap_or(DEFAULT_WEBSOCKET_RECONNECT_INITIAL_MS)
+            .max(1)
+    }
+
+    pub fn reconnect_max_ms(&self) -> u64 {
+        self.reconnect_max_ms
+            .unwrap_or(DEFAULT_WEBSOCKET_RECONNECT_MAX_MS)
+            .max(self.reconnect_initial_ms())
+    }
+
+    pub fn ping_interval_secs(&self) -> u64 {
+        self.ping_interval_secs
+            .unwrap_or(DEFAULT_WEBSOCKET_PING_INTERVAL_SECS)
+    }
+
+    pub fn idle_timeout_secs(&self) -> u64 {
+        self.idle_timeout_secs
+            .unwrap_or(DEFAULT_WEBSOCKET_IDLE_TIMEOUT_SECS)
+    }
+
+    pub fn accept_connections(&self) -> bool {
+        self.accept_connections
+            .unwrap_or_else(|| self.bind_addr.is_some() || !self.seed_urls.is_empty())
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(bind_addr) = self.bind_addr.as_deref() {
+            bind_addr
+                .parse::<SocketAddr>()
+                .map_err(|error| format!("invalid bind_addr {bind_addr:?}: {error}"))?;
+        }
+        if !self.path().starts_with('/') || self.path().contains('?') || self.path().contains('#') {
+            return Err("path must be an absolute HTTP path without query or fragment".into());
+        }
+        if let Some(public_url) = self.public_url.as_deref() {
+            validate_websocket_url(public_url, false)?;
+            let uri = public_url
+                .parse::<tokio_tungstenite::tungstenite::http::Uri>()
+                .map_err(|error| format!("invalid public_url: {error}"))?;
+            if uri.path() != self.path() {
+                return Err(format!(
+                    "public_url path {:?} does not match configured path {:?}",
+                    uri.path(),
+                    self.path()
+                ));
+            }
+            if self.bind_addr.is_none() {
+                return Err("public_url requires bind_addr".into());
+            }
+        }
+        let mut unique = std::collections::HashSet::new();
+        for seed_url in &self.seed_urls {
+            validate_websocket_url(seed_url, true)?;
+            if !unique.insert(seed_url) {
+                return Err(format!("duplicate seed URL {seed_url:?}"));
+            }
+        }
+        let minimum_frame = usize::from(self.mtu()).saturating_add(64);
+        if self.max_frame_bytes() < minimum_frame || self.max_frame_bytes() > 1024 * 1024 {
+            return Err(format!(
+                "max_frame_bytes must be between {minimum_frame} and 1048576"
+            ));
+        }
+        if self.max_send_queue() > 4096 {
+            return Err("max_send_queue must not exceed 4096".into());
+        }
+        if self.max_connections() > 4096 {
+            return Err("max_connections must not exceed 4096".into());
+        }
+        if self.max_inbound_connections() > self.max_connections() {
+            return Err("max_inbound_connections must not exceed max_connections".into());
+        }
+        if self.ping_interval_secs() > 0
+            && self.idle_timeout_secs() > 0
+            && self.idle_timeout_secs() <= self.ping_interval_secs()
+        {
+            return Err("idle_timeout_secs must exceed ping_interval_secs".into());
+        }
+        Ok(())
+    }
+}
+
+fn validate_websocket_url(raw: &str, allow_loopback_plaintext: bool) -> Result<(), String> {
+    let uri = raw
+        .parse::<tokio_tungstenite::tungstenite::http::Uri>()
+        .map_err(|error| format!("invalid WebSocket URL {raw:?}: {error}"))?;
+    let scheme = uri
+        .scheme_str()
+        .ok_or_else(|| format!("WebSocket URL {raw:?} is missing a scheme"))?;
+    let host = uri
+        .host()
+        .ok_or_else(|| format!("WebSocket URL {raw:?} is missing a host"))?;
+    if uri.authority().is_none() || uri.path().is_empty() {
+        return Err(format!("invalid WebSocket URL {raw:?}"));
+    }
+    match scheme {
+        "wss" => Ok(()),
+        "ws" if allow_loopback_plaintext && websocket_host_is_loopback(host) => Ok(()),
+        "ws" => Err(format!(
+            "plaintext WebSocket URL {raw:?} is allowed only for loopback seeds"
+        )),
+        _ => Err(format!("WebSocket URL {raw:?} must use wss://")),
+    }
+}
+
+fn websocket_host_is_loopback(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .trim_matches(['[', ']'])
+            .parse::<IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 // ============================================================================

@@ -697,7 +697,7 @@ fn test_validate_transport_advert_requires_nostr_enabled() {
 }
 
 #[test]
-fn test_validate_empty_peer_addresses_require_nostr_enabled() {
+fn test_validate_empty_peer_addresses_require_a_resolution_path() {
     let mut config = Config {
         peers: vec![PeerConfig {
             npub: "npub1peer".to_string(),
@@ -708,7 +708,7 @@ fn test_validate_empty_peer_addresses_require_nostr_enabled() {
     config.node.discovery.nostr.enabled = false;
 
     let err = config.validate().expect_err("validation should fail");
-    assert!(err.to_string().contains("node.discovery.nostr"));
+    assert!(err.to_string().contains("WebSocket seed URL"));
 }
 
 #[test]
@@ -729,6 +729,47 @@ fn test_validate_peer_addresses_optional_with_nostr_enabled() {
     config
         .validate()
         .expect("Nostr discovery should allow empty addresses");
+}
+
+#[test]
+fn test_validate_peer_addresses_optional_with_websocket_seed() {
+    let mut config = Config {
+        peers: vec![PeerConfig {
+            npub: "npub1peer".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    config.node.discovery.nostr.enabled = false;
+    config.transports.websocket = TransportInstances::Single(WebSocketConfig {
+        seed_urls: vec!["wss://seed.example/fips".to_string()],
+        ..Default::default()
+    });
+
+    config
+        .validate()
+        .expect("a WSS first adjacency can route to an addressless peer");
+}
+
+#[test]
+fn test_validate_peer_addresses_optional_with_ethernet_discovery() {
+    let mut config = Config {
+        peers: vec![PeerConfig {
+            npub: "npub1peer".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    config.node.discovery.nostr.enabled = false;
+    config.transports.ethernet = TransportInstances::Single(EthernetConfig {
+        interface: "eth0".to_string(),
+        discovery: Some(true),
+        ..Default::default()
+    });
+
+    config
+        .validate()
+        .expect("Ethernet discovery can resolve an addressless peer");
 }
 
 #[test]

@@ -624,15 +624,14 @@ async fn active_fallback_uses_cached_direct_advert_as_probe_hint() {
 
 #[cfg(feature = "webrtc-transport")]
 #[tokio::test]
-async fn healthy_relay_upgrade_skips_relay_redial_and_unadvertised_udp_nat() {
-    use crate::Transport;
+async fn healthy_websocket_upgrade_skips_bootstrap_redial_and_unadvertised_udp_nat() {
     use crate::config::{
-        NostrDiscoveryConfig, NostrDiscoveryPolicy, NostrRelayConfig, TransportInstances,
-        WebRtcConfig,
+        NostrDiscoveryConfig, NostrDiscoveryPolicy, TransportInstances, WebRtcConfig,
+        WebSocketConfig,
     };
     use crate::discovery::nostr::{OverlayEndpointAdvert, OverlayTransportKind};
-    use crate::transport::nostr_relay::NostrRelayTransport;
     use crate::transport::webrtc::WebRtcTransport;
+    use crate::transport::websocket::WebSocketTransport;
 
     let local_identity = Identity::generate();
     let mut peer_secret = [0u8; 32];
@@ -662,7 +661,7 @@ async fn healthy_relay_upgrade_skips_relay_redial_and_unadvertised_udp_nat() {
         resolve_mdns_candidates: Some(false),
         ..Default::default()
     };
-    config.transports.nostr_relay = TransportInstances::Single(NostrRelayConfig::default());
+    config.transports.websocket = TransportInstances::Single(WebSocketConfig::default());
     config.transports.webrtc = TransportInstances::Single(webrtc_config.clone());
     config.peers = vec![peer_config.clone()];
     let mut node = Node::with_identity(local_identity, config).expect("node");
@@ -670,19 +669,21 @@ async fn healthy_relay_upgrade_skips_relay_redial_and_unadvertised_udp_nat() {
     node.packet_tx = Some(packet_tx.clone());
     node.packet_rx = Some(packet_rx);
 
-    let relay_transport_id = TransportId::new(1);
-    let mut relay = NostrRelayTransport::new(
-        relay_transport_id,
+    let bootstrap_transport_id = TransportId::new(1);
+    let mut websocket = WebSocketTransport::new(
+        bootstrap_transport_id,
         None,
-        NostrRelayConfig::default(),
+        WebSocketConfig::default(),
         packet_tx.clone(),
         node.identity(),
-    )
-    .expect("relay transport");
-    relay.start().expect("start relay transport");
+    );
+    websocket
+        .start_async()
+        .await
+        .expect("start WebSocket transport");
     node.transports.insert(
-        relay_transport_id,
-        TransportHandle::NostrRelay(Box::new(relay)),
+        bootstrap_transport_id,
+        TransportHandle::WebSocket(Box::new(websocket)),
     );
     let webrtc_transport_id = TransportId::new(2);
     let mut webrtc = WebRtcTransport::new(
@@ -703,11 +704,11 @@ async fn healthy_relay_upgrade_skips_relay_redial_and_unadvertised_udp_nat() {
         TransportHandle::WebRtc(Box::new(webrtc)),
     );
 
-    let active_addr = TransportAddr::from_string(&hex::encode(peer_full.pubkey().serialize()));
+    let active_addr = TransportAddr::from_string("wss://seed.example/fips");
     let active = make_active_test_peer(
         &node,
         &peer_full,
-        relay_transport_id,
+        bootstrap_transport_id,
         LinkId::new(7),
         active_addr,
         crate::utils::index::SessionIndex::new(11),
@@ -735,8 +736,8 @@ async fn healthy_relay_upgrade_skips_relay_redial_and_unadvertised_udp_nat() {
         1_700_000_000,
     );
     advert.advert.endpoints.push(OverlayEndpointAdvert {
-        transport: OverlayTransportKind::NostrRelay,
-        addr: peer_npub.clone(),
+        transport: OverlayTransportKind::WebSocket,
+        addr: "wss://seed.example/fips".into(),
     });
     bootstrap
         .insert_advert_for_test(peer_npub.clone(), advert)
@@ -763,16 +764,11 @@ async fn healthy_relay_upgrade_skips_relay_redial_and_unadvertised_udp_nat() {
         "Node must not retain a parity-split alias for the advertised WebRTC identity"
     );
 
-    let TransportHandle::NostrRelay(relay) = node
-        .transports
-        .get(&relay_transport_id)
-        .expect("relay transport")
-    else {
-        panic!("expected relay transport");
-    };
     assert!(
-        relay.drain_outbound_events(8).is_empty(),
-        "a healthy relay path must not handshake with itself during a direct-upgrade pass"
+        node.pending_connects
+            .iter()
+            .all(|pending| pending.transport_id != bootstrap_transport_id),
+        "a healthy WebSocket path must not redial itself during a direct-upgrade pass"
     );
 
     tokio::time::timeout(Duration::from_secs(1), async {
@@ -789,7 +785,7 @@ async fn healthy_relay_upgrade_skips_relay_redial_and_unadvertised_udp_nat() {
     node.poll_nostr_discovery().await;
     assert!(
         bootstrap.failure_state_snapshot().is_empty(),
-        "a WebRTC+relay advert without udp:nat must not record a NAT traversal failure"
+        "a WebRTC+WebSocket advert without udp:nat must not record a NAT traversal failure"
     );
 
     for transport in node.transports.values_mut() {

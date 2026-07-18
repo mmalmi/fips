@@ -4,12 +4,12 @@
 //! underlying communication mechanisms (UDP, Ethernet, Tor, etc.) over
 //! which FIPS links are established.
 
-pub mod nostr_relay;
 pub mod tcp;
 pub mod tor;
 pub mod udp;
 #[cfg(feature = "webrtc-transport")]
 pub mod webrtc;
+pub mod websocket;
 
 #[cfg(feature = "sim-transport")]
 pub mod sim;
@@ -273,11 +273,11 @@ impl TransportType {
         reliable: false,
     };
 
-    /// Encrypted FIPS datagrams carried by ephemeral Nostr relay events.
-    pub const NOSTR_RELAY: TransportType = TransportType {
-        name: "nostr_relay",
-        connection_oriented: false,
-        reliable: false,
+    /// Binary WebSocket physical transport.
+    pub const WEBSOCKET: TransportType = TransportType {
+        name: "websocket",
+        connection_oriented: true,
+        reliable: true,
     };
 
     /// In-memory simulated packet transport.

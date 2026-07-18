@@ -221,10 +221,9 @@ fn queue_active_fallback_direct_retries_seeds_configured_relayed_peer() {
 }
 
 #[test]
-fn healthy_configured_nostr_relay_peer_keeps_direct_upgrade_retry() {
-    use crate::Transport;
-    use crate::config::NostrRelayConfig;
-    use crate::transport::nostr_relay::NostrRelayTransport;
+fn healthy_configured_websocket_peer_keeps_direct_upgrade_retry() {
+    use crate::config::WebSocketConfig;
+    use crate::transport::websocket::WebSocketTransport;
 
     let local_identity = Identity::generate();
     let peer_identity = Identity::generate();
@@ -235,9 +234,9 @@ fn healthy_configured_nostr_relay_peer_keeps_direct_upgrade_retry() {
         npub: peer_npub.clone(),
         alias: None,
         addresses: vec![crate::config::PeerAddress::with_priority(
-            "nostr_relay",
-            peer_npub.clone(),
-            250,
+            "websocket",
+            "wss://seed.example/fips",
+            200,
         )],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
         auto_reconnect: true,
@@ -248,27 +247,25 @@ fn healthy_configured_nostr_relay_peer_keeps_direct_upgrade_retry() {
     config.node.discovery.nostr.enabled = true;
     config.peers.push(peer_config.clone());
     let mut node = Node::with_identity(local_identity, config).expect("node");
-    let relay_transport_id = TransportId::new(1);
+    let bootstrap_transport_id = TransportId::new(1);
     let (packet_tx, _packet_rx) = packet_channel(8);
-    let mut relay = NostrRelayTransport::new(
-        relay_transport_id,
+    let bootstrap = WebSocketTransport::new(
+        bootstrap_transport_id,
         None,
-        NostrRelayConfig::default(),
+        WebSocketConfig::default(),
         packet_tx,
         &node.identity,
-    )
-    .expect("relay transport");
-    relay.start().expect("start relay transport");
+    );
     node.transports.insert(
-        relay_transport_id,
-        TransportHandle::NostrRelay(Box::new(relay)),
+        bootstrap_transport_id,
+        TransportHandle::WebSocket(Box::new(bootstrap)),
     );
     let active = make_active_test_peer(
         &node,
         &peer_identity,
-        relay_transport_id,
+        bootstrap_transport_id,
         LinkId::new(7),
-        crate::transport::TransportAddr::from_string(&peer_npub),
+        crate::transport::TransportAddr::from_string("wss://seed.example/fips"),
         crate::utils::index::SessionIndex::new(11),
         crate::utils::index::SessionIndex::new(12),
     );
@@ -282,14 +279,14 @@ fn healthy_configured_nostr_relay_peer_keeps_direct_upgrade_retry() {
     let state = node
         .retry_pending
         .get(&peer_addr)
-        .expect("a relay carrier must not suppress better direct-path retries");
+        .expect("a WebSocket bootstrap must not suppress better direct-path retries");
     assert_eq!(state.peer_config.npub, peer_config.npub);
     assert!(state.reconnect);
 
     node.clear_retry_unless_direct_refresh_needed(&peer_addr);
     assert!(
         node.retry_pending.contains_key(&peer_addr),
-        "fresh application traffic over the relay must not cancel the direct-path upgrade"
+        "fresh application traffic over WebSocket must not cancel the direct-path upgrade"
     );
 }
 

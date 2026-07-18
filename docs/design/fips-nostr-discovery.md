@@ -1,53 +1,55 @@
-# Nostr peerfinding and relay fallback
+# Nostr peer and service discovery
 
 > **Status:** Implemented behind the `nostr-discovery` cargo feature.
 
-FIPS uses Nostr for two deliberately separate jobs:
+FIPS uses Nostr only as a bounded, signed discovery/pubsub plane. Public kind
+`37195` adverts identify peers and describe reachable physical transports and
+services. Applications may distribute those adverts through configured Nostr
+relays, `nostr-pubsub`, or both.
 
-1. Public kind `37195` adverts find peers and describe candidate transports.
-2. Optional ephemeral kind `21060` events carry encrypted FIPS wire datagrams
-   when no direct transport is available yet.
+Nostr events are not a FIPS physical transport. In particular, FIPS wire
+records are never wrapped in ephemeral relay events. A node needs a physical
+adjacency such as WebSocket, WebRTC, Ethernet, UDP, TCP, or Tor before it can
+exchange authenticated FIPS traffic.
 
-There is no DM-relay configuration or Nostr-specific offer/answer plane.
-UDP traversal uses its existing session messages. Generic link negotiation is
-an ordinary service carried by the existing FSP `DataPacket` message (`0x10`)
-on standard service port 257. Once a relay-carried session exists, FIPS can
-negotiate a better UDP, WebRTC, or TCP path without adding an FSP message type.
+## First adjacency and upgrades
+
+A browser or native client that starts with no peer addresses can dial one or
+more explicit `wss://` seed URLs. The WebSocket connection carries ordinary
+FIPS records and the normal Noise handshake authenticates the peer. Because a
+URL does not identify the seed's FIPS key, a client first sends a 13-byte
+nonce-bound key-hint request and receives the seed's 45-byte key-hint response.
+The hint is untrusted routing metadata; Noise IK remains the authentication
+boundary. All later binary WebSocket messages are exactly one complete FIPS
+record. A native seed may expose a plain-WS listener on a loopback or private
+address behind a TLS reverse proxy.
+
+Once an authenticated adjacency exists, FIPS link negotiation can establish a
+better direct WebRTC, UDP, TCP, or other configured path. Link selection is
+transport-neutral: a healthy direct path may preempt the WebSocket bootstrap
+path, while the WebSocket connection can remain available for control traffic.
 
 ## Ownership boundary
 
-FIPS owns event construction and validation. The embedding application owns
-relay selection and network delivery.
+FIPS owns advert construction, validation, expiry, and the authenticated link
+negotiation that follows discovery. The embedding application owns relay and
+pubsub provider selection.
 
 ```text
-                       public kind 37195 adverts
-             configured relays + decentralized pubsub mesh
-                                    |
-                                    v
-                         +---------------------+
-                         | validated advert    |
-                         | cache / peerfinding |
-                         +---------------------+
-                                    |
-                         low-priority bootstrap
-                                    |
-                                    v
-        app-configured relays <-> kind 21060 <-> FIPS session
-                                    |
-                        authenticated negotiation
-                         /          |          \
-                       UDP       WebRTC        TCP
+ configured relays and/or nostr-pubsub
+                  |
+          signed kind 37195 adverts
+                  |
+        validated peer/service cache
+                  |
+  existing authenticated FIPS adjacency
+       /       |        |        \
+     WSS     WebRTC     UDP      TCP
 ```
 
-The external peerfinding provider may be `nostr-pubsub-fips`, which forwards
-kind `37195` events through both configured Nostr relays and decentralized
-pubsub. The raw relay fallback must not be sent through that whole EventBus:
-decentralized pubsub may already use FIPS and would recurse. Instead, the
-embedding application sends kind `21060` directly over its configured relay
-connections.
-
-Relay URLs therefore do not appear in `NostrRelayConfig`. The same application
-configuration that owns the relay bridge is the source of truth.
+The external peerfinding provider may be `nostr-pubsub-fips`. Relay-backed
+`nostr-pubsub` remains useful for peer and service announcements; it does not
+turn a Nostr relay into a packet carrier.
 
 ## Configuration
 
@@ -65,53 +67,28 @@ node:
         - "stun:stun.cloudflare.com:3478"
 
 transports:
-  nostr_relay:
-    mtu: 1280
-    auto_connect: true
-    accept_connections: true
-    max_pending_events: 1024
+  websocket:
+    seed_urls:
+      - "wss://seed-a.example/fips"
+      - "wss://seed-b.example/fips"
 ```
 
 `peerfinding_source` has two modes:
 
 - `relays`: fips-core opens `advert_relays` and directly publishes,
-  subscribes to, and queries kind `37195` adverts.
+  subscribes to, and queries signed adverts.
 - `external`: fips-core opens no advert relay connections. The application
   publishes `FipsEndpoint::local_nostr_discovery_advert_event()` and feeds
-  received events to `FipsEndpoint::ingest_nostr_event()`.
+  received events to `FipsEndpoint::ingest_nostr_discovery_event()`.
 
-Applications integrating `nostr-pubsub` should use `external`, so public
-peerfinding follows nostr-pubsub's configured relays and decentralized
-distribution rather than a duplicate relay pool inside fips-core.
-
-`transports.nostr_relay` enables only the FIPS transport endpoint and its
-bounded event queues. It does not open sockets or choose relays. The
-application drains signed outbound events with
-`FipsEndpoint::drain_nostr_relay_events()` and feeds received events back via
-`FipsEndpoint::ingest_nostr_event()`.
-
-Direct `Node` embedders can attach the equivalent `NostrRelayIo` handle before
-starting the node. The standalone `fips` daemon enables the default transport
-and attaches the adapter whenever `node.discovery.nostr.enabled` is true. It
-uses its application-configured `advert_relays` for the direct relay bridge.
-An explicit `transports.nostr_relay` section overrides the transport defaults.
-
-| Nostr relay transport field | Default | Meaning |
-| --- | --- | --- |
-| `mtu` | `1280` | Maximum FIPS wire datagram size before text encoding. |
-| `auto_connect` | `true` | Permit advert-derived relay fallback dials. |
-| `accept_connections` | `true` | Accept inbound FIPS handshakes from relay events. |
-| `max_pending_events` | `1024` | Bound on signed outbound events awaiting the adapter. |
-
-Deprecated `dm_relays` and WebRTC `signal_relays` fields are rejected as
-unknown configuration. This catches stale deployments instead of silently
-creating an unintended relay plane.
+Applications integrating `nostr-pubsub` should normally use `external`, so a
+single provider graph owns relay and in-FIPS pubsub distribution.
 
 ## Public peer adverts
 
 An advert is a signed kind `37195` parameterized replaceable event. Its `d`
 tag is the application namespace, which defaults to `fips-overlay-v1`. A
-NIP-40 expiration tag limits stale advertisements.
+NIP-40 expiration tag and created-at bound reject stale advertisements.
 
 The content is an `OverlayAdvert` document:
 
@@ -120,7 +97,7 @@ The content is an `OverlayAdvert` document:
   "identifier": "fips-overlay-v1",
   "version": 1,
   "endpoints": [
-    {"transport": "nostr_relay", "addr": "<author-npub>"},
+    {"transport": "websocket", "addr": "wss://seed.example/fips"},
     {"transport": "udp", "addr": "nat"},
     {"transport": "tcp", "addr": "203.0.113.8:2121"},
     {"transport": "webrtc", "addr": "<author-xonly-pubkey>"}
@@ -129,150 +106,29 @@ The content is an `OverlayAdvert` document:
 }
 ```
 
-Adverts contain capabilities and addresses, not relay sets. The relay that
-delivered an advert is useful reachability provenance, so an adapter may keep
-a short-lived author-to-relay mapping and prefer one or two of the newest
-observed routes for kind `21060`. This is a delivery hint, not an identity or
-trust signal. If no fresh route is known, the adapter should fan out to its
-configured relay list.
-
-Validated adverts populate an in-memory cache keyed by author. Expiration and
-a created-at staleness bound reject stale events, while
-`advert_cache_max_entries` bounds memory. Static peer addresses are tried
-before advert-derived addresses.
-
-With `policy: configured_only`, only configured identities may be learned from
+Adverts contain capabilities and transport addresses, not relay sets. Static
+peer addresses are tried before advert-derived addresses. With
+`policy: configured_only`, only configured identities may be learned from
 adverts. With `policy: open`, ambient valid adverts may enter the bounded
 open-discovery retry queue, subject to the peer ACL and trust ordering.
 
-## Ephemeral relay transport
+## Link negotiation
 
-Kind `21060` is in Nostr's ephemeral range. Each event has:
+UDP traversal and WebRTC negotiation run inside an authenticated FIPS session,
+not through Nostr offer/answer events. The generic link-negotiation service
+carries bounded adapter payloads on standard FSP service port 257.
 
-- the FIPS node identity as author;
-- exactly one `p` tag naming the recipient;
-- base64url-without-padding content containing one complete FIPS wire
-  datagram; and
-- a normal Nostr signature.
-
-The wire datagram is already encrypted and authenticated by FIPS. Adding
-NIP-44 or NIP-59 would duplicate encryption, introduce another key/envelope
-path, and increase message size. Base64url is used because Nostr event content
-is JSON text and interoperable binary event content is not available. Its
-rough 4/3 expansion is accepted for a fallback transport whose default MTU is
-1280 bytes.
-
-Inbound validation checks the Nostr signature, recipient, freshness, decoded
-size, and author/address binding before the packet enters the normal FIPS
-transport receive path. A relay can observe sender, recipient, timing, and
-size, but cannot decrypt the FIPS payload.
-
-The relay transport is connectionless and unreliable. Relays may reject,
-delay, duplicate, reorder, or drop ephemeral events. FIPS reliability and
-session behavior remain responsible for tolerating those properties. The
-transport advert priority is intentionally low (`250`) so directly reachable
-transports win.
-
-## Establishment and automatic upgrade
-
-The relay transport does not bypass FIPS authentication. Two peers bootstrap
-exactly as on UDP or another datagram carrier:
-
-1. A kind `37195` advert supplies the peer identity and relay capability.
-2. FIPS handshake datagrams are signed as kind `21060` events and delivered
-   by the application's relay bridge.
-3. The receiver validates the event, decodes the datagram, and completes the
-   normal Noise-authenticated FIPS handshake.
-4. After the session is established, candidate transport negotiation travels
-   inside encrypted `SessionMessage` frames.
-5. A successful UDP traversal or WebRTC/TCP connection becomes an ordinary
-   FIPS link and is preferred over the relay fallback.
-
-FIPS automates selection among configured and discovered transport candidates;
-it is not an unrestricted path oracle. A transport must be configured and its
-required runtime support must be present. UDP NAT traversal also requires a
-local STUN server list. When no better candidate succeeds, the relay-carried
-session remains usable, including in constrained environments where direct
-UDP, TCP, or WebRTC is unavailable.
-
-### UDP traversal
-
-A `udp:nat` advert says that the peer supports STUN-assisted hole punching.
-The initiating side gathers candidates on a per-peer punch socket, then sends
-`TraversalOffer` over the authenticated FIPS session. The responder validates
-the session peer identity, gathers its candidates, and returns
-`TraversalAnswer` on the same session. Both sides punch using the socket on
-which their reflexive address was observed. A successful socket is adopted by
-the UDP transport and runs the ordinary FIPS link handshake.
-
-Offers and answers are no longer Nostr events. Their TTL, replay cache, and
-bounded inbound-offer semaphore remain defense-in-depth for malformed or
-duplicated session messages.
-
-### WebRTC
-
-WebRTC SDP/ICE is an adapter payload inside the generic link-negotiation
-service. The envelope identifies the link type, negotiation ID, step, lifetime,
-and adapter-owned payload; FSP supplies the authenticated peer identity and
-replay protection. The WebRTC transport has no Nostr client or relay URL
-configuration. Once negotiated, its SCTP data channel carries FIPS traffic
-directly.
-
-An unsolicited WebRTC offer is eligible only when the adapter is enabled and
-inbound acceptance is enabled. By default, inbound acceptance follows public
-WebRTC advertisement; an explicit `accept_connections` setting overrides that
-policy for private deployments. Capacity, one-pending-dial-per-peer behavior,
-expiry, replay suppression, and deterministic simultaneous-dial resolution are
-checked before allocating or retaining a connection.
-The node's discovery admission policy is also enforced: configured-only mode
-rejects negotiation from non-configured identities, while open mode relies on
-its existing bounded ambient-peer admission.
-
-### TCP
-
-Advertised reachable TCP addresses can be dialed directly. Applications may
-also negotiate or distribute TCP candidates above the authenticated session;
-the relay fallback does not require a special TCP signaling protocol in
-fips-core.
-
-## Adapter guidance
-
-An external application bridge should:
-
-1. Publish and receive kind `37195` through its configured relay bridge and
-   decentralized pubsub EventBus.
-2. Record relay provenance only for valid received adverts.
-3. Subscribe on configured relays to kind `21060` filtered by the local `p`
-   tag.
-4. Pass relay datagrams directly between Nostr and `FipsEndpoint`, bypassing
-   the decentralized EventBus.
-5. Prefer up to two fresh advert-delivery relays for the recipient, then fall
-   back to all configured relays.
-6. Keep queues, event age, and event size bounded.
-
-The adapter may share relay connections with nostr-pubsub. It should not call
-the whole nostr-pubsub forwarding path for relay datagrams, since that path can
-include already-established FIPS connections.
+- `udp:nat` triggers STUN-assisted hole punching over the existing session.
+- WebRTC SDP/ICE is carried by authenticated link-negotiation messages.
+- Reachable TCP and WebSocket addresses can be dialed directly.
 
 ## Security properties
 
-- Kind `37195` adverts are public and signed. They prove authorship, not that
-  advertised endpoints are reachable or safe.
-- Kind `21060` metadata is visible to relays. Its content is an encrypted FIPS
-  datagram, and the eventual peer identity is accepted only after the normal
-  FIPS handshake.
-- Relay provenance is untrusted reachability information. A malicious relay
-  can suppress or replay adverts but cannot impersonate an author with a valid
-  signature.
-- Only locally configured STUN servers are queried. Advertised STUN metadata
-  is informational and cannot steer arbitrary egress.
-- Open peerfinding is not admission control. Peer ACLs and authenticated FIPS
-  identities remain authoritative.
-- The fallback's bounded queue and MTU limit memory amplification before
-  normal protocol admission takes effect.
-
-## See also
-
-- [fips-configuration.md](fips-configuration.md)
-- [fips-transport-layer.md](fips-transport-layer.md)
-- [nostr-udp-hole-punch-protocol.md](../proposals/nostr-udp-hole-punch-protocol.md)
+- Kind `37195` adverts are signed and public. They prove authorship, not
+  reachability or authorization.
+- Noise authenticates every FIPS physical link independently of the advert or
+  TLS reverse proxy.
+- Advert caches, event age, peer counts, reconnects, frames, and queues are
+  bounded.
+- Relay operators may observe advert metadata, but they never carry FIPS
+  ciphertext packets as Nostr events.

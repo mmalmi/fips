@@ -30,7 +30,6 @@ const ENDPOINT_OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
 mod builder;
 #[path = "endpoint/nostr.rs"]
 mod nostr_api;
-mod nostr_relay_io;
 mod receive;
 mod service_receiver;
 mod status;
@@ -44,7 +43,6 @@ pub use crate::node::{
     FipsEndpointDirectReceiver, FipsEndpointDirectSink,
 };
 pub use builder::FipsEndpointBuilder;
-pub use nostr_relay_io::NostrRelayIo;
 use receive::{EndpointReceiveState, ServiceReceiveState};
 pub use status::{FipsEndpointPeer, FipsEndpointRelayStatus};
 

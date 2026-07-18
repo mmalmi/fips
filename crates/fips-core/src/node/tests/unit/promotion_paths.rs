@@ -439,7 +439,7 @@ async fn higher_priority_discovered_inbound_path_replaces_relay_fallback() {
 
     assert!(
         matches!(result, PromotionResult::CrossConnectionWon { .. }),
-        "an authenticated higher-priority discovered path should replace the relay fallback"
+        "an authenticated higher-priority discovered path should replace the WebSocket bootstrap"
     );
     let active = node.get_peer(&peer_node_addr).unwrap();
     assert_eq!(active.link_id(), new_link_id);
@@ -453,29 +453,27 @@ async fn higher_priority_discovered_inbound_path_replaces_relay_fallback() {
 }
 
 #[tokio::test]
-async fn direct_inbound_path_replaces_unconfigured_nostr_relay_fallback() {
-    use crate::Transport;
-    use crate::config::NostrRelayConfig;
-    use crate::transport::nostr_relay::NostrRelayTransport;
+async fn direct_inbound_path_replaces_unconfigured_websocket_bootstrap() {
+    use crate::config::WebSocketConfig;
+    use crate::transport::websocket::WebSocketTransport;
 
     let mut node = make_node();
     let (packet_tx, packet_rx) = packet_channel(64);
     node.packet_tx = Some(packet_tx.clone());
     node.packet_rx = Some(packet_rx);
 
-    let relay_transport_id = TransportId::new(1);
-    let mut relay = NostrRelayTransport::new(
-        relay_transport_id,
+    let bootstrap_transport_id = TransportId::new(1);
+    let mut bootstrap = WebSocketTransport::new(
+        bootstrap_transport_id,
         None,
-        NostrRelayConfig::default(),
+        WebSocketConfig::default(),
         packet_tx.clone(),
         &node.identity,
-    )
-    .unwrap();
-    relay.start().unwrap();
+    );
+    bootstrap.start_async().await.unwrap();
     node.transports.insert(
-        relay_transport_id,
-        TransportHandle::NostrRelay(Box::new(relay)),
+        bootstrap_transport_id,
+        TransportHandle::WebSocket(Box::new(bootstrap)),
     );
 
     let direct_transport_id = TransportId::new(2);
@@ -499,7 +497,7 @@ async fn direct_inbound_path_replaces_unconfigured_nostr_relay_fallback() {
         "fixture should make the inbound upgrade lose an ordinary initial-connection race"
     );
 
-    let relay_addr = TransportAddr::from_string(&peer_identity.npub());
+    let bootstrap_addr = TransportAddr::from_string("wss://seed.example/fips");
     let direct_addr = TransportAddr::from_string("127.0.0.1:9000");
     let old_link_id = LinkId::new(10);
     let old_our_index = SessionIndex::new(11);
@@ -514,16 +512,18 @@ async fn direct_inbound_path_replaces_unconfigured_nostr_relay_fallback() {
             session: old_session,
             our_index: old_our_index,
             their_index: old_their_index,
-            transport_id: relay_transport_id,
-            current_addr: relay_addr,
+            transport_id: bootstrap_transport_id,
+            current_addr: bootstrap_addr,
             link_stats: crate::transport::LinkStats::new(),
             is_initiator: false,
             remote_epoch: Some([0x11; 8]),
         },
     );
     node.peers.insert(peer_node_addr, old_peer);
-    node.peers
-        .insert_session_index((relay_transport_id, old_our_index.as_u32()), peer_node_addr);
+    node.peers.insert_session_index(
+        (bootstrap_transport_id, old_our_index.as_u32()),
+        peer_node_addr,
+    );
 
     let new_link_id = LinkId::new(11);
     let mut inbound = PeerConnection::inbound(new_link_id, 2_000);
@@ -552,7 +552,7 @@ async fn direct_inbound_path_replaces_unconfigured_nostr_relay_fallback() {
 
     assert!(
         matches!(result, PromotionResult::CrossConnectionWon { .. }),
-        "an authenticated direct path should replace relay fallback without a reciprocal advert"
+        "an authenticated direct path should replace WebSocket bootstrap without a reciprocal advert"
     );
     let active = node.get_peer(&peer_node_addr).unwrap();
     assert_eq!(active.link_id(), new_link_id);

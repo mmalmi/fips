@@ -8,7 +8,7 @@ use tracing::debug;
 
 /// WebRTC has no relay client of its own. Its SDP negotiation is ordinary
 /// encrypted FIPS session traffic, which also lets any bootstrap transport
-/// (including the Nostr relay fallback) negotiate a better data path.
+/// (including WebSocket) negotiate a better data path.
 #[derive(Clone)]
 pub(super) struct FipsSignalSender {
     tx: mpsc::UnboundedSender<OutboundLinkNegotiation>,

@@ -180,7 +180,9 @@ fn endpoint_advert_is_publicly_usable(endpoint: &OverlayEndpointAdvert) -> bool 
         }
         super::types::OverlayTransportKind::Tor => true,
         super::types::OverlayTransportKind::WebRtc => is_compressed_pubkey_hex(addr),
-        super::types::OverlayTransportKind::NostrRelay => nostr::PublicKey::parse(addr).is_ok(),
+        super::types::OverlayTransportKind::WebSocket => addr
+            .parse::<tokio_tungstenite::tungstenite::http::Uri>()
+            .is_ok_and(|uri| uri.scheme_str() == Some("wss") && uri.host().is_some()),
     }
 }
 

@@ -117,8 +117,7 @@ pub enum OverlayTransportKind {
     Tcp,
     Tor,
     WebRtc,
-    #[serde(rename = "nostr_relay")]
-    NostrRelay,
+    WebSocket,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

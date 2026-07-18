@@ -1,10 +1,9 @@
 //! App-facing FIPS endpoint API.
 
-pub use fips_core::NostrRelayAdapter;
 pub use fips_core::config::{
     Config, ConnectPolicy, EthernetConfig, NostrDiscoveryConfig, NostrDiscoveryPolicy,
-    NostrPeerfindingSource, NostrRelayConfig, PeerAddress, PeerAddressProvenance, PeerConfig,
-    RoutingMode, TransportInstances, TransportsConfig, UdpConfig,
+    NostrPeerfindingSource, PeerAddress, PeerAddressProvenance, PeerConfig, RoutingMode,
+    TransportInstances, TransportsConfig, UdpConfig, WebSocketConfig,
 };
 pub use fips_core::endpoint::{
     FIPS_ENDPOINT_DIRECT_PACKET_QUEUE_MAX_PACKETS, FIPS_ENDPOINT_DIRECT_PACKET_RUN_MAX_PACKETS,

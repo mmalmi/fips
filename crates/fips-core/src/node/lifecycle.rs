@@ -42,7 +42,7 @@ pub(super) struct PendingMeshSignal {
 /// CGNAT (100.64/10), unspecified, multicast/benchmark, and IPv6
 /// unique-local/loopback/unspecified. We never publish these as the
 /// peer's primary `runtime_endpoint`; an off-LAN consumer can't route
-/// to them, and latching one in onto a slow overlay-relay fallback is
+/// to them, and latching one in while using a remote bootstrap path is
 /// the original bug this guard exists to prevent.
 fn is_unroutable_advert_ip(ip: IpAddr) -> bool {
     match ip {

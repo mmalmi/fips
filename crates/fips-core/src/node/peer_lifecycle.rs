@@ -102,11 +102,6 @@ impl ActivePeerRegistry {
     pub(in crate::node) fn session_index_is_empty(&self) -> bool {
         self.by_session_index.is_empty()
     }
-
-    #[cfg(test)]
-    pub(in crate::node) fn session_index_count(&self) -> usize {
-        self.by_session_index.len()
-    }
 }
 
 impl<'a> IntoIterator for &'a ActivePeerRegistry {
@@ -546,11 +541,6 @@ impl PeerLifecycleRegistry {
     #[cfg(test)]
     pub(in crate::node) fn session_index_is_empty(&self) -> bool {
         self.active.session_index_is_empty()
-    }
-
-    #[cfg(test)]
-    pub(in crate::node) fn session_index_count(&self) -> usize {
-        self.active.session_index_count()
     }
 }
 

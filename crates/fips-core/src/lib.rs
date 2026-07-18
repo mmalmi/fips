@@ -19,7 +19,6 @@ pub(crate) mod dataplane;
 pub mod mmp;
 pub mod node;
 pub mod noise;
-pub mod nostr_relay_adapter;
 pub mod peer;
 pub mod peer_rating;
 pub(crate) mod perf_profile;
@@ -89,7 +88,5 @@ pub use endpoint::{
     FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun, FipsEndpointDirectReceiver,
     FipsEndpointDirectSink, FipsEndpointError, FipsEndpointMessage, FipsEndpointOutboundDatagram,
     FipsEndpointServiceDatagram, FipsEndpointServiceReceiver, LocalServiceRegistrationError,
-    NostrRelayIo,
 };
 pub use node::{ExternalPacketIo, Node, NodeDeliveredPacket, NodeError, NodeState};
-pub use nostr_relay_adapter::NostrRelayAdapter;

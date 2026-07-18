@@ -123,7 +123,6 @@ dns:
   port: 5354
 
 transports:
-  nostr_relay: {}
   udp:
     bind_addr: "0.0.0.0:2121"
     mtu: 1472

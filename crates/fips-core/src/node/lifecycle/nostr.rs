@@ -175,10 +175,10 @@ impl Node {
             OverlayTransportKind::Tcp => "tcp",
             OverlayTransportKind::Tor => "tor",
             OverlayTransportKind::WebRtc => "webrtc",
-            OverlayTransportKind::NostrRelay => "nostr_relay",
+            OverlayTransportKind::WebSocket => "websocket",
         };
-        let priority = if endpoint.transport == OverlayTransportKind::NostrRelay {
-            250
+        let priority = if endpoint.transport == OverlayTransportKind::WebSocket {
+            200
         } else {
             priority
         };
@@ -200,12 +200,9 @@ impl Node {
                 .webrtc
                 .iter()
                 .any(|(_, config)| config.auto_connect()),
-            OverlayTransportKind::NostrRelay => self
-                .config
-                .transports
-                .nostr_relay
-                .iter()
-                .any(|(_, config)| config.auto_connect()),
+            OverlayTransportKind::WebSocket => {
+                self.config.transports.websocket.iter().next().is_some()
+            }
             _ => true,
         }
     }
@@ -571,8 +568,8 @@ impl Node {
                 skipped_self = skipped_self.saturating_add(1);
                 continue;
             }
-            let active_relay_fallback = self.active_peer_uses_nostr_relay(&node_addr);
-            if self.peers.contains_key(&node_addr) && !active_relay_fallback {
+            let active_bootstrap_path = self.active_peer_uses_websocket(&node_addr);
+            if self.peers.contains_key(&node_addr) && !active_bootstrap_path {
                 skipped_connected = skipped_connected.saturating_add(1);
                 continue;
             }
@@ -635,7 +632,7 @@ impl Node {
                 auto_reconnect: true,
                 discovery_fallback_transit: false,
             });
-            state.reconnect = active_relay_fallback;
+            state.reconnect = active_bootstrap_path;
             state.retry_after_ms = now_ms;
             state.expires_at_ms = Some(self.open_discovery_retry_expires_at_ms(now_ms));
             self.retry_pending.insert(node_addr, state);
@@ -643,7 +640,7 @@ impl Node {
                 caller = %caller,
                 peer = %peer_identity.short_npub(),
                 advert_age_secs = now_secs.saturating_sub(created_at_secs),
-                relay_upgrade = active_relay_fallback,
+                bootstrap_upgrade = active_bootstrap_path,
                 "open-discovery sweep: queued retry for cached advert"
             );
             enqueue_budget = enqueue_budget.saturating_sub(1);

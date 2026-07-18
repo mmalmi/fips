@@ -44,8 +44,8 @@ pub use peer::{ConnectPolicy, PeerAddress, PeerAddressProvenance, PeerConfig};
 #[cfg(feature = "sim-transport")]
 pub use transport::SimTransportConfig;
 pub use transport::{
-    BleConfig, DirectoryServiceConfig, EthernetConfig, NostrRelayConfig, TcpConfig, TorConfig,
-    TransportInstances, TransportsConfig, UdpConfig, WebRtcConfig,
+    BleConfig, DirectoryServiceConfig, EthernetConfig, TcpConfig, TorConfig, TransportInstances,
+    TransportsConfig, UdpConfig, WebRtcConfig, WebSocketConfig,
 };
 pub(crate) use webrtc_budget::{
     MAX_WEBRTC_CONFIG_CANDIDATE_SOCKETS, validate_webrtc_candidate_socket_budget,
@@ -675,10 +675,22 @@ impl Config {
             ));
         }
 
+        let can_resolve_addressless_peers = nostr.enabled
+            || self
+                .transports
+                .websocket
+                .iter()
+                .any(|(_, cfg)| !cfg.seed_urls.is_empty())
+            || self
+                .transports
+                .ethernet
+                .iter()
+                .any(|(_, cfg)| cfg.discovery());
+
         for (i, peer) in self.peers.iter().enumerate() {
-            if peer.addresses.is_empty() && !nostr.enabled {
+            if peer.addresses.is_empty() && !can_resolve_addressless_peers {
                 return Err(ConfigError::Validation(format!(
-                    "peers[{i}] ({}): must specify at least one address, or enable `node.discovery.nostr` to resolve endpoints from Nostr adverts",
+                    "peers[{i}] ({}): must specify at least one address, a WebSocket seed URL, or an enabled peer-discovery transport",
                     peer.npub
                 )));
             }
@@ -747,6 +759,15 @@ impl Config {
                     "transports.webrtc configured candidate socket budget reserves {webrtc_candidate_sockets}, exceeding {MAX_WEBRTC_CONFIG_CANDIDATE_SOCKETS}"
                 )));
             }
+        }
+
+        for (name, cfg) in self.transports.websocket.iter() {
+            cfg.validate().map_err(|reason| {
+                let label = name.unwrap_or("(unnamed)");
+                ConfigError::Validation(format!(
+                    "transports.websocket[{label}] configuration: {reason}"
+                ))
+            })?;
         }
 
         Ok(())

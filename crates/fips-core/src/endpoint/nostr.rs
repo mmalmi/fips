@@ -20,10 +20,7 @@ impl FipsEndpoint {
         .map_err(FipsEndpointError::Node)
     }
 
-    /// Feed a signed Nostr event received by an external adapter into FIPS.
-    ///
-    /// Public peer adverts and ratings enter their validated discovery caches;
-    /// targeted ephemeral relay datagrams enter the Nostr relay transport.
+    /// Feed a signed Nostr discovery or rating event into FIPS.
     /// Unsupported, invalid, stale, or incorrectly addressed events return
     /// `false`.
     pub async fn ingest_nostr_event(&self, event: nostr::Event) -> Result<bool, FipsEndpointError> {
@@ -50,24 +47,6 @@ impl FipsEndpoint {
         event: nostr::Event,
     ) -> Result<bool, FipsEndpointError> {
         self.ingest_nostr_event(event).await
-    }
-
-    /// Drain signed ephemeral FIPS datagram events for the external relay
-    /// adapter. Relay selection remains outside FIPS.
-    pub async fn drain_nostr_relay_events(
-        &self,
-        limit: usize,
-    ) -> Result<Vec<nostr::Event>, FipsEndpointError> {
-        let (response_tx, response_rx) = oneshot::channel();
-        self.control(
-            "Nostr relay event drain",
-            NodeEndpointControlCommand::DrainNostrRelayEvents {
-                limit: limit.max(1),
-                response_tx,
-            },
-            response_rx,
-        )
-        .await
     }
 
     /// Snapshot the endpoint addresses this node is currently advertising via

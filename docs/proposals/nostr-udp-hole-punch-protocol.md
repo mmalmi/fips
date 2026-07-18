@@ -2,17 +2,17 @@
 
 > **Status:** Implemented behind the `nostr-discovery` cargo feature. The
 > historical direct Nostr signaling protocol was removed: Nostr is used for
-> public peer adverts and, optionally, as a FIPS datagram carrier. Traversal
-> negotiation itself runs inside an authenticated FIPS session.
+> public peer adverts while traversal negotiation runs inside an authenticated
+> FIPS session.
 
 ## Abstract
 
 Two FIPS peers behind NAT can negotiate a direct UDP path with STUN-assisted
 hole punching. A public Nostr kind `37195` advert announces the `udp:nat`
 capability. The peers first establish any FIPS session, possibly over the
-ephemeral Nostr relay transport, and exchange traversal offers and answers as
-encrypted FIPS session messages. The successfully punched socket is adopted
-as a normal UDP transport.
+WebSocket bootstrap transport, and exchange traversal offers and answers as
+encrypted FIPS session messages. The successfully punched socket is adopted as
+a normal UDP transport.
 
 This removes the former kind `21059` gift-wrap protocol, DM relay sets, and
 NIP-65 inbox relay lookup. No relay receives a plaintext traversal payload or
@@ -40,7 +40,7 @@ The responder's signed kind `37195` event includes a public endpoint:
   "identifier": "fips-overlay-v1",
   "version": 1,
   "endpoints": [
-    {"transport": "nostr_relay", "addr": "<responder-npub>"},
+    {"transport": "websocket", "addr": "wss://seed.example/fips"},
     {"transport": "udp", "addr": "nat"}
   ],
   "stunServers": ["stun:stun.cloudflare.com:3478"]
@@ -57,13 +57,9 @@ configured STUN servers.
 
 Traversal negotiation requires an authenticated FIPS session. That session
 may already run over UDP, TCP, WebRTC, Tor, or another transport. Where no
-direct path exists, the application may carry FIPS datagrams as ephemeral
-kind `21060` relay events until the session is established.
-
-Kind `21060` is a generic low-priority FIPS transport, not a traversal
-message. Its content is one base64url-no-pad, already-encrypted FIPS wire
-datagram. The application's relay adapter chooses delivery relays, preferably
-using fresh relay provenance from the recipient's public advert.
+direct path exists, an explicit WSS seed supplies the first physical
+adjacency. Relay-backed `nostr-pubsub` can distribute the signed advert, but it
+does not carry the FIPS session packets.
 
 ## Offer
 
@@ -128,7 +124,7 @@ to the UDP transport. The normal FIPS link handshake then authenticates the
 expected peer on that socket. Only after that handshake is the UDP link an
 accepted path.
 
-The relay-carried or other bootstrap session can remain available while the
+The WebSocket or other bootstrap session can remain available while the
 direct path is tested. Transport selection prefers the direct link once it is
 usable. If punching fails, the existing session remains valid and another
 transport upgrade may be attempted.
@@ -138,18 +134,18 @@ transport upgrade may be attempted.
 | Failure | Result |
 | --- | --- |
 | STUN unavailable | No UDP candidate; retain the existing FIPS path. |
-| Symmetric NAT or firewall | Punch timeout; retain fallback and try another configured transport. |
+| Symmetric NAT or firewall | Punch timeout; retain the existing path and try another configured transport. |
 | Stale advert | Advert expiry/cache rules reject it or the attempt times out. |
 | Duplicated session message | Replay cache rejects the traversal session id. |
 | Identity mismatch | Authenticated session binding or final FIPS handshake rejects it. |
-| Relay rejects kind `21060` | Bootstrap must use another configured relay or transport. |
+| WebSocket seed unavailable | Bounded reconnect tries another configured seed or physical transport. |
 
 ## Security and privacy
 
 - Traversal offers and answers are encrypted by the established FIPS session;
   they are never published as standalone Nostr events.
-- A relay used for kind `21060` sees event authors, recipients, sizes, and
-  timing, but the content is an encrypted FIPS datagram.
+- Relays distributing public adverts see advert authors and transport
+  metadata, but never carry encrypted FIPS packet traffic.
 - STUN providers see the node's public address. A peer cannot choose the STUN
   server because only local configuration is used for egress.
 - Public adverts intentionally expose identity and transport capabilities.
@@ -161,4 +157,4 @@ transport upgrade may be attempted.
 - RFC 8489 — Session Traversal Utilities for NAT (STUN)
 - NIP-01 — Nostr event and ephemeral-kind semantics
 - NIP-40 — Expiration timestamps
-- [Nostr peerfinding and relay fallback](../design/fips-nostr-discovery.md)
+- [Nostr peer and service discovery](../design/fips-nostr-discovery.md)

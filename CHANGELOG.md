@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.10] - 2026-07-18
+
+### Changed
+
+- Add a bounded native WebSocket physical transport. Clients dial one or more
+  explicit `wss://` seeds; native listeners bind plain WS for deployment
+  behind a TLS reverse proxy. Binary messages carry bounded FIPS records and
+  the ordinary Noise handshake authenticates every peer.
+- Remove the ephemeral kind-21060 Nostr relay packet transport and its
+  application adapters. Nostr relay and `nostr-pubsub` providers remain
+  available for signed peer and service announcements; they no longer carry
+  FIPS wire datagrams.
+- Allow addressless configured peers when a WebSocket seed or Ethernet
+  discovery provides a first adjacency and routed resolution path.
+- Bump `fips-endpoint` to 0.4.10 so embedded consumers select the WebSocket
+  transport and relay-carrier removal together.
+
 ## [0.4.9] - 2026-07-18
 
 ### Fixed

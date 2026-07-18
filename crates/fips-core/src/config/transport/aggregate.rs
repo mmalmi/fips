@@ -14,10 +14,6 @@ pub struct TransportsConfig {
     #[serde(default, skip_serializing_if = "is_transport_empty")]
     pub udp: TransportInstances<UdpConfig>,
 
-    /// Ephemeral Nostr relay fallback transport instances.
-    #[serde(default, skip_serializing_if = "is_transport_empty")]
-    pub nostr_relay: TransportInstances<NostrRelayConfig>,
-
     /// In-memory simulated transport instances.
     #[cfg(feature = "sim-transport")]
     #[serde(default, skip_serializing_if = "is_transport_empty")]
@@ -30,6 +26,10 @@ pub struct TransportsConfig {
     /// TCP transport instances.
     #[serde(default, skip_serializing_if = "is_transport_empty")]
     pub tcp: TransportInstances<TcpConfig>,
+
+    /// WebSocket physical transport instances.
+    #[serde(default, skip_serializing_if = "is_transport_empty")]
+    pub websocket: TransportInstances<WebSocketConfig>,
 
     /// Tor transport instances.
     #[serde(default, skip_serializing_if = "is_transport_empty")]
@@ -53,7 +53,6 @@ impl TransportsConfig {
     /// Check if any transports are configured.
     pub fn is_empty(&self) -> bool {
         self.udp.is_empty()
-            && self.nostr_relay.is_empty()
             && {
                 #[cfg(feature = "sim-transport")]
                 {
@@ -66,6 +65,7 @@ impl TransportsConfig {
             }
             && self.ethernet.is_empty()
             && self.tcp.is_empty()
+            && self.websocket.is_empty()
             && self.tor.is_empty()
             && self.webrtc.is_empty()
             && self.ble.is_empty()
@@ -78,9 +78,6 @@ impl TransportsConfig {
         if !other.udp.is_empty() {
             self.udp = other.udp;
         }
-        if !other.nostr_relay.is_empty() {
-            self.nostr_relay = other.nostr_relay;
-        }
         #[cfg(feature = "sim-transport")]
         if !other.sim.is_empty() {
             self.sim = other.sim;
@@ -90,6 +87,9 @@ impl TransportsConfig {
         }
         if !other.tcp.is_empty() {
             self.tcp = other.tcp;
+        }
+        if !other.websocket.is_empty() {
+            self.websocket = other.websocket;
         }
         if !other.tor.is_empty() {
             self.tor = other.tor;

@@ -5,7 +5,6 @@
 
 use clap::Parser;
 use fips::config::{IdentitySource, resolve_identity};
-use fips::nostr_relay_adapter::NostrRelayAdapter;
 use fips::version;
 use fips::{Config, Node};
 use std::path::PathBuf;
@@ -39,16 +38,6 @@ struct Args {
     #[cfg(windows)]
     #[arg(long)]
     uninstall_service: bool,
-}
-
-/// Materialize the standalone daemon's relay fallback when Nostr peerfinding
-/// is enabled. Library embedders retain explicit control over this transport.
-fn configure_nostr_relay_fallback(config: &mut Config) -> bool {
-    if config.node.discovery.nostr.enabled && config.transports.nostr_relay.is_empty() {
-        config.transports.nostr_relay =
-            fips::config::TransportInstances::Single(fips::config::NostrRelayConfig::default());
-    }
-    !config.transports.nostr_relay.is_empty()
 }
 
 /// Run the FIPS daemon (shared between foreground and service modes).
@@ -97,9 +86,8 @@ async fn run_daemon(
     } else {
         "info"
     };
-    let default_directive = format!(
-        "{log_level},nostr_relay_pool={nostr_directive},nostr_sdk={nostr_directive},nostr={nostr_directive}"
-    );
+    let default_directive =
+        format!("{log_level},nostr_sdk={nostr_directive},nostr={nostr_directive}");
     let filter = EnvFilter::builder()
         .with_default_directive(log_level.into())
         .parse_lossy(default_directive);
@@ -141,14 +129,9 @@ async fn run_daemon(
         IdentitySource::Ephemeral => info!("Using ephemeral identity (new keypair each start)"),
     }
 
-    // Create node with resolved identity. The standalone daemon is the
-    // application owner of relay connections, so its relay fallback shares
-    // the configured advert relays without putting URLs in fips-core's
-    // transport config.
+    // Create node with resolved identity.
     let mut config = config;
     config.node.identity.nsec = Some(resolved.nsec);
-    let relay_urls = config.node.discovery.nostr.advert_relays.clone();
-    let relay_fallback_enabled = configure_nostr_relay_fallback(&mut config);
     debug!("Creating node");
     let mut node = match Node::new(config) {
         Ok(node) => node,
@@ -157,18 +140,6 @@ async fn run_daemon(
             std::process::exit(1);
         }
     };
-    let relay_io = if relay_fallback_enabled {
-        match node.attach_nostr_relay_io(256) {
-            Ok(io) => Some(io),
-            Err(error) => {
-                error!(%error, "Failed to attach Nostr relay fallback I/O");
-                std::process::exit(1);
-            }
-        }
-    } else {
-        None
-    };
-
     info!("Node created:");
     info!("      npub: {}", node.npub());
     info!("   node_addr: {}", hex::encode(node.node_addr().as_bytes()));
@@ -181,25 +152,6 @@ async fn run_daemon(
         error!("Failed to start node: {}", e);
         std::process::exit(1);
     }
-
-    let relay_adapter = match relay_io {
-        Some(io) => match NostrRelayAdapter::start_for_node(io, &relay_urls).await {
-            Ok(adapter) => {
-                if adapter.is_none() {
-                    warn!(
-                        "Nostr relay fallback is enabled but no application relays are configured"
-                    );
-                }
-                adapter
-            }
-            Err(error) => {
-                error!(%error, "Failed to start Nostr relay fallback adapter");
-                let _ = node.stop().await;
-                std::process::exit(1);
-            }
-        },
-        None => None,
-    };
 
     info!("FIPS running");
 
@@ -218,10 +170,6 @@ async fn run_daemon(
     }
 
     info!("FIPS shutting down");
-
-    if let Some(adapter) = relay_adapter {
-        adapter.stop().await;
-    }
 
     // Stop the node (shuts down transports, TUN, I/O threads)
     if let Err(e) = node.stop().await {
@@ -469,58 +417,5 @@ mod service {
         service.delete()?;
         println!("Service '{}' uninstalled.", SERVICE_NAME);
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use fips::config::{NostrPeerfindingSource, NostrRelayConfig, TransportInstances};
-
-    #[test]
-    fn daemon_enables_relay_fallback_for_each_nostr_peerfinding_source() {
-        for source in [
-            NostrPeerfindingSource::Relays,
-            NostrPeerfindingSource::External,
-        ] {
-            let mut config = Config::default();
-            config.node.discovery.nostr.enabled = true;
-            config.node.discovery.nostr.peerfinding_source = source;
-
-            assert!(configure_nostr_relay_fallback(&mut config));
-            assert!(matches!(
-                config.transports.nostr_relay,
-                TransportInstances::Single(_)
-            ));
-        }
-    }
-
-    #[test]
-    fn daemon_does_not_enable_relay_fallback_when_nostr_is_disabled() {
-        let mut config = Config::default();
-
-        assert!(!configure_nostr_relay_fallback(&mut config));
-        assert!(config.transports.nostr_relay.is_empty());
-    }
-
-    #[test]
-    fn daemon_preserves_explicit_relay_fallback_configuration() {
-        let explicit = NostrRelayConfig {
-            mtu: Some(900),
-            auto_connect: Some(false),
-            accept_connections: Some(false),
-            max_pending_events: Some(17),
-        };
-        let mut config = Config::default();
-        config.transports.nostr_relay = TransportInstances::Single(explicit);
-
-        assert!(configure_nostr_relay_fallback(&mut config));
-        let TransportInstances::Single(config) = config.transports.nostr_relay else {
-            panic!("explicit relay fallback should remain a single instance");
-        };
-        assert_eq!(config.mtu, Some(900));
-        assert_eq!(config.auto_connect, Some(false));
-        assert_eq!(config.accept_connections, Some(false));
-        assert_eq!(config.max_pending_events, Some(17));
     }
 }

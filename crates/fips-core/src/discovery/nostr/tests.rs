@@ -1,4 +1,3 @@
-use nostr::ToBech32;
 use nostr::prelude::{EventBuilder, Kind, Tag, TagKind, Timestamp};
 
 use super::runtime::{NostrDiscovery, VerifiedEvent, suppress_responder_for_own_initiator};
@@ -154,25 +153,24 @@ fn serializes_and_validates_webrtc_overlay_advert() {
 }
 
 #[test]
-fn serializes_and_validates_nostr_relay_overlay_advert() {
-    let keys = nostr::Keys::generate();
+fn serializes_and_validates_websocket_overlay_advert() {
     let advert = OverlayAdvert {
         identifier: ADVERT_IDENTIFIER.to_string(),
         version: ADVERT_VERSION,
         endpoints: vec![OverlayEndpointAdvert {
-            transport: OverlayTransportKind::NostrRelay,
-            addr: keys.public_key().to_bech32().expect("relay npub"),
+            transport: OverlayTransportKind::WebSocket,
+            addr: "wss://seed.example/fips".into(),
         }],
         stun_servers: None,
     };
 
     let json = serde_json::to_string(&advert).unwrap();
-    assert!(json.contains("\"transport\":\"nostr_relay\""));
+    assert!(json.contains("\"transport\":\"websocket\""));
 
     let sanitized = NostrDiscovery::validate_overlay_advert(advert).unwrap();
     assert_eq!(
         sanitized.endpoints[0].transport,
-        OverlayTransportKind::NostrRelay
+        OverlayTransportKind::WebSocket
     );
 }
 

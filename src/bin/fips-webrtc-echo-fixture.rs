@@ -1,12 +1,10 @@
 //! Local test fixture for TypeScript/Rust WebRTC interop.
 //!
-//! Starts a Rust FIPS endpoint with only the WebRTC transport enabled, publishes
-//! its advert on the supplied local Nostr relay, and echoes endpoint-data bytes
-//! back to the sender.
+//! Starts a Rust FIPS endpoint with a WebSocket seed listener and WebRTC
+//! transport, then echoes endpoint-data bytes back to the sender.
 
 use clap::Parser;
-use fips::config::{NostrDiscoveryPolicy, NostrRelayConfig, TransportInstances};
-use fips::nostr_relay_adapter::NostrRelayAdapter;
+use fips::config::{TransportInstances, WebSocketConfig};
 use fips::{Config, FipsEndpoint, Identity, IdentityConfig, WebRtcConfig};
 use serde_json::json;
 use std::io::Write;
@@ -16,9 +14,13 @@ use tracing_subscriber::{EnvFilter, fmt};
 #[derive(Parser, Debug)]
 #[command(name = "fips-webrtc-echo-fixture", about = "FIPS WebRTC echo fixture")]
 struct Args {
-    /// Nostr relay URL used for public WebRTC adverts.
+    /// Plain-WS listener address for the seed transport.
+    #[arg(long, default_value = "127.0.0.1:0")]
+    websocket_bind: String,
+
+    /// Optional public WSS URL advertised separately from the bind address.
     #[arg(long)]
-    relay: String,
+    websocket_public_url: Option<String>,
 
     /// Hex or nsec secret key for the fixture identity.
     #[arg(long)]
@@ -45,14 +47,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         nsec: Some(args.secret.clone()),
         persistent: false,
     };
-    config.node.discovery.nostr.enabled = true;
-    config.node.discovery.nostr.advertise = true;
-    config.node.discovery.nostr.advert_relays = vec![args.relay.clone()];
-    config.node.discovery.nostr.stun_servers = Vec::new();
-    config.node.discovery.nostr.app = args.app.clone();
-    config.node.discovery.nostr.policy = NostrDiscoveryPolicy::Open;
+    config.node.discovery.nostr.enabled = false;
     config.transports.webrtc = TransportInstances::Single(WebRtcConfig {
-        advertise_on_nostr: Some(true),
+        advertise_on_nostr: Some(false),
         auto_connect: Some(false),
         accept_connections: Some(true),
         connect_timeout_ms: Some(15_000),
@@ -60,9 +57,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         stun_servers: Some(Vec::new()),
         ..Default::default()
     });
-    config.transports.nostr_relay = TransportInstances::Single(NostrRelayConfig {
-        auto_connect: Some(false),
-        accept_connections: Some(true),
+    config.transports.websocket = TransportInstances::Single(WebSocketConfig {
+        bind_addr: Some(args.websocket_bind),
+        public_url: args.websocket_public_url,
         ..Default::default()
     });
 
@@ -74,8 +71,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .bind()
             .await?,
     );
-    let _relay_adapter = NostrRelayAdapter::start(Arc::clone(&endpoint), &[args.relay]).await?;
-
     println!(
         "{}",
         json!({

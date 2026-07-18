@@ -70,7 +70,7 @@ impl Node {
             candidates.push(candidate);
             Self::sort_peer_address_candidates(&mut candidates);
         }
-        let healthy_relay_upgrade = self.active_peer_uses_nostr_relay(&peer_node_addr)
+        let healthy_bootstrap_upgrade = self.active_peer_uses_websocket(&peer_node_addr)
             && self.peers.get(&peer_node_addr).is_some_and(|peer| {
                 peer.is_healthy()
                     && peer.can_send()
@@ -87,7 +87,7 @@ impl Node {
         let alternatives: Vec<_> = candidates
             .into_iter()
             .filter(|addr| {
-                !(healthy_relay_upgrade && addr.transport == "nostr_relay")
+                !(healthy_bootstrap_upgrade && addr.transport == "websocket")
                     && (same_path_refresh_needed
                         || !self.active_peer_matches_candidate(&peer_node_addr, addr))
             })
@@ -192,7 +192,7 @@ impl Node {
             return true;
         }
 
-        if self.active_peer_uses_nostr_relay(peer_node_addr) {
+        if self.active_peer_uses_websocket(peer_node_addr) {
             return true;
         }
 
@@ -271,7 +271,7 @@ impl Node {
             return;
         }
 
-        if self.active_peer_uses_nostr_relay(peer_node_addr) {
+        if self.active_peer_uses_websocket(peer_node_addr) {
             return;
         }
 
@@ -341,13 +341,13 @@ impl Node {
             .is_some_and(|transport_id| self.bootstrap_transports.contains(&transport_id))
     }
 
-    pub(in crate::node) fn active_peer_uses_nostr_relay(&self, peer_node_addr: &NodeAddr) -> bool {
+    pub(in crate::node) fn active_peer_uses_websocket(&self, peer_node_addr: &NodeAddr) -> bool {
         self.peers
             .get(peer_node_addr)
             .and_then(|peer| peer.transport_id())
             .and_then(|transport_id| self.transports.get(&transport_id))
             .is_some_and(|transport| {
-                matches!(transport, crate::transport::TransportHandle::NostrRelay(_))
+                matches!(transport, crate::transport::TransportHandle::WebSocket(_))
             })
     }
 
@@ -562,8 +562,8 @@ impl Node {
             })
             .or_else(|| {
                 self.transports.get(&transport_id).map(|transport| {
-                    if transport.transport_type().name == "nostr_relay" {
-                        250
+                    if transport.transport_type().name == "websocket" {
+                        200
                     } else {
                         100
                     }

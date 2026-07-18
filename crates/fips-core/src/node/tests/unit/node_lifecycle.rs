@@ -428,7 +428,7 @@ async fn test_node_state_transitions() {
 }
 
 #[tokio::test]
-async fn test_node_start_does_not_wait_for_nostr_relay_startup() {
+async fn test_node_start_does_not_wait_for_nostr_discovery_startup() {
     let mut config = Config::new();
     config.node.control.enabled = false;
     config.node.discovery.nostr.enabled = true;

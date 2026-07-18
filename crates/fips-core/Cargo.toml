@@ -1,6 +1,6 @@
 [package]
 name = "fips-core"
-version = "0.4.9"
+version = "0.4.10"
 edition = "2024"
 description = "Reusable FIPS mesh, endpoint, transport, and protocol library"
 license = "MIT"
@@ -36,6 +36,7 @@ simple-dns = "0.11.2"
 mdns-sd = "0.19"
 socket2 = { version = "0.6.2", features = ["all"] }
 tokio-socks = "0.5"
+tokio-tungstenite = { version = "0.26.2", features = ["rustls-tls-webpki-roots"] }
 portable-atomic = { version = "1", features = ["std"] }
 bytes = { version = "1", optional = true }
 if-addrs = { version = "0.15", optional = true }

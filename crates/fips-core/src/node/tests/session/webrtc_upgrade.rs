@@ -1,17 +1,16 @@
 use super::*;
 use crate::config::{
-    ConnectPolicy, NostrDiscoveryConfig, PeerAddress, PeerConfig, UdpConfig, WebRtcConfig,
+    ConnectPolicy, NostrDiscoveryConfig, PeerAddress, PeerConfig, WebRtcConfig, WebSocketConfig,
 };
-use crate::node::tests::spanning_tree::{drain_all_packets, initiate_handshake};
-use crate::transport::udp::UdpTransport;
 use crate::transport::webrtc::WebRtcTransport;
+use crate::transport::websocket::WebSocketTransport;
 use crate::transport::{ConnectionState, TransportHandle, packet_channel};
 
-const UDP_TRANSPORT_NUMBER: u32 = 1;
+const WEBSOCKET_TRANSPORT_NUMBER: u32 = 1;
 const WEBRTC_TRANSPORT_NUMBER: u32 = 2;
 
 #[test]
-fn simultaneous_webrtc_upgrade_preserves_shared_physical_carrier() {
+fn websocket_carried_simultaneous_webrtc_upgrade_preserves_shared_physical_carrier() {
     run_large_stack_async_test("fips-native-webrtc-shared-carrier", || async {
         let mut nodes = vec![
             make_dual_transport_node(fixed_identity(6, 0x03)).await,
@@ -19,8 +18,7 @@ fn simultaneous_webrtc_upgrade_preserves_shared_physical_carrier() {
         ];
         configure_fallback_and_direct_paths(&mut nodes).await;
 
-        initiate_handshake(&mut nodes, 0, 1).await;
-        drain_all_packets(&mut nodes, false).await;
+        establish_websocket_adjacency(&mut nodes).await;
 
         let identity_a = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
         let identity_b = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
@@ -31,14 +29,14 @@ fn simultaneous_webrtc_upgrade_preserves_shared_physical_carrier() {
                 .node
                 .get_peer(&node_b_addr)
                 .and_then(|peer| peer.transport_id()),
-            Some(TransportId::new(UDP_TRANSPORT_NUMBER))
+            Some(TransportId::new(WEBSOCKET_TRANSPORT_NUMBER))
         );
         assert_eq!(
             nodes[1]
                 .node
                 .get_peer(&node_a_addr)
                 .and_then(|peer| peer.transport_id()),
-            Some(TransportId::new(UDP_TRANSPORT_NUMBER))
+            Some(TransportId::new(WEBSOCKET_TRANSPORT_NUMBER))
         );
 
         let webrtc_addr_a = identity_transport_addr(nodes[0].node.identity());
@@ -186,13 +184,13 @@ fn simultaneous_webrtc_upgrade_preserves_shared_physical_carrier() {
 async fn configure_fallback_and_direct_paths(nodes: &mut [TestNode]) {
     let identity_a = nodes[0].node.identity();
     let identity_b = nodes[1].node.identity();
-    let udp_addr_a = nodes[0].addr.to_string();
-    let udp_addr_b = nodes[1].addr.to_string();
+    let websocket_addr_a = nodes[0].addr.to_string();
+    let websocket_addr_b = nodes[1].addr.to_string();
     let webrtc_addr_a = identity_transport_addr(identity_a).to_string();
     let webrtc_addr_b = identity_transport_addr(identity_b).to_string();
 
-    let peer_b = test_peer_config(identity_b.npub(), udp_addr_b, webrtc_addr_b);
-    let peer_a = test_peer_config(identity_a.npub(), udp_addr_a, webrtc_addr_a);
+    let peer_b = test_peer_config(identity_b.npub(), websocket_addr_b, webrtc_addr_b);
+    let peer_a = test_peer_config(identity_a.npub(), websocket_addr_a, webrtc_addr_a);
     nodes[0]
         .node
         .update_peers(vec![peer_b])
@@ -205,12 +203,12 @@ async fn configure_fallback_and_direct_paths(nodes: &mut [TestNode]) {
         .expect("configure node A fallback and direct paths");
 }
 
-fn test_peer_config(npub: String, udp_addr: String, webrtc_addr: String) -> PeerConfig {
+fn test_peer_config(npub: String, websocket_addr: String, webrtc_addr: String) -> PeerConfig {
     PeerConfig {
         npub,
         alias: None,
         addresses: vec![
-            PeerAddress::with_priority("udp", udp_addr, 250),
+            PeerAddress::with_priority("websocket", websocket_addr, 200),
             PeerAddress::with_priority("webrtc", webrtc_addr, 100),
         ],
         connect_policy: ConnectPolicy::Manual,
@@ -240,19 +238,24 @@ async fn make_dual_transport_node(identity: Identity) -> TestNode {
     let (tun_outbound_tx, tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(256);
     node.tun_outbound_rx = Some(tun_outbound_rx);
 
-    let mut udp = UdpTransport::new(
-        TransportId::new(UDP_TRANSPORT_NUMBER),
+    let mut websocket = WebSocketTransport::new(
+        TransportId::new(WEBSOCKET_TRANSPORT_NUMBER),
         None,
-        UdpConfig {
+        WebSocketConfig {
             bind_addr: Some("127.0.0.1:0".to_string()),
-            mtu: Some(1_280),
             ..Default::default()
         },
         packet_tx.clone(),
+        node.identity(),
     );
-    udp.start_async().await.expect("loopback UDP transport");
-    let udp_addr =
-        TransportAddr::from_string(&udp.local_addr().expect("loopback UDP address").to_string());
+    websocket
+        .start_async()
+        .await
+        .expect("loopback WebSocket transport");
+    let websocket_addr = TransportAddr::from_string(&format!(
+        "ws://{}/fips",
+        websocket.local_addr().expect("loopback WebSocket address")
+    ));
 
     let mut webrtc = WebRtcTransport::new(
         TransportId::new(WEBRTC_TRANSPORT_NUMBER),
@@ -277,8 +280,8 @@ async fn make_dual_transport_node(identity: Identity) -> TestNode {
     webrtc.start_async().await.expect("start WebRTC transport");
 
     node.transports.insert(
-        TransportId::new(UDP_TRANSPORT_NUMBER),
-        TransportHandle::Udp(udp),
+        TransportId::new(WEBSOCKET_TRANSPORT_NUMBER),
+        TransportHandle::WebSocket(Box::new(websocket)),
     );
     node.transports.insert(
         TransportId::new(WEBRTC_TRANSPORT_NUMBER),
@@ -287,11 +290,42 @@ async fn make_dual_transport_node(identity: Identity) -> TestNode {
 
     TestNode {
         node,
-        transport_id: TransportId::new(UDP_TRANSPORT_NUMBER),
+        transport_id: TransportId::new(WEBSOCKET_TRANSPORT_NUMBER),
         packet_rx,
         tun_outbound_tx,
-        addr: udp_addr,
+        addr: websocket_addr,
     }
+}
+
+async fn establish_websocket_adjacency(nodes: &mut [TestNode]) {
+    let identity_b = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
+    nodes[0]
+        .node
+        .initiate_connection(
+            TransportId::new(WEBSOCKET_TRANSPORT_NUMBER),
+            nodes[1].addr.clone(),
+            identity_b,
+        )
+        .await
+        .expect("start WebSocket seed adjacency");
+    let node_a = *nodes[0].node.node_addr();
+    let node_b = *nodes[1].node.node_addr();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            for node in nodes.iter_mut() {
+                node.node.poll_pending_connects().await;
+            }
+            process_available_packets(nodes).await;
+            if nodes[0].node.get_peer(&node_b).is_some()
+                && nodes[1].node.get_peer(&node_a).is_some()
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .expect("WebSocket seed adjacency should authenticate");
 }
 
 async fn drive_webrtc_negotiation(nodes: &mut [TestNode]) {

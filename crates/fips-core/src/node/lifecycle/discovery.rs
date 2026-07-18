@@ -194,7 +194,7 @@ impl Node {
                     }
                     let peer_npub = traversal.peer_npub.clone();
                     let fresh_active_path = !self
-                        .active_peer_uses_nostr_relay(peer_identity.node_addr())
+                        .active_peer_uses_websocket(peer_identity.node_addr())
                         && (self.active_peer_has_fresh_endpoint_data_liveness(
                             peer_identity.node_addr(),
                         ) || (!self

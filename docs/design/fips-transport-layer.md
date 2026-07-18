@@ -162,6 +162,11 @@ packets within the byte stream. The FMP common prefix includes a payload
 length field that provides this framing directly, replacing the need for a
 separate length-prefix layer.
 
+WebSocket preserves those record boundaries directly: after its bounded
+URL-seed key-hint request/response, each binary message contains exactly one
+complete FMP/FSP record including the shared four-byte prefix. Text messages
+and partial or concatenated records close the physical connection.
+
 **Addressing opacity**: Transport addresses are opaque byte vectors. FMP
 doesn't interpret them — it just passes them back to the transport when
 sending. This means adding a new transport type with a novel address format
@@ -704,10 +709,10 @@ transport endpoints (UDP host:port, TCP host:port, .onion address). Other FIPS
 nodes subscribing on the same relays learn about available peers.
 
 Public Nostr adverts are a discovery service that feeds addresses to other
-transports. Separately, the optional `nostr-relay` transport can carry
-already-encrypted FIPS wire datagrams in ephemeral kind 21060 events. Its
-application-owned relay adapter provides a low-priority path when no direct
-transport is available yet.
+transports. Relay-backed `nostr-pubsub` may distribute those bounded signed
+peer and service announcements, but Nostr relays never carry FIPS wire
+datagrams. A client with no direct address uses an explicit WebSocket seed or
+another configured physical transport for its first adjacency.
 
 For NAT'd UDP endpoints, a node may advertise `addr: "nat"` instead of a
 concrete address, signaling that peers should initiate STUN-assisted UDP

@@ -21,9 +21,11 @@ pub const LOCAL_CAPABILITY_MAX_MESSAGE_BYTES: usize =
 const CAPABILITY_ANNOUNCE: u8 = 1;
 const CAPABILITY_ROSTER: u8 = 2;
 
-/// Minimal same-host discovery prelude used only to obtain an untrusted IK
-/// responder-key hint. Message kind is determined by exact wire length:
-/// request = version + nonce; response = version + nonce + x-only pubkey.
+/// Minimal physical-adjacency discovery prelude used to obtain an untrusted IK
+/// responder-key hint. Dedicated local rendezvous and URL-only WebSocket seeds
+/// share this bounded binary codec. Message kind is determined by exact wire
+/// length: request = version + nonce; response = version + nonce + x-only
+/// pubkey.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalKeyHint {
     Request { nonce: u64 },

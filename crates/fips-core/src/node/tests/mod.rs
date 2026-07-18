@@ -22,6 +22,7 @@ mod session;
 mod spanning_tree;
 mod tcp;
 mod unit;
+mod websocket;
 
 pub(super) fn make_node() -> Node {
     let config = Config::new();

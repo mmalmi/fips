@@ -480,7 +480,7 @@ impl WebRtcTransport {
     }
 
     /// Drain SDP negotiation messages for delivery over encrypted FIPS
-    /// sessions. Relay adapters must never consume or republish this queue.
+    /// sessions. External discovery providers never consume this queue.
     pub(crate) fn drain_link_negotiations(&mut self, limit: usize) -> Vec<OutboundLinkNegotiation> {
         let mut drained = Vec::with_capacity(limit.min(32));
         while drained.len() < limit {

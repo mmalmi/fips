@@ -98,41 +98,13 @@ impl Node {
                 let _ = response_tx.send(registered);
             }
             NodeEndpointControlCommand::IngestNostrEvent { event, response_tx } => {
-                let accepted = if event.kind
-                    == nostr::Kind::Custom(
-                        crate::transport::nostr_relay::NOSTR_RELAY_DATAGRAM_KIND,
-                    )
-                {
-                    self.transports.values().find_map(|transport| {
-                        let crate::transport::TransportHandle::NostrRelay(transport) = transport else {
-                            return None;
-                        };
-                        Some(transport.ingest_event(event.clone()).unwrap_or_else(|error| {
-                            debug!(%error, event_id = %event.id, "rejected Nostr relay FIPS datagram");
-                            false
-                        }))
-                    }).unwrap_or(false)
-                } else if let Some(discovery) = self.nostr_discovery_handle() {
+                let accepted = if let Some(discovery) = self.nostr_discovery_handle() {
                     discovery.ingest_advert_event(&event).await.cached()
                         || discovery.process_rating_fact_event(&event).await
                 } else {
                     false
                 };
                 let _ = response_tx.send(accepted);
-            }
-            NodeEndpointControlCommand::DrainNostrRelayEvents { limit, response_tx } => {
-                let mut events = Vec::new();
-                for transport in self.transports.values() {
-                    let crate::transport::TransportHandle::NostrRelay(transport) = transport else {
-                        continue;
-                    };
-                    let remaining = limit.saturating_sub(events.len());
-                    if remaining == 0 {
-                        break;
-                    }
-                    events.extend(transport.drain_outbound_events(remaining));
-                }
-                let _ = response_tx.send(events);
             }
             NodeEndpointControlCommand::PeerSnapshot { response_tx } => {
                 let snapshot_now = Instant::now();

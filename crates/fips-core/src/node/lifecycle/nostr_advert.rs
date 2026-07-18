@@ -164,11 +164,15 @@ impl Node {
                         });
                     }
                 }
-                "nostr_relay" => {
-                    endpoints.push(OverlayEndpointAdvert {
-                        transport: OverlayTransportKind::NostrRelay,
-                        addr: crate::encode_npub(&self.identity.pubkey()),
-                    });
+                "websocket" => {
+                    if let crate::transport::TransportHandle::WebSocket(websocket) = handle
+                        && let Some(url) = websocket.public_url()
+                    {
+                        endpoints.push(OverlayEndpointAdvert {
+                            transport: OverlayTransportKind::WebSocket,
+                            addr: url.to_string(),
+                        });
+                    }
                 }
                 _ => {}
             }

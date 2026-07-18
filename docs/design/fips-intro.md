@@ -521,12 +521,13 @@ consume transport addresses through public relays — available behind the
 
 NAT traversal for internet-connected nodes is supported via STUN-assisted
 UDP hole punching. Offer/answer negotiation travels inside an authenticated
-FIPS session, which may initially use the low-priority ephemeral Nostr relay
-transport. Once a direct UDP path is established, the punched socket is
-handed into the standard FIPS transport/session stack. Nodes that cannot
-establish a direct path can retain the relay-carried session, use port
-forwarding, a publicly addressed peer, or relay through other mesh nodes. The
-Nostr-mediated discovery and NAT traversal paths are gated by the
+FIPS session, which may initially use a configured WebSocket seed. Once a
+direct UDP path is established, the punched socket is handed into the standard
+FIPS transport/session stack. Nodes that cannot establish a direct path can
+retain the WebSocket adjacency, use port forwarding, a publicly addressed
+peer, or relay through other mesh nodes. Relay-backed `nostr-pubsub` may still
+distribute signed peer and service announcements. The Nostr-mediated discovery
+and NAT traversal paths are gated by the
 `nostr-discovery` cargo feature and configured under
 `node.discovery.nostr.*`.
 

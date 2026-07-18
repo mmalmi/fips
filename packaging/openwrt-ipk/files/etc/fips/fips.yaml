@@ -54,11 +54,14 @@ dns:
   port: 5354
 
 transports:
-  # Low-priority encrypted datagrams over the Nostr relays configured above.
-  # The standalone daemon owns the relay bridge; fips-core owns no relay URLs.
-  # Automatically enabled when node.discovery.nostr.enabled is true. Uncomment
-  # only to override its mtu/auto_connect/accept_connections/queue defaults.
-  # nostr_relay: {}
+  # Optional WebSocket first adjacency. A public listener should be exposed as
+  # WSS through a TLS reverse proxy rather than binding this plain-WS socket to
+  # an untrusted interface.
+  # websocket:
+  #   bind_addr: "127.0.0.1:8787"
+  #   public_url: "wss://seed.example/fips"
+  #   seed_urls:
+  #     - "wss://another-seed.example/fips"
 
   udp:
     bind_addr: "0.0.0.0:2121"
