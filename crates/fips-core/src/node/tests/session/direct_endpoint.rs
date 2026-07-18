@@ -234,6 +234,114 @@ fn test_endpoint_data_flushes_after_session_establishment() {
 }
 
 #[test]
+fn reply_learned_lookup_timeout_does_not_discard_simultaneous_fsp_responder_data() {
+    run_large_stack_async_test("fips-simultaneous-responder-pending-data", || async {
+        const SERVICE_PORT: u16 = 7_370;
+        let edges = vec![(0, 1)];
+        let mut nodes = run_tree_test(2, &edges, false).await;
+        verify_tree_convergence(&nodes);
+        populate_all_coord_caches(&mut nodes);
+
+        let addresses = [*nodes[0].node.node_addr(), *nodes[1].node.node_addr()];
+        let (winner, responder) = if addresses[0] < addresses[1] {
+            (0, 1)
+        } else {
+            (1, 0)
+        };
+        nodes[responder].node.config.node.routing.mode = RoutingMode::ReplyLearned;
+
+        let mut winner_endpoint = nodes[winner]
+            .node
+            .attach_endpoint_data_io(8)
+            .expect("winner endpoint data I/O should attach");
+        assert!(
+            nodes[winner]
+                .node
+                .endpoint_services
+                .register(SERVICE_PORT, winner_endpoint.service_event_tx.clone())
+        );
+        let winner_identity =
+            PeerIdentity::from_pubkey_full(nodes[winner].node.identity().pubkey_full());
+        let responder_identity =
+            PeerIdentity::from_pubkey_full(nodes[responder].node.identity().pubkey_full());
+
+        send_service_datagram_via_dataplane(
+            &mut nodes[responder].node,
+            winner_identity,
+            SERVICE_PORT,
+            SERVICE_PORT,
+            b"tcp-syn".to_vec(),
+        )
+        .await;
+        send_endpoint_data_via_dataplane(
+            &mut nodes[winner].node,
+            responder_identity,
+            b"simultaneous-init".to_vec(),
+        )
+        .await
+        .expect("winner should start its simultaneous session");
+        assert!(
+            nodes.iter().enumerate().all(|(index, node)| node
+                .node
+                .get_session(&addresses[1 - index])
+                .is_some_and(|session| session.is_initiating())),
+            "both endpoints should start as FSP initiators"
+        );
+
+        assert!(
+            wait_process_packets_for_node(&mut nodes, responder).await > 0,
+            "the tiebreak-losing endpoint should receive the winner's setup"
+        );
+        assert!(
+            nodes[responder]
+                .node
+                .get_session(&addresses[winner])
+                .is_some_and(|session| session.is_awaiting_msg3()),
+            "the larger address should become the FSP responder"
+        );
+
+        let mut lookup = crate::node::handlers::discovery::PendingLookup::new(0);
+        lookup.attempt = nodes[responder]
+            .node
+            .config
+            .node
+            .discovery
+            .attempt_timeouts_secs
+            .len() as u8;
+        nodes[responder]
+            .node
+            .pending_lookups
+            .insert(addresses[winner], lookup);
+        nodes[responder].node.check_pending_lookups(8_000).await;
+        assert!(
+            nodes[responder]
+                .node
+                .pending_session_traffic
+                .has_traffic_for(&addresses[winner]),
+            "lookup exhaustion must leave the TCP/FSP service datagram owned by the handshake"
+        );
+
+        let delivery = recv_service_event_while_draining(
+            &mut nodes,
+            &mut winner_endpoint.service_event_rx,
+            Duration::from_secs(10),
+            "simultaneous responder service datagram",
+        )
+        .await;
+        let message = delivery
+            .messages
+            .first()
+            .expect("one responder service datagram");
+        assert_eq!(message.source_peer, responder_identity);
+        assert_eq!(message.source_port, SERVICE_PORT);
+        assert_eq!(message.destination_port, SERVICE_PORT);
+        assert_eq!(message.payload.as_slice(), b"tcp-syn");
+
+        cleanup_nodes(&mut nodes).await;
+    });
+}
+
+#[test]
 fn test_endpoint_data_batch_flushes_after_session_establishment() {
     run_large_stack_async_test("fips-endpoint-data-batch-flushes", || async {
         let edges = vec![(0, 1)];

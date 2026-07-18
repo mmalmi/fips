@@ -276,3 +276,66 @@ async fn test_check_pending_lookups_default_sequence_unreachable() {
         "backoff suppression must not re-open the pending lookup"
     );
 }
+
+#[tokio::test]
+async fn lookup_timeout_preserves_endpoint_data_for_fsp_responder_awaiting_msg3() {
+    use crate::node::handlers::discovery::PendingLookup;
+    use crate::node::session::{EndToEndState, SessionEntry};
+
+    let mut node = make_node();
+    let target = Identity::generate();
+    let target_addr = *target.node_addr();
+    let responder = crate::noise::HandshakeState::new_xk_responder(node.identity().keypair());
+    node.sessions.insert(
+        target_addr,
+        SessionEntry::new(
+            target_addr,
+            node.identity().pubkey_full(),
+            EndToEndState::AwaitingMsg3(responder),
+            1_000,
+            false,
+        ),
+    );
+    node.pending_session_traffic
+        .push_endpoint_data_batch_with_enqueued_at_ms(
+            target_addr,
+            vec![
+                crate::node::EndpointDataPayload::from_service_datagram(
+                    7_370,
+                    7_370,
+                    b"tcp-syn".to_vec(),
+                )
+                .expect("pending service datagram"),
+            ],
+            usize::MAX,
+            usize::MAX,
+            1_000,
+        );
+    let mut lookup = PendingLookup::new(0);
+    lookup.attempt = node.config.node.discovery.attempt_timeouts_secs.len() as u8;
+    node.pending_lookups.insert(target_addr, lookup);
+    let baseline_timed_out = node.stats().discovery.resp_timed_out;
+
+    node.check_pending_lookups(8_000).await;
+
+    assert!(
+        !node.pending_lookups.contains_key(&target_addr),
+        "the exhausted lookup should stop while the FSP handshake continues"
+    );
+    assert_eq!(
+        node.pending_session_traffic
+            .endpoint_data_for(&target_addr)
+            .map(|queue| queue.len()),
+        Some(1),
+        "lookup exhaustion must not discard endpoint data owned by an active FSP handshake"
+    );
+    assert_eq!(
+        node.stats().discovery.resp_timed_out,
+        baseline_timed_out,
+        "an active authenticated-session handshake is not an unreachable destination"
+    );
+    assert!(
+        !node.discovery_backoff.is_suppressed(&target_addr),
+        "an active FSP handshake must not poison later discovery"
+    );
+}
