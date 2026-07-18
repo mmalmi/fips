@@ -15,6 +15,17 @@ use tokio::task::JoinHandle;
 use crate::transport::nostr_relay::NOSTR_RELAY_DATAGRAM_KIND;
 use crate::{FipsEndpoint, FipsEndpointError, NostrRelayIo};
 
+const NOSTR_RELAY_ACTIVE_OUTBOUND_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const NOSTR_RELAY_IDLE_OUTBOUND_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+const fn outbound_poll_delay(drained_events: usize) -> Duration {
+    if drained_events == 0 {
+        NOSTR_RELAY_IDLE_OUTBOUND_POLL_INTERVAL
+    } else {
+        NOSTR_RELAY_ACTIVE_OUTBOUND_POLL_INTERVAL
+    }
+}
+
 /// Pumps signed kind-21060 datagrams between FIPS and application-selected
 /// Nostr relays.
 pub struct NostrRelayAdapter {
@@ -99,14 +110,15 @@ impl NostrRelayAdapter {
         let publish_slots = Arc::new(Semaphore::new(32));
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
         let task = tokio::spawn(async move {
-            let mut outbound_tick = tokio::time::interval(Duration::from_millis(10));
-            outbound_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let outbound_sleep = tokio::time::sleep(Duration::ZERO);
+            tokio::pin!(outbound_sleep);
             loop {
                 tokio::select! {
                     _ = &mut shutdown_rx => break,
-                    _ = outbound_tick.tick() => {
-                        match io.drain_events(64).await {
+                    () = &mut outbound_sleep => {
+                        let next_delay = match io.drain_events(64).await {
                             Ok(events) => {
+                                let delay = outbound_poll_delay(events.len());
                                 for event in events {
                                     let Ok(permit) = Arc::clone(&publish_slots).try_acquire_owned() else {
                                         tracing::debug!(event_id = %event.id, "FIPS relay publish queue is saturated");
@@ -120,9 +132,16 @@ impl NostrRelayAdapter {
                                         }
                                     });
                                 }
+                                delay
                             }
-                            Err(error) => tracing::debug!(%error, "failed to drain FIPS relay datagrams"),
-                        }
+                            Err(error) => {
+                                tracing::debug!(%error, "failed to drain FIPS relay datagrams");
+                                NOSTR_RELAY_IDLE_OUTBOUND_POLL_INTERVAL
+                            }
+                        };
+                        outbound_sleep
+                            .as_mut()
+                            .reset(tokio::time::Instant::now() + next_delay);
                     }
                     notification = notifications.recv() => {
                         match notification {
@@ -167,5 +186,24 @@ impl Drop for NostrRelayAdapter {
             let _ = shutdown.send(());
         }
         self.task.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nostr_relay_outbound_poll_delay_is_adaptive() {
+        assert_eq!(
+            outbound_poll_delay(1),
+            NOSTR_RELAY_ACTIVE_OUTBOUND_POLL_INTERVAL
+        );
+        assert_eq!(
+            outbound_poll_delay(0),
+            NOSTR_RELAY_IDLE_OUTBOUND_POLL_INTERVAL
+        );
+        assert!(NOSTR_RELAY_ACTIVE_OUTBOUND_POLL_INTERVAL <= Duration::from_millis(10));
+        assert!(NOSTR_RELAY_IDLE_OUTBOUND_POLL_INTERVAL >= Duration::from_millis(250));
     }
 }

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-07-18
+
+### Fixed
+
+- Poll the application-owned Nostr relay carrier every 10 milliseconds while
+  it is draining datagrams and every 250 milliseconds while it is empty,
+  eliminating its idle busy loop without slowing an active relay queue.
+- Bump `fips-endpoint` to 0.4.8 so embedded consumers select the corrected
+  `fips-core` release. FMP, FSP, discovery, datagram DFP1, and
+  link-negotiation wire formats are unchanged.
+
 ## [0.4.7] - 2026-07-18
 
 ### Fixed
