@@ -45,8 +45,10 @@ async fn test_response_originator_caches_route() {
 }
 
 #[tokio::test]
-async fn test_response_transit_needs_recent_request() {
-    let mut node = make_node();
+async fn test_response_transit_learns_target_route() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
     let from = make_node_addr(0xAA);
     let target = make_node_addr(0xBB);
     let root = make_node_addr(0xF0);
@@ -57,7 +59,7 @@ async fn test_response_transit_needs_recent_request() {
     let target_identity = Identity::generate();
     let proof = target_identity.sign(&proof_data);
 
-    let response = LookupResponse::new(444, target, coords, proof);
+    let response = LookupResponse::new(444, target, coords.clone(), proof);
     let payload = &response.encode()[1..];
 
     // Simulate being a transit node: record a recent_request for this ID
@@ -72,12 +74,19 @@ async fn test_response_transit_needs_recent_request() {
     // (will fail silently since 0xDD is not an actual peer)
     node.handle_lookup_response(&from, payload).await;
 
-    // Should NOT cache in coord_cache (we're transit, not originator)
+    // A following SessionSetup uses this same transit. Retain the coordinates
+    // and reverse next hop learned from the response so it does not immediately
+    // report CoordsRequired for the route it just discovered.
     let now_ms2 = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
-    assert!(!node.coord_cache().contains(&target, now_ms2));
+    assert_eq!(node.coord_cache().get(&target, now_ms2), Some(&coords));
+    let learned = node.learned_route_table_snapshot(now_ms2);
+    assert_eq!(learned.destination_count, 1);
+    assert_eq!(learned.route_count, 1);
+    assert_eq!(learned.destinations[0].destination, target.to_string());
+    assert_eq!(learned.destinations[0].routes[0].next_hop, from.to_string());
 }
 
 // ============================================================================

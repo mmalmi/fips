@@ -131,3 +131,56 @@ async fn test_request_three_node_chain() {
 
     cleanup_nodes(&mut nodes).await;
 }
+
+#[tokio::test]
+async fn test_lookup_response_warms_multi_hop_transit_route() {
+    // Topology: origin — seed — router — target. The seed is not adjacent to
+    // the target, so the response must warm both target coordinates and the
+    // learned next hop before the first end-to-end session follows it.
+    let edges = vec![(0, 1), (1, 2), (2, 3)];
+    let mut nodes = run_tree_test(4, &edges, false).await;
+    for test_node in &mut nodes {
+        test_node.node.config.node.routing.mode = RoutingMode::ReplyLearned;
+    }
+
+    let target = *nodes[3].node.node_addr();
+    let target_pubkey = nodes[3].node.identity().pubkey_full();
+    let router = *nodes[2].node.node_addr();
+    nodes[0].node.register_identity(target, target_pubkey);
+    nodes[0].node.initiate_lookup(&target, 8).await;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !nodes[0]
+        .node
+        .coord_cache()
+        .contains(&target, Node::now_ms())
+        && tokio::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        process_available_packets(&mut nodes).await;
+    }
+
+    let now_ms = Node::now_ms();
+    assert!(
+        nodes[1].node.coord_cache().contains(&target, now_ms),
+        "seed transit must retain target coordinates from the response"
+    );
+    let learned = nodes[1].node.learned_route_table_snapshot(now_ms);
+    assert!(learned.destinations.iter().any(|destination| {
+        destination.destination == target.to_string()
+            && destination
+                .routes
+                .iter()
+                .any(|route| route.next_hop == router.to_string())
+    }));
+    assert_eq!(
+        nodes[1]
+            .node
+            .find_next_hop(&target)
+            .map(|peer| *peer.node_addr()),
+        Some(router),
+        "the first session after discovery must follow the response path"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}

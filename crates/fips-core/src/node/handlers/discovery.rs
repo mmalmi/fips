@@ -152,6 +152,20 @@ impl Node {
                 // Transit node: reverse-path forward
                 self.stats_mut().discovery.resp_forwarded += 1;
 
+                // The next end-to-end session follows this response. Retain
+                // the target coordinates and the response's incoming next hop
+                // so that session traffic can traverse the same learned path
+                // instead of immediately eliciting CoordsRequired here.
+                if response.target_coords.node_addr() == &response.target {
+                    self.coord_cache.insert_with_path_mtu(
+                        response.target,
+                        response.target_coords.clone(),
+                        now_ms,
+                        response.path_mtu,
+                    );
+                    self.learn_reverse_route(response.target, *from);
+                }
+
                 // Apply path_mtu min() from the outgoing link's transport MTU
                 self.apply_outgoing_link_mtu_to_response(&mut response, &from_peer);
 
