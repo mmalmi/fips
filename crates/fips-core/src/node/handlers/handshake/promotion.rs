@@ -62,6 +62,7 @@ impl Node {
             &peer_node_addr,
             transport_id,
             &current_addr,
+            is_outbound,
         );
 
         // Check for cross-connection

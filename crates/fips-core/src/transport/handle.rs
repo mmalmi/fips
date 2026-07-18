@@ -46,9 +46,15 @@ pub enum TransportHandle {
 }
 
 impl TransportHandle {
-    pub(crate) fn is_configured_seed_addr(&self, addr: &TransportAddr) -> bool {
+    pub(crate) fn is_configured_websocket_adjacency(
+        &self,
+        addr: &TransportAddr,
+        is_outbound: bool,
+    ) -> bool {
         match self {
-            TransportHandle::WebSocket(transport) => transport.is_configured_seed_addr(addr),
+            TransportHandle::WebSocket(transport) => {
+                transport.is_configured_adjacency(addr, is_outbound)
+            }
             _ => false,
         }
     }

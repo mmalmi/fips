@@ -212,6 +212,17 @@ impl WebSocketTransport {
         })
     }
 
+    pub(crate) fn is_configured_adjacency(&self, addr: &TransportAddr, is_outbound: bool) -> bool {
+        if is_outbound {
+            self.is_configured_seed_addr(addr)
+        } else {
+            // Accepting clients on a configured listener is an explicit
+            // operator choice; every promoted client has already completed
+            // the authenticated FIPS handshake.
+            self.config.bind_addr.is_some()
+        }
+    }
+
     pub fn stats(&self) -> WebSocketStatsSnapshot {
         self.runtime.stats.snapshot()
     }

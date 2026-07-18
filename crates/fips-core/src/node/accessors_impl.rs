@@ -841,6 +841,7 @@ impl Node {
         peer_addr: &NodeAddr,
         transport_id: TransportId,
         current_addr: &TransportAddr,
+        is_outbound: bool,
     ) -> bool {
         if let Some(retry_state) = self.retry_pending.get(peer_addr) {
             return retry_state.peer_config.discovery_fallback_transit;
@@ -850,14 +851,25 @@ impl Node {
             return allowed;
         }
 
-        if self
-            .transports
-            .get(&transport_id)
-            .is_some_and(|transport| transport.is_configured_seed_addr(current_addr))
-        {
+        if self.transports.get(&transport_id).is_some_and(|transport| {
+            transport.is_configured_websocket_adjacency(current_addr, is_outbound)
+        }) {
             return true;
         }
 
         self.config.node.discovery.nostr.policy != crate::config::NostrDiscoveryPolicy::Open
+    }
+
+    pub(crate) fn peer_is_configured_websocket_adjacency(&self, peer_addr: &NodeAddr) -> bool {
+        let Some(peer) = self.peers.get(peer_addr) else {
+            return false;
+        };
+        let (Some(transport_id), Some(current_addr)) = (peer.transport_id(), peer.current_addr())
+        else {
+            return false;
+        };
+        self.transports.get(&transport_id).is_some_and(|transport| {
+            transport.is_configured_websocket_adjacency(current_addr, peer.fmp_mmp_is_initiator())
+        })
     }
 }

@@ -74,14 +74,20 @@ impl Node {
 
     fn should_use_reply_learned_lookup_fallback_for_origin_target(
         &self,
+        from: &NodeAddr,
         origin: &NodeAddr,
         target: &NodeAddr,
     ) -> bool {
         let nostr = &self.config.node.discovery.nostr;
         match nostr.policy {
             crate::config::NostrDiscoveryPolicy::Open => {
-                self.configured_discovery_fallback_transit(origin).is_some()
-                    && self.configured_discovery_fallback_transit(target).is_some()
+                // A configured WebSocket listener is an operator-selected
+                // physical router. Let its authenticated clients find one
+                // another without treating ambient Open-discovery peers as
+                // fallback transit.
+                (self.configured_discovery_fallback_transit(origin).is_some()
+                    && self.configured_discovery_fallback_transit(target).is_some())
+                    || self.peer_is_configured_websocket_adjacency(from)
             }
             crate::config::NostrDiscoveryPolicy::ConfiguredOnly if nostr.enabled => {
                 self.configured_discovery_fallback_transit(origin).is_some()

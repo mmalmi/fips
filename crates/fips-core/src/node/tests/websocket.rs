@@ -80,3 +80,136 @@ async fn url_only_seed_hint_completes_noise_ik_and_datagram_exchange() {
     );
     cleanup_nodes(&mut nodes).await;
 }
+
+#[tokio::test]
+async fn open_discovery_listener_routes_first_contact_between_websocket_clients() {
+    let seed = make_websocket_node(WebSocketConfig {
+        bind_addr: Some("127.0.0.1:0".into()),
+        ..Default::default()
+    })
+    .await;
+    let seed_url = seed.addr.to_string();
+
+    let router = make_websocket_node(WebSocketConfig {
+        bind_addr: Some("127.0.0.1:0".into()),
+        seed_urls: vec![seed_url.clone()],
+        reconnect_initial_ms: Some(10),
+        reconnect_max_ms: Some(50),
+        ..Default::default()
+    })
+    .await;
+    let router_url = router.addr.to_string();
+
+    let guest = make_websocket_node(WebSocketConfig {
+        seed_urls: vec![router_url],
+        reconnect_initial_ms: Some(10),
+        reconnect_max_ms: Some(50),
+        ..Default::default()
+    })
+    .await;
+    let admin = make_websocket_node(WebSocketConfig {
+        seed_urls: vec![seed_url],
+        reconnect_initial_ms: Some(10),
+        reconnect_max_ms: Some(50),
+        ..Default::default()
+    })
+    .await;
+
+    let mut nodes = vec![seed, router, guest, admin];
+    for node in &mut nodes {
+        node.node.config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;
+        node.node.config.node.discovery.nostr.enabled = true;
+        node.node.config.node.discovery.nostr.policy = crate::config::NostrDiscoveryPolicy::Open;
+    }
+
+    let seed_addr = *nodes[0].node.node_addr();
+    let router_addr = *nodes[1].node.node_addr();
+    let guest_addr = *nodes[2].node.node_addr();
+    let admin_addr = *nodes[3].node.node_addr();
+    let guest_npub = nodes[2].node.identity.npub();
+    let guest_pubkey = nodes[2].node.identity.pubkey_full();
+    nodes[3].node.config.peers.push(crate::config::PeerConfig {
+        npub: guest_npub,
+        alias: None,
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    });
+    nodes[3].node.configured_peers = ConfiguredPeerLookup::from_config(&nodes[3].node.config);
+    nodes[3].node.register_identity(guest_addr, guest_pubkey);
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            for node in &mut nodes {
+                node.node.poll_transport_discovery().await;
+                node.node.poll_pending_connects().await;
+            }
+            run_synthetic_node_work(&mut nodes).await;
+            process_available_packets(&mut nodes).await;
+            let seed_ready = nodes[0].node.get_peer(&router_addr).is_some()
+                && nodes[0].node.get_peer(&admin_addr).is_some();
+            let router_ready = nodes[1].node.get_peer(&seed_addr).is_some()
+                && nodes[1].node.get_peer(&guest_addr).is_some();
+            let edge_ready = nodes[2].node.get_peer(&router_addr).is_some()
+                && nodes[3].node.get_peer(&seed_addr).is_some();
+            if seed_ready && router_ready && edge_ready {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("WebSocket seed/router topology must authenticate");
+
+    assert!(
+        nodes[0]
+            .node
+            .peer_is_configured_websocket_adjacency(&admin_addr),
+        "the seed must recognize an authenticated inbound admin as an operator-configured adjacency"
+    );
+    assert!(
+        nodes[0]
+            .node
+            .peer_is_configured_websocket_adjacency(&router_addr),
+        "the seed must recognize an authenticated inbound router as an operator-configured adjacency"
+    );
+    assert!(
+        nodes[1]
+            .node
+            .peer_is_configured_websocket_adjacency(&seed_addr),
+        "the router must recognize its explicitly configured outbound seed"
+    );
+
+    assert_eq!(
+        nodes[3].node.initiate_lookup(&guest_addr, 8).await,
+        1,
+        "admin lookup should leave through its configured WebSocket seed"
+    );
+    for _ in 0..500 {
+        run_synthetic_node_work(&mut nodes).await;
+        process_available_packets(&mut nodes).await;
+        if nodes[3].node.find_next_hop(&guest_addr).is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        !nodes[0].node.recent_requests.is_empty(),
+        "the WSS seed must receive the admin lookup"
+    );
+    assert!(
+        !nodes[1].node.recent_requests.is_empty(),
+        "the WSS seed must forward the lookup to the router client"
+    );
+    assert!(
+        !nodes[2].node.recent_requests.is_empty(),
+        "the router must forward the lookup to its direct guest"
+    );
+    assert!(
+        nodes[3].node.find_next_hop(&guest_addr).is_some(),
+        "lookup should traverse the WSS listener and return a guest route"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}

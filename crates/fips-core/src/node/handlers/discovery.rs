@@ -417,6 +417,7 @@ impl Node {
         let reply_learned_fallback_enabled = self.config.node.routing.mode
             == RoutingMode::ReplyLearned
             && self.should_use_reply_learned_lookup_fallback_for_origin_target(
+                from,
                 &request.origin,
                 &request.target,
             );
