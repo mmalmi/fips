@@ -841,7 +841,7 @@ impl Node {
         peer_addr: &NodeAddr,
         transport_id: TransportId,
         current_addr: &TransportAddr,
-        is_outbound: bool,
+        handshake_is_initiator: bool,
     ) -> bool {
         if let Some(retry_state) = self.retry_pending.get(peer_addr) {
             return retry_state.peer_config.discovery_fallback_transit;
@@ -852,7 +852,7 @@ impl Node {
         }
 
         if self.transports.get(&transport_id).is_some_and(|transport| {
-            transport.is_configured_websocket_adjacency(current_addr, is_outbound)
+            transport.is_configured_websocket_adjacency(current_addr, handshake_is_initiator)
         }) {
             return true;
         }

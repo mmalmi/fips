@@ -657,7 +657,7 @@ fn test_promote_nonconfigured_open_discovery_peer_blocks_fallback_transit() {
 }
 
 #[tokio::test]
-async fn test_promote_explicit_websocket_seed_allows_open_discovery_fallback_transit() {
+async fn test_promote_explicit_websocket_seed_responder_allows_open_discovery_fallback_transit() {
     use crate::config::WebSocketConfig;
     use crate::transport::websocket::WebSocketTransport;
 
@@ -683,7 +683,20 @@ async fn test_promote_explicit_websocket_seed_allows_open_discovery_fallback_tra
     );
 
     let link_id = LinkId::new(1);
-    let (mut conn, identity) = make_completed_connection(&mut node, link_id, transport_id, 1000);
+    let remote_identity = Identity::generate();
+    let identity = PeerIdentity::from_pubkey_full(remote_identity.pubkey_full());
+    let local_identity = PeerIdentity::from_pubkey_full(node.identity.pubkey_full());
+    let mut remote_conn = PeerConnection::outbound(LinkId::new(999), local_identity, 1000);
+    let msg1 = remote_conn
+        .start_handshake(remote_identity.keypair(), [9; 8], 1000)
+        .unwrap();
+    let mut conn = PeerConnection::inbound(link_id, 1000);
+    conn.receive_handshake_init(node.identity.keypair(), node.startup_epoch, &msg1, 1000)
+        .unwrap();
+    let our_index = node.index_allocator.allocate().unwrap();
+    conn.set_our_index(our_index);
+    conn.set_their_index(SessionIndex::new(42));
+    conn.set_transport_id(transport_id);
     let node_addr = *identity.node_addr();
     conn.set_source_addr(TransportAddr::from_string(seed_url));
 
@@ -692,7 +705,11 @@ async fn test_promote_explicit_websocket_seed_allows_open_discovery_fallback_tra
 
     assert!(
         !node.discovery_fallback_transit.is_blocked(&node_addr),
-        "an explicitly configured WebSocket seed is intended first-contact transit"
+        "an explicitly configured WebSocket seed must remain first-contact transit when simultaneous initiation makes the local FIPS handshake the responder"
+    );
+    assert!(
+        node.peer_is_configured_websocket_adjacency(&node_addr),
+        "the active responder-role peer must retain its configured physical WebSocket seed association"
     );
 
     let target = Identity::generate();

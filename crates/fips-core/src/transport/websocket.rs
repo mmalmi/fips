@@ -212,14 +212,23 @@ impl WebSocketTransport {
         })
     }
 
-    pub(crate) fn is_configured_adjacency(&self, addr: &TransportAddr, is_outbound: bool) -> bool {
-        if is_outbound {
-            self.is_configured_seed_addr(addr)
-        } else {
+    pub(crate) fn is_configured_adjacency(
+        &self,
+        addr: &TransportAddr,
+        handshake_is_initiator: bool,
+    ) -> bool {
+        if self.is_configured_seed_addr(addr) {
+            // The URL identifies the operator-configured physical dial even
+            // when simultaneous FIPS initiation makes this node the responder.
+            // Handshake role is not transport direction.
+            true
+        } else if !handshake_is_initiator {
             // Accepting clients on a configured listener is an explicit
             // operator choice; every promoted client has already completed
             // the authenticated FIPS handshake.
             self.config.bind_addr.is_some()
+        } else {
+            false
         }
     }
 

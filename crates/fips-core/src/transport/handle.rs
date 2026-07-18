@@ -49,11 +49,11 @@ impl TransportHandle {
     pub(crate) fn is_configured_websocket_adjacency(
         &self,
         addr: &TransportAddr,
-        is_outbound: bool,
+        handshake_is_initiator: bool,
     ) -> bool {
         match self {
             TransportHandle::WebSocket(transport) => {
-                transport.is_configured_adjacency(addr, is_outbound)
+                transport.is_configured_adjacency(addr, handshake_is_initiator)
             }
             _ => false,
         }

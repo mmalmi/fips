@@ -180,3 +180,31 @@ fn configured_seed_accepts_routed_fips_handshakes_by_default() {
     };
     assert!(!explicitly_closed.accept_connections());
 }
+
+#[test]
+fn configured_seed_adjacency_survives_responder_handshake_role() {
+    let identity = Identity::generate();
+    let (packet_tx, _packet_rx) = packet_channel(8);
+    let seed_url = "wss://seed.example/fips";
+    let transport = WebSocketTransport::new(
+        TransportId::new(9),
+        None,
+        WebSocketConfig {
+            seed_urls: vec![seed_url.into()],
+            ..Default::default()
+        },
+        packet_tx,
+        &identity,
+    );
+    let seed_addr = TransportAddr::from_string(seed_url);
+
+    assert!(transport.is_configured_adjacency(&seed_addr, true));
+    assert!(
+        transport.is_configured_adjacency(&seed_addr, false),
+        "the configured physical seed URL must remain an explicit adjacency when simultaneous FIPS initiation makes the local session the responder"
+    );
+    assert!(!transport.is_configured_adjacency(
+        &TransportAddr::from_string("wss://other.example/fips"),
+        false
+    ));
+}
