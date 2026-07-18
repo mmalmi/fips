@@ -1,4 +1,5 @@
 use super::*;
+use crate::node::route_impl::TransitNextHopPlan;
 
 #[tokio::test]
 async fn test_response_decode_error() {
@@ -51,7 +52,7 @@ async fn test_response_transit_learns_target_route() {
     let mut node = Node::new(config).unwrap();
     let from = make_node_addr(0xAA);
     let target = make_node_addr(0xBB);
-    let root = make_node_addr(0xF0);
+    let root = *node.tree_state().my_coords().root_id();
     let coords = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
 
     // Transit nodes don't verify proofs, so any valid signature suffices
@@ -87,6 +88,56 @@ async fn test_response_transit_learns_target_route() {
     assert_eq!(learned.route_count, 1);
     assert_eq!(learned.destinations[0].destination, target.to_string());
     assert_eq!(learned.destinations[0].routes[0].next_hop, from.to_string());
+}
+
+#[tokio::test]
+async fn test_response_transit_keeps_foreign_root_out_of_strict_routing() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let transport_id = TransportId::new(1);
+
+    let (target_side_connection, target_side_identity) =
+        make_completed_connection(&mut node, LinkId::new(1), transport_id, 1_000);
+    let target_side = *target_side_identity.node_addr();
+    node.add_connection(target_side_connection).unwrap();
+    node.promote_connection(LinkId::new(1), target_side_identity, 2_000)
+        .unwrap();
+
+    let (origin_side_connection, origin_side_identity) =
+        make_completed_connection(&mut node, LinkId::new(2), transport_id, 1_000);
+    let origin_side = *origin_side_identity.node_addr();
+    node.add_connection(origin_side_connection).unwrap();
+    node.promote_connection(LinkId::new(2), origin_side_identity, 2_000)
+        .unwrap();
+
+    let target = make_node_addr(0xBB);
+    let foreign_coords = TreeCoordinate::from_addrs(vec![target]).unwrap();
+    assert_ne!(
+        foreign_coords.root_id(),
+        node.tree_state().my_coords().root_id(),
+        "fixture requires a target in a different tree component"
+    );
+    let proof_data = LookupResponse::proof_bytes(445, &target, &foreign_coords);
+    let proof = Identity::generate().sign(&proof_data);
+    let response = LookupResponse::new(445, target, foreign_coords, proof);
+    let now_ms = Node::now_ms();
+    node.recent_requests
+        .insert(445, RecentRequest::new(origin_side, now_ms));
+
+    node.handle_lookup_response(&target_side, &response.encode()[1..])
+        .await;
+
+    let now_ms = Node::now_ms();
+    assert!(
+        !node.coord_cache().contains(&target, now_ms),
+        "foreign-root coordinates must not suppress the proven reply path"
+    );
+    match node.plan_transit_next_hop(&target, &origin_side) {
+        TransitNextHopPlan::Route(next_hop) => assert_eq!(next_hop, target_side),
+        TransitNextHopPlan::Loop(_) => panic!("foreign-root coordinates caused a route loop"),
+        TransitNextHopPlan::NoRoute => panic!("verified response path was not retained"),
+    }
 }
 
 // ============================================================================

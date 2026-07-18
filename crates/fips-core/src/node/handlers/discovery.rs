@@ -157,12 +157,20 @@ impl Node {
                 // so that session traffic can traverse the same learned path
                 // instead of immediately eliciting CoordsRequired here.
                 if response.target_coords.node_addr() == &response.target {
-                    self.coord_cache.insert_with_path_mtu(
-                        response.target,
-                        response.target_coords.clone(),
-                        now_ms,
-                        response.path_mtu,
-                    );
+                    // Coordinates are meaningful only inside our current tree
+                    // component. Caching a foreign-root response would make
+                    // transit routing reject the freshly learned reply path as
+                    // non-progressing and return PathBroken. Keep the response
+                    // path, but wait for compatible coordinates before using
+                    // strict tree-distance routing.
+                    if response.target_coords.root_id() == self.tree_state.my_coords().root_id() {
+                        self.coord_cache.insert_with_path_mtu(
+                            response.target,
+                            response.target_coords.clone(),
+                            now_ms,
+                            response.path_mtu,
+                        );
+                    }
                     self.learn_reverse_route(response.target, *from);
                 }
 
