@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.12] - 2026-07-19
+
+### Fixed
+
+- Preserve configured WebSocket seeds as eligible first-contact transit after
+  authentication, forward routed discovery through listeners, and retain
+  verified foreign-root reply paths so WSS-to-router-to-physical-peer session
+  establishment converges without a relay packet carrier or static peer key.
+- Gate WebRTC upgrades on an authenticated FIPS route and reject traversal
+  work before allocating background tasks, keeping public Nostr announcements
+  bounded to peer/service discovery instead of spawning route-less signaling.
+- Throttle Linux UDP namespace error sampling while preserving the last valid
+  counter snapshot, removing unnecessary procfs work from the idle dataplane.
+- Bump `fips-endpoint` to 0.4.12 so embedded consumers select the complete
+  routed WebSocket and idle-work fixes together. FMP, FSP, discovery, and
+  physical transport wire formats are unchanged.
+
 ## [0.4.11] - 2026-07-18
 
 ### Fixed
