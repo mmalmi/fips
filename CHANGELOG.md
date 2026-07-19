@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.19] - 2026-07-20
 
 ### Changed
 
@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   antipoison cap from `0.10` to `0.20`, reusing one shared secp256k1 identity
   context, and removing the redundant `parent_switched` control metric in
   favor of `parent_switches`.
+- Release `fips-identity` 0.3.2, `fips-core` 0.4.19, and `fips-endpoint`
+  0.4.19 together so consumers select the complete compatibility update.
 
 ### Fixed
 

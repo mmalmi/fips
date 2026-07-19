@@ -64,6 +64,9 @@ publish_crate() {
     if [[ -n "$ALLOW_DIRTY" ]]; then
         cargo_args+=("$ALLOW_DIRTY")
     fi
+    if [[ -n "$DRY_RUN" && "$crate" == "fips-core" ]]; then
+        cargo_args+=(--config 'patch.crates-io.fips-identity.path="crates/fips-identity"')
+    fi
     if [[ -n "$DRY_RUN" && "$crate" == "fips-endpoint" ]]; then
         cargo_args+=(--config 'patch.crates-io.fips-core.path="crates/fips-core"')
     fi
