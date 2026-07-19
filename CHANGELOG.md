@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.14] - 2026-07-19
+
+### Fixed
+
+- Fully stop the LAN mDNS daemon and close its multicast sockets between the
+  aligned five-second discovery windows, then recreate the responder and
+  browser for the next scan. This preserves once-per-minute local peer
+  discovery while avoiding a persistent Android packet-tunnel wakeup loop.
+- Add a lifecycle regression proving no mDNS daemon remains active between
+  scan windows. FMP, FSP, discovery records, and physical transport wire
+  formats are unchanged.
+
 ## [0.4.13] - 2026-07-19
 
 ### Fixed

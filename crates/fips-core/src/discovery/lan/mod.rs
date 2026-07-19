@@ -32,9 +32,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use mdns_sd::{IfKind, ScopedIp, ServiceDaemon, ServiceEvent, ServiceInfo};
+use mdns_sd::{ScopedIp, ServiceDaemon, ServiceEvent, ServiceInfo};
 use thiserror::Error;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 use tracing::{debug, info, warn};
 
 use crate::Identity;
@@ -53,6 +53,7 @@ const IP_CHECK_INTERVAL_SECS: u32 = 30;
 // close their multicast sockets and reconvene on the next wall-clock minute.
 const BROWSE_WINDOW: Duration = Duration::from_secs(5);
 const BROWSE_PERIOD_MS: u128 = 60_000;
+const DAEMON_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// TXT key carrying the bech32-encoded npub of the publishing node.
 pub const TXT_KEY_NPUB: &str = "npub";
@@ -138,13 +139,14 @@ impl LanDiscoveryConfig {
 
 /// Running mDNS responder + browser bound to the node's UDP advert port.
 pub struct LanDiscovery {
-    daemon: ServiceDaemon,
     own_npub: String,
-    instance_fullname: String,
     events_rx: Mutex<tokio::sync::mpsc::UnboundedReceiver<LanEvent>>,
-    event_pump: tokio::task::JoinHandle<()>,
+    shutdown_tx: watch::Sender<bool>,
+    event_pump: Mutex<Option<tokio::task::JoinHandle<()>>>,
     #[cfg(test)]
     browse_paused: Arc<AtomicBool>,
+    #[cfg(test)]
+    daemon_active: Arc<AtomicBool>,
 }
 
 impl LanDiscovery {
@@ -166,11 +168,6 @@ impl LanDiscovery {
         if advertised_port == 0 {
             return Err(LanDiscoveryError::NoAdvertisedPort);
         }
-
-        let daemon = ServiceDaemon::new().map_err(|e| LanDiscoveryError::Daemon(e.to_string()))?;
-        daemon
-            .set_ip_check_interval(IP_CHECK_INTERVAL_SECS)
-            .map_err(|e| LanDiscoveryError::Daemon(e.to_string()))?;
 
         let npub = identity.npub();
         // mDNS DNS labels are capped at 63 bytes. 16 bech32 chars of npub
@@ -210,34 +207,40 @@ impl LanDiscovery {
         .enable_addr_auto();
 
         let instance_fullname = service_info.get_fullname().to_string();
-
-        daemon
-            .register(service_info)
-            .map_err(|e| LanDiscoveryError::Register(e.to_string()))?;
-
-        let browse_rx = daemon
-            .browse(&config.service_type)
-            .map_err(|e| LanDiscoveryError::Browse(e.to_string()))?;
+        let service_type = config.service_type.clone();
+        let (daemon, browse_rx) = start_scan_daemon(&service_info, &service_type)?;
 
         let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel();
         let own_npub = npub.clone();
         let scope_filter = scope.clone().filter(|s| !s.is_empty());
-        let browse_daemon = daemon.clone();
-        let service_type = config.service_type.clone();
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
         #[cfg(test)]
         let browse_paused = Arc::new(AtomicBool::new(false));
         #[cfg(test)]
         let event_pump_browse_paused = Arc::clone(&browse_paused);
+        #[cfg(test)]
+        let daemon_active = Arc::new(AtomicBool::new(true));
+        #[cfg(test)]
+        let event_pump_daemon_active = Arc::clone(&daemon_active);
+        let event_pump_instance_fullname = instance_fullname.clone();
         let event_pump = tokio::spawn(async move {
+            let mut daemon = daemon;
             let mut browse_rx = browse_rx;
-            loop {
+            let mut daemon_running = true;
+            'lifecycle: loop {
                 let window = tokio::time::sleep(BROWSE_WINDOW);
                 tokio::pin!(window);
                 loop {
                     let event = tokio::select! {
+                        changed = shutdown_rx.changed() => {
+                            if changed.is_err() || *shutdown_rx.borrow() {
+                                break 'lifecycle;
+                            }
+                            continue;
+                        }
                         event = browse_rx.recv_async() => match event {
                             Ok(event) => event,
-                            Err(_) => return,
+                            Err(_) => break 'lifecycle,
                         },
                         () = &mut window => break,
                     };
@@ -320,30 +323,41 @@ impl LanDiscovery {
                         }
                     }
                 }
-                if let Err(error) = browse_daemon.stop_browse(&service_type) {
-                    warn!(%error, "lan: stop mDNS browse failed");
-                    return;
-                }
-                if let Err(error) = browse_daemon.disable_interface(IfKind::All) {
-                    warn!(%error, "lan: suspend mDNS interfaces failed");
-                    return;
-                }
+                stop_scan_daemon(&daemon, &event_pump_instance_fullname).await;
+                daemon_running = false;
                 #[cfg(test)]
-                event_pump_browse_paused.store(true, Ordering::Release);
-                tokio::time::sleep(next_browse_window_delay()).await;
+                {
+                    event_pump_daemon_active.store(false, Ordering::Release);
+                    event_pump_browse_paused.store(true, Ordering::Release);
+                }
+                tokio::select! {
+                    () = tokio::time::sleep(next_browse_window_delay()) => {}
+                    changed = shutdown_rx.changed() => {
+                        if changed.is_err() || *shutdown_rx.borrow() {
+                            break 'lifecycle;
+                        }
+                    }
+                }
+                if *shutdown_rx.borrow() {
+                    break 'lifecycle;
+                }
                 #[cfg(test)]
                 event_pump_browse_paused.store(false, Ordering::Release);
-                if let Err(error) = browse_daemon.enable_interface(IfKind::All) {
-                    warn!(%error, "lan: resume mDNS interfaces failed");
-                    return;
-                }
-                browse_rx = match browse_daemon.browse(&service_type) {
-                    Ok(receiver) => receiver,
+                (daemon, browse_rx) = match start_scan_daemon(&service_info, &service_type) {
+                    Ok(runtime) => runtime,
                     Err(error) => {
                         warn!(%error, "lan: restart mDNS browse failed");
-                        return;
+                        break 'lifecycle;
                     }
                 };
+                daemon_running = true;
+                #[cfg(test)]
+                event_pump_daemon_active.store(true, Ordering::Release);
+            }
+            if daemon_running {
+                stop_scan_daemon(&daemon, &event_pump_instance_fullname).await;
+                #[cfg(test)]
+                event_pump_daemon_active.store(false, Ordering::Release);
             }
         });
 
@@ -354,13 +368,14 @@ impl LanDiscovery {
             "lan: mDNS discovery started"
         );
         Ok(Arc::new(Self {
-            daemon,
             own_npub: npub,
-            instance_fullname,
             events_rx: Mutex::new(events_rx),
-            event_pump,
+            shutdown_tx,
+            event_pump: Mutex::new(Some(event_pump)),
             #[cfg(test)]
             browse_paused,
+            #[cfg(test)]
+            daemon_active,
         }))
     }
 
@@ -381,13 +396,54 @@ impl LanDiscovery {
 
     /// Tear down the responder, browser, and event pump.
     pub async fn shutdown(self: &Arc<Self>) {
-        if let Err(e) = self.daemon.unregister(&self.instance_fullname) {
-            warn!(error = %e, "lan: unregister failed");
+        let _ = self.shutdown_tx.send(true);
+        if let Some(event_pump) = self.event_pump.lock().await.take()
+            && tokio::time::timeout(DAEMON_SHUTDOWN_TIMEOUT, event_pump)
+                .await
+                .is_err()
+        {
+            warn!("lan: event pump did not stop before timeout");
         }
-        if let Err(e) = self.daemon.shutdown() {
-            warn!(error = %e, "lan: daemon shutdown failed");
+    }
+}
+
+fn start_scan_daemon(
+    service_info: &ServiceInfo,
+    service_type: &str,
+) -> Result<(ServiceDaemon, mdns_sd::Receiver<ServiceEvent>), LanDiscoveryError> {
+    let daemon = ServiceDaemon::new().map_err(|e| LanDiscoveryError::Daemon(e.to_string()))?;
+    daemon
+        .set_ip_check_interval(IP_CHECK_INTERVAL_SECS)
+        .map_err(|e| LanDiscoveryError::Daemon(e.to_string()))?;
+    if let Err(error) = daemon.register(service_info.clone()) {
+        let _ = daemon.shutdown();
+        return Err(LanDiscoveryError::Register(error.to_string()));
+    }
+    match daemon.browse(service_type) {
+        Ok(receiver) => Ok((daemon, receiver)),
+        Err(error) => {
+            let _ = daemon.shutdown();
+            Err(LanDiscoveryError::Browse(error.to_string()))
         }
-        self.event_pump.abort();
+    }
+}
+
+async fn stop_scan_daemon(daemon: &ServiceDaemon, instance_fullname: &str) {
+    if let Err(error) = daemon.unregister(instance_fullname) {
+        debug!(%error, "lan: unregister failed");
+    }
+    let shutdown = match daemon.shutdown() {
+        Ok(shutdown) => shutdown,
+        Err(error) => {
+            debug!(%error, "lan: daemon already stopped");
+            return;
+        }
+    };
+    if tokio::time::timeout(DAEMON_SHUTDOWN_TIMEOUT, shutdown.recv_async())
+        .await
+        .is_err()
+    {
+        warn!("lan: mDNS daemon did not stop before timeout");
     }
 }
 

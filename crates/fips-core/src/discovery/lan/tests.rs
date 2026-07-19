@@ -47,12 +47,13 @@ async fn lan_discovery_uses_low_wakeup_interface_refresh() {
     .await
     .expect("start LAN discovery");
 
-    assert_eq!(discovery.daemon.get_ip_check_interval().unwrap(), 30);
+    assert_eq!(super::IP_CHECK_INTERVAL_SECS, 30);
+    assert!(discovery.daemon_active.load(Ordering::Acquire));
     discovery.shutdown().await;
 }
 
 #[tokio::test]
-async fn lan_discovery_pauses_active_browse_between_scan_windows() {
+async fn lan_discovery_stops_daemon_between_scan_windows() {
     let discovery = LanDiscovery::start(
         &Identity::generate(),
         None,
@@ -77,25 +78,16 @@ async fn lan_discovery_pauses_active_browse_between_scan_windows() {
     })
     .await
     .expect("mDNS browse should enter a pause with an observable interval");
-    let before = discovery
-        .daemon
-        .get_metrics()
-        .unwrap()
-        .recv_timeout(Duration::from_secs(1))
-        .unwrap()["browse"];
+    assert!(discovery.browse_paused.load(Ordering::Acquire));
+    assert!(
+        !discovery.daemon_active.load(Ordering::Acquire),
+        "the mDNS thread and multicast sockets must be absent between scans"
+    );
     tokio::time::sleep(Duration::from_secs(3)).await;
-    let after = discovery
-        .daemon
-        .get_metrics()
-        .unwrap()
-        .recv_timeout(Duration::from_secs(1))
-        .unwrap()["browse"];
+    assert!(discovery.browse_paused.load(Ordering::Acquire));
+    assert!(!discovery.daemon_active.load(Ordering::Acquire));
 
     discovery.shutdown().await;
-    assert_eq!(
-        after, before,
-        "active mDNS queries should pause between scans"
-    );
 }
 
 #[test]
