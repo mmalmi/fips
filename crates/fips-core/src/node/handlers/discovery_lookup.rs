@@ -64,6 +64,14 @@ impl Node {
         peer: &crate::peer::ActivePeer,
         target: &NodeAddr,
     ) -> bool {
+        // A full `.fips` name is an explicit, locally authenticated target
+        // selection. Let that lookup leave over any established physical
+        // adjacency, including an Open-discovery adjacency that is otherwise
+        // excluded from ambient fallback transit.
+        if self.is_dns_resolved_identity(target) {
+            return true;
+        }
+
         self.discovery_fallback_transit.allows_lookup_fallback_peer(
             peer_addr,
             target,

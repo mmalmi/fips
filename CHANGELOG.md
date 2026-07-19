@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.18] - 2026-07-19
+
+### Fixed
+
+- Complete authenticated `.fips` DNS route discovery under Open discovery by
+  allowing an explicitly resolved target lookup over an established physical
+  adjacency even when that adjacency is excluded from ambient fallback
+  transit. Ambient learned identities remain subject to the normal policy.
+
 ## [0.4.17] - 2026-07-19
 
 ### Fixed

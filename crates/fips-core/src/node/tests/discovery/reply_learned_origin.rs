@@ -176,10 +176,12 @@ async fn test_reply_learned_dns_target_uses_authenticated_physical_adjacency() {
     let adjacent_addr = *nodes[1].node.node_addr();
     nodes[0].node.config.node.routing.mode = RoutingMode::ReplyLearned;
     nodes[0].node.config.node.discovery.nostr.enabled = true;
-    nodes[0].node.config.node.discovery.nostr.policy =
-        crate::config::NostrDiscoveryPolicy::ConfiguredOnly;
+    nodes[0].node.config.node.discovery.nostr.policy = crate::config::NostrDiscoveryPolicy::Open;
     nodes[0].node.tree_state_mut().remove_peer(&adjacent_addr);
     nodes[0].node.tree_state_mut().become_root();
+    nodes[0]
+        .node
+        .set_discovery_fallback_transit_allowed(adjacent_addr, false);
     assert!(
         nodes[0]
             .node
@@ -196,7 +198,7 @@ async fn test_reply_learned_dns_target_uses_authenticated_physical_adjacency() {
     assert_eq!(
         nodes[0].node.initiate_lookup(ambient.node_addr(), 5).await,
         0,
-        "an ambient learned identity must not broaden configured-only fallback"
+        "an ambient learned identity must not broaden open-discovery fallback"
     );
 
     let resolved = Identity::generate();
