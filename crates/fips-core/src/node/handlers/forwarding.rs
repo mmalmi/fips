@@ -383,6 +383,16 @@ impl Node {
             }
         };
 
+        // LookupResponse reverse entries are intentionally one-shot. Once a
+        // well-formed initial SessionSetup has a forward route, retain its
+        // ingress hop so the SessionAck can traverse the same transit chain.
+        // Limit this bootstrap observation to msg1 whose claimed source
+        // coordinate matches the datagram source; established traffic keeps
+        // learning routes only after end-to-end authentication.
+        if transit_session_setup_source(&datagram_ref).is_some() {
+            self.learn_reverse_route(datagram_ref.src_addr, previous_hop);
+        }
+
         // Apply path_mtu min() from the outgoing link's transport MTU
         let mut path_mtu = datagram_ref.path_mtu;
         if let Some(peer) = self.peers.get(&next_hop_addr)
@@ -783,6 +793,15 @@ impl Node {
             );
         }
     }
+}
+
+fn transit_session_setup_source(datagram: &SessionDatagramRef<'_>) -> Option<NodeAddr> {
+    let prefix = FspCommonPrefix::parse(datagram.payload)?;
+    if prefix.phase != FSP_PHASE_MSG1 {
+        return None;
+    }
+    let setup = SessionSetup::decode(&datagram.payload[FSP_COMMON_PREFIX_SIZE..]).ok()?;
+    (setup.src_coords.node_addr() == &datagram.src_addr).then_some(datagram.src_addr)
 }
 
 impl PreparedSessionForwardRoute {

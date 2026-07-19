@@ -1,6 +1,6 @@
 [package]
 name = "fips-endpoint"
-version = "0.4.12"
+version = "0.4.13"
 edition = "2024"
 description = "App-facing FIPS EndpointData API"
 license = "MIT"
@@ -9,4 +9,4 @@ repository = "https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n
 readme = "README.md"
 
 [dependencies]
-fips-core = { version = "0.4.12", path = "../fips-core" }
+fips-core = { version = "0.4.13", path = "../fips-core" }

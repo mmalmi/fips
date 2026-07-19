@@ -211,5 +211,41 @@ async fn open_discovery_listener_routes_first_contact_between_websocket_clients(
         "lookup should traverse the WSS listener and return a guest route"
     );
 
+    nodes[3]
+        .node
+        .initiate_session(guest_addr, guest_pubkey)
+        .await
+        .expect("admin should initiate an end-to-end session over the learned route");
+    for _ in 0..500 {
+        run_synthetic_node_work(&mut nodes).await;
+        process_available_packets(&mut nodes).await;
+        let admin_established = nodes[3]
+            .node
+            .get_session(&guest_addr)
+            .is_some_and(|session| session.is_established());
+        let guest_established = nodes[2]
+            .node
+            .get_session(&admin_addr)
+            .is_some_and(|session| session.is_established());
+        if admin_established && guest_established {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        nodes[3]
+            .node
+            .get_session(&guest_addr)
+            .is_some_and(|session| session.is_established()),
+        "the admin session should establish over WSS seed/router transit"
+    );
+    assert!(
+        nodes[2]
+            .node
+            .get_session(&admin_addr)
+            .is_some_and(|session| session.is_established()),
+        "the guest session should establish over WSS seed/router transit"
+    );
+
     cleanup_nodes(&mut nodes).await;
 }

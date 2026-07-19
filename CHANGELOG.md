@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.13] - 2026-07-19
+
+### Fixed
+
+- Retain the authenticated ingress hop for a successfully routed initial FSP
+  SessionSetup so its SessionAck can return across WSS seed and physical-router
+  transit after the one-shot discovery response has completed. The learned
+  observation is bounded to a well-formed msg1 whose source coordinate matches
+  the datagram source; established traffic still learns routes only after
+  end-to-end authentication.
+- Extend the native WebSocket topology regression through a complete
+  end-to-end FSP session, covering WSS seed to router to physical edge in both
+  directions. FMP, FSP, discovery, and physical transport wire formats are
+  unchanged.
+
 ## [0.4.12] - 2026-07-19
 
 ### Fixed
