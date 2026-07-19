@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.16] - 2026-07-19
+
+### Changed
+
+- Allow ICMPv6 echo request and reply through the integrated `.fips` host
+  firewall inside the authenticated `fd00::/8` overlay. Other non-TCP host
+  traffic remains blocked, and FIPS wire formats are unchanged.
+
 ## [0.4.15] - 2026-07-19
 
 ### Added

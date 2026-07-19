@@ -324,18 +324,20 @@ pub fn render_nft_host_firewall_rules(
              type filter hook input priority 0; policy accept;\n\
              iifname != \"{iface}\" return\n\
              meta nfproto != ipv6 return\n\
-             ip6 saddr != {FIPS_MESH_IPV6_PREFIX} return\n\
-             ct state established,related accept\n\
-         {inbound_tcp_rule}\
+	             ip6 saddr != {FIPS_MESH_IPV6_PREFIX} return\n\
+	             ct state established,related accept\n\
+	             icmpv6 type {{ echo-request, echo-reply }} accept\n\
+	         {inbound_tcp_rule}\
              counter drop\n\
            }}\n\
            chain output {{\n\
              type filter hook output priority 0; policy accept;\n\
              oifname != \"{iface}\" return\n\
              meta nfproto != ipv6 return\n\
-             ip6 daddr != {FIPS_MESH_IPV6_PREFIX} return\n\
-             ct state established,related accept\n\
-             meta l4proto tcp accept\n\
+	             ip6 daddr != {FIPS_MESH_IPV6_PREFIX} return\n\
+	             ct state established,related accept\n\
+	             icmpv6 type {{ echo-request, echo-reply }} accept\n\
+	             meta l4proto tcp accept\n\
              counter drop\n\
            }}\n\
          }}\n"
@@ -371,7 +373,9 @@ pub fn render_macos_pf_host_firewall_rules(iface: &str, inbound_tcp_ports: &[u16
 
     let _ = write!(
         rules,
-        "pass out quick on {iface} inet6 proto tcp from any to {FIPS_MESH_IPV6_PREFIX} flags S/SA keep state\n\
+        "pass in quick on {iface} inet6 proto icmp6 from {FIPS_MESH_IPV6_PREFIX} to any icmp6-type {{ echoreq, echorep }} keep state\n\
+	         pass out quick on {iface} inet6 proto icmp6 from any to {FIPS_MESH_IPV6_PREFIX} icmp6-type {{ echoreq, echorep }} keep state\n\
+	         pass out quick on {iface} inet6 proto tcp from any to {FIPS_MESH_IPV6_PREFIX} flags S/SA keep state\n\
          block drop in quick on {iface} inet6 from {FIPS_MESH_IPV6_PREFIX} to any\n\
          block drop out quick on {iface} inet6 from any to {FIPS_MESH_IPV6_PREFIX}\n"
     );
@@ -596,7 +600,7 @@ mod tests {
     }
 
     #[test]
-    fn nft_rules_default_to_outbound_tcp_only() {
+    fn nft_rules_default_to_outbound_tcp_and_diagnostic_echo() {
         let rules = render_nft_host_firewall_rules("fips_host", "nvpn0", &[]);
 
         assert!(rules.contains("table inet fips_host"));
@@ -605,6 +609,12 @@ mod tests {
         assert!(rules.contains("ip6 saddr != fd00::/8 return"));
         assert!(rules.contains("ip6 daddr != fd00::/8 return"));
         assert!(rules.contains("meta l4proto tcp accept"));
+        assert_eq!(
+            rules
+                .matches("icmpv6 type { echo-request, echo-reply } accept")
+                .count(),
+            2
+        );
         assert!(!rules.contains("tcp dport"));
     }
 
@@ -616,13 +626,19 @@ mod tests {
     }
 
     #[test]
-    fn macos_pf_rules_default_to_outbound_tcp_only() {
+    fn macos_pf_rules_default_to_outbound_tcp_and_diagnostic_echo() {
         let rules = render_macos_pf_host_firewall_rules("utun8", &[]);
 
         assert!(rules.contains("pass out quick on utun8 inet6 proto tcp"));
+        assert!(rules.contains(
+			"pass in quick on utun8 inet6 proto icmp6 from fd00::/8 to any icmp6-type { echoreq, echorep }"
+		));
+        assert!(rules.contains(
+			"pass out quick on utun8 inet6 proto icmp6 from any to fd00::/8 icmp6-type { echoreq, echorep }"
+		));
         assert!(rules.contains("block drop in quick on utun8 inet6 from fd00::/8 to any"));
         assert!(rules.contains("block drop out quick on utun8 inet6 from any to fd00::/8"));
-        assert!(!rules.contains("pass in quick"));
+        assert!(!rules.contains("pass in quick on utun8 inet6 proto tcp"));
         assert!(!rules.contains("proto udp"));
     }
 
