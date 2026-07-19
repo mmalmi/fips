@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.15] - 2026-07-19
+
+### Added
+
+- Let embedded endpoints register a DNS-resolved peer identity in the bounded
+  identity cache and enqueue host IPv6 packets directly from a blocking TUN
+  reader. These APIs reuse the ordinary authenticated discovery, routing, and
+  FSP session pipeline; they do not configure or admit the resolved peer.
+
+### Fixed
+
+- Enable applications to attach `.fips` host networking to their existing
+  embedded endpoint instead of starting a second node with duplicate identity
+  and disconnected physical transports. FMP, FSP, discovery, and physical
+  transport wire formats are unchanged.
+
 ## [0.4.14] - 2026-07-19
 
 ### Fixed

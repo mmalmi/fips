@@ -85,6 +85,14 @@ impl Node {
                 let result = self.refresh_peer_paths(npubs).await;
                 let _ = response_tx.send(result);
             }
+            NodeEndpointControlCommand::RegisterIdentity {
+                identity,
+                response_tx,
+            } => {
+                let registered =
+                    self.register_identity(*identity.node_addr(), identity.pubkey_full());
+                let _ = response_tx.send(registered);
+            }
             NodeEndpointControlCommand::RegisterService {
                 port,
                 sender,

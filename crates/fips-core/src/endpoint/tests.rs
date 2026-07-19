@@ -301,6 +301,38 @@ async fn endpoint_peer_snapshot_starts_empty() {
     endpoint.shutdown().await.expect("shutdown should succeed");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn endpoint_accepts_dns_resolved_identity_and_blocking_host_packet() {
+    let endpoint = Arc::new(
+        FipsEndpoint::builder()
+            .without_system_tun()
+            .bind()
+            .await
+            .expect("endpoint should bind"),
+    );
+    let local = PeerIdentity::from_npub(endpoint.npub()).expect("local identity");
+
+    assert!(
+        endpoint
+            .register_peer_identity(local)
+            .await
+            .expect("DNS identity should register")
+    );
+
+    let packet = ipv6_tcp_packet(0x02, 0);
+
+    let endpoint_for_sender = Arc::clone(&endpoint);
+    tokio::task::spawn_blocking(move || {
+        endpoint_for_sender
+            .blocking_send_ip_packet(packet)
+            .expect("blocking TUN producer should enqueue without an async bridge");
+    })
+    .await
+    .expect("blocking sender task");
+
+    endpoint.shutdown().await.expect("shutdown should succeed");
+}
+
 #[tokio::test]
 async fn endpoint_exposes_signed_machine_rating_events() {
     let endpoint = FipsEndpoint::builder()

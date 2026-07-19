@@ -805,6 +805,27 @@ impl FipsEndpoint {
         }
     }
 
+    /// Register a DNS-resolved peer identity for subsequent IPv6 packet routing.
+    ///
+    /// This only populates the bounded identity cache. It does not configure,
+    /// admit, or connect the peer; the normal authenticated discovery and
+    /// session policy still applies when traffic is sent.
+    pub async fn register_peer_identity(
+        &self,
+        identity: PeerIdentity,
+    ) -> Result<bool, FipsEndpointError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.control(
+            "identity registration",
+            NodeEndpointControlCommand::RegisterIdentity {
+                identity,
+                response_tx,
+            },
+            response_rx,
+        )
+        .await
+    }
+
     /// Snapshot authenticated peers known by the endpoint.
     pub async fn peers(&self) -> Result<Vec<FipsEndpointPeer>, FipsEndpointError> {
         let (response_tx, response_rx) = oneshot::channel();
@@ -825,6 +846,16 @@ impl FipsEndpoint {
         self.outbound_packets
             .send(packet.into())
             .await
+            .map_err(|_| FipsEndpointError::Closed)
+    }
+
+    /// Enqueue an outbound IPv6 packet from a blocking system-TUN reader.
+    pub fn blocking_send_ip_packet(
+        &self,
+        packet: impl Into<Vec<u8>>,
+    ) -> Result<(), FipsEndpointError> {
+        self.outbound_packets
+            .blocking_send(packet.into())
             .map_err(|_| FipsEndpointError::Closed)
     }
 
