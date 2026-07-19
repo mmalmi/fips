@@ -29,6 +29,13 @@ const DNS_CACHE_TTL: Duration = Duration::from_secs(60);
 /// reports that the local route/source address is no longer usable.
 const LOCAL_ROUTE_SOCKET_RECOVERY_COOLDOWN: Duration = Duration::from_secs(5);
 
+/// `/proc/net/snmp` describes the whole Linux network namespace and is only a
+/// diagnostic supplement to the socket's kernel drop counter. Sampling it on
+/// every one-second node tick spends measurable idle CPU parsing the same
+/// procfs table, so retain the last good value between bounded polls.
+#[cfg(any(target_os = "linux", test))]
+const LINUX_UDP_RCVBUF_ERRORS_POLL_INTERVAL: Duration = Duration::from_secs(10);
+
 /// Datagrams drained per UDP receive syscall.
 ///
 /// WireGuard-go and Tailscale use 128 as their ideal userspace packet batch,
@@ -234,6 +241,34 @@ fn linux_udp_rcvbuf_errors() -> Option<u64> {
 }
 
 #[cfg(any(target_os = "linux", test))]
+struct LinuxUdpRcvbufErrorSnapshot {
+    baseline: u64,
+    observed: u64,
+    checked_at: Instant,
+}
+
+#[cfg(any(target_os = "linux", test))]
+impl LinuxUdpRcvbufErrorSnapshot {
+    fn new(initial: u64, checked_at: Instant) -> Self {
+        Self {
+            baseline: initial,
+            observed: initial,
+            checked_at,
+        }
+    }
+
+    fn namespace_drops(&mut self, now: Instant, read: impl FnOnce() -> Option<u64>) -> u64 {
+        if now.saturating_duration_since(self.checked_at) >= LINUX_UDP_RCVBUF_ERRORS_POLL_INTERVAL {
+            self.checked_at = now;
+            if let Some(observed) = read() {
+                self.observed = observed;
+            }
+        }
+        self.observed.saturating_sub(self.baseline)
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
 fn parse_proc_net_snmp_udp_rcvbuf_errors(contents: &str) -> Option<u64> {
     let mut lines = contents.lines();
     while let Some(header) = lines.next() {
@@ -320,7 +355,7 @@ pub struct UdpTransport {
     /// from `SO_RXQ_OVFL` so benchmark artifacts can distinguish this socket
     /// dropping from unrelated UDP receive-buffer pressure in the namespace.
     #[cfg(target_os = "linux")]
-    udp_rcvbuf_error_baseline: u64,
+    udp_rcvbuf_errors: StdMutex<LinuxUdpRcvbufErrorSnapshot>,
     /// DNS resolution cache for hostname addresses.
     dns_cache: StdMutex<HashMap<TransportAddr, (SocketAddr, Instant)>>,
 }
@@ -363,7 +398,10 @@ impl UdpTransport {
             last_local_route_socket_recovery: None,
             stats: Arc::new(UdpStats::new()),
             #[cfg(target_os = "linux")]
-            udp_rcvbuf_error_baseline: linux_udp_rcvbuf_errors().unwrap_or(0),
+            udp_rcvbuf_errors: {
+                let initial = linux_udp_rcvbuf_errors().unwrap_or(0);
+                StdMutex::new(LinuxUdpRcvbufErrorSnapshot::new(initial, Instant::now()))
+            },
             dns_cache: StdMutex::new(HashMap::new()),
         }
     }
@@ -482,9 +520,11 @@ impl UdpTransport {
     pub fn congestion(&self) -> super::TransportCongestion {
         let socket_drops = self.stats.kernel_drops();
         #[cfg(target_os = "linux")]
-        let namespace_drops = linux_udp_rcvbuf_errors()
-            .unwrap_or(self.udp_rcvbuf_error_baseline)
-            .saturating_sub(self.udp_rcvbuf_error_baseline);
+        let namespace_drops = self
+            .udp_rcvbuf_errors
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .namespace_drops(Instant::now(), linux_udp_rcvbuf_errors);
         #[cfg(target_os = "linux")]
         let recv_drops = socket_drops.max(namespace_drops);
         #[cfg(not(target_os = "linux"))]

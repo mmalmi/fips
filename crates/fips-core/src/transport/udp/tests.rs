@@ -32,6 +32,53 @@ Udp: 10 0 7 12 42 0 0 0 0\n\
     );
 }
 
+#[test]
+fn udp_namespace_drop_sampling_is_bounded_and_keeps_last_good_value() {
+    let started_at = Instant::now();
+    let mut snapshot = LinuxUdpRcvbufErrorSnapshot::new(10, started_at);
+    let mut reads = 0;
+
+    assert_eq!(
+        snapshot.namespace_drops(started_at + Duration::from_secs(1), || {
+            reads += 1;
+            Some(15)
+        }),
+        0
+    );
+    assert_eq!(reads, 0, "the one-second node tick must not read /proc/net/snmp");
+
+    assert_eq!(
+        snapshot.namespace_drops(
+            started_at + LINUX_UDP_RCVBUF_ERRORS_POLL_INTERVAL,
+            || {
+                reads += 1;
+                Some(15)
+            },
+        ),
+        5
+    );
+    assert_eq!(reads, 1);
+
+    assert_eq!(
+        snapshot.namespace_drops(started_at + Duration::from_secs(11), || {
+            reads += 1;
+            Some(99)
+        }),
+        5
+    );
+    assert_eq!(reads, 1);
+
+    assert_eq!(
+        snapshot.namespace_drops(started_at + Duration::from_secs(20), || {
+            reads += 1;
+            None
+        }),
+        5,
+        "a transient procfs read failure must retain the last observed count"
+    );
+    assert_eq!(reads, 2);
+}
+
 #[tokio::test]
 async fn test_start_stop() {
     let (tx, _rx) = packet_channel(100);
