@@ -129,8 +129,15 @@ impl Node {
         bootstrap.set_outbound_admission(self.open_discovery_outbound_admission_check());
         bootstrap.set_direct_refresh_admission(self.outbound_direct_refresh_admission_check());
         let mesh_signaling_allowed = self.mesh_signaling_allowed_for_peer(peer_config);
+        if !mesh_signaling_allowed {
+            debug!(
+                npub = %peer_config.npub,
+                "Deferring NAT traversal until an authenticated FIPS signaling path exists"
+            );
+            return false;
+        }
         let started = bootstrap
-            .request_connect_with_mesh_signaling(peer_config.clone(), mesh_signaling_allowed)
+            .request_connect_with_mesh_signaling(peer_config.clone(), true)
             .await;
         if started {
             info!(
@@ -230,6 +237,15 @@ impl Node {
                     continue;
                 }
                 debug!(npub = %peer_config.npub, "No Nostr overlay runtime for udp:nat address");
+                continue;
+            }
+
+            if addr.transport == "webrtc" && self.find_next_hop(&peer_node_addr).is_none() {
+                debug!(
+                    npub = %peer_config.npub,
+                    "Deferring WebRTC upgrade until a FIPS route can carry link negotiation"
+                );
+                self.maybe_initiate_lookup(&peer_node_addr).await;
                 continue;
             }
 

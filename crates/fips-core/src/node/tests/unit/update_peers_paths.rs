@@ -845,6 +845,37 @@ async fn configured_direct_refresh_ignores_traversal_cooldown_for_mesh_signal() 
 }
 
 #[tokio::test]
+async fn unconfigured_nat_advert_without_fips_path_does_not_start_signaling() {
+    use crate::config::NostrDiscoveryPolicy;
+
+    let peer = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer.npub(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::with_priority("udp", "nat", 1)],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: false,
+    };
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.node.discovery.nostr.policy = NostrDiscoveryPolicy::Open;
+    let mut node = Node::new(config).expect("node");
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
+    node.nostr_discovery = Some(bootstrap.clone());
+
+    assert!(
+        !node.request_nostr_bootstrap(&peer_config).await,
+        "Nostr announcements alone cannot carry WebRTC signaling"
+    );
+    assert_eq!(
+        bootstrap.active_initiator_count_for_test().await,
+        0,
+        "no background traversal task should be spawned without an authenticated FIPS path"
+    );
+}
+
+#[tokio::test]
 async fn mesh_signal_warms_session_instead_of_dropping_without_established_session() {
     use super::spanning_tree::{run_tree_test, verify_tree_convergence};
     use crate::discovery::nostr::{MeshTraversalSignal, TraversalOffer};

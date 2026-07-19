@@ -147,6 +147,71 @@ async fn test_try_peer_addresses_races_all_concrete_udp_candidates() {
     }
 }
 
+#[cfg(feature = "webrtc-transport")]
+#[tokio::test]
+async fn webrtc_candidate_waits_for_an_authenticated_fips_route() {
+    use crate::config::{NostrDiscoveryConfig, TransportInstances, WebRtcConfig};
+    use crate::transport::webrtc::WebRtcTransport;
+
+    let peer = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+    let candidate_addr = hex::encode(peer.pubkey_full().serialize());
+    let peer_config = crate::config::PeerConfig {
+        npub: peer.npub(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::new("webrtc", candidate_addr)],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: false,
+    };
+
+    let webrtc_config = WebRtcConfig {
+        auto_connect: Some(true),
+        connect_timeout_ms: Some(5_000),
+        ice_gather_timeout_ms: Some(2_000),
+        stun_servers: Some(Vec::new()),
+        resolve_mdns_candidates: Some(false),
+        ..Default::default()
+    };
+    let mut config = Config::new();
+    config.transports.webrtc = TransportInstances::Single(webrtc_config.clone());
+    let mut node = Node::new(config).expect("node");
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(1);
+    let mut webrtc = WebRtcTransport::new(
+        transport_id,
+        None,
+        webrtc_config,
+        packet_tx,
+        node.identity(),
+        &NostrDiscoveryConfig::default(),
+    )
+    .expect("WebRTC transport");
+    webrtc
+        .use_canonical_loopback_candidate_profile()
+        .expect("loopback candidate profile");
+    webrtc.start_async().await.expect("start WebRTC transport");
+    node.transports
+        .insert(transport_id, TransportHandle::WebRtc(Box::new(webrtc)));
+
+    let result = node
+        .try_peer_addresses(&peer_config, peer_identity, false)
+        .await;
+
+    assert!(matches!(result, Err(NodeError::NoTransportForType(_))));
+    assert_eq!(
+        node.connection_count(),
+        0,
+        "a Nostr advert must not build or dial WebRTC before FIPS can carry its signaling"
+    );
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
 #[tokio::test]
 async fn test_try_peer_addresses_skips_incompatible_udp_address_family() {
     let peer_identity = Identity::generate();
