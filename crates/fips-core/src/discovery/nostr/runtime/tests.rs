@@ -147,6 +147,28 @@ fn mesh_signaled_initiators_use_direct_refresh_admission() {
 }
 
 #[tokio::test]
+async fn rejected_traversal_admission_does_not_spawn_background_work() {
+    let discovery = Arc::new(NostrDiscovery::new_for_test());
+    discovery.set_direct_refresh_admission(false);
+    let peer = nostr::Keys::generate()
+        .public_key()
+        .to_bech32()
+        .expect("peer npub");
+
+    assert!(
+        !discovery
+            .request_connect_with_mesh_signaling(PeerConfig::new(peer, "udp", "nat"), true)
+            .await,
+        "capacity rejection should be synchronous"
+    );
+    assert_eq!(
+        discovery.active_initiator_count_for_test().await,
+        0,
+        "a rejected traversal must not allocate an initiator task"
+    );
+}
+
+#[tokio::test]
 async fn traversal_replay_cache_rejects_duplicate_session_signal() {
     let discovery = NostrDiscovery::new_for_test();
 

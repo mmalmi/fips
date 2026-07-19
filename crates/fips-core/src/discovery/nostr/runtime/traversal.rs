@@ -38,6 +38,14 @@ impl NostrDiscovery {
         peer_config: PeerConfig,
         mesh_signaling_allowed: bool,
     ) -> bool {
+        if !self.traversal_initiator_admission_allowed(mesh_signaling_allowed) {
+            debug!(
+                peer = %short_npub(&peer_config.npub),
+                mesh_signaling_allowed,
+                "traversal: request suppressed by admission"
+            );
+            return false;
+        }
         let peer_key = NostrPeerKey::parse(&peer_config.npub).ok();
         if let Some(peer_key) = peer_key {
             let mut active = self.active_initiators.lock().await;
