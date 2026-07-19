@@ -11,6 +11,9 @@ mod local;
 mod node_addr;
 mod peer;
 
+use std::sync::LazyLock;
+
+use secp256k1::{All, Secp256k1};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -20,6 +23,12 @@ pub use encoding::{decode_npub, decode_nsec, decode_secret, encode_npub, encode_
 pub use local::Identity;
 pub use node_addr::NodeAddr;
 pub use peer::PeerIdentity;
+
+/// Shared secp256k1 context reused by identity signing and verification.
+///
+/// Constructing a context allocates and initializes blinding tables, while
+/// `Secp256k1` is designed to be shared safely after initialization.
+pub(crate) static SECP: LazyLock<Secp256k1<All>> = LazyLock::new(Secp256k1::new);
 
 /// FIPS address prefix (IPv6 ULA range).
 pub const FIPS_ADDRESS_PREFIX: u8 = 0xfd;

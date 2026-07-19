@@ -229,6 +229,35 @@ fn test_bloom_filter_insert_bytes_contains_bytes() {
 }
 
 #[test]
+fn test_bloom_filter_indices_match_upstream_double_hashing() {
+    use std::collections::HashSet;
+
+    use sha2::{Digest, Sha256};
+
+    fn expected_indices(data: &[u8], num_bits: usize, hash_count: u8) -> HashSet<usize> {
+        let digest = Sha256::digest(data);
+        let h1 = u64::from_le_bytes(digest[0..8].try_into().unwrap());
+        let h2 = u64::from_le_bytes(digest[8..16].try_into().unwrap());
+        (0..hash_count)
+            .map(|k| h1.wrapping_add(u64::from(k).wrapping_mul(h2)) as usize % num_bits)
+            .collect()
+    }
+
+    for (num_bits, hash_count) in [(1024, 5), (8192, 7)] {
+        for data in [b"".as_slice(), b"alpha", b"the quick brown fox"] {
+            let expected = expected_indices(data, num_bits, hash_count);
+            let mut filter = BloomFilter::with_params(num_bits, hash_count).unwrap();
+            filter.insert_bytes(data);
+
+            let actual: HashSet<usize> = (0..num_bits)
+                .filter(|index| filter.as_bytes()[index / 8] & (1 << (index % 8)) != 0)
+                .collect();
+            assert_eq!(actual, expected);
+        }
+    }
+}
+
+#[test]
 fn test_bloom_filter_estimated_count_saturated() {
     // Create a small filter with all bits set
     let bytes = vec![0xFF; 8]; // all bits set

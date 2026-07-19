@@ -253,7 +253,7 @@ Controls tree construction and parent selection.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `node.bloom.update_debounce_ms` | u64 | `500` | Debounce interval for filter update propagation |
-| `node.bloom.max_inbound_fpr` | f64 | `0.10` | Antipoison cap: reject inbound `FilterAnnounce` frames whose derived false-positive rate exceeds this value. Valid range `(0.0, 1.0)`. Saturated or poisoned filters remain rejected. |
+| `node.bloom.max_inbound_fpr` | f64 | `0.20` | Antipoison cap: reject inbound `FilterAnnounce` frames whose derived false-positive rate exceeds this value. Valid range `(0.0, 1.0)`. The default accepts legitimate aggregates of roughly 2,114 entries on the fixed 1 KB, k=5 filter while saturated or poisoned filters remain rejected. |
 
 Bloom filter size (1 KB), hash count (5), and size classes are protocol
 constants and not configurable.
@@ -806,7 +806,7 @@ node:
     learned_fallback_explore_interval: 16 # try coord/bloom/tree route every N learned sends (0 = disabled)
   bloom:
     update_debounce_ms: 500
-    max_inbound_fpr: 0.10              # antipoison cap on inbound FilterAnnounce FPR
+    max_inbound_fpr: 0.20              # antipoison cap on inbound FilterAnnounce FPR
   session:
     default_ttl: 64
     pending_packets_per_dest: 16

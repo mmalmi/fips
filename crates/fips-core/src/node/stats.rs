@@ -170,7 +170,6 @@ pub struct TreeStats {
     pub sig_failed: u64,
     pub stale: u64,
     pub accepted: u64,
-    pub parent_switched: u64,
     pub loop_detected: u64,
     pub ancestry_changed: u64,
     // Outbound announce sending
@@ -193,7 +192,6 @@ impl TreeStats {
             sig_failed: self.sig_failed,
             stale: self.stale,
             accepted: self.accepted,
-            parent_switched: self.parent_switched,
             loop_detected: self.loop_detected,
             ancestry_changed: self.ancestry_changed,
             sent: self.sent,
@@ -385,7 +383,6 @@ pub struct TreeStatsSnapshot {
     pub sig_failed: u64,
     pub stale: u64,
     pub accepted: u64,
-    pub parent_switched: u64,
     pub loop_detected: u64,
     pub ancestry_changed: u64,
     pub sent: u64,

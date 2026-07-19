@@ -1,6 +1,17 @@
 use super::*;
 
 #[test]
+fn test_bloom_config_defaults_match_upstream_0_4_1() {
+    let direct = BloomConfig::default();
+    let deserialized: BloomConfig = serde_yaml::from_str("{}").unwrap();
+
+    assert_eq!(direct.update_debounce_ms, 500);
+    assert_eq!(deserialized.update_debounce_ms, direct.update_debounce_ms);
+    assert!((direct.max_inbound_fpr - 0.20).abs() < f64::EPSILON);
+    assert_eq!(deserialized.max_inbound_fpr, direct.max_inbound_fpr);
+}
+
+#[test]
 fn test_ecn_config_defaults() {
     let c = EcnConfig::default();
     assert!(c.enabled);

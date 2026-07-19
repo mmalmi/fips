@@ -21,7 +21,6 @@
       "flap_dampened": 0,
       "loop_detected": 0,
       "parent_losses": 0,
-      "parent_switched": 0,
       "parent_switches": 0,
       "rate_limited": 0,
       "received": 0,

@@ -204,3 +204,39 @@ async fn test_originator_stores_path_mtu_in_cache() {
         "Originator should store path_mtu from LookupResponse in cache"
     );
 }
+
+#[tokio::test]
+async fn test_originator_lookup_response_keeps_tighter_path_mtu() {
+    let mut node = make_node();
+    let from = make_node_addr(0xAA);
+
+    let target_identity = Identity::generate();
+    let target = *target_identity.node_addr();
+    let root = make_node_addr(0xF0);
+    let coords = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
+    let target_fips = crate::FipsAddress::from_node_addr(&target);
+
+    node.register_identity(target, target_identity.pubkey_full());
+    node.coord_cache_mut()
+        .insert_with_path_mtu(target, coords.clone(), Node::now_ms(), 1280);
+    node.path_mtu_lookup_insert(target_fips, 1280);
+
+    let proof_data = LookupResponse::proof_bytes(801, &target, &coords);
+    let proof = target_identity.sign(&proof_data);
+    let mut response = LookupResponse::new(801, target, coords, proof);
+    response.path_mtu = 1500;
+
+    node.handle_lookup_response(&from, &response.encode()[1..])
+        .await;
+
+    assert_eq!(
+        node.path_mtu_lookup_get(&target_fips),
+        Some(1280),
+        "LookupResponse must not loosen the TUN path-MTU clamp"
+    );
+    assert_eq!(
+        node.coord_cache().get_entry(&target).unwrap().path_mtu(),
+        Some(1280),
+        "LookupResponse must not loosen the coordinate cache path MTU"
+    );
+}
