@@ -211,6 +211,9 @@ pub struct SessionFlags {
     pub request_ack: bool,
     /// Set up bidirectional session.
     pub bidirectional: bool,
+    /// Both endpoints may carry established FSP records directly on an
+    /// authenticated physical transport instead of wrapping them in FMP.
+    pub direct_fsp_transport: bool,
 }
 
 impl SessionFlags {
@@ -231,6 +234,12 @@ impl SessionFlags {
         self
     }
 
+    /// Advertise support for direct-on-transport FSP records.
+    pub fn with_direct_fsp_transport(mut self) -> Self {
+        self.direct_fsp_transport = true;
+        self
+    }
+
     /// Convert to a byte.
     pub fn to_byte(&self) -> u8 {
         let mut flags = 0u8;
@@ -240,6 +249,9 @@ impl SessionFlags {
         if self.bidirectional {
             flags |= 0x02;
         }
+        if self.direct_fsp_transport {
+            flags |= 0x04;
+        }
         flags
     }
 
@@ -248,6 +260,7 @@ impl SessionFlags {
         Self {
             request_ack: byte & 0x01 != 0,
             bidirectional: byte & 0x02 != 0,
+            direct_fsp_transport: byte & 0x04 != 0,
         }
     }
 }
@@ -360,7 +373,7 @@ impl FspInnerFlags {
 ///
 /// | Offset | Field             | Size       | Description                                         |
 /// |--------|-------------------|------------|-----------------------------------------------------|
-/// | 0      | flags             | 1 byte     | Bit 0: REQUEST_ACK, Bit 1: BIDIRECTIONAL            |
+/// | 0      | flags             | 1 byte     | Bit 0: REQUEST_ACK, Bit 1: BIDIRECTIONAL, Bit 2: DIRECT_FSP |
 /// | 1      | src_coords_count  | 2 bytes LE | Number of source coordinate entries                 |
 /// | 3      | src_coords        | 16 × n     | Source's ancestry (NodeAddr, self → root)           |
 /// | ...    | dest_coords_count | 2 bytes LE | Number of dest coordinate entries                   |
@@ -527,6 +540,17 @@ impl SessionAck {
     pub fn with_handshake(mut self, payload: Vec<u8>) -> Self {
         self.handshake_payload = payload;
         self
+    }
+
+    /// Advertise support for direct-on-transport FSP records.
+    pub fn with_direct_fsp_transport(mut self) -> Self {
+        self.flags |= 0x04;
+        self
+    }
+
+    /// Whether the responder advertised direct-on-transport FSP support.
+    pub fn supports_direct_fsp_transport(&self) -> bool {
+        self.flags & 0x04 != 0
     }
 
     /// Encode as wire format (4-byte FSP prefix + flags + coords + handshake).

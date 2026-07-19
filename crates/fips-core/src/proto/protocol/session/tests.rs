@@ -46,10 +46,15 @@ fn test_session_message_type_invalid() {
 
 #[test]
 fn test_session_flags() {
-    let flags = SessionFlags::new().with_ack().bidirectional();
+    let flags = SessionFlags::new()
+        .with_ack()
+        .bidirectional()
+        .with_direct_fsp_transport();
 
     assert!(flags.request_ack);
     assert!(flags.bidirectional);
+    assert!(flags.direct_fsp_transport);
+    assert_eq!(flags.to_byte(), 0x07);
 
     let byte = flags.to_byte();
     let restored = SessionFlags::from_byte(byte);
@@ -62,6 +67,7 @@ fn test_session_flags_default() {
     let flags = SessionFlags::new();
     assert!(!flags.request_ack);
     assert!(!flags.bidirectional);
+    assert!(!flags.direct_fsp_transport);
     assert_eq!(flags.to_byte(), 0);
 }
 
@@ -140,6 +146,7 @@ fn test_session_setup_no_handshake() {
 fn test_session_ack_encode_decode() {
     let handshake = vec![0xBB; 33]; // typical Noise IK msg2
     let ack = SessionAck::new(make_coords(&[7, 8, 0]), make_coords(&[3, 4, 0]))
+        .with_direct_fsp_transport()
         .with_handshake(handshake.clone());
 
     let encoded = ack.encode();
@@ -151,6 +158,7 @@ fn test_session_ack_encode_decode() {
     assert_eq!(decoded.src_coords, ack.src_coords);
     assert_eq!(decoded.dest_coords, ack.dest_coords);
     assert_eq!(decoded.handshake_payload, handshake);
+    assert!(decoded.supports_direct_fsp_transport());
 }
 
 #[test]

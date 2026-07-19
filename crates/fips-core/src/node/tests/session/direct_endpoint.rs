@@ -68,6 +68,38 @@ async fn test_session_direct_peer_handshake() {
             .unwrap()
             .is_established()
     );
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&node1_addr)
+            .unwrap()
+            .remote_supports_direct_fsp_transport()
+    );
+    assert!(
+        nodes[1]
+            .node
+            .get_session(&node0_addr)
+            .unwrap()
+            .remote_supports_direct_fsp_transport()
+    );
+    assert!(
+        nodes[0]
+            .node
+            .dataplane
+            .owner_active_path(crate::dataplane::OwnerId::fsp_node(node1_addr))
+            .expect("node 0 FSP owner")
+            .is_some(),
+        "negotiated current peers should use direct FSP transport"
+    );
+    assert!(
+        nodes[1]
+            .node
+            .dataplane
+            .owner_active_path(crate::dataplane::OwnerId::fsp_node(node0_addr))
+            .expect("node 1 FSP owner")
+            .is_some(),
+        "negotiated current peers should use direct FSP transport"
+    );
 
     cleanup_nodes(&mut nodes).await;
 }

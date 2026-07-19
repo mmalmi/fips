@@ -312,7 +312,11 @@ impl Node {
             };
         };
         let mut direct_path_mtu = None;
-        let (wrap, path) = if next_hop == *node_addr {
+        let direct_fsp_negotiated = self
+            .sessions
+            .get(node_addr)
+            .is_some_and(SessionEntry::remote_supports_direct_fsp_transport);
+        let (wrap, path) = if next_hop == *node_addr && direct_fsp_negotiated {
             match self.dataplane_direct_fsp_path(node_addr) {
                 Some((path, path_mtu)) => {
                     direct_path_mtu = Some(path_mtu);

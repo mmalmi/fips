@@ -17,6 +17,7 @@ impl Node {
                 return;
             }
         };
+        let remote_supports_direct_fsp_transport = setup.flags.direct_fsp_transport;
 
         if setup.handshake_payload.len() != XK_HANDSHAKE_MSG1_SIZE {
             debug!(
@@ -174,6 +175,7 @@ impl Node {
                     // Build and send SessionAck
                     let our_coords = self.tree_state.my_coords().clone();
                     let ack = SessionAck::new(our_coords, setup.src_coords.clone())
+                        .with_direct_fsp_transport()
                         .with_handshake(msg2);
                     let ack_payload = ack.encode();
                     let my_addr = *self.node_addr();
@@ -241,7 +243,9 @@ impl Node {
 
         // Build and send SessionAck (include initiator's coords for return-path warming)
         let our_coords = self.tree_state.my_coords().clone();
-        let ack = SessionAck::new(our_coords, setup.src_coords.clone()).with_handshake(msg2);
+        let ack = SessionAck::new(our_coords, setup.src_coords.clone())
+            .with_direct_fsp_transport()
+            .with_handshake(msg2);
         let ack_payload = ack.encode();
         let my_addr = *self.node_addr();
         let mut datagram = SessionDatagram::new(my_addr, *src_addr, ack_payload.clone())
@@ -276,6 +280,11 @@ impl Node {
             now_ms,
             resend_interval,
         );
+        if let Some(entry) = self.sessions.get_mut(src_addr) {
+            entry.set_remote_supports_direct_fsp_transport(
+                remote_supports_direct_fsp_transport,
+            );
+        }
 
         debug!(src = %self.peer_display_name(src_addr), "SessionSetup processed (XK), SessionAck sent, awaiting msg3");
     }
@@ -310,6 +319,7 @@ impl Node {
                 return;
             }
         };
+        let remote_supports_direct_fsp_transport = ack.supports_direct_fsp_transport();
 
         // Rekey path: entry is Established with rekey_state
         if entry.is_established() && entry.has_rekey_in_progress() && entry.is_rekey_initiator() {
@@ -328,6 +338,9 @@ impl Node {
                 self.sessions.insert(*src_addr, entry);
                 return;
             }
+            entry.set_remote_supports_direct_fsp_transport(
+                remote_supports_direct_fsp_transport,
+            );
 
             // Generate XK msg3
             let msg3 = match handshake.write_xk_message_3() {
@@ -460,6 +473,9 @@ impl Node {
             debug!(error = %e, "Failed to process Noise XK msg2 in SessionAck");
             return; // Entry was already removed, don't put back a broken session
         }
+        entry.set_remote_supports_direct_fsp_transport(
+            remote_supports_direct_fsp_transport,
+        );
 
         // Generate XK msg3: write_xk_message_3 (sends encrypted static + epoch)
         let msg3 = match handshake.write_xk_message_3() {

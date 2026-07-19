@@ -12,12 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Align with upstream FIPS 0.4.1 by raising the default inbound Bloom-filter
   antipoison cap from `0.10` to `0.20`, reusing one shared secp256k1 identity
   context, and removing the redundant `parent_switched` control metric in
-  favor of `parent_switches`. Wire formats remain unchanged.
+  favor of `parent_switches`.
 
 ### Fixed
 
 - Keep the tighter cached path MTU when a later `LookupResponse` advertises a
   looser value, both for the TUN clamp and the coordinate cache.
+- Negotiate the newer direct-on-transport FSP carrier in previously reserved
+  `SessionSetup` and `SessionAck` flag bits. Peers that do not advertise the
+  capability, including upstream FIPS 0.4.1, automatically use its compatible
+  FSP-inside-FMP carrier; modern peers retain the direct fast path.
 
 ## [0.4.18] - 2026-07-19
 

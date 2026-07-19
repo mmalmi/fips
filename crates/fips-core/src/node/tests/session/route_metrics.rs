@@ -1,6 +1,44 @@
 use super::*;
 
 #[test]
+fn test_direct_fsp_requires_negotiated_capability() {
+    let mut node = Node::new(Config::new()).unwrap();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(91);
+    let (connection, remote_identity) =
+        make_completed_connection(&mut node, link_id, transport_id, 1_000);
+    let remote_addr = *remote_identity.node_addr();
+
+    node.add_connection(connection).unwrap();
+    node.promote_connection(link_id, remote_identity, 2_000)
+        .unwrap();
+    assert!(node.sync_dataplane_fmp_owner(&remote_addr));
+    let remote = Identity::generate();
+    let session = make_noise_session(node.identity(), &remote);
+    let mut entry = crate::node::session::SessionEntry::new(
+        remote_addr,
+        remote_identity.pubkey_full(),
+        EndToEndState::Established(session),
+        1_000,
+        true,
+    );
+    entry.mark_established(1_000);
+    node.sessions.insert(remote_addr, entry);
+
+    assert!(node.sync_dataplane_fsp_owner_from_current_session(&remote_addr, 0));
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&remote_addr),
+        Some(remote_addr),
+        "a peer that did not negotiate direct FSP must use the 0.4.1-compatible FMP carrier"
+    );
+    assert_eq!(
+        node.dataplane
+            .owner_active_path(crate::dataplane::OwnerId::fsp_node(remote_addr)),
+        Ok(None)
+    );
+}
+
+#[test]
 fn test_dataplane_fmp_owner_update_refreshes_fsp_owner_wrap_route() {
     let mut node = make_reply_learned_node_with_tree_peer();
     let next_hop = *node.peer_ids().next().expect("fallback peer");

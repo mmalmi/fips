@@ -20,7 +20,8 @@ use crate::noise::{
 };
 use crate::protocol::{
     CoordsRequired, MtuExceeded, PathBroken, PathMtuNotification, SessionAck, SessionDatagram,
-    SessionMessageType, SessionMsg3, SessionReceiverReport, SessionSenderReport, SessionSetup,
+    SessionFlags, SessionMessageType, SessionMsg3, SessionReceiverReport, SessionSenderReport,
+    SessionSetup,
 };
 use crate::transport::PacketBuffer;
 #[cfg(feature = "webrtc-transport")]

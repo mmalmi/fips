@@ -73,6 +73,10 @@ pub(crate) struct SessionEntry {
     session_start_ms: u64,
     /// Whether this node initiated the Noise handshake.
     is_initiator: bool,
+    /// Whether the remote endpoint advertised support for carrying FSP
+    /// records directly on a physical transport. False preserves the FMP
+    /// carrier used by upstream FIPS 0.4.1 and older peers.
+    remote_supports_direct_fsp_transport: bool,
     // === Handshake Resend ===
     /// Encoded session-layer payload for resend (SessionSetup or SessionAck).
     /// Cleared on Established transition.
@@ -127,6 +131,7 @@ impl SessionEntry {
             created_at: now_ms,
             session_start_ms: 0,
             is_initiator,
+            remote_supports_direct_fsp_transport: false,
             handshake_payload: None,
             resend_count: 0,
             next_resend_at_ms: 0,
@@ -233,6 +238,14 @@ impl SessionEntry {
     /// Whether this node initiated the Noise handshake.
     pub(crate) fn is_initiator(&self) -> bool {
         self.is_initiator
+    }
+
+    pub(crate) fn remote_supports_direct_fsp_transport(&self) -> bool {
+        self.remote_supports_direct_fsp_transport
+    }
+
+    pub(crate) fn set_remote_supports_direct_fsp_transport(&mut self, supported: bool) {
+        self.remote_supports_direct_fsp_transport = supported;
     }
 
     // === Handshake Resend ===

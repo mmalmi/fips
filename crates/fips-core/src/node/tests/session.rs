@@ -663,6 +663,7 @@ fn install_established_session_with_mmp(node: &mut Node, remote: &Identity) {
         true,
     );
     entry.mark_established(1000);
+    entry.set_remote_supports_direct_fsp_transport(true);
     node.sessions.insert(remote_addr, entry);
     ensure_dataplane_fsp_owner_for_test(node, remote_addr);
 }
