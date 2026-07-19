@@ -384,7 +384,7 @@ impl Node {
                         node_addr = %identity.node_addr,
                         "Registering identity from DNS resolution"
                     );
-                    self.register_identity(identity.node_addr, identity.pubkey);
+                    self.register_dns_identity(identity.node_addr, identity.pubkey);
                 }
                 Some(batch) = dataplane_runtime.endpoint_data_rx.recv() => {
                     let mut turn = {

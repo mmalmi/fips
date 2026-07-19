@@ -168,6 +168,51 @@ async fn test_reply_learned_initiates_lookup_to_sendable_non_tree_peer() {
 }
 
 #[tokio::test]
+async fn test_reply_learned_dns_target_uses_authenticated_physical_adjacency() {
+    let edges = vec![(0, 1)];
+    let mut nodes = run_tree_test(2, &edges, false).await;
+    verify_tree_convergence(&nodes);
+
+    let adjacent_addr = *nodes[1].node.node_addr();
+    nodes[0].node.config.node.routing.mode = RoutingMode::ReplyLearned;
+    nodes[0].node.config.node.discovery.nostr.enabled = true;
+    nodes[0].node.config.node.discovery.nostr.policy =
+        crate::config::NostrDiscoveryPolicy::ConfiguredOnly;
+    nodes[0].node.tree_state_mut().remove_peer(&adjacent_addr);
+    nodes[0].node.tree_state_mut().become_root();
+    assert!(
+        nodes[0]
+            .node
+            .peers
+            .get(&adjacent_addr)
+            .is_some_and(|peer| peer.can_send()),
+        "fixture requires one authenticated physical adjacency"
+    );
+
+    let ambient = Identity::generate();
+    nodes[0]
+        .node
+        .register_identity(*ambient.node_addr(), ambient.pubkey_full());
+    assert_eq!(
+        nodes[0].node.initiate_lookup(ambient.node_addr(), 5).await,
+        0,
+        "an ambient learned identity must not broaden configured-only fallback"
+    );
+
+    let resolved = Identity::generate();
+    nodes[0]
+        .node
+        .register_dns_identity(*resolved.node_addr(), resolved.pubkey_full());
+    assert_eq!(
+        nodes[0].node.initiate_lookup(resolved.node_addr(), 5).await,
+        1,
+        "a user-resolved .fips target should use the admitted physical adjacency"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
 async fn test_reply_learned_initiates_lookup_fanout_despite_tree_match() {
     // Topology: node0 has a normal tree path toward node2 through node1, and
     // a live non-tree neighbor node3. Reply-learned discovery must ask node3

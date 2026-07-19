@@ -19,6 +19,7 @@ struct IdentityCacheEntry {
     pubkey: secp256k1::PublicKey,
     npub: String,
     last_seen_ms: u64,
+    dns_resolved: bool,
 }
 
 impl IdentityCacheEntry {
@@ -27,12 +28,14 @@ impl IdentityCacheEntry {
         pubkey: secp256k1::PublicKey,
         npub: String,
         last_seen_ms: u64,
+        dns_resolved: bool,
     ) -> Self {
         Self {
             node_addr,
             pubkey,
             npub,
             last_seen_ms,
+            dns_resolved,
         }
     }
 }
@@ -57,11 +60,34 @@ impl IdentityCache {
         now_ms: u64,
         max_entries: usize,
     ) -> bool {
+        self.register_inner(node_addr, pubkey, now_ms, max_entries, false)
+    }
+
+    pub(in crate::node) fn register_dns_resolved(
+        &mut self,
+        node_addr: NodeAddr,
+        pubkey: secp256k1::PublicKey,
+        now_ms: u64,
+        max_entries: usize,
+    ) -> bool {
+        self.register_inner(node_addr, pubkey, now_ms, max_entries, true)
+    }
+
+    fn register_inner(
+        &mut self,
+        node_addr: NodeAddr,
+        pubkey: secp256k1::PublicKey,
+        now_ms: u64,
+        max_entries: usize,
+        dns_resolved: bool,
+    ) -> bool {
         let prefix = Self::prefix_for(&node_addr);
-        if let Some(entry) = self.entries.get(&prefix)
+        if let Some(entry) = self.entries.get_mut(&prefix)
             && entry.node_addr == node_addr
             && entry.pubkey == pubkey
         {
+            entry.last_seen_ms = now_ms;
+            entry.dns_resolved |= dns_resolved;
             return true;
         }
 
@@ -81,13 +107,14 @@ impl IdentityCache {
         {
             entry.pubkey = pubkey;
             entry.last_seen_ms = now_ms;
+            entry.dns_resolved |= dns_resolved;
             return true;
         }
 
         let npub = encode_npub(&xonly);
         self.entries.insert(
             prefix,
-            IdentityCacheEntry::new(node_addr, pubkey, npub, now_ms),
+            IdentityCacheEntry::new(node_addr, pubkey, npub, now_ms, dns_resolved),
         );
         self.evict_lru(max_entries);
         true
@@ -105,6 +132,12 @@ impl IdentityCache {
 
     pub(in crate::node) fn has_prefix_for(&self, node_addr: &NodeAddr) -> bool {
         self.entries.contains_key(&Self::prefix_for(node_addr))
+    }
+
+    pub(in crate::node) fn is_dns_resolved(&self, node_addr: &NodeAddr) -> bool {
+        self.entries
+            .get(&Self::prefix_for(node_addr))
+            .is_some_and(|entry| entry.node_addr == *node_addr && entry.dns_resolved)
     }
 
     pub(in crate::node) fn len(&self) -> usize {

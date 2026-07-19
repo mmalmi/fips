@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.17] - 2026-07-19
+
+### Fixed
+
+- Let identities explicitly resolved through authenticated `.fips` DNS use an
+  already-admitted physical adjacency for reply-learned route discovery. The
+  authorization is bounded by the identity cache; ambient learned identities
+  remain excluded by configured-only discovery policy.
+
 ## [0.4.16] - 2026-07-19
 
 ### Changed

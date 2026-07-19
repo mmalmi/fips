@@ -90,7 +90,7 @@ impl Node {
                 response_tx,
             } => {
                 let registered =
-                    self.register_identity(*identity.node_addr(), identity.pubkey_full());
+                    self.register_dns_identity(*identity.node_addr(), identity.pubkey_full());
                 let _ = response_tx.send(registered);
             }
             NodeEndpointControlCommand::RegisterService {

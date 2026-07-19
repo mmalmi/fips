@@ -103,9 +103,11 @@ impl Node {
         match nostr.policy {
             crate::config::NostrDiscoveryPolicy::Open => {
                 self.configured_discovery_fallback_transit(target).is_some()
+                    || self.is_dns_resolved_identity(target)
             }
             crate::config::NostrDiscoveryPolicy::ConfiguredOnly if nostr.enabled => {
                 self.configured_discovery_fallback_transit(target).is_some()
+                    || self.is_dns_resolved_identity(target)
             }
             crate::config::NostrDiscoveryPolicy::ConfiguredOnly
             | crate::config::NostrDiscoveryPolicy::Disabled => true,

@@ -96,6 +96,25 @@ impl Node {
         )
     }
 
+    /// Register an identity explicitly resolved through the authenticated
+    /// `.fips` DNS namespace.
+    pub(crate) fn register_dns_identity(
+        &mut self,
+        node_addr: NodeAddr,
+        pubkey: secp256k1::PublicKey,
+    ) -> bool {
+        self.identity_cache.register_dns_resolved(
+            node_addr,
+            pubkey,
+            Self::now_ms(),
+            self.config.node.cache.identity_size,
+        )
+    }
+
+    pub(crate) fn is_dns_resolved_identity(&self, node_addr: &NodeAddr) -> bool {
+        self.identity_cache.is_dns_resolved(node_addr)
+    }
+
     /// Look up a destination by FipsAddress prefix (bytes 1-15 of the IPv6 address).
     pub(crate) fn lookup_by_fips_prefix(
         &mut self,
