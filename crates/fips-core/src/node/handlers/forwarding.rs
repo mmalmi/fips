@@ -342,12 +342,14 @@ impl Node {
                 crate::perf_profile::Timer::start(crate::perf_profile::Stage::CoordCacheWarm);
             self.try_warm_coord_cache_ref(&datagram_ref);
         }
-        if let Some(source) = session_ack_source(&datagram_ref) {
-            // A structurally valid msg2 returning from the destination proves
-            // which adjacent hop completed this handshake leg. Keep the
-            // following encrypted flow on that path until it expires or an
-            // explicit send failure releases it; weighted route exploration
-            // must not split one end-to-end FSP session across branches.
+        if datagram_ref.dest_addr != *self.node_addr()
+            && let Some(source) = session_ack_source(&datagram_ref)
+        {
+            // A transit node cannot open msg2, so a structurally valid ACK is
+            // its proof of which adjacent hop completed this handshake leg.
+            // The destination pins only after Noise authenticates msg2; doing
+            // so here would let a duplicate on another branch replace that
+            // stronger endpoint route.
             self.pin_handshake_reverse_route(source, previous_hop);
         }
 

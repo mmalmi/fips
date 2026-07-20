@@ -141,6 +141,34 @@ async fn test_local_session_ack_pins_authenticated_previous_hop() {
         "an authenticated local SessionAck must pin its ingress before another healthy branch can report a routing error"
     );
 
+    let unrelated_identity = *nodes[0]
+        .node
+        .get_peer(&unrelated_hop)
+        .expect("unrelated branch should remain connected")
+        .identity();
+    let duplicate_ack = SessionAck::new(
+        nodes[2].node.tree_state().my_coords().clone(),
+        nodes[0].node.tree_state().my_coords().clone(),
+    )
+    .with_handshake(vec![0u8; crate::noise::XK_HANDSHAKE_MSG2_SIZE]);
+    let encoded =
+        SessionDatagram::new(target, *nodes[0].node.node_addr(), duplicate_ack.encode()).encode();
+    nodes[0]
+        .node
+        .handle_session_datagram(AuthenticatedSessionDatagram::new(
+            unrelated_identity,
+            &encoded[1..],
+            false,
+        ))
+        .await;
+
+    assert!(
+        !nodes[0]
+            .node
+            .routing_error_matches_active_path(&target, &unrelated_hop),
+        "a structurally valid duplicate SessionAck on another branch must not replace the Noise-authenticated endpoint route"
+    );
+
     cleanup_nodes(&mut nodes).await;
 }
 
