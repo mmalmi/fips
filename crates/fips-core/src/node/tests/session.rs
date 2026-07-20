@@ -8,7 +8,9 @@ use crate::node::tests::spanning_tree::{
     TestNode, cleanup_nodes, lock_large_network_test, process_available_packets, run_tree_test,
     run_tree_test_with_mtus, verify_tree_convergence,
 };
-use crate::protocol::{SessionAck, SessionDatagram, SessionReceiverReport, SessionSetup};
+use crate::protocol::{
+    SessionAck, SessionDatagram, SessionMsg3, SessionReceiverReport, SessionSetup,
+};
 use crate::tree::{ParentDeclaration, TreeCoordinate};
 
 mod direct_endpoint;

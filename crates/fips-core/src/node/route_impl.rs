@@ -313,6 +313,28 @@ impl Node {
             return TransitNextHopPlan::Route(*dest_node_addr);
         }
 
+        // A forwarded LookupResponse proves this direction of the transit
+        // path. Keep an established encrypted flow on that learned path while
+        // it is live; origin-side route exploration must not spray transit
+        // records into an unproven branch. Failure handling removes/decays the
+        // route and the ordinary coordinate/tree fallback remains below.
+        if self.config.node.routing.mode == RoutingMode::ReplyLearned {
+            let sendable = self
+                .peers
+                .iter()
+                .filter(|(addr, peer)| *addr != previous_hop && peer.is_healthy())
+                .map(|(addr, _)| *addr)
+                .collect::<HashSet<_>>();
+            if let Some(next_hop_addr) =
+                self.learned_routes
+                    .select_handshake_route(dest_node_addr, Self::now_ms(), |addr| {
+                        sendable.contains(addr)
+                    })
+            {
+                return TransitNextHopPlan::Route(next_hop_addr);
+            }
+        }
+
         let Some(next_hop_addr) = self
             .find_next_hop(dest_node_addr)
             .map(|peer| *peer.node_addr())
@@ -629,7 +651,56 @@ impl Node {
             self.config.node.routing.learned_ttl_secs,
             self.config.node.routing.max_learned_routes_per_dest,
         );
-        let _ = self.refresh_dataplane_fsp_owner_routes(&destination);
+        // Discovery may return through more than one live seed. Once an FSP
+        // handshake has authenticated one complete path, keep that owner route
+        // stable while its physical next hop remains usable; later learned
+        // candidates stay available for explicit failure/degradation recovery.
+        let _ = self.refresh_dataplane_fsp_owner_routes_retaining_current(&destination);
+    }
+
+    pub(in crate::node) fn pin_handshake_reverse_route(
+        &mut self,
+        destination: NodeAddr,
+        next_hop: NodeAddr,
+    ) {
+        if self.config.node.routing.mode != RoutingMode::ReplyLearned
+            || destination == *self.node_addr()
+        {
+            return;
+        }
+        self.learned_routes.pin_handshake_route(
+            destination,
+            next_hop,
+            Self::now_ms(),
+            self.config.node.routing.learned_ttl_secs,
+            self.config.node.routing.max_learned_routes_per_dest,
+        );
+    }
+
+    pub(in crate::node) fn routing_error_matches_active_path(
+        &mut self,
+        destination: &NodeAddr,
+        previous_hop: &NodeAddr,
+        reporter: &NodeAddr,
+    ) -> bool {
+        if self.config.node.routing.mode != RoutingMode::ReplyLearned {
+            return true;
+        }
+        let Some(pinned_hop) = self
+            .learned_routes
+            .active_handshake_route(destination, Self::now_ms())
+        else {
+            return true;
+        };
+        // Liveness may briefly mark a still-connected traversal hop stale
+        // while authenticated endpoint traffic is in flight. Plaintext route
+        // errors have no packet identifier or end-to-end authentication, so a
+        // stale branch can route its report back through the active branch.
+        // Only the pinned adjacent hop can authoritatively report failure for
+        // that pinned route. Explicit send/link failure removes the pin through
+        // `record_route_failure`, preserving normal multi-hop recovery without
+        // trusting an uncorrelated downstream report.
+        pinned_hop == *previous_hop && pinned_hop == *reporter
     }
 
     pub(in crate::node) fn record_route_failure(

@@ -331,38 +331,27 @@ impl Node {
     /// current attempt's deadline elapses:
     /// - If more entries remain: send the next attempt with a fresh
     ///   `request_id`.
-    /// - Otherwise: if an FSP handshake owns the destination, stop discovery
-    ///   and let the handshake lifecycle retain or time out its queued traffic.
-    /// - Without an FSP handshake: declare the destination unreachable, drop
+    /// - Otherwise: if an FSP session owns the destination, stop discovery
+    ///   and let the session lifecycle retain or time out its queued traffic.
+    ///   An established session does not end lookup early: path-recovery
+    ///   lookups are created precisely when its routed carrier is broken.
+    /// - Without an FSP session: declare the destination unreachable, drop
     ///   queued packets, and emit ICMPv6 destination-unreachable for each.
     pub(in crate::node) async fn check_pending_lookups(&mut self, now_ms: u64) {
         let timeouts = self.config.node.discovery.attempt_timeouts_secs.clone();
         let max_attempts = timeouts.len() as u8;
 
         // Collect targets needing action
-        let mut to_complete: Vec<NodeAddr> = Vec::new();
         let mut to_retry: Vec<NodeAddr> = Vec::new();
         let mut to_session_handshake: Vec<NodeAddr> = Vec::new();
         let mut to_timeout: Vec<NodeAddr> = Vec::new();
 
         for (&target, entry) in self.pending_lookups.iter() {
-            if self
-                .sessions
-                .get(&target)
-                .is_some_and(|entry| entry.is_established())
-            {
-                to_complete.push(target);
-                continue;
-            }
             let attempt_idx = (entry.attempt as usize).saturating_sub(1);
             let attempt_timeout_ms = timeouts.get(attempt_idx).copied().unwrap_or(0) * 1000;
             if now_ms.saturating_sub(entry.last_sent_ms) >= attempt_timeout_ms {
                 if entry.attempt >= max_attempts {
-                    if self
-                        .sessions
-                        .get(&target)
-                        .is_some_and(|session| !session.is_established())
-                    {
+                    if self.sessions.get(&target).is_some() {
                         to_session_handshake.push(target);
                     } else {
                         to_timeout.push(target);
@@ -373,20 +362,11 @@ impl Node {
             }
         }
 
-        for target in to_complete {
-            self.pending_lookups.remove(&target);
-            self.discovery_backoff.record_success(&target);
-            debug!(
-                target_node = %self.peer_display_name(&target),
-                "Discovery lookup completed by established session"
-            );
-        }
-
         for target in to_session_handshake {
             self.pending_lookups.remove(&target);
             debug!(
                 target_node = %self.peer_display_name(&target),
-                "Discovery lookup exhausted while FSP handshake retains queued traffic"
+                "Discovery lookup exhausted while FSP session retains queued traffic"
             );
         }
 

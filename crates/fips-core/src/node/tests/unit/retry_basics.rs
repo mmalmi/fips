@@ -151,6 +151,121 @@ async fn test_process_pending_retries_is_budgeted_per_tick() {
 }
 
 #[tokio::test]
+async fn ambient_no_transport_retries_enter_traversal_cooldown() {
+    let peer = Identity::generate();
+    let peer_npub = peer.npub();
+    let peer_addr = *PeerIdentity::from_npub(&peer_npub).unwrap().node_addr();
+    let mut peer_config =
+        crate::config::PeerConfig::new(peer_npub.clone(), "udp", "203.0.113.7:2121");
+    peer_config.auto_reconnect = false;
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.node.retry.max_retries = 10;
+    let mut node = Node::new(config).unwrap();
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
+    node.nostr_discovery = Some(bootstrap.clone());
+
+    let mut retry = crate::node::retry::RetryState::new(peer_config);
+    retry.retry_after_ms = 0;
+    retry.expires_at_ms = Some(120_000);
+    node.retry_pending.insert(peer_addr, retry);
+
+    let mut now_ms = 1_000;
+    for _ in 0..5 {
+        node.retry_pending
+            .get_mut(&peer_addr)
+            .expect("ambient retry remains bounded")
+            .retry_after_ms = now_ms;
+        node.process_pending_retries(now_ms).await;
+        now_ms += 1_000;
+    }
+
+    let cooldown_until = bootstrap
+        .cooldown_until(&peer_npub, now_ms)
+        .expect("repeated unusable ambient adverts should enter traversal cooldown");
+    assert!(
+        node.retry_pending
+            .get(&peer_addr)
+            .is_some_and(|state| state.retry_after_ms >= cooldown_until),
+        "the bounded retry queue must not fire before the traversal cooldown expires"
+    );
+}
+
+#[test]
+fn ambient_handshake_timeouts_enter_traversal_cooldown() {
+    let peer = Identity::generate();
+    let peer_npub = peer.npub();
+    let peer_identity = PeerIdentity::from_npub(&peer_npub).unwrap();
+    let peer_addr = *peer_identity.node_addr();
+    let mut peer_config =
+        crate::config::PeerConfig::new(peer_npub.clone(), "udp", "203.0.113.7:2121");
+    peer_config.auto_reconnect = false;
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.node.retry.max_retries = 10;
+    config.peers.push(peer_config);
+    let mut node = Node::new(config).unwrap();
+    let discovery_config = crate::config::NostrDiscoveryConfig {
+        failure_streak_threshold: 3,
+        extended_cooldown_secs: 1_800,
+        ..Default::default()
+    };
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test_with_config(discovery_config));
+    node.nostr_discovery = Some(bootstrap.clone());
+
+    for now_ms in [1_000, 2_000, 3_000] {
+        node.schedule_retry_after_handshake_timeout(peer_identity, now_ms);
+    }
+
+    let cooldown_until = bootstrap
+        .cooldown_until(&peer_npub, 3_000)
+        .expect("unanswered ambient handshakes should enter traversal cooldown");
+    assert!(
+        node.retry_pending
+            .get(&peer_addr)
+            .is_some_and(|state| state.retry_after_ms >= cooldown_until),
+        "the ambient retry queue must stay quiet until traversal cooldown expires"
+    );
+}
+
+#[test]
+fn configured_handshake_timeouts_keep_auto_reconnect_policy() {
+    let peer = Identity::generate();
+    let peer_npub = peer.npub();
+    let peer_identity = PeerIdentity::from_npub(&peer_npub).unwrap();
+    let peer_addr = *peer_identity.node_addr();
+
+    let mut config = Config::new();
+    config.peers.push(crate::config::PeerConfig::new(
+        peer_npub.clone(),
+        "udp",
+        "203.0.113.8:2121",
+    ));
+    let mut node = Node::new(config).unwrap();
+    let discovery_config = crate::config::NostrDiscoveryConfig {
+        failure_streak_threshold: 1,
+        ..Default::default()
+    };
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test_with_config(discovery_config));
+    node.nostr_discovery = Some(bootstrap.clone());
+
+    node.schedule_retry_after_handshake_timeout(peer_identity, 1_000);
+
+    assert!(
+        bootstrap.cooldown_until(&peer_npub, 1_000).is_none(),
+        "configured auto-reconnect peers must not enter ambient traversal cooldown"
+    );
+    assert!(
+        node.retry_pending
+            .get(&peer_addr)
+            .is_some_and(|state| state.reconnect),
+        "configured peers must retain unlimited auto-reconnect"
+    );
+}
+
+#[tokio::test]
 async fn active_direct_refresh_retries_are_background_budgeted() {
     let mut config = Config::new();
     config.node.discovery.nostr.enabled = true;

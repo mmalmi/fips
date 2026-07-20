@@ -463,6 +463,16 @@ impl Node {
             return;
         }
 
+        // A WebSocket listener is an operator-selected public adjacency: its
+        // open-discovery budget exists to admit authenticated inbound clients,
+        // not to turn every ambient relay advert into an outbound connection.
+        // Keep scanning adverts so configured-peer retries can be expedited,
+        // while leaving ambient peers to dial the advertised listener URL.
+        let allow_ambient_outbound = !self.transports.values().any(|transport| {
+            matches!(transport, crate::transport::TransportHandle::WebSocket(_))
+                && transport.accept_connections()
+        });
+
         let configured_npubs = self
             .config
             .peers()
@@ -472,7 +482,7 @@ impl Node {
         let now_ms = Self::now_ms();
         let now_secs = now_ms / 1000;
         let mut enqueue_budget = self.open_discovery_enqueue_budget(&configured_npubs);
-        if enqueue_budget == 0 {
+        if allow_ambient_outbound && enqueue_budget == 0 {
             debug!(
                 caller = %caller,
                 "open-discovery sweep: enqueue budget is 0, skipping"
@@ -481,12 +491,13 @@ impl Node {
         }
 
         let mut candidates = bootstrap.cached_open_discovery_candidates(64).await;
-        if self
-            .config
-            .node
-            .discovery
-            .nostr
-            .open_discovery_trust_ratings_enabled
+        if allow_ambient_outbound
+            && self
+                .config
+                .node
+                .discovery
+                .nostr
+                .open_discovery_trust_ratings_enabled
         {
             let candidate_npubs = candidates
                 .iter()
@@ -512,12 +523,13 @@ impl Node {
         let mut skipped_connected = 0usize;
         let mut skipped_retry_pending = 0usize;
         let mut skipped_connecting = 0usize;
+        let mut skipped_listener_outbound = 0usize;
         let mut skipped_no_endpoints = 0usize;
         let mut skipped_invalid_npub = 0usize;
         let mut skipped_cooldown = 0usize;
 
         for (npub, endpoints, created_at_secs) in candidates {
-            if enqueue_budget == 0 {
+            if allow_ambient_outbound && enqueue_budget == 0 {
                 break;
             }
 
@@ -572,6 +584,11 @@ impl Node {
                 continue;
             }
 
+            if !allow_ambient_outbound {
+                skipped_listener_outbound = skipped_listener_outbound.saturating_add(1);
+                continue;
+            }
+
             let peer_identity = match PeerIdentity::from_npub(&npub) {
                 Ok(identity) => identity,
                 Err(_) => {
@@ -584,8 +601,11 @@ impl Node {
                 skipped_self = skipped_self.saturating_add(1);
                 continue;
             }
-            let active_bootstrap_path = self.active_peer_uses_websocket(&node_addr);
-            if self.peers.contains_key(&node_addr) && !active_bootstrap_path {
+            if self.peers.contains_key(&node_addr) {
+                // An authenticated physical adjacency is already usable.
+                // Better paths may still arrive through ordinary link
+                // negotiation, but cached ambient adverts must not turn every
+                // WSS client into permanent direct-upgrade retry work.
                 skipped_connected = skipped_connected.saturating_add(1);
                 continue;
             }
@@ -645,10 +665,13 @@ impl Node {
                 alias: None,
                 addresses,
                 connect_policy: ConnectPolicy::AutoConnect,
-                auto_reconnect: true,
+                // Cached open-discovery adverts are ambient candidates, not
+                // configured peers. Keep their retries finite so failed or
+                // stale adverts honor the normal traversal cooldown instead
+                // of becoming permanent background reconnect work.
+                auto_reconnect: false,
                 discovery_fallback_transit: false,
             });
-            state.reconnect = active_bootstrap_path;
             state.retry_after_ms = now_ms;
             state.expires_at_ms = Some(self.open_discovery_retry_expires_at_ms(now_ms));
             self.retry_pending.insert(node_addr, state);
@@ -656,7 +679,6 @@ impl Node {
                 caller = %caller,
                 peer = %peer_identity.short_npub(),
                 advert_age_secs = now_secs.saturating_sub(created_at_secs),
-                bootstrap_upgrade = active_bootstrap_path,
                 "open-discovery sweep: queued retry for cached advert"
             );
             enqueue_budget = enqueue_budget.saturating_sub(1);
@@ -672,6 +694,7 @@ impl Node {
             + skipped_connected
             + skipped_retry_pending
             + skipped_connecting
+            + skipped_listener_outbound
             + skipped_no_endpoints
             + skipped_invalid_npub
             + skipped_cooldown;
@@ -687,6 +710,7 @@ impl Node {
                 skipped_connected = skipped_connected,
                 skipped_retry_pending = skipped_retry_pending,
                 skipped_connecting = skipped_connecting,
+                skipped_listener_outbound = skipped_listener_outbound,
                 skipped_no_endpoints = skipped_no_endpoints,
                 skipped_invalid_npub = skipped_invalid_npub,
                 skipped_cooldown = skipped_cooldown,

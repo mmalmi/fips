@@ -57,6 +57,19 @@ impl Node {
         node_addr: &NodeAddr,
         coords_warmup_remaining: u8,
     ) -> bool {
+        self.sync_dataplane_fsp_owner_from_current_session_via(
+            node_addr,
+            None,
+            coords_warmup_remaining,
+        )
+    }
+
+    pub(in crate::node) fn sync_dataplane_fsp_owner_from_current_session_via(
+        &mut self,
+        node_addr: &NodeAddr,
+        proven_next_hop: Option<NodeAddr>,
+        coords_warmup_remaining: u8,
+    ) -> bool {
         let Some(snapshot) = self
             .sessions
             .get(node_addr)
@@ -68,6 +81,7 @@ impl Node {
         self.sync_dataplane_fsp_owner_from_session_snapshot(
             node_addr,
             snapshot,
+            proven_next_hop,
             coords_warmup_remaining,
         )
     }
@@ -76,6 +90,7 @@ impl Node {
         &mut self,
         node_addr: &NodeAddr,
         snapshot: DataplaneFspOwnerSessionSnapshot,
+        proven_next_hop: Option<NodeAddr>,
         coords_warmup_remaining: u8,
     ) -> bool {
         let _timer =
@@ -85,6 +100,7 @@ impl Node {
         let Some(seed) = self.dataplane_fsp_owner_seed_from_snapshot(
             node_addr,
             snapshot,
+            proven_next_hop,
             coords_warmup_remaining,
         ) else {
             self.remove_dataplane_fsp_owner(node_addr);
@@ -238,6 +254,7 @@ impl Node {
         &mut self,
         node_addr: &NodeAddr,
         snapshot: DataplaneFspOwnerSessionSnapshot,
+        proven_next_hop: Option<NodeAddr>,
         coords_warmup_remaining: u8,
     ) -> Option<DataplaneFspOwnerSeed> {
         let mut fsp_flags = 0;
@@ -247,8 +264,13 @@ impl Node {
         let generation = snapshot.session_start_ms.max(1);
         let inner_flags = crate::protocol::FspInnerFlags { spin_bit: false }.to_byte();
         let coords_prefix = self.dataplane_fsp_coords_prefix(node_addr, coords_warmup_remaining);
-        let route_update =
-            self.dataplane_fsp_owner_routes(node_addr, generation, fsp_flags, inner_flags);
+        let route_update = self.dataplane_fsp_owner_routes(
+            node_addr,
+            generation,
+            fsp_flags,
+            inner_flags,
+            proven_next_hop,
+        );
 
         let mut config = self
             .dataplane_owner_config(generation)
@@ -300,9 +322,22 @@ impl Node {
         generation: u64,
         fsp_flags: u8,
         inner_flags: u8,
+        proven_next_hop: Option<NodeAddr>,
     ) -> DataplaneFspOwnerRouteUpdate {
         let owner = OwnerId::fsp_node(*node_addr);
-        let Some(next_hop) = self.find_next_hop(node_addr).map(|peer| *peer.node_addr()) else {
+        // A Noise-authenticated handshake ingress remains the strongest route
+        // evidence while its adjacent FMP path can still send. Traversal
+        // liveness may briefly be stale before endpoint traffic refreshes it;
+        // falling back here can seed the new FSP owner onto an unproven branch.
+        let proven_next_hop = proven_next_hop.filter(|next_hop| {
+            self.peers
+                .get(next_hop)
+                .is_some_and(|peer| peer.can_send())
+                && self.dataplane_has_fmp_owner(next_hop)
+        });
+        let Some(next_hop) = proven_next_hop
+            .or_else(|| self.find_next_hop(node_addr).map(|peer| *peer.node_addr()))
+        else {
             return DataplaneFspOwnerRouteUpdate {
                 routes: DataplaneLiveOwnerRoutes::new(),
                 wrap: None,

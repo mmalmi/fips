@@ -81,6 +81,8 @@ impl Node {
             session_direct_degradation: SessionDirectDegradation::default(),
             recent_requests: RecentDiscoveryRequests::default(),
             transports: HashMap::new(),
+            #[cfg(feature = "host-ble-transport")]
+            host_ble_io: None,
             transport_drops: TransportDropTracker::default(),
             transport_socket_drops: TransportDropTracker::default(),
             transport_namespace_drops: TransportDropTracker::default(),
@@ -225,6 +227,8 @@ impl Node {
             session_direct_degradation: SessionDirectDegradation::default(),
             recent_requests: RecentDiscoveryRequests::default(),
             transports: HashMap::new(),
+            #[cfg(feature = "host-ble-transport")]
+            host_ble_io: None,
             transport_drops: TransportDropTracker::default(),
             transport_socket_drops: TransportDropTracker::default(),
             transport_namespace_drops: TransportDropTracker::default(),
@@ -485,8 +489,34 @@ impl Node {
             warn!("WebRTC transport configured but this build lacks WebRTC transport support");
         }
 
+        #[cfg(feature = "host-ble-transport")]
+        {
+            if let Some(io) = self.host_ble_io.take() {
+                let (name, ble_config) = self
+                    .config
+                    .transports
+                    .ble
+                    .iter()
+                    .next()
+                    .map(|(name, config)| (name.map(str::to_string), config.clone()))
+                    .unwrap_or((None, crate::config::BleConfig::default()));
+                let transport_id = self.allocate_transport_id();
+                let mut ble = crate::transport::ble::BleTransport::new(
+                    transport_id,
+                    name,
+                    ble_config,
+                    io,
+                    packet_tx.clone(),
+                );
+                ble.set_local_pubkey(self.identity.pubkey().serialize());
+                transports.push(TransportHandle::Ble(ble));
+            } else if !self.config.transports.ble.is_empty() {
+                warn!("host BLE configured without a platform adapter");
+            }
+        }
+
         // Create BLE transport instances
-        #[cfg(bluer_available)]
+        #[cfg(all(bluer_available, not(feature = "host-ble-transport")))]
         {
             let ble_instances: Vec<_> = self
                 .config
@@ -527,6 +557,11 @@ impl Node {
         }
 
         transports
+    }
+
+    #[cfg(feature = "host-ble-transport")]
+    pub(crate) fn set_host_ble_io(&mut self, io: crate::transport::ble::host::HostBleIo) {
+        self.host_ble_io = Some(io);
     }
 
     /// Find an operational transport that matches the given transport type name.

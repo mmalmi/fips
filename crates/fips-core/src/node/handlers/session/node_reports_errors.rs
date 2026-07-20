@@ -203,7 +203,7 @@ impl Node {
     /// coordinates for the destination. Send a standalone CoordsWarmup
     /// immediately (rate-limited), trigger discovery, and reset the
     /// warmup counter for subsequent data packets.
-    async fn handle_coords_required(&mut self, inner: &[u8]) {
+    async fn handle_coords_required(&mut self, previous_hop: &NodeAddr, inner: &[u8]) {
         self.stats_mut().errors.coords_required += 1;
 
         let msg = match CoordsRequired::decode(inner) {
@@ -219,6 +219,20 @@ impl Node {
             reporter = %msg.reporter,
             "CoordsRequired: transit router needs coordinates"
         );
+
+        if !self.routing_error_matches_active_path(
+            &msg.dest_addr,
+            previous_hop,
+            &msg.reporter,
+        ) {
+            debug!(
+                dest = %msg.dest_addr,
+                reporter = %msg.reporter,
+                previous_hop = %previous_hop,
+                "Ignoring CoordsRequired from a stale route branch"
+            );
+            return;
+        }
 
         // Send standalone CoordsWarmup immediately (rate-limited)
         if self
@@ -262,7 +276,7 @@ impl Node {
     /// The router has coordinates but still can't route to the destination.
     /// Send a standalone CoordsWarmup immediately (rate-limited), invalidate
     /// cached coordinates, trigger re-discovery, and reset the warmup counter.
-    async fn handle_path_broken(&mut self, inner: &[u8]) {
+    async fn handle_path_broken(&mut self, previous_hop: &NodeAddr, inner: &[u8]) {
         self.stats_mut().errors.path_broken += 1;
 
         let msg = match PathBroken::decode(inner) {
@@ -278,6 +292,20 @@ impl Node {
             reporter = %msg.reporter,
             "PathBroken: transit router reports routing failure"
         );
+
+        if !self.routing_error_matches_active_path(
+            &msg.dest_addr,
+            previous_hop,
+            &msg.reporter,
+        ) {
+            debug!(
+                dest = %msg.dest_addr,
+                reporter = %msg.reporter,
+                previous_hop = %previous_hop,
+                "Ignoring PathBroken from a stale route branch"
+            );
+            return;
+        }
 
         // Send standalone CoordsWarmup immediately (rate-limited)
         if self

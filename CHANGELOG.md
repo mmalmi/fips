@@ -5,6 +5,89 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.27] - 2026-07-20
+
+### Fixed
+
+- Preserve an FSP session that has already recovered to a restarted peer's
+  current epoch when delayed FMP promotion completes, avoiding a second
+  teardown that can strand production first-ping name resolution.
+- Keep queued control sends progressing through dataplane backlog and restrict
+  learned-origin NAT fallback to explicit bootstrap transit peers.
+- Release `fips-core` and `fips-endpoint` 0.4.27 together. FMP, FSP,
+  discovery, and physical transport wire formats are unchanged.
+
+## [0.4.26] - 2026-07-20
+
+### Fixed
+
+- Keep native WebSocket listeners passive for ambient peer adverts. Explicitly
+  configured peers still auto-connect and retry normally; listener nodes admit
+  authenticated inbound WebSocket sessions without dialing every advertised
+  relay peer or sustaining idle handshake churn.
+- Release `fips-core` and `fips-endpoint` 0.4.26 together. FMP, FSP,
+  discovery, and physical transport wire formats are unchanged.
+
+## [0.4.25] - 2026-07-20
+
+### Fixed
+
+- Count unanswered outbound handshakes to bounded ambient peers as traversal
+  failures, so successfully sent probes cannot bypass the normal extended
+  cooldown indefinitely. Configured peers retain unlimited auto-reconnect.
+- Release `fips-core` and `fips-endpoint` 0.4.25 together. FMP, FSP,
+  discovery, and physical transport wire formats are unchanged.
+
+## [0.4.24] - 2026-07-20
+
+### Fixed
+
+- Count repeated unusable ambient advert endpoints as traversal failures and
+  hold their bounded retry state behind the normal peer cooldown. The same
+  cached advert can no longer restart a background retry burst immediately
+  after exhausting its finite attempts.
+- Release `fips-core` and `fips-endpoint` 0.4.24 together. FMP, FSP,
+  discovery, and physical transport wire formats are unchanged.
+
+## [0.4.23] - 2026-07-20
+
+### Fixed
+
+- Keep authenticated ambient WebSocket peers out of the open-discovery retry
+  queue. Their existing physical adjacency remains usable, and ordinary link
+  negotiation can still establish and preempt it with a better path, without
+  turning every WSS client into permanent background upgrade work.
+- Release `fips-core` and `fips-endpoint` 0.4.23 together. FMP, FSP,
+  discovery, and physical transport wire formats are unchanged.
+
+## [0.4.22] - 2026-07-20
+
+### Fixed
+
+- Keep peers learned from ambient open-discovery adverts on bounded retries and
+  traversal cooldowns. Explicitly configured peers still reconnect
+  indefinitely, while stale or unreachable ambient adverts no longer create
+  permanent background retry and WebRTC-upgrade work.
+- Release `fips-core` and `fips-endpoint` 0.4.22 together so embedded users
+  receive the corrected discovery lifecycle without dependency skew. FMP,
+  FSP, discovery, and physical transport wire formats are unchanged.
+
+## [0.4.21] - 2026-07-20
+
+### Fixed
+
+- Stabilize routed FSP session establishment across multiple authenticated
+  WebSocket seeds by retaining the proven reply-learned branch through peer
+  refreshes, liveness jitter, duplicate acknowledgements, and the final Noise
+  handshake message. Explicit send and liveness failures still release the
+  branch for ordinary route recovery.
+- Ignore stale routed-session errors from an off-path seed while an
+  authenticated handshake branch is pinned, preventing an unrelated transit
+  path from tearing down a valid end-to-end FSP session.
+- Release `fips-core` and `fips-endpoint` 0.4.21 together so native, embedded,
+  and browser-routed deployments use the same recovery behavior. FMP, FSP,
+  discovery, and physical transport wire formats are unchanged.
+
 ## [0.4.20] - 2026-07-20
 
 ### Fixed

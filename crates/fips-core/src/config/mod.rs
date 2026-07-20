@@ -675,6 +675,11 @@ impl Config {
             ));
         }
 
+        let ble_discovery_enabled = self
+            .transports
+            .ble
+            .iter()
+            .any(|(_, config)| config.scan() && config.auto_connect());
         let can_resolve_addressless_peers = nostr.enabled
             || self
                 .transports
@@ -685,7 +690,8 @@ impl Config {
                 .transports
                 .ethernet
                 .iter()
-                .any(|(_, cfg)| cfg.discovery());
+                .any(|(_, cfg)| cfg.discovery())
+            || ble_discovery_enabled;
 
         for (i, peer) in self.peers.iter().enumerate() {
             if peer.addresses.is_empty() && !can_resolve_addressless_peers {

@@ -19,10 +19,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 
 /// Generate a deterministic BLE address for test node `n`.
 fn ble_addr(n: u8) -> BleAddr {
-    BleAddr {
-        adapter: "hci0".to_string(),
-        device: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, n],
-    }
+    BleAddr::from_mac("hci0", [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, n])
 }
 
 /// A pre-connected stream bank for MockBleIo connect handlers.
@@ -73,6 +70,42 @@ async fn make_test_node_ble(node_num: u8) -> TestNode {
     }
 }
 
+/// Create a BLE node whose scan results drive node-level auto-connect.
+async fn make_discovering_test_node_ble(node_num: u8) -> TestNode {
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+    let addr = ble_addr(node_num);
+    let config = BleConfig {
+        adapter: Some("hci0".to_string()),
+        mtu: Some(2048),
+        accept_connections: Some(true),
+        scan: Some(true),
+        advertise: Some(false),
+        auto_connect: Some(true),
+        probe_cooldown_secs: Some(1),
+        ..Default::default()
+    };
+    let io = MockBleIo::new("hci0", addr.clone());
+    let (packet_tx, packet_rx) = packet_channel(256);
+    let (tun_outbound_tx, tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(256);
+    node.tun_outbound_rx = Some(tun_outbound_rx);
+
+    let mut transport = BleTransport::new(transport_id, None, config, io, packet_tx);
+    transport.set_local_pubkey(node.identity().pubkey().serialize());
+    transport.start_async().await.unwrap();
+    let ta = addr.to_transport_addr();
+    node.transports
+        .insert(transport_id, TransportHandle::Ble(transport));
+
+    TestNode {
+        node,
+        transport_id,
+        packet_rx,
+        tun_outbound_tx,
+        addr: ta,
+    }
+}
+
 /// Extract the BleAddr from a TestNode's TransportAddr.
 fn node_ble_addr(node: &TestNode) -> BleAddr {
     BleAddr::parse(node.addr.as_str().unwrap()).unwrap()
@@ -88,7 +121,7 @@ async fn wire_ble_connection(nodes: &[TestNode], i: usize, j: usize, bank: &Stre
     let addr_i = node_ble_addr(&nodes[i]);
     let addr_j = node_ble_addr(&nodes[j]);
 
-    let (stream_i, stream_j) = MockBleStream::pair(addr_j.clone(), addr_i.clone(), 2048);
+    let (stream_i, stream_j) = MockBleStream::pair(addr_i, addr_j, 2048);
 
     // Store stream_i in the bank keyed by node j's address string.
     // When node i connects to node j, the handler returns this stream.
@@ -144,8 +177,15 @@ async fn establish_ble_connection(nodes: &[TestNode], i: usize, j: usize) {
         .get(&nodes[i].transport_id)
         .unwrap();
     transport.connect(&nodes[j].addr).await.unwrap();
-    // Let the background connect task complete
-    tokio::task::yield_now().await;
+    for _ in 0..100 {
+        if transport.connection_state(&nodes[j].addr)
+            == crate::transport::ConnectionState::Connected
+        {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("BLE connection did not become ready");
 }
 
 /// Two BLE nodes complete a Noise handshake and establish bidirectional peering.
@@ -315,5 +355,195 @@ async fn test_ble_discovery() {
         tun_outbound_tx,
         addr: ta,
     }];
+    cleanup_nodes(&mut nodes).await;
+}
+
+/// Simultaneous scans must select one physical direction and one logical
+/// initiator instead of starting two handshakes over address-keyed streams.
+#[tokio::test]
+async fn test_ble_simultaneous_discovery_selects_one_initiator() {
+    let mut nodes = vec![
+        make_discovering_test_node_ble(1).await,
+        make_discovering_test_node_ble(2).await,
+    ];
+    nodes.sort_by_key(|node| *node.node.node_addr());
+
+    let bank: StreamBank = Arc::new(StdMutex::new(HashMap::new()));
+    wire_ble_connection(&nodes, 0, 1, &bank).await;
+    wire_ble_connection(&nodes, 1, 0, &bank).await;
+    install_connect_handler(&nodes, 0, &bank);
+    install_connect_handler(&nodes, 1, &bank);
+
+    for (source, target) in [(0, 1), (1, 0)] {
+        let TransportHandle::Ble(transport) = nodes[source]
+            .node
+            .transports
+            .get(&nodes[source].transport_id)
+            .unwrap()
+        else {
+            panic!("expected BLE transport");
+        };
+        transport
+            .io()
+            .inject_scan_result(node_ble_addr(&nodes[target]))
+            .await;
+    }
+
+    for _ in 0..50 {
+        // The connection handlers run in background tasks. Give them bounded
+        // wall-clock time instead of assuming a fixed number of scheduler
+        // yields is sufficient while the full test suite is under load.
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        for node in &mut nodes {
+            node.node.poll_transport_discovery().await;
+        }
+        if nodes
+            .iter()
+            .map(|node| node.node.pending_connects.len())
+            .sum::<usize>()
+            > 0
+        {
+            break;
+        }
+    }
+
+    assert_eq!(
+        nodes
+            .iter()
+            .map(|node| node.node.pending_connects.len())
+            .sum::<usize>(),
+        1,
+        "simultaneous BLE discovery must choose exactly one logical initiator"
+    );
+    assert_eq!(
+        nodes[0].node.pending_connects.len(),
+        1,
+        "the lower node address owns the surviving outbound connection"
+    );
+
+    let total = drain_all_packets(&mut nodes, false).await;
+    assert!(total > 0, "the selected BLE connection must carry FMP");
+    assert!(
+        nodes[0].node.get_peer(nodes[1].node.node_addr()).is_some()
+            && nodes[1].node.get_peer(nodes[0].node.node_addr()).is_some(),
+        "the selected connection must establish bidirectional peering"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+/// The deterministic preferred direction is only a collision rule. If only
+/// the higher node scans, that connection must survive after the grace period.
+#[tokio::test]
+async fn test_ble_one_way_scanner_falls_back_to_nonpreferred_direction() {
+    let mut nodes = vec![
+        make_discovering_test_node_ble(1).await,
+        make_discovering_test_node_ble(2).await,
+    ];
+    nodes.sort_by_key(|node| *node.node.node_addr());
+
+    let bank: StreamBank = Arc::new(StdMutex::new(HashMap::new()));
+    wire_ble_connection(&nodes, 1, 0, &bank).await;
+    install_connect_handler(&nodes, 1, &bank);
+
+    let TransportHandle::Ble(transport) = nodes[1]
+        .node
+        .transports
+        .get(&nodes[1].transport_id)
+        .unwrap()
+    else {
+        panic!("expected BLE transport");
+    };
+    transport
+        .io()
+        .inject_scan_result(node_ble_addr(&nodes[0]))
+        .await;
+
+    for _ in 0..50 {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        nodes[1].node.poll_transport_discovery().await;
+        if !nodes[1].node.pending_connects.is_empty() {
+            break;
+        }
+    }
+
+    assert_eq!(
+        nodes[1].node.pending_connects.len(),
+        1,
+        "a one-way scanner must keep its non-preferred connection"
+    );
+    let total = drain_all_packets(&mut nodes, false).await;
+    assert!(total > 0, "the fallback BLE connection must carry FMP");
+    assert!(
+        nodes[0].node.get_peer(nodes[1].node.node_addr()).is_some()
+            && nodes[1].node.get_peer(nodes[0].node.node_addr()).is_some(),
+        "the fallback connection must establish bidirectional peering"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+/// A fresh BLE socket for the same address is incarnation evidence. It must
+/// start a new logical handshake even while the old peer still looks healthy.
+#[tokio::test]
+async fn test_ble_replacement_connection_refreshes_healthy_logical_peer() {
+    let mut nodes = vec![
+        make_discovering_test_node_ble(1).await,
+        make_discovering_test_node_ble(2).await,
+    ];
+    nodes.sort_by_key(|node| *node.node.node_addr());
+
+    let bank: StreamBank = Arc::new(StdMutex::new(HashMap::new()));
+    wire_ble_connection(&nodes, 0, 1, &bank).await;
+    install_connect_handler(&nodes, 0, &bank);
+    establish_ble_connection(&nodes, 0, 1).await;
+    initiate_handshake(&mut nodes, 0, 1).await;
+    drain_all_packets(&mut nodes, false).await;
+
+    let peer_addr = *nodes[1].node.node_addr();
+    assert!(nodes[0].node.get_peer(&peer_addr).is_some());
+    nodes[0]
+        .node
+        .transports
+        .get(&nodes[0].transport_id)
+        .unwrap()
+        .discover()
+        .unwrap();
+
+    if let TransportHandle::Ble(transport) = nodes[0]
+        .node
+        .transports
+        .get(&nodes[0].transport_id)
+        .unwrap()
+    {
+        transport.close_connection_async(&nodes[1].addr).await;
+    } else {
+        panic!("expected BLE transport");
+    }
+    tokio::task::yield_now().await;
+
+    wire_ble_connection(&nodes, 0, 1, &bank).await;
+    let replacement_addr = node_ble_addr(&nodes[1]);
+    if let TransportHandle::Ble(transport) = nodes[0]
+        .node
+        .transports
+        .get(&nodes[0].transport_id)
+        .unwrap()
+    {
+        transport.io().inject_scan_result(replacement_addr).await;
+    } else {
+        panic!("expected BLE transport");
+    }
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+
+    nodes[0].node.poll_transport_discovery().await;
+
+    assert_eq!(
+        nodes[0].node.pending_connects.len(),
+        1,
+        "replacement BLE connection must schedule a fresh logical handshake"
+    );
     cleanup_nodes(&mut nodes).await;
 }

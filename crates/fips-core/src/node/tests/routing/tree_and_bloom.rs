@@ -1,4 +1,5 @@
 use super::*;
+use crate::node::route_impl::TransitNextHopPlan;
 
 #[test]
 fn test_routing_tree_fallback() {
@@ -177,6 +178,60 @@ fn test_reply_learned_mode_uses_observed_route_without_coords() {
     assert!(result.is_some(), "learned route should not require coords");
     assert_eq!(result.unwrap().node_addr(), &peer2_addr);
     assert_ne!(peer1_addr, peer2_addr);
+}
+
+#[test]
+fn test_transit_keeps_response_proven_route_instead_of_exploring_tree_branch() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    config.node.routing.learned_fallback_explore_interval = 1;
+    let mut node = Node::new(config).unwrap();
+    let transport_id = TransportId::new(1);
+    let my_addr = *node.node_addr();
+
+    let tree_link = LinkId::new(1);
+    let (tree_connection, tree_identity) =
+        make_completed_connection(&mut node, tree_link, transport_id, 1_000);
+    let tree_hop = *tree_identity.node_addr();
+    node.add_connection(tree_connection).unwrap();
+    node.promote_connection(tree_link, tree_identity, 2_000)
+        .unwrap();
+    node.tree_state_mut().update_peer(
+        ParentDeclaration::new(tree_hop, my_addr, 1, 2_000),
+        TreeCoordinate::from_addrs(vec![tree_hop, my_addr]).unwrap(),
+    );
+
+    let learned_link = LinkId::new(2);
+    let (learned_connection, learned_identity) =
+        make_completed_connection(&mut node, learned_link, transport_id, 1_000);
+    let learned_hop = *learned_identity.node_addr();
+    node.add_connection(learned_connection).unwrap();
+    node.promote_connection(learned_link, learned_identity, 2_000)
+        .unwrap();
+
+    let ingress_link = LinkId::new(3);
+    let (ingress_connection, ingress_identity) =
+        make_completed_connection(&mut node, ingress_link, transport_id, 1_000);
+    let ingress_hop = *ingress_identity.node_addr();
+    node.add_connection(ingress_connection).unwrap();
+    node.promote_connection(ingress_link, ingress_identity, 2_000)
+        .unwrap();
+
+    let destination = make_node_addr(99);
+    node.coord_cache_mut().insert(
+        destination,
+        TreeCoordinate::from_addrs(vec![destination, tree_hop, my_addr]).unwrap(),
+        Node::now_ms(),
+    );
+    node.pin_handshake_reverse_route(destination, learned_hop);
+
+    for _ in 0..4 {
+        assert!(matches!(
+            node.plan_transit_next_hop(&destination, &ingress_hop),
+            TransitNextHopPlan::Route(next_hop) if next_hop == learned_hop
+        ));
+    }
+    assert_ne!(tree_hop, learned_hop);
 }
 
 #[test]

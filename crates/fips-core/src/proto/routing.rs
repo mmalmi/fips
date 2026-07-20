@@ -18,7 +18,14 @@ const MAX_ROUTE_WEIGHT: f64 = 512.0;
 #[derive(Debug, Default)]
 pub(crate) struct LearnedRouteTable {
     routes: HashMap<NodeAddr, Vec<LearnedRoute>>,
+    handshake_routes: HashMap<NodeAddr, HandshakeRoute>,
     fallback_exploration: LearnedRouteFallbackExploration,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct HandshakeRoute {
+    next_hop: NodeAddr,
+    expires_at_ms: u64,
 }
 
 /// Pacing state for periodically exploring non-learned fallback routes.
@@ -103,6 +110,13 @@ impl LearnedRouteTable {
     }
 
     pub(crate) fn record_failure(&mut self, destination: &NodeAddr, next_hop: &NodeAddr) {
+        if self
+            .handshake_routes
+            .get(destination)
+            .is_some_and(|route| &route.next_hop == next_hop)
+        {
+            self.handshake_routes.remove(destination);
+        }
         let Some(routes) = self.routes.get_mut(destination) else {
             return;
         };
@@ -112,6 +126,58 @@ impl LearnedRouteTable {
             route.score = (route.score * 0.5).max(MIN_ROUTE_SCORE);
             route.current_weight = route.current_weight.min(0.0);
         }
+    }
+
+    pub(crate) fn pin_handshake_route(
+        &mut self,
+        destination: NodeAddr,
+        next_hop: NodeAddr,
+        now_ms: u64,
+        ttl_secs: u64,
+        max_routes_per_dest: usize,
+    ) {
+        if destination == next_hop || max_routes_per_dest == 0 {
+            return;
+        }
+        self.learn(destination, next_hop, now_ms, ttl_secs, max_routes_per_dest);
+        self.handshake_routes.insert(
+            destination,
+            HandshakeRoute {
+                next_hop,
+                expires_at_ms: now_ms.saturating_add(ttl_secs.saturating_mul(1_000)),
+            },
+        );
+    }
+
+    pub(crate) fn select_handshake_route<F>(
+        &mut self,
+        destination: &NodeAddr,
+        now_ms: u64,
+        mut can_send: F,
+    ) -> Option<NodeAddr>
+    where
+        F: FnMut(&NodeAddr) -> bool,
+    {
+        let route = self.handshake_routes.get(destination).copied()?;
+        if route.expires_at_ms <= now_ms || !can_send(&route.next_hop) {
+            self.handshake_routes.remove(destination);
+            return None;
+        }
+        let _ = self.record_selected(destination, &route.next_hop, now_ms);
+        Some(route.next_hop)
+    }
+
+    pub(crate) fn active_handshake_route(
+        &mut self,
+        destination: &NodeAddr,
+        now_ms: u64,
+    ) -> Option<NodeAddr> {
+        let route = self.handshake_routes.get(destination).copied()?;
+        if route.expires_at_ms <= now_ms {
+            self.handshake_routes.remove(destination);
+            return None;
+        }
+        Some(route.next_hop)
     }
 
     pub(crate) fn select_next_hop<F>(
@@ -209,6 +275,8 @@ impl LearnedRouteTable {
             routes.retain(|route| route.expires_at_ms > now_ms);
             !routes.is_empty()
         });
+        self.handshake_routes
+            .retain(|_, route| route.expires_at_ms > now_ms);
         let live_destinations = self.routes.keys().copied().collect::<Vec<_>>();
         self.fallback_exploration
             .retain_destinations(|destination| live_destinations.contains(destination));
@@ -376,6 +444,42 @@ mod tests {
         assert!(
             faster_count > slower_count,
             "higher-score route should carry most traffic"
+        );
+    }
+
+    #[test]
+    fn handshake_route_stays_pinned_until_failure_or_expiry() {
+        let dest = addr(100);
+        let explored = addr(1);
+        let proven = addr(2);
+        let mut table = LearnedRouteTable::default();
+
+        for now in 1_000..1_008 {
+            table.learn(dest, explored, now, 60, 4);
+        }
+        table.pin_handshake_route(dest, proven, 1_100, 60, 4);
+
+        for now in 2_000..2_020 {
+            assert_eq!(
+                table.select_handshake_route(&dest, now, |_| true),
+                Some(proven),
+                "one encrypted session must not rotate onto an explored branch"
+            );
+        }
+
+        table.record_failure(&dest, &proven);
+        assert_eq!(table.select_handshake_route(&dest, 2_100, |_| true), None);
+        assert_eq!(
+            table.select_next_hop(&dest, 2_100, |_| true),
+            Some(explored),
+            "an explicit failure must release the pin for ordinary recovery"
+        );
+
+        table.pin_handshake_route(dest, proven, 3_000, 1, 4);
+        assert_eq!(
+            table.select_handshake_route(&dest, 4_001, |_| true),
+            None,
+            "the pin must not outlive the learned-route TTL"
         );
     }
 

@@ -104,6 +104,123 @@ async fn test_session_direct_peer_handshake() {
     cleanup_nodes(&mut nodes).await;
 }
 
+#[tokio::test]
+async fn test_local_session_ack_pins_authenticated_previous_hop() {
+    // Node 0 has two healthy physical branches. Its routed session with node 2
+    // is established through node 1 by a locally delivered dataplane
+    // SessionAck; node 3 must not subsequently be allowed to invalidate that
+    // authenticated path.
+    let edges = vec![(0, 1), (1, 2), (0, 3)];
+    let mut nodes = run_tree_test(4, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+    nodes[0].node.config.node.routing.mode = RoutingMode::ReplyLearned;
+
+    let target = *nodes[2].node.node_addr();
+    let target_pubkey = nodes[2].node.identity().pubkey_full();
+    let unrelated_hop = *nodes[3].node.node_addr();
+    nodes[0]
+        .node
+        .initiate_session(target, target_pubkey)
+        .await
+        .expect("session initiation should succeed");
+
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &target,
+        Duration::from_secs(10),
+        "local SessionAck route pin",
+    )
+    .await;
+
+    assert!(
+        !nodes[0]
+            .node
+            .routing_error_matches_active_path(&target, &unrelated_hop, &unrelated_hop),
+        "an authenticated local SessionAck must pin its ingress before another healthy branch can report a routing error"
+    );
+
+    let unrelated_identity = *nodes[0]
+        .node
+        .get_peer(&unrelated_hop)
+        .expect("unrelated branch should remain connected")
+        .identity();
+    let duplicate_ack = SessionAck::new(
+        nodes[2].node.tree_state().my_coords().clone(),
+        nodes[0].node.tree_state().my_coords().clone(),
+    )
+    .with_handshake(vec![0u8; crate::noise::XK_HANDSHAKE_MSG2_SIZE]);
+    let encoded =
+        SessionDatagram::new(target, *nodes[0].node.node_addr(), duplicate_ack.encode()).encode();
+    nodes[0]
+        .node
+        .handle_session_datagram(AuthenticatedSessionDatagram::new(
+            unrelated_identity,
+            &encoded[1..],
+            false,
+        ))
+        .await;
+
+    assert!(
+        !nodes[0]
+            .node
+            .routing_error_matches_active_path(&target, &unrelated_hop, &unrelated_hop),
+        "a structurally valid duplicate SessionAck on another branch must not replace the Noise-authenticated endpoint route"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[test]
+fn test_final_handshake_message_uses_authenticated_pinned_route() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let transport_id = TransportId::new(1);
+
+    let pinned_link = LinkId::new(1);
+    let (pinned_connection, pinned_identity) =
+        make_completed_connection(&mut node, pinned_link, transport_id, 1_000);
+    let pinned_hop = *pinned_identity.node_addr();
+    node.add_connection(pinned_connection).unwrap();
+    node.promote_connection(pinned_link, pinned_identity, 2_000)
+        .unwrap();
+
+    let unrelated_link = LinkId::new(2);
+    let (unrelated_connection, unrelated_identity) =
+        make_completed_connection(&mut node, unrelated_link, transport_id, 1_000);
+    let unrelated_hop = *unrelated_identity.node_addr();
+    node.add_connection(unrelated_connection).unwrap();
+    node.promote_connection(unrelated_link, unrelated_identity, 2_000)
+        .unwrap();
+
+    let target = make_node_addr(0xE2);
+    for offset in 0..32 {
+        node.learned_routes.learn(
+            target,
+            unrelated_hop,
+            Node::now_ms().saturating_add(offset),
+            60,
+            4,
+        );
+    }
+    node.pin_handshake_reverse_route(target, pinned_hop);
+
+    let mut final_msg3 = SessionDatagram::new(
+        *node.node_addr(),
+        target,
+        SessionMsg3::new(vec![0u8; crate::noise::XK_HANDSHAKE_MSG3_SIZE]).encode(),
+    );
+    let msg3_route = node
+        .resolve_session_handshake_runtime_route(&mut final_msg3)
+        .expect("authenticated final handshake message should remain routable");
+    assert_eq!(
+        msg3_route.next_hop_addr, pinned_hop,
+        "the final handshake message must use the Noise-authenticated ingress even when another learned branch has a higher score"
+    );
+}
+
 #[test]
 fn test_registered_service_datagram_request_reply_and_ipv6_port_compatibility() {
     run_large_stack_async_test("fips-service-datagram-request-reply", || async {

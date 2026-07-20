@@ -299,10 +299,6 @@ impl AuthenticatedSessionDispatch {
         &self.source_addr
     }
 
-    fn previous_hop_addr(&self) -> &NodeAddr {
-        &self.previous_hop_addr
-    }
-
     fn ce_flag(&self) -> bool {
         self.ce_flag
     }
@@ -395,8 +391,10 @@ impl AuthenticatedSessionDispatch {
     }
 
     async fn dispatch(self, node: &mut Node) {
-        // Reverse-route learning runs after the session-entry borrow drops.
-        node.learn_reverse_route(*self.source_addr(), *self.previous_hop_addr());
+        // Authenticated transit ingress is directional and must not become an
+        // outbound route merely because application traffic arrived on it.
+        // Direct adjacency already has its active-peer route; routed paths are
+        // learned from discovery and handshake records that exercise return.
 
         // Capture the dispatch facts now, before the EndpointData branch takes
         // ownership of the message and drains the inner header in place.
@@ -534,12 +532,10 @@ impl AuthenticatedSessionDispatch {
 
     fn dispatch_endpoint_data_batched(
         self,
-        node: &mut Node,
         commit: &mut SessionReceiveBatchCommit,
     ) -> Vec<EndpointDataDelivery> {
         debug_assert!(self.is_endpoint_data());
 
-        node.learn_reverse_route(*self.source_addr(), *self.previous_hop_addr());
         commit.push_dispatch(&self);
         self.into_endpoint_data_deliveries()
     }
@@ -552,7 +548,6 @@ impl AuthenticatedSessionDispatch {
     ) {
         debug_assert!(self.is_ipv6_shim_data_packet());
 
-        node.learn_reverse_route(*self.source_addr(), *self.previous_hop_addr());
         commit.push_dispatch(&self);
 
         let source_addr = *self.source_addr();
@@ -606,7 +601,6 @@ impl AuthenticatedSessionDispatch {
             .service_ports()
             .expect("validated service DataPacket must carry ports");
 
-        node.learn_reverse_route(*self.source_addr(), *self.previous_hop_addr());
         commit.push_dispatch(&self);
         node.endpoint_services
             .is_registered(destination_port)

@@ -1,12 +1,19 @@
 //! BLE I/O abstraction layer.
 //!
-//! Defines the `BleIo` trait that separates transport logic from the
-//! BlueZ/bluer stack. `BluerIo` (behind `cfg(bluer_available)`) provides
-//! the real implementation; `MockBleIo` provides an in-memory test double.
+//! Defines the `BleIo` trait that separates transport logic from operating
+//! system BLE APIs. BlueZ and host-command implementations provide production
+//! adapters; `MockBleIo` provides an in-memory test double.
 
 use crate::transport::TransportError;
 
-use super::addr::BleAddr;
+use super::{DEFAULT_PSM, addr::BleAddr, bootstrap::BleBootstrap};
+
+/// One peer discovered through the BLE v2 GATT bootstrap service.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BleCandidate {
+    pub addr: BleAddr,
+    pub bootstrap: BleBootstrap,
+}
 
 // ============================================================================
 // BLE I/O Traits
@@ -47,6 +54,9 @@ pub trait BleAcceptor: Send {
     fn accept(
         &mut self,
     ) -> impl std::future::Future<Output = Result<Self::Stream, TransportError>> + Send;
+
+    /// Platform-assigned PSM on which this acceptor is listening.
+    fn psm(&self) -> u16;
 }
 
 /// A scanner that yields discovered BLE devices advertising the FIPS UUID.
@@ -54,7 +64,7 @@ pub trait BleScanner: Send {
     /// Wait for the next discovered device.
     ///
     /// Returns `None` when scanning is stopped.
-    fn next(&mut self) -> impl std::future::Future<Output = Option<BleAddr>> + Send;
+    fn next(&mut self) -> impl std::future::Future<Output = Option<BleCandidate>> + Send;
 }
 
 /// Core BLE I/O operations.
@@ -86,6 +96,7 @@ pub trait BleIo: Send + Sync + 'static {
     /// Start advertising the FIPS service UUID.
     fn start_advertising(
         &self,
+        bootstrap: BleBootstrap,
     ) -> impl std::future::Future<Output = Result<(), TransportError>> + Send;
 
     /// Stop advertising.
@@ -113,13 +124,17 @@ pub trait BleIo: Send + Sync + 'static {
 mod bluer_impl {
     use super::*;
     use crate::transport::TransportError;
+    use crate::transport::ble::bootstrap::{
+        FIPS_BLE_V2_BOOTSTRAP_CHARACTERISTIC_UUID, FIPS_BLE_V2_SERVICE_UUID,
+    };
 
+    use bluer::gatt::local::{Application, Characteristic, CharacteristicRead, Service};
     use bluer::l2cap::{SeqPacket, SeqPacketListener, Socket, SocketAddr};
     use bluer::{
         AdapterEvent, AddressType, DiscoveryFilter, DiscoveryTransport, adv::Advertisement,
     };
-    use futures::StreamExt;
-    use std::collections::{BTreeSet, HashSet};
+    use futures::{FutureExt, StreamExt};
+    use std::collections::{BTreeSet, HashSet, VecDeque};
     use std::pin::Pin;
     use tokio::sync::Mutex;
     use tracing::{debug, trace};
@@ -128,8 +143,9 @@ mod bluer_impl {
     ///
     /// Derived from SHA-256("FIPS: welcome to cryptoanarchy") with UUID v4
     /// version/variant bits applied.
-    pub const FIPS_SERVICE_UUID: bluer::Uuid =
-        bluer::Uuid::from_u128(0x9c90_b790_2cc5_42c0_9f87_c9cc_4064_8f4c);
+    pub const FIPS_SERVICE_UUID: bluer::Uuid = bluer::Uuid::from_u128(FIPS_BLE_V2_SERVICE_UUID);
+    pub const FIPS_BOOTSTRAP_CHARACTERISTIC_UUID: bluer::Uuid =
+        bluer::Uuid::from_u128(FIPS_BLE_V2_BOOTSTRAP_CHARACTERISTIC_UUID);
 
     /// Map a bluer error to a TransportError.
     fn map_err(context: &str, e: bluer::Error) -> TransportError {
@@ -215,6 +231,7 @@ mod bluer_impl {
     pub struct BluerAcceptor {
         listener: SeqPacketListener,
         adapter_name: String,
+        psm: u16,
     }
 
     impl BleAcceptor for BluerAcceptor {
@@ -230,6 +247,10 @@ mod bluer_impl {
             let remote = BleAddr::from_bluer(peer_sa.addr, &self.adapter_name);
             BluerStream::new(conn, remote)
         }
+
+        fn psm(&self) -> u16 {
+            self.psm
+        }
     }
 
     // ----------------------------------------------------------------
@@ -241,35 +262,104 @@ mod bluer_impl {
         events: Pin<Box<dyn futures::Stream<Item = AdapterEvent> + Send>>,
         adapter: bluer::Adapter,
         adapter_name: String,
+        seeded: VecDeque<bluer::Address>,
     }
 
     impl BleScanner for BluerScanner {
-        async fn next(&mut self) -> Option<BleAddr> {
+        async fn next(&mut self) -> Option<BleCandidate> {
             loop {
-                match self.events.next().await {
-                    Some(AdapterEvent::DeviceAdded(addr)) => {
-                        // Check if device advertises FIPS UUID
-                        if let Ok(device) = self.adapter.device(addr) {
-                            match device.uuids().await {
-                                Ok(Some(uuids)) if uuids.contains(&FIPS_SERVICE_UUID) => {
-                                    let ble_addr = BleAddr::from_bluer(addr, &self.adapter_name);
-                                    debug!(addr = %ble_addr, "BLE scanner: FIPS peer found");
-                                    return Some(ble_addr);
-                                }
-                                Ok(_) => {
-                                    trace!(addr = %addr, "BLE scanner: device without FIPS UUID");
-                                }
-                                Err(e) => {
-                                    trace!(addr = %addr, error = %e, "BLE scanner: failed to read UUIDs");
-                                }
-                            }
-                        }
+                let addr = match self.seeded.pop_front() {
+                    Some(addr) => addr,
+                    None => match self.events.next().await {
+                        Some(AdapterEvent::DeviceAdded(addr)) => addr,
+                        Some(_) => continue,
+                        None => return None,
+                    },
+                };
+                let Ok(device) = self.adapter.device(addr) else {
+                    continue;
+                };
+                match device.uuids().await {
+                    Ok(Some(uuids)) if uuids.contains(&FIPS_SERVICE_UUID) => {}
+                    Ok(_) => {
+                        trace!(addr = %addr, "BLE scanner: device without FIPS UUID");
+                        continue;
                     }
-                    Some(_) => continue,
-                    None => return None,
+                    Err(error) => {
+                        trace!(addr = %addr, %error, "BLE scanner: failed to read UUIDs");
+                        continue;
+                    }
+                }
+                match read_bootstrap(&device).await {
+                    Ok(bootstrap) => {
+                        let addr = BleAddr::from_bluer(addr, &self.adapter_name);
+                        debug!(addr = %addr, psm = bootstrap.psm, "BLE scanner: FIPS peer found");
+                        return Some(BleCandidate { addr, bootstrap });
+                    }
+                    Err(error) => {
+                        trace!(addr = %addr, %error, "BLE scanner: bootstrap read failed");
+                    }
                 }
             }
         }
+    }
+
+    async fn read_bootstrap(device: &bluer::Device) -> Result<BleBootstrap, TransportError> {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            read_bootstrap_inner(device),
+        )
+        .await
+        .map_err(|_| TransportError::Timeout)?
+    }
+
+    async fn read_bootstrap_inner(device: &bluer::Device) -> Result<BleBootstrap, TransportError> {
+        if !device
+            .is_connected()
+            .await
+            .map_err(|error| map_err("is_connected", error))?
+            && let Err(error) = device.connect().await
+            && !device.is_connected().await.unwrap_or(false)
+        {
+            return Err(map_err("GATT connect", error));
+        }
+        for service in device
+            .services()
+            .await
+            .map_err(|error| map_err("enumerate GATT services", error))?
+        {
+            if service
+                .uuid()
+                .await
+                .map_err(|error| map_err("read GATT service UUID", error))?
+                != FIPS_SERVICE_UUID
+            {
+                continue;
+            }
+            for characteristic in service
+                .characteristics()
+                .await
+                .map_err(|error| map_err("enumerate GATT characteristics", error))?
+            {
+                if characteristic
+                    .uuid()
+                    .await
+                    .map_err(|error| map_err("read GATT characteristic UUID", error))?
+                    == FIPS_BOOTSTRAP_CHARACTERISTIC_UUID
+                {
+                    let bytes = characteristic
+                        .read()
+                        .await
+                        .map_err(|error| map_err("read BLE bootstrap", error))?;
+                    return BleBootstrap::decode(&bytes).map_err(|error| {
+                        TransportError::RecvFailed(format!("invalid BLE bootstrap: {error}"))
+                    });
+                }
+            }
+        }
+        Err(TransportError::RecvFailed(
+            "FIPS BLE bootstrap characteristic not found".into(),
+        ))
     }
 
     // ----------------------------------------------------------------
@@ -282,6 +372,7 @@ mod bluer_impl {
         adapter: bluer::Adapter,
         adapter_name: String,
         adv_handle: Mutex<Option<bluer::adv::AdvertisementHandle>>,
+        gatt_handle: Mutex<Option<bluer::gatt::local::ApplicationHandle>>,
         mtu: u16,
     }
 
@@ -318,6 +409,7 @@ mod bluer_impl {
                 adapter,
                 adapter_name: name,
                 adv_handle: Mutex::new(None),
+                gatt_handle: Mutex::new(None),
                 mtu,
             })
         }
@@ -356,11 +448,12 @@ mod bluer_impl {
             Ok(BluerAcceptor {
                 listener,
                 adapter_name: self.adapter_name.clone(),
+                psm,
             })
         }
 
         async fn connect(&self, addr: &BleAddr, psm: u16) -> Result<Self::Stream, TransportError> {
-            let target_sa = addr.to_socket_addr(psm);
+            let target_sa = addr.to_socket_addr(psm)?;
 
             let socket = Socket::<SeqPacket>::new_seq_packet()
                 .map_err(|e| map_io_err("new_seq_packet", e))?;
@@ -385,7 +478,33 @@ mod bluer_impl {
             BluerStream::new(conn, remote)
         }
 
-        async fn start_advertising(&self) -> Result<(), TransportError> {
+        async fn start_advertising(&self, bootstrap: BleBootstrap) -> Result<(), TransportError> {
+            let bootstrap_bytes = bootstrap.encode().to_vec();
+            let app = Application {
+                services: vec![Service {
+                    uuid: FIPS_SERVICE_UUID,
+                    primary: true,
+                    characteristics: vec![Characteristic {
+                        uuid: FIPS_BOOTSTRAP_CHARACTERISTIC_UUID,
+                        read: Some(CharacteristicRead {
+                            read: true,
+                            fun: Box::new(move |_| {
+                                let value = bootstrap_bytes.clone();
+                                async move { Ok(value) }.boxed()
+                            }),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let gatt_handle = self
+                .adapter
+                .serve_gatt_application(app)
+                .await
+                .map_err(|error| map_err("serve BLE bootstrap GATT service", error))?;
             let adv = Advertisement {
                 advertisement_type: bluer::adv::Type::Peripheral,
                 service_uuids: {
@@ -399,39 +518,32 @@ mod bluer_impl {
                 ..Default::default()
             };
 
-            let handle = self
-                .adapter
-                .advertise(adv)
-                .await
-                .map_err(|e| map_err("advertise", e))?;
+            let handle = match self.adapter.advertise(adv).await {
+                Ok(handle) => handle,
+                Err(error) => {
+                    drop(gatt_handle);
+                    return Err(map_err("advertise", error));
+                }
+            };
 
+            *self.gatt_handle.lock().await = Some(gatt_handle);
             *self.adv_handle.lock().await = Some(handle);
-            debug!("BLE advertising started");
+            debug!(
+                psm = bootstrap.psm,
+                max_packet = bootstrap.max_packet,
+                "BLE advertising started"
+            );
             Ok(())
         }
 
         async fn stop_advertising(&self) -> Result<(), TransportError> {
             let _ = self.adv_handle.lock().await.take();
+            let _ = self.gatt_handle.lock().await.take();
             debug!("BLE advertising stopped");
             Ok(())
         }
 
         async fn start_scanning(&self) -> Result<Self::Scanner, TransportError> {
-            // Clear cached devices so BlueZ fires DeviceAdded for every
-            // advertisement. Without this, already-known devices only
-            // produce PropertyChanged events (which bluer doesn't expose
-            // at the device level), causing the scanner to miss peers
-            // after a daemon restart.
-            if let Ok(cached) = self.adapter.device_addresses().await {
-                let count = cached.len();
-                for addr in cached {
-                    let _ = self.adapter.remove_device(addr).await;
-                }
-                if count > 0 {
-                    debug!(count, "BLE scanner: cleared cached devices");
-                }
-            }
-
             // Set discovery filter for LE transport with FIPS UUID
             let filter = DiscoveryFilter {
                 transport: DiscoveryTransport::Le,
@@ -454,12 +566,33 @@ mod bluer_impl {
                 .await
                 .map_err(|e| map_err("discover_devices", e))?;
 
+            // Seed already-known matching devices without removing them.
+            // Removing a BlueZ device can also remove pairing information.
+            let mut seeded = VecDeque::new();
+            if let Ok(cached) = self.adapter.device_addresses().await {
+                for addr in cached {
+                    let Ok(device) = self.adapter.device(addr) else {
+                        continue;
+                    };
+                    if device
+                        .uuids()
+                        .await
+                        .ok()
+                        .flatten()
+                        .is_some_and(|uuids| uuids.contains(&FIPS_SERVICE_UUID))
+                    {
+                        seeded.push_back(addr);
+                    }
+                }
+            }
+
             debug!("BLE scanning started");
 
             Ok(BluerScanner {
                 events: Box::pin(events),
                 adapter: self.adapter.clone(),
                 adapter_name: self.adapter_name.clone(),
+                seeded,
             })
         }
 
@@ -559,6 +692,7 @@ impl BleStream for MockBleStream {
 /// Mock BLE acceptor backed by a channel of pre-connected streams.
 pub struct MockBleAcceptor {
     rx: tokio::sync::mpsc::Receiver<MockBleStream>,
+    psm: u16,
 }
 
 impl BleAcceptor for MockBleAcceptor {
@@ -570,15 +704,19 @@ impl BleAcceptor for MockBleAcceptor {
             .await
             .ok_or(TransportError::RecvFailed("acceptor channel closed".into()))
     }
+
+    fn psm(&self) -> u16 {
+        self.psm
+    }
 }
 
 /// Mock BLE scanner backed by a channel of discovered addresses.
 pub struct MockBleScanner {
-    rx: tokio::sync::mpsc::Receiver<BleAddr>,
+    rx: tokio::sync::mpsc::Receiver<BleCandidate>,
 }
 
 impl BleScanner for MockBleScanner {
-    async fn next(&mut self) -> Option<BleAddr> {
+    async fn next(&mut self) -> Option<BleCandidate> {
         self.rx.recv().await
     }
 }
@@ -596,9 +734,11 @@ pub struct MockBleIo {
     local_addr: BleAddr,
     accept_tx: tokio::sync::mpsc::Sender<MockBleStream>,
     accept_rx: std::sync::Mutex<Option<tokio::sync::mpsc::Receiver<MockBleStream>>>,
-    scan_tx: tokio::sync::mpsc::Sender<BleAddr>,
-    scan_rx: std::sync::Mutex<Option<tokio::sync::mpsc::Receiver<BleAddr>>>,
+    scan_tx: tokio::sync::mpsc::Sender<BleCandidate>,
+    scan_rx: std::sync::Mutex<Option<tokio::sync::mpsc::Receiver<BleCandidate>>>,
     connect_handler: std::sync::Mutex<Option<ConnectHandler>>,
+    assigned_psm: u16,
+    advertised_bootstrap: std::sync::Mutex<Option<BleBootstrap>>,
 }
 
 impl MockBleIo {
@@ -614,7 +754,15 @@ impl MockBleIo {
             scan_tx,
             scan_rx: std::sync::Mutex::new(Some(scan_rx)),
             connect_handler: std::sync::Mutex::new(None),
+            assigned_psm: DEFAULT_PSM,
+            advertised_bootstrap: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Override the listener PSM to model platforms that allocate it.
+    pub fn with_listener_psm(mut self, psm: u16) -> Self {
+        self.assigned_psm = psm;
+        self
     }
 
     /// Inject an inbound connection (simulates a remote device connecting).
@@ -624,7 +772,27 @@ impl MockBleIo {
 
     /// Inject a scan result (simulates discovering a remote device).
     pub async fn inject_scan_result(&self, addr: BleAddr) {
-        let _ = self.scan_tx.send(addr).await;
+        let _ = self
+            .scan_tx
+            .send(BleCandidate {
+                addr,
+                bootstrap: BleBootstrap::new(DEFAULT_PSM, 2048)
+                    .expect("default mock bootstrap is valid"),
+            })
+            .await;
+    }
+
+    /// Inject a complete BLE v2 bootstrap discovery record.
+    pub async fn inject_scan_candidate(&self, candidate: BleCandidate) {
+        let _ = self.scan_tx.send(candidate).await;
+    }
+
+    /// Last bootstrap value passed to the mock advertiser.
+    pub fn advertised_bootstrap(&self) -> Option<BleBootstrap> {
+        *self
+            .advertised_bootstrap
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
     }
 
     /// Set a handler for outbound connect calls.
@@ -651,7 +819,10 @@ impl BleIo for MockBleIo {
             .unwrap_or_else(|e| e.into_inner())
             .take()
             .ok_or_else(|| TransportError::NotSupported("acceptor already taken".into()))?;
-        Ok(MockBleAcceptor { rx })
+        Ok(MockBleAcceptor {
+            rx,
+            psm: self.assigned_psm,
+        })
     }
 
     async fn connect(&self, addr: &BleAddr, psm: u16) -> Result<Self::Stream, TransportError> {
@@ -665,7 +836,11 @@ impl BleIo for MockBleIo {
         }
     }
 
-    async fn start_advertising(&self) -> Result<(), TransportError> {
+    async fn start_advertising(&self, bootstrap: BleBootstrap) -> Result<(), TransportError> {
+        *self
+            .advertised_bootstrap
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(bootstrap);
         Ok(())
     }
 
@@ -692,114 +867,5 @@ impl BleIo for MockBleIo {
     }
 }
 
-// ============================================================================
-// Tests
-// ============================================================================
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn test_addr(n: u8) -> BleAddr {
-        BleAddr {
-            adapter: "hci0".to_string(),
-            device: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, n],
-        }
-    }
-
-    #[tokio::test]
-    async fn test_mock_stream_pair_send_recv() {
-        let (a, b) = MockBleStream::pair(test_addr(1), test_addr(2), 2048);
-
-        a.send(b"hello").await.unwrap();
-        let mut buf = [0u8; 64];
-        let n = b.recv(&mut buf).await.unwrap();
-        assert_eq!(&buf[..n], b"hello");
-
-        b.send(b"world").await.unwrap();
-        let n = a.recv(&mut buf).await.unwrap();
-        assert_eq!(&buf[..n], b"world");
-    }
-
-    #[tokio::test]
-    async fn test_mock_stream_mtu() {
-        let (a, b) = MockBleStream::pair(test_addr(1), test_addr(2), 512);
-        assert_eq!(a.send_mtu(), 512);
-        assert_eq!(a.recv_mtu(), 512);
-        assert_eq!(b.send_mtu(), 512);
-        assert_eq!(b.recv_mtu(), 512);
-    }
-
-    #[tokio::test]
-    async fn test_mock_stream_remote_addr() {
-        let (a, b) = MockBleStream::pair(test_addr(1), test_addr(2), 2048);
-        assert_eq!(a.remote_addr(), &test_addr(2));
-        assert_eq!(b.remote_addr(), &test_addr(1));
-    }
-
-    #[tokio::test]
-    async fn test_mock_io_listen_accept() {
-        let io = MockBleIo::new("hci0", test_addr(1));
-        let mut acceptor = io.listen(0x0085).await.unwrap();
-
-        let (stream_a, _stream_b) = MockBleStream::pair(test_addr(1), test_addr(2), 2048);
-        io.inject_inbound(stream_a).await;
-
-        let accepted = acceptor.accept().await.unwrap();
-        // stream_a's remote_addr is addr_b (test_addr(2))
-        assert_eq!(accepted.remote_addr(), &test_addr(2));
-    }
-
-    #[tokio::test]
-    async fn test_mock_io_connect() {
-        let io = MockBleIo::new("hci0", test_addr(1));
-        let local = test_addr(1);
-        io.set_connect_handler(move |addr, _psm| {
-            let (stream, _peer) = MockBleStream::pair(local.clone(), addr.clone(), 2048);
-            Ok(stream)
-        });
-
-        let stream = io.connect(&test_addr(2), 0x0085).await.unwrap();
-        assert_eq!(stream.remote_addr(), &test_addr(2));
-    }
-
-    #[tokio::test]
-    async fn test_mock_io_connect_no_handler() {
-        let io = MockBleIo::new("hci0", test_addr(1));
-        let result = io.connect(&test_addr(2), 0x0085).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_mock_io_scan() {
-        let io = MockBleIo::new("hci0", test_addr(1));
-        let mut scanner = io.start_scanning().await.unwrap();
-
-        io.inject_scan_result(test_addr(2)).await;
-        io.inject_scan_result(test_addr(3)).await;
-
-        assert_eq!(scanner.next().await, Some(test_addr(2)));
-        assert_eq!(scanner.next().await, Some(test_addr(3)));
-    }
-
-    #[tokio::test]
-    async fn test_mock_io_local_addr() {
-        let io = MockBleIo::new("hci0", test_addr(1));
-        assert_eq!(io.local_addr().unwrap(), test_addr(1));
-        assert_eq!(io.adapter_name(), "hci0");
-    }
-
-    #[tokio::test]
-    async fn test_mock_io_advertising_noop() {
-        let io = MockBleIo::new("hci0", test_addr(1));
-        io.start_advertising().await.unwrap();
-        io.stop_advertising().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_mock_io_listen_twice_fails() {
-        let io = MockBleIo::new("hci0", test_addr(1));
-        let _acceptor = io.listen(0x0085).await.unwrap();
-        assert!(io.listen(0x0085).await.is_err());
-    }
-}
+mod tests;

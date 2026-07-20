@@ -1,6 +1,6 @@
 [package]
 name = "fips-core"
-version = "0.4.20"
+version = "0.4.27"
 edition = "2024"
 description = "Reusable FIPS mesh, endpoint, transport, and protocol library"
 license = "MIT"
@@ -12,6 +12,7 @@ readme = "README.md"
 default = []
 sim-transport = []
 webrtc-transport = ["dep:bytes", "dep:if-addrs", "dep:webrtc"]
+host-ble-transport = []
 
 [dependencies]
 fips-identity = { version = "0.3.2", path = "../fips-identity" }

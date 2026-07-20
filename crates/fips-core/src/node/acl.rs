@@ -11,7 +11,7 @@
 
 use crate::config::NostrDiscoveryPolicy;
 use crate::node::{Node, NodeError};
-use crate::transport::{TransportAddr, TransportId};
+use crate::transport::{TransportAddr, TransportId, TransportType};
 use crate::upper::hosts::{HostMap, HostMapReloader, file_mtime};
 use crate::{NodeAddr, PeerIdentity};
 use serde::Serialize;
@@ -409,6 +409,14 @@ impl Node {
             && self.config.node.discovery.nostr.policy == NostrDiscoveryPolicy::ConfiguredOnly
     }
 
+    fn enforces_configured_only_peer_admission_on(&self, transport_id: TransportId) -> bool {
+        self.enforces_configured_only_peer_admission()
+            && self
+                .transports
+                .get(&transport_id)
+                .is_none_or(|transport| transport.transport_type() != &TransportType::BLE)
+    }
+
     pub(in crate::node) fn is_configured_peer_identity(
         &self,
         peer_identity: &PeerIdentity,
@@ -496,7 +504,7 @@ impl Node {
             self.transports.get(&transport_id).is_some_and(|transport| {
                 transport.is_configured_websocket_adjacency(remote_addr, handshake_is_initiator)
             });
-        if self.enforces_configured_only_peer_admission()
+        if self.enforces_configured_only_peer_admission_on(transport_id)
             && !self.is_configured_peer_identity(peer_identity)
             && !local_rendezvous
             && !configured_websocket_adjacency
