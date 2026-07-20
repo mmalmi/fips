@@ -74,8 +74,6 @@ impl Node {
             return None;
         }
         let now_ms = Self::now_ms();
-        let unreturned_fallback_route =
-            self.session_unreturned_fallback_route(dest_node_addr, now_ms);
         let direct_path_hard_degraded =
             self.session_direct_path_is_degraded(dest_node_addr, now_ms);
         let direct_path_soft_degraded = !direct_path_hard_degraded
@@ -127,7 +125,7 @@ impl Node {
             if addr == dest_node_addr {
                 direct_payload_eligible
             } else {
-                peer.is_healthy() && unreturned_fallback_route != Some(*addr)
+                peer.is_healthy()
             }
         };
 
@@ -257,11 +255,10 @@ impl Node {
         }
 
         // 5. Greedy tree routing fallback
-        let tree_route_addr = self.select_tree_payload_candidate_avoiding(
+        let tree_route_addr = self.select_tree_payload_candidate(
             &dest_coords,
             dest_node_addr,
             direct_payload_eligible,
-            unreturned_fallback_route.as_ref(),
         );
         if let Some(next_hop_addr) = tree_route_addr
             && fallback_beats_direct(self, next_hop_addr)
@@ -561,22 +558,6 @@ impl Node {
                     self.session_direct_path_exclusive_trust_timeout_ms(),
                 )
             })
-    }
-
-    pub(in crate::node) fn session_unreturned_fallback_route(
-        &self,
-        dest: &NodeAddr,
-        now_ms: u64,
-    ) -> Option<NodeAddr> {
-        let activity = self.dataplane.fsp_owner_activity(dest)?;
-        let next_hop = activity.last_outbound_next_hop()?;
-        (next_hop != *dest
-            && activity.has_sustained_outbound_without_data_return_from(
-                &next_hop,
-                now_ms,
-                self.session_direct_path_exclusive_trust_timeout_ms(),
-            ))
-        .then_some(next_hop)
     }
 
     fn session_direct_discovered_endpoint_trust_expired(

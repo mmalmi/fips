@@ -506,7 +506,7 @@ fn test_active_session_keeps_learned_fallback_next_hop_affinity() {
 }
 
 #[test]
-fn test_retransmits_abandon_fallback_without_route_matched_return() {
+fn test_retransmits_do_not_abandon_healthy_learned_fallback() {
     let mut node = make_reply_learned_node_with_tree_peer();
     let first_fallback = *node.peer_ids().next().expect("first fallback peer");
     assert!(node.sync_dataplane_fmp_owner(&first_fallback));
@@ -542,26 +542,26 @@ fn test_retransmits_abandon_fallback_without_route_matched_return() {
     node.mark_session_direct_path_degraded(remote_addr, Node::now_ms());
 
     let now_ms = Node::now_ms();
-    let grace_ms = node.session_direct_path_exclusive_trust_timeout_ms();
+    let route_age_ms = node.session_direct_path_exclusive_trust_timeout_ms() + 1;
     seed_dataplane_fsp_data_sent_for_test(
         &mut node,
         remote_addr,
         first_fallback,
-        now_ms.saturating_sub(grace_ms + 1),
+        now_ms.saturating_sub(route_age_ms),
     );
     seed_dataplane_fsp_data_sent_for_test(&mut node, remote_addr, first_fallback, now_ms);
 
     assert_eq!(
         node.find_next_hop(&remote_addr)
             .map(|peer| *peer.node_addr()),
-        Some(second_fallback),
-        "fresh retransmits must not pin a fallback that has returned no endpoint data for the full grace window"
+        Some(first_fallback),
+        "payload retransmits alone cannot prove a healthy learned fallback is broken"
     );
     assert!(node.refresh_dataplane_fsp_owner_routes(&remote_addr));
     assert_eq!(
         node.dataplane.fsp_owner_next_hop(&remote_addr),
-        Some(second_fallback),
-        "periodic liveness repair must replace the cached dataplane route, not merely report a better candidate"
+        Some(first_fallback),
+        "periodic liveness repair must preserve the protocol-selected fallback until explicit route feedback"
     );
 }
 

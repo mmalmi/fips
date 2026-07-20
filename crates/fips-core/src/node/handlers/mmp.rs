@@ -720,31 +720,6 @@ impl Node {
             self.maybe_initiate_path_recovery_lookup(&node_addr).await;
         }
 
-        let unreturned_fallback_payload_peers = self
-            .sessions
-            .iter()
-            .filter(|(_, entry)| entry.is_established())
-            .filter_map(|(node_addr, _)| {
-                self.session_unreturned_fallback_route(node_addr, now_ms)
-                    .map(|failed_next_hop| (*node_addr, failed_next_hop))
-            })
-            .collect::<Vec<_>>();
-
-        for (node_addr, failed_next_hop) in unreturned_fallback_payload_peers {
-            debug!(
-                peer = %self.peer_display_name(&node_addr),
-                failed_next_hop = %self.peer_display_name(&failed_next_hop),
-                "Replacing fallback route with sustained unreturned endpoint data"
-            );
-            let _ = self.refresh_dataplane_fsp_owner_routes(&node_addr);
-            if self.dataplane.fsp_owner_next_hop(&node_addr) != Some(failed_next_hop) {
-                continue;
-            }
-            if self.has_sendable_fallback_lookup_peer(&node_addr) {
-                self.maybe_initiate_path_recovery_lookup(&node_addr).await;
-            }
-        }
-
         for dead_peer in &heartbeat_plan.dead_peers {
             let preserve_for_configured_reconnect = self
                 .configured_peer(&dead_peer.node_addr)
