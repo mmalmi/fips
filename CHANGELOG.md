@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.21] - 2026-07-20
+
+### Fixed
+
+- Stabilize routed FSP session establishment across multiple authenticated
+  WebSocket seeds by retaining the proven reply-learned branch through peer
+  refreshes, liveness jitter, duplicate acknowledgements, and the final Noise
+  handshake message. Explicit send and liveness failures still release the
+  branch for ordinary route recovery.
+- Ignore stale routed-session errors from an off-path seed while an
+  authenticated handshake branch is pinned, preventing an unrelated transit
+  path from tearing down a valid end-to-end FSP session.
+- Release `fips-core` and `fips-endpoint` 0.4.21 together so native, embedded,
+  and browser-routed deployments use the same recovery behavior. FMP, FSP,
+  discovery, and physical transport wire formats are unchanged.
+
 ## [0.4.20] - 2026-07-20
 
 ### Fixed
