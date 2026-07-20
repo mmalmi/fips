@@ -604,22 +604,27 @@ impl Node {
         dest: &NodeAddr,
         now_ms: u64,
     ) {
-        if self.session_direct_path_degradation_active(dest, now_ms) {
-            if let Some(fallback_next_hop) = self
-                .dataplane
-                .fsp_owner_activity(dest)
-                .and_then(|activity| activity.last_outbound_next_hop())
-                .filter(|next_hop| next_hop != dest)
-            {
+        let direct_was_degraded = self.session_direct_path_degradation_active(dest, now_ms);
+        let active_fallback_next_hop = self
+            .dataplane
+            .fsp_owner_activity(dest)
+            .and_then(|activity| activity.last_outbound_next_hop())
+            .filter(|next_hop| next_hop != dest);
+        if direct_was_degraded || active_fallback_next_hop.is_some() {
+            if let Some(fallback_next_hop) = active_fallback_next_hop {
                 let _ = self
                     .dataplane
                     .forget_fsp_data_route(*dest, fallback_next_hop);
             }
             debug!(
                 peer = %self.peer_display_name(dest),
-                "Authenticated direct-path refresh released degraded fallback affinity"
+                direct_was_degraded,
+                released_fallback_affinity = active_fallback_next_hop.is_some(),
+                "Authenticated direct-path promotion restored payload eligibility"
             );
-            self.clear_session_direct_path_degraded(dest);
+            if !self.clear_session_direct_path_degraded(dest) {
+                let _ = self.refresh_dataplane_fsp_owner_routes(dest);
+            }
             return;
         }
 

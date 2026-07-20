@@ -364,7 +364,7 @@ async fn test_session_receiver_loss_replaces_active_fallback_route() {
 }
 
 #[test]
-fn test_authenticated_direct_refresh_releases_degraded_fallback_affinity() {
+fn test_authenticated_direct_promotion_releases_active_fallback_affinity() {
     let mut node = make_reply_learned_node_with_tree_peer();
     let fallback_next_hop = *node.peer_ids().next().expect("fallback peer");
     assert!(node.sync_dataplane_fmp_owner(&fallback_next_hop));
@@ -386,13 +386,12 @@ fn test_authenticated_direct_refresh_releases_degraded_fallback_affinity() {
         Node::now_ms(),
     );
     let now_ms = Node::now_ms();
-    node.mark_session_direct_path_degraded(remote_addr, now_ms);
 
     node.clear_session_direct_path_degraded_after_promotion(&remote_addr, now_ms);
 
     assert!(
         !node.session_direct_path_degradation_active(&remote_addr, now_ms),
-        "a newly authenticated direct carrier must get a bounded payload retry"
+        "a newly authenticated direct carrier must remain eligible for a bounded payload retry"
     );
     assert_eq!(
         node.dataplane
