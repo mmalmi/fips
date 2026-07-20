@@ -645,7 +645,11 @@ impl Node {
                 alias: None,
                 addresses,
                 connect_policy: ConnectPolicy::AutoConnect,
-                auto_reconnect: true,
+                // Cached open-discovery adverts are ambient candidates, not
+                // configured peers. Keep their retries finite so failed or
+                // stale adverts honor the normal traversal cooldown instead
+                // of becoming permanent background reconnect work.
+                auto_reconnect: false,
                 discovery_fallback_transit: false,
             });
             state.reconnect = active_bootstrap_path;

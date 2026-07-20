@@ -76,6 +76,18 @@ async fn test_open_discovery_sweep_queues_eligible_skips_filtered() {
     );
     let queued = node.retry_pending.get(&eligible_node_addr).unwrap();
     assert_eq!(queued.peer_config.npub, eligible_npub);
+    assert!(
+        !queued.peer_config.auto_reconnect,
+        "ambient open-discovery peers must use bounded retries"
+    );
+    assert!(
+        !queued.reconnect,
+        "a fresh ambient advert must not be promoted to permanent reconnect state"
+    );
+    assert!(
+        queued.expires_at_ms.is_some(),
+        "ambient open-discovery retries must retain their expiry"
+    );
 
     // Connected-peer skip filter held.
     assert!(
