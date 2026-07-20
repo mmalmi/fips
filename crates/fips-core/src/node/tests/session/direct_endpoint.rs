@@ -104,6 +104,46 @@ async fn test_session_direct_peer_handshake() {
     cleanup_nodes(&mut nodes).await;
 }
 
+#[tokio::test]
+async fn test_local_session_ack_pins_authenticated_previous_hop() {
+    // Node 0 has two healthy physical branches. Its routed session with node 2
+    // is established through node 1 by a locally delivered dataplane
+    // SessionAck; node 3 must not subsequently be allowed to invalidate that
+    // authenticated path.
+    let edges = vec![(0, 1), (1, 2), (0, 3)];
+    let mut nodes = run_tree_test(4, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+    nodes[0].node.config.node.routing.mode = RoutingMode::ReplyLearned;
+
+    let target = *nodes[2].node.node_addr();
+    let target_pubkey = nodes[2].node.identity().pubkey_full();
+    let unrelated_hop = *nodes[3].node.node_addr();
+    nodes[0]
+        .node
+        .initiate_session(target, target_pubkey)
+        .await
+        .expect("session initiation should succeed");
+
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &target,
+        Duration::from_secs(10),
+        "local SessionAck route pin",
+    )
+    .await;
+
+    assert!(
+        !nodes[0]
+            .node
+            .routing_error_matches_active_path(&target, &unrelated_hop),
+        "an authenticated local SessionAck must pin its ingress before another healthy branch can report a routing error"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
 #[test]
 fn test_registered_service_datagram_request_reply_and_ipv6_port_compatibility() {
     run_large_stack_async_test("fips-service-datagram-request-reply", || async {

@@ -343,6 +343,7 @@ impl Node {
                 self.sessions.insert(*src_addr, entry);
                 return;
             }
+            self.pin_handshake_reverse_route(*src_addr, *previous_hop_addr);
             entry.set_remote_supports_direct_fsp_transport(
                 remote_supports_direct_fsp_transport,
             );
@@ -479,6 +480,11 @@ impl Node {
             debug!(error = %e, "Failed to process Noise XK msg2 in SessionAck");
             return; // Entry was already removed, don't put back a broken session
         }
+        // The dataplane local-delivery fast path reaches this handler without
+        // passing through forwarding's SessionAck preparation. Pin the hop
+        // only after Noise authenticates msg2 so later errors from another
+        // healthy branch cannot tear down the session's proven return path.
+        self.pin_handshake_reverse_route(*src_addr, *previous_hop_addr);
         entry.set_remote_supports_direct_fsp_transport(
             remote_supports_direct_fsp_transport,
         );
