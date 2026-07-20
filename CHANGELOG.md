@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.28] - 2026-07-20
+
+### Added
+
+- Add a scoped, versioned recent-peer cache shared by native FIPS embedders.
+  It records authenticated identities and reusable UDP paths, expires and
+  bounds observations, and can only augment peer configurations the app has
+  already authorized.
+- Add a caller-scoped native file adapter with strict identity/scope checks,
+  same-directory replacement, and owner-only permissions on Unix.
+- Release `fips-core` and `fips-endpoint` 0.4.28 together. Wire protocols and
+  live discovery formats are unchanged.
+
 ## [0.4.27] - 2026-07-20
 
 ### Fixed

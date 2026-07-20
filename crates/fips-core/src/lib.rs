@@ -87,6 +87,9 @@ pub use endpoint::{
     FipsEndpoint, FipsEndpointBuilder, FipsEndpointDirectDeliveryError,
     FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun, FipsEndpointDirectReceiver,
     FipsEndpointDirectSink, FipsEndpointError, FipsEndpointMessage, FipsEndpointOutboundDatagram,
-    FipsEndpointServiceDatagram, FipsEndpointServiceReceiver, LocalServiceRegistrationError,
+    FipsEndpointPeer, FipsEndpointRelayStatus, FipsEndpointServiceDatagram,
+    FipsEndpointServiceReceiver, LocalServiceRegistrationError,
+    RECENT_PEERS_MAX_ENDPOINTS_PER_PEER, RECENT_PEERS_MAX_PEERS, RECENT_PEERS_VERSION, RecentPeer,
+    RecentPeerEndpoint, RecentPeerTransport, RecentPeers, RecentPeersError,
 };
 pub use node::{ExternalPacketIo, Node, NodeDeliveredPacket, NodeError, NodeState};

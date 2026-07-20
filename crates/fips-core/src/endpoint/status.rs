@@ -1,5 +1,6 @@
 use crate::NodeAddr;
 use crate::node::{NodeEndpointPeer, NodeEndpointRelayStatus};
+use std::net::SocketAddr;
 
 /// Authenticated FIPS peer state visible to an embedded application.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +57,30 @@ pub struct FipsEndpointPeer {
     pub nostr_traversal_cooldown_until_ms: Option<u64>,
     /// Last observed Nostr timestamp skew in milliseconds for this peer.
     pub nostr_traversal_last_observed_skew_ms: Option<i64>,
+}
+
+impl FipsEndpointPeer {
+    /// Return a safe UDP restart candidate from this authenticated snapshot.
+    ///
+    /// A candidate is exposed only while the peer is connected over UDP and
+    /// the reported address is a reusable [`SocketAddr`]. In particular, this
+    /// never turns TCP source ports, synthetic WebSocket paths, WebRTC
+    /// signaling identities, or BLE addresses into restart routes.
+    pub fn authenticated_udp_restart_addr(&self) -> Option<SocketAddr> {
+        if !self.connected || self.transport_type.as_deref() != Some("udp") {
+            return None;
+        }
+
+        self.transport_addr
+            .as_deref()?
+            .parse()
+            .ok()
+            .filter(is_reusable_udp_socket_addr)
+    }
+}
+
+pub(super) fn is_reusable_udp_socket_addr(addr: &SocketAddr) -> bool {
+    addr.port() != 0 && !addr.ip().is_unspecified() && !addr.ip().is_multicast()
 }
 
 /// Live Nostr relay state visible to an embedded application.

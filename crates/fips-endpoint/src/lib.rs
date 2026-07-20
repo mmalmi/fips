@@ -1,5 +1,9 @@
 //! App-facing FIPS endpoint API.
 
+mod recent_peers_file;
+
+pub use recent_peers_file::{RecentPeersFileError, RecentPeersFileStore};
+
 pub use fips_core::config::{
     Config, ConnectPolicy, EthernetConfig, NostrDiscoveryConfig, NostrDiscoveryPolicy,
     NostrPeerfindingSource, PeerAddress, PeerAddressProvenance, PeerConfig, RoutingMode,
@@ -11,7 +15,8 @@ pub use fips_core::endpoint::{
     FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun, FipsEndpointDirectReceiver,
     FipsEndpointDirectSink, FipsEndpointError, FipsEndpointMessage, FipsEndpointPeer,
     FipsEndpointRelayStatus, FipsEndpointServiceDatagram, FipsEndpointServiceReceiver,
-    UpdatePeersOutcome,
+    RECENT_PEERS_MAX_ENDPOINTS_PER_PEER, RECENT_PEERS_MAX_PEERS, RECENT_PEERS_VERSION, RecentPeer,
+    RecentPeerEndpoint, RecentPeerTransport, RecentPeers, RecentPeersError, UpdatePeersOutcome,
 };
 pub use fips_core::identity::{
     FipsAddress, Identity, IdentityError, NodeAddr, PeerIdentity, decode_npub, decode_nsec,
