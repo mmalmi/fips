@@ -491,6 +491,103 @@ fn reply_learned_lookup_timeout_does_not_discard_simultaneous_fsp_responder_data
 }
 
 #[test]
+fn simultaneous_fsp_role_change_replaces_obsolete_initiator_route() {
+    run_large_stack_async_test("fips-simultaneous-role-route", || async {
+        let edges = vec![(0, 1), (1, 2)];
+        let mut nodes = run_tree_test(3, &edges, false).await;
+        verify_tree_convergence(&nodes);
+        populate_all_coord_caches(&mut nodes);
+        for node in &mut nodes {
+            node.node.config.node.routing.mode = RoutingMode::ReplyLearned;
+        }
+
+        let endpoint_addresses = [*nodes[0].node.node_addr(), *nodes[2].node.node_addr()];
+        let (winner, responder) = if endpoint_addresses[0] < endpoint_addresses[1] {
+            (0, 2)
+        } else {
+            (2, 0)
+        };
+        let winner_addr = *nodes[winner].node.node_addr();
+        let responder_addr = *nodes[responder].node.node_addr();
+        let reply_hop = *nodes[1].node.node_addr();
+        let stale_hop = make_node_addr(0xF7);
+        nodes[responder]
+            .node
+            .pin_handshake_reverse_route(winner_addr, stale_hop);
+
+        let winner_identity =
+            PeerIdentity::from_pubkey_full(nodes[winner].node.identity().pubkey_full());
+        let responder_identity =
+            PeerIdentity::from_pubkey_full(nodes[responder].node.identity().pubkey_full());
+        send_endpoint_data_via_dataplane(
+            &mut nodes[responder].node,
+            winner_identity,
+            b"responder-init".to_vec(),
+        )
+        .await
+        .expect("responder should start as an initiator");
+        send_endpoint_data_via_dataplane(
+            &mut nodes[winner].node,
+            responder_identity,
+            b"winner-init".to_vec(),
+        )
+        .await
+        .expect("winner should start as an initiator");
+        assert!(
+            nodes[winner]
+                .node
+                .get_session(&responder_addr)
+                .is_some_and(|entry| entry.is_initiating())
+                && nodes[responder]
+                    .node
+                    .get_session(&winner_addr)
+                    .is_some_and(|entry| entry.is_initiating()),
+            "both endpoints should be initiating before the role-change packet is processed"
+        );
+
+        assert!(
+            wait_process_packets_for_node(&mut nodes, 1).await > 0,
+            "the transit node should forward the simultaneous setups"
+        );
+        assert!(
+            wait_process_packets_for_node(&mut nodes, responder).await > 0,
+            "the tiebreak loser should process the winner's setup"
+        );
+        assert!(
+            nodes[responder]
+                .node
+                .get_session(&winner_addr)
+                .is_some_and(|entry| entry.is_awaiting_msg3()),
+            "the larger address should switch to responder"
+        );
+        let active_route = nodes[responder]
+            .node
+            .learned_routes
+            .active_handshake_route(&winner_addr, Node::now_ms());
+        assert_eq!(
+            active_route,
+            Some(reply_hop),
+            "the responder must replace its abandoned initiator pin with the branch that carried msg2; winner={winner_addr}, stale={stale_hop}, active={active_route:?}"
+        );
+        assert!(
+            nodes[responder]
+                .node
+                .routing_error_matches_active_path(&winner_addr, &reply_hop),
+            "PathBroken returning through the responder's actual msg2 branch must be actionable"
+        );
+        assert!(
+            !nodes[responder]
+                .node
+                .routing_error_matches_active_path(&winner_addr, &stale_hop),
+            "the abandoned initiator branch must become stale"
+        );
+
+        assert_ne!(winner_addr, responder_addr);
+        cleanup_nodes(&mut nodes).await;
+    });
+}
+
+#[test]
 fn test_endpoint_data_batch_flushes_after_session_establishment() {
     run_large_stack_async_test("fips-endpoint-data-batch-flushes", || async {
         let edges = vec![(0, 1)];
