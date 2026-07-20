@@ -111,17 +111,17 @@ async fn preferred_connection_arrived<S: BleStream>(
     pool.lock().await.contains(addr)
 }
 
-async fn admit_inbound<S: BleStream + 'static>(
-    stream: S,
-    pool: SharedBlePool<S>,
-    packet_tx: PacketTx,
-    transport_id: TransportId,
-    stats: Arc<BleStats>,
-    local_pubkey: Option<[u8; 32]>,
-    discovery_buffer: Arc<DiscoveryBuffer>,
-    local_node_addr: Option<NodeAddr>,
-    max_packet: u16,
-) {
+async fn admit_inbound<S: BleStream + 'static>(stream: S, ctx: AcceptLoopContext<S>) {
+    let AcceptLoopContext {
+        pool,
+        packet_tx,
+        transport_id,
+        stats,
+        local_pubkey,
+        discovery_buffer,
+        local_node_addr,
+        max_packet,
+    } = ctx;
     let addr = stream.remote_addr().clone();
     let ta = addr.to_transport_addr();
     let stream = FramedBleStream::new(stream, max_packet);
@@ -203,17 +203,7 @@ where
     A: io::BleAcceptor,
     A::Stream: 'static,
 {
-    let AcceptLoopContext {
-        pool,
-        packet_tx,
-        transport_id,
-        stats,
-        local_pubkey,
-        discovery_buffer,
-        local_node_addr,
-        max_packet,
-    } = ctx;
-    let inbound_limit = pool.lock().await.max_connections().max(1);
+    let inbound_limit = ctx.pool.lock().await.max_connections().max(1);
     let permits = Arc::new(Semaphore::new(inbound_limit));
     let mut handlers = JoinSet::new();
 
@@ -226,29 +216,23 @@ where
         match acceptor.accept().await {
             Ok(stream) => {
                 let Ok(permit) = Arc::clone(&permits).try_acquire_owned() else {
-                    stats.record_connection_rejected();
+                    ctx.stats.record_connection_rejected();
                     debug!("BLE inbound admission limit reached");
                     continue;
                 };
-                let pool = Arc::clone(&pool);
-                let packet_tx = packet_tx.clone();
-                let stats = Arc::clone(&stats);
-                let discovery_buffer = Arc::clone(&discovery_buffer);
-                let local_node_addr = local_node_addr;
+                let handler_ctx = AcceptLoopContext {
+                    pool: Arc::clone(&ctx.pool),
+                    packet_tx: ctx.packet_tx.clone(),
+                    transport_id: ctx.transport_id,
+                    stats: Arc::clone(&ctx.stats),
+                    local_pubkey: ctx.local_pubkey,
+                    discovery_buffer: Arc::clone(&ctx.discovery_buffer),
+                    local_node_addr: ctx.local_node_addr,
+                    max_packet: ctx.max_packet,
+                };
                 handlers.spawn(async move {
                     let _permit = permit;
-                    admit_inbound(
-                        stream,
-                        pool,
-                        packet_tx,
-                        transport_id,
-                        stats,
-                        local_pubkey,
-                        discovery_buffer,
-                        local_node_addr,
-                        max_packet,
-                    )
-                    .await;
+                    admit_inbound(stream, handler_ctx).await;
                 });
             }
             Err(e) => {
