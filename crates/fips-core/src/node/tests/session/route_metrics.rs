@@ -588,6 +588,81 @@ async fn test_only_explicit_path_broken_replaces_healthy_learned_fallback() {
     );
 }
 
+#[tokio::test]
+async fn test_path_broken_matches_last_outbound_branch_after_wrap_route_moves() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let old_fallback = *node.peer_ids().next().expect("old fallback peer");
+    assert!(node.sync_dataplane_fmp_owner(&old_fallback));
+
+    let transport_id = TransportId::new(1);
+    let replacement_link = LinkId::new(2);
+    let (replacement_conn, replacement_identity) =
+        make_completed_connection(&mut node, replacement_link, transport_id, 1_000);
+    let replacement_fallback = *replacement_identity.node_addr();
+    node.add_connection(replacement_conn).unwrap();
+    node.promote_connection(replacement_link, replacement_identity, 2_000)
+        .unwrap();
+    assert!(node.sync_dataplane_fmp_owner(&replacement_fallback));
+
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+    install_established_session_with_mmp(&mut node, &remote);
+    node.learn_reverse_route(remote_addr, old_fallback);
+    node.learn_reverse_route(remote_addr, replacement_fallback);
+    assert!(node.sync_dataplane_fsp_owner_from_current_session_via(
+        &remote_addr,
+        Some(old_fallback),
+        0,
+    ));
+    seed_dataplane_fsp_data_sent_for_test(&mut node, remote_addr, old_fallback, Node::now_ms());
+
+    // Model a reverse-path update moving the owner's wrap route while the
+    // last transmitted payload and its explicit error are still on the old
+    // branch. There is no handshake pin at this point.
+    node.learned_routes
+        .record_failure(&remote_addr, &old_fallback);
+    node.learn_reverse_route(remote_addr, old_fallback);
+    assert!(node.sync_dataplane_fsp_owner_from_current_session_via(
+        &remote_addr,
+        Some(replacement_fallback),
+        0,
+    ));
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&remote_addr),
+        Some(replacement_fallback)
+    );
+    assert_eq!(
+        node.dataplane
+            .fsp_owner_activity(&remote_addr)
+            .and_then(|activity| activity.last_outbound_next_hop()),
+        Some(old_fallback)
+    );
+
+    assert!(
+        node.routing_error_matches_active_path(&remote_addr, &old_fallback),
+        "PathBroken must match the branch used by the last outbound payload even after the owner wrap route moves"
+    );
+
+    let downstream_reporter = make_node_addr(181);
+    let path_broken = PathBroken::new(remote_addr, downstream_reporter).encode();
+    node.handle_session_payload(LocalSessionPayload::new(
+        downstream_reporter,
+        old_fallback,
+        &path_broken,
+    ))
+    .await;
+
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&remote_addr),
+        Some(replacement_fallback),
+        "failure of the old outbound branch must preserve the replacement wrap route"
+    );
+    assert!(
+        !node.routing_error_matches_active_path(&remote_addr, &old_fallback),
+        "the same old branch must become stale after its outbound affinity is cleared"
+    );
+}
+
 #[test]
 fn test_active_fallback_affinity_keeps_user_payload_on_fallback() {
     let mut node = make_reply_learned_node_with_tree_peer();

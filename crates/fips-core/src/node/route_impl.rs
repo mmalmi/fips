@@ -723,9 +723,22 @@ impl Node {
             return pinned_hop == *previous_hop;
         }
 
-        // Once an explicit failure releases the handshake pin, delayed errors
-        // from that branch must not poison the replacement route. The
-        // dataplane owner is the canonical route for established traffic.
+        // The owner's wrap route can move as reverse traffic teaches a new
+        // branch while an already-transmitted payload and its PathBroken are
+        // still returning on the old branch. Match that explicit feedback to
+        // the branch actually used by the last outbound payload. Clearing the
+        // affinity when the failure is recorded makes later errors from the
+        // same branch stale.
+        if let Some(last_outbound_next_hop) = self
+            .dataplane
+            .fsp_owner_activity(destination)
+            .and_then(|activity| activity.last_outbound_next_hop())
+        {
+            return last_outbound_next_hop == *previous_hop;
+        }
+
+        // Before any payload has selected a branch, the dataplane owner's wrap
+        // route is the best authenticated local match available.
         self.dataplane
             .fsp_owner_next_hop(destination)
             .is_none_or(|next_hop| next_hop == *previous_hop)
