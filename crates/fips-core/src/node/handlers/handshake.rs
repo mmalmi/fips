@@ -293,6 +293,42 @@ impl Node {
                 _ => {
                     // Same epoch (or no epoch stored).
                     //
+                    // Rekey Msg1 retransmits keep the same sender index. The
+                    // responder must retain and resend the already-owned
+                    // Msg2 both while that epoch is pending and after K-bit
+                    // cutover. Reprocessing a late duplicate as a fresh
+                    // direct-path recovery can replace only this endpoint's
+                    // FMP session after the initiator has already discarded
+                    // the matching handshake state, splitting the epochs.
+                    let duplicate_rekey_msg2 = (existing_peer.pending_their_index()
+                        == Some(header.sender_idx)
+                        || (existing_peer.is_draining()
+                            && existing_peer.their_index() == Some(header.sender_idx)))
+                    .then(|| existing_peer.handshake_msg2().map(<[u8]>::to_vec))
+                    .flatten();
+                    if let Some(msg2) = duplicate_rekey_msg2 {
+                        if let Some(transport) = self.transports.get(&packet.transport_id) {
+                            match transport.send(&packet.remote_addr, &msg2).await {
+                                Ok(_) => debug!(
+                                    peer = %self.peer_display_name(&peer_node_addr),
+                                    sender_index = %header.sender_idx,
+                                    "Resent owned Msg2 for duplicate rekey Msg1"
+                                ),
+                                Err(e) => debug!(
+                                    peer = %self.peer_display_name(&peer_node_addr),
+                                    sender_index = %header.sender_idx,
+                                    error = %e,
+                                    "Failed to resend owned Msg2 for duplicate rekey Msg1"
+                                ),
+                            }
+                        }
+                        self.peers.remove_connection(&link_id);
+                        self.links.remove(&link_id);
+                        self.msg1_rate_limiter.complete_handshake();
+                        return;
+                    }
+
+                    //
                     // If liveness has already marked the active path stale,
                     // a same-epoch msg1 is recovery traffic, not a duplicate
                     // initial handshake. Falling through lets promotion
@@ -416,6 +452,9 @@ impl Node {
                                 self.msg1_rate_limiter.complete_handshake();
                                 return;
                             };
+                            if let Some(peer) = self.peers.get_mut(&peer_node_addr) {
+                                peer.set_handshake_msg2(wire_msg2.clone());
+                            }
                             self.log_registered_peer_session_index_result(
                                 &peer_node_addr,
                                 &registered,

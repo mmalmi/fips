@@ -2,6 +2,47 @@ use super::*;
 use crate::peer::ActivePeerSession;
 
 #[tokio::test]
+async fn test_link_dead_direct_parent_reparents_to_live_transit() {
+    let edges = vec![(0, 1), (0, 2), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+
+    let dest = (0..nodes.len())
+        .min_by_key(|index| *nodes[*index].node.node_addr())
+        .expect("triangle has a root");
+    let mut non_roots = (0..nodes.len()).filter(|index| *index != dest);
+    let source = non_roots.next().expect("triangle has a source");
+    let transit = non_roots.next().expect("triangle has a transit peer");
+    let dest_addr = *nodes[dest].node.node_addr();
+    let transit_addr = *nodes[transit].node.node_addr();
+
+    assert_eq!(
+        nodes[source].node.tree_state().my_declaration().parent_id(),
+        &dest_addr,
+        "the smallest direct peer should begin as the source's tree parent"
+    );
+
+    nodes[source].node.remove_link_dead_peer(&dest_addr);
+
+    assert_eq!(
+        nodes[source].node.tree_state().my_declaration().parent_id(),
+        &transit_addr,
+        "a stale direct parent must leave the live transit edge as tree parent"
+    );
+    assert_eq!(
+        nodes[source]
+            .node
+            .find_next_hop(&dest_addr)
+            .map(|peer| *peer.node_addr()),
+        Some(transit_addr),
+        "payload should route around the stale direct parent"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
 async fn test_link_dead_fallback_warms_session_over_existing_graph() {
     let edges = vec![(0, 1), (1, 2)];
     let mut nodes = run_tree_test(3, &edges, false).await;
@@ -178,28 +219,41 @@ async fn direct_established_endpoint_data_falls_back_after_link_dead() {
     let edges = vec![(0, 1), (0, 2), (1, 2)];
     let mut nodes = run_tree_test(3, &edges, false).await;
     verify_tree_convergence(&nodes);
-    populate_all_coord_caches(&mut nodes);
     for node in &mut nodes {
         node.node.config.node.routing.mode = RoutingMode::ReplyLearned;
     }
 
-    let mut alice_endpoint = nodes[0]
+    // Match the roaming topology: the healthy transit node is already the
+    // tree root/parent for both endpoint nodes before their direct edge dies.
+    let charlie = (0..nodes.len())
+        .min_by_key(|index| *nodes[*index].node.node_addr())
+        .expect("triangle has a root");
+    let mut endpoints = (0..nodes.len()).filter(|index| *index != charlie);
+    let alice = endpoints.next().expect("triangle has alice");
+    let bob = endpoints.next().expect("triangle has bob");
+
+    let mut alice_endpoint = nodes[alice]
         .node
         .attach_endpoint_data_io(8)
         .expect("alice endpoint data I/O should attach");
-    let mut bob_endpoint = nodes[1]
+    let mut bob_endpoint = nodes[bob]
         .node
         .attach_endpoint_data_io(8)
         .expect("bob endpoint data I/O should attach");
 
-    let alice_addr = *nodes[0].node.node_addr();
-    let bob_addr = *nodes[1].node.node_addr();
-    let alice_identity = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
-    let bob_identity = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
+    let alice_addr = *nodes[alice].node.node_addr();
+    let bob_addr = *nodes[bob].node.node_addr();
+    let charlie_addr = *nodes[charlie].node.node_addr();
+    let alice_identity = PeerIdentity::from_pubkey_full(nodes[alice].node.identity().pubkey_full());
+    let bob_identity = PeerIdentity::from_pubkey_full(nodes[bob].node.identity().pubkey_full());
 
-    send_endpoint_data_via_dataplane(&mut nodes[0].node, bob_identity, b"direct-first".to_vec())
-        .await
-        .expect("initial endpoint data should send");
+    send_endpoint_data_via_dataplane(
+        &mut nodes[alice].node,
+        bob_identity,
+        b"direct-first".to_vec(),
+    )
+    .await
+    .expect("initial endpoint data should send");
     drain_to_quiescence(&mut nodes).await;
 
     let event = recv_endpoint_event_while_draining(
@@ -214,46 +268,50 @@ async fn direct_established_endpoint_data_falls_back_after_link_dead() {
     assert_eq!(message.payload.as_slice(), &b"direct-first"[..]);
 
     assert!(
-        nodes[0]
+        nodes[alice]
             .node
             .get_session(&bob_addr)
             .is_some_and(|entry| entry.is_established()),
         "alice should keep an established end-to-end session to bob"
     );
     assert!(
-        nodes[1]
+        nodes[bob]
             .node
             .get_session(&alice_addr)
             .is_some_and(|entry| entry.is_established()),
         "bob should keep an established end-to-end session to alice"
     );
 
-    nodes[0].node.remove_link_dead_peer(&bob_addr);
-    nodes[1].node.remove_link_dead_peer(&alice_addr);
+    nodes[alice].node.remove_link_dead_peer(&bob_addr);
+    nodes[bob].node.remove_link_dead_peer(&alice_addr);
 
-    let charlie_addr = *nodes[2].node.node_addr();
-    nodes[0].node.learn_reverse_route(bob_addr, charlie_addr);
-    nodes[1].node.learn_reverse_route(alice_addr, charlie_addr);
-
-    let alice_next_hop = *nodes[0]
+    let alice_next_hop = *nodes[alice]
         .node
         .find_next_hop(&bob_addr)
         .expect("alice should have fallback next hop")
         .node_addr();
-    let bob_next_hop = *nodes[1]
+    let bob_next_hop = *nodes[bob]
         .node
         .find_next_hop(&alice_addr)
         .expect("bob should have fallback next hop")
         .node_addr();
-    assert_ne!(alice_next_hop, bob_addr);
-    assert_ne!(bob_next_hop, alice_addr);
+    assert_eq!(alice_next_hop, charlie_addr);
+    assert_eq!(bob_next_hop, charlie_addr);
 
-    send_endpoint_data_via_dataplane(&mut nodes[0].node, bob_identity, b"alice-fallback".to_vec())
-        .await
-        .expect("alice fallback endpoint data should send");
-    send_endpoint_data_via_dataplane(&mut nodes[1].node, alice_identity, b"bob-fallback".to_vec())
-        .await
-        .expect("bob fallback endpoint data should send");
+    send_endpoint_data_via_dataplane(
+        &mut nodes[alice].node,
+        bob_identity,
+        b"alice-fallback".to_vec(),
+    )
+    .await
+    .expect("alice fallback endpoint data should send");
+    send_endpoint_data_via_dataplane(
+        &mut nodes[bob].node,
+        alice_identity,
+        b"bob-fallback".to_vec(),
+    )
+    .await
+    .expect("bob fallback endpoint data should send");
     drain_to_quiescence(&mut nodes).await;
 
     let event = recv_endpoint_event_while_draining(

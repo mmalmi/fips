@@ -134,7 +134,34 @@ impl Node {
             }
         };
 
-        self.mark_session_direct_path_degraded(*node_addr, Self::now_ms());
+        // Preserve the authenticated destination coordinate before removing
+        // the dead edge from the live tree. The coordinate identifies the
+        // destination in the current tree and can still route through another
+        // healthy neighbor; discarding it here leaves reply-learned mode with
+        // no loop-free fallback until a new discovery lookup succeeds.
+        let now_ms = Self::now_ms();
+        let stale_peer_coords = self.tree_state.peer_coords(node_addr).cloned();
+
+        // The authenticated peer/session stays available for direct probes,
+        // but a dead physical edge must leave the live routing graph. If the
+        // stale peer remains our tree parent, its old coordinate prefix can
+        // hide an otherwise healthy two-hop path and FSP payload never reaches
+        // the fallback carrier. A later authenticated TreeAnnounce restores
+        // the edge after direct recovery.
+        let tree_changed = self.handle_peer_removal_tree_cleanup(node_addr);
+        if tree_changed {
+            for peer in self.peers.values_mut() {
+                peer.mark_tree_announce_pending();
+            }
+        }
+        self.bloom_state.remove_peer_state(node_addr);
+        let remaining_peers = self.peers.keys().copied().collect::<Vec<_>>();
+        self.bloom_state.mark_all_updates_needed(remaining_peers);
+        if let Some(coords) = stale_peer_coords {
+            self.cache_current_root_coords(*node_addr, coords, now_ms);
+        }
+
+        self.mark_session_direct_path_degraded(*node_addr, now_ms);
 
         if !preserve_queued_packets {
             self.pending_session_traffic.remove_destination(node_addr);
@@ -143,6 +170,7 @@ impl Node {
         info!(
             peer = %peer_name,
             link_id = %degraded.link_id,
+            tree_changed,
             preserve_queued_packets,
             "Peer direct path marked stale after link-dead timeout"
         );

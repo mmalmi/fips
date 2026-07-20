@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.32] - 2026-07-21
+
+### Fixed
+
+- Preserve the current authenticated destination coordinate when a direct
+  physical edge dies, so an existing tree neighbor can carry FSP payload
+  while the direct path retries.
+- Remove stale direct edges from tree and bloom routing state without tearing
+  down their authenticated peer or end-to-end session.
+- Resend the responder-owned FMP rekey message across K-bit cutover when a
+  duplicate initiator message arrives, preventing asymmetric rekey stalls.
+- Release `fips-core` and `fips-endpoint` 0.4.32 together. FMP, FSP,
+  discovery, routing semantics, and physical transport wire formats are
+  unchanged.
+
 ## [0.4.31] - 2026-07-21
 
 ### Fixed
