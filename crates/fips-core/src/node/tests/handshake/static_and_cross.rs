@@ -126,7 +126,7 @@ async fn static_address_handshake_without_nostr_discovery() {
 #[tokio::test]
 async fn test_cross_connection_both_initiate() {
     use crate::config::UdpConfig;
-    use crate::node::wire::build_msg1;
+    use crate::node::wire::{Msg1Header, Msg2Header, build_msg1};
     use crate::transport::udp::UdpTransport;
     use tokio::time::{Duration, timeout};
 
@@ -345,6 +345,88 @@ async fn test_cross_connection_both_initiate() {
         peer_b_on_a.our_index(),
         "B must send to A's installed receiver index after degraded simultaneous reconnect"
     );
+
+    // Repeat the simultaneous dial with an already-established carrier that
+    // liveness has marked link-dead. This is the roaming ordering: both sides
+    // retain the stale peer/FSP session for fallback continuity, then race a
+    // same-tuple direct refresh when the underlay returns.
+    node_a.remove_link_dead_peer(&peer_b_node_addr);
+    node_b.remove_link_dead_peer(&peer_a_node_addr);
+    node_a
+        .initiate_connection(transport_id_a, remote_addr_b.clone(), peer_b_identity)
+        .await
+        .expect("A starts same-path recovery");
+    node_b
+        .initiate_connection(transport_id_b, remote_addr_a.clone(), peer_a_identity)
+        .await
+        .expect("B starts same-path recovery");
+
+    let recovery_msg1_at_b = timeout(Duration::from_secs(1), async {
+        loop {
+            let packet = packet_rx_b.recv().await.expect("B channel open");
+            if Msg1Header::parse(packet.data.as_slice()).is_some() {
+                break packet;
+            }
+        }
+    })
+    .await
+    .expect("B should receive A's recovery msg1");
+    node_b.handle_msg1(recovery_msg1_at_b).await;
+
+    let recovery_msg1_at_a = timeout(Duration::from_secs(1), async {
+        loop {
+            let packet = packet_rx_a.recv().await.expect("A channel open");
+            if Msg1Header::parse(packet.data.as_slice()).is_some() {
+                break packet;
+            }
+        }
+    })
+    .await
+    .expect("A should receive B's recovery msg1");
+    node_a.handle_msg1(recovery_msg1_at_a).await;
+
+    let recovery_msg2_at_a = timeout(Duration::from_secs(1), async {
+        loop {
+            let packet = packet_rx_a.recv().await.expect("A channel open");
+            if Msg2Header::parse(packet.data.as_slice()).is_some() {
+                break packet;
+            }
+        }
+    })
+    .await
+    .expect("A should receive B's recovery msg2");
+    node_a.handle_msg2(recovery_msg2_at_a).await;
+
+    let recovery_msg2_at_b = timeout(Duration::from_secs(1), async {
+        loop {
+            let packet = packet_rx_b.recv().await.expect("B channel open");
+            if Msg2Header::parse(packet.data.as_slice()).is_some() {
+                break packet;
+            }
+        }
+    })
+    .await
+    .expect("B should receive A's recovery msg2");
+    node_b.handle_msg2(recovery_msg2_at_b).await;
+
+    let recovered_b_on_a = node_a
+        .get_peer(&peer_b_node_addr)
+        .expect("A should retain recovered B");
+    let recovered_a_on_b = node_b
+        .get_peer(&peer_a_node_addr)
+        .expect("B should retain recovered A");
+    assert_eq!(
+        recovered_b_on_a.their_index(),
+        recovered_a_on_b.our_index(),
+        "A recovery sender index must match B's installed receiver"
+    );
+    assert_eq!(
+        recovered_a_on_b.their_index(),
+        recovered_b_on_a.our_index(),
+        "B recovery sender index must match A's installed receiver"
+    );
+    assert_eq!(node_a.connection_count(), 0);
+    assert_eq!(node_b.connection_count(), 0);
 
     // Clean up transports
     for (_, t) in node_a.transports.iter_mut() {

@@ -107,6 +107,26 @@ impl Node {
             .get(dest_node_addr)
             .filter(|peer| peer.is_healthy() && !direct_session_degraded)
             .map(|_| *dest_node_addr);
+        let direct_payload_untried = self.sessions.get(dest_node_addr).is_some()
+            && self
+                .dataplane
+                .fsp_owner_activity(dest_node_addr)
+                .is_none_or(|activity| activity.last_outbound_next_hop().is_none());
+
+        // A new FSP session has no payload evidence for any branch yet. Start
+        // it on an already-authenticated direct FMP carrier even when a routed
+        // handshake ingress currently has a better link-cost sample. This is
+        // the only ordering-independent way to validate a direct path that was
+        // promoted just before the FSP owner was installed. Once payload has
+        // selected a branch, the ordinary affinity, cost, and degradation
+        // rules below take over; missing direct return traffic expires the
+        // exclusive-trust window and moves the owner back to fallback.
+        if let Some(direct_addr) = healthy_direct_route
+            && direct_payload_untried
+            && !direct_session_untrusted
+        {
+            return self.peers.get(&direct_addr);
+        }
         let authenticated_direct_handshake = self.config.node.routing.mode
             == RoutingMode::ReplyLearned
             && self
@@ -662,6 +682,17 @@ impl Node {
                 "Keeping direct payload degraded after direct-path promotion"
             );
         }
+    }
+
+    pub(in crate::node) fn complete_authenticated_direct_path_refresh_after_rekey(
+        &mut self,
+        dest: &NodeAddr,
+    ) {
+        if !self.promoted_path_matches_configured_static_peer(dest) {
+            return;
+        }
+        self.clear_session_direct_path_degraded_after_promotion(dest, Self::now_ms());
+        self.clear_retry_unless_direct_refresh_needed(dest);
     }
 
     fn promoted_path_matches_configured_static_peer(&self, peer_node_addr: &NodeAddr) -> bool {

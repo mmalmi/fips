@@ -351,6 +351,48 @@ fn test_stale_cost_fallback_keeps_user_payload_on_fallback() {
 }
 
 #[test]
+fn test_new_session_tries_healthy_direct_before_cheaper_fallback() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let fallback_next_hop = *node.peer_ids().next().expect("fallback peer");
+    let transport_id = TransportId::new(1);
+    let direct_link = LinkId::new(44);
+    let (direct_conn, direct_identity) =
+        make_completed_connection(&mut node, direct_link, transport_id, 1_000);
+    let remote_addr = *direct_identity.node_addr();
+    node.add_connection(direct_conn).unwrap();
+    node.promote_connection(direct_link, direct_identity, 2_000)
+        .unwrap();
+    let session = make_noise_session(node.identity(), &Identity::generate());
+    let mut entry = crate::node::session::SessionEntry::new(
+        remote_addr,
+        direct_identity.pubkey_full(),
+        EndToEndState::Established(session),
+        1_000,
+        true,
+    );
+    entry.mark_established(1_000);
+    node.sessions.insert(remote_addr, entry);
+    node.learn_reverse_route(remote_addr, fallback_next_hop);
+    seed_dataplane_fmp_srtt_for_test(&mut node, remote_addr, 90);
+    seed_dataplane_fmp_srtt_for_test(&mut node, fallback_next_hop, 5);
+    assert!(
+        node.route_candidate_beats_direct(Some(remote_addr), fallback_next_hop),
+        "fixture should make the routed handshake ingress look cheaper than direct"
+    );
+
+    assert!(node.sync_dataplane_fsp_owner_from_current_session_via(
+        &remote_addr,
+        Some(fallback_next_hop),
+        0,
+    ));
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&remote_addr),
+        Some(remote_addr),
+        "a new session must validate its healthy authenticated direct carrier before inheriting a stale routed branch"
+    );
+}
+
+#[test]
 fn test_recent_direct_payload_return_prefers_direct_over_cheaper_fallback() {
     let mut node = make_reply_learned_node_with_tree_peer();
     let fallback_next_hop = *node.peer_ids().next().expect("fallback peer");

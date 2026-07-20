@@ -272,6 +272,11 @@ impl Node {
         if possible_restart && let Some(existing_peer) = self.peers.get(&peer_node_addr) {
             let new_epoch = conn.remote_epoch();
             let existing_epoch = existing_peer.remote_epoch();
+            let established_same_path_rekey = self.same_path_msg1_is_established_rekey(
+                &peer_node_addr,
+                packet.transport_id,
+                &packet.remote_addr,
+            );
 
             match (existing_epoch, new_epoch) {
                 (Some(existing), Some(new)) if existing != new => {
@@ -294,7 +299,7 @@ impl Node {
                     // install the freshly authenticated path instead of
                     // resending an old msg2 whose receiver index belongs to
                     // the dead session.
-                    if same_epoch_direct_path_recovery {
+                    if same_epoch_direct_path_recovery && !established_same_path_rekey {
                         debug!(
                             peer = %self.peer_display_name(&peer_node_addr),
                             "Same-epoch msg1 received while direct payload is stale; processing as direct-path recovery"
@@ -309,10 +314,11 @@ impl Node {
                         // immediately — a genuine rekey can't fire that fast.
                         let session_age_secs =
                             existing_peer.session_established_at().elapsed().as_secs();
-                        if self.config.node.rekey.enabled
-                            && existing_peer.has_session()
-                            && existing_peer.is_healthy()
-                            && session_age_secs >= 30
+                        if established_same_path_rekey
+                            || (self.config.node.rekey.enabled
+                                && existing_peer.has_session()
+                                && existing_peer.is_healthy()
+                                && session_age_secs >= 30)
                         {
                             // Guard: already have a pending session from a completed
                             // rekey (waiting for K-bit cutover). Don't overwrite it
@@ -721,6 +727,22 @@ impl Node {
         peer_unhealthy
             || self.session_direct_path_blocks_direct_payload(peer_node_addr, now_ms)
             || self.session_direct_path_exclusive_trust_expired(peer_node_addr, now_ms)
+    }
+
+    pub(in crate::node) fn same_path_msg1_is_established_rekey(
+        &self,
+        peer_node_addr: &NodeAddr,
+        transport_id: crate::transport::TransportId,
+        remote_addr: &crate::transport::TransportAddr,
+    ) -> bool {
+        self.config.node.rekey.enabled
+            && self.peers.get(peer_node_addr).is_some_and(|peer| {
+                peer.has_session()
+                    && peer.can_send()
+                    && peer.session_established_at().elapsed().as_secs() >= 30
+                    && peer.transport_id() == Some(transport_id)
+                    && peer.current_addr() == Some(remote_addr)
+            })
     }
 
     fn ensure_owned_msg2_receiver_route(&mut self, node_addr: &NodeAddr) -> bool {

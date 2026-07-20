@@ -293,7 +293,53 @@ fn healthy_control_path_with_degraded_payload_classifies_msg1_as_direct_recovery
 }
 
 #[test]
-fn expired_direct_payload_hold_keeps_reconnect_until_validation() {
+fn stale_same_tuple_refresh_remains_an_established_rekey_candidate() {
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(1);
+    let (conn, identity) = make_completed_connection(&mut node, link_id, transport_id, 1_000);
+    let node_addr = *identity.node_addr();
+
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, identity, 2_000).unwrap();
+    let peer = node.get_peer_mut(&node_addr).unwrap();
+    peer.set_session_established_at_for_test(
+        std::time::Instant::now() - std::time::Duration::from_secs(31),
+    );
+    peer.mark_stale();
+
+    let peer = node.get_peer(&node_addr).unwrap();
+    assert!(peer.can_send());
+    assert!(!peer.is_healthy());
+    assert_eq!(peer.transport_id(), Some(transport_id));
+    assert_eq!(
+        peer.current_addr(),
+        Some(&TransportAddr::from_string("127.0.0.1:5000"))
+    );
+    assert!(
+        node.same_epoch_msg1_is_direct_path_recovery(&node_addr, Node::now_ms()),
+        "link-dead state still records that direct payload needs recovery"
+    );
+    assert!(
+        node.same_path_msg1_is_established_rekey(
+            &node_addr,
+            transport_id,
+            &TransportAddr::from_string("127.0.0.1:5000"),
+        ),
+        "a retained stale carrier must classify a same-tuple msg1 as rekey so both sides use the same cutover state machine"
+    );
+    assert!(
+        !node.same_path_msg1_is_established_rekey(
+            &node_addr,
+            transport_id,
+            &TransportAddr::from_string("127.0.0.1:5001"),
+        ),
+        "a different tuple remains an alternate-path recovery handshake"
+    );
+}
+
+#[tokio::test]
+async fn expired_direct_payload_hold_keeps_reconnect_until_validation() {
     let mut node = make_node();
     let transport_id = TransportId::new(1);
     let link_id = LinkId::new(1);
@@ -306,6 +352,8 @@ fn expired_direct_payload_hold_keeps_reconnect_until_validation() {
     node.promote_connection(link_id, identity, 2_000).unwrap();
 
     let now_ms = Node::now_ms();
+    node.get_peer_mut(&node_addr).unwrap().touch(now_ms);
+    super::super::seed_dataplane_fmp_rx_for_test(&mut node, node_addr, std::time::Duration::ZERO);
     let expired_at = now_ms.saturating_sub(SESSION_DIRECT_DEGRADED_HOLD_MS + 1);
     node.mark_session_direct_path_degraded(node_addr, expired_at);
     node.retry_pending.insert(
@@ -325,6 +373,40 @@ fn expired_direct_payload_hold_keeps_reconnect_until_validation() {
         node.retry_pending.contains_key(&node_addr),
         "generic fresh-link cleanup must keep reconnect pending until direct FSP payload is validated"
     );
+    assert!(
+        !node.active_peer_needs_same_path_refresh(&node_addr),
+        "fixture requires a fresh authenticated FMP control carrier"
+    );
+
+    let (packet_tx, _packet_rx) = packet_channel(8);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("direct-retry".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    assert!(
+        node.initiate_active_peer_direct_refresh_connection(&peer_config)
+            .await
+            .unwrap(),
+        "pending direct FSP validation must keep the authenticated same-path UDP candidate eligible even after FMP control traffic resumes"
+    );
+    assert!(
+        node.get_peer(&node_addr).unwrap().rekey_in_progress(),
+        "a healthy same-path carrier must refresh through the symmetric rekey state machine so the peer cannot classify the handshake differently"
+    );
+    assert_eq!(node.connection_count(), 0);
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
 }
 
 #[test]

@@ -57,9 +57,35 @@ impl Node {
     ) -> Result<bool, NodeError> {
         let peer_node_addr = *peer_identity.node_addr();
         let mut candidates = self.peer_address_candidates(peer_config).await;
+        let direct_validation_rekey = allow_same_path_refresh
+            && self.config.node.rekey.enabled
+            && self
+                .session_direct_degradation
+                .has_pending_validation(&peer_node_addr)
+            && self.peers.get(&peer_node_addr).is_some_and(|peer| {
+                peer.can_send()
+                    && self
+                        .active_peer_current_udp_candidate(&peer_node_addr)
+                        .is_some()
+                    && candidates.iter().any(|candidate| {
+                        self.active_peer_matches_candidate(&peer_node_addr, candidate)
+                    })
+            });
+        if direct_validation_rekey {
+            let rekey_already_active = self.peers.get(&peer_node_addr).is_some_and(|peer| {
+                peer.rekey_in_progress() || peer.pending_new_session().is_some()
+            });
+            if rekey_already_active || self.initiate_rekey(&peer_node_addr).await {
+                return Ok(true);
+            }
+        }
         let same_path_refresh_needed = allow_same_path_refresh
             && self.peers.get(&peer_node_addr).is_some_and(|peer| {
-                !peer.is_healthy() || self.active_peer_needs_same_path_refresh(&peer_node_addr)
+                !peer.is_healthy()
+                    || self
+                        .session_direct_degradation
+                        .has_pending_validation(&peer_node_addr)
+                    || self.active_peer_needs_same_path_refresh(&peer_node_addr)
             });
         if same_path_refresh_needed
             && let Some(candidate) = self.active_peer_current_udp_candidate(&peer_node_addr)

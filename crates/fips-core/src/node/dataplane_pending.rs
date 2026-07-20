@@ -252,7 +252,9 @@ impl Node {
             node_addr,
             "responder authenticated FMP rekey cutover",
         );
-        self.sync_dataplane_fmp_owner(node_addr)
+        let synced = self.sync_dataplane_fmp_owner(node_addr);
+        self.complete_authenticated_direct_path_refresh_after_rekey(node_addr);
+        synced
     }
 
     pub(in crate::node) fn promote_dataplane_authenticated_pending_fsp_epoch(
