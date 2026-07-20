@@ -8,12 +8,12 @@ use crate::dataplane::{
     OutboundPacket, OutputTarget, OwnerConfig, OwnerCryptoKeys, OwnerId, PacketClass,
     TransportPath,
 };
-use crate::node::session_wire::{FSP_PHASE_MSG2, FSP_PHASE_MSG3, FspCommonPrefix};
 use crate::protocol::SessionMessageType;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const DATAPLANE_PENDING_OUTBOUND_FAST_CONTINUATION_TURNS: usize = 2;
 const DATAPLANE_PENDING_OUTBOUND_CONTROL_CONTINUATION_TURNS: usize = 8;
+const DATAPLANE_PENDING_OUTBOUND_CONTROL_CRYPTO_LIMIT: usize = 64;
 const DATAPLANE_PENDING_OUTBOUND_COMPLETION_TIMEOUT: std::time::Duration =
     std::time::Duration::from_millis(100);
 const DATAPLANE_DEFERRED_CONTROL_TURN_DRAIN_LIMIT: usize = 64;
@@ -85,6 +85,7 @@ enum DataplanePendingOutboundFailure {
 #[derive(Clone, Copy)]
 struct DataplanePendingOutboundPolicy {
     continuation_turns: usize,
+    crypto_limit: usize,
 }
 
 struct DataplanePendingSendTokenReceipts {
@@ -121,10 +122,12 @@ impl DataplanePendingSendTokenReceipts {
 const DATAPLANE_PENDING_OUTBOUND_FAST_POLICY: DataplanePendingOutboundPolicy =
     DataplanePendingOutboundPolicy {
         continuation_turns: DATAPLANE_PENDING_OUTBOUND_FAST_CONTINUATION_TURNS,
+        crypto_limit: 1,
     };
 const DATAPLANE_PENDING_OUTBOUND_PATIENT_CONTROL_POLICY: DataplanePendingOutboundPolicy =
     DataplanePendingOutboundPolicy {
         continuation_turns: DATAPLANE_PENDING_OUTBOUND_CONTROL_CONTINUATION_TURNS,
+        crypto_limit: DATAPLANE_PENDING_OUTBOUND_CONTROL_CRYPTO_LIMIT,
     };
 
 impl Node {
@@ -187,6 +190,7 @@ impl Node {
                 send_token,
                 1,
                 pending_policy.continuation_turns,
+                pending_policy.crypto_limit,
             )
             .await
         {
@@ -388,6 +392,7 @@ impl Node {
                 send_token,
                 payload_count,
                 DATAPLANE_PENDING_OUTBOUND_FAST_POLICY.continuation_turns,
+                DATAPLANE_PENDING_OUTBOUND_FAST_POLICY.crypto_limit,
             )
             .await;
         self.process_dataplane_pending_outbound_bookkeeping().await;
@@ -571,7 +576,8 @@ impl Node {
                 turn,
                 send_token,
                 1,
-                DATAPLANE_PENDING_OUTBOUND_FAST_POLICY.continuation_turns,
+                DATAPLANE_PENDING_OUTBOUND_PATIENT_CONTROL_POLICY.continuation_turns,
+                DATAPLANE_PENDING_OUTBOUND_PATIENT_CONTROL_POLICY.crypto_limit,
             )
             .await;
         self.process_dataplane_pending_outbound_bookkeeping().await;
@@ -681,6 +687,7 @@ impl Node {
         send_token: u64,
         expected_receipts: usize,
         continuation_turns: usize,
+        continuation_crypto_limit: usize,
     ) -> Result<
         (DataplaneTransportSentReceipt, DataplaneLiveNodeTurn),
         DataplanePendingOutboundFailure,
@@ -727,7 +734,7 @@ impl Node {
                     },
                     0,
                     0,
-                    pending.remaining,
+                    pending.remaining.max(continuation_crypto_limit),
                 )
                 .await;
         }
