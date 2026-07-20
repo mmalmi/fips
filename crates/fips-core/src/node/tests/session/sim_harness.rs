@@ -267,3 +267,103 @@ async fn discovery_control_send_survives_existing_priority_backlog() {
     quiesce_synthetic_dataplanes(&mut nodes).await;
     cleanup_nodes(&mut nodes).await;
 }
+
+#[tokio::test]
+async fn queued_routed_endpoint_data_survives_existing_priority_backlog() {
+    const BACKLOG_PACKETS: usize = 12;
+
+    let mut nodes = run_tree_test(3, &[(0, 1), (1, 2)], false).await;
+    populate_all_coord_caches(&mut nodes);
+
+    let next_hop = *nodes[1].node.node_addr();
+    let destination = *nodes[2].node.node_addr();
+    let destination_pubkey = nodes[2].node.identity().pubkey_full();
+    let mut destination_endpoint = nodes[2]
+        .node
+        .attach_endpoint_data_io(8)
+        .expect("destination endpoint data I/O should attach");
+
+    nodes[0]
+        .node
+        .initiate_session(destination, destination_pubkey)
+        .await
+        .expect("routed session initiation should succeed");
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &destination,
+        Duration::from_secs(10),
+        "routed endpoint backlog fixture",
+    )
+    .await;
+
+    nodes[0]
+        .node
+        .pending_session_traffic
+        .push_endpoint_data_batch_with_enqueued_at_ms(
+            destination,
+            vec![
+                crate::node::EndpointDataPayload::from_packet_payload(b"queued-routed".to_vec())
+                    .expect("test endpoint payload"),
+            ],
+            usize::MAX,
+            usize::MAX,
+            Node::now_ms(),
+        );
+
+    let heartbeat = [crate::protocol::LinkMessageType::Heartbeat.to_byte()];
+    let outbound = (0..BACKLOG_PACKETS)
+        .map(|_| {
+            nodes[0]
+                .node
+                .prepare_dataplane_fmp_link_outbound(
+                    next_hop,
+                    crate::transport::PacketBuffer::new(heartbeat.to_vec()),
+                    false,
+                    crate::dataplane::ActivityTick::new(Node::now_ms()),
+                )
+                .expect("prepare synthetic priority backlog")
+                .0
+        })
+        .collect();
+    let first = nodes[0]
+        .node
+        .pump_dataplane_pending_outbound_firsts(
+            crate::dataplane::DataplaneLiveOutboundFirsts {
+                initial_outbound_batch: outbound,
+                ..Default::default()
+            },
+            0,
+            0,
+            1,
+        )
+        .await;
+    assert_eq!(first.summary().outbound_admitted(), BACKLOG_PACKETS);
+    assert!(nodes[0].node.dataplane.has_runnable_work());
+
+    nodes[0].node.flush_pending_packets(&destination).await;
+    assert!(
+        !nodes[0]
+            .node
+            .pending_session_traffic
+            .has_traffic_for(&destination),
+        "queued routed endpoint data must not be stranded behind valid dataplane work"
+    );
+
+    let event = recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut destination_endpoint.event_rx,
+        Duration::from_secs(10),
+        "queued routed endpoint data behind backlog",
+    )
+    .await;
+    let delivered = expect_single_endpoint_data_event(event);
+    assert_eq!(
+        delivered.source_peer,
+        PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full())
+    );
+    assert_eq!(delivered.payload.as_slice(), b"queued-routed");
+
+    quiesce_synthetic_dataplanes(&mut nodes).await;
+    cleanup_nodes(&mut nodes).await;
+}

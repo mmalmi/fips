@@ -391,8 +391,8 @@ impl Node {
                 turn,
                 send_token,
                 payload_count,
-                DATAPLANE_PENDING_OUTBOUND_FAST_POLICY.continuation_turns,
-                DATAPLANE_PENDING_OUTBOUND_FAST_POLICY.crypto_limit,
+                DATAPLANE_PENDING_OUTBOUND_PATIENT_CONTROL_POLICY.continuation_turns,
+                DATAPLANE_PENDING_OUTBOUND_PATIENT_CONTROL_POLICY.crypto_limit,
             )
             .await;
         self.process_dataplane_pending_outbound_bookkeeping().await;
