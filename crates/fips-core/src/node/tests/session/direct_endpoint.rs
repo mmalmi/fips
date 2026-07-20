@@ -173,6 +173,55 @@ async fn test_local_session_ack_pins_authenticated_previous_hop() {
 }
 
 #[test]
+fn test_final_handshake_message_uses_authenticated_pinned_route() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let transport_id = TransportId::new(1);
+
+    let pinned_link = LinkId::new(1);
+    let (pinned_connection, pinned_identity) =
+        make_completed_connection(&mut node, pinned_link, transport_id, 1_000);
+    let pinned_hop = *pinned_identity.node_addr();
+    node.add_connection(pinned_connection).unwrap();
+    node.promote_connection(pinned_link, pinned_identity, 2_000)
+        .unwrap();
+
+    let unrelated_link = LinkId::new(2);
+    let (unrelated_connection, unrelated_identity) =
+        make_completed_connection(&mut node, unrelated_link, transport_id, 1_000);
+    let unrelated_hop = *unrelated_identity.node_addr();
+    node.add_connection(unrelated_connection).unwrap();
+    node.promote_connection(unrelated_link, unrelated_identity, 2_000)
+        .unwrap();
+
+    let target = make_node_addr(0xE2);
+    for offset in 0..32 {
+        node.learned_routes.learn(
+            target,
+            unrelated_hop,
+            Node::now_ms().saturating_add(offset),
+            60,
+            4,
+        );
+    }
+    node.pin_handshake_reverse_route(target, pinned_hop);
+
+    let mut final_msg3 = SessionDatagram::new(
+        *node.node_addr(),
+        target,
+        SessionMsg3::new(vec![0u8; crate::noise::XK_HANDSHAKE_MSG3_SIZE]).encode(),
+    );
+    let msg3_route = node
+        .resolve_session_handshake_runtime_route(&mut final_msg3)
+        .expect("authenticated final handshake message should remain routable");
+    assert_eq!(
+        msg3_route.next_hop_addr, pinned_hop,
+        "the final handshake message must use the Noise-authenticated ingress even when another learned branch has a higher score"
+    );
+}
+
+#[test]
 fn test_registered_service_datagram_request_reply_and_ipv6_port_compatibility() {
     run_large_stack_async_test("fips-service-datagram-request-reply", || async {
         const CLIENT_PORT: u16 = 41_000;

@@ -173,6 +173,29 @@ impl Node {
             return Ok(self.prepare_session_datagram_runtime_route(datagram, dest_addr));
         }
 
+        // Once Noise msg2 authenticates an ingress branch, the final msg3
+        // must follow that same branch. Ordinary learned-route weighting may
+        // prefer a different seed between handshake phases; sending msg3
+        // there leaves the initiator locally established while the responder
+        // keeps retransmitting msg2 forever. A still-sendable adjacent hop is
+        // sufficient here because explicit send failure releases the pin.
+        if self.config.node.routing.mode == crate::config::RoutingMode::ReplyLearned {
+            let sendable = self
+                .peers
+                .iter()
+                .filter(|(_, peer)| peer.can_send())
+                .map(|(addr, _)| *addr)
+                .collect::<std::collections::HashSet<_>>();
+            if let Some(next_hop_addr) =
+                self.learned_routes
+                    .select_handshake_route(&dest_addr, Self::now_ms(), |addr| {
+                        sendable.contains(addr)
+                    })
+            {
+                return Ok(self.prepare_session_datagram_runtime_route(datagram, next_hop_addr));
+            }
+        }
+
         let prefix = FspCommonPrefix::parse(&datagram.payload);
         let inner = datagram.payload.get(FSP_COMMON_PREFIX_SIZE..);
         let carried_dest_coords = match (prefix.map(|prefix| prefix.phase), inner) {
