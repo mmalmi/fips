@@ -463,6 +463,16 @@ impl Node {
             return;
         }
 
+        // A WebSocket listener is an operator-selected public adjacency: its
+        // open-discovery budget exists to admit authenticated inbound clients,
+        // not to turn every ambient relay advert into an outbound connection.
+        // Keep scanning adverts so configured-peer retries can be expedited,
+        // while leaving ambient peers to dial the advertised listener URL.
+        let allow_ambient_outbound = !self.transports.values().any(|transport| {
+            matches!(transport, crate::transport::TransportHandle::WebSocket(_))
+                && transport.accept_connections()
+        });
+
         let configured_npubs = self
             .config
             .peers()
@@ -472,7 +482,7 @@ impl Node {
         let now_ms = Self::now_ms();
         let now_secs = now_ms / 1000;
         let mut enqueue_budget = self.open_discovery_enqueue_budget(&configured_npubs);
-        if enqueue_budget == 0 {
+        if allow_ambient_outbound && enqueue_budget == 0 {
             debug!(
                 caller = %caller,
                 "open-discovery sweep: enqueue budget is 0, skipping"
@@ -481,12 +491,13 @@ impl Node {
         }
 
         let mut candidates = bootstrap.cached_open_discovery_candidates(64).await;
-        if self
-            .config
-            .node
-            .discovery
-            .nostr
-            .open_discovery_trust_ratings_enabled
+        if allow_ambient_outbound
+            && self
+                .config
+                .node
+                .discovery
+                .nostr
+                .open_discovery_trust_ratings_enabled
         {
             let candidate_npubs = candidates
                 .iter()
@@ -512,12 +523,13 @@ impl Node {
         let mut skipped_connected = 0usize;
         let mut skipped_retry_pending = 0usize;
         let mut skipped_connecting = 0usize;
+        let mut skipped_listener_outbound = 0usize;
         let mut skipped_no_endpoints = 0usize;
         let mut skipped_invalid_npub = 0usize;
         let mut skipped_cooldown = 0usize;
 
         for (npub, endpoints, created_at_secs) in candidates {
-            if enqueue_budget == 0 {
+            if allow_ambient_outbound && enqueue_budget == 0 {
                 break;
             }
 
@@ -569,6 +581,11 @@ impl Node {
                     }
                 }
                 skipped_configured = skipped_configured.saturating_add(1);
+                continue;
+            }
+
+            if !allow_ambient_outbound {
+                skipped_listener_outbound = skipped_listener_outbound.saturating_add(1);
                 continue;
             }
 
@@ -677,6 +694,7 @@ impl Node {
             + skipped_connected
             + skipped_retry_pending
             + skipped_connecting
+            + skipped_listener_outbound
             + skipped_no_endpoints
             + skipped_invalid_npub
             + skipped_cooldown;
@@ -692,6 +710,7 @@ impl Node {
                 skipped_connected = skipped_connected,
                 skipped_retry_pending = skipped_retry_pending,
                 skipped_connecting = skipped_connecting,
+                skipped_listener_outbound = skipped_listener_outbound,
                 skipped_no_endpoints = skipped_no_endpoints,
                 skipped_invalid_npub = skipped_invalid_npub,
                 skipped_cooldown = skipped_cooldown,
