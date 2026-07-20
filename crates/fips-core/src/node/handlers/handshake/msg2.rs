@@ -171,17 +171,16 @@ impl Node {
                         }
 
                         if remote_epoch_changed {
-                            self.remove_dataplane_fsp_owner(&peer_node_addr);
-                            if self.sessions.remove(&peer_node_addr).is_some() {
-                                debug!(
+                            if self.clear_stale_fsp_unless_recovered_to_remote_epoch(
+                                &peer_node_addr,
+                                remote_epoch,
+                                "FMP rekey",
+                            ) {
+                                info!(
                                     peer = %display_name,
-                                    "Cleared stale FSP session after peer restart during FMP rekey"
+                                    "Peer restart detected during FMP rekey, replacing stale endpoint session"
                                 );
                             }
-                            info!(
-                                peer = %display_name,
-                                "Peer restart detected during FMP rekey, replacing stale endpoint session"
-                            );
                         }
 
                         debug!(
@@ -390,15 +389,26 @@ impl Node {
                     )
                 })
                 .unwrap_or((false, false, false, false));
+            // An inbound session whose Msg2 is still retained is the other
+            // half of this simultaneous handshake, not the stale carrier that
+            // triggered the reconnect. Resolve that pair with the deterministic
+            // cross-connection tie-breaker even while the older FSP payload
+            // session remains degraded. Otherwise both endpoints can promote
+            // their own outbound Noise session and install mutually unrelated
+            // FMP keys/receiver indices.
+            let simultaneous_inbound_session = self
+                .peers
+                .get(&peer_node_addr)
+                .is_some_and(|peer| peer.handshake_msg2().is_some());
             let existing_path_unusable = active_peer_unusable
-                || self.session_direct_path_blocks_direct_payload(
-                    &peer_node_addr,
-                    packet.timestamp_ms,
-                )
-                || self.session_direct_path_exclusive_trust_expired(
-                    &peer_node_addr,
-                    packet.timestamp_ms,
-                );
+                || (!simultaneous_inbound_session
+                    && (self.session_direct_path_blocks_direct_payload(
+                        &peer_node_addr,
+                        packet.timestamp_ms,
+                    ) || self.session_direct_path_exclusive_trust_expired(
+                        &peer_node_addr,
+                        packet.timestamp_ms,
+                    )));
             let outbound_alternate_path = remote_epoch_changed
                 || existing_path_unusable
                 || (outbound_path_differs && !connection_oriented_cross_connection);
@@ -513,17 +523,16 @@ impl Node {
                 self.sync_dataplane_fmp_owner(&peer_node_addr);
 
                 if remote_epoch_changed {
-                    self.remove_dataplane_fsp_owner(&peer_node_addr);
-                    if self.sessions.remove(&peer_node_addr).is_some() {
-                        debug!(
+                    if self.clear_stale_fsp_unless_recovered_to_remote_epoch(
+                        &peer_node_addr,
+                        outbound_remote_epoch,
+                        "outbound path refresh",
+                    ) {
+                        info!(
                             peer = %display_name,
-                            "Cleared stale FSP session after peer restart during outbound path refresh"
+                            "Peer restart detected during outbound path refresh, replacing stale endpoint session"
                         );
                     }
-                    info!(
-                        peer = %display_name,
-                        "Peer restart detected during outbound path refresh, replacing stale endpoint session"
-                    );
                 }
 
                 self.pending_outbound.remove(&key);

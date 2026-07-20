@@ -66,15 +66,12 @@ impl SessionDirectDegradation {
             .is_some_and(|until_ms| *until_ms > now_ms)
     }
 
-    pub(in crate::node) fn is_degraded(&mut self, dest: &NodeAddr, now_ms: u64) -> bool {
-        match self.degraded_until_ms.get(dest).copied() {
-            Some(until_ms) if until_ms > now_ms => true,
-            Some(_) => {
-                self.degraded_until_ms.remove(dest);
-                false
-            }
-            None => false,
-        }
+    pub(in crate::node) fn is_degraded(&self, dest: &NodeAddr, now_ms: u64) -> bool {
+        self.is_degraded_at(dest, now_ms)
+    }
+
+    pub(in crate::node) fn has_pending_validation(&self, dest: &NodeAddr) -> bool {
+        self.degraded_until_ms.contains_key(dest)
     }
 
     pub(in crate::node) fn mark_degraded(

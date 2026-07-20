@@ -212,7 +212,7 @@ impl DataplaneOwnerShard {
         self.owners
             .values()
             .filter_map(OwnerState::fsp_activity)
-            .filter(|activity| activity.tracks_next_hop(next_hop))
+            .filter(|activity| activity.tracks_inbound_next_hop(next_hop))
             .filter_map(|activity| activity.last_rx_age_ms(now_ms))
             .min()
     }
@@ -235,7 +235,7 @@ impl DataplaneOwnerShard {
         self.owners
             .values()
             .filter_map(OwnerState::fsp_activity)
-            .filter(|activity| activity.tracks_next_hop(next_hop))
+            .filter(|activity| activity.tracks_outbound_next_hop(next_hop))
             .any(|activity| activity.has_recent_outbound_without_inbound(now_ms, timeout_ms))
     }
 

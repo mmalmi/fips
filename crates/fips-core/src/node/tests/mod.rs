@@ -182,6 +182,22 @@ pub(super) fn make_completed_connection(
     current_time_ms: u64,
 ) -> (PeerConnection, PeerIdentity) {
     let peer_identity_full = Identity::generate();
+    make_completed_connection_for_identity(
+        node,
+        link_id,
+        transport_id,
+        current_time_ms,
+        &peer_identity_full,
+    )
+}
+
+pub(super) fn make_completed_connection_for_identity(
+    node: &mut Node,
+    link_id: LinkId,
+    transport_id: TransportId,
+    current_time_ms: u64,
+    peer_identity_full: &Identity,
+) -> (PeerConnection, PeerIdentity) {
     // Must use from_pubkey_full to preserve parity for ECDH
     let peer_identity = PeerIdentity::from_pubkey_full(peer_identity_full.pubkey_full());
 

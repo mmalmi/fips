@@ -107,6 +107,25 @@ impl Node {
             .get(dest_node_addr)
             .filter(|peer| peer.is_healthy() && !direct_session_degraded)
             .map(|_| *dest_node_addr);
+        let authenticated_direct_handshake = self.config.node.routing.mode
+            == RoutingMode::ReplyLearned
+            && self
+                .learned_routes
+                .active_handshake_route(dest_node_addr, now_ms)
+                == Some(*dest_node_addr);
+
+        // A completed direct FSP handshake is fresh, authenticated evidence
+        // that the recovered carrier can move control traffic. Let it carry a
+        // bounded payload validation attempt before an older fallback flow
+        // affinity or stale link-cost sample can reclaim the owner route. If
+        // payload does not return, exclusive-trust expiry makes the direct
+        // route untrusted and fallback routing resumes normally.
+        if let Some(direct_addr) = healthy_direct_route
+            && authenticated_direct_handshake
+            && !direct_session_untrusted
+        {
+            return self.peers.get(&direct_addr);
+        }
         let active_fallback_affinity = (self.config.node.routing.mode == RoutingMode::ReplyLearned)
             .then(|| {
                 let activity = self.dataplane.fsp_owner_activity(dest_node_addr)?;

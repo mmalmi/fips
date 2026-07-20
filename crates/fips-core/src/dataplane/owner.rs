@@ -693,8 +693,8 @@ impl DataplaneFspOwnerActivity {
             && !self.has_recent_data_return_from(next_hop, now_ms, timeout_ms)
     }
 
-    fn tracks_next_hop(self, next_hop: &NodeAddr) -> bool {
-        self.last_rx_previous_hop == Some(*next_hop) || self.tracks_outbound_next_hop(next_hop)
+    fn tracks_inbound_next_hop(self, next_hop: &NodeAddr) -> bool {
+        self.last_rx_previous_hop == Some(*next_hop)
     }
 
     fn tracks_data_next_hop(self, next_hop: &NodeAddr) -> bool {

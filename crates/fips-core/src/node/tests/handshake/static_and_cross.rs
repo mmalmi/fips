@@ -286,6 +286,13 @@ async fn test_cross_connection_both_initiate() {
         "Node A should have peer B"
     );
 
+    // A reconnect commonly races while the previous direct FSP carrier is
+    // still marked degraded. That retained payload state must not make both
+    // sides bypass deterministic cross-connection resolution for the freshly
+    // authenticated inbound/outbound FMP handshake pair.
+    node_a.mark_session_direct_path_degraded(peer_b_node_addr, Node::now_ms());
+    node_b.mark_session_direct_path_degraded(peer_a_node_addr, Node::now_ms());
+
     // === Phase 3: Both nodes receive msg2 responses ===
     // The msg2 was sent during handle_msg1 processing. When handle_msg2
     // processes it, it will detect the cross-connection and resolve.
@@ -328,6 +335,16 @@ async fn test_cross_connection_both_initiate() {
     assert!(peer_a_on_b.has_session(), "Peer A on B should have session");
     assert!(peer_b_on_a.can_send(), "Peer B on A should be sendable");
     assert!(peer_a_on_b.can_send(), "Peer A on B should be sendable");
+    assert_eq!(
+        peer_b_on_a.their_index(),
+        peer_a_on_b.our_index(),
+        "A must send to B's installed receiver index after degraded simultaneous reconnect"
+    );
+    assert_eq!(
+        peer_a_on_b.their_index(),
+        peer_b_on_a.our_index(),
+        "B must send to A's installed receiver index after degraded simultaneous reconnect"
+    );
 
     // Clean up transports
     for (_, t) in node_a.transports.iter_mut() {

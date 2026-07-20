@@ -137,10 +137,12 @@ impl LearnedRouteTable {
         ttl_secs: u64,
         max_routes_per_dest: usize,
     ) {
-        if destination == next_hop || max_routes_per_dest == 0 {
+        if max_routes_per_dest == 0 {
             return;
         }
-        self.learn(destination, next_hop, now_ms, ttl_secs, max_routes_per_dest);
+        if destination != next_hop {
+            self.learn(destination, next_hop, now_ms, ttl_secs, max_routes_per_dest);
+        }
         self.handshake_routes.insert(
             destination,
             HandshakeRoute {

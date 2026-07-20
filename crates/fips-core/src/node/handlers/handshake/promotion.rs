@@ -150,24 +150,11 @@ impl Node {
                         let _ = self.index_allocator.free(old_idx);
                     }
 
-                    let recovered_fsp_already_matches_restart =
-                        self.sessions.get(&peer_node_addr).is_some_and(|session| {
-                            session.established_remote_epoch_matches(remote_epoch)
-                        });
-                    if recovered_fsp_already_matches_restart {
-                        debug!(
-                            peer = %self.peer_display_name(&peer_node_addr),
-                            "Preserved FSP session already recovered to restarted peer epoch"
-                        );
-                    } else {
-                        self.remove_dataplane_fsp_owner(&peer_node_addr);
-                        if self.sessions.remove(&peer_node_addr).is_some() {
-                            debug!(
-                                peer = %self.peer_display_name(&peer_node_addr),
-                                "Cleared stale FSP session after peer restart during promotion"
-                            );
-                        }
-                    }
+                    self.clear_stale_fsp_unless_recovered_to_remote_epoch(
+                        &peer_node_addr,
+                        remote_epoch,
+                        "promotion",
+                    );
                     info!(
                         peer = %self.peer_display_name(&peer_node_addr),
                         winner_link = %link_id,
@@ -405,5 +392,35 @@ impl Node {
 
             Ok(PromotionResult::Promoted(peer_node_addr))
         }
+    }
+
+    pub(in crate::node) fn clear_stale_fsp_unless_recovered_to_remote_epoch(
+        &mut self,
+        peer_node_addr: &NodeAddr,
+        remote_epoch: Option<[u8; 8]>,
+        context: &'static str,
+    ) -> bool {
+        if self
+            .sessions
+            .get(peer_node_addr)
+            .is_some_and(|session| session.established_remote_epoch_matches(remote_epoch))
+        {
+            debug!(
+                peer = %self.peer_display_name(peer_node_addr),
+                context,
+                "Preserved FSP session already recovered to restarted peer epoch"
+            );
+            return false;
+        }
+
+        self.remove_dataplane_fsp_owner(peer_node_addr);
+        if self.sessions.remove(peer_node_addr).is_some() {
+            debug!(
+                peer = %self.peer_display_name(peer_node_addr),
+                context,
+                "Cleared stale FSP session after peer restart"
+            );
+        }
+        true
     }
 }

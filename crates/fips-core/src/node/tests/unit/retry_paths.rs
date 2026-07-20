@@ -262,6 +262,72 @@ fn test_promote_clears_direct_degradation_hold_for_authenticated_discovered_path
 }
 
 #[test]
+fn healthy_control_path_with_degraded_payload_classifies_msg1_as_direct_recovery() {
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(1);
+    let (conn, identity) = make_completed_connection(&mut node, link_id, transport_id, 1_000);
+    let node_addr = *identity.node_addr();
+
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, identity, 2_000).unwrap();
+    node.get_peer_mut(&node_addr)
+        .unwrap()
+        .set_session_established_at_for_test(
+            std::time::Instant::now() - std::time::Duration::from_secs(31),
+        );
+    assert!(node.get_peer(&node_addr).unwrap().is_healthy());
+
+    let now_ms = Node::now_ms();
+    node.mark_session_direct_path_degraded(node_addr, now_ms);
+    assert!(
+        node.same_epoch_msg1_is_direct_path_recovery(&node_addr, now_ms),
+        "a healthy FMP control carrier must not turn a path-recovery msg1 into periodic rekey while FSP payload is still degraded"
+    );
+
+    node.clear_session_direct_path_degraded(&node_addr);
+    assert!(
+        !node.same_epoch_msg1_is_direct_path_recovery(&node_addr, Node::now_ms()),
+        "an old healthy session without payload degradation remains eligible for ordinary periodic rekey"
+    );
+}
+
+#[test]
+fn expired_direct_payload_hold_keeps_reconnect_until_validation() {
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(1);
+    let (conn, identity) = make_completed_connection(&mut node, link_id, transport_id, 1_000);
+    let node_addr = *identity.node_addr();
+    let peer_config = crate::config::PeerConfig::new(identity.npub(), "udp", "127.0.0.1:5000");
+
+    node.config.peers = vec![peer_config.clone()];
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, identity, 2_000).unwrap();
+
+    let now_ms = Node::now_ms();
+    let expired_at = now_ms.saturating_sub(SESSION_DIRECT_DEGRADED_HOLD_MS + 1);
+    node.mark_session_direct_path_degraded(node_addr, expired_at);
+    node.retry_pending.insert(
+        node_addr,
+        super::super::retry::RetryState::new(peer_config.clone()),
+    );
+    assert!(
+        !node.session_direct_path_degradation_active(&node_addr, now_ms),
+        "fixture requires the temporary payload block to be expired"
+    );
+    assert!(
+        node.active_peer_should_keep_direct_retry(&node_addr, &peer_config),
+        "a resumed healthy FMP heartbeat must not cancel reconnect before direct FSP payload is validated"
+    );
+    node.clear_retry_unless_direct_refresh_needed(&node_addr);
+    assert!(
+        node.retry_pending.contains_key(&node_addr),
+        "generic fresh-link cleanup must keep reconnect pending until direct FSP payload is validated"
+    );
+}
+
+#[test]
 fn test_promote_clears_direct_degradation_hold_for_configured_static_path() {
     let mut node = make_node();
     let transport_id = TransportId::new(1);

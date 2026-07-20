@@ -267,6 +267,8 @@ impl Node {
         // If we fell through from the address-index check above with
         // possible_restart=true, we now have the decrypted epoch from msg1.
         // Compare it against the stored epoch for this peer.
+        let same_epoch_direct_path_recovery = possible_restart
+            && self.same_epoch_msg1_is_direct_path_recovery(&peer_node_addr, packet.timestamp_ms);
         if possible_restart && let Some(existing_peer) = self.peers.get(&peer_node_addr) {
             let new_epoch = conn.remote_epoch();
             let existing_epoch = existing_peer.remote_epoch();
@@ -292,10 +294,10 @@ impl Node {
                     // install the freshly authenticated path instead of
                     // resending an old msg2 whose receiver index belongs to
                     // the dead session.
-                    if !existing_peer.is_healthy() {
+                    if same_epoch_direct_path_recovery {
                         debug!(
                             peer = %self.peer_display_name(&peer_node_addr),
-                            "Same-epoch msg1 received from stale peer; processing as direct-path recovery"
+                            "Same-epoch msg1 received while direct payload is stale; processing as direct-path recovery"
                         );
                     } else {
                         // If the peer has an active session and rekey is enabled,
@@ -702,6 +704,23 @@ impl Node {
         }
 
         self.msg1_rate_limiter.complete_handshake();
+    }
+
+    pub(in crate::node) fn same_epoch_msg1_is_direct_path_recovery(
+        &mut self,
+        peer_node_addr: &NodeAddr,
+        now_ms: u64,
+    ) -> bool {
+        let Some(peer_unhealthy) = self
+            .peers
+            .get(peer_node_addr)
+            .map(|peer| !peer.is_healthy())
+        else {
+            return false;
+        };
+        peer_unhealthy
+            || self.session_direct_path_blocks_direct_payload(peer_node_addr, now_ms)
+            || self.session_direct_path_exclusive_trust_expired(peer_node_addr, now_ms)
     }
 
     fn ensure_owned_msg2_receiver_route(&mut self, node_addr: &NodeAddr) -> bool {

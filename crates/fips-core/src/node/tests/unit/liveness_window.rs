@@ -67,12 +67,13 @@ fn session_direct_degradation_owns_hold_extension_expiry_and_clear() {
     );
     assert!(
         !degradation.is_degraded(&dest, 22_000),
-        "the owner must expire and remove stale degradation holds"
+        "the payload hold must expire so direct validation can be attempted"
     );
     assert!(
-        !degradation.clear(&dest),
-        "expired degradation state should already be removed"
+        degradation.has_pending_validation(&dest),
+        "hold expiry must retain the need for an authenticated direct-path validation"
     );
+    assert!(degradation.clear(&dest));
 
     assert!(degradation.mark_degraded(dest, 30_000, hold_ms));
     assert!(degradation.clear(&dest));
@@ -807,6 +808,7 @@ async fn fresh_control_with_unreturned_endpoint_data_warms_fallback_lookup() {
     retry.reconnect = true;
     retry.retry_after_ms = now_ms;
     node.retry_pending.insert(peer_addr, retry);
+    node.mark_session_direct_path_degraded(peer_addr, now_ms);
 
     node.check_link_heartbeats().await;
 
@@ -819,8 +821,8 @@ async fn fresh_control_with_unreturned_endpoint_data_warms_fallback_lookup() {
         "fresh control traffic must not keep unreturned endpoint data pinned to the suspect direct path"
     );
     assert!(
-        !node.retry_pending.contains_key(&peer_addr),
-        "fresh control traffic should clear direct-probe retry even while payload trust remains degraded"
+        node.retry_pending.contains_key(&peer_addr),
+        "fresh control traffic must keep direct-probe retry until direct payload return validates the path"
     );
     assert!(
         node.pending_lookups.contains_key(&peer_addr),

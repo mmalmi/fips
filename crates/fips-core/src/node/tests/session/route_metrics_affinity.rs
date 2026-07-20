@@ -207,6 +207,39 @@ fn test_active_fallback_affinity_keeps_user_payload_on_fallback() {
 }
 
 #[test]
+fn test_authenticated_direct_handshake_gets_payload_validation_before_old_fallback_affinity() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let fallback_next_hop = *node.peer_ids().next().expect("fallback peer");
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+    node.config.peers.push(crate::config::PeerConfig {
+        npub: crate::encode_npub(&remote.pubkey()),
+        alias: Some("direct-handshake-after-fallback".to_string()),
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    });
+    add_direct_peer_for_identity(&mut node, &remote);
+    install_established_session_with_mmp(&mut node, &remote);
+    node.learn_reverse_route(remote_addr, fallback_next_hop);
+    seed_dataplane_fsp_data_sent_for_test(
+        &mut node,
+        remote_addr,
+        fallback_next_hop,
+        Node::now_ms(),
+    );
+    node.pin_handshake_reverse_route(remote_addr, remote_addr);
+
+    assert_eq!(
+        node.find_next_hop(&remote_addr)
+            .map(|peer| *peer.node_addr()),
+        Some(remote_addr),
+        "a fresh authenticated direct handshake must get one bounded payload-validation window before stale fallback affinity wins"
+    );
+}
+
+#[test]
 fn test_active_fallback_exploration_skips_direct_while_refresh_pending() {
     let mut node = make_reply_learned_node_with_tree_peer();
     node.config.node.routing.learned_fallback_explore_interval = 2;

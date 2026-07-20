@@ -133,6 +133,47 @@ fn test_handshake_proven_hop_overrides_initial_route_exploration() {
 }
 
 #[test]
+fn test_live_direct_peer_overrides_routed_handshake_ingress() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let routed_hop = *node.peer_ids().next().expect("routed handshake hop");
+    assert!(node.sync_dataplane_fmp_owner(&routed_hop));
+
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+    let direct_link = LinkId::new(2);
+    let (direct_connection, direct_identity) = make_completed_connection_for_identity(
+        &mut node,
+        direct_link,
+        TransportId::new(1),
+        2_000,
+        &remote,
+    );
+    node.add_connection(direct_connection).unwrap();
+    node.promote_connection(direct_link, direct_identity, 2_000)
+        .unwrap();
+    assert!(node.sync_dataplane_fmp_owner(&remote_addr));
+
+    install_established_session_with_mmp(&mut node, &remote);
+    assert!(node.sync_dataplane_fsp_owner_from_current_session_via(
+        &remote_addr,
+        Some(routed_hop),
+        0,
+    ));
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&remote_addr),
+        Some(remote_addr),
+        "a live direct peer must beat a transient routed SessionAck ingress"
+    );
+    assert!(
+        node.dataplane
+            .owner_active_path(crate::dataplane::OwnerId::fsp_node(remote_addr))
+            .expect("direct FSP owner")
+            .is_some(),
+        "the FSP owner must use the direct transport path"
+    );
+}
+
+#[test]
 fn test_active_peer_removal_invalidates_dependent_fsp_wrap_route() {
     let mut node = make_reply_learned_node_with_tree_peer();
     let next_hop = *node.peer_ids().next().expect("fallback peer");

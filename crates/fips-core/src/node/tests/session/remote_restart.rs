@@ -199,6 +199,27 @@ async fn restarted_initiator_reestablishes_with_surviving_responder() {
         survivor_session.handshake_hash(),
         "both peers must install the same restarted session"
     );
+    let recovered_handshake_hash = survivor_session.handshake_hash().copied();
+    let restarted_epoch = nodes[0].node.startup_epoch;
+    assert!(
+        !nodes[1]
+            .node
+            .clear_stale_fsp_unless_recovered_to_remote_epoch(
+                &restarted_addr,
+                Some(restarted_epoch),
+                "test FMP recovery",
+            ),
+        "a later FMP recovery must preserve an FSP session that already authenticated the restarted peer epoch"
+    );
+    assert_eq!(
+        nodes[1]
+            .node
+            .get_session(&restarted_addr)
+            .expect("recovered FSP session must remain installed")
+            .handshake_hash()
+            .copied(),
+        recovered_handshake_hash,
+    );
     assert!(nodes[0].node.dataplane_has_fsp_owner(&survivor_addr));
     assert!(nodes[1].node.dataplane_has_fsp_owner(&restarted_addr));
 
@@ -223,6 +244,29 @@ async fn restarted_initiator_reestablishes_with_surviving_responder() {
     assert_eq!(
         expect_single_endpoint_data_event(event).payload.as_slice(),
         &b"restarted-initiator-recovered"[..]
+    );
+
+    let mut survivor_endpoint = nodes[1]
+        .node
+        .attach_endpoint_data_io(8)
+        .expect("survivor endpoint data I/O should attach");
+    send_endpoint_data_via_dataplane(
+        &mut nodes[0].node,
+        survivor_identity,
+        b"survivor-received-after-restart".to_vec(),
+    )
+    .await
+    .expect("restarted initiator should send endpoint data");
+    let event = recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut survivor_endpoint.event_rx,
+        Duration::from_secs(10),
+        "survivor endpoint data from restarted initiator",
+    )
+    .await;
+    assert_eq!(
+        expect_single_endpoint_data_event(event).payload.as_slice(),
+        &b"survivor-received-after-restart"[..]
     );
 
     cleanup_nodes(&mut nodes).await;

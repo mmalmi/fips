@@ -188,6 +188,11 @@ fn fsp_owner_tracks_data_return_without_registry_side_channel() {
         None,
         "control/session FSP activity must not masquerade as endpoint-data freshness"
     );
+    assert_eq!(
+        mover.min_fsp_rx_age_for_next_hop(&next_hop.node_addr(), 135),
+        None,
+        "traffic rerouted through another previous hop must not refresh the old direct link"
+    );
 }
 
 #[test]

@@ -188,7 +188,10 @@ impl Node {
             return false;
         };
 
-        if self.session_direct_path_degradation_active(peer_node_addr, Self::now_ms()) {
+        if self
+            .session_direct_degradation
+            .has_pending_validation(peer_node_addr)
+        {
             return true;
         }
 
@@ -268,6 +271,17 @@ impl Node {
 
         if !keep_retry {
             self.retry_pending.remove(peer_node_addr);
+            return;
+        }
+
+        // FMP/control liveness can resume on an old direct link while the FSP
+        // payload route is still blackholed. Keep racing a replacement until
+        // authenticated direct FSP data (or a promoted direct handshake)
+        // explicitly clears the pending payload validation marker.
+        if self
+            .session_direct_degradation
+            .has_pending_validation(peer_node_addr)
+        {
             return;
         }
 
