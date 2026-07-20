@@ -213,12 +213,16 @@ impl OwnerState {
             {
                 self.last_rx_data_previous_hop = Some(previous_hop);
             }
+            // Application data from the destination proves the end-to-end
+            // session returned data even when the decentralized overlay chose
+            // an asymmetric return path. Keep the route-matched evidence below
+            // separate: it is used to grant trust to one specific direct hop.
+            self.outbound_without_data_return_since = None;
             if self.last_outbound_next_hop == Some(previous_hop)
                 && let Some(tick) = activity_tick
                 && note_activity(&mut self.last_data_return_activity, tick)
             {
                 self.last_data_return_next_hop = Some(previous_hop);
-                self.outbound_without_data_return_since = None;
             }
             self.data_packets_recv = self.data_packets_recv.saturating_add(1);
             self.data_bytes_recv = self.data_bytes_recv.saturating_add(body_len as u64);

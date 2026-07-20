@@ -696,6 +696,33 @@ impl Node {
         );
     }
 
+    pub(in crate::node) fn pin_duplicate_handshake_reverse_route(
+        &mut self,
+        destination: NodeAddr,
+        next_hop: NodeAddr,
+    ) {
+        if self.config.node.routing.mode != RoutingMode::ReplyLearned
+            || destination == *self.node_addr()
+        {
+            return;
+        }
+        let now_ms = Self::now_ms();
+        if self
+            .learned_routes
+            .active_handshake_route(&destination, now_ms)
+            .is_some_and(|pinned_hop| pinned_hop != next_hop)
+        {
+            return;
+        }
+        self.learned_routes.pin_handshake_route(
+            destination,
+            next_hop,
+            now_ms,
+            self.config.node.routing.learned_ttl_secs,
+            self.config.node.routing.max_learned_routes_per_dest,
+        );
+    }
+
     pub(in crate::node) fn routing_error_matches_active_path(
         &mut self,
         destination: &NodeAddr,
