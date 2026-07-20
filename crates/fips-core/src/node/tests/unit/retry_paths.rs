@@ -242,7 +242,7 @@ fn test_promote_clears_retry_pending() {
 }
 
 #[test]
-fn test_promote_keeps_direct_degradation_hold_for_discovered_path() {
+fn test_promote_clears_direct_degradation_hold_for_authenticated_discovered_path() {
     let mut node = make_node();
     let transport_id = TransportId::new(1);
 
@@ -256,8 +256,8 @@ fn test_promote_keeps_direct_degradation_hold_for_discovered_path() {
     node.promote_connection(link_id, identity, now_ms).unwrap();
 
     assert!(
-        node.session_direct_path_blocks_direct_payload(&node_addr, Node::now_ms()),
-        "direct refresh promotion should not instantly restore payload trust for a degraded discovered path"
+        !node.session_direct_path_blocks_direct_payload(&node_addr, Node::now_ms()),
+        "an authenticated direct refresh should get a bounded payload retry after degradation"
     );
 }
 

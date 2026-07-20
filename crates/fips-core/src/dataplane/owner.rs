@@ -688,6 +688,7 @@ impl DataplaneFspOwnerActivity {
         timeout_ms: u64,
     ) -> bool {
         self.data_packets_sent > 0
+            && self.last_outbound_next_hop == Some(*next_hop)
             && self.has_recent_outbound_activity(now_ms, timeout_ms)
             && !self.has_recent_data_return_from(next_hop, now_ms, timeout_ms)
     }

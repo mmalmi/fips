@@ -107,6 +107,28 @@ impl Node {
             .get(dest_node_addr)
             .filter(|peer| peer.is_healthy() && !direct_session_degraded)
             .map(|_| *dest_node_addr);
+        let active_fallback_affinity = (self.config.node.routing.mode == RoutingMode::ReplyLearned)
+            .then(|| {
+                let activity = self.dataplane.fsp_owner_activity(dest_node_addr)?;
+                let next_hop = activity.last_outbound_next_hop()?;
+                (next_hop != *dest_node_addr
+                    && activity.has_recent_outbound_activity(
+                        now_ms,
+                        self.session_direct_path_exclusive_trust_timeout_ms(),
+                    )
+                    && !failed_learned_routes.contains(&next_hop)
+                    && self
+                        .peers
+                        .get(&next_hop)
+                        .is_some_and(|peer| peer.is_healthy() && peer.can_send()))
+                .then_some(next_hop)
+            })
+            .flatten();
+        if let Some(next_hop_addr) = active_fallback_affinity {
+            self.learned_routes
+                .record_selected(dest_node_addr, &next_hop_addr, now_ms);
+            return self.peers.get(&next_hop_addr);
+        }
         let direct_session_has_recent_data_return =
             self.session_direct_path_has_recent_data_return(dest_node_addr, now_ms);
         if let Some(direct_addr) = healthy_direct_route
@@ -165,26 +187,6 @@ impl Node {
                 |addr| sendable.contains(addr),
             )
         });
-        if let Some(next_hop_addr) = sendable_learned_peers.as_ref().and_then(|sendable| {
-            let activity = self.dataplane.fsp_owner_activity(dest_node_addr)?;
-            let next_hop_addr = activity.last_outbound_next_hop()?;
-            if next_hop_addr == *dest_node_addr
-                || !activity.has_recent_outbound_activity(
-                    now_ms,
-                    self.session_direct_path_exclusive_trust_timeout_ms(),
-                )
-                || !sendable.contains(&next_hop_addr)
-                || !fallback_beats_direct(self, next_hop_addr)
-            {
-                return None;
-            }
-            Some(next_hop_addr)
-        }) {
-            self.learned_routes
-                .record_selected(dest_node_addr, &next_hop_addr, now_ms);
-            return self.peers.get(&next_hop_addr);
-        }
-
         // 3. Optional reply-learned routing. These entries are not peer
         // claims; they are local observations of which peer carried traffic
         // or a verified lookup response back from the destination. Most
@@ -602,6 +604,25 @@ impl Node {
         dest: &NodeAddr,
         now_ms: u64,
     ) {
+        if self.session_direct_path_degradation_active(dest, now_ms) {
+            if let Some(fallback_next_hop) = self
+                .dataplane
+                .fsp_owner_activity(dest)
+                .and_then(|activity| activity.last_outbound_next_hop())
+                .filter(|next_hop| next_hop != dest)
+            {
+                let _ = self
+                    .dataplane
+                    .forget_fsp_data_route(*dest, fallback_next_hop);
+            }
+            debug!(
+                peer = %self.peer_display_name(dest),
+                "Authenticated direct-path refresh released degraded fallback affinity"
+            );
+            self.clear_session_direct_path_degraded(dest);
+            return;
+        }
+
         let keep_degraded = self.session_direct_path_blocks_direct_payload(dest, now_ms);
         if !keep_degraded {
             self.clear_session_direct_path_degraded(dest);

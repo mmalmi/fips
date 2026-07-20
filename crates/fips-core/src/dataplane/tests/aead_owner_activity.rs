@@ -123,6 +123,14 @@ fn fsp_owner_tracks_data_return_without_registry_side_channel() {
         ),
         "direct inbound data must not masquerade as return traffic for a routed fallback send"
     );
+    assert!(
+        !activity.has_recent_outbound_without_data_return_from(
+            &owner.node_addr(),
+            115,
+            20,
+        ),
+        "fallback traffic must not be misclassified as an unreturned direct send"
+    );
     assert!(!activity.has_recent_outbound_without_inbound(115, 20));
     assert_eq!(mover.record_fsp_decrypt_failure(owner), Some(1));
 

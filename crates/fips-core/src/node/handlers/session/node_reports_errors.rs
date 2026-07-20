@@ -73,35 +73,48 @@ impl Node {
         };
 
         if let Some((span, loss)) = processed.sample
-            && processed.used_direct_next_hop
             && processed.route_quality_sample
             && span >= SESSION_DIRECT_DEGRADED_MIN_SAMPLE
         {
-            if loss >= SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD
-                && self.peers.get(src_addr).is_some_and(|peer| peer.can_send())
-            {
-                let newly_degraded = self.mark_session_direct_path_degraded(*src_addr, now_ms);
-                if newly_degraded || !self.retry_pending.contains_key(src_addr) {
-                    self.schedule_link_dead_reprobe(*src_addr, now_ms);
+            if processed.used_direct_next_hop {
+                if loss >= SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD
+                    && self.peers.get(src_addr).is_some_and(|peer| peer.can_send())
+                {
+                    let newly_degraded = self.mark_session_direct_path_degraded(*src_addr, now_ms);
+                    if newly_degraded || !self.retry_pending.contains_key(src_addr) {
+                        self.schedule_link_dead_reprobe(*src_addr, now_ms);
+                    }
+                    debug!(
+                        src = %peer_name,
+                        loss = format_args!("{:.1}%", loss * 100.0),
+                        sample_packets = span,
+                        newly_degraded,
+                        "Session loss marked direct path degraded; fallback routing may carry traffic while direct probes continue"
+                    );
+                    self.maybe_initiate_direct_path_fallback_lookup(src_addr)
+                        .await;
+                } else if loss <= SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD
+                    && self.clear_session_direct_path_degraded(src_addr)
+                {
+                    debug!(
+                        src = %peer_name,
+                        loss = format_args!("{:.1}%", loss * 100.0),
+                        sample_packets = span,
+                        "Session loss recovered; direct path eligible for normal routing"
+                    );
                 }
-                debug!(
-                    src = %peer_name,
-                    loss = format_args!("{:.1}%", loss * 100.0),
-                    sample_packets = span,
-                    newly_degraded,
-                    "Session loss marked direct path degraded; fallback routing may carry traffic while direct probes continue"
-                );
-                self.maybe_initiate_direct_path_fallback_lookup(src_addr)
-                    .await;
-            } else if loss <= SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD
-                && self.clear_session_direct_path_degraded(src_addr)
+            } else if loss >= SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD
+                && let Some(failed_next_hop) = last_outbound_next_hop
             {
+                self.record_route_failure(*src_addr, failed_next_hop);
                 debug!(
                     src = %peer_name,
+                    failed_next_hop = %self.peer_display_name(&failed_next_hop),
                     loss = format_args!("{:.1}%", loss * 100.0),
                     sample_packets = span,
-                    "Session loss recovered; direct path eligible for normal routing"
+                    "Session loss demoted active fallback route"
                 );
+                self.maybe_initiate_path_recovery_lookup(src_addr).await;
             }
         }
 
