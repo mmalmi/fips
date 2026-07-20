@@ -339,3 +339,92 @@ async fn lookup_timeout_preserves_endpoint_data_for_fsp_responder_awaiting_msg3(
         "an active FSP handshake must not poison later discovery"
     );
 }
+
+#[tokio::test]
+async fn established_session_keeps_path_recovery_lookup_and_endpoint_data() {
+    use crate::node::handlers::discovery::PendingLookup;
+    use crate::node::session::{EndToEndState, SessionEntry};
+    use crate::noise::HandshakeState;
+
+    let mut node = make_node();
+    let target = Identity::generate();
+    let target_addr = *target.node_addr();
+
+    let mut initiator =
+        HandshakeState::new_initiator(node.identity().keypair(), target.pubkey_full());
+    let mut responder = HandshakeState::new_responder(target.keypair());
+    initiator.set_local_epoch([1; 8]);
+    responder.set_local_epoch([2; 8]);
+    let msg1 = initiator.write_message_1().expect("session msg1");
+    responder.read_message_1(&msg1).expect("session read msg1");
+    let msg2 = responder.write_message_2().expect("session msg2");
+    initiator.read_message_2(&msg2).expect("session read msg2");
+    let session = initiator.into_session().expect("established session");
+    node.sessions.insert(
+        target_addr,
+        SessionEntry::new(
+            target_addr,
+            target.pubkey_full(),
+            EndToEndState::Established(session),
+            1_000,
+            false,
+        ),
+    );
+    node.pending_session_traffic
+        .push_endpoint_data_batch_with_enqueued_at_ms(
+            target_addr,
+            vec![
+                crate::node::EndpointDataPayload::from_service_datagram(
+                    7_370,
+                    7_370,
+                    b"tcp-syn".to_vec(),
+                )
+                .expect("pending service datagram"),
+            ],
+            usize::MAX,
+            usize::MAX,
+            1_000,
+        );
+    node.pending_lookups
+        .insert(target_addr, PendingLookup::new(0));
+    let baseline_initiated = node.stats().discovery.req_initiated;
+    let baseline_timed_out = node.stats().discovery.resp_timed_out;
+
+    node.check_pending_lookups(1_100).await;
+
+    let lookup = node
+        .pending_lookups
+        .get(&target_addr)
+        .expect("established but broken path must keep recovery lookup active");
+    assert_eq!(lookup.attempt, 2, "path recovery must advance to retry two");
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        baseline_initiated + 1,
+        "path recovery must send another lookup despite the established session"
+    );
+
+    let lookup = node
+        .pending_lookups
+        .get_mut(&target_addr)
+        .expect("recovery lookup");
+    lookup.attempt = node.config.node.discovery.attempt_timeouts_secs.len() as u8;
+    lookup.last_sent_ms = 0;
+    node.check_pending_lookups(8_000).await;
+
+    assert!(
+        !node.pending_lookups.contains_key(&target_addr),
+        "exhausted recovery lookup should leave the bounded pending set"
+    );
+    assert_eq!(
+        node.pending_session_traffic
+            .endpoint_data_for(&target_addr)
+            .map(|queue| queue.len()),
+        Some(1),
+        "an established FSP session must retain endpoint data after lookup exhaustion"
+    );
+    assert_eq!(
+        node.stats().discovery.resp_timed_out,
+        baseline_timed_out,
+        "an established authenticated session is not an unreachable destination"
+    );
+}

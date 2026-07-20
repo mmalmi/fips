@@ -69,6 +69,43 @@ fn test_dataplane_fmp_owner_update_refreshes_fsp_owner_wrap_route() {
 }
 
 #[test]
+fn test_handshake_proven_hop_overrides_initial_route_exploration() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    node.config.node.routing.learned_fallback_explore_interval = 1;
+    let tree_peer = *node.peer_ids().next().expect("tree peer");
+    let transport_id = TransportId::new(1);
+    let proven_link = LinkId::new(2);
+    let (proven_connection, proven_identity) =
+        make_completed_connection(&mut node, proven_link, transport_id, 1_000);
+    let proven_hop = *proven_identity.node_addr();
+    node.add_connection(proven_connection).unwrap();
+    node.promote_connection(proven_link, proven_identity, 2_000)
+        .unwrap();
+
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+    node.learn_reverse_route(remote_addr, proven_hop);
+    assert_eq!(
+        node.find_next_hop(&remote_addr).map(|peer| *peer.node_addr()),
+        Some(proven_hop),
+        "the discovery-proven route should carry the session handshake"
+    );
+
+    install_established_session_with_mmp(&mut node, &remote);
+    assert!(node.sync_dataplane_fsp_owner_from_current_session_via(
+        &remote_addr,
+        Some(proven_hop),
+        0,
+    ));
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&remote_addr),
+        Some(proven_hop),
+        "first established records must follow the authenticated handshake ingress instead of the route-exploration slot"
+    );
+    assert_ne!(tree_peer, proven_hop);
+}
+
+#[test]
 fn test_active_peer_removal_invalidates_dependent_fsp_wrap_route() {
     let mut node = make_reply_learned_node_with_tree_peer();
     let next_hop = *node.peer_ids().next().expect("fallback peer");

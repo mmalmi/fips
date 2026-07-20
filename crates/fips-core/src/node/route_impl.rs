@@ -313,6 +313,27 @@ impl Node {
             return TransitNextHopPlan::Route(*dest_node_addr);
         }
 
+        // A forwarded LookupResponse proves this direction of the transit
+        // path. Keep an established encrypted flow on that learned path while
+        // it is live; origin-side route exploration must not spray transit
+        // records into an unproven branch. Failure handling removes/decays the
+        // route and the ordinary coordinate/tree fallback remains below.
+        if self.config.node.routing.mode == RoutingMode::ReplyLearned {
+            let sendable = self
+                .peers
+                .iter()
+                .filter(|(addr, peer)| *addr != previous_hop && peer.is_healthy())
+                .map(|(addr, _)| *addr)
+                .collect::<HashSet<_>>();
+            if let Some(next_hop_addr) = self.learned_routes.select_next_hop(
+                dest_node_addr,
+                Self::now_ms(),
+                |addr| sendable.contains(addr),
+            ) {
+                return TransitNextHopPlan::Route(next_hop_addr);
+            }
+        }
+
         let Some(next_hop_addr) = self
             .find_next_hop(dest_node_addr)
             .map(|peer| *peer.node_addr())
@@ -629,6 +650,9 @@ impl Node {
             self.config.node.routing.learned_ttl_secs,
             self.config.node.routing.max_learned_routes_per_dest,
         );
+        // Only discovery and handshake paths call this for routed traffic;
+        // authenticated application ingress is directional and is not learned
+        // as an outbound route. Refresh owners when this stronger proof arrives.
         let _ = self.refresh_dataplane_fsp_owner_routes(&destination);
     }
 

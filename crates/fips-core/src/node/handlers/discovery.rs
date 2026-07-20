@@ -251,6 +251,7 @@ impl Node {
                 info!(
                     request_id = response.request_id,
                     target = %self.peer_display_name(&target),
+                    next_hop = %self.peer_display_name(from),
                     depth = response.target_coords.depth(),
                     path_mtu = path_mtu,
                     "Discovery succeeded, proof verified, route cached"

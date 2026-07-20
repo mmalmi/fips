@@ -387,8 +387,9 @@ impl Node {
         // well-formed initial SessionSetup has a forward route, retain its
         // ingress hop so the SessionAck can traverse the same transit chain.
         // Limit this bootstrap observation to msg1 whose claimed source
-        // coordinate matches the datagram source; established traffic keeps
-        // learning routes only after end-to-end authentication.
+        // coordinate matches the datagram source. Established application
+        // traffic does not passively learn transit ingress as an outbound
+        // route; only direct authenticated adjacency is bidirectional.
         if transit_session_setup_source(&datagram_ref).is_some() {
             self.learn_reverse_route(datagram_ref.src_addr, previous_hop);
         }

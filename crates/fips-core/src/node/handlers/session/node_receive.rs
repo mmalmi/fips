@@ -36,7 +36,7 @@ impl Node {
                 Box::pin(self.handle_session_setup(&src_addr, &previous_hop_addr, inner)).await;
             }
             FSP_PHASE_MSG2 => {
-                Box::pin(self.handle_session_ack(&src_addr, inner)).await;
+                Box::pin(self.handle_session_ack(&src_addr, &previous_hop_addr, inner)).await;
             }
             FSP_PHASE_MSG3 => {
                 Box::pin(self.handle_session_msg3(&src_addr, &previous_hop_addr, inner)).await;
@@ -101,8 +101,7 @@ impl Node {
                     &mut service_commit,
                 )
                 .await;
-                let deliveries =
-                    dispatch.dispatch_endpoint_data_batched(self, &mut endpoint_commit);
+                let deliveries = dispatch.dispatch_endpoint_data_batched(&mut endpoint_commit);
                 processed = processed.saturating_add(deliveries.len());
                 endpoint_deliveries.extend(deliveries);
                 continue;
@@ -272,7 +271,6 @@ impl Node {
                         "FSP rekey cutover complete after dataplane compact endpoint-data receive commit"
                     );
                 }
-                self.learn_reverse_route(source_addr, previous_hop_addr);
                 endpoint_commit.push_receive_completion(SessionReceiveCompletion {
                     source_addr,
                     previous_hop_addr,

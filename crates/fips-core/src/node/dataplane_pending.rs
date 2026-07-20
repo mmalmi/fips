@@ -62,6 +62,7 @@ impl Node {
             send_context.generation(),
             send_context.fsp_flags(),
             send_context.inner_flags(),
+            None,
         );
         let route_ready = update.wrap.is_some() || update.path.is_some();
         let next_hop_ready = update.path.is_some()

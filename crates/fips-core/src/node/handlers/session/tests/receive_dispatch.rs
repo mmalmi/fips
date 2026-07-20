@@ -284,7 +284,7 @@
         );
 
         assert_eq!(dispatch.source_addr(), &source_addr);
-        assert_eq!(dispatch.previous_hop_addr(), &previous_hop_addr);
+        assert_eq!(&dispatch.previous_hop_addr, &previous_hop_addr);
         assert!(dispatch.ce_flag());
         assert_eq!(
             dispatch.msg_type(),
@@ -361,7 +361,7 @@
             .insert(source_addr, established_entry(&local, &peer));
 
         let mut commit = SessionReceiveBatchCommit::default();
-        let deliveries = dispatch.dispatch_endpoint_data_batched(&mut node, &mut commit);
+        let deliveries = dispatch.dispatch_endpoint_data_batched(&mut commit);
         let pending_flush = commit.finish(&mut node);
         node.deliver_endpoint_data_batch(deliveries);
         assert!(pending_flush.is_empty());
@@ -374,6 +374,52 @@
         assert!(
             !node.pending_session_traffic.has_traffic_for(&source_addr),
             "empty pending guard should keep the fast path synchronous"
+        );
+    }
+
+    #[test]
+    fn authenticated_transit_data_does_not_replace_proven_outbound_route() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let source_addr = *peer.node_addr();
+        let proven_outbound_hop = node_addr(0x54);
+        let passive_ingress_hop = node_addr(0x55);
+        let plaintext = fsp_prepend_inner_header(
+            0x0102_0304,
+            SessionMessageType::EndpointData.to_byte(),
+            0,
+            b"directional transit data",
+        );
+        let dispatch = AuthenticatedSessionDispatch::new(
+            source_addr,
+            passive_ingress_hop,
+            false,
+            AuthenticatedSessionMessage::new(
+                source_peer,
+                crate::transport::PacketBuffer::new(plaintext),
+                SessionMessageType::EndpointData.to_byte(),
+            ),
+        );
+
+        let mut config = crate::config::Config::new();
+        config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;
+        let mut node = Node::with_identity(local, config).expect("node");
+        node.sessions
+            .insert(source_addr, established_entry(node.identity(), &peer));
+        node.learn_reverse_route(source_addr, proven_outbound_hop);
+
+        let mut commit = SessionReceiveBatchCommit::default();
+        let _deliveries = dispatch.dispatch_endpoint_data_batched(&mut commit);
+        let _pending_flush = commit.finish(&mut node);
+
+        let snapshot = node.learned_route_table_snapshot(Node::now_ms());
+        assert_eq!(snapshot.destination_count, 1);
+        assert_eq!(snapshot.route_count, 1);
+        assert_eq!(
+            snapshot.destinations[0].routes[0].next_hop,
+            proven_outbound_hop.to_string(),
+            "authenticated inbound transit must not enter outbound route rotation"
         );
     }
 
@@ -423,7 +469,7 @@
         );
 
         let mut commit = SessionReceiveBatchCommit::default();
-        let _delivery = dispatch.dispatch_endpoint_data_batched(&mut node, &mut commit);
+        let _delivery = dispatch.dispatch_endpoint_data_batched(&mut commit);
         let pending_flush = commit.finish(&mut node);
 
         assert_eq!(pending_flush, vec![source_addr]);

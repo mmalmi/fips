@@ -292,7 +292,12 @@ impl Node {
     /// Handle an incoming SessionAck (Noise XK msg2).
     ///
     /// Processes msg2, generates and sends msg3, then transitions to Established.
-    async fn handle_session_ack(&mut self, src_addr: &NodeAddr, inner: &[u8]) {
+    async fn handle_session_ack(
+        &mut self,
+        src_addr: &NodeAddr,
+        previous_hop_addr: &NodeAddr,
+        inner: &[u8],
+    ) {
         let ack = match SessionAck::decode(inner) {
             Ok(a) => a,
             Err(e) => {
@@ -386,8 +391,9 @@ impl Node {
                 entry.establish(session, now_ms);
                 entry.set_handshake_payload(msg3_resend_payload, now_ms + resend_interval);
                 self.sessions.insert(*src_addr, entry);
-                self.sync_dataplane_fsp_owner_from_current_session(
+                self.sync_dataplane_fsp_owner_from_current_session_via(
                     src_addr,
+                    Some(*previous_hop_addr),
                     self.config.node.session.coords_warmup_packets,
                 );
                 self.flush_pending_packets(src_addr).await;
@@ -515,15 +521,25 @@ impl Node {
         self.sessions.insert(*src_addr, entry);
         self.pending_lookups.remove(src_addr);
         self.discovery_backoff.record_success(src_addr);
-        self.sync_dataplane_fsp_owner_from_current_session(
+        // A successfully opened XK msg2 authenticates the responder and the
+        // physical ingress chain that carried it. Prefer that proven return
+        // path for the first established records instead of a stale lookup
+        // branch that may not have retained the destination route.
+        self.learn_reverse_route(*src_addr, *previous_hop_addr);
+        self.sync_dataplane_fsp_owner_from_current_session_via(
             src_addr,
+            Some(*previous_hop_addr),
             self.config.node.session.coords_warmup_packets,
         );
 
         // Flush any queued outbound packets for this destination
         self.flush_pending_packets(src_addr).await;
 
-        info!(src = %self.peer_display_name(src_addr), "Session established (initiator, XK)");
+        info!(
+            src = %self.peer_display_name(src_addr),
+            previous_hop = %self.peer_display_name(previous_hop_addr),
+            "Session established (initiator, XK)"
+        );
     }
 
     /// Handle an incoming SessionMsg3 (Noise XK msg3).
@@ -616,8 +632,9 @@ impl Node {
                 entry.establish(session, Self::now_ms());
                 self.sessions.insert(*src_addr, entry);
                 self.learn_reverse_route(*src_addr, *previous_hop_addr);
-                self.sync_dataplane_fsp_owner_from_current_session(
+                self.sync_dataplane_fsp_owner_from_current_session_via(
                     src_addr,
+                    Some(*previous_hop_addr),
                     self.config.node.session.coords_warmup_packets,
                 );
                 self.flush_pending_packets(src_addr).await;
@@ -706,8 +723,9 @@ impl Node {
         // Msg3 binds the initiator's static key to src_addr, so its authenticated
         // FMP ingress hop is now safe to retain as the reverse route.
         self.learn_reverse_route(*src_addr, *previous_hop_addr);
-        self.sync_dataplane_fsp_owner_from_current_session(
+        self.sync_dataplane_fsp_owner_from_current_session_via(
             src_addr,
+            Some(*previous_hop_addr),
             self.config.node.session.coords_warmup_packets,
         );
 
