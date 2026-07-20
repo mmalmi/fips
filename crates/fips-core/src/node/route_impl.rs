@@ -713,6 +713,20 @@ impl Node {
         if self.config.node.routing.mode != RoutingMode::ReplyLearned {
             return true;
         }
+
+        // Once established traffic has selected a branch, match feedback to
+        // the branch that actually carried the last outbound payload. The
+        // handshake pin may still name the authenticated msg2 ingress until
+        // its TTL expires, but reverse traffic can legitimately establish a
+        // different outbound route before then.
+        if let Some(last_outbound_next_hop) = self
+            .dataplane
+            .fsp_owner_activity(destination)
+            .and_then(|activity| activity.last_outbound_next_hop())
+        {
+            return last_outbound_next_hop == *previous_hop;
+        }
+
         if let Some(pinned_hop) = self
             .learned_routes
             .active_handshake_route(destination, Self::now_ms())
@@ -729,14 +743,6 @@ impl Node {
         // the branch actually used by the last outbound payload. Clearing the
         // affinity when the failure is recorded makes later errors from the
         // same branch stale.
-        if let Some(last_outbound_next_hop) = self
-            .dataplane
-            .fsp_owner_activity(destination)
-            .and_then(|activity| activity.last_outbound_next_hop())
-        {
-            return last_outbound_next_hop == *previous_hop;
-        }
-
         // Before any payload has selected a branch, the dataplane owner's wrap
         // route is the best authenticated local match available.
         self.dataplane
