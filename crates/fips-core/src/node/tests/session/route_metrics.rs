@@ -618,7 +618,8 @@ async fn test_path_broken_matches_last_outbound_branch_after_wrap_route_moves() 
 
     // Model a reverse-path update moving the owner's wrap route while the
     // last transmitted payload and its explicit error are still on the old
-    // branch. There is no handshake pin at this point.
+    // branch. A newer authenticated handshake ingress may already pin the
+    // replacement branch, but it did not carry that outbound payload.
     node.learned_routes
         .record_failure(&remote_addr, &old_fallback);
     node.learn_reverse_route(remote_addr, old_fallback);
@@ -636,6 +637,12 @@ async fn test_path_broken_matches_last_outbound_branch_after_wrap_route_moves() 
             .fsp_owner_activity(&remote_addr)
             .and_then(|activity| activity.last_outbound_next_hop()),
         Some(old_fallback)
+    );
+    node.pin_handshake_reverse_route(remote_addr, replacement_fallback);
+    assert_eq!(
+        node.learned_routes
+            .active_handshake_route(&remote_addr, Node::now_ms()),
+        Some(replacement_fallback)
     );
 
     assert!(
