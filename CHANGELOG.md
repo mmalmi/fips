@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.27] - 2026-07-20
+
+### Fixed
+
+- Preserve an FSP session that has already recovered to a restarted peer's
+  current epoch when delayed FMP promotion completes, avoiding a second
+  teardown that can strand production first-ping name resolution.
+- Keep queued control sends progressing through dataplane backlog and restrict
+  learned-origin NAT fallback to explicit bootstrap transit peers.
+- Release `fips-core` and `fips-endpoint` 0.4.27 together. FMP, FSP,
+  discovery, and physical transport wire formats are unchanged.
+
 ## [0.4.26] - 2026-07-20
 
 ### Fixed
