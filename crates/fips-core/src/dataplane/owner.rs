@@ -700,6 +700,7 @@ impl DataplaneFspOwnerActivity {
         grace_ms: u64,
     ) -> bool {
         self.last_outbound_next_hop == Some(*next_hop)
+            && self.has_recent_outbound_activity(now_ms, grace_ms)
             && self
                 .outbound_without_data_return_since
                 .is_some_and(|tick| tick.age_ms(now_ms) >= grace_ms)

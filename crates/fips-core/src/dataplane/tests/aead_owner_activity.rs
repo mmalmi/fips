@@ -123,6 +123,14 @@ fn fsp_owner_tracks_data_return_without_registry_side_channel() {
         ),
         "direct inbound data must not masquerade as return traffic for a routed fallback send"
     );
+    assert!(
+        !activity.has_sustained_outbound_without_data_return_from(
+            &next_hop.node_addr(),
+            125,
+            20,
+        ),
+        "end-to-end application data must stop fallback churn even when the overlay return path is asymmetric"
+    );
     assert!(!activity.has_recent_outbound_without_inbound(115, 20));
     assert_eq!(mover.record_fsp_decrypt_failure(owner), Some(1));
 
@@ -205,6 +213,10 @@ fn fsp_owner_retransmits_do_not_reset_unreturned_route_age() {
     let activity = mover.owner_fsp_activity(owner).unwrap();
     assert!(activity.has_recent_outbound_activity(121, 10));
     assert!(activity.has_sustained_outbound_without_data_return_from(&first_hop, 121, 20));
+    assert!(
+        !activity.has_sustained_outbound_without_data_return_from(&first_hop, 140, 20),
+        "dormant unanswered state must not trigger route replacement forever"
+    );
 
     assert!(
         mover

@@ -430,11 +430,12 @@ impl Node {
 
         if entry.is_established() {
             if let Some(payload) = entry.handshake_payload().map(<[u8]>::to_vec) {
-                // The duplicate msg2 is authenticated and proves that this
-                // ingress branch still reaches the responder. A prior pinned
-                // branch may have failed after the first msg2, so follow the
-                // freshest Ack when resending the final msg3.
-                self.pin_handshake_reverse_route(*src_addr, *previous_hop_addr);
+                // The Noise state that authenticated the first msg2 has
+                // already been consumed. A structurally valid duplicate may
+                // trigger the final-msg3 replay, but it cannot move an active
+                // authenticated route pin. Explicit route failure clears the
+                // pin and permits a later duplicate to establish a new one.
+                self.pin_duplicate_handshake_reverse_route(*src_addr, *previous_hop_addr);
                 let my_addr = *self.node_addr();
                 let mut datagram = SessionDatagram::new(my_addr, *src_addr, payload)
                     .with_ttl(self.config.node.session.default_ttl);
