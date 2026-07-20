@@ -685,6 +685,27 @@ impl Node {
         );
     }
 
+    pub(in crate::node) fn routing_error_matches_active_path(
+        &mut self,
+        destination: &NodeAddr,
+        previous_hop: &NodeAddr,
+    ) -> bool {
+        if self.config.node.routing.mode != RoutingMode::ReplyLearned {
+            return true;
+        }
+        let Some(pinned_hop) = self
+            .learned_routes
+            .active_handshake_route(destination, Self::now_ms())
+        else {
+            return true;
+        };
+        pinned_hop == *previous_hop
+            || !self
+                .peers
+                .get(&pinned_hop)
+                .is_some_and(|peer| peer.is_healthy())
+    }
+
     pub(in crate::node) fn record_route_failure(
         &mut self,
         destination: NodeAddr,

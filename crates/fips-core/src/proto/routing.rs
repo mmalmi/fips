@@ -167,6 +167,19 @@ impl LearnedRouteTable {
         Some(route.next_hop)
     }
 
+    pub(crate) fn active_handshake_route(
+        &mut self,
+        destination: &NodeAddr,
+        now_ms: u64,
+    ) -> Option<NodeAddr> {
+        let route = self.handshake_routes.get(destination).copied()?;
+        if route.expires_at_ms <= now_ms {
+            self.handshake_routes.remove(destination);
+            return None;
+        }
+        Some(route.next_hop)
+    }
+
     pub(crate) fn select_next_hop<F>(
         &mut self,
         destination: &NodeAddr,

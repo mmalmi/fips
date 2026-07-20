@@ -51,10 +51,12 @@ impl Node {
                 let error_body = &inner[1..];
                 match SessionMessageType::from_byte(error_type) {
                     Some(SessionMessageType::CoordsRequired) => {
-                        self.handle_coords_required(error_body).await;
+                        self.handle_coords_required(&previous_hop_addr, error_body)
+                            .await;
                     }
                     Some(SessionMessageType::PathBroken) => {
-                        self.handle_path_broken(error_body).await;
+                        self.handle_path_broken(&previous_hop_addr, error_body)
+                            .await;
                     }
                     Some(SessionMessageType::MtuExceeded) => {
                         self.handle_mtu_exceeded(error_body).await;

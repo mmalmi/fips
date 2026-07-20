@@ -7,7 +7,7 @@
 use super::*;
 use crate::node::route_impl::TransitNextHopPlan;
 use crate::node::session_wire::{FSP_FLAG_CP, build_fsp_header};
-use crate::protocol::{SessionAck, SessionDatagram, SessionSetup, encode_coords};
+use crate::protocol::{PathBroken, SessionAck, SessionDatagram, SessionSetup, encode_coords};
 use crate::tree::TreeCoordinate;
 use spanning_tree::{
     cleanup_nodes, process_available_packets, run_tree_test, verify_tree_convergence,
@@ -210,7 +210,7 @@ async fn test_transit_session_ack_pins_the_completed_handshake_path() {
         make_completed_connection(&mut node, LinkId::new(1), transport_id, 1_000);
     let target_hop = *target_hop_identity.node_addr();
     node.add_connection(target_connection).unwrap();
-    node.promote_connection(LinkId::new(1), target_hop_identity.clone(), 2_000)
+    node.promote_connection(LinkId::new(1), target_hop_identity, 2_000)
         .unwrap();
 
     let (origin_connection, origin_hop_identity) =
@@ -547,6 +547,63 @@ async fn test_forwarding_no_route_generates_error() {
     .expect("Expected CoordsRequired error signal to arrive at node 1");
 
     cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn test_stale_path_broken_does_not_invalidate_pinned_handshake_route() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let transport_id = TransportId::new(1);
+
+    let pinned_link = LinkId::new(1);
+    let (pinned_connection, pinned_identity) =
+        make_completed_connection(&mut node, pinned_link, transport_id, 1_000);
+    let pinned_hop = *pinned_identity.node_addr();
+    node.add_connection(pinned_connection).unwrap();
+    node.promote_connection(pinned_link, pinned_identity, 2_000)
+        .unwrap();
+
+    let stale_link = LinkId::new(2);
+    let (stale_connection, stale_identity) =
+        make_completed_connection(&mut node, stale_link, transport_id, 1_000);
+    let stale_hop = *stale_identity.node_addr();
+    node.add_connection(stale_connection).unwrap();
+    node.promote_connection(stale_link, stale_identity, 2_000)
+        .unwrap();
+
+    let target = make_node_addr(0xE1);
+    let target_coords = TreeCoordinate::root(target);
+    let now_ms = Node::now_ms();
+    node.coord_cache_mut()
+        .insert(target, target_coords.clone(), now_ms);
+    node.pin_handshake_reverse_route(target, pinned_hop);
+
+    let stale_error = PathBroken::new(target, stale_hop)
+        .with_last_coords(target_coords.clone())
+        .encode();
+    node.handle_session_payload(LocalSessionPayload::new(stale_hop, stale_hop, &stale_error))
+        .await;
+
+    assert!(
+        node.coord_cache().contains(&target, Node::now_ms()),
+        "an error returning through a different branch must not invalidate the authenticated handshake path"
+    );
+
+    let current_error = PathBroken::new(target, pinned_hop)
+        .with_last_coords(target_coords)
+        .encode();
+    node.handle_session_payload(LocalSessionPayload::new(
+        pinned_hop,
+        pinned_hop,
+        &current_error,
+    ))
+    .await;
+
+    assert!(
+        !node.coord_cache().contains(&target, Node::now_ms()),
+        "an error returning through the pinned path must retain normal recovery behavior"
+    );
 }
 
 #[tokio::test]
