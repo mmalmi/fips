@@ -699,11 +699,13 @@ impl Node {
         else {
             return true;
         };
+        // Liveness may briefly mark a still-connected traversal hop stale
+        // while authenticated endpoint traffic is in flight. That is not
+        // proof that a plaintext error arriving through another branch belongs
+        // to the established session. Only an error returning through the
+        // authenticated hop may invalidate the route; explicit send/link
+        // failure removes the pin through `record_route_failure`.
         pinned_hop == *previous_hop
-            || !self
-                .peers
-                .get(&pinned_hop)
-                .is_some_and(|peer| peer.is_healthy())
     }
 
     pub(in crate::node) fn record_route_failure(
