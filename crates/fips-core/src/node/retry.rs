@@ -413,6 +413,43 @@ impl Node {
         }
     }
 
+    /// Schedule the next attempt after an outbound handshake timed out.
+    ///
+    /// A transport can accept an ambient datagram even when nobody answers at
+    /// the advertised endpoint. Treat that unanswered handshake like the
+    /// equivalent immediate `NoTransportForType` failure so bounded ambient
+    /// peers enter the Nostr traversal cooldown. Operator-configured peers use
+    /// `auto_reconnect` and retain their ordinary unlimited reconnect policy.
+    pub(super) fn schedule_retry_after_handshake_timeout(
+        &mut self,
+        peer_identity: PeerIdentity,
+        now_ms: u64,
+    ) {
+        let node_addr = *peer_identity.node_addr();
+        let peer_config = self
+            .retry_pending
+            .get(&node_addr)
+            .map(|state| state.peer_config.clone())
+            .or_else(|| self.configured_peer(&node_addr).cloned());
+        let cooldown_until_ms = peer_config
+            .as_ref()
+            .filter(|peer| !peer.auto_reconnect)
+            .and_then(|_| {
+                self.nostr_discovery.as_ref().and_then(|bootstrap| {
+                    bootstrap
+                        .record_traversal_failure_for_peer(peer_identity, now_ms)
+                        .cooldown_until_ms
+                })
+            });
+
+        self.schedule_retry(node_addr, now_ms);
+        if let Some(cooldown_until_ms) = cooldown_until_ms
+            && let Some(state) = self.retry_pending.get_mut(&node_addr)
+        {
+            state.retry_after_ms = state.retry_after_ms.max(cooldown_until_ms);
+        }
+    }
+
     /// Schedule auto-reconnect for a peer removed by MMP dead timeout.
     ///
     /// Looks up the peer in auto-connect config and checks `auto_reconnect`.
