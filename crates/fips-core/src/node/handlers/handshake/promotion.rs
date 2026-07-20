@@ -150,12 +150,23 @@ impl Node {
                         let _ = self.index_allocator.free(old_idx);
                     }
 
-                    self.remove_dataplane_fsp_owner(&peer_node_addr);
-                    if self.sessions.remove(&peer_node_addr).is_some() {
+                    let recovered_fsp_already_matches_restart =
+                        self.sessions.get(&peer_node_addr).is_some_and(|session| {
+                            session.established_remote_epoch_matches(remote_epoch)
+                        });
+                    if recovered_fsp_already_matches_restart {
                         debug!(
                             peer = %self.peer_display_name(&peer_node_addr),
-                            "Cleared stale FSP session after peer restart during promotion"
+                            "Preserved FSP session already recovered to restarted peer epoch"
                         );
+                    } else {
+                        self.remove_dataplane_fsp_owner(&peer_node_addr);
+                        if self.sessions.remove(&peer_node_addr).is_some() {
+                            debug!(
+                                peer = %self.peer_display_name(&peer_node_addr),
+                                "Cleared stale FSP session after peer restart during promotion"
+                            );
+                        }
                     }
                     info!(
                         peer = %self.peer_display_name(&peer_node_addr),

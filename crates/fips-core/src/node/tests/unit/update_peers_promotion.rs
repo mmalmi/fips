@@ -105,6 +105,15 @@ async fn outbound_refresh_promotion_moves_active_peer_to_new_transport_tuple() {
 
 #[tokio::test]
 async fn outbound_restart_promotion_clears_stale_fsp_session() {
+    assert_restart_promotion_fsp_session([0x02; 8], false).await;
+}
+
+#[tokio::test]
+async fn delayed_fmp_restart_promotion_preserves_already_recovered_fsp_session() {
+    assert_restart_promotion_fsp_session([0x22; 8], true).await;
+}
+
+async fn assert_restart_promotion_fsp_session(fsp_remote_epoch: [u8; 8], expect_preserved: bool) {
     use crate::node::session::{EndToEndState, SessionEntry};
     use crate::noise::HandshakeState;
 
@@ -154,18 +163,18 @@ async fn outbound_restart_promotion_clears_stale_fsp_session() {
         HandshakeState::new_initiator(node.identity.keypair(), peer_full.pubkey_full());
     let mut fsp_responder = HandshakeState::new_responder(peer_full.keypair());
     fsp_initiator.set_local_epoch([0x01; 8]);
-    fsp_responder.set_local_epoch([0x02; 8]);
+    fsp_responder.set_local_epoch(fsp_remote_epoch);
     let fsp_msg1 = fsp_initiator.write_message_1().unwrap();
     fsp_responder.read_message_1(&fsp_msg1).unwrap();
     let fsp_msg2 = fsp_responder.write_message_2().unwrap();
     fsp_initiator.read_message_2(&fsp_msg2).unwrap();
-    let stale_session = fsp_initiator.into_session().unwrap();
+    let fsp_session = fsp_initiator.into_session().unwrap();
     node.sessions.insert(
         peer_node_addr,
         SessionEntry::new(
             peer_node_addr,
             peer_full.pubkey_full(),
-            EndToEndState::Established(stale_session),
+            EndToEndState::Established(fsp_session),
             1_200,
             true,
         ),
@@ -212,8 +221,9 @@ async fn outbound_restart_promotion_clears_stale_fsp_session() {
     let active = node.get_peer(&peer_node_addr).unwrap();
     assert_eq!(active.link_id(), new_link_id);
     assert_eq!(active.remote_epoch(), Some([0x22; 8]));
-    assert!(
-        node.sessions.get(&peer_node_addr).is_none(),
-        "old FSP session must be removed when the peer's startup epoch changes"
+    assert_eq!(
+        node.sessions.get(&peer_node_addr).is_some(),
+        expect_preserved,
+        "FMP restart promotion must preserve only an FSP session that already authenticated the same remote startup epoch"
     );
 }

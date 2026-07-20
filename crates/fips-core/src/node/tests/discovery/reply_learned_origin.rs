@@ -278,7 +278,7 @@ async fn test_reply_learned_initiates_lookup_fanout_despite_tree_match() {
 }
 
 #[tokio::test]
-async fn test_reply_learned_origin_fanout_skips_bootstrap_transit_peer() {
+async fn test_reply_learned_origin_fanout_uses_only_explicit_bootstrap_transit_peer() {
     // Topology: node0 has a normal tree path toward node2 through node1, and
     // a live non-tree neighbor node3 that was learned through a bootstrap
     // transport. Bootstrap/open-discovery peers are useful direct targets, but
@@ -347,6 +347,41 @@ async fn test_reply_learned_origin_fanout_skips_bootstrap_transit_peer() {
     assert!(
         nodes[3].node.recent_requests.is_empty(),
         "bootstrap transit peer should not receive private fallback lookup"
+    );
+
+    let mut configured_peers = nodes[0].node.config.peers.clone();
+    configured_peers.push(crate::config::PeerConfig {
+        npub: nodes[3].node.identity().npub(),
+        alias: None,
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    });
+    nodes[0]
+        .node
+        .update_peers(configured_peers)
+        .await
+        .expect("configured bootstrap transit peer update");
+
+    let sent = nodes[0].node.initiate_lookup(&node2_addr, 5).await;
+    assert_eq!(
+        sent, 2,
+        "an explicitly configured NAT-traversed peer must remain usable as fallback transit"
+    );
+
+    for _ in 0..4 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        process_available_packets(&mut nodes).await;
+    }
+
+    assert!(
+        nodes[3]
+            .node
+            .recent_requests
+            .values()
+            .any(|request| request.from_peer == *nodes[0].node.node_addr()),
+        "the configured bootstrap peer should receive fallback discovery"
     );
 
     cleanup_nodes(&mut nodes).await;
