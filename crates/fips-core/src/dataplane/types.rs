@@ -389,7 +389,7 @@ impl OutboundPacket {
         }
         match self.post_seal {
             OutboundPostSeal::FmpWrap(route) => Some(route.next_hop_addr()),
-            OutboundPostSeal::Transport => None,
+            OutboundPostSeal::Transport => Some(self.owner.node_addr()),
         }
     }
 

@@ -554,6 +554,8 @@ pub(crate) struct DataplaneFspOwnerActivity {
     last_rx_previous_hop: Option<NodeAddr>,
     last_rx_data_activity: Option<ActivityTick>,
     last_rx_data_previous_hop: Option<NodeAddr>,
+    last_data_return_activity: Option<ActivityTick>,
+    last_data_return_next_hop: Option<NodeAddr>,
     last_tx_data_activity: Option<ActivityTick>,
     last_outbound_next_hop: Option<NodeAddr>,
     current_k_bit: bool,
@@ -586,9 +588,11 @@ impl DataplaneFspOwnerActivity {
         now_ms: u64,
         timeout_ms: u64,
     ) -> bool {
-        self.last_rx_data_previous_hop == Some(*next_hop)
+        self.last_outbound_next_hop == Some(*next_hop)
+            && self.last_data_return_next_hop == Some(*next_hop)
             && self
-                .last_rx_data_age_ms(now_ms)
+                .last_data_return_activity
+                .map(|tick| tick.age_ms(now_ms))
                 .is_some_and(|age_ms| age_ms <= timeout_ms)
     }
 
@@ -744,6 +748,8 @@ pub(crate) struct OwnerState {
     last_rx_previous_hop: Option<NodeAddr>,
     last_rx_data_activity: Option<ActivityTick>,
     last_rx_data_previous_hop: Option<NodeAddr>,
+    last_data_return_activity: Option<ActivityTick>,
+    last_data_return_next_hop: Option<NodeAddr>,
     last_tx_activity: Option<ActivityTick>,
     last_tx_data_activity: Option<ActivityTick>,
     last_outbound_next_hop: Option<NodeAddr>,

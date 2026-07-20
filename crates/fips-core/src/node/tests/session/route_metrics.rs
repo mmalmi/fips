@@ -695,7 +695,7 @@ fn test_recent_direct_payload_return_prefers_direct_over_cheaper_fallback() {
     seed_dataplane_fmp_srtt_for_test(&mut node, fallback_next_hop, 5);
     {
         let now_ms = Node::now_ms();
-        seed_dataplane_fsp_data_sent_for_test(&mut node, remote_addr, fallback_next_hop, now_ms);
+        seed_dataplane_fsp_data_sent_for_test(&mut node, remote_addr, remote_addr, now_ms);
         seed_dataplane_fsp_data_rx_for_test(&mut node, remote_addr, remote_addr, now_ms);
     }
     assert!(
