@@ -110,7 +110,19 @@ fn fsp_owner_tracks_data_return_without_registry_side_channel() {
             .is_some()
     );
     let activity = mover.owner_fsp_activity(owner).unwrap();
-    assert_eq!(activity.last_rx_data_age_ms(115), Some(5));
+    assert_eq!(
+        activity.last_rx_data_age_ms(115),
+        Some(5),
+        "authenticated application data should still count as general session activity"
+    );
+    assert!(
+        activity.has_recent_outbound_without_data_return_from(
+            &next_hop.node_addr(),
+            115,
+            20,
+        ),
+        "direct inbound data must not masquerade as return traffic for a routed fallback send"
+    );
     assert!(!activity.has_recent_outbound_without_inbound(115, 20));
     assert_eq!(mover.record_fsp_decrypt_failure(owner), Some(1));
 
@@ -167,6 +179,37 @@ fn fsp_owner_tracks_data_return_without_registry_side_channel() {
         mover.min_fsp_data_rx_age_for_next_hop(&other_previous_hop, 135),
         None,
         "control/session FSP activity must not masquerade as endpoint-data freshness"
+    );
+}
+
+#[test]
+fn fsp_owner_records_direct_transport_as_the_destination_next_hop() {
+    let owner = fsp_owner(79);
+    let mut mover = mover();
+    mover.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(10));
+
+    let outbound = OutboundPacket::fsp(
+        owner,
+        1,
+        PacketClass::Bulk,
+        0,
+        PacketBuffer::new(b"direct payload".to_vec()),
+    )
+    .with_fsp_inner_header(
+        crate::protocol::SessionMessageType::EndpointData.to_byte(),
+        0,
+    )
+    .with_activity_tick(ActivityTick::new(100));
+    mover.submit_outbound_packet(outbound).unwrap();
+    assert_eq!(dispatch_outbound_available(&mut mover, 8).len(), 1);
+
+    assert_eq!(
+        mover
+            .owner_fsp_activity(owner)
+            .unwrap()
+            .last_outbound_next_hop(),
+        Some(owner.node_addr()),
+        "direct FSP transport must replace any previously recorded fallback next hop"
     );
 }
 

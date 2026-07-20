@@ -88,6 +88,79 @@
     }
 
     #[test]
+    fn direct_inbound_data_does_not_clear_degradation_for_fallback_outbound_route() {
+        let mut node = Node::new(crate::config::Config::new()).expect("node");
+        let source_addr = *Identity::generate().node_addr();
+        let fallback_addr = *Identity::generate().node_addr();
+        let now_ms = Node::now_ms();
+
+        crate::node::tests::seed_dataplane_fsp_data_sent_for_test(
+            &mut node,
+            source_addr,
+            fallback_addr,
+            now_ms,
+        );
+        crate::node::tests::seed_dataplane_fsp_data_rx_for_test(
+            &mut node,
+            source_addr,
+            source_addr,
+            now_ms,
+        );
+        node.mark_session_direct_path_degraded(source_addr, now_ms);
+
+        SessionDispatchCommit {
+            source_addr,
+            receive_completion: Some(SessionReceiveCompletion {
+                source_addr,
+                previous_hop_addr: source_addr,
+                direct_path: true,
+            }),
+        }
+        .finish_receive(&mut node);
+
+        assert!(
+            node.session_direct_path_degradation_active(&source_addr, now_ms),
+            "a direct packet unrelated to the active fallback send must not restore direct payload routing"
+        );
+    }
+
+    #[test]
+    fn route_matched_direct_data_clears_direct_degradation() {
+        let mut node = Node::new(crate::config::Config::new()).expect("node");
+        let source_addr = *Identity::generate().node_addr();
+        let now_ms = Node::now_ms();
+
+        crate::node::tests::seed_dataplane_fsp_data_sent_for_test(
+            &mut node,
+            source_addr,
+            source_addr,
+            now_ms,
+        );
+        crate::node::tests::seed_dataplane_fsp_data_rx_for_test(
+            &mut node,
+            source_addr,
+            source_addr,
+            now_ms,
+        );
+        node.mark_session_direct_path_degraded(source_addr, now_ms);
+
+        SessionDispatchCommit {
+            source_addr,
+            receive_completion: Some(SessionReceiveCompletion {
+                source_addr,
+                previous_hop_addr: source_addr,
+                direct_path: true,
+            }),
+        }
+        .finish_receive(&mut node);
+
+        assert!(
+            !node.session_direct_path_degradation_active(&source_addr, now_ms),
+            "authenticated data returned on the active direct route should restore it"
+        );
+    }
+
+    #[test]
     fn authenticated_fmp_receive_clears_direct_probe_retry_on_direct_path() {
         use crate::PeerIdentity;
         use crate::config::{ConnectPolicy, PeerAddress, PeerConfig};

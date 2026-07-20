@@ -257,7 +257,9 @@ impl SessionReceiveBatchCommit {
         }
 
         for source_addr in self.direct_sources {
-            if node.clear_session_direct_path_degraded(&source_addr) {
+            if node.session_direct_path_has_recent_data_return(&source_addr, now_ms)
+                && node.clear_session_direct_path_degraded(&source_addr)
+            {
                 debug!(
                     src = %node.peer_display_name(&source_addr),
                     "Authenticated direct endpoint data restored direct payload routing"
@@ -653,6 +655,10 @@ impl SessionDispatchCommit {
             }
 
             if completion.direct_path
+                && node.session_direct_path_has_recent_data_return(
+                    &completion.source_addr,
+                    now_ms,
+                )
                 && node.clear_session_direct_path_degraded(&completion.source_addr)
             {
                 debug!(

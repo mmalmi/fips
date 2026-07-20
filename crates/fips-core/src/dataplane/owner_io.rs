@@ -207,14 +207,18 @@ impl OwnerState {
         {
             self.last_rx_previous_hop = Some(previous_hop);
         }
-        if dataplane_fsp_message_is_application_data(msg_type)
-            && (previous_hop == self.owner.node_addr()
-                || self.last_outbound_next_hop == Some(previous_hop))
-        {
-            if let Some(tick) = activity_tick {
-                note_activity(&mut self.last_rx_data_activity, tick);
+        if dataplane_fsp_message_is_application_data(msg_type) {
+            if let Some(tick) = activity_tick
+                && note_activity(&mut self.last_rx_data_activity, tick)
+            {
+                self.last_rx_data_previous_hop = Some(previous_hop);
             }
-            self.last_rx_data_previous_hop = Some(previous_hop);
+            if self.last_outbound_next_hop == Some(previous_hop)
+                && let Some(tick) = activity_tick
+                && note_activity(&mut self.last_data_return_activity, tick)
+            {
+                self.last_data_return_next_hop = Some(previous_hop);
+            }
             self.data_packets_recv = self.data_packets_recv.saturating_add(1);
             self.data_bytes_recv = self.data_bytes_recv.saturating_add(body_len as u64);
         }
