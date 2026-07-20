@@ -235,6 +235,13 @@ impl SessionEntry {
         )
     }
 
+    pub(crate) fn established_remote_epoch_matches(&self, remote_epoch: Option<[u8; 8]>) -> bool {
+        matches!(
+            (self.current_noise_session(), remote_epoch),
+            (Some(session), Some(epoch)) if session.remote_epoch() == epoch
+        )
+    }
+
     /// Whether this node initiated the Noise handshake.
     pub(crate) fn is_initiator(&self) -> bool {
         self.is_initiator
