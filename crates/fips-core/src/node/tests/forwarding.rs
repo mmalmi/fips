@@ -5,6 +5,7 @@
 //! multi-hop forwarding through live node topologies.
 
 use super::*;
+use crate::ParentDeclaration;
 use crate::node::route_impl::TransitNextHopPlan;
 use crate::node::session_wire::{FSP_FLAG_CP, build_fsp_header};
 use crate::protocol::{PathBroken, SessionAck, SessionDatagram, SessionSetup, encode_coords};
@@ -235,8 +236,12 @@ async fn test_transit_session_ack_pins_the_completed_handshake_path() {
     }
 
     let root = *node.tree_state().my_coords().root_id();
+    node.tree_state_mut().update_peer(
+        ParentDeclaration::new(explored_hop, root, 1, 2_000),
+        TreeCoordinate::from_addrs(vec![explored_hop, root]).unwrap(),
+    );
     let ack = SessionAck::new(
-        TreeCoordinate::from_addrs(vec![target, root]).unwrap(),
+        TreeCoordinate::from_addrs(vec![target, explored_hop, root]).unwrap(),
         TreeCoordinate::from_addrs(vec![origin, root]).unwrap(),
     );
     let encoded = SessionDatagram::new(target, origin, ack.encode()).encode();
@@ -255,10 +260,13 @@ async fn test_transit_session_ack_pins_the_completed_handshake_path() {
     }
 
     node.record_route_failure(target, target_hop);
-    assert!(matches!(
-        node.plan_transit_next_hop(&target, &origin_hop),
-        TransitNextHopPlan::Route(next_hop) if next_hop == explored_hop
-    ));
+    assert!(
+        matches!(
+            node.plan_transit_next_hop(&target, &origin_hop),
+            TransitNextHopPlan::Route(next_hop) if next_hop == explored_hop
+        ),
+        "after the pinned route fails, recovery may use a learned hop only when its tree coordinates prove forward progress"
+    );
 }
 
 #[tokio::test]

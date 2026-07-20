@@ -223,7 +223,7 @@ fn test_transit_keeps_response_proven_route_instead_of_exploring_tree_branch() {
         TreeCoordinate::from_addrs(vec![destination, tree_hop, my_addr]).unwrap(),
         Node::now_ms(),
     );
-    node.learn_reverse_route(destination, learned_hop);
+    node.pin_handshake_reverse_route(destination, learned_hop);
 
     for _ in 0..4 {
         assert!(matches!(

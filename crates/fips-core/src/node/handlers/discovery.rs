@@ -171,7 +171,11 @@ impl Node {
                             response.path_mtu,
                         );
                     }
-                    self.learn_reverse_route(response.target, *from);
+                    // A claimed reverse-path response is the route proof for
+                    // the end-to-end handshake that immediately follows it.
+                    // Pin that bounded handshake path; ordinary learned
+                    // traffic remains subject to transit loop checks.
+                    self.pin_handshake_reverse_route(response.target, *from);
                 }
 
                 // Apply path_mtu min() from the outgoing link's transport MTU
@@ -263,7 +267,7 @@ impl Node {
                     now_ms,
                     path_mtu,
                 );
-                self.learn_reverse_route(target, *from);
+                self.pin_handshake_reverse_route(target, *from);
 
                 // Mirror path_mtu into the FipsAddress-keyed read-only lookup
                 // map used by the TUN reader/writer at TCP MSS clamp time.

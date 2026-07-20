@@ -333,14 +333,6 @@ impl Node {
             {
                 return TransitNextHopPlan::Route(next_hop_addr);
             }
-            if let Some(next_hop_addr) =
-                self.learned_routes
-                    .select_next_hop(dest_node_addr, Self::now_ms(), |addr| {
-                        sendable.contains(addr)
-                    })
-            {
-                return TransitNextHopPlan::Route(next_hop_addr);
-            }
         }
 
         let Some(next_hop_addr) = self
