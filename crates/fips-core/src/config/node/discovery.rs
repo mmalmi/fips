@@ -113,8 +113,7 @@ pub enum NostrDiscoveryPolicy {
 /// `external` disables built-in advert relay publication, subscriptions, and
 /// cache-miss queries so an adapter can route ordinary signed advert events
 /// through a transport-neutral pubsub provider instead. Transport negotiation
-/// is exported as encrypted Nostr events for the same application-selected
-/// pubsub provider composition, avoiding a separate signaling relay plane.
+/// is carried by authenticated FIPS sessions, not by a second relay plane.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NostrPeerfindingSource {

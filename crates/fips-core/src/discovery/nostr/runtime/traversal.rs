@@ -1,12 +1,8 @@
 use super::*;
 
 impl NostrDiscovery {
-    pub(super) async fn accept_incoming_offer_session(
-        &self,
-        session_id: &str,
-        signal_path: TraversalSignalPath,
-    ) -> bool {
-        self.mark_session_seen(session_id, signal_path)
+    pub(super) async fn accept_incoming_offer_session(&self, session_id: &str) -> bool {
+        self.mark_session_seen(session_id, TraversalSignalPath::Mesh)
             .await
             .is_ok()
     }
@@ -143,7 +139,7 @@ impl NostrDiscovery {
             .insert(offer.nonce.clone(), tx);
 
         if !self
-            .emit_traversal_signal(MeshTraversalSignal::Offer {
+            .emit_mesh_signal(MeshTraversalSignal::Offer {
                 peer_npub: peer_config.npub.clone(),
                 offer: offer.clone(),
             })
@@ -157,8 +153,7 @@ impl NostrDiscovery {
         debug!(
             peer = %peer_short,
             session = %short_id(&offer.session_id),
-            signal_path = if self.config.peerfinding_source == crate::config::NostrPeerfindingSource::External { "nostr-pubsub" } else { "fips-session" },
-            "traversal: offer queued"
+            "traversal: offer queued on authenticated FIPS session"
         );
 
         let answer = match tokio::time::timeout(signal_answer_timeout(&self.config), rx).await {
@@ -274,7 +269,7 @@ impl NostrDiscovery {
             debug!(
                 peer = %short_npub(&sender_npub),
                 session = %short_id(&answer.session_id),
-                "traversal: ignoring answer with mismatched type or recipient"
+                "traversal: ignoring mesh answer with mismatched type or recipient"
             );
             return;
         }
@@ -293,7 +288,7 @@ impl NostrDiscovery {
             debug!(
                 peer = %short_npub(&sender_npub),
                 session = %short_id(&answer.session_id),
-                "traversal: ignoring answer without pending offer"
+                "traversal: ignoring mesh answer without pending offer"
             );
         }
     }
@@ -303,98 +298,43 @@ impl NostrDiscovery {
         offer: TraversalOffer,
         sender_npub: String,
     ) {
-        let _ = self
-            .receive_traversal_offer(offer, sender_npub, TraversalSignalPath::Mesh)
-            .await;
-    }
-
-    async fn receive_traversal_offer(
-        self: &Arc<Self>,
-        offer: TraversalOffer,
-        sender_npub: String,
-        signal_path: TraversalSignalPath,
-    ) -> bool {
         if offer.message_type != "offer" || offer.recipient_npub != self.npub {
             debug!(
                 peer = %short_npub(&sender_npub),
                 session = %short_id(&offer.session_id),
-                ?signal_path,
-                "traversal: ignoring offer with mismatched type or recipient"
+                "traversal: ignoring mesh offer with mismatched type or recipient"
             );
-            return false;
+            return;
         }
 
         let Ok(permit) = self.offer_slots.clone().try_acquire_owned() else {
             debug!(
                 sender_npub = %sender_npub,
                 limit = self.config.max_concurrent_incoming_offers,
-                ?signal_path,
-                "rate-limited inbound traversal offer; offer dropped"
+                "rate-limited inbound mesh traversal offer (max_concurrent_incoming_offers reached); offer dropped"
             );
-            return false;
+            return;
         };
-        if !self
-            .accept_incoming_offer_session(&offer.session_id, signal_path)
-            .await
-        {
+        if !self.accept_incoming_offer_session(&offer.session_id).await {
             debug!(
                 peer = %short_npub(&sender_npub),
                 session = %short_id(&offer.session_id),
-                ?signal_path,
-                "duplicate inbound traversal offer"
+                "duplicate inbound mesh traversal offer"
             );
-            return false;
+            return;
         }
 
         let runtime = Arc::clone(self);
         self.spawn_child_task(async move {
             let _permit = permit;
-            if let Err(err) = runtime
-                .handle_incoming_traversal_offer(offer, sender_npub)
-                .await
-            {
-                debug!(error = %err, ?signal_path, "failed to handle traversal offer");
+            if let Err(err) = runtime.handle_incoming_mesh_offer(offer, sender_npub).await {
+                debug!(error = %err, "failed to handle mesh traversal offer");
             }
         })
-        .await
+        .await;
     }
 
-    pub(crate) async fn ingest_external_signal_event(
-        self: &Arc<Self>,
-        event: &Event,
-    ) -> Result<bool, BootstrapError> {
-        if event.kind != Kind::Custom(SIGNAL_KIND) {
-            return Ok(false);
-        }
-        let signal = unwrap_signal_event(&self.keys, event).await?;
-        let sender_npub = signal
-            .sender
-            .to_bech32()
-            .map_err(|error| BootstrapError::Nostr(error.to_string()))?;
-        let message_type = serde_json::from_str::<serde_json::Value>(&signal.rumor.content)?
-            .get("type")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned);
-        match message_type.as_deref() {
-            Some("offer") => {
-                let offer = serde_json::from_str::<TraversalOffer>(&signal.rumor.content)?;
-                Ok(self
-                    .receive_traversal_offer(offer, sender_npub, TraversalSignalPath::Pubsub)
-                    .await)
-            }
-            Some("answer") => {
-                let answer = serde_json::from_str::<TraversalAnswer>(&signal.rumor.content)?;
-                self.receive_mesh_traversal_answer(answer, sender_npub)
-                    .await;
-                Ok(true)
-            }
-            _ => Err(BootstrapError::Protocol(
-                "unknown traversal signal type".to_string(),
-            )),
-        }
-    }
-
-    async fn handle_incoming_traversal_offer(
+    async fn handle_incoming_mesh_offer(
         self: Arc<Self>,
         offer: TraversalOffer,
         sender_npub: String,
@@ -489,22 +429,21 @@ impl NostrDiscovery {
             Some(offer_received_at),
         );
         if !self
-            .emit_traversal_signal(MeshTraversalSignal::Answer {
+            .emit_mesh_signal(MeshTraversalSignal::Answer {
                 peer_npub: sender_npub.clone(),
                 answer: answer.clone(),
             })
             .await
         {
             return Err(BootstrapError::Protocol(
-                "traversal answer queue full".to_string(),
+                "mesh traversal answer queue full".to_string(),
             ));
         }
         debug!(
             peer = %peer_short,
             session = %short_id(&offer.session_id),
             accepted = accepted,
-            signal_path = if self.config.peerfinding_source == crate::config::NostrPeerfindingSource::External { "nostr-pubsub" } else { "fips-session" },
-            "traversal: answer queued"
+            "traversal: answer queued for FIPS mesh signaling"
         );
         if !accepted {
             return Ok(());

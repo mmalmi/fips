@@ -1,29 +1,29 @@
-# Provider-routed UDP hole punching
+# FIPS-session UDP hole punching
 
-> **Status:** Implemented. The
-> application-selected pubsub provider carries encrypted traversal signaling;
-> FIPS does not own a separate DM-relay list or open signaling relay sockets.
+> **Status:** Implemented behind the `nostr-discovery` cargo feature. The
+> historical direct Nostr signaling protocol was removed: Nostr is used for
+> public peer adverts while traversal negotiation runs inside an authenticated
+> FIPS session.
 
 ## Abstract
 
 Two FIPS peers behind NAT can negotiate a direct UDP path with STUN-assisted
 hole punching. A public Nostr kind `37195` advert announces the `udp:nat`
-capability. FIPS emits encrypted NIP-59 kind `21059` traversal offers and
-answers through its endpoint API. The embedding application distributes them
-through the same `nostr-pubsub` provider composition used for adverts, which
-may include configured relays and decentralized FIPS pubsub. The successfully
-punched socket is adopted as a normal UDP transport.
+capability. The peers first establish any FIPS session, possibly over the
+WebSocket bootstrap transport, and exchange traversal offers and answers as
+encrypted FIPS session messages. The successfully punched socket is adopted as
+a normal UDP transport.
 
-There is no DM-relay configuration and no NIP-65 inbox-relay lookup. Relays
-receive ordinary ephemeral NIP-59 events whose traversal payload and sender
-identity are encrypted for the recipient.
+This removes the former kind `21059` gift-wrap protocol, DM relay sets, and
+NIP-65 inbox relay lookup. No relay receives a plaintext traversal payload or
+needs to support a special signaling convention.
 
 ## Roles and socket lifecycle
 
-- The **initiator** knows a peer identity whose advert includes `udp:nat` and
-  begins a direct-path attempt.
-- The **responder** decrypts and validates the targeted pubsub offer and may
-  accept it for the sealed sender identity.
+- The **initiator** has an authenticated session to a peer whose advert
+  includes `udp:nat` and begins an upgrade attempt.
+- The **responder** receives the offer from that authenticated session and may
+  accept it for the same peer identity.
 - Each attempt owns a fresh UDP **punch socket**, bound to an ephemeral local
   port. STUN, probes, acknowledgements, and the adopted UDP transport all use
   that socket. A retry creates a new socket and a new session id.
@@ -53,14 +53,13 @@ nostr-pubsub bridge using both configured relays and decentralized pubsub.
 Advertised STUN values are informational; each node contacts only its locally
 configured STUN servers.
 
-## Provider boundary
+## Prerequisite session
 
-Traversal negotiation does not require an existing FIPS route. In external
-peerfinding mode, FIPS constructs, signs, encrypts, decrypts, and validates the
-events while the embedding application owns provider selection and retry. The
-application calls `drain_nostr_traversal_signal_events()` for outbound events
-and feeds subscribed events back through `ingest_nostr_discovery_event()`.
-This signaling plane carries no FIPS wire records or user packets.
+Traversal negotiation requires an authenticated FIPS session. That session
+may already run over UDP, TCP, WebRTC, Tor, or another transport. Where no
+direct path exists, an explicit WSS seed supplies the first physical
+adjacency. Relay-backed `nostr-pubsub` can distribute the signed advert, but it
+does not carry the FIPS session packets.
 
 ## Offer
 
@@ -71,16 +70,17 @@ The initiator:
    XOR-MAPPED-ADDRESS.
 3. Optionally collects same-port local interface candidates when
    `share_local_candidates` is enabled.
-4. Wraps `TraversalOffer` as an encrypted kind `21059` event for the peer and
-   queues it for the external pubsub provider.
+4. Sends a `TraversalOffer` as a FIPS traversal session message to the
+   authenticated peer.
 
 The offer identifies the attempt with a random session id and nonce, binds
 sender and recipient identities, carries the reflexive and optional local
 candidates, records the local STUN server for diagnostics, and has a bounded
 expiry.
 
-The receiving node unwraps the NIP-59 seal and requires the payload sender to
-match that sealed identity. A payload cannot select a different sender.
+Although the data structure retains Nostr-shaped npub identities for stable
+wire compatibility, the receiving node binds them to the authenticated FIPS
+session source. A payload cannot select a different sender.
 
 ## Answer
 
@@ -89,13 +89,12 @@ authenticated peer. It checks expiry and replay state, then:
 
 1. Creates its own attempt-specific punch socket.
 2. Runs STUN using its local allowlist.
-3. Returns `TraversalAnswer` as an encrypted kind `21059` event through the
-   same application-selected pubsub providers.
+3. Returns `TraversalAnswer` over the same authenticated FIPS session.
 4. Includes its candidates and a bounded punch timing hint.
 
 An inbound semaphore limits simultaneous offer processing. Recently seen
 session ids are stored in a bounded replay cache. These limits protect the
-runtime before the punched link completes its normal FIPS authentication.
+runtime even though the source has already passed FIPS authentication.
 
 ## Hole punching
 

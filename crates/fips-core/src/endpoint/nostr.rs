@@ -85,23 +85,6 @@ impl FipsEndpoint {
         }
     }
 
-    /// Drain encrypted traversal signals for an external Nostr pubsub provider.
-    ///
-    /// FIPS signs and encrypts these NIP-59 events but never selects a relay.
-    /// Applications should publish them through the same configured EventBus
-    /// composition used for discovery adverts.
-    pub async fn drain_nostr_traversal_signal_events(
-        &self,
-    ) -> Result<Vec<nostr::Event>, FipsEndpointError> {
-        let (response_tx, response_rx) = oneshot::channel();
-        self.control(
-            "Nostr traversal signal drain",
-            NodeEndpointControlCommand::DrainNostrTraversalSignalEvents { response_tx },
-            response_rx,
-        )
-        .await
-    }
-
     /// Snapshot live Nostr relay states used by the embedded endpoint.
     pub async fn relay_statuses(&self) -> Result<Vec<FipsEndpointRelayStatus>, FipsEndpointError> {
         let (response_tx, response_rx) = oneshot::channel();

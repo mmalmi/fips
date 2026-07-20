@@ -16,9 +16,9 @@ use tracing::{debug, info, trace, warn};
 
 use super::failure_state::{FailureDecision, FailureState, NostrPeerKey};
 use super::signal::{
-    FreshnessOutcome, SignalEnvelope, TraversalSignalTiming, build_signal_event,
-    create_traversal_answer, create_traversal_offer, estimate_clock_skew, unwrap_signal_event,
-    validate_offer_freshness, validate_traversal_answer_for_offer,
+    FreshnessOutcome, SignalEnvelope, TraversalSignalTiming, create_traversal_answer,
+    create_traversal_offer, estimate_clock_skew, validate_offer_freshness,
+    validate_traversal_answer_for_offer,
 };
 use super::stun::{ADVERT_STUN_TIMEOUT, TRAVERSAL_STUN_TIMEOUT, observe_traversal_addresses};
 use super::traversal::{nonce, now_ms, planned_remote_endpoints, run_punch_attempt};
@@ -26,8 +26,8 @@ use super::types::{
     ADVERT_IDENTIFIER, ADVERT_KIND, ADVERT_VERSION, BootstrapError, BootstrapEvent,
     CachedOverlayAdvert, MeshTraversalSignal, NostrAdvertIngestOutcome, NostrFailureDecision,
     NostrPeerFailureView, NostrRefetchOutcome, NostrRelayStatus, OverlayAdvert,
-    OverlayEndpointAdvert, PROTOCOL_VERSION, PunchHint, SIGNAL_KIND, TraversalAnswer,
-    TraversalOffer, advert_d_tag,
+    OverlayEndpointAdvert, PROTOCOL_VERSION, PunchHint, TraversalAnswer, TraversalOffer,
+    advert_d_tag,
 };
 use crate::config::{NostrDiscoveryConfig, PeerConfig};
 use crate::discovery::EstablishedTraversal;
@@ -87,10 +87,9 @@ fn short_id(id: &str) -> String {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub(super) enum TraversalSignalPath {
     Mesh,
-    Pubsub,
 }
 
 impl TraversalSignalPath {
@@ -272,8 +271,6 @@ pub struct NostrDiscovery {
     event_rx: Mutex<mpsc::Receiver<BootstrapEvent>>,
     mesh_signal_tx: mpsc::Sender<MeshTraversalSignal>,
     mesh_signal_rx: Mutex<mpsc::Receiver<MeshTraversalSignal>>,
-    external_signal_tx: mpsc::Sender<Event>,
-    external_signal_rx: Mutex<mpsc::Receiver<Event>>,
     relay_task: Mutex<Option<JoinHandle<()>>>,
     relay_refresh: Notify,
     publish_task: Mutex<Option<JoinHandle<()>>>,
@@ -355,8 +352,6 @@ impl NostrDiscovery {
         let npub = crate::encode_npub(&identity.pubkey());
         let (event_tx, event_rx) = mpsc::channel(event_channel_capacity(&config));
         let (mesh_signal_tx, mesh_signal_rx) = mpsc::channel(event_channel_capacity(&config));
-        let (external_signal_tx, external_signal_rx) =
-            mpsc::channel(event_channel_capacity(&config));
         let offer_slots = Arc::new(Semaphore::new(config.max_concurrent_incoming_offers));
 
         let failure_state = FailureState::new(
@@ -388,8 +383,6 @@ impl NostrDiscovery {
             event_rx: Mutex::new(event_rx),
             mesh_signal_tx,
             mesh_signal_rx: Mutex::new(mesh_signal_rx),
-            external_signal_tx,
-            external_signal_rx: Mutex::new(external_signal_rx),
             relay_task: Mutex::new(None),
             relay_refresh: Notify::new(),
             publish_task: Mutex::new(None),
