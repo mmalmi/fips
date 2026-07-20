@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.30] - 2026-07-20
+
+### Fixed
+
+- Recover a direct route after a learned fallback is explicitly lost without
+  letting stale fallback affinity override a newly promoted direct peer.
+- Clear fallback affinity when direct promotion succeeds, while preserving the
+  authenticated outbound path until that promotion is complete.
+- Release `fips-core` and `fips-endpoint` 0.4.30 together. Wire formats are
+  unchanged.
+
 ## [0.4.29] - 2026-07-20
 
 ### Fixed
