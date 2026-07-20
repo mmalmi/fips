@@ -183,6 +183,56 @@ fn fsp_owner_tracks_data_return_without_registry_side_channel() {
 }
 
 #[test]
+fn fsp_owner_retransmits_do_not_reset_unreturned_route_age() {
+    let owner = fsp_owner(177);
+    let first_hop = test_node_addr(178);
+    let second_hop = test_node_addr(179);
+    let mut mover = mover();
+    mover.register_owner(owner, OwnerConfig::new(1, 8));
+
+    assert!(
+        mover
+            .owner_mut(owner)
+            .unwrap()
+            .record_fsp_data_sent(first_hop, 512, ActivityTick::new(100))
+    );
+    assert!(
+        mover
+            .owner_mut(owner)
+            .unwrap()
+            .record_fsp_data_sent(first_hop, 512, ActivityTick::new(119))
+    );
+    let activity = mover.owner_fsp_activity(owner).unwrap();
+    assert!(activity.has_recent_outbound_activity(121, 10));
+    assert!(activity.has_sustained_outbound_without_data_return_from(&first_hop, 121, 20));
+
+    assert!(
+        mover
+            .owner_mut(owner)
+            .unwrap()
+            .record_fsp_data_sent(second_hop, 512, ActivityTick::new(122))
+    );
+    let activity = mover.owner_fsp_activity(owner).unwrap();
+    assert!(
+        !activity.has_sustained_outbound_without_data_return_from(&second_hop, 130, 20),
+        "changing routes must start a fresh bounded return window"
+    );
+}
+
+#[test]
+fn fsp_owner_uses_session_age_when_no_packet_has_authenticated() {
+    let owner = fsp_owner(180);
+    let mut mover = mover();
+    mover.register_owner(
+        owner,
+        OwnerConfig::new(1, 8).with_fsp_session_start_ms(1_000),
+    );
+
+    let activity = mover.owner_fsp_activity(owner).unwrap();
+    assert_eq!(activity.authenticated_inbound_or_session_age_ms(16_000), Some(15_000));
+}
+
+#[test]
 fn fsp_owner_records_direct_transport_as_the_destination_next_hop() {
     let owner = fsp_owner(79);
     let mut mover = mover();

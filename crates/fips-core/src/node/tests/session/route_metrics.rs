@@ -506,6 +506,66 @@ fn test_active_session_keeps_learned_fallback_next_hop_affinity() {
 }
 
 #[test]
+fn test_retransmits_abandon_fallback_without_route_matched_return() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let first_fallback = *node.peer_ids().next().expect("first fallback peer");
+    assert!(node.sync_dataplane_fmp_owner(&first_fallback));
+    let transport_id = TransportId::new(1);
+    let second_link = LinkId::new(2);
+    let (second_conn, second_identity) =
+        make_completed_connection(&mut node, second_link, transport_id, 1_000);
+    let second_fallback = *second_identity.node_addr();
+    node.add_connection(second_conn).unwrap();
+    node.promote_connection(second_link, second_identity, 2_000)
+        .unwrap();
+    assert!(node.sync_dataplane_fmp_owner(&second_fallback));
+
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+    node.config.peers.push(crate::config::PeerConfig {
+        npub: crate::encode_npub(&remote.pubkey()),
+        alias: Some("unreturned-fallback-retransmits".to_string()),
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    });
+    add_direct_peer_for_identity(&mut node, &remote);
+    install_established_session_with_mmp(&mut node, &remote);
+    node.learn_reverse_route(remote_addr, first_fallback);
+    node.learn_reverse_route(remote_addr, second_fallback);
+    assert!(node.sync_dataplane_fsp_owner_from_current_session_via(
+        &remote_addr,
+        Some(first_fallback),
+        0,
+    ));
+    node.mark_session_direct_path_degraded(remote_addr, Node::now_ms());
+
+    let now_ms = Node::now_ms();
+    let grace_ms = node.session_direct_path_exclusive_trust_timeout_ms();
+    seed_dataplane_fsp_data_sent_for_test(
+        &mut node,
+        remote_addr,
+        first_fallback,
+        now_ms.saturating_sub(grace_ms + 1),
+    );
+    seed_dataplane_fsp_data_sent_for_test(&mut node, remote_addr, first_fallback, now_ms);
+
+    assert_eq!(
+        node.find_next_hop(&remote_addr)
+            .map(|peer| *peer.node_addr()),
+        Some(second_fallback),
+        "fresh retransmits must not pin a fallback that has returned no endpoint data for the full grace window"
+    );
+    assert!(node.refresh_dataplane_fsp_owner_routes(&remote_addr));
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&remote_addr),
+        Some(second_fallback),
+        "periodic liveness repair must replace the cached dataplane route, not merely report a better candidate"
+    );
+}
+
+#[test]
 fn test_active_fallback_affinity_keeps_user_payload_on_fallback() {
     let mut node = make_reply_learned_node_with_tree_peer();
     node.config.node.routing.learned_fallback_explore_interval = 2;
