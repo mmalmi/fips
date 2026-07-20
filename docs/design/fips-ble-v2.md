@@ -47,6 +47,10 @@ The listening platform chooses the L2CAP PSM. A scanner reads the bootstrap
 characteristic before asking FIPS whether to connect. PSM discovery is not a
 security boundary; FMP Noise authentication is.
 
+Bootstrap records are dynamic and cached in a bounded 64-peer window. A failed
+L2CAP open invalidates the platform cache and triggers a fresh GATT read so an
+application restart and newly assigned PSM do not strand reconnects.
+
 The initial mobile implementation uses an L2CAP channel without requiring
 operating-system pairing. FMP and FSP remain the authentication and encryption
 boundaries. Implementations must not present a pairing prompt as an implicit
@@ -72,6 +76,16 @@ magic value after a protocol violation.
 The configured maximum FIPS packet is independent of an operating system's
 L2CAP segment size. A platform may split writes internally, but it must preserve
 byte order and report completion or failure for each FIPS-owned write command.
+
+## Connection Arbitration
+
+Inbound identity exchanges run concurrently up to the configured BLE connection
+limit, so a silent unauthenticated socket cannot block the accept loop. When two
+peers cross-probe, the smaller exchanged node address prefers its outbound
+connection. The non-preferred direction waits a short grace period and survives
+when no preferred connection appears, preserving one-way scanner/listener use.
+Only the physical outbound initiator starts the logical FMP handshake; FMP then
+authenticates the claimed identity.
 
 ## Host Adapter Contract
 

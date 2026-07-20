@@ -1,6 +1,6 @@
 //! Enum wrapper for concrete transport implementations.
 
-#[cfg(any(target_os = "linux", feature = "host-ble-transport"))]
+#[cfg(any(target_os = "linux", feature = "host-ble-transport", test))]
 use super::ble::DefaultBleTransport;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::ethernet::EthernetTransport;
@@ -41,7 +41,7 @@ pub enum TransportHandle {
     #[cfg(feature = "webrtc-transport")]
     WebRtc(Box<WebRtcTransport>),
     /// BLE L2CAP transport.
-    #[cfg(any(target_os = "linux", feature = "host-ble-transport"))]
+    #[cfg(any(target_os = "linux", feature = "host-ble-transport", test))]
     Ble(DefaultBleTransport),
 }
 
@@ -116,7 +116,7 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.start_async().await,
             #[cfg(feature = "webrtc-transport")]
             TransportHandle::WebRtc(t) => t.start_async().await,
-            #[cfg(any(target_os = "linux", feature = "host-ble-transport"))]
+            #[cfg(any(target_os = "linux", feature = "host-ble-transport", test))]
             TransportHandle::Ble(t) => t.start_async().await,
         }
     }
@@ -134,7 +134,7 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.stop_async().await,
             #[cfg(feature = "webrtc-transport")]
             TransportHandle::WebRtc(t) => t.stop_async().await,
-            #[cfg(any(target_os = "linux", feature = "host-ble-transport"))]
+            #[cfg(any(target_os = "linux", feature = "host-ble-transport", test))]
             TransportHandle::Ble(t) => t.stop_async().await,
         }
     }
@@ -153,7 +153,7 @@ impl TransportHandle {
             #[cfg(feature = "webrtc-transport")]
             // Keep this optional adapter's large future out of every transport send frame.
             TransportHandle::WebRtc(t) => Box::pin(t.send_async(addr, data)).await,
-            #[cfg(any(target_os = "linux", feature = "host-ble-transport"))]
+            #[cfg(any(target_os = "linux", feature = "host-ble-transport", test))]
             TransportHandle::Ble(t) => t.send_async(addr, data).await,
         }
     }
@@ -185,7 +185,7 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.transport_id(),
             #[cfg(feature = "webrtc-transport")]
             TransportHandle::WebRtc(t) => t.transport_id(),
-            #[cfg(any(target_os = "linux", feature = "host-ble-transport"))]
+            #[cfg(any(target_os = "linux", feature = "host-ble-transport", test))]
             TransportHandle::Ble(t) => t.transport_id(),
         }
     }
@@ -208,7 +208,7 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.name(),
             #[cfg(feature = "webrtc-transport")]
             TransportHandle::WebRtc(t) => t.name(),
-            #[cfg(any(target_os = "linux", feature = "host-ble-transport"))]
+            #[cfg(any(target_os = "linux", feature = "host-ble-transport", test))]
             TransportHandle::Ble(t) => t.name(),
         }
     }
@@ -226,7 +226,7 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.transport_type(),
             #[cfg(feature = "webrtc-transport")]
             TransportHandle::WebRtc(t) => t.transport_type(),
-            #[cfg(any(target_os = "linux", feature = "host-ble-transport"))]
+            #[cfg(any(target_os = "linux", feature = "host-ble-transport", test))]
             TransportHandle::Ble(t) => t.transport_type(),
         }
     }
@@ -244,7 +244,7 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.state(),
             #[cfg(feature = "webrtc-transport")]
             TransportHandle::WebRtc(t) => t.state(),
-            #[cfg(any(target_os = "linux", feature = "host-ble-transport"))]
+            #[cfg(any(target_os = "linux", feature = "host-ble-transport", test))]
             TransportHandle::Ble(t) => t.state(),
         }
     }
@@ -262,7 +262,7 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.mtu(),
             #[cfg(feature = "webrtc-transport")]
             TransportHandle::WebRtc(t) => t.mtu(),
-            #[cfg(any(target_os = "linux", feature = "host-ble-transport"))]
+            #[cfg(any(target_os = "linux", feature = "host-ble-transport", test))]
             TransportHandle::Ble(t) => t.mtu(),
         }
     }
@@ -283,7 +283,7 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.link_mtu(addr),
             #[cfg(feature = "webrtc-transport")]
             TransportHandle::WebRtc(t) => t.link_mtu(addr),
-            #[cfg(any(target_os = "linux", feature = "host-ble-transport"))]
+            #[cfg(any(target_os = "linux", feature = "host-ble-transport", test))]
             TransportHandle::Ble(t) => t.link_mtu(addr),
         }
     }
@@ -301,7 +301,7 @@ impl TransportHandle {
             TransportHandle::Tor(_) => None,
             #[cfg(feature = "webrtc-transport")]
             TransportHandle::WebRtc(_) => None,
-            #[cfg(any(target_os = "linux", feature = "host-ble-transport"))]
+            #[cfg(any(target_os = "linux", feature = "host-ble-transport", test))]
             TransportHandle::Ble(_) => None,
         }
     }
@@ -333,7 +333,7 @@ impl TransportHandle {
             TransportHandle::Tor(_) => None,
             #[cfg(feature = "webrtc-transport")]
             TransportHandle::WebRtc(_) => None,
-            #[cfg(any(target_os = "linux", feature = "host-ble-transport"))]
+            #[cfg(any(target_os = "linux", feature = "host-ble-transport", test))]
             TransportHandle::Ble(_) => None,
         }
     }
@@ -375,7 +375,7 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.discover(),
             #[cfg(feature = "webrtc-transport")]
             TransportHandle::WebRtc(t) => t.discover(),
-            #[cfg(any(target_os = "linux", feature = "host-ble-transport"))]
+            #[cfg(any(target_os = "linux", feature = "host-ble-transport", test))]
             TransportHandle::Ble(t) => t.discover(),
         }
     }
@@ -393,7 +393,7 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.auto_connect(),
             #[cfg(feature = "webrtc-transport")]
             TransportHandle::WebRtc(t) => t.auto_connect(),
-            #[cfg(any(target_os = "linux", feature = "host-ble-transport"))]
+            #[cfg(any(target_os = "linux", feature = "host-ble-transport", test))]
             TransportHandle::Ble(t) => t.auto_connect(),
         }
     }
@@ -411,7 +411,7 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.accept_connections(),
             #[cfg(feature = "webrtc-transport")]
             TransportHandle::WebRtc(t) => t.accept_connections(),
-            #[cfg(any(target_os = "linux", feature = "host-ble-transport"))]
+            #[cfg(any(target_os = "linux", feature = "host-ble-transport", test))]
             TransportHandle::Ble(t) => t.accept_connections(),
         }
     }
@@ -435,7 +435,7 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.connect_async(addr).await,
             #[cfg(feature = "webrtc-transport")]
             TransportHandle::WebRtc(t) => t.connect_async(addr).await,
-            #[cfg(any(target_os = "linux", feature = "host-ble-transport"))]
+            #[cfg(any(target_os = "linux", feature = "host-ble-transport", test))]
             TransportHandle::Ble(t) => t.connect_async(addr).await,
         }
     }
@@ -457,15 +457,15 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.connection_state_sync(addr),
             #[cfg(feature = "webrtc-transport")]
             TransportHandle::WebRtc(t) => t.connection_state_sync(addr),
-            #[cfg(any(target_os = "linux", feature = "host-ble-transport"))]
+            #[cfg(any(target_os = "linux", feature = "host-ble-transport", test))]
             TransportHandle::Ble(t) => t.connection_state_sync(addr),
         }
     }
 
     /// Close a specific connection on this transport.
     ///
-    /// No-op for connectionless transports. For TCP/Tor, removes the
-    /// connection from the pool and drops the stream.
+    /// No-op for connectionless transports. For connection-oriented
+    /// transports, removes the connection from the pool and drops the stream.
     pub async fn close_connection(&self, addr: &TransportAddr) {
         match self {
             TransportHandle::Udp(t) => t.close_connection(addr),
@@ -478,7 +478,7 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.close_connection_async(addr).await,
             #[cfg(feature = "webrtc-transport")]
             TransportHandle::WebRtc(t) => t.close_connection_async(addr).await,
-            #[cfg(any(target_os = "linux", feature = "host-ble-transport"))]
+            #[cfg(any(target_os = "linux", feature = "host-ble-transport", test))]
             TransportHandle::Ble(t) => t.close_connection_async(addr).await,
         }
     }
@@ -513,7 +513,7 @@ impl TransportHandle {
             TransportHandle::Tor(_) => TransportCongestion::default(),
             #[cfg(feature = "webrtc-transport")]
             TransportHandle::WebRtc(_) => TransportCongestion::default(),
-            #[cfg(any(target_os = "linux", feature = "host-ble-transport"))]
+            #[cfg(any(target_os = "linux", feature = "host-ble-transport", test))]
             TransportHandle::Ble(_) => TransportCongestion::default(),
         }
     }
@@ -556,7 +556,7 @@ impl TransportHandle {
                 "mtu": t.mtu(),
                 "state": t.state().to_string(),
             }),
-            #[cfg(any(target_os = "linux", feature = "host-ble-transport"))]
+            #[cfg(any(target_os = "linux", feature = "host-ble-transport", test))]
             TransportHandle::Ble(t) => {
                 serde_json::to_value(t.stats().snapshot()).unwrap_or_default()
             }

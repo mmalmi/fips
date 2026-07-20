@@ -60,6 +60,162 @@ async fn test_transport_advertises_platform_assigned_psm() {
     transport.stop_async().await.unwrap();
 }
 
+#[tokio::test]
+async fn stalled_inbound_pubkey_exchange_does_not_block_healthy_peer() {
+    let local_addr = test_addr(1);
+    let io = MockBleIo::new("hci0", local_addr.clone());
+    let (tx, _rx) = crate::transport::packet_channel(64);
+    let config = BleConfig {
+        advertise: Some(false),
+        scan: Some(false),
+        ..BleConfig::default()
+    };
+    let local_identity = crate::Identity::generate();
+    let mut transport = BleTransport::new(TransportId::new(1), None, config, io, tx);
+    transport.set_local_pubkey(local_identity.pubkey().serialize());
+    transport.start_async().await.unwrap();
+
+    let (stalled_inbound, stalled_peer) =
+        io::MockBleStream::pair(local_addr.clone(), test_addr(2), 2048);
+    transport.io().inject_inbound(stalled_inbound).await;
+    tokio::task::yield_now().await;
+
+    let healthy_addr = test_addr(3);
+    let (healthy_inbound, healthy_peer) =
+        io::MockBleStream::pair(local_addr, healthy_addr.clone(), 2048);
+    transport.io().inject_inbound(healthy_inbound).await;
+    let peer_identity = crate::Identity::generate();
+    let peer_pubkey = peer_identity.pubkey().serialize();
+    let healthy_peer = FramedBleStream::new(healthy_peer, 2048);
+    let peer_task = tokio::spawn(async move {
+        tasks::pubkey_exchange(&healthy_peer, &peer_pubkey)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    });
+
+    let healthy_addr = healthy_addr.to_transport_addr();
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if transport.connection_state_sync(&healthy_addr) == ConnectionState::Connected {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("healthy inbound connection must bypass the stalled exchange");
+
+    peer_task.abort();
+    drop(stalled_peer);
+    transport.stop_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn retired_receive_loop_does_not_remove_replacement_connection() {
+    use std::sync::Arc;
+
+    let local_addr = test_addr(1);
+    let remote_addr = test_addr(2);
+    let transport_addr = remote_addr.to_transport_addr();
+    let pool = Arc::new(tokio::sync::Mutex::new(pool::ConnectionPool::new(2)));
+    let (packet_tx, _packet_rx) = crate::transport::packet_channel(8);
+    let stats = Arc::new(BleStats::new());
+
+    let (old_stream, old_peer) =
+        io::MockBleStream::pair(local_addr.clone(), remote_addr.clone(), 2048);
+    let old_stream = Arc::new(FramedBleStream::new(old_stream, 2048));
+    pool.lock()
+        .await
+        .insert(
+            transport_addr.clone(),
+            BleConnection {
+                stream: Arc::clone(&old_stream),
+                recv_task: None,
+                send_mtu: 2048,
+                recv_mtu: 2048,
+                established_at: tokio::time::Instant::now(),
+                is_static: false,
+                addr: remote_addr.clone(),
+            },
+        )
+        .unwrap();
+    let old_receive = tokio::spawn(tasks::receive_loop(
+        old_stream,
+        transport_addr.clone(),
+        Arc::clone(&pool),
+        packet_tx,
+        TransportId::new(1),
+        stats,
+        2048,
+    ));
+
+    let (replacement, _replacement_peer) =
+        io::MockBleStream::pair(local_addr, remote_addr.clone(), 2048);
+    let replacement = Arc::new(FramedBleStream::new(replacement, 2048));
+    pool.lock()
+        .await
+        .insert(
+            transport_addr.clone(),
+            BleConnection {
+                stream: Arc::clone(&replacement),
+                recv_task: None,
+                send_mtu: 2048,
+                recv_mtu: 2048,
+                established_at: tokio::time::Instant::now(),
+                is_static: false,
+                addr: remote_addr,
+            },
+        )
+        .unwrap();
+
+    drop(old_peer);
+    old_receive.await.unwrap();
+
+    let pool = pool.lock().await;
+    assert!(
+        pool.get(&transport_addr)
+            .is_some_and(|connection| Arc::ptr_eq(&connection.stream, &replacement)),
+        "an old receive task must not remove the replacement generation"
+    );
+}
+
+#[tokio::test]
+async fn configured_connection_limit_includes_in_flight_identity_exchange() {
+    let local_addr = test_addr(1);
+    let io = MockBleIo::new("hci0", local_addr.clone());
+    let held_peers = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let peers = std::sync::Arc::clone(&held_peers);
+    io.set_connect_handler(move |addr, _psm| {
+        let (stream, peer) = io::MockBleStream::pair(local_addr.clone(), addr.clone(), 2048);
+        peers.lock().unwrap().push(peer);
+        Ok(stream)
+    });
+    let (tx, _rx) = crate::transport::packet_channel(8);
+    let config = BleConfig {
+        max_connections: Some(1),
+        ..BleConfig::default()
+    };
+    let mut transport = BleTransport::new(TransportId::new(1), None, config, io, tx);
+    transport.set_local_pubkey([2; 32]);
+
+    let first = test_addr(2).to_transport_addr();
+    let second = test_addr(3).to_transport_addr();
+    transport.connect_async(&first).await.unwrap();
+
+    assert_eq!(
+        transport.connection_state_sync(&first),
+        ConnectionState::Connecting
+    );
+    assert!(matches!(
+        transport.connect_async(&second).await,
+        Err(TransportError::ConnectionRefused)
+    ));
+
+    transport.stop_async().await.unwrap();
+    drop(held_peers);
+}
+
 #[tokio::test(start_paused = true)]
 async fn test_scan_discovers_peers() {
     let io = MockBleIo::new("hci0", test_addr(1));
@@ -99,6 +255,58 @@ async fn test_scan_deduplicates() {
 
     let peers = transport.discovery_buffer.take();
     assert_eq!(peers.len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_scan_retry_uses_refreshed_bootstrap_for_same_address() {
+    use std::sync::{Arc, Mutex};
+
+    let io = MockBleIo::new("hci0", test_addr(1));
+    let attempted_psms = Arc::new(Mutex::new(Vec::new()));
+    let recorded_psms = Arc::clone(&attempted_psms);
+    io.set_connect_handler(move |_addr, psm| {
+        recorded_psms.lock().unwrap().push(psm);
+        Err(TransportError::ConnectionRefused)
+    });
+
+    let (tx, _rx) = crate::transport::packet_channel(64);
+    let config = BleConfig {
+        probe_cooldown_secs: Some(1),
+        ..BleConfig::default()
+    };
+    let mut transport = BleTransport::new(TransportId::new(1), None, config, io, tx);
+    transport.set_local_pubkey([2; 32]);
+    transport.start_async().await.unwrap();
+
+    let addr = test_addr(2);
+    let stale = bootstrap::BleBootstrap::new(0x0091, 2048).unwrap();
+    let refreshed = bootstrap::BleBootstrap::new(0x0093, 2048).unwrap();
+    transport
+        .io()
+        .inject_scan_candidate(io::BleCandidate {
+            addr: addr.clone(),
+            bootstrap: stale,
+        })
+        .await;
+    tokio::task::yield_now().await;
+
+    transport
+        .io()
+        .inject_scan_candidate(io::BleCandidate {
+            addr,
+            bootstrap: refreshed,
+        })
+        .await;
+    tokio::task::yield_now().await;
+
+    tokio::time::advance(std::time::Duration::from_secs(1)).await;
+    tokio::task::yield_now().await;
+
+    assert_eq!(
+        *attempted_psms.lock().unwrap(),
+        vec![stale.psm, refreshed.psm]
+    );
+    transport.stop_async().await.unwrap();
 }
 
 #[test]
@@ -143,7 +351,8 @@ fn test_tiebreaker_convention() {
 
     // scan_loop (outbound): promotes when our_addr < peer_addr
     // Smaller node scanning larger → our_addr < peer_addr → promote (win)
-    assert!(smaller < larger, "test setup: smaller < larger");
+    assert!(tasks::local_node_wins_outbound(&smaller, &larger));
+    assert!(!tasks::local_node_wins_outbound(&larger, &smaller));
 
     // accept_loop (inbound): drops when our_addr < peer_addr
     // Smaller node accepting from larger → drops inbound (outbound wins)

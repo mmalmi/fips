@@ -30,11 +30,16 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.SynchronousQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 private val FIPS_SERVICE_UUID: UUID = UUID.fromString("9c90b792-2cc5-42c0-9f87-c9cc40648f4c")
 private val FIPS_BOOTSTRAP_UUID: UUID = UUID.fromString("9c90b793-2cc5-42c0-9f87-c9cc40648f4c")
+private const val MAX_PLATFORM_CONNECTIONS = 64
+private const val MAX_IO_THREADS = MAX_PLATFORM_CONNECTIONS * 2 + 2
 
 /** Android BLE v2 adapter. L2CAP CoC requires Android API 29 or newer. */
 @SuppressLint("MissingPermission")
@@ -46,18 +51,27 @@ class AndroidFipsBlePlatform(context: Context) : FipsBlePlatform {
         get() = manager?.adapter
     private val stateThread = HandlerThread("fips-ble-state").apply { start() }
     private val state = Handler(stateThread.looper)
-    private val io: ExecutorService = Executors.newCachedThreadPool()
+    private val io: ExecutorService =
+        ThreadPoolExecutor(
+            0,
+            MAX_IO_THREADS,
+            60L,
+            TimeUnit.SECONDS,
+            SynchronousQueue<Runnable>(),
+        )
     private val nextConnectionId = AtomicLong(1)
     private val connections = mutableMapOf<Long, AndroidBleConnection>()
+    private val pendingConnectRequests = mutableSetOf<Long>()
     private val pendingConnectSockets = ConcurrentHashMap<Long, BluetoothSocket>()
     private val discoveryGatts = mutableMapOf<String, BluetoothGatt>()
-    private val discoveredTokens = mutableSetOf<String>()
+    private val discoveredTokens = BootstrapDiscoveryCache()
     private var eventSink = HostBleEventSink {}
     private var serverSocket: BluetoothServerSocket? = null
     private var gattServer: BluetoothGattServer? = null
     private var bootstrapValue = byteArrayOf()
     private var pendingAdvertiseRequest: Long? = null
     private var scanRequest: Long? = null
+    private val closing = AtomicBoolean(false)
     private var closed = false
 
     override fun setEventSink(sink: HostBleEventSink) {
@@ -91,6 +105,7 @@ class AndroidFipsBlePlatform(context: Context) : FipsBlePlatform {
     }
 
     override fun close() {
+        if (!closing.compareAndSet(false, true)) return
         state.post {
             if (closed) return@post
             closed = true
@@ -99,6 +114,7 @@ class AndroidFipsBlePlatform(context: Context) : FipsBlePlatform {
             stopListening()
             pendingConnectSockets.values.forEach { runCatching { it.close() } }
             pendingConnectSockets.clear()
+            pendingConnectRequests.clear()
             connections.keys.toList().forEach { closeConnection(it, null) }
             io.shutdownNow()
             stateThread.quitSafely()
@@ -156,6 +172,10 @@ class AndroidFipsBlePlatform(context: Context) : FipsBlePlatform {
 
     private fun registerIncoming(socket: BluetoothSocket) {
         try {
+            if (connections.size + pendingConnectRequests.size >= MAX_PLATFORM_CONNECTIONS) {
+                runCatching { socket.close() }
+                return
+            }
             val connection = createConnection(socket) ?: return
             connections[connection.id] = connection
             connection.startReading()
@@ -367,7 +387,7 @@ class AndroidFipsBlePlatform(context: Context) : FipsBlePlatform {
         if (scanRequest == null) return
         try {
             val token = device.address
-            if (!discoveredTokens.add(token)) return
+            if (!discoveredTokens.begin(token)) return
             val callback = BootstrapGattCallback(token)
             val gatt =
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -377,7 +397,7 @@ class AndroidFipsBlePlatform(context: Context) : FipsBlePlatform {
                 }
             discoveryGatts[token] = gatt
         } catch (_: Exception) {
-            runCatching { discoveredTokens.remove(device.address) }
+            runCatching { discoveredTokens.invalidate(device.address) }
         }
     }
 
@@ -436,9 +456,10 @@ class AndroidFipsBlePlatform(context: Context) : FipsBlePlatform {
             if (!finished.compareAndSet(false, true)) return
             state.post {
                 discoveryGatts.remove(token)
-                if (bootstrap == null) {
-                    discoveredTokens.remove(token)
-                } else if (scanRequest != null) {
+                if (bootstrap == null || scanRequest == null) {
+                    discoveredTokens.invalidate(token)
+                } else {
+                    discoveredTokens.complete(token)
                     emit(HostBleEvent.PeerDiscovered(token, bootstrap.copyOf()))
                 }
                 gatt.disconnect()
@@ -468,22 +489,47 @@ class AndroidFipsBlePlatform(context: Context) : FipsBlePlatform {
             emit(HostBleEvent.Failed(command.requestId, "Bluetooth is unavailable or off"))
             return
         }
-        io.execute {
-            var socket: BluetoothSocket? = null
-            try {
-                val device = bluetooth.getRemoteDevice(command.peerToken)
-                socket = device.createInsecureL2capChannel(command.psm)
-                pendingConnectSockets[command.requestId] = socket
-                socket.connect()
-                pendingConnectSockets.remove(command.requestId)
-                val connectedSocket = socket
-                state.post { registerOutgoing(command, connectedSocket) }
-                socket = null
-            } catch (error: Exception) {
-                pendingConnectSockets.remove(command.requestId)
-                runCatching { socket?.close() }
-                state.post { emit(HostBleEvent.Failed(command.requestId, error.bleMessage("connect"))) }
+        if (connections.size + pendingConnectRequests.size >= MAX_PLATFORM_CONNECTIONS) {
+            emit(HostBleEvent.Failed(command.requestId, "BLE connection limit reached"))
+            return
+        }
+        pendingConnectRequests.add(command.requestId)
+        try {
+            io.execute {
+                var socket: BluetoothSocket? = null
+                try {
+                    if (closing.get()) return@execute
+                    val device = bluetooth.getRemoteDevice(command.peerToken)
+                    socket = device.createInsecureL2capChannel(command.psm)
+                    pendingConnectSockets[command.requestId] = socket
+                    if (closing.get()) {
+                        pendingConnectSockets.remove(command.requestId)
+                        runCatching { socket?.close() }
+                        return@execute
+                    }
+                    socket.connect()
+                    pendingConnectSockets.remove(command.requestId)
+                    val connectedSocket = socket
+                    state.post {
+                        pendingConnectRequests.remove(command.requestId)
+                        registerOutgoing(command, connectedSocket)
+                    }
+                    socket = null
+                } catch (error: Exception) {
+                    pendingConnectSockets.remove(command.requestId)
+                    runCatching { socket?.close() }
+                    state.post {
+                        pendingConnectRequests.remove(command.requestId)
+                        discoveredTokens.invalidate(command.peerToken)
+                        emit(HostBleEvent.Failed(command.requestId, error.bleMessage("connect")))
+                        runCatching { bluetooth.getRemoteDevice(command.peerToken) }
+                            .onSuccess(::discoverBootstrap)
+                    }
+                }
             }
+        } catch (error: Exception) {
+            pendingConnectRequests.remove(command.requestId)
+            throw error
         }
     }
 

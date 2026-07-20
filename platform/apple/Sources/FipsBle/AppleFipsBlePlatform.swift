@@ -4,6 +4,8 @@ import Foundation
 private let fipsServiceUuid = CBUUID(string: "9c90b792-2cc5-42c0-9f87-c9cc40648f4c")
 private let fipsBootstrapUuid = CBUUID(string: "9c90b793-2cc5-42c0-9f87-c9cc40648f4c")
 private let appleSegmentMtu: UInt16 = 512
+private let maxPlatformConnections = 64
+private let maxPendingBootstrapDiscoveries = 64
 
 public final class AppleFipsBlePlatform: NSObject, FipsBlePlatform {
     public var eventSink: HostBleEventSink = { _ in }
@@ -211,6 +213,14 @@ public final class AppleFipsBlePlatform: NSObject, FipsBlePlatform {
         channel: CBL2CAPChannel,
         outgoingRequest: UInt64?
     ) {
+        guard connections.count < maxPlatformConnections else {
+            channel.inputStream.close()
+            channel.outputStream.close()
+            if let requestId = outgoingRequest {
+                emit(.failed(requestId: requestId, message: "BLE connection limit reached"))
+            }
+            return
+        }
         let connectionId = nextConnectionId
         nextConnectionId &+= 1
         let peerIdentifier = channel.peer.identifier
@@ -259,6 +269,22 @@ public final class AppleFipsBlePlatform: NSObject, FipsBlePlatform {
         discoveryPending.remove(peripheral.identifier)
         if connectRequests[peripheral.identifier] == nil {
             central.cancelPeripheralConnection(peripheral)
+        }
+    }
+
+    private func discoverBootstrap(_ peripheral: CBPeripheral) {
+        guard scanRequest != nil else { return }
+        let identifier = peripheral.identifier
+        guard !discoveryPending.contains(identifier),
+              discoveryPending.count < maxPendingBootstrapDiscoveries
+        else { return }
+        peripherals[identifier] = peripheral
+        peripheral.delegate = self
+        discoveryPending.insert(identifier)
+        if peripheral.state == .connected {
+            peripheral.discoverServices([fipsServiceUuid])
+        } else {
+            central.connect(peripheral)
         }
     }
 
@@ -383,16 +409,7 @@ extension AppleFipsBlePlatform: CBCentralManagerDelegate {
         advertisementData: [String: Any],
         rssi RSSI: NSNumber
     ) {
-        guard scanRequest != nil else { return }
-        let identifier = peripheral.identifier
-        peripherals[identifier] = peripheral
-        peripheral.delegate = self
-        guard discoveryPending.insert(identifier).inserted else { return }
-        if peripheral.state == .connected {
-            peripheral.discoverServices([fipsServiceUuid])
-        } else {
-            central.connect(peripheral)
-        }
+        discoverBootstrap(peripheral)
     }
 
     public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
@@ -485,6 +502,7 @@ extension AppleFipsBlePlatform: CBPeripheralDelegate {
                 requestId: request.requestId,
                 message: "BLE L2CAP open failed: \(error?.localizedDescription ?? "unknown error")"
             ))
+            discoverBootstrap(peripheral)
             return
         }
         register(channel: channel, outgoingRequest: request.requestId)

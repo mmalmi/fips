@@ -17,7 +17,7 @@ pub mod sim;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod ethernet;
 
-#[cfg(any(target_os = "linux", feature = "host-ble-transport"))]
+#[cfg(any(target_os = "linux", feature = "host-ble-transport", test))]
 pub mod ble;
 
 mod handle;

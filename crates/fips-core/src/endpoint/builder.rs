@@ -136,6 +136,13 @@ impl FipsEndpointBuilder {
             config.dns.enabled = false;
             config.node.system_files_enabled = false;
         }
+        #[cfg(feature = "host-ble-transport")]
+        if let Some(ble_config) = &self.host_ble_config {
+            // Explicit host BLE is connectivity in its own right. Install it
+            // before applying scoped defaults so a BLE-only mobile endpoint
+            // does not silently acquire UDP/Nostr and their relay requirements.
+            config.transports.ble = crate::config::TransportInstances::Single(ble_config.clone());
+        }
         if self.local_rendezvous {
             config.node.discovery.local.enabled = true;
         }
@@ -151,10 +158,6 @@ impl FipsEndpointBuilder {
                 config.node.discovery.lan.scope = Some(scope.to_string());
             }
             apply_default_scoped_discovery(&mut config, scope);
-        }
-        #[cfg(feature = "host-ble-transport")]
-        if let Some(ble_config) = &self.host_ble_config {
-            config.transports.ble = crate::config::TransportInstances::Single(ble_config.clone());
         }
         config
     }

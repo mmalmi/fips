@@ -352,6 +352,24 @@ async fn endpoint_exposes_signed_machine_rating_events() {
 
 #[cfg(feature = "host-ble-transport")]
 #[tokio::test]
+async fn discovery_scope_with_host_ble_does_not_inject_udp_or_nostr_defaults() {
+    use crate::config::BleConfig;
+    use crate::transport::ble::host::HostBleIo;
+
+    let (io, _adapter) = HostBleIo::channel("ios", "local-device", 16).unwrap();
+    let config = FipsEndpoint::builder()
+        .config(Config::new())
+        .discovery_scope("iris-chat:fips-nearby:v1")
+        .host_ble(io, BleConfig::default())
+        .prepared_config();
+
+    assert!(!config.node.discovery.nostr.enabled);
+    assert!(config.transports.udp.is_empty());
+    assert!(!config.transports.ble.is_empty());
+}
+
+#[cfg(feature = "host-ble-transport")]
+#[tokio::test]
 async fn endpoint_host_ble_runs_platform_lifecycle_with_assigned_psm() {
     use crate::config::BleConfig;
     use crate::transport::ble::host::{HostBleCommand, HostBleIo};
