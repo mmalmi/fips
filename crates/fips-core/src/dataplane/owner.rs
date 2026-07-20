@@ -558,6 +558,7 @@ pub(crate) struct DataplaneFspOwnerActivity {
     last_data_return_next_hop: Option<NodeAddr>,
     last_tx_data_activity: Option<ActivityTick>,
     last_outbound_next_hop: Option<NodeAddr>,
+    outbound_without_data_return_since: Option<ActivityTick>,
     current_k_bit: bool,
     previous_draining_k_bit: Option<bool>,
     current_epoch_confirmed: bool,
@@ -576,6 +577,13 @@ impl DataplaneFspOwnerActivity {
 
     pub(crate) fn last_rx_age_ms(self, now_ms: u64) -> Option<u64> {
         self.last_rx_activity.map(|tick| tick.age_ms(now_ms))
+    }
+
+    pub(crate) fn authenticated_inbound_or_session_age_ms(self, now_ms: u64) -> Option<u64> {
+        self.last_rx_age_ms(now_ms).or_else(|| {
+            self.fsp_session_start_ms
+                .map(|start_ms| now_ms.saturating_sub(start_ms))
+        })
     }
 
     pub(crate) fn last_rx_data_age_ms(self, now_ms: u64) -> Option<u64> {
@@ -685,6 +693,18 @@ impl DataplaneFspOwnerActivity {
             && !self.has_recent_data_return_from(next_hop, now_ms, timeout_ms)
     }
 
+    pub(crate) fn has_sustained_outbound_without_data_return_from(
+        self,
+        next_hop: &NodeAddr,
+        now_ms: u64,
+        grace_ms: u64,
+    ) -> bool {
+        self.last_outbound_next_hop == Some(*next_hop)
+            && self
+                .outbound_without_data_return_since
+                .is_some_and(|tick| tick.age_ms(now_ms) >= grace_ms)
+    }
+
     fn tracks_next_hop(self, next_hop: &NodeAddr) -> bool {
         self.last_rx_previous_hop == Some(*next_hop) || self.tracks_outbound_next_hop(next_hop)
     }
@@ -753,6 +773,7 @@ pub(crate) struct OwnerState {
     last_tx_activity: Option<ActivityTick>,
     last_tx_data_activity: Option<ActivityTick>,
     last_outbound_next_hop: Option<NodeAddr>,
+    outbound_without_data_return_since: Option<ActivityTick>,
     data_packets_sent: u64,
     data_packets_recv: u64,
     data_bytes_sent: u64,

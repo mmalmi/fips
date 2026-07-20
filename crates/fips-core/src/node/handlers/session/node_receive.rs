@@ -475,8 +475,8 @@ impl Node {
     ) -> bool {
         let now_ms = Self::now_ms();
         let owner_activity = self.dataplane.fsp_owner_activity(&src_addr);
-        let authenticated_inbound_age_ms =
-            owner_activity.and_then(|activity| activity.last_rx_age_ms(now_ms));
+        let authenticated_inbound_age_ms = owner_activity
+            .and_then(|activity| activity.authenticated_inbound_or_session_age_ms(now_ms));
         if owner_activity.is_some_and(|activity| {
             activity.should_ignore_stale_epoch_decrypt_failure(received_k_bit)
         }) {
