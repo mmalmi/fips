@@ -614,6 +614,14 @@ async fn test_stale_path_broken_does_not_invalidate_pinned_handshake_route() {
         node.coord_cache().contains(&target, Node::now_ms()),
         "downstream recovery feedback routed back through the pinned branch must not destructively invalidate coordinates"
     );
+    assert_eq!(
+        node.learned_routes
+            .active_handshake_route(&target, Node::now_ms()),
+        None,
+        "downstream PathBroken must release the failed authenticated branch"
+    );
+
+    node.pin_handshake_reverse_route(target, pinned_hop);
 
     node.get_peer_mut(&pinned_hop)
         .expect("pinned branch should remain registered")

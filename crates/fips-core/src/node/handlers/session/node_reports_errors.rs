@@ -299,6 +299,12 @@ impl Node {
             return;
         }
 
+        // The authenticated ingress identifies the failed local branch even
+        // when the reporting router is farther downstream. Release the
+        // handshake pin and demote only that learned next hop; coordinates and
+        // unrelated routes remain intact.
+        self.record_route_failure(msg.dest_addr, *previous_hop);
+
         // Send standalone CoordsWarmup immediately (rate-limited)
         if self
             .coords_response_rate_limiter

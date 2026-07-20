@@ -74,6 +74,7 @@ impl Node {
             return None;
         }
         let now_ms = Self::now_ms();
+        let failed_learned_routes = self.learned_routes.failed_next_hops(dest_node_addr, now_ms);
         let direct_path_hard_degraded =
             self.session_direct_path_is_degraded(dest_node_addr, now_ms);
         let direct_path_soft_degraded = !direct_path_hard_degraded
@@ -125,7 +126,7 @@ impl Node {
             if addr == dest_node_addr {
                 direct_payload_eligible
             } else {
-                peer.is_healthy()
+                peer.is_healthy() && !failed_learned_routes.contains(addr)
             }
         };
 
@@ -712,16 +713,22 @@ impl Node {
         if self.config.node.routing.mode != RoutingMode::ReplyLearned {
             return true;
         }
-        let Some(pinned_hop) = self
+        if let Some(pinned_hop) = self
             .learned_routes
             .active_handshake_route(destination, Self::now_ms())
-        else {
-            return true;
-        };
-        // The reporter may be any downstream router on a legitimate multi-hop
-        // path. The authenticated adjacent ingress is the part we can match to
-        // the pinned route. Callers gate destructive feedback separately.
-        pinned_hop == *previous_hop
+        {
+            // The reporter may be any downstream router on a legitimate
+            // multi-hop path. The authenticated adjacent ingress is the part
+            // we can match to the pinned route.
+            return pinned_hop == *previous_hop;
+        }
+
+        // Once an explicit failure releases the handshake pin, delayed errors
+        // from that branch must not poison the replacement route. The
+        // dataplane owner is the canonical route for established traffic.
+        self.dataplane
+            .fsp_owner_next_hop(destination)
+            .is_none_or(|next_hop| next_hop == *previous_hop)
     }
 
     pub(in crate::node) fn record_route_failure(
@@ -732,6 +739,7 @@ impl Node {
         if self.config.node.routing.mode != RoutingMode::ReplyLearned {
             return;
         }
+        let _ = self.dataplane.forget_fsp_data_route(destination, next_hop);
         self.learned_routes.record_failure(&destination, &next_hop);
         let _ = self.refresh_dataplane_fsp_owner_routes(&destination);
     }

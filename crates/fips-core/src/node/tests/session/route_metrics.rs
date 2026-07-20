@@ -1,4 +1,5 @@
 use super::*;
+use crate::protocol::PathBroken;
 
 #[test]
 fn test_direct_fsp_requires_negotiated_capability() {
@@ -505,8 +506,8 @@ fn test_active_session_keeps_learned_fallback_next_hop_affinity() {
     );
 }
 
-#[test]
-fn test_retransmits_do_not_abandon_healthy_learned_fallback() {
+#[tokio::test]
+async fn test_only_explicit_path_broken_replaces_healthy_learned_fallback() {
     let mut node = make_reply_learned_node_with_tree_peer();
     let first_fallback = *node.peer_ids().next().expect("first fallback peer");
     assert!(node.sync_dataplane_fmp_owner(&first_fallback));
@@ -562,6 +563,28 @@ fn test_retransmits_do_not_abandon_healthy_learned_fallback() {
         node.dataplane.fsp_owner_next_hop(&remote_addr),
         Some(first_fallback),
         "periodic liveness repair must preserve the protocol-selected fallback until explicit route feedback"
+    );
+
+    assert!(node.routing_error_matches_active_path(&remote_addr, &first_fallback));
+    assert!(!node.routing_error_matches_active_path(&remote_addr, &second_fallback));
+
+    let downstream_reporter = make_node_addr(180);
+    let path_broken = PathBroken::new(remote_addr, downstream_reporter).encode();
+    node.handle_session_payload(LocalSessionPayload::new(
+        downstream_reporter,
+        first_fallback,
+        &path_broken,
+    ))
+    .await;
+
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&remote_addr),
+        Some(second_fallback),
+        "authenticated downstream PathBroken must demote the failed branch and move established traffic"
+    );
+    assert!(
+        !node.routing_error_matches_active_path(&remote_addr, &first_fallback),
+        "delayed errors from the failed branch must not poison its replacement"
     );
 }
 

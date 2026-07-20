@@ -8,7 +8,7 @@
 
 use crate::NodeAddr;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const MIN_ROUTE_SCORE: f64 = 0.05;
 const MAX_ROUTE_SCORE: f64 = 64.0;
@@ -90,6 +90,7 @@ impl LearnedRouteTable {
 
         if let Some(route) = routes.iter_mut().find(|route| route.next_hop == next_hop) {
             route.successes = route.successes.saturating_add(1);
+            route.failures = 0;
             route.last_seen_ms = now_ms;
             route.expires_at_ms = expires_at_ms;
             route.score = (route.score + 1.0).clamp(MIN_ROUTE_SCORE, MAX_ROUTE_SCORE);
@@ -180,6 +181,20 @@ impl LearnedRouteTable {
         Some(route.next_hop)
     }
 
+    pub(crate) fn failed_next_hops(
+        &self,
+        destination: &NodeAddr,
+        now_ms: u64,
+    ) -> HashSet<NodeAddr> {
+        self.routes
+            .get(destination)
+            .into_iter()
+            .flatten()
+            .filter(|route| route.expires_at_ms > now_ms && route.failures > 0)
+            .map(|route| route.next_hop)
+            .collect()
+    }
+
     pub(crate) fn select_next_hop<F>(
         &mut self,
         destination: &NodeAddr,
@@ -195,7 +210,7 @@ impl LearnedRouteTable {
         let sendable = routes
             .iter()
             .enumerate()
-            .filter(|(_, route)| can_send(&route.next_hop))
+            .filter(|(_, route)| route.failures == 0 && can_send(&route.next_hop))
             .map(|(index, route)| (index, route.weight()))
             .collect::<Vec<_>>();
         if sendable.is_empty() {
@@ -261,7 +276,10 @@ impl LearnedRouteTable {
         };
         routes.retain(|route| route.expires_at_ms > now_ms);
 
-        if !routes.iter().any(|route| can_send(&route.next_hop)) {
+        if !routes
+            .iter()
+            .any(|route| route.failures == 0 && can_send(&route.next_hop))
+        {
             return false;
         }
 

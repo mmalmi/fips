@@ -320,6 +320,16 @@ impl OwnerState {
         true
     }
 
+    pub(crate) fn forget_fsp_data_route(&mut self, next_hop: NodeAddr) -> bool {
+        if self.owner.protocol() != PacketProtocol::Fsp
+            || self.last_outbound_next_hop != Some(next_hop)
+        {
+            return false;
+        }
+        self.last_outbound_next_hop = None;
+        true
+    }
+
     fn collect_fsp_mmp_reports(
         &mut self,
         now: std::time::Instant,
