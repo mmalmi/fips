@@ -53,7 +53,6 @@ impl OwnerState {
             last_tx_activity: None,
             last_tx_data_activity: None,
             last_outbound_next_hop: None,
-            outbound_without_data_return_since: None,
             data_packets_sent: 0,
             data_packets_recv: 0,
             data_bytes_sent: 0,
@@ -110,7 +109,6 @@ impl OwnerState {
         self.last_data_return_next_hop = None;
         self.last_tx_data_activity = None;
         self.last_outbound_next_hop = None;
-        self.outbound_without_data_return_since = None;
         self.data_packets_sent = 0;
         self.data_packets_recv = 0;
         self.data_bytes_sent = 0;
@@ -603,7 +601,6 @@ impl OwnerState {
             last_data_return_next_hop: self.last_data_return_next_hop,
             last_tx_data_activity: self.last_tx_data_activity,
             last_outbound_next_hop: self.last_outbound_next_hop,
-            outbound_without_data_return_since: self.outbound_without_data_return_since,
             current_k_bit: self.fsp_current_k_bit,
             previous_draining_k_bit: self.fsp_previous_draining_k_bit,
             current_epoch_confirmed: self.fsp_lifecycle_confirmed,

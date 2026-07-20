@@ -123,14 +123,6 @@ fn fsp_owner_tracks_data_return_without_registry_side_channel() {
         ),
         "direct inbound data must not masquerade as return traffic for a routed fallback send"
     );
-    assert!(
-        !activity.has_sustained_outbound_without_data_return_from(
-            &next_hop.node_addr(),
-            125,
-            20,
-        ),
-        "end-to-end application data must stop fallback churn even when the overlay return path is asymmetric"
-    );
     assert!(!activity.has_recent_outbound_without_inbound(115, 20));
     assert_eq!(mover.record_fsp_decrypt_failure(owner), Some(1));
 
@@ -187,47 +179,6 @@ fn fsp_owner_tracks_data_return_without_registry_side_channel() {
         mover.min_fsp_data_rx_age_for_next_hop(&other_previous_hop, 135),
         None,
         "control/session FSP activity must not masquerade as endpoint-data freshness"
-    );
-}
-
-#[test]
-fn fsp_owner_retransmits_do_not_reset_unreturned_route_age() {
-    let owner = fsp_owner(177);
-    let first_hop = test_node_addr(178);
-    let second_hop = test_node_addr(179);
-    let mut mover = mover();
-    mover.register_owner(owner, OwnerConfig::new(1, 8));
-
-    assert!(
-        mover
-            .owner_mut(owner)
-            .unwrap()
-            .record_fsp_data_sent(first_hop, 512, ActivityTick::new(100))
-    );
-    assert!(
-        mover
-            .owner_mut(owner)
-            .unwrap()
-            .record_fsp_data_sent(first_hop, 512, ActivityTick::new(119))
-    );
-    let activity = mover.owner_fsp_activity(owner).unwrap();
-    assert!(activity.has_recent_outbound_activity(121, 10));
-    assert!(activity.has_sustained_outbound_without_data_return_from(&first_hop, 121, 20));
-    assert!(
-        !activity.has_sustained_outbound_without_data_return_from(&first_hop, 140, 20),
-        "dormant unanswered state must not trigger route replacement forever"
-    );
-
-    assert!(
-        mover
-            .owner_mut(owner)
-            .unwrap()
-            .record_fsp_data_sent(second_hop, 512, ActivityTick::new(122))
-    );
-    let activity = mover.owner_fsp_activity(owner).unwrap();
-    assert!(
-        !activity.has_sustained_outbound_without_data_return_from(&second_hop, 130, 20),
-        "changing routes must start a fresh bounded return window"
     );
 }
 

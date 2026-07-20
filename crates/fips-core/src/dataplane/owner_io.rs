@@ -134,7 +134,7 @@ impl OwnerState {
         if self.owner.protocol() == PacketProtocol::Fsp {
             if let Some(bytes) = fsp_application_data_len {
                 if let Some(next_hop) = fsp_next_hop {
-                    self.record_fsp_data_route_send(next_hop, packet.activity_tick);
+                    self.last_outbound_next_hop = Some(next_hop);
                 }
                 self.data_packets_sent = self.data_packets_sent.saturating_add(1);
                 self.data_bytes_sent = self.data_bytes_sent.saturating_add(bytes as u64);
@@ -213,11 +213,6 @@ impl OwnerState {
             {
                 self.last_rx_data_previous_hop = Some(previous_hop);
             }
-            // Application data from the destination proves the end-to-end
-            // session returned data even when the decentralized overlay chose
-            // an asymmetric return path. Keep the route-matched evidence below
-            // separate: it is used to grant trust to one specific direct hop.
-            self.outbound_without_data_return_since = None;
             if self.last_outbound_next_hop == Some(previous_hop)
                 && let Some(tick) = activity_tick
                 && note_activity(&mut self.last_data_return_activity, tick)
@@ -317,25 +312,12 @@ impl OwnerState {
         if self.owner.protocol() != PacketProtocol::Fsp {
             return false;
         }
-        self.record_fsp_data_route_send(next_hop, Some(tick));
+        self.last_outbound_next_hop = Some(next_hop);
         note_activity(&mut self.last_tx_activity, tick);
         note_activity(&mut self.last_tx_data_activity, tick);
         self.data_packets_sent = self.data_packets_sent.saturating_add(1);
         self.data_bytes_sent = self.data_bytes_sent.saturating_add(bytes as u64);
         true
-    }
-
-    fn record_fsp_data_route_send(
-        &mut self,
-        next_hop: NodeAddr,
-        tick: Option<ActivityTick>,
-    ) {
-        if self.last_outbound_next_hop != Some(next_hop) {
-            self.last_outbound_next_hop = Some(next_hop);
-            self.outbound_without_data_return_since = tick;
-        } else if self.outbound_without_data_return_since.is_none() {
-            self.outbound_without_data_return_since = tick;
-        }
     }
 
     fn collect_fsp_mmp_reports(
