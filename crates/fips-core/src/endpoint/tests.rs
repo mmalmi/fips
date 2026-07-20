@@ -349,3 +349,116 @@ async fn endpoint_exposes_signed_machine_rating_events() {
 
     endpoint.shutdown().await.expect("shutdown should succeed");
 }
+
+#[cfg(feature = "host-ble-transport")]
+#[tokio::test]
+async fn discovery_scope_with_host_ble_does_not_inject_udp_or_nostr_defaults() {
+    use crate::config::BleConfig;
+    use crate::transport::ble::host::HostBleIo;
+
+    let (io, _adapter) = HostBleIo::channel("ios", "local-device", 16).unwrap();
+    let config = FipsEndpoint::builder()
+        .config(Config::new())
+        .discovery_scope("iris-chat:fips-nearby:v1")
+        .host_ble(io, BleConfig::default())
+        .prepared_config();
+
+    assert!(!config.node.discovery.nostr.enabled);
+    assert!(config.transports.udp.is_empty());
+    assert!(!config.transports.ble.is_empty());
+}
+
+#[cfg(feature = "host-ble-transport")]
+#[tokio::test]
+async fn endpoint_host_ble_runs_platform_lifecycle_with_assigned_psm() {
+    use crate::config::BleConfig;
+    use crate::transport::ble::host::{HostBleCommand, HostBleIo};
+
+    let (io, adapter) = HostBleIo::channel("ios", "local-device", 16).unwrap();
+    let platform = tokio::spawn(run_endpoint_host_ble_platform(adapter));
+    let endpoint = FipsEndpoint::builder()
+        .without_system_tun()
+        .host_ble(io, BleConfig::default())
+        .bind()
+        .await
+        .expect("endpoint should bind with host BLE");
+
+    endpoint.shutdown().await.expect("shutdown should succeed");
+    let shutdown_commands = platform.await.expect("platform pump should finish");
+    assert!(
+        shutdown_commands
+            .iter()
+            .any(|command| matches!(command, HostBleCommand::StopAdvertising { .. }))
+    );
+    assert!(shutdown_commands.contains(&HostBleCommand::StopListening));
+    assert!(shutdown_commands.contains(&HostBleCommand::StopScanning));
+}
+
+#[cfg(feature = "host-ble-transport")]
+async fn run_endpoint_host_ble_platform(
+    adapter: crate::transport::ble::host::HostBleAdapter,
+) -> Vec<crate::transport::ble::host::HostBleCommand> {
+    use crate::transport::ble::{
+        bootstrap::BleBootstrap,
+        host::{HostBleCommand, HostBleEvent},
+    };
+
+    let HostBleCommand::Listen {
+        request_id,
+        preferred_psm,
+    } = adapter.next_command().await.expect("listener command")
+    else {
+        panic!("expected listener command");
+    };
+    assert_eq!(preferred_psm, 0x0085);
+    adapter
+        .emit(HostBleEvent::Listening {
+            request_id,
+            psm: 0x0091,
+        })
+        .await
+        .unwrap();
+
+    let HostBleCommand::StartAdvertising {
+        request_id,
+        bootstrap,
+    } = adapter.next_command().await.expect("advertising command")
+    else {
+        panic!("expected advertising command");
+    };
+    let bootstrap = BleBootstrap::decode(&bootstrap).unwrap();
+    assert_eq!(bootstrap.psm, 0x0091);
+    assert_eq!(bootstrap.max_packet, 2048);
+    adapter
+        .emit(HostBleEvent::AdvertisingStarted { request_id })
+        .await
+        .unwrap();
+
+    let HostBleCommand::StartScanning { request_id } =
+        adapter.next_command().await.expect("scanning command")
+    else {
+        panic!("expected scanning command");
+    };
+    adapter
+        .emit(HostBleEvent::ScanningStarted { request_id })
+        .await
+        .unwrap();
+
+    let mut shutdown_commands = Vec::new();
+    while shutdown_commands.len() < 3 {
+        let command = tokio::time::timeout(Duration::from_secs(5), adapter.next_command())
+            .await
+            .expect("host BLE shutdown command should arrive")
+            .expect("host BLE command channel should remain open through shutdown");
+        if let HostBleCommand::StopAdvertising { request_id } = command {
+            adapter
+                .emit(HostBleEvent::AdvertisingStopped { request_id })
+                .await
+                .unwrap();
+            shutdown_commands.push(HostBleCommand::StopAdvertising { request_id });
+        } else {
+            shutdown_commands.push(command);
+        }
+    }
+    shutdown_commands
+}

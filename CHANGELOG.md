@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.28] - 2026-07-20
+
+### Added
+
+- Add a scoped, versioned recent-peer cache shared by native FIPS embedders.
+  It records authenticated identities and reusable UDP paths, expires and
+  bounds observations, and can only augment peer configurations the app has
+  already authorized.
+- Add a caller-scoped native file adapter with strict identity/scope checks,
+  same-directory replacement, and owner-only permissions on Unix.
+- Release `fips-core` and `fips-endpoint` 0.4.28 together. Wire protocols and
+  live discovery formats are unchanged.
+
+## [0.4.27] - 2026-07-20
+
+### Fixed
+
+- Preserve an FSP session that has already recovered to a restarted peer's
+  current epoch when delayed FMP promotion completes, avoiding a second
+  teardown that can strand production first-ping name resolution.
+- Keep queued control sends progressing through dataplane backlog and restrict
+  learned-origin NAT fallback to explicit bootstrap transit peers.
+- Release `fips-core` and `fips-endpoint` 0.4.27 together. FMP, FSP,
+  discovery, and physical transport wire formats are unchanged.
+
+## [0.4.26] - 2026-07-20
+
+### Fixed
+
+- Keep native WebSocket listeners passive for ambient peer adverts. Explicitly
+  configured peers still auto-connect and retry normally; listener nodes admit
+  authenticated inbound WebSocket sessions without dialing every advertised
+  relay peer or sustaining idle handshake churn.
+- Release `fips-core` and `fips-endpoint` 0.4.26 together. FMP, FSP,
+  discovery, and physical transport wire formats are unchanged.
+
 ## [0.4.25] - 2026-07-20
 
 ### Fixed

@@ -267,7 +267,6 @@ async fn discovery_control_send_survives_existing_priority_backlog() {
     quiesce_synthetic_dataplanes(&mut nodes).await;
     cleanup_nodes(&mut nodes).await;
 }
-
 #[tokio::test]
 async fn queued_routed_endpoint_data_survives_existing_priority_backlog() {
     const BACKLOG_PACKETS: usize = 12;

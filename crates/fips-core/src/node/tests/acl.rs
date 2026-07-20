@@ -4,6 +4,14 @@ use crate::config::{NostrDiscoveryPolicy, PeerConfig};
 use crate::node::acl::{PeerAclContext, PeerAclReloader};
 use crate::node::wire::{build_msg1, build_msg2};
 use crate::peer::{ActivePeer, PeerConnection};
+#[cfg(feature = "host-ble-transport")]
+use crate::transport::ble::BleTransport;
+#[cfg(feature = "host-ble-transport")]
+use crate::transport::ble::addr::BleAddr;
+#[cfg(feature = "host-ble-transport")]
+use crate::transport::ble::host::HostBleIo;
+#[cfg(feature = "host-ble-transport")]
+use crate::transport::{TransportHandle, packet_channel};
 use crate::utils::index::SessionIndex;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -77,6 +85,39 @@ fn configured_only_discovery_allows_configured_peer() {
         PeerAclContext::InboundHandshake,
         TransportId::new(1),
         &TransportAddr::from_string("127.0.0.1:9000"),
+    );
+
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+#[cfg(feature = "host-ble-transport")]
+async fn configured_only_discovery_allows_nonconfigured_ble_peer() {
+    let mut config = Config::new();
+    config.node.system_files_enabled = false;
+    config.node.discovery.nostr.enabled = true;
+    config.node.discovery.nostr.policy = NostrDiscoveryPolicy::ConfiguredOnly;
+    let mut node = Node::new(config).unwrap();
+    let transport_id = TransportId::new(7);
+    let remote_addr = BleAddr::from_mac("hci0", [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 2]);
+    let (io, _adapter) = HostBleIo::channel("hci0", "local-peer", 8).unwrap();
+    let (packet_tx, _packet_rx) = packet_channel(8);
+    let transport = BleTransport::new(
+        transport_id,
+        None,
+        crate::config::BleConfig::default(),
+        io,
+        packet_tx,
+    );
+    node.transports
+        .insert(transport_id, TransportHandle::Ble(transport));
+    let stranger = Identity::generate();
+
+    let result = node.authorize_peer(
+        &PeerIdentity::from_pubkey_full(stranger.pubkey_full()),
+        PeerAclContext::OutboundConnect,
+        transport_id,
+        &remote_addr.to_transport_addr(),
     );
 
     assert!(result.is_ok());

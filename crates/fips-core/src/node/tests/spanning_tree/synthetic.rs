@@ -116,6 +116,7 @@ pub(in crate::node::tests) async fn repair_synthetic_tree_announces(
 pub(in crate::node::tests) async fn run_synthetic_node_work(nodes: &mut [TestNode]) {
     let now_ms = Node::now_ms();
     for tn in nodes.iter_mut() {
+        tn.node.poll_pending_connects().await;
         tn.node.resend_pending_handshakes(now_ms).await;
         tn.node.send_pending_tree_announces().await;
         tn.node.send_pending_filter_announces().await;

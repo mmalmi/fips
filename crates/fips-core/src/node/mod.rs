@@ -91,6 +91,8 @@ use crate::peer::{ActivePeer, PeerConnection};
 use crate::proto::lookup_limits::{DiscoveryBackoff, DiscoveryForwardRateLimiter};
 use crate::proto::rate_limit::RoutingErrorRateLimiter;
 use crate::proto::routing::{LearnedRouteTable, LearnedRouteTableSnapshot};
+#[cfg(feature = "host-ble-transport")]
+use crate::transport::ble::host::HostBleIo;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::transport::ethernet::EthernetTransport;
 use crate::transport::tcp::TcpTransport;
@@ -205,6 +207,9 @@ pub struct Node {
     // === Transports & Links ===
     /// Active transports (owned by Node).
     transports: HashMap<TransportId, TransportHandle>,
+    /// Platform-command BLE transport supplied by an embedded host.
+    #[cfg(feature = "host-ble-transport")]
+    host_ble_io: Option<HostBleIo>,
     /// Per-transport kernel drop tracking for congestion detection.
     transport_drops: TransportDropTracker,
     /// Per-transport wildcard socket-local drop tracking for observability.

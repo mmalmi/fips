@@ -59,10 +59,19 @@ impl Node {
                         ),
                     )
                     .learned();
-                    if self.active_peer_candidate_is_fresh_enough_to_skip(
-                        &node_addr,
-                        std::slice::from_ref(&candidate),
-                    ) {
+                    // BLE discovery is emitted only after a newly established
+                    // L2CAP connection completes its identity exchange. Seeing
+                    // it for an active peer therefore proves that the physical
+                    // connection has a new incarnation (for example after the
+                    // remote app restarted), even if the old logical peer has
+                    // not reached its heartbeat timeout yet.
+                    let confirms_new_connection = transport_name == "ble";
+                    if !confirms_new_connection
+                        && self.active_peer_candidate_is_fresh_enough_to_skip(
+                            &node_addr,
+                            std::slice::from_ref(&candidate),
+                        )
+                    {
                         continue;
                     }
                     if self.is_connecting_to_peer_on_path(

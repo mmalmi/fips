@@ -45,6 +45,7 @@ pub use super::tun_outbound::{TunOutboundRx, TunOutboundTx};
 #[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
 pub(crate) use super::tun_write::TunRx;
 pub use super::tun_write::TunTx;
+#[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
 pub(crate) use super::tun_write::write_channel;
 
 /// Read-only handle to the per-destination path MTU map. Populated by

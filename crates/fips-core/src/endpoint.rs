@@ -31,6 +31,7 @@ mod builder;
 #[path = "endpoint/nostr.rs"]
 mod nostr_api;
 mod receive;
+mod recent_peers;
 mod service_receiver;
 mod status;
 
@@ -44,6 +45,10 @@ pub use crate::node::{
 };
 pub use builder::FipsEndpointBuilder;
 use receive::{EndpointReceiveState, ServiceReceiveState};
+pub use recent_peers::{
+    RECENT_PEERS_MAX_ENDPOINTS_PER_PEER, RECENT_PEERS_MAX_PEERS, RECENT_PEERS_VERSION, RecentPeer,
+    RecentPeerEndpoint, RecentPeerTransport, RecentPeers, RecentPeersError,
+};
 pub use status::{FipsEndpointPeer, FipsEndpointRelayStatus};
 
 /// Endpoint data bytes delivered by FIPS.
@@ -78,6 +83,10 @@ pub enum FipsEndpointError {
 
     #[error("FSP service port {port} is already registered")]
     ServicePortAlreadyRegistered { port: u16 },
+
+    #[cfg(feature = "host-ble-transport")]
+    #[error("host BLE adapter was already consumed by another endpoint bind")]
+    HostBleAdapterConsumed,
 }
 
 /// Errors specific to capability-advertised local service registration.

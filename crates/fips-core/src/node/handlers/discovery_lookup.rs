@@ -26,6 +26,26 @@ impl Node {
 
         let peer_count = peer_addrs.len();
 
+        debug!(
+            target = %self.peer_display_name(target),
+            candidates = ?candidates
+                .iter()
+                .map(|candidate| (
+                    self.peer_display_name(&candidate.addr),
+                    candidate.can_send,
+                    candidate.is_healthy,
+                    candidate.is_tree_peer,
+                    candidate.may_reach_target,
+                    candidate.reply_learned_fallback_allowed,
+                ))
+                .collect::<Vec<_>>(),
+            selected = ?peer_addrs
+                .iter()
+                .map(|peer| self.peer_display_name(peer))
+                .collect::<Vec<_>>(),
+            "Discovery lookup peer plan"
+        );
+
         info!(
                 request_id = request.request_id,
                 target = %self.peer_display_name(target),
