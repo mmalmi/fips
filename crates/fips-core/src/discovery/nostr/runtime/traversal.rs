@@ -1,30 +1,10 @@
 use super::*;
 
 impl NostrDiscovery {
-    const INCOMING_OFFER_MIN_INTERVAL_MS: u64 = 60_000;
-
-    pub(super) async fn accept_incoming_offer_at(&self, sender_npub: &str, now_ms: u64) -> bool {
-        let Ok(peer) = NostrPeerKey::parse(sender_npub) else {
-            return false;
-        };
-        let mut last = self.last_incoming_offer_ms.lock().await;
-        if last
-            .get(&peer)
-            .is_some_and(|seen| now_ms.saturating_sub(*seen) < Self::INCOMING_OFFER_MIN_INTERVAL_MS)
-        {
-            return false;
-        }
-        if last.len() >= self.config.failure_state_max_entries && !last.contains_key(&peer) {
-            let oldest = last
-                .iter()
-                .min_by_key(|(_, seen)| **seen)
-                .map(|(peer, _)| *peer);
-            if let Some(oldest) = oldest {
-                last.remove(&oldest);
-            }
-        }
-        last.insert(peer, now_ms);
-        true
+    pub(super) async fn accept_incoming_offer_session(&self, session_id: &str) -> bool {
+        self.mark_session_seen(session_id, TraversalSignalPath::Mesh)
+            .await
+            .is_ok()
     }
 
     pub async fn request_connect(self: &Arc<Self>, peer_config: PeerConfig) {
@@ -327,14 +307,6 @@ impl NostrDiscovery {
             return;
         }
 
-        if !self.accept_incoming_offer_at(&sender_npub, now_ms()).await {
-            debug!(
-                peer = %short_npub(&sender_npub),
-                "rate-limited repeated inbound mesh traversal offer"
-            );
-            return;
-        }
-
         let Ok(permit) = self.offer_slots.clone().try_acquire_owned() else {
             debug!(
                 sender_npub = %sender_npub,
@@ -343,6 +315,14 @@ impl NostrDiscovery {
             );
             return;
         };
+        if !self.accept_incoming_offer_session(&offer.session_id).await {
+            debug!(
+                peer = %short_npub(&sender_npub),
+                session = %short_id(&offer.session_id),
+                "duplicate inbound mesh traversal offer"
+            );
+            return;
+        }
 
         let runtime = Arc::clone(self);
         self.spawn_child_task(async move {
@@ -422,9 +402,6 @@ impl NostrDiscovery {
             );
             return Ok(());
         }
-        self.mark_session_seen(&offer.session_id, TraversalSignalPath::Mesh)
-            .await?;
-
         let base_socket = bind_traversal_udp_socket()?;
         let observation = observe_traversal_addresses(
             &base_socket,
