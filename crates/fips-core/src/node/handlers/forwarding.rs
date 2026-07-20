@@ -342,6 +342,14 @@ impl Node {
                 crate::perf_profile::Timer::start(crate::perf_profile::Stage::CoordCacheWarm);
             self.try_warm_coord_cache_ref(&datagram_ref);
         }
+        if let Some(source) = session_ack_source(&datagram_ref) {
+            // A structurally valid msg2 returning from the destination proves
+            // which adjacent hop completed this handshake leg. Keep the
+            // following encrypted flow on that path until it expires or an
+            // explicit send failure releases it; weighted route exploration
+            // must not split one end-to-end FSP session across branches.
+            self.pin_handshake_reverse_route(source, previous_hop);
+        }
 
         // Local delivery: dispatch to session layer handlers. No alloc,
         // no copy — `handle_session_payload` takes `payload` by borrow.
@@ -805,6 +813,17 @@ fn transit_session_setup_source(datagram: &SessionDatagramRef<'_>) -> Option<Nod
     (setup.src_coords.node_addr() == &datagram.src_addr).then_some(datagram.src_addr)
 }
 
+fn session_ack_source(datagram: &SessionDatagramRef<'_>) -> Option<NodeAddr> {
+    let prefix = FspCommonPrefix::parse(datagram.payload)?;
+    if prefix.phase != FSP_PHASE_MSG2 {
+        return None;
+    }
+    let ack = SessionAck::decode(&datagram.payload[FSP_COMMON_PREFIX_SIZE..]).ok()?;
+    (ack.src_coords.node_addr() == &datagram.src_addr
+        && ack.dest_coords.node_addr() == &datagram.dest_addr)
+        .then_some(datagram.src_addr)
+}
+
 impl PreparedSessionForwardRoute {
     fn with_plaintext(self, plaintext: PacketBuffer) -> PreparedSessionForward {
         let encoded_len = plaintext.len();
@@ -826,6 +845,36 @@ include!("forwarding_helpers.rs");
 mod forwarding_fast_path_tests {
     use super::*;
     include!("forwarding_deferred_tests.rs");
+
+    #[test]
+    fn session_ack_route_pin_requires_matching_carried_identities() {
+        let src = NodeAddr::from_bytes(1_u128.to_be_bytes());
+        let dest = NodeAddr::from_bytes(2_u128.to_be_bytes());
+        let root = NodeAddr::from_bytes(3_u128.to_be_bytes());
+        let src_coords = crate::tree::TreeCoordinate::from_addrs(vec![src, root]).unwrap();
+        let dest_coords = crate::tree::TreeCoordinate::from_addrs(vec![dest, root]).unwrap();
+        let encoded = SessionDatagram::new(
+            src,
+            dest,
+            SessionAck::new(src_coords.clone(), dest_coords).encode(),
+        )
+        .encode();
+        let datagram = SessionDatagramRef::decode(&encoded[1..]).unwrap();
+        assert_eq!(session_ack_source(&datagram), Some(src));
+
+        let mismatched = SessionDatagram::new(
+            src,
+            dest,
+            SessionAck::new(
+                crate::tree::TreeCoordinate::from_addrs(vec![dest, root]).unwrap(),
+                src_coords,
+            )
+            .encode(),
+        )
+        .encode();
+        let datagram = SessionDatagramRef::decode(&mismatched[1..]).unwrap();
+        assert_eq!(session_ack_source(&datagram), None);
+    }
 
     #[test]
     fn borrowed_forward_encoder_matches_owned_session_datagram_encode() {

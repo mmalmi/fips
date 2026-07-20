@@ -5,6 +5,7 @@
 //! multi-hop forwarding through live node topologies.
 
 use super::*;
+use crate::node::route_impl::TransitNextHopPlan;
 use crate::node::session_wire::{FSP_FLAG_CP, build_fsp_header};
 use crate::protocol::{SessionAck, SessionDatagram, SessionSetup, encode_coords};
 use crate::tree::TreeCoordinate;
@@ -196,6 +197,68 @@ async fn test_coord_cache_warming_session_ack() {
         "dest_addr coords not cached from SessionAck"
     );
     assert_eq!(cached_dest.unwrap().root_id(), &root_addr);
+}
+
+#[tokio::test]
+async fn test_transit_session_ack_pins_the_completed_handshake_path() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let transport_id = TransportId::new(1);
+
+    let (target_connection, target_hop_identity) =
+        make_completed_connection(&mut node, LinkId::new(1), transport_id, 1_000);
+    let target_hop = *target_hop_identity.node_addr();
+    node.add_connection(target_connection).unwrap();
+    node.promote_connection(LinkId::new(1), target_hop_identity.clone(), 2_000)
+        .unwrap();
+
+    let (origin_connection, origin_hop_identity) =
+        make_completed_connection(&mut node, LinkId::new(2), transport_id, 1_000);
+    let origin_hop = *origin_hop_identity.node_addr();
+    node.add_connection(origin_connection).unwrap();
+    node.promote_connection(LinkId::new(2), origin_hop_identity, 2_000)
+        .unwrap();
+
+    let (explored_connection, explored_identity) =
+        make_completed_connection(&mut node, LinkId::new(3), transport_id, 1_000);
+    let explored_hop = *explored_identity.node_addr();
+    node.add_connection(explored_connection).unwrap();
+    node.promote_connection(LinkId::new(3), explored_identity, 2_000)
+        .unwrap();
+
+    let target = make_node_addr(0x41);
+    let origin = make_node_addr(0x42);
+    node.learn_reverse_route(origin, origin_hop);
+    for _ in 0..8 {
+        node.learn_reverse_route(target, explored_hop);
+    }
+
+    let root = *node.tree_state().my_coords().root_id();
+    let ack = SessionAck::new(
+        TreeCoordinate::from_addrs(vec![target, root]).unwrap(),
+        TreeCoordinate::from_addrs(vec![origin, root]).unwrap(),
+    );
+    let encoded = SessionDatagram::new(target, origin, ack.encode()).encode();
+    node.handle_session_datagram(AuthenticatedSessionDatagram::new(
+        target_hop_identity,
+        &encoded[1..],
+        false,
+    ))
+    .await;
+
+    for _ in 0..16 {
+        assert!(matches!(
+            node.plan_transit_next_hop(&target, &origin_hop),
+            TransitNextHopPlan::Route(next_hop) if next_hop == target_hop
+        ));
+    }
+
+    node.record_route_failure(target, target_hop);
+    assert!(matches!(
+        node.plan_transit_next_hop(&target, &origin_hop),
+        TransitNextHopPlan::Route(next_hop) if next_hop == explored_hop
+    ));
 }
 
 #[tokio::test]
