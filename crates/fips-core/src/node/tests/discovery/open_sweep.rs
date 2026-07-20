@@ -106,6 +106,67 @@ async fn test_open_discovery_sweep_queues_eligible_skips_filtered() {
 }
 
 #[tokio::test]
+async fn test_open_discovery_sweep_skips_authenticated_websocket_peer() {
+    use crate::config::{NostrDiscoveryPolicy, WebSocketConfig};
+    use crate::discovery::nostr::{NostrDiscovery, OverlayEndpointAdvert, OverlayTransportKind};
+    use crate::peer::ActivePeer;
+    use crate::transport::websocket::WebSocketTransport;
+    use crate::transport::{LinkId, TransportAddr, TransportHandle, TransportId, packet_channel};
+    use std::sync::Arc;
+
+    let mut config = crate::Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.node.discovery.nostr.policy = NostrDiscoveryPolicy::Open;
+    let mut node = crate::Node::new(config).unwrap();
+
+    let transport_id = TransportId::new(1);
+    let (packet_tx, _packet_rx) = packet_channel(8);
+    let transport = WebSocketTransport::new(
+        transport_id,
+        None,
+        WebSocketConfig::default(),
+        packet_tx,
+        &node.identity,
+    );
+    node.transports.insert(
+        transport_id,
+        TransportHandle::WebSocket(Box::new(transport)),
+    );
+
+    let peer_identity = crate::Identity::generate();
+    let peer = crate::PeerIdentity::from_pubkey_full(peer_identity.pubkey_full());
+    let peer_addr = *peer.node_addr();
+    let mut active = ActivePeer::new(peer, LinkId::new(7), crate::Node::now_ms());
+    active.set_current_addr(
+        transport_id,
+        &TransportAddr::from_string("wss://seed.example/fips"),
+    );
+    node.peers.insert(peer_addr, active);
+
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
+    let endpoint = OverlayEndpointAdvert {
+        transport: OverlayTransportKind::Udp,
+        addr: "203.0.113.7:2121".to_string(),
+    };
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let advert = NostrDiscovery::cached_advert_for_test(peer_identity.npub(), endpoint, now_secs);
+    bootstrap
+        .insert_advert_for_test(peer_identity.npub(), advert)
+        .await;
+
+    node.run_open_discovery_sweep(&bootstrap, Some(3_600), "test")
+        .await;
+
+    assert!(
+        !node.retry_pending.contains_key(&peer_addr),
+        "an authenticated ambient WSS adjacency must not become permanent direct-upgrade work"
+    );
+}
+
+#[tokio::test]
 async fn test_open_discovery_sweep_prioritizes_trusted_and_probes_newcomer() {
     use crate::config::NostrDiscoveryPolicy;
     use crate::discovery::nostr::{NostrDiscovery, OverlayEndpointAdvert, OverlayTransportKind};
