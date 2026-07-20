@@ -15,25 +15,11 @@ fn dataplane_fmp_link_class(plaintext: &[u8]) -> PacketClass {
 }
 
 fn dataplane_fmp_link_pending_policy(plaintext: &[u8]) -> DataplanePendingOutboundPolicy {
-    if fmp_plaintext_is_fsp_handshake_response_datagram(plaintext) {
+    if dataplane_fmp_link_class(plaintext) == PacketClass::Control {
         DATAPLANE_PENDING_OUTBOUND_PATIENT_CONTROL_POLICY
     } else {
         DATAPLANE_PENDING_OUTBOUND_FAST_POLICY
     }
-}
-
-fn fmp_plaintext_is_fsp_handshake_response_datagram(plaintext: &[u8]) -> bool {
-    if plaintext
-        .first()
-        .is_none_or(|ty| *ty != LinkMessageType::SessionDatagram.to_byte())
-    {
-        return false;
-    }
-    let Some(fsp_payload) = plaintext.get(crate::protocol::SESSION_DATAGRAM_HEADER_SIZE..) else {
-        return false;
-    };
-    FspCommonPrefix::parse(fsp_payload)
-        .is_some_and(|prefix| matches!(prefix.phase, FSP_PHASE_MSG2 | FSP_PHASE_MSG3))
 }
 
 fn dataplane_fsp_control_class(msg_type: u8) -> PacketClass {
@@ -306,7 +292,7 @@ mod tests {
     }
 
     #[test]
-    fn fmp_pending_policy_is_patient_only_for_fsp_handshake_responses() {
+    fn fmp_pending_policy_is_patient_for_control_messages() {
         let msg1 = session_datagram_plaintext_with_fsp_prefix(
             crate::node::session_wire::build_fsp_handshake_prefix(
                 crate::node::session_wire::FSP_PHASE_MSG1,
@@ -334,7 +320,7 @@ mod tests {
 
         assert_eq!(
             dataplane_fmp_link_pending_policy(&msg1).continuation_turns,
-            DATAPLANE_PENDING_OUTBOUND_FAST_CONTINUATION_TURNS
+            DATAPLANE_PENDING_OUTBOUND_CONTROL_CONTINUATION_TURNS
         );
         assert_eq!(
             dataplane_fmp_link_pending_policy(&msg2).continuation_turns,
@@ -347,6 +333,17 @@ mod tests {
         assert_eq!(
             dataplane_fmp_link_pending_policy(&established).continuation_turns,
             DATAPLANE_PENDING_OUTBOUND_FAST_CONTINUATION_TURNS
+        );
+        assert_eq!(
+            dataplane_fmp_link_pending_policy(&[
+                LinkMessageType::LookupRequest.to_byte()
+            ])
+            .crypto_limit,
+            DATAPLANE_PENDING_OUTBOUND_CONTROL_CRYPTO_LIMIT
+        );
+        assert_eq!(
+            dataplane_fmp_link_pending_policy(&[LinkMessageType::Heartbeat.to_byte()]).crypto_limit,
+            DATAPLANE_PENDING_OUTBOUND_FAST_POLICY.crypto_limit
         );
     }
 
