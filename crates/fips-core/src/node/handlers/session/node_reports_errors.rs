@@ -220,11 +220,7 @@ impl Node {
             "CoordsRequired: transit router needs coordinates"
         );
 
-        if !self.routing_error_matches_active_path(
-            &msg.dest_addr,
-            previous_hop,
-            &msg.reporter,
-        ) {
+        if !self.routing_error_matches_active_path(&msg.dest_addr, previous_hop) {
             debug!(
                 dest = %msg.dest_addr,
                 reporter = %msg.reporter,
@@ -293,11 +289,13 @@ impl Node {
             "PathBroken: transit router reports routing failure"
         );
 
-        if !self.routing_error_matches_active_path(
-            &msg.dest_addr,
-            previous_hop,
-            &msg.reporter,
-        ) {
+        // PathBroken invalidates cached routing state, so only the
+        // authenticated adjacent hop may author it. CoordsRequired above is
+        // non-destructive recovery feedback and may legitimately come from a
+        // downstream router on the pinned multi-hop path.
+        if msg.reporter != *previous_hop
+            || !self.routing_error_matches_active_path(&msg.dest_addr, previous_hop)
+        {
             debug!(
                 dest = %msg.dest_addr,
                 reporter = %msg.reporter,

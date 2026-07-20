@@ -587,6 +587,11 @@ async fn test_stale_path_broken_does_not_invalidate_pinned_handshake_route() {
         .insert(target, target_coords.clone(), now_ms);
     node.pin_handshake_reverse_route(target, pinned_hop);
 
+    assert!(
+        node.routing_error_matches_active_path(&target, &pinned_hop),
+        "multi-hop recovery feedback from a downstream router must remain actionable when it returns through the pinned ingress"
+    );
+
     let stale_error = PathBroken::new(target, stale_hop)
         .with_last_coords(target_coords.clone())
         .encode();
