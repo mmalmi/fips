@@ -26,6 +26,26 @@ impl Node {
 
         let peer_count = peer_addrs.len();
 
+        debug!(
+            target = %self.peer_display_name(target),
+            candidates = ?candidates
+                .iter()
+                .map(|candidate| (
+                    self.peer_display_name(&candidate.addr),
+                    candidate.can_send,
+                    candidate.is_healthy,
+                    candidate.is_tree_peer,
+                    candidate.may_reach_target,
+                    candidate.reply_learned_fallback_allowed,
+                ))
+                .collect::<Vec<_>>(),
+            selected = ?peer_addrs
+                .iter()
+                .map(|peer| self.peer_display_name(peer))
+                .collect::<Vec<_>>(),
+            "Discovery lookup peer plan"
+        );
+
         info!(
                 request_id = request.request_id,
                 target = %self.peer_display_name(target),
@@ -69,6 +89,15 @@ impl Node {
         // adjacency, including an Open-discovery adjacency that is otherwise
         // excluded from ambient fallback transit.
         if self.is_dns_resolved_identity(target) {
+            return true;
+        }
+
+        // An explicitly configured transit peer remains an operator-selected
+        // physical router when its direct UDP path was established through
+        // authenticated NAT traversal. `bootstrap_transports` distinguishes
+        // ephemeral adopted sockets from ordinary listeners, but it must not
+        // override an explicit per-peer transit grant.
+        if self.configured_discovery_fallback_transit(peer_addr) == Some(true) {
             return true;
         }
 
