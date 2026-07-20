@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.29] - 2026-07-20
+
+### Fixed
+
+- Preserve and repin the authenticated outbound route across lost final FSP
+  messages, simultaneous initiator/responder role changes, and downstream path
+  failures so multi-hop replies return on the established affinity.
+- Match routed errors to the path that actually carried the session, fail over
+  only explicitly broken paths, and complete queued endpoint sends after
+  dataplane backlog clears.
+- Accept verified multi-hop recovery feedback without reviving stale fallback
+  guesses or churning a healthy route.
+- Release `fips-core` and `fips-endpoint` 0.4.29 together. FMP, FSP,
+  discovery, and physical transport wire formats are unchanged.
+
 ## [0.4.28] - 2026-07-20
 
 ### Added
