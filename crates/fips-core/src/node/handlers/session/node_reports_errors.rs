@@ -289,13 +289,7 @@ impl Node {
             "PathBroken: transit router reports routing failure"
         );
 
-        // PathBroken invalidates cached routing state, so only the
-        // authenticated adjacent hop may author it. CoordsRequired above is
-        // non-destructive recovery feedback and may legitimately come from a
-        // downstream router on the pinned multi-hop path.
-        if msg.reporter != *previous_hop
-            || !self.routing_error_matches_active_path(&msg.dest_addr, previous_hop)
-        {
+        if !self.routing_error_matches_active_path(&msg.dest_addr, previous_hop) {
             debug!(
                 dest = %msg.dest_addr,
                 reporter = %msg.reporter,
@@ -321,8 +315,13 @@ impl Node {
                 "PathBroken response rate-limited, skipping standalone CoordsWarmup");
         }
 
-        // Invalidate stale cached coordinates
-        self.coord_cache.remove(&msg.dest_addr);
+        // A downstream router on the pinned multi-hop path may legitimately
+        // report failure, but its plaintext identity is not authenticated
+        // end-to-end. Use that report for non-destructive warmup/discovery and
+        // reserve coordinate invalidation for the authenticated adjacent hop.
+        if msg.reporter == *previous_hop {
+            self.coord_cache.remove(&msg.dest_addr);
+        }
 
         // Trigger re-discovery to get fresh coordinates, but only if we have
         // the target's identity cached — otherwise we can't verify the
