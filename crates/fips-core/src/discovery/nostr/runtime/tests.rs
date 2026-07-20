@@ -761,7 +761,7 @@ async fn mesh_signal_channel_roundtrips_offer() {
 
     assert!(
         discovery
-            .emit_mesh_signal(MeshTraversalSignal::Offer {
+            .emit_traversal_signal(MeshTraversalSignal::Offer {
                 peer_npub: "npub1peer".to_string(),
                 offer: offer.clone(),
             })
@@ -780,6 +780,116 @@ async fn mesh_signal_channel_roundtrips_offer() {
         }
         MeshTraversalSignal::Answer { .. } => panic!("expected mesh offer"),
     }
+}
+
+#[tokio::test]
+async fn external_peerfinding_exports_encrypted_traversal_signal() {
+    let discovery = NostrDiscovery::new_for_test_with_config(NostrDiscoveryConfig {
+        peerfinding_source: NostrPeerfindingSource::External,
+        ..Default::default()
+    });
+    let recipient = nostr::Keys::generate();
+    let recipient_npub = recipient.public_key().to_bech32().expect("recipient npub");
+    let offer = TraversalOffer {
+        message_type: "offer".to_string(),
+        session_id: "external-session".to_string(),
+        issued_at: now_ms(),
+        expires_at: now_ms().saturating_add(60_000),
+        nonce: "external-nonce".to_string(),
+        sender_npub: discovery.npub.clone(),
+        recipient_npub: recipient_npub.clone(),
+        reflexive_address: None,
+        local_addresses: Vec::new(),
+        stun_server: None,
+    };
+
+    assert!(
+        discovery
+            .emit_traversal_signal(MeshTraversalSignal::Offer {
+                peer_npub: recipient_npub,
+                offer: offer.clone(),
+            })
+            .await
+    );
+    assert!(
+        discovery.drain_mesh_signals().await.is_empty(),
+        "external peerfinding must not require an existing FIPS signaling route"
+    );
+
+    let events = discovery.drain_external_signal_events().await;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, Kind::Custom(SIGNAL_KIND));
+    let signal = unwrap_signal_event(&recipient, &events[0])
+        .await
+        .expect("recipient unwraps external traversal signal");
+    assert_eq!(signal.sender, discovery.pubkey);
+    assert_eq!(
+        serde_json::from_str::<TraversalOffer>(&signal.rumor.content)
+            .expect("decode traversal offer"),
+        offer
+    );
+}
+
+#[tokio::test]
+async fn external_peerfinding_ingests_encrypted_traversal_answer() {
+    let discovery = Arc::new(NostrDiscovery::new_for_test_with_config(
+        NostrDiscoveryConfig {
+            peerfinding_source: NostrPeerfindingSource::External,
+            ..Default::default()
+        },
+    ));
+    let peer = nostr::Keys::generate();
+    let peer_npub = peer.public_key().to_bech32().expect("peer npub");
+    let (tx, rx) = oneshot::channel();
+    discovery
+        .pending_answers
+        .lock()
+        .await
+        .insert("external-offer-nonce".to_string(), tx);
+    let answer = TraversalAnswer {
+        message_type: "answer".to_string(),
+        session_id: "external-session".to_string(),
+        issued_at: now_ms(),
+        expires_at: now_ms().saturating_add(60_000),
+        nonce: "external-answer-nonce".to_string(),
+        sender_npub: peer_npub.clone(),
+        recipient_npub: discovery.npub.clone(),
+        in_reply_to: "external-offer-nonce".to_string(),
+        accepted: true,
+        reflexive_address: None,
+        local_addresses: vec![TraversalAddress {
+            protocol: "udp".to_string(),
+            ip: "127.0.0.1".to_string(),
+            port: 51_820,
+        }],
+        stun_server: None,
+        punch: None,
+        reason: None,
+        offer_received_at: None,
+    };
+    let rumor = EventBuilder::private_msg_rumor(
+        discovery.pubkey,
+        serde_json::to_string(&answer).expect("encode answer"),
+    )
+    .build(peer.public_key());
+    let event = build_signal_event(
+        &peer,
+        discovery.pubkey,
+        rumor,
+        Timestamp::from(Timestamp::now().as_secs().saturating_add(60)),
+    )
+    .await
+    .expect("encrypt answer");
+
+    assert!(
+        discovery
+            .ingest_external_signal_event(&event)
+            .await
+            .expect("ingest external answer")
+    );
+    let envelope = rx.await.expect("pending external answer resolves");
+    assert_eq!(envelope.payload, answer);
+    assert_eq!(envelope.sender_npub, peer_npub);
 }
 
 #[tokio::test]

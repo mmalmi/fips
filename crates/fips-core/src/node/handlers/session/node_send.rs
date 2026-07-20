@@ -108,9 +108,23 @@ impl Node {
                 let _ = response_tx.send(registered);
             }
             NodeEndpointControlCommand::IngestNostrEvent { event, response_tx } => {
-                let accepted = if let Some(discovery) = self.nostr_discovery_handle() {
-                    discovery.ingest_advert_event(&event).await.cached()
-                        || discovery.process_rating_fact_event(&event).await
+                let accepted = if event.kind
+                    == nostr::Kind::Custom(crate::discovery::nostr::SIGNAL_KIND)
+                {
+                    if let Some(discovery) = self.nostr_discovery.clone() {
+                        match discovery.ingest_external_signal_event(&event).await {
+                            Ok(accepted) => accepted,
+                            Err(error) => {
+                                debug!(%error, event_id = %event.id, "ignoring invalid external traversal signal");
+                                false
+                            }
+                        }
+                    } else {
+                        false
+                    }
+                } else if let Some(discovery) = self.nostr_discovery_handle() {
+                        discovery.ingest_advert_event(&event).await.cached()
+                            || discovery.process_rating_fact_event(&event).await
                 } else {
                     false
                 };
@@ -279,6 +293,14 @@ impl Node {
                     ))
                 };
                 let _ = response_tx.send(result);
+            }
+            NodeEndpointControlCommand::DrainNostrTraversalSignalEvents { response_tx } => {
+                let events = if let Some(discovery) = self.nostr_discovery_handle() {
+                    discovery.drain_external_signal_events().await
+                } else {
+                    Vec::new()
+                };
+                let _ = response_tx.send(events);
             }
             NodeEndpointControlCommand::RelaySnapshot { response_tx } => {
                 let relays = if let Some(discovery) = self.nostr_discovery_handle() {

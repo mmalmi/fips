@@ -194,7 +194,7 @@ without that feature ignore `udp:nat` bootstrap configuration.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `node.discovery.nostr.enabled` | bool | `false` | Enable Nostr-mediated overlay discovery |
-| `node.discovery.nostr.peerfinding_source` | string | `"relays"` | `relays` uses FIPS's built-in advert relay publisher/subscriber/query path; `external` delegates kind 37195 transport to an application provider such as `nostr-pubsub` |
+| `node.discovery.nostr.peerfinding_source` | string | `"relays"` | `relays` uses FIPS's built-in advert relay path; `external` delegates kind 37195 adverts and encrypted kind 21059 traversal signals to an application provider such as `nostr-pubsub` |
 | `node.discovery.nostr.policy` | string | `"configured_only"` | Advert discovery policy: `disabled`, `configured_only`, `open` |
 | `node.discovery.nostr.open_discovery_max_pending` | usize | `64` | Max open-discovery peers queued in outbound retry/connection state at once |
 | `node.discovery.nostr.max_concurrent_incoming_offers` | usize | `16` | Max concurrent inbound traversal offers processed at once (rate limit against offer spam) |
@@ -204,7 +204,7 @@ without that feature ignore `udp:nat` bootstrap configuration.
 | `node.discovery.nostr.advert_relays` | list[string] | `["wss://relay.damus.io", "wss://nos.lol", "wss://offchain.pub", "wss://temp.iris.to"]` | Built-in service-advert relays; ignored when `peerfinding_source: external` |
 | `node.discovery.nostr.stun_servers` | list[string] | `["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478", "stun:global.stun.twilio.com:3478"]` | STUN servers used for local reflexive address discovery |
 | `node.discovery.nostr.app` | string | `"fips-overlay-v1"` | Traversal application namespace and advert identifier suffix |
-| `node.discovery.nostr.signal_ttl_secs` | u64 | `120` | Traversal offer/answer TTL inside the authenticated FIPS session |
+| `node.discovery.nostr.signal_ttl_secs` | u64 | `120` | Encrypted traversal offer/answer event TTL |
 | `node.discovery.nostr.attempt_timeout_secs` | u64 | `10` | Overall traversal attempt timeout in seconds |
 | `node.discovery.nostr.replay_window_secs` | u64 | `300` | Replay tracking retention window in seconds |
 | `node.discovery.nostr.punch_start_delay_ms` | u64 | `2000` | Delay before punch traffic starts |

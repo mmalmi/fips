@@ -1,11 +1,12 @@
 # Nostr peer and service discovery
 
-> **Status:** Implemented behind the `nostr-discovery` cargo feature.
+> **Status:** Implemented.
 
-FIPS uses Nostr only as a bounded, signed discovery/pubsub plane. Public kind
+FIPS uses Nostr only as a bounded discovery and signaling plane. Public kind
 `37195` adverts identify peers and describe reachable physical transports and
-services. Applications may distribute those adverts through configured Nostr
-relays, `nostr-pubsub`, or both.
+services. Encrypted NIP-59 kind `21059` events carry UDP traversal offers and
+answers. Applications may distribute both through configured Nostr relays,
+decentralized `nostr-pubsub`, or a composition of the two.
 
 Nostr events are not a FIPS physical transport. In particular, FIPS wire
 records are never wrapped in ephemeral relay events. A node needs a physical
@@ -36,20 +37,20 @@ negotiation that follows discovery. The embedding application owns relay and
 pubsub provider selection.
 
 ```text
- configured relays and/or nostr-pubsub
+ configured relays and/or decentralized nostr-pubsub
                   |
-          signed kind 37195 adverts
+  signed adverts + encrypted traversal signals
                   |
         validated peer/service cache
                   |
-  existing authenticated FIPS adjacency
+      direct physical adjacency
        /       |        |        \
      WSS     WebRTC     UDP      TCP
 ```
 
 The external peerfinding provider may be `nostr-pubsub-fips`. Relay-backed
-`nostr-pubsub` remains useful for peer and service announcements; it does not
-turn a Nostr relay into a packet carrier.
+`nostr-pubsub` also carries encrypted UDP bootstrap signaling; it does not turn
+a Nostr relay into a FIPS packet carrier.
 
 ## Configuration
 
@@ -79,7 +80,10 @@ transports:
   subscribes to, and queries signed adverts.
 - `external`: fips-core opens no advert relay connections. The application
   publishes `FipsEndpoint::local_nostr_discovery_advert_event()` and feeds
-  received events to `FipsEndpoint::ingest_nostr_discovery_event()`.
+  received events to `FipsEndpoint::ingest_nostr_discovery_event()`. It also
+  drains encrypted offers/answers with
+  `FipsEndpoint::drain_nostr_traversal_signal_events()` and publishes them
+  through the same provider composition.
 
 Applications integrating `nostr-pubsub` should normally use `external`, so a
 single provider graph owns relay and in-FIPS pubsub distribution.
@@ -114,11 +118,11 @@ open-discovery retry queue, subject to the peer ACL and trust ordering.
 
 ## Link negotiation
 
-UDP traversal and WebRTC negotiation run inside an authenticated FIPS session,
-not through Nostr offer/answer events. The generic link-negotiation service
-carries bounded adapter payloads on standard FSP service port 257.
+UDP traversal can bootstrap without an existing FIPS route by using encrypted
+kind `21059` events. WebRTC negotiation between already-routable peers uses the
+generic link-negotiation service on standard FSP service port 257.
 
-- `udp:nat` triggers STUN-assisted hole punching over the existing session.
+- `udp:nat` triggers provider-routed, STUN-assisted hole punching.
 - WebRTC SDP/ICE is carried by authenticated link-negotiation messages.
 - Reachable TCP and WebSocket addresses can be dialed directly.
 

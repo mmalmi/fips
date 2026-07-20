@@ -32,6 +32,8 @@ impl NostrDiscovery {
         let offer_slots = Arc::new(Semaphore::new(config.max_concurrent_incoming_offers));
         let (event_tx, event_rx) = mpsc::channel(event_channel_capacity(&config));
         let (mesh_signal_tx, mesh_signal_rx) = mpsc::channel(event_channel_capacity(&config));
+        let (external_signal_tx, external_signal_rx) =
+            mpsc::channel(event_channel_capacity(&config));
         let failure_state = FailureState::new(
             config.failure_streak_threshold,
             config.extended_cooldown_secs,
@@ -58,6 +60,8 @@ impl NostrDiscovery {
             event_rx: Mutex::new(event_rx),
             mesh_signal_tx,
             mesh_signal_rx: Mutex::new(mesh_signal_rx),
+            external_signal_tx,
+            external_signal_rx: Mutex::new(external_signal_rx),
             relay_task: Mutex::new(None),
             relay_refresh: Notify::new(),
             publish_task: Mutex::new(None),
@@ -136,6 +140,7 @@ impl NostrDiscovery {
 
     #[cfg(test)]
     pub(crate) async fn accept_incoming_offer_for_test(&self, session_id: &str) -> bool {
-        self.accept_incoming_offer_session(session_id).await
+        self.accept_incoming_offer_session(session_id, TraversalSignalPath::Mesh)
+            .await
     }
 }
