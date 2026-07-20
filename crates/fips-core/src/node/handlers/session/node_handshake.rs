@@ -430,32 +430,28 @@ impl Node {
 
         if entry.is_established() {
             if let Some(payload) = entry.handshake_payload().map(<[u8]>::to_vec) {
-                if entry.resend_count() < self.config.node.rate_limit.handshake_max_resends {
-                    let my_addr = *self.node_addr();
-                    let mut datagram = SessionDatagram::new(my_addr, *src_addr, payload)
-                        .with_ttl(self.config.node.session.default_ttl);
-                    let sent = match self.send_session_datagram(&mut datagram).await {
-                        Ok(()) => true,
-                        Err(e) => {
-                            debug!(
-                                src = %self.peer_display_name(src_addr),
-                                error = %e,
-                                "Failed to resend final SessionMsg3 after duplicate SessionAck"
-                            );
-                            false
-                        }
-                    };
-                    if sent {
-                        let now_ms = Self::now_ms();
-                        let interval = self.config.node.rate_limit.handshake_resend_interval_ms;
-                        entry.record_resend(now_ms + interval);
+                // The duplicate msg2 is authenticated and proves that this
+                // ingress branch still reaches the responder. A prior pinned
+                // branch may have failed after the first msg2, so follow the
+                // freshest Ack when resending the final msg3.
+                self.pin_handshake_reverse_route(*src_addr, *previous_hop_addr);
+                let my_addr = *self.node_addr();
+                let mut datagram = SessionDatagram::new(my_addr, *src_addr, payload)
+                    .with_ttl(self.config.node.session.default_ttl);
+                match self.send_session_datagram(&mut datagram).await {
+                    Ok(()) => {
                         debug!(
                             src = %self.peer_display_name(src_addr),
                             "Duplicate SessionAck after establishment, resent final SessionMsg3"
                         );
                     }
-                } else {
-                    entry.clear_handshake_payload();
+                    Err(e) => {
+                        debug!(
+                            src = %self.peer_display_name(src_addr),
+                            error = %e,
+                            "Failed to resend final SessionMsg3 after duplicate SessionAck"
+                        );
+                    }
                 }
             } else {
                 debug!(src = %self.peer_display_name(src_addr), "SessionAck for already-established session");

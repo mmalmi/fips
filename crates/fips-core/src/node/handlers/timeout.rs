@@ -37,6 +37,7 @@ impl crate::node::SessionRegistry {
             .filter(|(_, entry)| {
                 entry.is_established()
                     && entry.handshake_payload().is_some()
+                    && entry.next_resend_at_ms() > 0
                     && entry.resend_count() >= max_resends
             })
             .map(|(addr, _)| *addr)
@@ -50,7 +51,7 @@ impl crate::node::SessionRegistry {
                 if abandoned_rekey {
                     entry.abandon_rekey();
                 } else {
-                    entry.clear_handshake_payload();
+                    entry.stop_handshake_retransmit();
                 }
                 Some(ExhaustedEstablishedSessionHandshake {
                     dest_addr,
@@ -352,7 +353,9 @@ impl Node {
         // handshake payload: the initial final msg3, an FSP rekey msg1, or a
         // responder ack. Once a rekey resend budget is exhausted, abandon that
         // local rekey so the peer's next msg1 can converge instead of being
-        // tiebreak-dropped forever.
+        // tiebreak-dropped forever. Retain an initial final msg3 after its
+        // proactive budget ends: a late duplicate SessionAck explicitly proves
+        // that the responder still needs it.
         for exhausted in self
             .sessions
             .exhaust_established_handshake_resend_budgets(max_resends)
@@ -622,7 +625,7 @@ mod tests {
         let plain = sessions
             .get(plain_peer.node_addr())
             .expect("plain session should remain");
-        assert!(plain.handshake_payload().is_none());
+        assert_eq!(plain.handshake_payload(), Some(&[0x01][..]));
         assert_eq!(plain.next_resend_at_ms(), 0);
         assert_eq!(plain.resend_count(), 1);
 
