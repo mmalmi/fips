@@ -215,3 +215,55 @@ async fn carrier_boundary_drains_leftover_dataplane_work() {
     assert_eq!(process_available_packets(&mut nodes).await, 0);
     cleanup_nodes(&mut nodes).await;
 }
+
+#[tokio::test]
+async fn discovery_control_send_survives_existing_priority_backlog() {
+    // This deliberately exceeds both the two-turn fast-send budget and the
+    // former eight-turn special-case handshake-response budget.
+    const BACKLOG_PACKETS: usize = 12;
+
+    let mut nodes = run_tree_test(2, &[(0, 1)], false).await;
+    let peer = *nodes[1].node.node_addr();
+    let heartbeat = [crate::protocol::LinkMessageType::Heartbeat.to_byte()];
+    let outbound = (0..BACKLOG_PACKETS)
+        .map(|_| {
+            nodes[0]
+                .node
+                .prepare_dataplane_fmp_link_outbound(
+                    peer,
+                    crate::transport::PacketBuffer::new(heartbeat.to_vec()),
+                    false,
+                    crate::dataplane::ActivityTick::new(Node::now_ms()),
+                )
+                .expect("prepare synthetic priority backlog")
+                .0
+        })
+        .collect();
+    let first = nodes[0]
+        .node
+        .pump_dataplane_pending_outbound_firsts(
+            crate::dataplane::DataplaneLiveOutboundFirsts {
+                initial_outbound_batch: outbound,
+                ..Default::default()
+            },
+            0,
+            0,
+            1,
+        )
+        .await;
+    assert_eq!(first.summary().outbound_admitted(), BACKLOG_PACKETS);
+    assert!(nodes[0].node.dataplane.has_runnable_work());
+
+    nodes[0]
+        .node
+        .send_dataplane_fmp_link_plaintext(
+            &peer,
+            &[crate::protocol::LinkMessageType::LookupRequest.to_byte()],
+            false,
+        )
+        .await
+        .expect("discovery control must not fail behind admitted liveness traffic");
+
+    quiesce_synthetic_dataplanes(&mut nodes).await;
+    cleanup_nodes(&mut nodes).await;
+}
