@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::fs;
 use tempfile::TempDir;
 
+mod ble;
 #[test]
 fn test_empty_config() {
     let config = Config::new();

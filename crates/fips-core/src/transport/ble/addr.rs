@@ -1,6 +1,9 @@
 //! BLE transport address parsing and formatting.
 //!
-//! Address format: `"hci0/AA:BB:CC:DD:EE:FF"` — adapter name / device address.
+//! Address format: `"adapter/peer-token"`.
+//!
+//! BlueZ uses a MAC address as the peer token. Mobile platform adapters use
+//! opaque identifiers supplied by the operating system.
 
 use crate::transport::{TransportAddr, TransportError};
 
@@ -11,6 +14,8 @@ pub struct BleAddr {
     pub adapter: String,
     /// 6-byte Bluetooth device address.
     pub device: [u8; 6],
+    /// Opaque platform peer token when no stable Bluetooth address is exposed.
+    pub opaque_token: Option<String>,
 }
 
 impl BleAddr {
@@ -24,18 +29,57 @@ impl BleAddr {
             return Err(TransportError::InvalidAddress("empty adapter name".into()));
         }
 
-        let device = parse_mac(mac_str).ok_or_else(|| {
-            TransportError::InvalidAddress(format!("invalid MAC address: {mac_str}"))
-        })?;
+        let (device, opaque_token) = if let Some(device) = parse_mac(mac_str) {
+            (device, None)
+        } else {
+            if adapter.starts_with("hci") {
+                return Err(TransportError::InvalidAddress(format!(
+                    "invalid MAC address: {mac_str}"
+                )));
+            }
+            validate_opaque_token(mac_str)?;
+            ([0; 6], Some(mac_str.to_string()))
+        };
 
         Ok(Self {
             adapter: adapter.to_string(),
             device,
+            opaque_token,
+        })
+    }
+
+    /// Construct an address backed by a Bluetooth MAC address.
+    pub fn from_mac(adapter: impl Into<String>, device: [u8; 6]) -> Self {
+        Self {
+            adapter: adapter.into(),
+            device,
+            opaque_token: None,
+        }
+    }
+
+    /// Construct an address backed by an opaque platform peer token.
+    pub fn from_opaque(
+        adapter: impl Into<String>,
+        token: impl Into<String>,
+    ) -> Result<Self, TransportError> {
+        let adapter = adapter.into();
+        let token = token.into();
+        if adapter.is_empty() {
+            return Err(TransportError::InvalidAddress("empty adapter name".into()));
+        }
+        validate_opaque_token(&token)?;
+        Ok(Self {
+            adapter,
+            device: [0; 6],
+            opaque_token: Some(token),
         })
     }
 
     /// Format as `"adapter/AA:BB:CC:DD:EE:FF"`.
     pub fn to_string_repr(&self) -> String {
+        if let Some(token) = &self.opaque_token {
+            return format!("{}/{}", self.adapter, token);
+        }
         format!(
             "{}/{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
             self.adapter,
@@ -52,6 +96,21 @@ impl BleAddr {
     pub fn to_transport_addr(&self) -> TransportAddr {
         TransportAddr::from_string(&self.to_string_repr())
     }
+
+    /// Platform token without the local adapter prefix.
+    pub fn peer_token(&self) -> String {
+        self.opaque_token.clone().unwrap_or_else(|| {
+            format!(
+                "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                self.device[0],
+                self.device[1],
+                self.device[2],
+                self.device[3],
+                self.device[4],
+                self.device[5]
+            )
+        })
+    }
 }
 
 // ============================================================================
@@ -65,17 +124,27 @@ impl BleAddr {
         Self {
             adapter: adapter.to_string(),
             device: addr.0,
+            opaque_token: None,
         }
     }
 
     /// Convert to a bluer `Address`.
-    pub fn to_bluer_address(&self) -> bluer::Address {
-        bluer::Address(self.device)
+    pub fn to_bluer_address(&self) -> Result<bluer::Address, TransportError> {
+        if self.opaque_token.is_some() {
+            return Err(TransportError::InvalidAddress(
+                "opaque mobile BLE peer token cannot be used by BlueZ".into(),
+            ));
+        }
+        Ok(bluer::Address(self.device))
     }
 
     /// Convert to a bluer L2CAP `SocketAddr` with the given PSM.
-    pub fn to_socket_addr(&self, psm: u16) -> bluer::l2cap::SocketAddr {
-        bluer::l2cap::SocketAddr::new(self.to_bluer_address(), bluer::AddressType::LePublic, psm)
+    pub fn to_socket_addr(&self, psm: u16) -> Result<bluer::l2cap::SocketAddr, TransportError> {
+        Ok(bluer::l2cap::SocketAddr::new(
+            self.to_bluer_address()?,
+            bluer::AddressType::LePublic,
+            psm,
+        ))
     }
 }
 
@@ -96,6 +165,23 @@ fn parse_mac(s: &str) -> Option<[u8; 6]> {
         mac[i] = u8::from_str_radix(part, 16).ok()?;
     }
     Some(mac)
+}
+
+fn validate_opaque_token(token: &str) -> Result<(), TransportError> {
+    if token.is_empty() || token.len() > 128 {
+        return Err(TransportError::InvalidAddress(
+            "BLE peer token must contain 1 to 128 bytes".into(),
+        ));
+    }
+    if !token
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+    {
+        return Err(TransportError::InvalidAddress(
+            "BLE peer token contains unsupported characters".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Extract the adapter name from a transport address string.
@@ -130,6 +216,13 @@ mod tests {
     #[test]
     fn test_roundtrip() {
         let original = "hci0/AA:BB:CC:DD:EE:FF";
+        let addr = BleAddr::parse(original).unwrap();
+        assert_eq!(addr.to_string_repr(), original);
+    }
+
+    #[test]
+    fn test_roundtrip_opaque_platform_token() {
+        let original = "ios/4D36E96E-E325-11CE-BFC1-08002BE10318";
         let addr = BleAddr::parse(original).unwrap();
         assert_eq!(addr.to_string_repr(), original);
     }

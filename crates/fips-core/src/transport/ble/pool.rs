@@ -180,10 +180,7 @@ mod tests {
     }
 
     fn test_ble_addr(n: u8) -> BleAddr {
-        BleAddr {
-            adapter: "hci0".to_string(),
-            device: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, n],
-        }
+        BleAddr::from_mac("hci0", [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, n])
     }
 
     fn test_conn(n: u8, is_static: bool) -> BleConnection<()> {
