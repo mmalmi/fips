@@ -49,6 +49,11 @@ async fn url_only_seed_hint_completes_noise_ik_and_datagram_exchange() {
     })
     .await;
     let mut nodes = vec![server, client];
+    for node in &mut nodes {
+        node.node.config.node.discovery.nostr.enabled = true;
+        node.node.config.node.discovery.nostr.policy =
+            crate::config::NostrDiscoveryPolicy::ConfiguredOnly;
+    }
     let server_addr = *nodes[0].node.node_addr();
     let client_addr = *nodes[1].node.node_addr();
 
@@ -69,7 +74,7 @@ async fn url_only_seed_hint_completes_noise_ik_and_datagram_exchange() {
         }
     })
     .await
-    .expect("URL-only WebSocket seed must authenticate with Noise IK");
+    .expect("an operator-configured WebSocket adjacency must authenticate under configured-only discovery");
 
     assert_eq!(
         nodes[1]

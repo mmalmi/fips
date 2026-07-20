@@ -491,9 +491,15 @@ impl Node {
         remote_addr: &TransportAddr,
     ) -> Result<(), NodeError> {
         let local_rendezvous = self.is_local_rendezvous_path(transport_id, remote_addr);
+        let handshake_is_initiator = !matches!(context, PeerAclContext::InboundHandshake);
+        let configured_websocket_adjacency =
+            self.transports.get(&transport_id).is_some_and(|transport| {
+                transport.is_configured_websocket_adjacency(remote_addr, handshake_is_initiator)
+            });
         if self.enforces_configured_only_peer_admission()
             && !self.is_configured_peer_identity(peer_identity)
             && !local_rendezvous
+            && !configured_websocket_adjacency
         {
             let peer_node_addr = *peer_identity.node_addr();
             warn!(
@@ -512,6 +518,7 @@ impl Node {
         }
 
         if !local_rendezvous
+            && !configured_websocket_adjacency
             && matches!(context, PeerAclContext::InboundHandshake)
             && !self.admits_open_discovery_peer(peer_identity)
         {
