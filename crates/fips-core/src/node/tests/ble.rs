@@ -390,7 +390,10 @@ async fn test_ble_simultaneous_discovery_selects_one_initiator() {
     }
 
     for _ in 0..50 {
-        tokio::task::yield_now().await;
+        // The connection handlers run in background tasks. Give them bounded
+        // wall-clock time instead of assuming a fixed number of scheduler
+        // yields is sufficient while the full test suite is under load.
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         for node in &mut nodes {
             node.node.poll_transport_discovery().await;
         }

@@ -184,7 +184,7 @@ impl Node {
                             "Stale outbound handshake timed out while active peer is healthy; skipping retry"
                         );
                     } else {
-                        self.schedule_retry(node_addr, now_ms);
+                        self.schedule_retry_after_handshake_timeout(*identity, now_ms);
                     }
                 }
             }
