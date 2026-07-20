@@ -584,6 +584,16 @@ impl DataplaneLiveNode {
             .record_fsp_decrypt_failure(OwnerId::fsp_node(source_addr))
     }
 
+    pub(crate) fn forget_fsp_data_route(
+        &mut self,
+        dest_addr: NodeAddr,
+        next_hop: NodeAddr,
+    ) -> bool {
+        self.driver
+            .owner_mut(OwnerId::fsp_node(dest_addr))
+            .is_some_and(|owner| owner.forget_fsp_data_route(next_hop))
+    }
+
     #[cfg(test)]
     pub(crate) fn record_fsp_data_sent(
         &mut self,
