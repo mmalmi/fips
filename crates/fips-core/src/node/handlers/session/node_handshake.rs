@@ -30,6 +30,7 @@ impl Node {
         self.cache_current_root_coords(*src_addr, setup.src_coords.clone(), Self::now_ms());
 
         // Check for existing session with this remote
+        let mut changed_from_initiator_to_responder = false;
         if let Some(existing) = self.sessions.get(src_addr) {
             if existing.is_initiating() {
                 // Simultaneous initiation: smaller NodeAddr wins as initiator
@@ -46,6 +47,7 @@ impl Node {
                     src = %self.peer_display_name(src_addr),
                     "Simultaneous session initiation: we lose, becoming responder"
                 );
+                changed_from_initiator_to_responder = true;
             } else if existing.is_awaiting_msg3() {
                 // Duplicate setup while we already sent msg2 — resend stored ack
                 if let Some(payload) = existing.handshake_payload() {
@@ -105,7 +107,7 @@ impl Node {
                                 )
                                 .await
                             {
-                                Ok(()) => true,
+                                Ok(_) => true,
                                 Err(e) => {
                                     debug!(error = %e, dest = %self.peer_display_name(src_addr), "Failed to resend rekey SessionAck");
                                     false
@@ -254,7 +256,7 @@ impl Node {
         // Keep the reply on the authenticated ingress hop while it makes tree
         // progress. Otherwise use one strictly closer tree peer; if coordinates
         // cannot provide one, remain bounded to the ingress hop.
-        if let Err(e) = self
+        let ack_next_hop = match self
             .send_session_datagram_reply(
                 &mut datagram,
                 previous_hop_addr,
@@ -262,8 +264,18 @@ impl Node {
             )
             .await
         {
-            debug!(error = %e, dest = %self.peer_display_name(src_addr), "Failed to send SessionAck");
-            return;
+            Ok(next_hop) => next_hop,
+            Err(e) => {
+                debug!(error = %e, dest = %self.peer_display_name(src_addr), "Failed to send SessionAck");
+                return;
+            }
+        };
+        if changed_from_initiator_to_responder {
+            // Our initiator pin belongs to the abandoned SessionSetup. The
+            // responder's msg2 was sent on a potentially different branch;
+            // make explicit route failures match the branch we just used and
+            // keep later responder retries off the obsolete initiator route.
+            self.pin_handshake_reverse_route(*src_addr, ack_next_hop);
         }
 
         // Store session entry in AwaitingMsg3 state with ack payload for potential resend.

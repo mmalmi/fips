@@ -93,7 +93,7 @@ impl Node {
         datagram: &mut SessionDatagram,
         previous_hop_addr: &NodeAddr,
         dest_coords: &crate::tree::TreeCoordinate,
-    ) -> Result<(), NodeError> {
+    ) -> Result<NodeAddr, NodeError> {
         let dest_addr = datagram.dest_addr;
         // Before msg3 authenticates the source, admit only one strict tree-progress
         // hop derived from this setup; never consult learned or cached routes.
@@ -123,7 +123,8 @@ impl Node {
         let next_hop_addr = coordinate_route.unwrap_or(*previous_hop_addr);
         let runtime_route = self.prepare_session_datagram_runtime_route(datagram, next_hop_addr);
         self.send_session_datagram_on_runtime_route(datagram, runtime_route)
-            .await
+            .await?;
+        Ok(next_hop_addr)
     }
 
     async fn send_session_datagram_on_runtime_route(
