@@ -92,6 +92,15 @@ fn test_handshake_proven_hop_overrides_initial_route_exploration() {
         "the discovery-proven route should carry the session handshake"
     );
 
+    node.get_peer_mut(&proven_hop)
+        .expect("proven hop should remain registered")
+        .mark_stale();
+    assert!(
+        node.get_peer(&proven_hop)
+            .is_some_and(|peer| peer.can_send() && !peer.is_healthy()),
+        "fixture requires the authenticated handshake hop to remain sendable through transient liveness jitter"
+    );
+
     install_established_session_with_mmp(&mut node, &remote);
     assert!(node.sync_dataplane_fsp_owner_from_current_session_via(
         &remote_addr,
@@ -101,7 +110,7 @@ fn test_handshake_proven_hop_overrides_initial_route_exploration() {
     assert_eq!(
         node.dataplane.fsp_owner_next_hop(&remote_addr),
         Some(proven_hop),
-        "first established records must follow the authenticated handshake ingress instead of the route-exploration slot"
+        "first established records must follow the authenticated sendable handshake ingress instead of the route-exploration slot"
     );
     assert_ne!(tree_peer, proven_hop);
 

@@ -325,10 +325,14 @@ impl Node {
         proven_next_hop: Option<NodeAddr>,
     ) -> DataplaneFspOwnerRouteUpdate {
         let owner = OwnerId::fsp_node(*node_addr);
+        // A Noise-authenticated handshake ingress remains the strongest route
+        // evidence while its adjacent FMP path can still send. Traversal
+        // liveness may briefly be stale before endpoint traffic refreshes it;
+        // falling back here can seed the new FSP owner onto an unproven branch.
         let proven_next_hop = proven_next_hop.filter(|next_hop| {
             self.peers
                 .get(next_hop)
-                .is_some_and(|peer| peer.is_healthy() && peer.can_send())
+                .is_some_and(|peer| peer.can_send())
                 && self.dataplane_has_fmp_owner(next_hop)
         });
         let Some(next_hop) = proven_next_hop
