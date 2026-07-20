@@ -86,7 +86,8 @@ fn test_handshake_proven_hop_overrides_initial_route_exploration() {
     let remote_addr = *remote.node_addr();
     node.learn_reverse_route(remote_addr, proven_hop);
     assert_eq!(
-        node.find_next_hop(&remote_addr).map(|peer| *peer.node_addr()),
+        node.find_next_hop(&remote_addr)
+            .map(|peer| *peer.node_addr()),
         Some(proven_hop),
         "the discovery-proven route should carry the session handshake"
     );
@@ -103,6 +104,22 @@ fn test_handshake_proven_hop_overrides_initial_route_exploration() {
         "first established records must follow the authenticated handshake ingress instead of the route-exploration slot"
     );
     assert_ne!(tree_peer, proven_hop);
+
+    for _ in 0..4 {
+        node.learn_reverse_route(remote_addr, tree_peer);
+        assert_eq!(
+            node.dataplane.fsp_owner_next_hop(&remote_addr),
+            Some(proven_hop),
+            "later discovery routes must not replace the handshake-proven next hop while it remains healthy"
+        );
+    }
+
+    assert!(node.sync_dataplane_fmp_owner(&tree_peer));
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&remote_addr),
+        Some(proven_hop),
+        "refreshing an unrelated physical peer must not replace the established session's proven next hop"
+    );
 }
 
 #[test]

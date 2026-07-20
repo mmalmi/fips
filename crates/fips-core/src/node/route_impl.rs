@@ -325,11 +325,12 @@ impl Node {
                 .filter(|(addr, peer)| *addr != previous_hop && peer.is_healthy())
                 .map(|(addr, _)| *addr)
                 .collect::<HashSet<_>>();
-            if let Some(next_hop_addr) = self.learned_routes.select_next_hop(
-                dest_node_addr,
-                Self::now_ms(),
-                |addr| sendable.contains(addr),
-            ) {
+            if let Some(next_hop_addr) =
+                self.learned_routes
+                    .select_next_hop(dest_node_addr, Self::now_ms(), |addr| {
+                        sendable.contains(addr)
+                    })
+            {
                 return TransitNextHopPlan::Route(next_hop_addr);
             }
         }
@@ -650,10 +651,11 @@ impl Node {
             self.config.node.routing.learned_ttl_secs,
             self.config.node.routing.max_learned_routes_per_dest,
         );
-        // Only discovery and handshake paths call this for routed traffic;
-        // authenticated application ingress is directional and is not learned
-        // as an outbound route. Refresh owners when this stronger proof arrives.
-        let _ = self.refresh_dataplane_fsp_owner_routes(&destination);
+        // Discovery may return through more than one live seed. Once an FSP
+        // handshake has authenticated one complete path, keep that owner route
+        // stable while its physical next hop remains usable; later learned
+        // candidates stay available for explicit failure/degradation recovery.
+        let _ = self.refresh_dataplane_fsp_owner_routes_retaining_current(&destination);
     }
 
     pub(in crate::node) fn record_route_failure(

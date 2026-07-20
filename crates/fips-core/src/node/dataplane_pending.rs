@@ -53,6 +53,25 @@ impl Node {
         &mut self,
         node_addr: &NodeAddr,
     ) -> bool {
+        self.refresh_dataplane_fsp_owner_routes_via(node_addr, None)
+    }
+
+    pub(in crate::node) fn refresh_dataplane_fsp_owner_routes_retaining_current(
+        &mut self,
+        node_addr: &NodeAddr,
+    ) -> bool {
+        let current_next_hop = self
+            .dataplane
+            .fsp_owner_next_hop(node_addr)
+            .filter(|next_hop| self.dataplane_has_fmp_owner(next_hop));
+        self.refresh_dataplane_fsp_owner_routes_via(node_addr, current_next_hop)
+    }
+
+    fn refresh_dataplane_fsp_owner_routes_via(
+        &mut self,
+        node_addr: &NodeAddr,
+        preferred_next_hop: Option<NodeAddr>,
+    ) -> bool {
         let owner = OwnerId::fsp_node(*node_addr);
         let Some(send_context) = self.dataplane.fsp_owner_send_context(node_addr) else {
             return false;
@@ -62,7 +81,7 @@ impl Node {
             send_context.generation(),
             send_context.fsp_flags(),
             send_context.inner_flags(),
-            None,
+            preferred_next_hop,
         );
         let route_ready = update.wrap.is_some() || update.path.is_some();
         let next_hop_ready = update.path.is_some()
@@ -97,15 +116,24 @@ impl Node {
         let destinations = self.dataplane.fsp_owner_destinations();
         let mut refreshed = 0usize;
         for dest in destinations {
-            let current_uses_next_hop =
-                self.dataplane.fsp_owner_next_hop(&dest) == Some(*next_hop_addr);
+            let current_next_hop = self.dataplane.fsp_owner_next_hop(&dest);
+            let current_uses_next_hop = current_next_hop == Some(*next_hop_addr);
+            let current_is_ready = current_next_hop
+                .is_some_and(|current| self.dataplane_has_fmp_owner(&current));
+            if current_is_ready && !current_uses_next_hop {
+                continue;
+            }
             let would_use_next_hop = self
                 .find_next_hop(&dest)
                 .is_some_and(|peer| peer.node_addr() == next_hop_addr);
             if !(current_uses_next_hop || would_use_next_hop) {
                 continue;
             }
-            let route_ready = self.refresh_dataplane_fsp_owner_routes(&dest);
+            let route_ready = if current_is_ready {
+                self.refresh_dataplane_fsp_owner_routes_retaining_current(&dest)
+            } else {
+                self.refresh_dataplane_fsp_owner_routes(&dest)
+            };
             if route_ready || current_uses_next_hop {
                 refreshed = refreshed.saturating_add(1);
             }
