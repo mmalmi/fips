@@ -7,6 +7,95 @@ fn test_established_initiator_resends_final_msg3_until_responder_establishes() {
     });
 }
 
+#[test]
+fn test_established_initiator_answers_late_ack_after_resend_budget() {
+    run_large_stack_async_test("fips-established-msg3-late-ack", || async {
+        established_initiator_answers_late_ack_after_resend_budget().await;
+    });
+}
+
+async fn established_initiator_answers_late_ack_after_resend_budget() {
+    let mut nodes = run_tree_test(2, &[(0, 1)], false).await;
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+
+    nodes[0].node.config.node.rate_limit.handshake_max_resends = 1;
+    nodes[1].node.config.node.rate_limit.handshake_max_resends = 3;
+    nodes[0]
+        .node
+        .config
+        .node
+        .rate_limit
+        .handshake_resend_interval_ms = 5;
+    nodes[1]
+        .node
+        .config
+        .node
+        .rate_limit
+        .handshake_resend_interval_ms = 5;
+
+    let initiator_addr = *nodes[0].node.node_addr();
+    let responder_addr = *nodes[1].node.node_addr();
+    let responder_pubkey = nodes[1].node.identity().pubkey_full();
+
+    nodes[0]
+        .node
+        .initiate_session(responder_addr, responder_pubkey)
+        .await
+        .expect("session initiation should start");
+    assert!(wait_process_packets_for_node(&mut nodes, 1).await > 0);
+    assert!(wait_process_packets_for_node(&mut nodes, 0).await > 0);
+    assert!(wait_drop_queued_packets_for_node(&mut nodes[1]).await > 0);
+    assert!(
+        nodes[1]
+            .node
+            .get_session(&initiator_addr)
+            .is_some_and(|entry| entry.is_awaiting_msg3())
+    );
+
+    nodes[0]
+        .node
+        .sessions
+        .get_mut(&responder_addr)
+        .expect("established initiator session")
+        .record_resend(0);
+    nodes[0]
+        .node
+        .resend_pending_session_handshakes(Node::now_ms())
+        .await;
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&responder_addr)
+            .and_then(|entry| entry.handshake_payload())
+            .is_some(),
+        "the final msg3 must remain available after proactive retries stop"
+    );
+
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    nodes[1]
+        .node
+        .resend_pending_session_handshakes(Node::now_ms())
+        .await;
+    assert!(
+        wait_process_packets_for_node(&mut nodes, 0).await > 0,
+        "the late responder Ack should reach the initiator"
+    );
+    assert!(
+        wait_process_packets_for_node(&mut nodes, 1).await > 0,
+        "the initiator should answer the late Ack with retained msg3"
+    );
+    assert!(
+        nodes[1]
+            .node
+            .get_session(&initiator_addr)
+            .is_some_and(|entry| entry.is_established()),
+        "the responder should establish after the solicited msg3 resend"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
 async fn established_initiator_resends_final_msg3_until_responder_establishes() {
     let edges = vec![(0, 1)];
     let mut nodes = run_tree_test(2, &edges, false).await;

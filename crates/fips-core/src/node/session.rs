@@ -281,6 +281,14 @@ impl SessionEntry {
         self.next_resend_at_ms = 0;
     }
 
+    /// Stop proactive retransmission while retaining the last handshake
+    /// response. A peer that is still waiting can explicitly retransmit its
+    /// preceding handshake message and recover without starting a new Noise
+    /// session.
+    pub(crate) fn stop_handshake_retransmit(&mut self) {
+        self.next_resend_at_ms = 0;
+    }
+
     /// Number of resends performed so far.
     pub(crate) fn resend_count(&self) -> u32 {
         self.resend_count
