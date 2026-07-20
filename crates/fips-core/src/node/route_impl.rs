@@ -689,6 +689,7 @@ impl Node {
         &mut self,
         destination: &NodeAddr,
         previous_hop: &NodeAddr,
+        reporter: &NodeAddr,
     ) -> bool {
         if self.config.node.routing.mode != RoutingMode::ReplyLearned {
             return true;
@@ -700,12 +701,14 @@ impl Node {
             return true;
         };
         // Liveness may briefly mark a still-connected traversal hop stale
-        // while authenticated endpoint traffic is in flight. That is not
-        // proof that a plaintext error arriving through another branch belongs
-        // to the established session. Only an error returning through the
-        // authenticated hop may invalidate the route; explicit send/link
-        // failure removes the pin through `record_route_failure`.
-        pinned_hop == *previous_hop
+        // while authenticated endpoint traffic is in flight. Plaintext route
+        // errors have no packet identifier or end-to-end authentication, so a
+        // stale branch can route its report back through the active branch.
+        // Only the pinned adjacent hop can authoritatively report failure for
+        // that pinned route. Explicit send/link failure removes the pin through
+        // `record_route_failure`, preserving normal multi-hop recovery without
+        // trusting an uncorrelated downstream report.
+        pinned_hop == *previous_hop && pinned_hop == *reporter
     }
 
     pub(in crate::node) fn record_route_failure(

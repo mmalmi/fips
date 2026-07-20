@@ -220,7 +220,11 @@ impl Node {
             "CoordsRequired: transit router needs coordinates"
         );
 
-        if !self.routing_error_matches_active_path(&msg.dest_addr, previous_hop) {
+        if !self.routing_error_matches_active_path(
+            &msg.dest_addr,
+            previous_hop,
+            &msg.reporter,
+        ) {
             debug!(
                 dest = %msg.dest_addr,
                 reporter = %msg.reporter,
@@ -289,7 +293,11 @@ impl Node {
             "PathBroken: transit router reports routing failure"
         );
 
-        if !self.routing_error_matches_active_path(&msg.dest_addr, previous_hop) {
+        if !self.routing_error_matches_active_path(
+            &msg.dest_addr,
+            previous_hop,
+            &msg.reporter,
+        ) {
             debug!(
                 dest = %msg.dest_addr,
                 reporter = %msg.reporter,

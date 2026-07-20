@@ -137,7 +137,7 @@ async fn test_local_session_ack_pins_authenticated_previous_hop() {
     assert!(
         !nodes[0]
             .node
-            .routing_error_matches_active_path(&target, &unrelated_hop),
+            .routing_error_matches_active_path(&target, &unrelated_hop, &unrelated_hop),
         "an authenticated local SessionAck must pin its ingress before another healthy branch can report a routing error"
     );
 
@@ -165,7 +165,7 @@ async fn test_local_session_ack_pins_authenticated_previous_hop() {
     assert!(
         !nodes[0]
             .node
-            .routing_error_matches_active_path(&target, &unrelated_hop),
+            .routing_error_matches_active_path(&target, &unrelated_hop, &unrelated_hop),
         "a structurally valid duplicate SessionAck on another branch must not replace the Noise-authenticated endpoint route"
     );
 

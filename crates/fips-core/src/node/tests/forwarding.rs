@@ -590,6 +590,18 @@ async fn test_stale_path_broken_does_not_invalidate_pinned_handshake_route() {
         "an error returning through a different branch must not invalidate the authenticated handshake path"
     );
 
+    node.handle_session_payload(LocalSessionPayload::new(
+        stale_hop,
+        pinned_hop,
+        &stale_error,
+    ))
+    .await;
+
+    assert!(
+        node.coord_cache().contains(&target, Node::now_ms()),
+        "an off-path reporter routed back through the pinned branch must not invalidate the authenticated handshake path"
+    );
+
     node.get_peer_mut(&pinned_hop)
         .expect("pinned branch should remain registered")
         .mark_stale();
