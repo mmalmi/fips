@@ -207,9 +207,11 @@ fn ambient_handshake_timeouts_enter_traversal_cooldown() {
     config.node.retry.max_retries = 10;
     config.peers.push(peer_config);
     let mut node = Node::new(config).unwrap();
-    let mut discovery_config = crate::config::NostrDiscoveryConfig::default();
-    discovery_config.failure_streak_threshold = 3;
-    discovery_config.extended_cooldown_secs = 1_800;
+    let discovery_config = crate::config::NostrDiscoveryConfig {
+        failure_streak_threshold: 3,
+        extended_cooldown_secs: 1_800,
+        ..Default::default()
+    };
     let bootstrap = Arc::new(NostrDiscovery::new_for_test_with_config(discovery_config));
     node.nostr_discovery = Some(bootstrap.clone());
 
@@ -242,8 +244,10 @@ fn configured_handshake_timeouts_keep_auto_reconnect_policy() {
         "203.0.113.8:2121",
     ));
     let mut node = Node::new(config).unwrap();
-    let mut discovery_config = crate::config::NostrDiscoveryConfig::default();
-    discovery_config.failure_streak_threshold = 1;
+    let discovery_config = crate::config::NostrDiscoveryConfig {
+        failure_streak_threshold: 1,
+        ..Default::default()
+    };
     let bootstrap = Arc::new(NostrDiscovery::new_for_test_with_config(discovery_config));
     node.nostr_discovery = Some(bootstrap.clone());
 
