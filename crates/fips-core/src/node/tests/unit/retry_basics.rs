@@ -151,6 +151,51 @@ async fn test_process_pending_retries_is_budgeted_per_tick() {
 }
 
 #[tokio::test]
+async fn ambient_no_transport_retries_enter_traversal_cooldown() {
+    let peer = Identity::generate();
+    let peer_npub = peer.npub();
+    let peer_addr = *PeerIdentity::from_npub(&peer_npub).unwrap().node_addr();
+    let mut peer_config = crate::config::PeerConfig::new(
+        peer_npub.clone(),
+        "udp",
+        "203.0.113.7:2121",
+    );
+    peer_config.auto_reconnect = false;
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.node.retry.max_retries = 10;
+    let mut node = Node::new(config).unwrap();
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
+    node.nostr_discovery = Some(bootstrap.clone());
+
+    let mut retry = crate::node::retry::RetryState::new(peer_config);
+    retry.retry_after_ms = 0;
+    retry.expires_at_ms = Some(120_000);
+    node.retry_pending.insert(peer_addr, retry);
+
+    let mut now_ms = 1_000;
+    for _ in 0..5 {
+        node.retry_pending
+            .get_mut(&peer_addr)
+            .expect("ambient retry remains bounded")
+            .retry_after_ms = now_ms;
+        node.process_pending_retries(now_ms).await;
+        now_ms += 1_000;
+    }
+
+    let cooldown_until = bootstrap
+        .cooldown_until(&peer_npub, now_ms)
+        .expect("repeated unusable ambient adverts should enter traversal cooldown");
+    assert!(
+        node.retry_pending
+            .get(&peer_addr)
+            .is_some_and(|state| state.retry_after_ms >= cooldown_until),
+        "the bounded retry queue must not fire before the traversal cooldown expires"
+    );
+}
+
+#[tokio::test]
 async fn active_direct_refresh_retries_are_background_budgeted() {
     let mut config = Config::new();
     config.node.discovery.nostr.enabled = true;

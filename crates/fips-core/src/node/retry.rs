@@ -943,6 +943,18 @@ impl Node {
                         error = %e,
                         "Retry connection initiation failed"
                     );
+                    let bootstrap = self.nostr_discovery.clone();
+                    let cooldown_until_ms = if !peer_config.auto_reconnect
+                        && matches!(e, NodeError::NoTransportForType(_))
+                    {
+                        bootstrap.as_ref().and_then(|bootstrap| {
+                            bootstrap
+                                .record_traversal_failure(&peer_config.npub, now_ms)
+                                .cooldown_until_ms
+                        })
+                    } else {
+                        None
+                    };
                     // No-transport failures usually mean the cached overlay
                     // advert is stale (peer rebound NAT, switched relay, etc.).
                     // The advert cache is read-only inside fetch_advert, so
@@ -950,7 +962,7 @@ impl Node {
                     // entry expires. Force a re-fetch so the next retry tick
                     // picks up fresh endpoints.
                     if matches!(e, NodeError::NoTransportForType(_))
-                        && let Some(bootstrap) = self.nostr_discovery.clone()
+                        && let Some(bootstrap) = bootstrap
                     {
                         bootstrap
                             .request_advert_stale_check(peer_config.npub.clone())
@@ -959,6 +971,11 @@ impl Node {
                     // Immediate failure counts as an attempt — schedule next retry
                     // (reconnect flag is preserved on existing retry_pending entry)
                     self.schedule_retry_after_error(node_addr, now_ms, &e);
+                    if let Some(cooldown_until_ms) = cooldown_until_ms
+                        && let Some(state) = self.retry_pending.get_mut(&node_addr)
+                    {
+                        state.retry_after_ms = state.retry_after_ms.max(cooldown_until_ms);
+                    }
                 }
             }
         }
