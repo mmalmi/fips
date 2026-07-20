@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.23] - 2026-07-20
+
+### Fixed
+
+- Keep authenticated ambient WebSocket peers out of the open-discovery retry
+  queue. Their existing physical adjacency remains usable, and ordinary link
+  negotiation can still establish and preempt it with a better path, without
+  turning every WSS client into permanent background upgrade work.
+- Release `fips-core` and `fips-endpoint` 0.4.23 together. FMP, FSP,
+  discovery, and physical transport wire formats are unchanged.
+
 ## [0.4.22] - 2026-07-20
 
 ### Fixed
