@@ -356,25 +356,51 @@ impl Node {
                                 && existing_peer.is_healthy()
                                 && session_age_secs >= 30)
                         {
-                            // Guard: already have a pending session from a completed
-                            // rekey (waiting for K-bit cutover). Don't overwrite it
-                            // with a new handshake — drop this msg1.
-                            if existing_peer.pending_new_session().is_some() {
+                            // A locally initiated pending session is about to
+                            // cut over and still owns the current exchange, so
+                            // do not overwrite it with a peer Msg1.
+                            if existing_peer.pending_new_session().is_some()
+                                && existing_peer.pending_rekey_initiator()
+                            {
                                 debug!(
                                     peer = %self.peer_display_name(&peer_node_addr),
-                                    "Rekey msg1 received but already have pending session, dropping"
+                                    "Rekey msg1 received while local pending session awaits cutover, dropping"
                                 );
                                 self.peers.remove_connection(&link_id);
                                 self.links.remove(&link_id);
                                 self.msg1_rate_limiter.complete_handshake();
                                 return;
                             }
-                            let pending_fmp_k_bit = !existing_peer.current_k_bit();
+
+                            // A responder-side pending session can be orphaned
+                            // when every Msg2 reply is lost and the initiator
+                            // exhausts that sender index. A fresh Msg1 cannot
+                            // ever authenticate the old pending epoch. Replace
+                            // it so retries with a new sender index converge.
+                            let replace_orphaned_responder_pending =
+                                existing_peer.pending_new_session().is_some();
+                            let local_rekey_in_progress = existing_peer.rekey_in_progress();
+                            if replace_orphaned_responder_pending {
+                                debug!(
+                                    peer = %self.peer_display_name(&peer_node_addr),
+                                    previous_sender_index = ?existing_peer.pending_their_index(),
+                                    new_sender_index = %header.sender_idx,
+                                    "Replacing orphaned responder pending rekey for fresh Msg1"
+                                );
+                                self.abandon_fmp_rekey_for_peer(
+                                    &peer_node_addr,
+                                    "fresh Msg1 replaced orphaned responder pending rekey",
+                                );
+                            }
+                            let pending_fmp_k_bit = self
+                                .peers
+                                .get(&peer_node_addr)
+                                .is_some_and(|peer| !peer.current_k_bit());
 
                             // Dual-initiation detection: both sides sent msg1
                             // simultaneously. Apply tie-breaker — smaller NodeAddr
                             // wins as initiator (same as cross-connection resolution).
-                            if existing_peer.rekey_in_progress() {
+                            if local_rekey_in_progress {
                                 let our_addr = self.identity.node_addr();
                                 if our_addr < &peer_node_addr {
                                     // We win as initiator — drop their msg1.

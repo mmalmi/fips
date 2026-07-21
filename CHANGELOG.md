@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.34] - 2026-07-21
+
+### Fixed
+
+- Replace an orphaned responder-side FMP rekey when the initiator exhausts a
+  lost Msg2 exchange and retries with a fresh sender index, preventing repeated
+  network roaming from leaving direct-path recovery permanently pending.
+- Release `fips-core` and `fips-endpoint` 0.4.34 together. FMP, FSP,
+  discovery, routing semantics, and physical transport wire formats are
+  unchanged.
+
 ## [0.4.33] - 2026-07-21
 
 ### Fixed

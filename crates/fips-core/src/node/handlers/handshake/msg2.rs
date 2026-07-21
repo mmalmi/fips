@@ -170,17 +170,17 @@ impl Node {
                             );
                         }
 
-                        if remote_epoch_changed {
-                            if self.clear_stale_fsp_unless_recovered_to_remote_epoch(
+                        if remote_epoch_changed
+                            && self.clear_stale_fsp_unless_recovered_to_remote_epoch(
                                 &peer_node_addr,
                                 remote_epoch,
                                 "FMP rekey",
-                            ) {
-                                info!(
-                                    peer = %display_name,
-                                    "Peer restart detected during FMP rekey, replacing stale endpoint session"
-                                );
-                            }
+                            )
+                        {
+                            info!(
+                                peer = %display_name,
+                                "Peer restart detected during FMP rekey, replacing stale endpoint session"
+                            );
                         }
 
                         debug!(
@@ -522,17 +522,17 @@ impl Node {
                 self.register_identity(peer_node_addr, peer_identity.pubkey_full());
                 self.sync_dataplane_fmp_owner(&peer_node_addr);
 
-                if remote_epoch_changed {
-                    if self.clear_stale_fsp_unless_recovered_to_remote_epoch(
+                if remote_epoch_changed
+                    && self.clear_stale_fsp_unless_recovered_to_remote_epoch(
                         &peer_node_addr,
                         outbound_remote_epoch,
                         "outbound path refresh",
-                    ) {
-                        info!(
-                            peer = %display_name,
-                            "Peer restart detected during outbound path refresh, replacing stale endpoint session"
-                        );
-                    }
+                    )
+                {
+                    info!(
+                        peer = %display_name,
+                        "Peer restart detected during outbound path refresh, replacing stale endpoint session"
+                    );
                 }
 
                 self.pending_outbound.remove(&key);

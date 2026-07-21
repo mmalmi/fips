@@ -737,7 +737,7 @@ async fn failed_responder_rekey_msg2_rolls_back_pending_receiver_ownership() {
 
 #[cfg(feature = "sim-transport")]
 #[tokio::test]
-async fn duplicate_responder_rekey_msg1_resends_owned_msg2_across_cutover() {
+async fn responder_rekey_msg1_resends_duplicates_and_replaces_orphaned_pending_state() {
     use crate::node::wire::build_msg1;
     use crate::peer::{ActivePeer, ActivePeerSession};
     use crate::transport::{LinkStats, TransportHandle};
@@ -863,13 +863,58 @@ async fn duplicate_responder_rekey_msg1_resends_owned_msg2_across_cutover() {
         "duplicate Msg1 must not replace the pending receive epoch"
     );
 
+    // If every Msg2 reply is lost, the initiator eventually abandons its
+    // sender index and starts a fresh rekey. The responder must replace the
+    // orphaned responder-side pending epoch instead of dropping the new Msg1
+    // forever merely because an unconfirmed pending session still exists.
+    let replacement_their_index = SessionIndex::new(78);
+    let mut replacement_initiator = crate::noise::HandshakeState::new_initiator(
+        initiator.keypair(),
+        responder.identity.pubkey_full(),
+    );
+    replacement_initiator.set_local_epoch(remote_epoch);
+    let replacement_msg1 = build_msg1(
+        replacement_their_index,
+        &replacement_initiator.write_message_1().unwrap(),
+    );
+    let replacement_packet = || {
+        ReceivedPacket::with_timestamp(
+            transport_id,
+            remote_addr.clone(),
+            crate::transport::PacketBuffer::new(replacement_msg1.clone()),
+            1_002,
+        )
+    };
+
+    responder.handle_msg1(replacement_packet()).await;
+    let replacement_msg2 =
+        tokio::time::timeout(Duration::from_millis(20), initiator_packet_rx.recv())
+            .await
+            .expect("fresh rekey Msg1 should replace an orphaned responder pending epoch")
+            .expect("initiator transport should remain open")
+            .data
+            .into_vec();
+    assert_ne!(replacement_msg2, first_msg2);
+    let replacement_our_index = responder
+        .get_peer(&initiator_addr)
+        .and_then(|peer| peer.pending_our_index())
+        .expect("replacement responder pending epoch should own an index");
+    assert_ne!(replacement_our_index, pending_our_index);
+    assert_eq!(
+        responder
+            .get_peer(&initiator_addr)
+            .and_then(|peer| peer.pending_their_index()),
+        Some(replacement_their_index),
+        "fresh sender index must own the replacement responder pending epoch"
+    );
+
     responder
         .peers
         .get_mut(&initiator_addr)
         .unwrap()
         .handle_peer_kbit_flip()
         .expect("responder cutover should promote the pending session");
-    responder.handle_msg1(packet()).await;
+    responder.handle_msg1(replacement_packet()).await;
     let duplicate_after_cutover_msg2 =
         tokio::time::timeout(Duration::from_millis(20), initiator_packet_rx.recv())
             .await
@@ -877,9 +922,9 @@ async fn duplicate_responder_rekey_msg1_resends_owned_msg2_across_cutover() {
             .expect("initiator transport should remain open")
             .data
             .into_vec();
-    assert_eq!(duplicate_after_cutover_msg2, first_msg2);
+    assert_eq!(duplicate_after_cutover_msg2, replacement_msg2);
     let retained = responder.get_peer(&initiator_addr).unwrap();
-    assert_eq!(retained.our_index(), Some(pending_our_index));
+    assert_eq!(retained.our_index(), Some(replacement_our_index));
     assert!(retained.pending_new_session().is_none());
 
     match responder.transports.get_mut(&transport_id).unwrap() {
