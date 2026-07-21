@@ -65,6 +65,23 @@ fn permission_denied_send_errors_are_local_route_unavailable() {
 
     let text_error = TransportError::SendFailed("Operation not permitted (os error 1)".to_string());
     assert!(text_error.is_local_route_unavailable());
+    assert!(!io_error.requires_local_route_socket_recovery());
+    assert!(!text_error.requires_local_route_socket_recovery());
+}
+
+#[test]
+fn only_missing_local_source_address_requires_udp_socket_recovery() {
+    let missing_source = TransportError::Io(std::io::Error::new(
+        std::io::ErrorKind::AddrNotAvailable,
+        "cannot assign requested address",
+    ));
+    let unreachable_peer = TransportError::Io(std::io::Error::new(
+        std::io::ErrorKind::HostUnreachable,
+        "no route to host",
+    ));
+
+    assert!(missing_source.requires_local_route_socket_recovery());
+    assert!(!unreachable_peer.requires_local_route_socket_recovery());
 }
 
 #[cfg(windows)]

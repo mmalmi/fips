@@ -68,12 +68,13 @@ pub struct MmpMetrics {
 }
 
 impl MmpMetrics {
-    /// Reset state derived from ReceiverReport counters for rekey cutover.
+    /// Discard deltas that straddle an outbound carrier change.
     ///
-    /// The new session starts with counter 0, so the prev_rr deltas must
-    /// be reset to avoid computing bogus loss/goodput from the counter
-    /// discontinuity. RTT (SRTT) is preserved since it remains valid.
-    pub fn reset_for_rekey(&mut self) {
+    /// ReceiverReport counters are cumulative for the FSP session and do not
+    /// identify which next hop carried each packet. The first report after a
+    /// route change therefore cannot be attributed to either the old or new
+    /// carrier; retain its counters only as the new route's baseline.
+    pub fn reset_forward_report_baseline(&mut self) {
         self.prev_rr_cum_packets = 0;
         self.prev_rr_cum_bytes = 0;
         self.prev_rr_highest_counter = 0;
@@ -85,6 +86,15 @@ impl MmpMetrics {
         self.last_forward_loss_rate = None;
         self.forward_loss_window_span = 0;
         self.forward_loss_window_lost = 0;
+    }
+
+    /// Reset state derived from ReceiverReport counters for rekey cutover.
+    ///
+    /// The new session starts with counter 0, so the prev_rr deltas must
+    /// be reset to avoid computing bogus loss/goodput from the counter
+    /// discontinuity. RTT (SRTT) is preserved since it remains valid.
+    pub fn reset_for_rekey(&mut self) {
+        self.reset_forward_report_baseline();
         self.delivery_ratio_forward = 1.0;
         self.prev_reverse_packets = 0;
         self.prev_reverse_highest = 0;

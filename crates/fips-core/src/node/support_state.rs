@@ -74,6 +74,18 @@ impl SessionDirectDegradation {
         self.degraded_until_ms.contains_key(dest)
     }
 
+    pub(in crate::node) fn release_hold_for_validation(
+        &mut self,
+        dest: &NodeAddr,
+        now_ms: u64,
+    ) -> bool {
+        let Some(until_ms) = self.degraded_until_ms.get_mut(dest) else {
+            return false;
+        };
+        *until_ms = now_ms;
+        true
+    }
+
     pub(in crate::node) fn mark_degraded(
         &mut self,
         dest: NodeAddr,

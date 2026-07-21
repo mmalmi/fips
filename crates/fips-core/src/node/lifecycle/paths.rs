@@ -72,10 +72,22 @@ impl Node {
                     })
             });
         if direct_validation_rekey {
-            let rekey_already_active = self.peers.get(&peer_node_addr).is_some_and(|peer| {
-                peer.rekey_in_progress() || peer.pending_new_session().is_some()
-            });
-            if rekey_already_active || self.initiate_rekey(&peer_node_addr).await {
+            if let Some(peer) = self.peers.get_mut(&peer_node_addr) {
+                if peer.rekey_in_progress() {
+                    // A route or interface refresh is stronger evidence than
+                    // the ordinary exponential resend timer. Keep the sender
+                    // index that the remote responder may already own, but
+                    // make its stored Msg1 eligible on the next tick so a
+                    // handshake started while the route was down does not
+                    // wait behind stale backoff after connectivity returns.
+                    peer.set_msg1_next_resend(Self::now_ms());
+                    return Ok(true);
+                }
+                if peer.pending_new_session().is_some() {
+                    return Ok(true);
+                }
+            }
+            if self.initiate_rekey(&peer_node_addr).await {
                 return Ok(true);
             }
         }

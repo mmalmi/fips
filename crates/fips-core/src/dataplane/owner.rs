@@ -761,6 +761,7 @@ pub(crate) struct OwnerState {
     last_tx_activity: Option<ActivityTick>,
     last_tx_data_activity: Option<ActivityTick>,
     last_outbound_next_hop: Option<NodeAddr>,
+    fsp_mmp_path_changed_since_report: bool,
     data_packets_sent: u64,
     data_packets_recv: u64,
     data_bytes_sent: u64,

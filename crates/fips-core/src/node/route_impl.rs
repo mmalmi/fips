@@ -684,15 +684,43 @@ impl Node {
         }
     }
 
-    pub(in crate::node) fn complete_authenticated_direct_path_refresh_after_rekey(
+    pub(in crate::node) fn retain_direct_payload_validation_after_fmp_rekey(
         &mut self,
         dest: &NodeAddr,
     ) {
+        // FMP control proves only that the link rekey completed. It does not
+        // prove that end-to-end FSP payload has returned to the direct path;
+        // routed fallback traffic can remain healthy at the same time. Keep
+        // the degradation marker and retry loop until authenticated direct
+        // FSP receive activity clears them.
         if !self.promoted_path_matches_configured_static_peer(dest) {
             return;
         }
-        self.clear_session_direct_path_degraded_after_promotion(dest, Self::now_ms());
-        self.clear_retry_unless_direct_refresh_needed(dest);
+
+        let fallback_next_hop = self
+            .dataplane
+            .fsp_owner_activity(dest)
+            .and_then(|activity| activity.last_outbound_next_hop())
+            .filter(|next_hop| next_hop != dest);
+        if let Some(next_hop) = fallback_next_hop {
+            let _ = self.dataplane.forget_fsp_data_route(*dest, next_hop);
+        }
+        let _ = self
+            .session_direct_degradation
+            .release_hold_for_validation(dest, Self::now_ms());
+        let refreshed = self.refresh_dataplane_fsp_owner_routes(dest);
+        let pending_payload_validation =
+            self.session_direct_degradation.has_pending_validation(dest);
+        debug!(
+            peer = %self.peer_display_name(dest),
+            released_fallback_affinity = fallback_next_hop.is_some(),
+            refreshed,
+            pending_payload_validation,
+            "Authenticated FMP rekey made direct FSP payload eligible for validation"
+        );
+        if !pending_payload_validation {
+            self.clear_retry_unless_direct_refresh_needed(dest);
+        }
     }
 
     fn promoted_path_matches_configured_static_peer(&self, peer_node_addr: &NodeAddr) -> bool {

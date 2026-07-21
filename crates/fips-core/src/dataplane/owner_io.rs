@@ -134,6 +134,9 @@ impl OwnerState {
         if self.owner.protocol() == PacketProtocol::Fsp {
             if let Some(bytes) = fsp_application_data_len {
                 if let Some(next_hop) = fsp_next_hop {
+                    if self.last_outbound_next_hop != Some(next_hop) {
+                        self.fsp_mmp_path_changed_since_report = true;
+                    }
                     self.last_outbound_next_hop = Some(next_hop);
                 }
                 self.data_packets_sent = self.data_packets_sent.saturating_add(1);
@@ -311,6 +314,9 @@ impl OwnerState {
     ) -> bool {
         if self.owner.protocol() != PacketProtocol::Fsp {
             return false;
+        }
+        if self.last_outbound_next_hop != Some(next_hop) {
+            self.fsp_mmp_path_changed_since_report = true;
         }
         self.last_outbound_next_hop = Some(next_hop);
         note_activity(&mut self.last_tx_activity, tick);
@@ -536,6 +542,10 @@ impl OwnerState {
         let Some(mmp) = &mut self.fsp_mmp else {
             return Err(DataplaneFspMmpSkip::MmpDisabled);
         };
+
+        if std::mem::take(&mut self.fsp_mmp_path_changed_since_report) {
+            mmp.metrics.reset_forward_report_baseline();
+        }
 
         let our_timestamp_ms = now_ms.wrapping_sub(session_start_ms) as u32;
         mmp.metrics

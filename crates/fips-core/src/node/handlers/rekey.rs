@@ -241,7 +241,7 @@ impl crate::node::PeerLifecycleRegistry {
         let mut plan = FmpRekeyTickPlan::default();
 
         for (node_addr, peer) in &self.active {
-            if !peer.has_session() || !peer.is_healthy() {
+            if !peer.has_session() {
                 continue;
             }
 
@@ -255,6 +255,13 @@ impl crate::node::PeerLifecycleRegistry {
 
             if peer.is_draining() && peer.drain_expired(drain_secs) {
                 plan.drain.push(*node_addr);
+            }
+
+            // An authenticated pending rekey is itself the recovery path for
+            // a stale direct carrier. Do not require the old FMP epoch to
+            // become healthy before cutting over or retiring its drain state.
+            if !peer.is_healthy() {
+                continue;
             }
 
             if peer.rekey_in_progress() || peer.is_rekey_dampened(dampening_secs) {
@@ -554,7 +561,7 @@ impl Node {
                 );
                 self.ensure_current_session_index_registered(&node_addr, "initiator rekey cutover");
                 self.sync_dataplane_fmp_owner(&node_addr);
-                self.complete_authenticated_direct_path_refresh_after_rekey(&node_addr);
+                self.retain_direct_payload_validation_after_fmp_rekey(&node_addr);
             }
         }
 

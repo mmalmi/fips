@@ -168,6 +168,8 @@ fn peer_lifecycle_registry_owns_fmp_rekey_tick_selection() {
     let in_progress_peer = Identity::generate();
     let dampened_peer = Identity::generate();
     let stale_peer = Identity::generate();
+    let stale_cutover_peer = Identity::generate();
+    let stale_drain_peer = Identity::generate();
     let no_session_peer = Identity::generate();
 
     let mut cutover = active_fmp_peer(&local, &cutover_peer, 1);
@@ -208,7 +210,16 @@ fn peer_lifecycle_registry_owns_fmp_rekey_tick_selection() {
     let mut stale = active_fmp_peer(&local, &stale_peer, 8);
     stale.mark_stale();
 
-    let no_session = no_session_fmp_peer(&no_session_peer, 9);
+    let mut stale_cutover = active_fmp_peer(&local, &stale_cutover_peer, 9);
+    arm_completed_fmp_rekey(&mut stale_cutover, &local, &stale_cutover_peer, 9, true);
+    stale_cutover.mark_stale();
+
+    let mut stale_drain = active_fmp_peer(&local, &stale_drain_peer, 10);
+    arm_completed_fmp_rekey(&mut stale_drain, &local, &stale_drain_peer, 10, true);
+    assert!(stale_drain.cutover_to_new_session().is_some());
+    stale_drain.mark_stale();
+
+    let no_session = no_session_fmp_peer(&no_session_peer, 11);
 
     let mut peers = crate::node::PeerLifecycleRegistry::default();
     peers.insert(*cutover_peer.node_addr(), cutover);
@@ -219,6 +230,8 @@ fn peer_lifecycle_registry_owns_fmp_rekey_tick_selection() {
     peers.insert(*in_progress_peer.node_addr(), in_progress);
     peers.insert(*dampened_peer.node_addr(), dampened);
     peers.insert(*stale_peer.node_addr(), stale);
+    peers.insert(*stale_cutover_peer.node_addr(), stale_cutover);
+    peers.insert(*stale_drain_peer.node_addr(), stale_drain);
     peers.insert(*no_session_peer.node_addr(), no_session);
 
     let mut plan = peers.plan_fmp_rekey_tick(10_000, 1, Duration::ZERO, 0, REKEY_DAMPENING_SECS);
@@ -226,8 +239,12 @@ fn peer_lifecycle_registry_owns_fmp_rekey_tick_selection() {
     plan.drain.sort();
     plan.initiate.sort();
 
-    assert_eq!(plan.cutover, vec![*cutover_peer.node_addr()]);
-    assert_eq!(plan.drain, vec![*drain_peer.node_addr()]);
+    let mut expected_cutover = vec![*cutover_peer.node_addr(), *stale_cutover_peer.node_addr()];
+    expected_cutover.sort();
+    assert_eq!(plan.cutover, expected_cutover);
+    let mut expected_drain = vec![*drain_peer.node_addr(), *stale_drain_peer.node_addr()];
+    expected_drain.sort();
+    assert_eq!(plan.drain, expected_drain);
     let mut expected_initiate = vec![*timer_peer.node_addr(), *counter_peer.node_addr()];
     expected_initiate.sort();
     assert_eq!(plan.initiate, expected_initiate);

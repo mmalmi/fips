@@ -774,11 +774,34 @@ impl Node {
         transport_id: crate::transport::TransportId,
         remote_addr: &crate::transport::TransportAddr,
     ) -> bool {
+        // A pending outbound PeerConnection on this exact tuple means both
+        // endpoints are performing a full carrier refresh. Resolve those two
+        // Noise handshakes with the normal deterministic cross-connection
+        // rule. FMP rekeys live on ActivePeer instead, so treating this Msg1
+        // as a rekey would make both sides install unrelated responder
+        // indexes while their outbound halves are still in flight.
+        let simultaneous_same_path_connection = self.peers.connection_values().any(|connection| {
+            connection.is_outbound()
+                && connection.transport_id() == Some(transport_id)
+                && connection.source_addr() == Some(remote_addr)
+                && connection
+                    .expected_identity()
+                    .is_some_and(|identity| identity.node_addr() == peer_node_addr)
+        });
+        if simultaneous_same_path_connection {
+            return false;
+        }
+
+        let direct_payload_validation_pending = self
+            .session_direct_degradation
+            .has_pending_validation(peer_node_addr);
         self.config.node.rekey.enabled
             && self.peers.get(peer_node_addr).is_some_and(|peer| {
                 peer.has_session()
                     && peer.can_send()
-                    && peer.session_established_at().elapsed().as_secs() >= 30
+                    && (direct_payload_validation_pending
+                        || peer.is_draining()
+                        || peer.session_established_at().elapsed().as_secs() >= 30)
                     && peer.transport_id() == Some(transport_id)
                     && peer.current_addr() == Some(remote_addr)
             })

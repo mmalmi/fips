@@ -253,7 +253,7 @@ impl Node {
             "responder authenticated FMP rekey cutover",
         );
         let synced = self.sync_dataplane_fmp_owner(node_addr);
-        self.complete_authenticated_direct_path_refresh_after_rekey(node_addr);
+        self.retain_direct_payload_validation_after_fmp_rekey(node_addr);
         synced
     }
 

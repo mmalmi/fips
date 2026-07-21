@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.33] - 2026-07-21
+
+### Fixed
+
+- Keep direct-path retries pending through authenticated FMP control recovery
+  until direct FSP payload validates the restored carrier, while releasing
+  stale fallback affinity so that validation traffic can probe it.
+- Converge same-tuple rekeys after route restoration, stale-link cutovers,
+  drain overlap, and simultaneous full-carrier refreshes without splitting
+  sender indexes or K-bit epochs.
+- Attribute session loss only after establishing a fresh baseline for each
+  outbound carrier, preventing delayed outage reports from degrading a newly
+  restored direct route.
+- Preserve shared UDP sockets for destination-specific route failures and
+  rebuild them only when their local source address is no longer available.
+- Release `fips-core` and `fips-endpoint` 0.4.33 together. FMP, FSP,
+  discovery, routing semantics, and physical transport wire formats are
+  unchanged.
+
 ## [0.4.32] - 2026-07-21
 
 ### Fixed

@@ -174,6 +174,17 @@ impl TransportError {
             _ => false,
         }
     }
+
+    /// True only when the socket's local source address disappeared and a
+    /// rebind can repair it. Destination-specific policy/route failures remain
+    /// peer-scoped and must not tear down a shared UDP carrier.
+    pub(crate) fn requires_local_route_socket_recovery(&self) -> bool {
+        match self {
+            TransportError::Io(error) => error.kind() == std::io::ErrorKind::AddrNotAvailable,
+            TransportError::SendFailed(message) => is_addr_not_available_error_text(message),
+            _ => false,
+        }
+    }
 }
 
 fn is_local_route_error_kind(kind: std::io::ErrorKind) -> bool {
@@ -199,6 +210,16 @@ fn is_local_route_error_text(message: &str) -> bool {
         || lower.contains("os error 65")
         || lower.contains("os error 49")
         || lower.contains("os error 1")
+}
+
+fn is_addr_not_available_error_text(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("address not available")
+        || lower.contains("can't assign requested address")
+        || lower.contains("cannot assign requested address")
+        || lower.contains("os error 49")
+        || lower.contains("os error 99")
+        || lower.contains("os error 10049")
 }
 
 // ============================================================================

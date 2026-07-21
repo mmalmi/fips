@@ -338,6 +338,86 @@ fn stale_same_tuple_refresh_remains_an_established_rekey_candidate() {
     );
 }
 
+#[test]
+fn fresh_same_tuple_direct_validation_refresh_is_still_a_rekey_candidate() {
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(1);
+    let (conn, identity) = make_completed_connection(&mut node, link_id, transport_id, 1_000);
+    let node_addr = *identity.node_addr();
+
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, identity, 2_000).unwrap();
+    node.mark_session_direct_path_degraded(node_addr, Node::now_ms());
+
+    let peer = node.get_peer(&node_addr).unwrap();
+    assert!(peer.session_established_at().elapsed() < std::time::Duration::from_secs(30));
+    assert!(
+        node.same_path_msg1_is_established_rekey(
+            &node_addr,
+            transport_id,
+            &TransportAddr::from_string("127.0.0.1:5000"),
+        ),
+        "a repeated same-tuple validation handshake must remain on the rekey state machine even immediately after the preceding cutover"
+    );
+    assert!(
+        !node.same_path_msg1_is_established_rekey(
+            &node_addr,
+            transport_id,
+            &TransportAddr::from_string("127.0.0.1:5001"),
+        ),
+        "payload degradation must not turn a genuinely different tuple into a rekey"
+    );
+}
+
+#[test]
+fn fresh_same_tuple_refresh_during_fmp_drain_is_still_a_rekey_candidate() {
+    let mut node = make_node();
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let node_addr = *peer_identity.node_addr();
+    let transport_id = TransportId::new(1);
+    let remote_addr = TransportAddr::from_string("127.0.0.1:5000");
+    let mut peer = ActivePeer::with_session(
+        peer_identity,
+        LinkId::new(1),
+        1_000,
+        ActivePeerSession {
+            session: make_test_fmp_session(&node.identity, &peer_full, [0x01; 8], [0x02; 8]),
+            our_index: SessionIndex::new(10),
+            their_index: SessionIndex::new(20),
+            transport_id,
+            current_addr: remote_addr.clone(),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: Some([0x02; 8]),
+        },
+    );
+    peer.set_pending_session(
+        make_test_fmp_session(&node.identity, &peer_full, [0x03; 8], [0x04; 8]),
+        SessionIndex::new(11),
+        SessionIndex::new(21),
+        true,
+    );
+    assert!(peer.cutover_to_new_session().is_some());
+    assert!(peer.is_draining());
+    assert!(peer.session_established_at().elapsed() < std::time::Duration::from_secs(30));
+    node.peers.insert(node_addr, peer);
+
+    assert!(
+        node.same_path_msg1_is_established_rekey(&node_addr, transport_id, &remote_addr),
+        "a fresh same-tuple msg1 during the prior FMP session's drain window must remain on the symmetric rekey state machine"
+    );
+    assert!(
+        !node.same_path_msg1_is_established_rekey(
+            &node_addr,
+            transport_id,
+            &TransportAddr::from_string("127.0.0.1:5001"),
+        ),
+        "draining must not turn a genuinely different tuple into a rekey"
+    );
+}
+
 #[tokio::test]
 async fn expired_direct_payload_hold_keeps_reconnect_until_validation() {
     let mut node = make_node();
@@ -407,6 +487,97 @@ async fn expired_direct_payload_hold_keeps_reconnect_until_validation() {
     for transport in node.transports.values_mut() {
         transport.stop().await.ok();
     }
+}
+
+#[tokio::test]
+async fn direct_refresh_expedites_existing_rekey_without_changing_sender_index() {
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(1);
+    let (conn, identity) = make_completed_connection(&mut node, link_id, transport_id, 1_000);
+    let node_addr = *identity.node_addr();
+    let peer_config = crate::config::PeerConfig::new(identity.npub(), "udp", "127.0.0.1:5000");
+
+    node.config.peers = vec![peer_config.clone()];
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, identity, 2_000).unwrap();
+    node.mark_session_direct_path_degraded(node_addr, Node::now_ms());
+
+    let (packet_tx, _packet_rx) = packet_channel(8);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("direct-retry".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    assert!(
+        node.initiate_active_peer_direct_refresh_connection(&peer_config)
+            .await
+            .unwrap()
+    );
+    let sender_index = node
+        .get_peer(&node_addr)
+        .unwrap()
+        .rekey_our_index()
+        .unwrap();
+    node.get_peer_mut(&node_addr)
+        .unwrap()
+        .set_msg1_next_resend(Node::now_ms() + 60_000);
+
+    assert!(
+        node.initiate_active_peer_direct_refresh_connection(&peer_config)
+            .await
+            .unwrap()
+    );
+    let peer = node.get_peer(&node_addr).unwrap();
+    assert_eq!(
+        peer.rekey_our_index(),
+        Some(sender_index),
+        "a path refresh must preserve the sender index owned by the responder"
+    );
+    assert!(
+        peer.needs_msg1_resend(Node::now_ms()),
+        "an explicit direct refresh must make the owned Msg1 immediately eligible for retransmission"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[test]
+fn fmp_rekey_cutover_does_not_validate_direct_fsp_payload() {
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(1);
+    let (conn, identity) = make_completed_connection(&mut node, link_id, transport_id, 1_000);
+    let node_addr = *identity.node_addr();
+    let peer_config = crate::config::PeerConfig::new(identity.npub(), "udp", "127.0.0.1:5000");
+
+    node.config.peers = vec![peer_config.clone()];
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, identity, 2_000).unwrap();
+    node.mark_session_direct_path_degraded(node_addr, Node::now_ms());
+    node.retry_pending
+        .insert(node_addr, super::super::retry::RetryState::new(peer_config));
+    node.retain_direct_payload_validation_after_fmp_rekey(&node_addr);
+
+    assert!(
+        node.session_direct_degradation
+            .has_pending_validation(&node_addr),
+        "an FMP control rekey must not stand in for direct FSP payload validation"
+    );
+    assert!(
+        node.retry_pending.contains_key(&node_addr),
+        "direct probing must continue until FSP payload authenticates on the direct path"
+    );
 }
 
 #[test]

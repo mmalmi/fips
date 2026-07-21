@@ -686,7 +686,7 @@ impl Node {
                         );
                     }
                     Err(e) => {
-                        let local_route_unavailable = e.is_local_route_unavailable();
+                        let recover_local_route_socket = e.requires_local_route_socket_recovery();
                         warn!(
                             link_id = %link_id,
                             transport_id = %transport_id,
@@ -700,7 +700,7 @@ impl Node {
                         self.peers.remove_connection(&link_id);
                         self.links.remove(&link_id);
                         let _ = self.index_allocator.free(our_index);
-                        if local_route_unavailable {
+                        if recover_local_route_socket {
                             self.recover_udp_transport_after_local_route_failure(transport_id)
                                 .await;
                         }

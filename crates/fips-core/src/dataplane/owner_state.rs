@@ -53,6 +53,7 @@ impl OwnerState {
             last_tx_activity: None,
             last_tx_data_activity: None,
             last_outbound_next_hop: None,
+            fsp_mmp_path_changed_since_report: false,
             data_packets_sent: 0,
             data_packets_recv: 0,
             data_bytes_sent: 0,
@@ -109,6 +110,7 @@ impl OwnerState {
         self.last_data_return_next_hop = None;
         self.last_tx_data_activity = None;
         self.last_outbound_next_hop = None;
+        self.fsp_mmp_path_changed_since_report = false;
         self.data_packets_sent = 0;
         self.data_packets_recv = 0;
         self.data_bytes_sent = 0;

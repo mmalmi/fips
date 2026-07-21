@@ -322,6 +322,83 @@ async fn test_session_receiver_loss_degrades_direct_and_uses_fallback() {
 }
 
 #[tokio::test]
+async fn test_session_receiver_loss_from_previous_route_does_not_degrade_promoted_direct() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let fallback_next_hop = *node.peer_ids().next().expect("fallback peer");
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+
+    node.config.peers.push(crate::config::PeerConfig {
+        npub: crate::encode_npub(&remote.pubkey()),
+        alias: Some("promoted-direct-loss-baseline".to_string()),
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    });
+    add_direct_peer_for_identity(&mut node, &remote);
+    install_established_session_with_mmp(&mut node, &remote);
+    node.learn_reverse_route(remote_addr, fallback_next_hop);
+
+    seed_dataplane_fsp_data_sent_for_test(
+        &mut node,
+        remote_addr,
+        fallback_next_hop,
+        Node::now_ms(),
+    );
+    let fallback_baseline = SessionReceiverReport {
+        highest_counter: 100,
+        cumulative_packets_recv: 100,
+        cumulative_bytes_recv: 10_000,
+        timestamp_echo: session_timestamp_echo_for(50),
+        dwell_time: 0,
+        max_burst_loss: 0,
+        mean_burst_loss: 0,
+        jitter: 0,
+        ecn_ce_count: 0,
+        owd_trend: 0,
+        burst_loss_count: 0,
+        cumulative_reorder_count: 0,
+        interval_packets_recv: 0,
+        interval_bytes_recv: 0,
+    }
+    .encode();
+    node.handle_session_receiver_report(&remote_addr, &fallback_baseline)
+        .await;
+
+    node.clear_session_direct_path_degraded_after_promotion(&remote_addr, Node::now_ms());
+    seed_dataplane_fsp_data_sent_for_test(&mut node, remote_addr, remote_addr, Node::now_ms());
+    let delayed_outage_report = SessionReceiverReport {
+        highest_counter: 132,
+        cumulative_packets_recv: 101,
+        cumulative_bytes_recv: 10_100,
+        timestamp_echo: session_timestamp_echo_for(50),
+        dwell_time: 0,
+        max_burst_loss: 31,
+        mean_burst_loss: 31,
+        jitter: 0,
+        ecn_ce_count: 0,
+        owd_trend: 0,
+        burst_loss_count: 1,
+        cumulative_reorder_count: 0,
+        interval_packets_recv: 1,
+        interval_bytes_recv: 100,
+    }
+    .encode();
+    node.handle_session_receiver_report(&remote_addr, &delayed_outage_report)
+        .await;
+
+    assert!(
+        !node.session_direct_path_is_degraded(&remote_addr, Node::now_ms()),
+        "the first report after a route transition spans the old carrier and must only establish the new route's loss baseline"
+    );
+    assert!(
+        !node.retry_pending.contains_key(&remote_addr),
+        "loss attributed to the previous carrier must not restart direct recovery"
+    );
+}
+
+#[tokio::test]
 async fn test_session_receiver_loss_replaces_active_fallback_route() {
     let mut node = make_reply_learned_node_with_tree_peer();
     let failed_fallback = *node.peer_ids().next().expect("failed fallback peer");
@@ -446,6 +523,76 @@ fn test_authenticated_direct_promotion_releases_active_fallback_affinity() {
             .map(|peer| *peer.node_addr()),
         Some(remote_addr),
         "freshly promoted direct peer should win route selection once fallback affinity is released"
+    );
+}
+
+#[test]
+fn test_fmp_rekey_releases_fallback_affinity_without_validating_fsp() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let fallback_next_hop = *node.peer_ids().next().expect("fallback peer");
+    assert!(node.sync_dataplane_fmp_owner(&fallback_next_hop));
+
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+    let direct_transport = TransportId::new(91);
+    let direct_link = LinkId::new(91);
+    let (direct_conn, direct_identity) = make_completed_connection_for_identity(
+        &mut node,
+        direct_link,
+        direct_transport,
+        1_000,
+        &remote,
+    );
+    node.config.peers.push(crate::config::PeerConfig::new(
+        remote.npub(),
+        "udp",
+        "127.0.0.1:5000",
+    ));
+    node.add_connection(direct_conn).unwrap();
+    node.promote_connection(direct_link, direct_identity, 2_000)
+        .unwrap();
+    assert!(node.sync_dataplane_fmp_owner(&remote_addr));
+
+    install_established_session_with_mmp(&mut node, &remote);
+    node.learn_reverse_route(remote_addr, fallback_next_hop);
+    assert!(node.sync_dataplane_fsp_owner_from_current_session_via(
+        &remote_addr,
+        Some(fallback_next_hop),
+        0,
+    ));
+    seed_dataplane_fsp_data_sent_for_test(
+        &mut node,
+        remote_addr,
+        fallback_next_hop,
+        Node::now_ms(),
+    );
+    let now_ms = Node::now_ms();
+    node.mark_session_direct_path_degraded(remote_addr, now_ms);
+    assert!(node.session_direct_path_degradation_active(&remote_addr, now_ms));
+
+    node.retain_direct_payload_validation_after_fmp_rekey(&remote_addr);
+
+    assert!(
+        node.session_direct_degradation
+            .has_pending_validation(&remote_addr),
+        "FMP control must not validate direct FSP payload"
+    );
+    assert!(
+        !node.session_direct_path_degradation_active(&remote_addr, Node::now_ms()),
+        "authenticated direct FMP recovery must end the hard payload hold so validation traffic can use the direct carrier"
+    );
+    assert_eq!(
+        node.dataplane
+            .fsp_owner_activity(&remote_addr)
+            .and_then(|activity| activity.last_outbound_next_hop()),
+        None,
+        "authenticated direct FMP recovery must release stale fallback flow affinity"
+    );
+    assert_eq!(
+        node.find_next_hop(&remote_addr)
+            .map(|peer| *peer.node_addr()),
+        Some(remote_addr),
+        "the next FSP payload should probe the recovered direct carrier"
     );
 }
 
