@@ -570,7 +570,7 @@ fn test_fmp_rekey_releases_fallback_affinity_without_validating_fsp() {
     node.mark_session_direct_path_degraded(remote_addr, now_ms);
     assert!(node.session_direct_path_degradation_active(&remote_addr, now_ms));
 
-    node.retain_direct_payload_validation_after_fmp_rekey(&remote_addr);
+    node.make_direct_payload_eligible_for_validation_after_fmp_recovery(&remote_addr);
 
     assert!(
         node.session_direct_degradation
@@ -593,6 +593,70 @@ fn test_fmp_rekey_releases_fallback_affinity_without_validating_fsp() {
             .map(|peer| *peer.node_addr()),
         Some(remote_addr),
         "the next FSP payload should probe the recovered direct carrier"
+    );
+
+    assert!(node.sync_dataplane_fsp_owner_from_current_session_via(
+        &remote_addr,
+        Some(fallback_next_hop),
+        0,
+    ));
+    seed_dataplane_fsp_data_sent_for_test(
+        &mut node,
+        remote_addr,
+        fallback_next_hop,
+        Node::now_ms(),
+    );
+    let direct_transport_id = node
+        .get_peer(&remote_addr)
+        .and_then(|peer| peer.transport_id())
+        .expect("direct transport");
+    let direct_transport_addr = node
+        .get_peer(&remote_addr)
+        .and_then(|peer| peer.current_addr())
+        .cloned()
+        .expect("direct address");
+    node.get_peer_mut(&remote_addr)
+        .expect("direct peer")
+        .mark_stale();
+    node.mark_session_direct_path_degraded(remote_addr, Node::now_ms());
+
+    node.make_direct_payload_eligible_for_validation_after_fmp_recovery(&remote_addr);
+
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&remote_addr),
+        Some(fallback_next_hop),
+        "a rekey cutover that races stale-link liveness cannot select direct until authenticated direct traffic revives the peer"
+    );
+    seed_dataplane_fsp_data_sent_for_test(
+        &mut node,
+        remote_addr,
+        fallback_next_hop,
+        Node::now_ms(),
+    );
+
+    node.record_authenticated_fmp_receive_facts(
+        crate::node::AuthenticatedFmpReceiveFacts {
+            source_peer: PeerIdentity::from_pubkey_full(remote.pubkey_full()),
+            transport_id: direct_transport_id,
+            remote_addr: &direct_transport_addr,
+            packet_timestamp_ms: Node::now_ms(),
+            packet_len: 128,
+            fmp_counter: 1,
+            inner_timestamp_ms: 1,
+            fmp_flags: 0,
+        },
+        Some(&remote_addr),
+    );
+
+    assert!(
+        node.get_peer(&remote_addr)
+            .is_some_and(|peer| peer.is_healthy()),
+        "authenticated direct FMP return must revive the stale carrier"
+    );
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&remote_addr),
+        Some(remote_addr),
+        "reviving a rekey-recovered carrier must immediately make the next FSP payload validate direct"
     );
 }
 

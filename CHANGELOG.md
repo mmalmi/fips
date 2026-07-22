@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.35] - 2026-07-22
+
+### Fixed
+
+- Retire obsolete recovery rekeys and stale direct-probe retries as soon as
+  authenticated direct payload returns, preventing a later roam from flipping
+  epochs underneath otherwise valid recovery traffic.
+- Release fallback affinity again when authenticated direct control traffic
+  returns, so continuous routed payload cannot strand direct FSP validation.
+- Retry active direct-path restoration every two to four seconds while
+  retaining the existing overlap and draining guards. FMP, FSP, discovery,
+  routing semantics, and physical transport wire formats are unchanged.
+- Release `fips-core` and `fips-endpoint` 0.4.35 together.
+
 ## [0.4.34] - 2026-07-21
 
 ### Fixed

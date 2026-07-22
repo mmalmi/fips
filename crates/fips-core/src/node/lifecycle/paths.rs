@@ -86,6 +86,9 @@ impl Node {
                 if peer.pending_new_session().is_some() {
                     return Ok(true);
                 }
+                if peer.is_draining() {
+                    return Ok(true);
+                }
             }
             if self.initiate_rekey(&peer_node_addr).await {
                 return Ok(true);

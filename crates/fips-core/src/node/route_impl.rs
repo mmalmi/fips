@@ -633,6 +633,25 @@ impl Node {
     pub(in crate::node) fn clear_session_direct_path_degraded(&mut self, dest: &NodeAddr) -> bool {
         let changed = self.session_direct_degradation.clear(dest);
         if changed {
+            // The direct FMP/FSP carrier has now authenticated payload again.
+            // A rekey started only to recover this degraded carrier is no
+            // longer useful; letting it complete later can flip epochs during
+            // a subsequent roam and turn otherwise valid recovery traffic into
+            // replay. Retire it at the same point that retires the direct-path
+            // validation marker.
+            let _ = self.abandon_fmp_rekey_for_peer(
+                dest,
+                "authenticated direct payload made recovery rekey obsolete",
+            );
+            if !self.active_peer_uses_websocket(dest)
+                && !self.active_peer_uses_bootstrap_transport(dest)
+            {
+                // This is authenticated payload on the ordinary direct
+                // carrier. Do not leave a stale retry entry reporting
+                // `direct_probe_pending` or starting another recovery rekey
+                // from older aggregate liveness samples.
+                self.retry_pending.remove(dest);
+            }
             let _ = self.refresh_dataplane_fsp_owner_routes(dest);
         }
         changed
@@ -684,15 +703,18 @@ impl Node {
         }
     }
 
-    pub(in crate::node) fn retain_direct_payload_validation_after_fmp_rekey(
+    pub(in crate::node) fn make_direct_payload_eligible_for_validation_after_fmp_recovery(
         &mut self,
         dest: &NodeAddr,
     ) {
-        // FMP control proves only that the link rekey completed. It does not
+        // FMP control proves only that the direct link recovered. It does not
         // prove that end-to-end FSP payload has returned to the direct path;
         // routed fallback traffic can remain healthy at the same time. Keep
-        // the degradation marker and retry loop until authenticated direct
-        // FSP receive activity clears them.
+        // the degradation marker and retry loop until authenticated direct FSP
+        // receive activity clears them. Continuous payload can recreate
+        // fallback affinity between the rekey cutover and the first direct FMP
+        // return, so every authenticated recovery observation must release that
+        // affinity before refreshing the FSP owner.
         if !self.promoted_path_matches_configured_static_peer(dest) {
             return;
         }
@@ -716,7 +738,7 @@ impl Node {
             released_fallback_affinity = fallback_next_hop.is_some(),
             refreshed,
             pending_payload_validation,
-            "Authenticated FMP rekey made direct FSP payload eligible for validation"
+            "Authenticated FMP recovery made direct FSP payload eligible for validation"
         );
         if !pending_payload_validation {
             self.clear_retry_unless_direct_refresh_needed(dest);

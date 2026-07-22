@@ -561,7 +561,7 @@ impl Node {
                 );
                 self.ensure_current_session_index_registered(&node_addr, "initiator rekey cutover");
                 self.sync_dataplane_fmp_owner(&node_addr);
-                self.retain_direct_payload_validation_after_fmp_rekey(&node_addr);
+                self.make_direct_payload_eligible_for_validation_after_fmp_recovery(&node_addr);
             }
         }
 

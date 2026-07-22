@@ -536,7 +536,7 @@ async fn poll_nostr_discovery_failed_active_peer_paces_background_reprobe() {
         "active direct refresh failure must not accumulate peer backoff"
     );
     assert!(
-        state.retry_after_ms >= before_ms + 10_000 && state.retry_after_ms <= after_ms + 20_000,
+        state.retry_after_ms >= before_ms + 2_000 && state.retry_after_ms <= after_ms + 4_000,
         "failed background direct upgrade should be paced before another attempt, got {} (before={before_ms}, after={after_ms})",
         state.retry_after_ms,
     );
