@@ -9,14 +9,9 @@ use crate::app::{App, Tab};
 use super::helpers;
 
 pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
-    let data = match app.data.get(&Tab::Tree) {
-        Some(d) => d,
-        None => {
-            let msg =
-                Paragraph::new("  Waiting for data...").style(Style::default().fg(Color::DarkGray));
-            frame.render_widget(msg, area);
-            return;
-        }
+    let Some(data) = app.data.get(&Tab::Tree) else {
+        helpers::render_waiting(frame, area);
+        return;
     };
 
     let chunks = Layout::vertical([

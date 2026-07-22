@@ -142,6 +142,43 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn control_exchange_preserves_wire_contract() {
+        use std::io::{Read as _, Write as _};
+
+        let (mut client, mut server) = ControlStream::pair().unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let worker =
+            std::thread::spawn(move || exchange_request(&mut client, "{\"command\":\"x\"}\n"));
+
+        let mut request = String::new();
+        server.read_to_string(&mut request).unwrap();
+        assert_eq!(request, "{\"command\":\"x\"}\n");
+        server
+            .write_all(b"{\"status\":\"ok\",\"data\":1}\n{\"status\":\"error\"}\n")
+            .unwrap();
+        drop(server);
+
+        let response = worker.join().unwrap().unwrap();
+        assert_eq!(response, serde_json::json!({"status": "ok", "data": 1}));
+    }
+
+    #[test]
+    fn interprets_control_response_errors_consistently() {
+        let explicit = serde_json::json!({"status": "error", "message": "boom"});
+        let missing = serde_json::json!({"status": "error"});
+        assert_eq!(response_error(&explicit), Some("boom"));
+        assert_eq!(response_error(&missing), Some("unknown error"));
+        assert_eq!(response_error(&serde_json::json!({"status": "ok"})), None);
+        assert_eq!(
+            control_response_data(&explicit, "cmd").unwrap_err(),
+            "cmd failed: boom"
+        );
+    }
+
     #[test]
     fn detects_bare_ula_literal() {
         assert!(is_fips_mesh_address("fd9d:abcd::1"));

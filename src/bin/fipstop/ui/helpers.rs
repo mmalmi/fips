@@ -1,6 +1,32 @@
+use ratatui::Frame;
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 use serde_json::Value;
+
+/// Render the standard placeholder used while a tab is waiting for data.
+pub fn render_waiting(frame: &mut Frame, area: Rect) {
+    frame.render_widget(
+        Paragraph::new("  Waiting for data...").style(Style::default().fg(Color::DarkGray)),
+        area,
+    );
+}
+
+/// Render the standard table scrollbar when there are rows to navigate.
+pub fn render_scrollbar(frame: &mut Frame, area: Rect, row_count: usize, selected: Option<usize>) {
+    if row_count == 0 {
+        return;
+    }
+    let mut state = ScrollbarState::new(row_count).position(selected.unwrap_or(0));
+    frame.render_stateful_widget(
+        Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None),
+        area,
+        &mut state,
+    );
+}
 
 /// Extract a string field from JSON, returning "-" if missing.
 pub fn str_field<'a>(data: &'a Value, key: &str) -> &'a str {
@@ -70,6 +96,24 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 }
 
+/// Format seconds as human-readable uptime (e.g., "3d 2h 15m 4s").
+pub fn format_uptime(secs: u64) -> String {
+    let days = secs / 86400;
+    let hours = (secs % 86400) / 3600;
+    let mins = (secs % 3600) / 60;
+    let s = secs % 60;
+
+    if days > 0 {
+        format!("{days}d {hours}h {mins}m {s}s")
+    } else if hours > 0 {
+        format!("{hours}h {mins}m {s}s")
+    } else if mins > 0 {
+        format!("{mins}m {s}s")
+    } else {
+        format!("{s}s")
+    }
+}
+
 /// Format millisecond timestamp as relative duration from now (e.g., "3.2s ago").
 pub fn format_elapsed_ms(ms: u64) -> String {
     let now_ms = std::time::SystemTime::now()
@@ -79,16 +123,7 @@ pub fn format_elapsed_ms(ms: u64) -> String {
     if ms == 0 || ms > now_ms {
         return "-".into();
     }
-    let elapsed = now_ms - ms;
-    if elapsed < 1000 {
-        format!("{elapsed}ms")
-    } else if elapsed < 60_000 {
-        format!("{:.1}s", elapsed as f64 / 1000.0)
-    } else if elapsed < 3_600_000 {
-        format!("{:.1}m", elapsed as f64 / 60_000.0)
-    } else {
-        format!("{:.1}h", elapsed as f64 / 3_600_000.0)
-    }
+    format_duration_ms(now_ms - ms)
 }
 
 /// Get a nested string field.
@@ -172,6 +207,21 @@ pub fn kv_line(key: &str, value: &str) -> Line<'static> {
     ])
 }
 
+/// Format a forwarding counter as "N pkts (formatted_bytes)".
+pub fn forwarding_line(data: &Value, label: &str, pkt_key: &str, byte_key: &str) -> Line<'static> {
+    let pkts = data
+        .get("forwarding")
+        .and_then(|f| f.get(pkt_key))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let bytes = data
+        .get("forwarding")
+        .and_then(|f| f.get(byte_key))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    kv_line(label, &format!("{} pkts ({})", pkts, format_bytes(bytes)))
+}
+
 /// Render a sequence of values as Unicode block characters.
 ///
 /// Returns an empty string for empty input. Constant series render as a
@@ -209,4 +259,37 @@ pub fn nested_f64_array(data: &Value, outer: &str, inner: &str) -> Vec<f64> {
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().filter_map(|v| v.as_f64()).collect())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uptime_formatting_preserves_boundaries() {
+        assert_eq!(format_uptime(59), "59s");
+        assert_eq!(format_uptime(60), "1m 0s");
+        assert_eq!(format_uptime(3600), "1h 0m 0s");
+        assert_eq!(format_uptime(86400), "1d 0h 0m 0s");
+    }
+
+    #[test]
+    fn forwarding_line_preserves_values_and_missing_defaults() {
+        let data = serde_json::json!({"forwarding": {"packets": 7, "bytes": 2048}});
+        let line = forwarding_line(&data, "Sent", "packets", "bytes");
+        let text = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert_eq!(text, "    Sent: 7 pkts (2.0KB)");
+
+        let missing = forwarding_line(&Value::Null, "Sent", "packets", "bytes");
+        let text = missing
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert_eq!(text, "    Sent: 0 pkts (0B)");
+    }
 }

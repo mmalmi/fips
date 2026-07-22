@@ -20,6 +20,8 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use crate::app::{App, GRAPHS_METRICS, GraphsMode, PEER_GRAPHS_METRICS, Tab};
 
+use super::helpers;
+
 /// 5×5 braille lookup table indexed by (left fill 0..=4, right fill
 /// 0..=4). Direct transcription of btop's `braille_up` glyph set.
 const BRAILLE: [[char; 5]; 5] = [
@@ -152,10 +154,7 @@ fn draw_stacked(frame: &mut Frame, app: &mut App, inner: Rect) {
     };
 
     if all_series.is_empty() {
-        frame.render_widget(
-            Paragraph::new("  Waiting for data...").style(Style::default().fg(Color::DarkGray)),
-            inner,
-        );
+        helpers::render_waiting(frame, inner);
         return;
     }
 
@@ -188,15 +187,9 @@ fn draw_stacked(frame: &mut Frame, app: &mut App, inner: Rect) {
 }
 
 fn draw_metric_by_peer(frame: &mut Frame, app: &mut App, inner: Rect) {
-    let data = match app.data.get(&Tab::Graphs) {
-        Some(d) => d,
-        None => {
-            frame.render_widget(
-                Paragraph::new("  Waiting for data...").style(Style::default().fg(Color::DarkGray)),
-                inner,
-            );
-            return;
-        }
+    let Some(data) = app.data.get(&Tab::Graphs) else {
+        helpers::render_waiting(frame, inner);
+        return;
     };
 
     let metric_name = app.graphs_selected_peer_metric();
@@ -278,46 +271,7 @@ fn render_metric_block_labeled(
     values: &[f64],
     width: u16,
 ) -> Vec<Line<'static>> {
-    let unit = metric_unit(metric);
-    let mut out: Vec<Line<'static>> = Vec::with_capacity(METRIC_BLOCK_ROWS as usize);
-
-    let (min, max, last, n) = summarize(values);
-    let title_style = Style::default()
-        .fg(Color::White)
-        .add_modifier(Modifier::BOLD);
-    let label = Style::default().fg(Color::DarkGray);
-    let title = Line::from(vec![
-        Span::styled(format!("  {peer_name}"), title_style),
-        Span::styled(format!("  [{unit}]"), label),
-        Span::styled("    max ", label),
-        Span::raw(format_value(max)),
-        Span::styled("   last ", label),
-        Span::raw(format_value(last)),
-        Span::styled("   n=", label),
-        Span::raw(format!("{n}")),
-    ]);
-    out.push(title);
-
-    let gutter = 2u16;
-    let plot_cols = width.saturating_sub(gutter) as usize;
-
-    if plot_cols == 0 || values.is_empty() {
-        for _ in 0..METRIC_PLOT_ROWS {
-            out.push(Line::from(Span::styled(
-                "  (no samples)",
-                Style::default().fg(Color::DarkGray),
-            )));
-        }
-        out.push(Line::from(""));
-        return out;
-    }
-
-    let sampled = resample(values, plot_cols * 2);
-    let rows = METRIC_PLOT_ROWS as usize;
-    let plot_lines = render_btop_graph(&sampled, rows, min, max, gutter as usize);
-    out.extend(plot_lines);
-    out.push(Line::from(""));
-    out
+    render_metric_block_with_title(metric, peer_name, "   n=", values, width)
 }
 
 /// Render a single metric's mini block: one title row, four plot rows,
@@ -325,6 +279,16 @@ fn render_metric_block_labeled(
 /// so every metric uses the full vertical resolution regardless of
 /// its unit.
 fn render_metric_block(metric: &str, values: &[f64], width: u16) -> Vec<Line<'static>> {
+    render_metric_block_with_title(metric, metric, "   samples ", values, width)
+}
+
+fn render_metric_block_with_title(
+    metric: &str,
+    title: &str,
+    count_label: &'static str,
+    values: &[f64],
+    width: u16,
+) -> Vec<Line<'static>> {
     let unit = metric_unit(metric);
     let mut out: Vec<Line<'static>> = Vec::with_capacity(METRIC_BLOCK_ROWS as usize);
 
@@ -335,13 +299,13 @@ fn render_metric_block(metric: &str, values: &[f64], width: u16) -> Vec<Line<'st
         .add_modifier(Modifier::BOLD);
     let label = Style::default().fg(Color::DarkGray);
     let title = Line::from(vec![
-        Span::styled(format!("  {metric}"), title_style),
+        Span::styled(format!("  {title}"), title_style),
         Span::styled(format!("  [{unit}]"), label),
         Span::styled("    max ", label),
         Span::raw(format_value(max)),
         Span::styled("   last ", label),
         Span::raw(format_value(last)),
-        Span::styled("   samples ", label),
+        Span::styled(count_label, label),
         Span::raw(format!("{n}")),
     ]);
     out.push(title);
@@ -610,6 +574,23 @@ mod tests {
         let v = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let lines = render_metric_block("mesh_size", &v, 40);
         assert_eq!(lines.len(), METRIC_BLOCK_ROWS as usize);
+        let title = lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert_eq!(
+            title,
+            "  mesh_size  [nodes]    max 5.00   last 5.00   samples 5"
+        );
+
+        let lines = render_metric_block_labeled("mesh_size", "alice", &v, 40);
+        let title = lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert_eq!(title, "  alice  [nodes]    max 5.00   last 5.00   n=5");
     }
 
     #[test]

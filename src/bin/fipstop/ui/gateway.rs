@@ -2,10 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, Borders, Cell, Gauge, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
-    Table,
-};
+use ratatui::widgets::{Block, Borders, Cell, Gauge, Paragraph, Row, Table};
 
 use crate::app::{App, Tab};
 
@@ -31,14 +28,9 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_summary(frame: &mut Frame, app: &App, area: Rect) {
-    let data = match app.data.get(&Tab::Gateway) {
-        Some(d) => d,
-        None => {
-            let msg =
-                Paragraph::new("  Waiting for data...").style(Style::default().fg(Color::DarkGray));
-            frame.render_widget(msg, area);
-            return;
-        }
+    let Some(data) = app.data.get(&Tab::Gateway) else {
+        helpers::render_waiting(frame, area);
+        return;
     };
 
     let chunks = Layout::vertical([
@@ -120,7 +112,7 @@ fn draw_summary(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(" NAT mappings: ", label),
             Span::styled(nat.to_string(), count),
             Span::styled("  uptime: ", label),
-            Span::raw(format_uptime(uptime_secs)),
+            Span::raw(helpers::format_uptime(uptime_secs)),
         ]),
     ];
     frame.render_widget(Paragraph::new(lines), inner);
@@ -242,36 +234,7 @@ fn draw_mappings(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let state = app.table_states.entry(Tab::Gateway).or_default();
     frame.render_stateful_widget(table, area, state);
-
-    if row_count > 0 {
-        let selected = state.selected().unwrap_or(0);
-        let mut scrollbar_state = ScrollbarState::new(row_count).position(selected);
-        frame.render_stateful_widget(
-            Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                .begin_symbol(None)
-                .end_symbol(None),
-            area,
-            &mut scrollbar_state,
-        );
-    }
-}
-
-/// Format seconds as compact duration (e.g., "3d 2h", "15m 4s").
-fn format_uptime(secs: u64) -> String {
-    let days = secs / 86400;
-    let hours = (secs % 86400) / 3600;
-    let mins = (secs % 3600) / 60;
-    let s = secs % 60;
-
-    if days > 0 {
-        format!("{days}d {hours}h {mins}m {s}s")
-    } else if hours > 0 {
-        format!("{hours}h {mins}m {s}s")
-    } else if mins > 0 {
-        format!("{mins}m {s}s")
-    } else {
-        format!("{s}s")
-    }
+    helpers::render_scrollbar(frame, area, row_count, state.selected());
 }
 
 /// Format seconds as compact duration for table cells.

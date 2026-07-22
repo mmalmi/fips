@@ -8,7 +8,6 @@ use fips::config::{TransportInstances, WebSocketConfig};
 use fips::{Config, FipsEndpoint, Identity, IdentityConfig, WebRtcConfig};
 use serde_json::json;
 use std::io::Write;
-use std::sync::Arc;
 use tracing_subscriber::{EnvFilter, fmt};
 
 #[derive(Parser, Debug)]
@@ -63,14 +62,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     });
 
-    let endpoint = Arc::new(
-        FipsEndpoint::builder()
-            .config(config)
-            .discovery_scope(args.app)
-            .without_system_tun()
-            .bind()
-            .await?,
-    );
+    let endpoint = FipsEndpoint::builder()
+        .config(config)
+        .discovery_scope(args.app)
+        .without_system_tun()
+        .bind()
+        .await?;
     println!(
         "{}",
         json!({

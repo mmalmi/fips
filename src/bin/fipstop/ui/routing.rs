@@ -1,6 +1,5 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
@@ -9,14 +8,9 @@ use crate::app::{App, Tab};
 use super::helpers;
 
 pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
-    let data = match app.data.get(&Tab::Routing) {
-        Some(d) => d,
-        None => {
-            let msg =
-                Paragraph::new("  Waiting for data...").style(Style::default().fg(Color::DarkGray));
-            frame.render_widget(msg, area);
-            return;
-        }
+    let Some(data) = app.data.get(&Tab::Routing) else {
+        helpers::render_waiting(frame, area);
+        return;
     };
 
     let chunks = Layout::vertical([
@@ -63,24 +57,6 @@ fn draw_routing_state(frame: &mut Frame, data: &serde_json::Value, area: Rect) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// Format a forwarding counter as "N pkts (formatted_bytes)".
-fn fwd_line(data: &serde_json::Value, label: &str, pkt_key: &str, byte_key: &str) -> Line<'static> {
-    let pkts = data
-        .get("forwarding")
-        .and_then(|f| f.get(pkt_key))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let bytes = data
-        .get("forwarding")
-        .and_then(|f| f.get(byte_key))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    helpers::kv_line(
-        label,
-        &format!("{} pkts ({})", pkts, helpers::format_bytes(bytes)),
-    )
-}
-
 fn draw_routing_stats(frame: &mut Frame, data: &serde_json::Value, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -94,35 +70,35 @@ fn draw_routing_stats(frame: &mut Frame, data: &serde_json::Value, area: Rect) {
     // Left column: Forwarding + Discovery
     let mut left = vec![
         helpers::section_header("Forwarding"),
-        fwd_line(data, "Received", "received_packets", "received_bytes"),
-        fwd_line(data, "Delivered", "delivered_packets", "delivered_bytes"),
-        fwd_line(data, "Forwarded", "forwarded_packets", "forwarded_bytes"),
-        fwd_line(data, "Originated", "originated_packets", "originated_bytes"),
-        fwd_line(
+        helpers::forwarding_line(data, "Received", "received_packets", "received_bytes"),
+        helpers::forwarding_line(data, "Delivered", "delivered_packets", "delivered_bytes"),
+        helpers::forwarding_line(data, "Forwarded", "forwarded_packets", "forwarded_bytes"),
+        helpers::forwarding_line(data, "Originated", "originated_packets", "originated_bytes"),
+        helpers::forwarding_line(
             data,
             "Decode Error",
             "decode_error_packets",
             "decode_error_bytes",
         ),
-        fwd_line(
+        helpers::forwarding_line(
             data,
             "TTL Exhausted",
             "ttl_exhausted_packets",
             "ttl_exhausted_bytes",
         ),
-        fwd_line(
+        helpers::forwarding_line(
             data,
             "No Route",
             "drop_no_route_packets",
             "drop_no_route_bytes",
         ),
-        fwd_line(
+        helpers::forwarding_line(
             data,
             "MTU Exceeded",
             "drop_mtu_exceeded_packets",
             "drop_mtu_exceeded_bytes",
         ),
-        fwd_line(
+        helpers::forwarding_line(
             data,
             "Send Error",
             "drop_send_error_packets",
@@ -250,19 +226,14 @@ fn draw_routing_stats(frame: &mut Frame, data: &serde_json::Value, area: Rect) {
 }
 
 fn draw_coord_cache(frame: &mut Frame, app: &App, area: Rect) {
-    let data = match app.data.get(&Tab::Cache) {
-        Some(d) => d,
-        None => {
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .title(" Coordinate Cache ");
-            let inner = block.inner(area);
-            frame.render_widget(block, area);
-            let msg =
-                Paragraph::new("  Waiting for data...").style(Style::default().fg(Color::DarkGray));
-            frame.render_widget(msg, inner);
-            return;
-        }
+    let Some(data) = app.data.get(&Tab::Cache) else {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Coordinate Cache ");
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        helpers::render_waiting(frame, inner);
+        return;
     };
 
     let entries = helpers::u64_field(data, "count");

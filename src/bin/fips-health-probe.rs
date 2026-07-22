@@ -4,7 +4,6 @@ use clap::Parser;
 use fips::config::{PeerAddress, PeerConfig, TransportInstances, WebSocketConfig};
 use fips::{Config, FipsEndpoint, PeerIdentity, WebRtcConfig};
 use std::net::Ipv6Addr;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::{MissedTickBehavior, timeout_at};
 use tracing_subscriber::{EnvFilter, fmt};
@@ -87,18 +86,16 @@ async fn run(args: Args) -> Result<ProbeSuccess, String> {
     );
     let target_npub = target.npub();
 
-    let endpoint = Arc::new(
-        timeout_at(
-            deadline,
-            FipsEndpoint::builder()
-                .config(config)
-                .without_system_tun()
-                .bind(),
-        )
-        .await
-        .map_err(|_| "timed out starting ephemeral FIPS endpoint".to_string())?
-        .map_err(|error| format!("could not start ephemeral FIPS endpoint: {error}"))?,
-    );
+    let endpoint = timeout_at(
+        deadline,
+        FipsEndpoint::builder()
+            .config(config)
+            .without_system_tun()
+            .bind(),
+    )
+    .await
+    .map_err(|_| "timed out starting ephemeral FIPS endpoint".to_string())?
+    .map_err(|error| format!("could not start ephemeral FIPS endpoint: {error}"))?;
     let probe_result = match timeout_at(deadline, probe_target(&endpoint, target)).await {
         Ok(result) => result,
         Err(_) => Err(format!(

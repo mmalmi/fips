@@ -8,6 +8,7 @@ use serde::Serialize;
 ///
 /// Uses atomic counters for lock-free updates from the receive loop
 /// and send path concurrently.
+#[derive(Default)]
 pub struct UdpStats {
     send: UdpSendStats,
     recv: UdpRecvStats,
@@ -17,6 +18,7 @@ pub struct UdpStats {
 /// statistics. Keep the two directions on separate cache lines so full-duplex
 /// traffic does not bounce one write-hot cache line between executors.
 #[repr(align(64))]
+#[derive(Default)]
 struct UdpSendStats {
     packets: AtomicU64,
     bytes: AtomicU64,
@@ -25,6 +27,7 @@ struct UdpSendStats {
 }
 
 #[repr(align(64))]
+#[derive(Default)]
 struct UdpRecvStats {
     packets: AtomicU64,
     bytes: AtomicU64,
@@ -35,20 +38,7 @@ struct UdpRecvStats {
 impl UdpStats {
     /// Create a new stats instance with all counters at zero.
     pub fn new() -> Self {
-        Self {
-            send: UdpSendStats {
-                packets: AtomicU64::new(0),
-                bytes: AtomicU64::new(0),
-                errors: AtomicU64::new(0),
-                mtu_exceeded: AtomicU64::new(0),
-            },
-            recv: UdpRecvStats {
-                packets: AtomicU64::new(0),
-                bytes: AtomicU64::new(0),
-                errors: AtomicU64::new(0),
-                kernel_drops: AtomicU64::new(0),
-            },
-        }
+        Self::default()
     }
 
     /// Record a successful send.
@@ -113,12 +103,6 @@ impl UdpStats {
             mtu_exceeded: self.send.mtu_exceeded.load(Ordering::Relaxed),
             kernel_drops: self.recv.kernel_drops.load(Ordering::Relaxed),
         }
-    }
-}
-
-impl Default for UdpStats {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

@@ -225,15 +225,15 @@ fn default_socket_path() -> PathBuf {
     fips::config::default_control_path()
 }
 
-/// Send a JSON request to the control socket and return the response.
-///
-/// On Unix, connects via Unix domain socket.
-/// On Windows, connects via TCP to localhost.
 #[cfg(unix)]
-fn send_request(socket_path: &Path, request_json: &str) -> Result<serde_json::Value, String> {
-    use std::os::unix::net::UnixStream;
+type ControlStream = std::os::unix::net::UnixStream;
 
-    let mut stream = UnixStream::connect(socket_path).map_err(|e| {
+#[cfg(windows)]
+type ControlStream = std::net::TcpStream;
+
+#[cfg(unix)]
+fn connect_control_stream(socket_path: &Path) -> Result<ControlStream, String> {
+    ControlStream::connect(socket_path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::PermissionDenied {
             format!(
                 "cannot connect to {}: {}\n\
@@ -249,31 +249,11 @@ fn send_request(socket_path: &Path, request_json: &str) -> Result<serde_json::Va
                 e
             )
         }
-    })?;
-
-    let timeout = Duration::from_secs(5);
-    let _ = stream.set_read_timeout(Some(timeout));
-    let _ = stream.set_write_timeout(Some(timeout));
-
-    stream
-        .write_all(request_json.as_bytes())
-        .map_err(|e| format!("failed to send request: {e}"))?;
-    let _ = stream.shutdown(std::net::Shutdown::Write);
-
-    let reader = BufReader::new(&stream);
-    let line = reader
-        .lines()
-        .next()
-        .ok_or("no response from daemon")?
-        .map_err(|e| format!("failed to read response: {e}"))?;
-
-    serde_json::from_str(&line).map_err(|e| format!("invalid response JSON: {e}"))
+    })
 }
 
 #[cfg(windows)]
-fn send_request(socket_path: &Path, request_json: &str) -> Result<serde_json::Value, String> {
-    use std::net::TcpStream;
-
+fn connect_control_stream(socket_path: &Path) -> Result<ControlStream, String> {
     let port_str = socket_path.to_string_lossy();
     let port: u16 = match port_str.parse() {
         Ok(p) => p,
@@ -284,23 +264,37 @@ fn send_request(socket_path: &Path, request_json: &str) -> Result<serde_json::Va
     };
     let addr = format!("127.0.0.1:{port}");
 
-    let mut stream = TcpStream::connect(&addr).map_err(|e| {
+    ControlStream::connect(&addr).map_err(|e| {
         format!(
             "cannot connect to {}: {}\nIs the FIPS daemon running?",
             addr, e
         )
-    })?;
+    })
+}
+
+/// Send a JSON request to the control socket and return the response.
+///
+/// On Unix, connects via Unix domain socket. On Windows, connects via TCP.
+fn send_request(socket_path: &Path, request_json: &str) -> Result<serde_json::Value, String> {
+    let mut stream = connect_control_stream(socket_path)?;
 
     let timeout = Duration::from_secs(5);
     let _ = stream.set_read_timeout(Some(timeout));
     let _ = stream.set_write_timeout(Some(timeout));
 
+    exchange_request(&mut stream, request_json)
+}
+
+fn exchange_request(
+    stream: &mut ControlStream,
+    request_json: &str,
+) -> Result<serde_json::Value, String> {
     stream
         .write_all(request_json.as_bytes())
         .map_err(|e| format!("failed to send request: {e}"))?;
     let _ = stream.shutdown(std::net::Shutdown::Write);
 
-    let reader = BufReader::new(&stream);
+    let reader = BufReader::new(stream);
     let line = reader
         .lines()
         .next()
@@ -321,18 +315,18 @@ fn build_command(command: &str, params: serde_json::Value) -> String {
     format!("{}\n", serde_json::to_string(&req).unwrap())
 }
 
-/// Print a control socket response, handling error status.
-fn print_response(value: &serde_json::Value) {
-    let status = value
-        .get("status")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-
-    if status == "error" {
-        let msg = value
+fn response_error(value: &serde_json::Value) -> Option<&str> {
+    (value.get("status").and_then(|v| v.as_str()) == Some("error")).then(|| {
+        value
             .get("message")
             .and_then(|v| v.as_str())
-            .unwrap_or("unknown error");
+            .unwrap_or("unknown error")
+    })
+}
+
+/// Print a control socket response, handling error status.
+fn print_response(value: &serde_json::Value) {
+    if let Some(msg) = response_error(value) {
         eprintln!("error: {msg}");
         std::process::exit(1);
     }
@@ -525,15 +519,7 @@ fn control_response_data<'a>(
     response: &'a serde_json::Value,
     command: &str,
 ) -> Result<&'a serde_json::Value, String> {
-    let status = response
-        .get("status")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-    if status == "error" {
-        let msg = response
-            .get("message")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown error");
+    if let Some(msg) = response_error(response) {
         return Err(format!("{command} failed: {msg}"));
     }
     response
@@ -749,58 +735,39 @@ fn main() {
                 build_command("show_stats_history", params)
             }
         },
-        Commands::Keygen { .. } => unreachable!(),
-        Commands::Ratings { .. } => unreachable!(),
+        Commands::Keygen { .. } | Commands::Ratings { .. } => unreachable!(),
     };
 
-    // For plot output we need to post-process the JSON response rather
-    // than pretty-print it.
+    let value = match send_request(&socket_path, &request) {
+        Ok(value) => value,
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    };
+
     if let Commands::Stats {
         what: StatsCommands::History {
             plot: true, metric, ..
         },
     } = &cli.command
     {
-        match send_request(&socket_path, &request) {
-            Ok(value) => print_plot(&value, metric),
-            Err(e) => {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            }
-        }
-        return;
-    }
-
-    match send_request(&socket_path, &request) {
-        Ok(value) => print_response(&value),
-        Err(e) => {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        }
+        print_plot(&value, metric);
+    } else {
+        print_response(&value);
     }
 }
 
 /// Render the response as a Unicode block sparkline plot.
 fn print_plot(value: &serde_json::Value, metric: &str) {
-    let status = value
-        .get("status")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-    if status == "error" {
-        let msg = value
-            .get("message")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown error");
+    if let Some(msg) = response_error(value) {
         eprintln!("error: {msg}");
         std::process::exit(1);
     }
 
-    let data = match value.get("data") {
-        Some(d) => d,
-        None => {
-            eprintln!("error: no data in response");
-            std::process::exit(1);
-        }
+    let Some(data) = value.get("data") else {
+        eprintln!("error: no data in response");
+        std::process::exit(1);
     };
 
     let values: Vec<f64> = data

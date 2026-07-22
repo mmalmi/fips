@@ -6,6 +6,7 @@ use portable_atomic::{AtomicU64, Ordering};
 ///
 /// Uses atomic counters for lock-free updates from the receive loop
 /// and send path concurrently.
+#[derive(Default)]
 pub struct EthernetStats {
     pub frames_sent: AtomicU64,
     pub frames_recv: AtomicU64,
@@ -22,18 +23,7 @@ pub struct EthernetStats {
 impl EthernetStats {
     /// Create a new stats instance with all counters at zero.
     pub fn new() -> Self {
-        Self {
-            frames_sent: AtomicU64::new(0),
-            frames_recv: AtomicU64::new(0),
-            bytes_sent: AtomicU64::new(0),
-            bytes_recv: AtomicU64::new(0),
-            send_errors: AtomicU64::new(0),
-            recv_errors: AtomicU64::new(0),
-            beacons_sent: AtomicU64::new(0),
-            beacons_recv: AtomicU64::new(0),
-            frames_too_short: AtomicU64::new(0),
-            frames_too_long: AtomicU64::new(0),
-        }
+        Self::default()
     }
 
     /// Record a successful send.
@@ -82,12 +72,6 @@ impl EthernetStats {
             frames_too_short: self.frames_too_short.load(Ordering::Relaxed),
             frames_too_long: self.frames_too_long.load(Ordering::Relaxed),
         }
-    }
-}
-
-impl Default for EthernetStats {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

@@ -10,14 +10,9 @@ use super::helpers;
 use super::listening;
 
 pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
-    let data = match app.data.get(&crate::app::Tab::Node) {
-        Some(d) => d,
-        None => {
-            let msg =
-                Paragraph::new("  Waiting for data...").style(Style::default().fg(Color::DarkGray));
-            frame.render_widget(msg, area);
-            return;
-        }
+    let Some(data) = app.data.get(&crate::app::Tab::Node) else {
+        helpers::render_waiting(frame, area);
+        return;
     };
 
     let chunks = Layout::vertical([
@@ -52,7 +47,7 @@ fn draw_runtime(frame: &mut Frame, data: &serde_json::Value, area: Rect) {
         .get("uptime_secs")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    let uptime = format_uptime(uptime_secs);
+    let uptime = helpers::format_uptime(uptime_secs);
     let socket = helpers::str_field(data, "control_socket");
     let tun_name = helpers::str_field(data, "tun_name");
 
@@ -195,11 +190,11 @@ fn draw_node_stats(frame: &mut Frame, data: &serde_json::Value, area: Rect) {
 
     let lines = vec![
         helpers::section_header("TUN (IPv6)"),
-        fwd_line(data, "Tx", "delivered_packets", "delivered_bytes"),
-        fwd_line(data, "Rx", "originated_packets", "originated_bytes"),
+        helpers::forwarding_line(data, "Tx", "delivered_packets", "delivered_bytes"),
+        helpers::forwarding_line(data, "Rx", "originated_packets", "originated_bytes"),
         Line::from(""),
         helpers::section_header("Forwarded (transit)"),
-        fwd_line(data, "Packets", "forwarded_packets", "forwarded_bytes"),
+        helpers::forwarding_line(data, "Packets", "forwarded_packets", "forwarded_bytes"),
         Line::from(vec![
             Span::styled("    rate in:  ", label),
             Span::styled(bytes_in_spark, spark_style),
@@ -209,40 +204,4 @@ fn draw_node_stats(frame: &mut Frame, data: &serde_json::Value, area: Rect) {
     ];
 
     frame.render_widget(Paragraph::new(lines), inner);
-}
-
-/// Format a forwarding counter as "N pkts (formatted_bytes)".
-fn fwd_line(data: &serde_json::Value, label: &str, pkt_key: &str, byte_key: &str) -> Line<'static> {
-    let pkts = data
-        .get("forwarding")
-        .and_then(|f| f.get(pkt_key))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let bytes = data
-        .get("forwarding")
-        .and_then(|f| f.get(byte_key))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    helpers::kv_line(
-        label,
-        &format!("{} pkts ({})", pkts, helpers::format_bytes(bytes)),
-    )
-}
-
-/// Format seconds as human-readable uptime (e.g., "3d 2h 15m 4s").
-fn format_uptime(secs: u64) -> String {
-    let days = secs / 86400;
-    let hours = (secs % 86400) / 3600;
-    let mins = (secs % 3600) / 60;
-    let s = secs % 60;
-
-    if days > 0 {
-        format!("{days}d {hours}h {mins}m {s}s")
-    } else if hours > 0 {
-        format!("{hours}h {mins}m {s}s")
-    } else if mins > 0 {
-        format!("{mins}m {s}s")
-    } else {
-        format!("{s}s")
-    }
 }

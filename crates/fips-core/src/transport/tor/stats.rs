@@ -8,6 +8,7 @@ use serde::Serialize;
 ///
 /// Uses atomic counters for lock-free updates from per-connection
 /// receive loops and the send path concurrently.
+#[derive(Default)]
 pub struct TorStats {
     pub packets_sent: AtomicU64,
     pub bytes_sent: AtomicU64,
@@ -30,24 +31,7 @@ pub struct TorStats {
 impl TorStats {
     /// Create a new stats instance with all counters at zero.
     pub fn new() -> Self {
-        Self {
-            packets_sent: AtomicU64::new(0),
-            bytes_sent: AtomicU64::new(0),
-            packets_recv: AtomicU64::new(0),
-            bytes_recv: AtomicU64::new(0),
-            send_errors: AtomicU64::new(0),
-            recv_errors: AtomicU64::new(0),
-            mtu_exceeded: AtomicU64::new(0),
-            connections_established: AtomicU64::new(0),
-            connect_timeouts: AtomicU64::new(0),
-            connect_refused: AtomicU64::new(0),
-            socks5_errors: AtomicU64::new(0),
-            connections_accepted: AtomicU64::new(0),
-            connections_rejected: AtomicU64::new(0),
-            control_errors: AtomicU64::new(0),
-            pool_inbound: AtomicU64::new(0),
-            pool_outbound: AtomicU64::new(0),
-        }
+        Self::default()
     }
 
     /// Record a successful send.
@@ -157,12 +141,6 @@ impl TorStats {
             pool_inbound: self.pool_inbound.load(Ordering::Relaxed),
             pool_outbound: self.pool_outbound.load(Ordering::Relaxed),
         }
-    }
-}
-
-impl Default for TorStats {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

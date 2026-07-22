@@ -2,9 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table,
-};
+use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
 use crate::app::{App, SelectedTreeItem, Tab};
 
@@ -269,18 +267,7 @@ fn draw_table(
     let row_count = tree_rows.len();
     let state = app.table_states.entry(Tab::Transports).or_default();
     frame.render_stateful_widget(table, area, state);
-
-    if row_count > 0 {
-        let selected = state.selected().unwrap_or(0);
-        let mut scrollbar_state = ScrollbarState::new(row_count).position(selected);
-        frame.render_stateful_widget(
-            Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                .begin_symbol(None)
-                .end_symbol(None),
-            area,
-            &mut scrollbar_state,
-        );
-    }
+    helpers::render_scrollbar(frame, area, row_count, state.selected());
 }
 
 fn draw_detail(
