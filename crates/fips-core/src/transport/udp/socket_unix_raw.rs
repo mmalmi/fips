@@ -8,12 +8,7 @@
             recv_buf_size: usize,
             send_buf_size: usize,
         ) -> Result<Self, TransportError> {
-            // A kernel-assigned endpoint must remain unique while this socket
-            // is live. Reuse is only meaningful for an explicitly requested
-            // ordinary port; enabling it before a port-0 bind lets multiple
-            // sockets receive the same assigned address on some Unix kernels.
-            let reusable = bind_addr.port() != 0;
-            Self::open_inner(bind_addr, recv_buf_size, send_buf_size, reusable)
+            Self::open_inner(bind_addr, recv_buf_size, send_buf_size)
         }
 
         /// Create a UDP socket whose address cannot be shared by another
@@ -23,14 +18,13 @@
             recv_buf_size: usize,
             send_buf_size: usize,
         ) -> Result<Self, TransportError> {
-            Self::open_inner(bind_addr, recv_buf_size, send_buf_size, false)
+            Self::open_inner(bind_addr, recv_buf_size, send_buf_size)
         }
 
         fn open_inner(
             bind_addr: SocketAddr,
             recv_buf_size: usize,
             send_buf_size: usize,
-            reusable: bool,
         ) -> Result<Self, TransportError> {
             let domain = if bind_addr.is_ipv4() {
                 Domain::IPV4
@@ -42,12 +36,6 @@
 
             configure_socket_nonblocking(&sock)?;
 
-            if reusable {
-                // SO_REUSEPORT/SO_REUSEADDR keeps ordinary transport restart
-                // and adoption friendly. Rendezvous ownership deliberately
-                // skips both options so bind remains an exclusive OS lock.
-                configure_socket_reuse(&sock);
-            }
             apply_darwin_udp_tuning(&sock, "udp-listen");
 
             sock.bind(&bind_addr.into())
@@ -86,9 +74,6 @@
 
             configure_socket_nonblocking(&sock)?;
 
-            // Adopted NAT-traversal sockets become normal FIPS UDP transports.
-            // Keep their reuse flags aligned with `open()`.
-            configure_socket_reuse(&sock);
             apply_darwin_udp_tuning(&sock, "udp-adopted");
 
             configure_socket_buffer_sizes(&sock, recv_buf_size, send_buf_size)?;

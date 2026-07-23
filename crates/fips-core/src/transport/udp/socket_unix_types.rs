@@ -241,11 +241,6 @@
             .map_err(|e| TransportError::StartFailed(format!("set nonblocking failed: {}", e)))
     }
 
-    fn configure_socket_reuse(sock: &Socket) {
-        let _ = sock.set_reuse_port(true);
-        let _ = sock.set_reuse_address(true);
-    }
-
     #[cfg(target_os = "macos")]
     fn apply_darwin_udp_tuning(sock: &Socket, label: &'static str) {
         crate::transport::udp::darwin_sockopts::apply_udp_socket_tuning(sock.as_raw_fd(), label);

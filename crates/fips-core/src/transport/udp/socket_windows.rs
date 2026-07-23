@@ -52,7 +52,7 @@ mod platform {
             recv_buf_size: usize,
             send_buf_size: usize,
         ) -> Result<Self, TransportError> {
-            Self::open_inner(bind_addr, recv_buf_size, send_buf_size, false)
+            Self::open_inner(bind_addr, recv_buf_size, send_buf_size)
         }
 
         /// Create an exclusive UDP socket for same-host rendezvous ownership.
@@ -61,14 +61,13 @@ mod platform {
             recv_buf_size: usize,
             send_buf_size: usize,
         ) -> Result<Self, TransportError> {
-            Self::open_inner(bind_addr, recv_buf_size, send_buf_size, true)
+            Self::open_inner(bind_addr, recv_buf_size, send_buf_size)
         }
 
         fn open_inner(
             bind_addr: SocketAddr,
             recv_buf_size: usize,
             send_buf_size: usize,
-            requested_exclusive: bool,
         ) -> Result<Self, TransportError> {
             let domain = if bind_addr.is_ipv4() {
                 Domain::IPV4
@@ -82,23 +81,10 @@ mod platform {
                 TransportError::StartFailed(format!("set nonblocking failed: {}", e))
             })?;
 
-            // A kernel-assigned endpoint must remain unique while this socket
-            // is live. Explicit nonzero ordinary ports retain restart-friendly
-            // reuse, while port 0 uses Windows' exclusive-address lock.
-            let exclusive = requested_exclusive || bind_addr.port() == 0;
-            if exclusive {
-                set_windows_exclusive_addr_use(&sock)?;
-            } else {
-                // Windows: `socket2::Socket::set_reuse_port` doesn't exist.
-                let _ = sock.set_reuse_address(true);
-            }
+            set_windows_exclusive_addr_use(&sock)?;
 
             sock.bind(&bind_addr.into()).map_err(|error| {
-                if exclusive {
-                    TransportError::exclusive_bind_failed(bind_addr, error)
-                } else {
-                    TransportError::bind_failed(bind_addr, error)
-                }
+                TransportError::exclusive_bind_failed(bind_addr, error)
             })?;
 
             // Set socket buffer sizes

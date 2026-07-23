@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.37] - 2026-07-23
+
+### Fixed
+
+- Make every UDP listener an exclusive operating-system bind so two FIPS
+  identities cannot silently share one port and receive each other's
+  handshakes nondeterministically.
+- Apply the same exclusive-listener rule on Unix and Windows and cover it with
+  a real socket-bind regression test.
+- Release `fips-core` and `fips-endpoint` 0.4.37 together. FMP, FSP,
+  discovery, routing, and physical transport wire formats are unchanged.
+
 ## [0.4.36] - 2026-07-23
 
 ### Fixed

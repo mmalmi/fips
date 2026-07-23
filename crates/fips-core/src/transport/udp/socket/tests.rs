@@ -185,15 +185,17 @@ fn live_ordinary_ephemeral_udp_sockets_receive_unique_addresses() {
 }
 
 #[test]
-fn explicit_nonzero_ordinary_udp_port_remains_reusable() {
-    let probe = std::net::UdpSocket::bind("127.0.0.1:0").expect("probe reusable UDP port");
+fn explicit_nonzero_udp_port_rejects_a_second_process() {
+    let probe = std::net::UdpSocket::bind("127.0.0.1:0").expect("probe exclusive UDP port");
     let addr = probe.local_addr().expect("probe local address");
     drop(probe);
 
     let first = UdpRawSocket::open(addr, 65_536, 65_536).expect("first ordinary bind");
-    let second = UdpRawSocket::open(addr, 65_536, 65_536).expect("second ordinary bind");
     assert_eq!(first.local_addr(), addr);
-    assert_eq!(second.local_addr(), addr);
+    assert!(
+        UdpRawSocket::open(addr, 65_536, 65_536).is_err(),
+        "a second FIPS identity must not share a live UDP listen port"
+    );
 }
 
 #[tokio::test]
