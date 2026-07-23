@@ -1,6 +1,8 @@
 use super::*;
 use crate::config::NostrPeerfindingSource;
-use crate::discovery::nostr::{NostrAdvertIngestOutcome, OverlayTransportKind, TraversalAddress};
+use crate::discovery::nostr::{
+    NostrAdvertIngestOutcome, OverlayTransportKind, TraversalAddress, TraversalOffer,
+};
 
 #[test]
 fn event_channel_capacity_tracks_open_and_inbound_limits() {
@@ -472,6 +474,77 @@ async fn distinct_incoming_offer_attempts_are_not_peer_rate_limited() {
     assert!(discovery.accept_incoming_offer_for_test("attempt-1").await);
     assert!(discovery.accept_incoming_offer_for_test("attempt-2").await);
     assert!(!discovery.accept_incoming_offer_for_test("attempt-1").await);
+}
+
+#[tokio::test]
+async fn incoming_mesh_offer_breaks_mutual_traversal_cooldown() {
+    let discovery = Arc::new(NostrDiscovery::new_for_test_with_config(
+        NostrDiscoveryConfig {
+            stun_servers: Vec::new(),
+            share_local_candidates: true,
+            attempt_timeout_secs: 1,
+            ..Default::default()
+        },
+    ));
+    let expected_peer_npub = nostr::Keys::generate()
+        .public_key()
+        .to_bech32()
+        .expect("peer npub");
+    let received_at = now_ms();
+    for offset in 0..5 {
+        discovery.record_traversal_failure(&expected_peer_npub, received_at + offset);
+    }
+    assert!(
+        discovery
+            .cooldown_until(&expected_peer_npub, received_at + 5)
+            .is_some(),
+        "fixture must put the peer in traversal cooldown"
+    );
+
+    discovery
+        .receive_mesh_traversal_offer(
+            TraversalOffer {
+                message_type: "offer".to_string(),
+                session_id: "roam-recovery".to_string(),
+                issued_at: received_at,
+                expires_at: received_at + 30_000,
+                nonce: "roam-recovery-nonce".to_string(),
+                sender_npub: expected_peer_npub.clone(),
+                recipient_npub: discovery.npub.clone(),
+                reflexive_address: None,
+                local_addresses: vec![TraversalAddress {
+                    protocol: "udp".to_string(),
+                    ip: "127.0.0.1".to_string(),
+                    port: 51_820,
+                }],
+                stun_server: None,
+            },
+            expected_peer_npub.clone(),
+        )
+        .await;
+
+    let answer = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let Some(signal) = discovery.drain_mesh_signals().await.into_iter().next() {
+                break signal;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("a configured peer's recovery offer must not be stranded by cooldown");
+    assert!(
+        matches!(
+            answer,
+            MeshTraversalSignal::Answer {
+                ref peer_npub,
+                ..
+            } if peer_npub == &expected_peer_npub
+        ),
+        "the cooldown peer must receive a traversal answer"
+    );
+
+    discovery.shutdown().await.expect("shutdown discovery");
 }
 
 fn signed_rating_fact_event(

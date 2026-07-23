@@ -341,17 +341,11 @@ impl NostrDiscovery {
     ) -> Result<(), BootstrapError> {
         let peer_short = short_npub(&sender_npub);
         let offer_received_at = now_ms();
-        if self
-            .cooldown_until(&sender_npub, offer_received_at)
-            .is_some()
-        {
-            debug!(
-                peer = %peer_short,
-                session = %short_id(&offer.session_id),
-                "traversal: incoming mesh offer dropped during peer cooldown"
-            );
-            return Ok(());
-        }
+        // This offer arrived through an authenticated FIPS session. A peer
+        // traversal cooldown throttles our outbound attempts, but must not
+        // reject the other side's attempt: after either peer roams, both can
+        // otherwise enter cooldown and drop every offer until one endpoint is
+        // restarted.
         if !self.direct_refresh_admission_allowed() {
             debug!(
                 peer = %peer_short,
