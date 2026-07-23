@@ -133,6 +133,57 @@ async fn link_dead_unconfigured_browser_peer_is_fully_evicted() {
 }
 
 #[tokio::test]
+async fn closed_websocket_client_is_evicted_without_waiting_for_link_dead_timeout() {
+    let local_identity = Identity::generate();
+    let peer_identity = Identity::generate();
+    let peer = PeerIdentity::from_pubkey_full(peer_identity.pubkey_full());
+    let peer_addr = *peer.node_addr();
+    let session = make_test_fmp_session(&local_identity, &peer_identity, [1; 8], [2; 8]);
+    let transport_id = TransportId::new(1);
+    let (packet_tx, _packet_rx) = packet_channel(8);
+    let websocket = crate::transport::websocket::WebSocketTransport::new(
+        transport_id,
+        None,
+        crate::config::WebSocketConfig::default(),
+        packet_tx,
+        &local_identity,
+    );
+    let mut node = Node::with_identity(local_identity, Config::new()).expect("node");
+    node.config.node.link_dead_timeout_secs = 30;
+    node.transports.insert(
+        transport_id,
+        TransportHandle::WebSocket(Box::new(websocket)),
+    );
+    node.peers.insert(
+        peer_addr,
+        ActivePeer::with_session(
+            peer,
+            LinkId::new(7),
+            Node::now_ms(),
+            ActivePeerSession {
+                session,
+                our_index: crate::utils::index::SessionIndex::new(11),
+                their_index: crate::utils::index::SessionIndex::new(12),
+                transport_id,
+                current_addr: crate::transport::TransportAddr::from_string(
+                    "ws-peer://127.0.0.1:41000/1",
+                ),
+                link_stats: crate::transport::LinkStats::new(),
+                is_initiator: false,
+                remote_epoch: None,
+            },
+        ),
+    );
+
+    node.check_link_heartbeats().await;
+
+    assert!(
+        !node.peers.contains_key(&peer_addr),
+        "a physically closed WebSocket client must not remain in routing fanout for 30 seconds"
+    );
+}
+
+#[tokio::test]
 async fn failed_heartbeat_send_does_not_suppress_next_probe() {
     let local_identity = Identity::generate();
     let peer_identity = Identity::generate();

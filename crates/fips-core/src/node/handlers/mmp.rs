@@ -539,10 +539,50 @@ impl Node {
         let heartbeat_msg = [LinkMessageType::Heartbeat.to_byte()];
         let now_ms = Self::now_ms();
 
+        let connection_states: std::collections::HashMap<
+            NodeAddr,
+            Option<crate::transport::ConnectionState>,
+        > = self
+            .peers
+            .iter()
+            .filter_map(|(node_addr, peer)| {
+                let transport_id = peer.transport_id()?;
+                let remote_addr = peer.current_addr()?;
+                let state = self
+                    .get_transport(&transport_id)
+                    .map(|transport| transport.connection_state(remote_addr));
+                Some((*node_addr, state))
+            })
+            .collect();
+        let definitively_closed_paths: std::collections::HashSet<NodeAddr> = connection_states
+            .iter()
+            .filter_map(|(node_addr, state)| {
+                matches!(
+                    state.as_ref(),
+                    None | Some(crate::transport::ConnectionState::None)
+                        | Some(crate::transport::ConnectionState::Failed(_))
+                )
+                .then_some(*node_addr)
+            })
+            .collect();
+        let physically_closed_paths: std::collections::HashSet<NodeAddr> = connection_states
+            .iter()
+            .filter_map(|(node_addr, state)| {
+                matches!(
+                    state.as_ref(),
+                    Some(crate::transport::ConnectionState::None)
+                        | Some(crate::transport::ConnectionState::Failed(_))
+                )
+                .then_some(*node_addr)
+            })
+            .collect();
         let effective_dead_timeouts: std::collections::HashMap<NodeAddr, Duration> = self
             .peers
             .iter()
             .map(|(node_addr, _)| {
+                if physically_closed_paths.contains(node_addr) {
+                    return (*node_addr, Duration::ZERO);
+                }
                 let local_send_failure_timeout = self.local_send_failure_dead_timeout_for_peer(
                     node_addr,
                     now,
@@ -563,23 +603,6 @@ impl Node {
                     *node_addr,
                     self.direct_path_liveness_quiet_for(node_addr, peer, now, now_ms),
                 )
-            })
-            .collect();
-        let definitively_closed_paths: std::collections::HashSet<NodeAddr> = self
-            .peers
-            .iter()
-            .filter_map(|(node_addr, peer)| {
-                let transport_id = peer.transport_id()?;
-                let remote_addr = peer.current_addr()?;
-                let state = self
-                    .get_transport(&transport_id)
-                    .map(|transport| transport.connection_state(remote_addr));
-                matches!(
-                    state,
-                    None | Some(crate::transport::ConnectionState::None)
-                        | Some(crate::transport::ConnectionState::Failed(_))
-                )
-                .then_some(*node_addr)
             })
             .collect();
         let heartbeat_plan = self.peers.plan_link_heartbeat_tick(

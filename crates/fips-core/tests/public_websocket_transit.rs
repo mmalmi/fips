@@ -3,8 +3,10 @@ use fips_core::config::{
     WebSocketConfig,
 };
 use fips_core::{Config, FipsEndpoint, Identity, PeerIdentity, encode_nsec};
-use std::net::TcpListener;
+use socket2::SockRef;
+use std::net::{SocketAddr, TcpListener};
 use std::time::Duration;
+use tokio::sync::oneshot;
 
 const SERVICE_PORT: u16 = 44_000;
 const SOURCE_PORT: u16 = 44_001;
@@ -13,14 +15,21 @@ const DELIVERY_TIMEOUT: Duration = Duration::from_secs(8);
 const CHURN_ROUNDS: usize = 20;
 const BUSY_SEED_CLIENTS: usize = 24;
 
-fn available_websocket_url() -> String {
+fn available_websocket_address() -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").expect("reserve WebSocket listener port");
-    let port = listener
+    let address = listener
         .local_addr()
-        .expect("read reserved WebSocket listener port")
-        .port();
+        .expect("read reserved WebSocket listener address");
     drop(listener);
-    format!("ws://127.0.0.1:{port}/fips")
+    address
+}
+
+fn websocket_url(address: SocketAddr) -> String {
+    format!("ws://{address}/fips")
+}
+
+fn available_websocket_url() -> String {
+    websocket_url(available_websocket_address())
 }
 
 fn websocket_config(bind_url: Option<&str>, seed: Option<(&str, &str)>) -> Config {
@@ -138,6 +147,98 @@ async fn receive_payload(
 }
 
 #[tokio::test]
+async fn configured_websocket_seed_authenticates_after_tcp_reset() {
+    let seed_address = available_websocket_address();
+    let seed_url = websocket_url(seed_address);
+    let seed_identity = Identity::generate();
+    let seed_npub = seed_identity.npub();
+    let reset_listener = tokio::net::TcpListener::bind(seed_address)
+        .await
+        .expect("bind resetting TCP listener");
+    let (reset_sent_tx, reset_sent_rx) = oneshot::channel();
+    let reset_task = tokio::spawn(async move {
+        let (stream, _) = reset_listener
+            .accept()
+            .await
+            .expect("accept configured WebSocket seed connection");
+        let stream = stream.into_std().expect("convert reset stream");
+        SockRef::from(&stream)
+            .set_linger(Some(Duration::ZERO))
+            .expect("configure TCP reset on close");
+        drop(stream);
+        reset_sent_tx.send(()).expect("report TCP reset");
+    });
+
+    let client = bind_endpoint(websocket_config(None, Some((&seed_npub, &seed_url)))).await;
+    tokio::time::timeout(CONNECT_TIMEOUT, reset_sent_rx)
+        .await
+        .expect("client did not reach resetting TCP listener")
+        .expect("reset listener stopped without reporting TCP reset");
+    reset_task.await.expect("reset listener task");
+    assert!(
+        client
+            .peers()
+            .await
+            .expect("client peer snapshot after TCP reset")
+            .iter()
+            .all(|peer| !peer.connected),
+        "client unexpectedly authenticated through the resetting listener"
+    );
+
+    let seed = bind_endpoint(with_identity(
+        websocket_config(Some(&seed_url), None),
+        &seed_identity,
+    ))
+    .await;
+    tokio::join!(
+        wait_for_adjacency(&client, &seed_npub),
+        wait_for_adjacency(&seed, client.npub()),
+    );
+
+    client.shutdown().await.expect("client shutdown");
+    seed.shutdown().await.expect("seed shutdown");
+}
+
+#[tokio::test]
+async fn closed_websocket_client_leaves_seed_roster_promptly() {
+    let seed_url = available_websocket_url();
+    let seed_identity = Identity::generate();
+    let seed_npub = seed_identity.npub();
+    let seed = bind_endpoint(with_identity(
+        websocket_config(Some(&seed_url), None),
+        &seed_identity,
+    ))
+    .await;
+    let client = bind_endpoint(websocket_config(None, Some((&seed_npub, &seed_url)))).await;
+    let client_npub = client.npub().to_string();
+
+    tokio::join!(
+        wait_for_exact_seed(&client, &seed_npub),
+        wait_for_adjacency(&seed, &client_npub),
+    );
+    client.shutdown().await.expect("client shutdown");
+
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if seed
+                .peers()
+                .await
+                .expect("seed peer snapshot")
+                .iter()
+                .all(|peer| peer.npub != client_npub)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("closed WebSocket client lingered in seed routing roster");
+
+    seed.shutdown().await.expect("seed shutdown");
+}
+
+#[tokio::test]
 async fn persistent_two_seed_websocket_transit_survives_client_churn() {
     let seed_one_url = available_websocket_url();
     let seed_two_url = available_websocket_url();
@@ -154,7 +255,7 @@ async fn persistent_two_seed_websocket_transit_survives_client_churn() {
         .peers
         .push(configured_listener_peer(&seed_two_npub, &seed_two_url));
     let seed_one = bind_endpoint(seed_one_config).await;
-    let seed_two = bind_endpoint(with_identity(
+    let mut seed_two = bind_endpoint(with_identity(
         websocket_config(Some(&seed_two_url), Some((&seed_one_npub, &seed_one_url))),
         &seed_two_identity,
     ))
@@ -177,6 +278,21 @@ async fn persistent_two_seed_websocket_transit_survives_client_churn() {
     for client in &busy_seed_clients {
         wait_for_exact_seed(client, &seed_one_npub).await;
     }
+
+    // Replace the dialing seed while the listener side is serving unrelated
+    // clients. The replacement retains the same identity and configured
+    // adjacency: it must reconnect through the one canonical physical dial
+    // before fresh route-by-npub clients start churning.
+    seed_two.shutdown().await.expect("second seed shutdown");
+    seed_two = bind_endpoint(with_identity(
+        websocket_config(Some(&seed_two_url), Some((&seed_one_npub, &seed_one_url))),
+        &seed_two_identity,
+    ))
+    .await;
+    tokio::join!(
+        wait_for_adjacency(&seed_one, &seed_two_npub),
+        wait_for_adjacency(&seed_two, &seed_one_npub),
+    );
 
     for round in 0..CHURN_ROUNDS {
         let (client_one, client_two) = tokio::join!(
