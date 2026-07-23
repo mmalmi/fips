@@ -170,19 +170,17 @@ async fn open_discovery_listener_routes_first_contact_between_websocket_clients(
     assert!(
         nodes[0]
             .node
-            .peer_is_configured_websocket_adjacency(&admin_addr),
+            .peer_is_operator_routing_adjacency(&admin_addr),
         "the seed must recognize an authenticated inbound admin as an operator-configured adjacency"
     );
     assert!(
         nodes[0]
             .node
-            .peer_is_configured_websocket_adjacency(&router_addr),
+            .peer_is_operator_routing_adjacency(&router_addr),
         "the seed must recognize an authenticated inbound router as an operator-configured adjacency"
     );
     assert!(
-        nodes[1]
-            .node
-            .peer_is_configured_websocket_adjacency(&seed_addr),
+        nodes[1].node.peer_is_operator_routing_adjacency(&seed_addr),
         "the router must recognize its explicitly configured outbound seed"
     );
 

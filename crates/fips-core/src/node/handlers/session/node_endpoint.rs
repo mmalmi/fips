@@ -7,7 +7,7 @@ impl Node {
     ) {
         let dest_addr = *remote.node_addr();
         let dest_pubkey = remote.pubkey_full();
-        self.register_identity(dest_addr, dest_pubkey);
+        self.register_endpoint_identity(dest_addr, dest_pubkey);
         let _ = self
             .queue_dataplane_unrouted_endpoint_payloads(
                 dest_addr,
@@ -112,7 +112,7 @@ impl Node {
     ) {
         let (remote, payloads, _, enqueued_at_ms) = batch.into_parts();
         let dest_addr = *remote.node_addr();
-        self.register_identity(dest_addr, remote.pubkey_full());
+        self.register_endpoint_identity(dest_addr, remote.pubkey_full());
         self.queue_pending_endpoint_data_batch_with_enqueued_at_ms(
             dest_addr,
             payloads,

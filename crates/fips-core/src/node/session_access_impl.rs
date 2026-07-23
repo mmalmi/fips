@@ -103,7 +103,20 @@ impl Node {
         node_addr: NodeAddr,
         pubkey: secp256k1::PublicKey,
     ) -> bool {
-        self.identity_cache.register_dns_resolved(
+        self.register_endpoint_identity(node_addr, pubkey)
+    }
+
+    /// Register an identity explicitly selected by the embedding application.
+    ///
+    /// Unlike an identity learned from ambient mesh traffic, an endpoint
+    /// destination is authoritative local intent and may use configured
+    /// transit when no tree or learned route is ready yet.
+    pub(crate) fn register_endpoint_identity(
+        &mut self,
+        node_addr: NodeAddr,
+        pubkey: secp256k1::PublicKey,
+    ) -> bool {
+        self.identity_cache.register_explicit_target(
             node_addr,
             pubkey,
             Self::now_ms(),
@@ -111,8 +124,8 @@ impl Node {
         )
     }
 
-    pub(crate) fn is_dns_resolved_identity(&self, node_addr: &NodeAddr) -> bool {
-        self.identity_cache.is_dns_resolved(node_addr)
+    pub(crate) fn is_explicit_target_identity(&self, node_addr: &NodeAddr) -> bool {
+        self.identity_cache.is_explicit_target(node_addr)
     }
 
     /// Look up a destination by FipsAddress prefix (bytes 1-15 of the IPv6 address).

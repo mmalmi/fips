@@ -46,7 +46,7 @@ pub enum TransportHandle {
 }
 
 impl TransportHandle {
-    pub(crate) fn is_configured_websocket_adjacency(
+    pub(crate) fn is_operator_routing_adjacency(
         &self,
         addr: &TransportAddr,
         handshake_is_initiator: bool,
@@ -54,6 +54,9 @@ impl TransportHandle {
         match self {
             TransportHandle::WebSocket(transport) => {
                 transport.is_configured_adjacency(addr, handshake_is_initiator)
+            }
+            TransportHandle::Udp(transport) => {
+                transport.is_operator_routing_adjacency(handshake_is_initiator)
             }
             _ => false,
         }

@@ -88,8 +88,11 @@ impl Node {
         // selection. Let that lookup leave over any established physical
         // adjacency, including an Open-discovery adjacency that is otherwise
         // excluded from ambient fallback transit.
-        if self.is_dns_resolved_identity(target) {
-            return true;
+        if self.config.node.discovery.nostr.policy
+            == crate::config::NostrDiscoveryPolicy::Open
+            && self.is_explicit_target_identity(target)
+        {
+            return self.configured_discovery_fallback_transit(peer_addr) == Some(true);
         }
 
         // An explicitly configured transit peer remains an operator-selected
@@ -118,13 +121,12 @@ impl Node {
         let nostr = &self.config.node.discovery.nostr;
         match nostr.policy {
             crate::config::NostrDiscoveryPolicy::Open => {
-                // A configured WebSocket listener is an operator-selected
-                // physical router. Let its authenticated clients find one
-                // another without treating ambient Open-discovery peers as
-                // fallback transit.
+                // An operator-selected public listener is a physical router.
+                // Let its authenticated clients find one another without
+                // treating ordinary Open-discovery peers as fallback transit.
                 (self.configured_discovery_fallback_transit(origin).is_some()
                     && self.configured_discovery_fallback_transit(target).is_some())
-                    || self.peer_is_configured_websocket_adjacency(from)
+                    || self.peer_is_operator_routing_adjacency(from)
             }
             crate::config::NostrDiscoveryPolicy::ConfiguredOnly if nostr.enabled => {
                 self.configured_discovery_fallback_transit(origin).is_some()
@@ -140,11 +142,11 @@ impl Node {
         match nostr.policy {
             crate::config::NostrDiscoveryPolicy::Open => {
                 self.configured_discovery_fallback_transit(target).is_some()
-                    || self.is_dns_resolved_identity(target)
+                    || self.is_explicit_target_identity(target)
             }
             crate::config::NostrDiscoveryPolicy::ConfiguredOnly if nostr.enabled => {
                 self.configured_discovery_fallback_transit(target).is_some()
-                    || self.is_dns_resolved_identity(target)
+                    || self.is_explicit_target_identity(target)
             }
             crate::config::NostrDiscoveryPolicy::ConfiguredOnly
             | crate::config::NostrDiscoveryPolicy::Disabled => true,

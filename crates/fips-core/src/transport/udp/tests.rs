@@ -428,6 +428,37 @@ fn test_accept_connections_forced_false_in_outbound_only() {
     assert!(!transport.accept_connections());
 }
 
+#[test]
+fn public_inbound_udp_is_operator_routing_adjacency_only_for_responder() {
+    let (packet_tx, _packet_rx) = packet_channel(8);
+    let public = UdpTransport::new(
+        TransportId::new(41),
+        None,
+        UdpConfig {
+            bind_addr: Some("0.0.0.0:2121".to_string()),
+            public: Some(true),
+            accept_connections: Some(true),
+            ..UdpConfig::default()
+        },
+        packet_tx.clone(),
+    );
+    assert!(public.is_operator_routing_adjacency(false));
+    assert!(!public.is_operator_routing_adjacency(true));
+
+    let ordinary = UdpTransport::new(
+        TransportId::new(42),
+        None,
+        UdpConfig {
+            bind_addr: Some("0.0.0.0:0".to_string()),
+            public: Some(false),
+            accept_connections: Some(true),
+            ..UdpConfig::default()
+        },
+        packet_tx,
+    );
+    assert!(!ordinary.is_operator_routing_adjacency(false));
+}
+
 #[tokio::test]
 async fn test_outbound_only_binds_ephemeral() {
     // outbound_only=true must override bind_addr to 0.0.0.0:0 so the

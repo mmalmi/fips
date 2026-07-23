@@ -416,6 +416,13 @@ impl UdpTransport {
         self.local_addr
     }
 
+    pub(crate) fn is_operator_routing_adjacency(&self, handshake_is_initiator: bool) -> bool {
+        !handshake_is_initiator
+            && self.config.is_public()
+            && !self.config.outbound_only()
+            && self.config.accept_connections()
+    }
+
     /// Configured recv buffer size.
     pub fn recv_buf_size(&self) -> usize {
         self.config.recv_buf_size()

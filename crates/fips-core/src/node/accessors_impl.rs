@@ -852,7 +852,7 @@ impl Node {
         }
 
         if self.transports.get(&transport_id).is_some_and(|transport| {
-            transport.is_configured_websocket_adjacency(current_addr, handshake_is_initiator)
+            transport.is_operator_routing_adjacency(current_addr, handshake_is_initiator)
         }) {
             return true;
         }
@@ -860,7 +860,7 @@ impl Node {
         self.config.node.discovery.nostr.policy != crate::config::NostrDiscoveryPolicy::Open
     }
 
-    pub(crate) fn peer_is_configured_websocket_adjacency(&self, peer_addr: &NodeAddr) -> bool {
+    pub(crate) fn peer_is_operator_routing_adjacency(&self, peer_addr: &NodeAddr) -> bool {
         let Some(peer) = self.peers.get(peer_addr) else {
             return false;
         };
@@ -869,7 +869,7 @@ impl Node {
             return false;
         };
         self.transports.get(&transport_id).is_some_and(|transport| {
-            transport.is_configured_websocket_adjacency(current_addr, peer.fmp_mmp_is_initiator())
+            transport.is_operator_routing_adjacency(current_addr, peer.fmp_mmp_is_initiator())
         })
     }
 }

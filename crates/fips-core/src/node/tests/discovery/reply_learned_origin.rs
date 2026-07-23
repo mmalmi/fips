@@ -174,6 +174,7 @@ async fn test_reply_learned_dns_target_uses_authenticated_physical_adjacency() {
     verify_tree_convergence(&nodes);
 
     let adjacent_addr = *nodes[1].node.node_addr();
+    let adjacent_npub = nodes[1].node.identity().npub();
     nodes[0].node.config.node.routing.mode = RoutingMode::ReplyLearned;
     nodes[0].node.config.node.discovery.nostr.enabled = true;
     nodes[0].node.config.node.discovery.nostr.policy = crate::config::NostrDiscoveryPolicy::Open;
@@ -181,7 +182,16 @@ async fn test_reply_learned_dns_target_uses_authenticated_physical_adjacency() {
     nodes[0].node.tree_state_mut().become_root();
     nodes[0]
         .node
-        .set_discovery_fallback_transit_allowed(adjacent_addr, false);
+        .update_peers(vec![crate::config::PeerConfig {
+            npub: adjacent_npub,
+            alias: None,
+            addresses: Vec::new(),
+            connect_policy: crate::config::ConnectPolicy::AutoConnect,
+            auto_reconnect: true,
+            discovery_fallback_transit: true,
+        }])
+        .await
+        .expect("configure authenticated transit");
     assert!(
         nodes[0]
             .node
@@ -208,7 +218,46 @@ async fn test_reply_learned_dns_target_uses_authenticated_physical_adjacency() {
     assert_eq!(
         nodes[0].node.initiate_lookup(resolved.node_addr(), 5).await,
         1,
-        "a user-resolved .fips target should use the admitted physical adjacency"
+        "a user-resolved .fips target should use configured transit"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn test_reply_learned_endpoint_target_uses_configured_transit() {
+    let edges = vec![(0, 1)];
+    let mut nodes = run_tree_test(2, &edges, false).await;
+    verify_tree_convergence(&nodes);
+
+    let transit_addr = *nodes[1].node.node_addr();
+    let transit_npub = nodes[1].node.identity().npub();
+    nodes[0].node.config.node.routing.mode = RoutingMode::ReplyLearned;
+    nodes[0].node.config.node.discovery.nostr.enabled = true;
+    nodes[0].node.config.node.discovery.nostr.policy = crate::config::NostrDiscoveryPolicy::Open;
+    nodes[0].node.tree_state_mut().remove_peer(&transit_addr);
+    nodes[0].node.tree_state_mut().become_root();
+    nodes[0]
+        .node
+        .update_peers(vec![crate::config::PeerConfig {
+            npub: transit_npub,
+            alias: None,
+            addresses: Vec::new(),
+            connect_policy: crate::config::ConnectPolicy::AutoConnect,
+            auto_reconnect: true,
+            discovery_fallback_transit: true,
+        }])
+        .await
+        .expect("configure authenticated transit");
+
+    let target = Identity::generate();
+    nodes[0]
+        .node
+        .register_endpoint_identity(*target.node_addr(), target.pubkey_full());
+    assert_eq!(
+        nodes[0].node.initiate_lookup(target.node_addr(), 5).await,
+        1,
+        "a destination selected by the embedding application must route by identity through configured transit"
     );
 
     cleanup_nodes(&mut nodes).await;

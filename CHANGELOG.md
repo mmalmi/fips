@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.36] - 2026-07-23
+
+### Fixed
+
+- Route application-selected destination npubs through operator-configured
+  transit even when the destination has no advert or direct physical
+  connection.
+- Treat authenticated clients of public UDP seeds as operator routing
+  adjacencies, allowing routed lookup requests to traverse public seed chains
+  without enabling ambient Open-discovery peers as transit.
+- Release `fips-core` and `fips-endpoint` 0.4.36 together. FMP, FSP,
+  discovery, routing, and physical transport wire formats are unchanged.
+
 ## [0.4.35] - 2026-07-22
 
 ### Fixed

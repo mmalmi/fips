@@ -773,7 +773,7 @@ async fn test_promote_explicit_websocket_seed_responder_allows_open_discovery_fa
         "an explicitly configured WebSocket seed must remain first-contact transit when simultaneous initiation makes the local FIPS handshake the responder"
     );
     assert!(
-        node.peer_is_configured_websocket_adjacency(&node_addr),
+        node.peer_is_operator_routing_adjacency(&node_addr),
         "the active responder-role peer must retain its configured physical WebSocket seed association"
     );
 
