@@ -96,6 +96,35 @@ async fn wait_for_ice_gathering(
         })
 }
 
+async fn wait_for_usable_ice_gathering(
+    timeout: Duration,
+    gathering: &mut mpsc::Receiver<()>,
+    pc: &RTCPeerConnection,
+    stun_configured: bool,
+) -> Result<(), TransportError> {
+    match wait_for_ice_gathering(timeout, gathering).await {
+        Ok(()) => Ok(()),
+        Err(timeout_error) if stun_configured => {
+            let Some(local_description) = pc.local_description().await else {
+                return Err(timeout_error);
+            };
+            let candidates = validate_embedded_ice_candidates(
+                &local_description.sdp,
+                EmbeddedCandidateScope::Local,
+            )?;
+            if candidates.server_reflexive_routes == 0 {
+                return Err(timeout_error);
+            }
+            debug!(
+                server_reflexive_candidates = candidates.server_reflexive_routes,
+                "continuing WebRTC negotiation with gathered STUN candidates while an ICE server remains pending"
+            );
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn signal_expiry_for_deadline(
     deadline: tokio::time::Instant,
     monotonic_now: tokio::time::Instant,

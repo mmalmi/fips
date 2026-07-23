@@ -130,9 +130,11 @@ impl WebRtcRuntime {
             pc.set_local_description(offer)
                 .await
                 .map_err(|e| TransportError::StartFailed(e.to_string()))?;
-            wait_for_ice_gathering(
+            wait_for_usable_ice_gathering(
                 Duration::from_millis(self.config.ice_gather_timeout_ms()),
                 &mut gathering,
+                &pc,
+                !self.stun_servers.is_empty(),
             )
             .await?;
 
@@ -559,9 +561,11 @@ impl WebRtcRuntime {
             pc.set_local_description(answer)
                 .await
                 .map_err(|e| TransportError::StartFailed(e.to_string()))?;
-            wait_for_ice_gathering(
+            wait_for_usable_ice_gathering(
                 Duration::from_millis(self.config.ice_gather_timeout_ms()),
                 &mut gathering,
+                &pc,
+                !self.stun_servers.is_empty(),
             )
             .await?;
 

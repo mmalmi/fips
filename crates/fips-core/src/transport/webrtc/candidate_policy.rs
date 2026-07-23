@@ -7,8 +7,8 @@ use crate::config::{
 use ::webrtc::api::APIBuilder;
 use ::webrtc::api::media_engine::MediaEngine;
 use ::webrtc::api::setting_engine::SettingEngine;
-use ::webrtc::ice::candidate::Candidate;
 use ::webrtc::ice::candidate::candidate_base::unmarshal_candidate;
+use ::webrtc::ice::candidate::{Candidate, CandidateType};
 use ::webrtc::ice::mdns::MulticastDnsMode;
 use ::webrtc::ice::network_type::NetworkType;
 use if_addrs::IfOperStatus;
@@ -332,6 +332,7 @@ pub(super) fn build_webrtc_api() -> Result<Arc<::webrtc::api::API>, TransportErr
 pub(super) struct EmbeddedCandidateCount {
     pub(super) raw_lines: usize,
     pub(super) unique_routes: usize,
+    pub(super) server_reflexive_routes: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -362,6 +363,7 @@ pub(super) fn validate_embedded_ice_candidates(
     let (max_routes, max_lines) = scope.limits();
     let mut raw_lines = 0usize;
     let mut unique = HashSet::new();
+    let mut server_reflexive = HashSet::new();
     for line in sdp.lines() {
         let Some(raw_candidate) = line.trim_start().strip_prefix("a=candidate:") else {
             continue;
@@ -379,7 +381,7 @@ pub(super) fn validate_embedded_ice_candidates(
             .related_address()
             .map(|address| format!("{}:{}", address.address.to_ascii_lowercase(), address.port))
             .unwrap_or_default();
-        unique.insert(format!(
+        let route = format!(
             "{}|{}|{}|{}|{}|{}",
             candidate.network_type(),
             candidate.candidate_type(),
@@ -387,7 +389,11 @@ pub(super) fn validate_embedded_ice_candidates(
             candidate.port(),
             candidate.tcp_type(),
             related,
-        ));
+        );
+        if candidate.candidate_type() == CandidateType::ServerReflexive {
+            server_reflexive.insert(route.clone());
+        }
+        unique.insert(route);
         if unique.len() > max_routes {
             return Err(TransportError::InvalidAddress(format!(
                 "WebRTC embedded SDP exceeds {max_routes} unique ICE routes"
@@ -397,5 +403,6 @@ pub(super) fn validate_embedded_ice_candidates(
     Ok(EmbeddedCandidateCount {
         raw_lines,
         unique_routes: unique.len(),
+        server_reflexive_routes: server_reflexive.len(),
     })
 }

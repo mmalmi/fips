@@ -63,6 +63,38 @@ async fn gather_candidate_offer(
     (pc, sdp)
 }
 
+async fn spawn_one_shot_stun_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let socket = UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("local STUN socket");
+    let server_addr = socket.local_addr().expect("local STUN address");
+    let server = tokio::spawn(async move {
+        let mut buffer = [0u8; 1500];
+        let (length, source) = socket.recv_from(&mut buffer).await.expect("STUN request");
+        let mut request = Message::new();
+        request
+            .unmarshal_binary(&buffer[..length])
+            .expect("decode STUN request");
+        let mut response = Message::new();
+        response
+            .build(&[
+                Box::new(BINDING_SUCCESS),
+                Box::new(request.transaction_id),
+                Box::new(XorMappedAddress {
+                    ip: source.ip(),
+                    port: source.port(),
+                }),
+                Box::new(FINGERPRINT),
+            ])
+            .expect("build STUN response");
+        socket
+            .send_to(&response.raw, source)
+            .await
+            .expect("send STUN response");
+    });
+    (server_addr, server)
+}
+
 #[tokio::test]
 async fn synthetic_many_address_vnet_gather_stays_within_host_socket_budget() {
     let static_ips: Vec<_> = (1..=24)
@@ -189,34 +221,7 @@ async fn production_profile_gathers_selected_ipv4_ipv6_and_vpn_addresses() {
 
 #[tokio::test]
 async fn production_profile_stun_gathering_survives_host_address_filtering() {
-    let socket = UdpSocket::bind("127.0.0.1:0")
-        .await
-        .expect("local STUN socket");
-    let server_addr = socket.local_addr().expect("local STUN address");
-    let server = tokio::spawn(async move {
-        let mut buffer = [0u8; 1500];
-        let (length, source) = socket.recv_from(&mut buffer).await.expect("STUN request");
-        let mut request = Message::new();
-        request
-            .unmarshal_binary(&buffer[..length])
-            .expect("decode STUN request");
-        let mut response = Message::new();
-        response
-            .build(&[
-                Box::new(BINDING_SUCCESS),
-                Box::new(request.transaction_id),
-                Box::new(XorMappedAddress {
-                    ip: source.ip(),
-                    port: source.port(),
-                }),
-                Box::new(FINGERPRINT),
-            ])
-            .expect("build STUN response");
-        socket
-            .send_to(&response.raw, source)
-            .await
-            .expect("send STUN response");
-    });
+    let (server_addr, server) = spawn_one_shot_stun_server().await;
     let api = CandidateAddressPolicy::system()
         .build_api()
         .expect("production WebRTC API");
@@ -250,6 +255,66 @@ async fn production_profile_stun_gathering_survives_host_address_filtering() {
     );
     server.await.expect("STUN server task");
     pc.close().await.expect("close STUN PC");
+}
+
+#[tokio::test]
+async fn usable_stun_candidate_is_not_blocked_by_a_silent_server() {
+    let silent = UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("silent STUN socket");
+    let silent_addr = silent.local_addr().expect("silent STUN address");
+    let (server_addr, server) = spawn_one_shot_stun_server().await;
+    let identity = crate::Identity::generate();
+    let (packet_tx, _packet_rx) = crate::packet_channel(1);
+    let transport = WebRtcTransport::new(
+        TransportId::new(605),
+        None,
+        WebRtcConfig {
+            max_connections: Some(1),
+            ice_gather_timeout_ms: Some(500),
+            stun_servers: Some(vec![
+                format!("stun:{silent_addr}"),
+                format!("stun:{server_addr}"),
+            ]),
+            ..WebRtcConfig::default()
+        },
+        packet_tx,
+        &identity,
+        &NostrDiscoveryConfig::default(),
+    )
+    .expect("WebRTC transport");
+    let pc = transport
+        .runtime()
+        .new_peer_connection()
+        .await
+        .expect("peer connection");
+    pc.create_data_channel("partial-stun-gather", None)
+        .await
+        .expect("data channel");
+    let offer = pc.create_offer(None).await.expect("offer");
+    let mut gathering = pc.gathering_complete_promise().await;
+    pc.set_local_description(offer)
+        .await
+        .expect("local description");
+    wait_for_usable_ice_gathering(
+        Duration::from_millis(500),
+        &mut gathering,
+        &pc,
+        true,
+    )
+    .await
+    .expect("responsive STUN candidate should satisfy non-trickle negotiation");
+    let sdp = pc.local_description().await.expect("STUN SDP").sdp;
+    assert!(
+        candidate_socket_routes(&sdp)
+            .iter()
+            .any(|route| route.ends_with("|srflx")),
+        "server-reflexive route missing from {sdp}"
+    );
+
+    server.await.expect("STUN server task");
+    pc.close().await.expect("close STUN PC");
+    drop(silent);
 }
 
 #[tokio::test]
@@ -717,10 +782,12 @@ async fn failure_diagnostic_tracks_candidates_and_data_channel_stage() {
     peer.record_local_candidates(EmbeddedCandidateCount {
         raw_lines: 2,
         unique_routes: 1,
+        server_reflexive_routes: 0,
     });
     peer.record_remote_candidates(EmbeddedCandidateCount {
         raw_lines: 4,
         unique_routes: 3,
+        server_reflexive_routes: 1,
     });
     peer.record_data_channel_wired();
     peer.record_data_channel_open();
