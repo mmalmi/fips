@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.38] - 2026-07-23
+
+### Fixed
+
+- Prioritize explicitly configured transit adjacencies inside the bounded
+  reply-learned lookup fanout, so busy public listeners cannot
+  nondeterministically exclude the only inter-seed route.
+- Cover the production topology with two persistent WebSocket seeds, more
+  than sixteen concurrent listener clients, and repeated fresh bidirectional
+  route-by-npub delivery.
+- Release `fips-core` and `fips-endpoint` 0.4.38 together. FMP, FSP,
+  discovery, routing, and physical transport wire formats are unchanged.
+
 ## [0.4.37] - 2026-07-23
 
 ### Fixed

@@ -16,6 +16,7 @@ pub(crate) struct LookupPeerCandidate {
     pub(crate) is_tree_peer: bool,
     pub(crate) may_reach_target: bool,
     pub(crate) reply_learned_fallback_allowed: bool,
+    pub(crate) configured_reply_learned_fallback_transit: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,7 +52,7 @@ pub(crate) fn plan_forward_peers(
 
     if routing_mode == RoutingMode::ReplyLearned && reply_learned_fallback_enabled {
         let fallback_budget = extra_peer_budget.saturating_sub(peers.len());
-        let extra_peers: Vec<NodeAddr> = candidates
+        let mut fallback_candidates = candidates
             .iter()
             .filter(|candidate| {
                 candidate.addr != from
@@ -60,8 +61,13 @@ pub(crate) fn plan_forward_peers(
                     && (candidate.addr != target || candidate.is_healthy)
                     && candidate.reply_learned_fallback_allowed
             })
+            .filter(|candidate| !peers.contains(&candidate.addr))
+            .collect::<Vec<_>>();
+        fallback_candidates
+            .sort_by_key(|candidate| !candidate.configured_reply_learned_fallback_transit);
+        let extra_peers: Vec<NodeAddr> = fallback_candidates
+            .into_iter()
             .map(|candidate| candidate.addr)
-            .filter(|addr| !peers.contains(addr))
             .take(fallback_budget)
             .collect();
         peers.extend(extra_peers);
@@ -106,11 +112,16 @@ pub(crate) fn plan_initiate_peers(
 
     if routing_mode == RoutingMode::ReplyLearned && reply_learned_fallback_enabled {
         let fallback_budget = extra_peer_budget.saturating_sub(peers.len());
-        let extra_peers: Vec<NodeAddr> = candidates
+        let mut fallback_candidates = candidates
             .iter()
             .filter(|candidate| candidate.can_send && candidate.reply_learned_fallback_allowed)
+            .filter(|candidate| !peers.contains(&candidate.addr))
+            .collect::<Vec<_>>();
+        fallback_candidates
+            .sort_by_key(|candidate| !candidate.configured_reply_learned_fallback_transit);
+        let extra_peers: Vec<NodeAddr> = fallback_candidates
+            .into_iter()
             .map(|candidate| candidate.addr)
-            .filter(|addr| !peers.contains(addr))
             .take(fallback_budget)
             .collect();
         peers.extend(extra_peers);
@@ -150,6 +161,7 @@ mod tests {
             is_tree_peer,
             may_reach_target,
             reply_learned_fallback_allowed,
+            configured_reply_learned_fallback_transit: false,
         }
     }
 
@@ -282,5 +294,51 @@ mod tests {
         assert_eq!(plan.peers, vec![addr(2), addr(3)]);
         assert_eq!(plan.tree_match_count, 1);
         assert!(plan.used_fallback);
+    }
+
+    #[test]
+    fn initiate_reply_learned_keeps_configured_transit_inside_fanout_budget() {
+        let mut candidates = (1..=20)
+            .map(|val| candidate(val, true, true, false, false, true))
+            .collect::<Vec<_>>();
+        candidates.push(LookupPeerCandidate {
+            configured_reply_learned_fallback_transit: true,
+            ..candidate(42, true, true, false, false, true)
+        });
+
+        let plan = plan_initiate_peers(RoutingMode::ReplyLearned, true, &candidates, 16);
+
+        assert_eq!(plan.peers.len(), 16);
+        assert!(
+            plan.peers.contains(&addr(42)),
+            "configured transit peer was excluded by opportunistic peers"
+        );
+    }
+
+    #[test]
+    fn forward_reply_learned_keeps_configured_transit_inside_fanout_budget() {
+        let mut candidates = (2..=21)
+            .map(|val| candidate(val, true, true, false, false, true))
+            .collect::<Vec<_>>();
+        candidates.push(LookupPeerCandidate {
+            configured_reply_learned_fallback_transit: true,
+            ..candidate(42, true, true, false, false, true)
+        });
+
+        let plan = plan_forward_peers(
+            addr(1),
+            addr(99),
+            addr(100),
+            RoutingMode::ReplyLearned,
+            true,
+            &candidates,
+            16,
+        );
+
+        assert_eq!(plan.peers.len(), 16);
+        assert!(
+            plan.peers.contains(&addr(42)),
+            "configured transit peer was excluded by opportunistic peers"
+        );
     }
 }

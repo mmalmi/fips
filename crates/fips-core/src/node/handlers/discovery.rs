@@ -587,6 +587,9 @@ impl Node {
                 may_reach_target: peer.may_reach(target),
                 reply_learned_fallback_allowed: self
                     .should_use_reply_learned_lookup_fallback_peer(addr, peer, target),
+                configured_reply_learned_fallback_transit: self
+                    .configured_discovery_fallback_transit(addr)
+                    == Some(true),
             })
             .collect()
     }
