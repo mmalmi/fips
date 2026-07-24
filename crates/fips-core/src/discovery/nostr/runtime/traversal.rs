@@ -93,19 +93,6 @@ impl NostrDiscovery {
             })?;
         let peer_key = NostrPeerKey::from_public_key_ref(&target_pubkey);
 
-        let configured_nat = peer_config
-            .addresses
-            .iter()
-            .any(|address| address.transport == "udp" && address.addr.eq_ignore_ascii_case("nat"));
-        match self.fetch_advert(&peer_config.npub, target_pubkey).await {
-            Ok(advert) => {
-                if !advert.has_udp_nat_endpoint() && !configured_nat {
-                    return Err(BootstrapError::MissingNatEndpoint(peer_config.npub.clone()));
-                }
-            }
-            Err(err) => return Err(err),
-        }
-
         let base_socket = bind_traversal_udp_socket()?;
 
         let observation = observe_traversal_addresses(

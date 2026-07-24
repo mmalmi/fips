@@ -468,6 +468,55 @@ async fn duplicate_connect_request_reports_already_active() {
 }
 
 #[tokio::test]
+async fn authenticated_mesh_traversal_does_not_require_nostr_advert() {
+    let discovery = Arc::new(NostrDiscovery::new_for_test_with_config(
+        NostrDiscoveryConfig {
+            stun_servers: Vec::new(),
+            share_local_candidates: true,
+            attempt_timeout_secs: 5,
+            ..Default::default()
+        },
+    ));
+    let peer_npub = nostr::Keys::generate()
+        .public_key()
+        .to_bech32()
+        .expect("peer npub");
+
+    assert!(
+        discovery
+            .request_connect_with_mesh_signaling(
+                PeerConfig::new(peer_npub.clone(), "udp", "nat"),
+                true,
+            )
+            .await,
+        "authenticated traversal request should start"
+    );
+
+    let signal = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let Some(signal) = discovery.drain_mesh_signals().await.into_iter().next() {
+                break signal;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("mesh traversal must not wait for a Nostr advert");
+    assert!(
+        matches!(
+            signal,
+            MeshTraversalSignal::Offer {
+                peer_npub: ref signal_peer_npub,
+                ..
+            } if signal_peer_npub == &peer_npub
+        ),
+        "authenticated session should carry the traversal offer"
+    );
+
+    discovery.shutdown().await.expect("shutdown discovery");
+}
+
+#[tokio::test]
 async fn distinct_incoming_offer_attempts_are_not_peer_rate_limited() {
     let discovery = NostrDiscovery::new_for_test();
 
