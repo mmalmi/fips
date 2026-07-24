@@ -462,6 +462,59 @@ async fn refresh_peer_paths_redials_active_peer_on_same_known_candidate() {
 }
 
 #[tokio::test]
+async fn refresh_peer_paths_continues_after_an_unreachable_peer() {
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let unreachable_full = Identity::generate();
+    let mut unreachable = auto_connect_peer(unreachable_full.npub(), "127.0.0.1:8");
+    unreachable.addresses.clear();
+
+    let (reachable_full, reachable_identity) = peer_identity_for_outbound_refresh_owner(&node);
+    let reachable_node_addr = *reachable_identity.node_addr();
+    let current_addr = TransportAddr::from_string("127.0.0.1:9");
+    let old_link_id = LinkId::new(7);
+    let mut active_peer = ActivePeer::new(reachable_identity, old_link_id, 1_000);
+    active_peer.set_current_addr(transport_id, &current_addr);
+    node.peers.insert(reachable_node_addr, active_peer);
+
+    let reachable = auto_connect_peer(reachable_full.npub(), "127.0.0.1:9");
+    node.config.peers = vec![unreachable.clone(), reachable.clone()];
+
+    let refreshed = node
+        .refresh_peer_paths(vec![unreachable.npub, reachable.npub])
+        .await
+        .unwrap();
+
+    assert_eq!(refreshed, 1);
+    assert_eq!(
+        node.connection_count(),
+        1,
+        "an unreachable peer must not prevent later direct probes"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
 async fn update_peers_marks_pruned_private_active_endpoint_stale() {
     let mut node = make_node();
     let (packet_tx, packet_rx) = packet_channel(64);

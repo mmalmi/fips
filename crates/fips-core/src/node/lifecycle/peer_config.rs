@@ -358,14 +358,32 @@ impl Node {
             }
 
             let attempted = if self.peers.contains_key(&node_addr) {
-                self.initiate_active_peer_direct_refresh_connection(&peer_config)
-                    .await?
+                match self
+                    .initiate_active_peer_direct_refresh_connection(&peer_config)
+                    .await
+                {
+                    Ok(attempted) => attempted,
+                    Err(error) => {
+                        self.schedule_retry_after_error(node_addr, now_ms, &error);
+                        debug!(
+                            peer = %identity.short_npub(),
+                            error = %error,
+                            "Active peer direct-path refresh did not start"
+                        );
+                        false
+                    }
+                }
             } else {
                 match self.initiate_peer_connection(&peer_config).await {
                     Ok(()) => true,
                     Err(error) => {
                         self.schedule_retry_after_error(node_addr, now_ms, &error);
-                        return Err(error);
+                        debug!(
+                            peer = %identity.short_npub(),
+                            error = %error,
+                            "Missing peer direct-path refresh did not start"
+                        );
+                        false
                     }
                 }
             };
