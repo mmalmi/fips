@@ -214,6 +214,7 @@ const RELAY_STARTUP_OP_TIMEOUT: Duration = Duration::from_secs(5);
 const ADVERT_PUBLISH_TIMEOUT: Duration = Duration::from_secs(10);
 const ADVERT_PUBLISH_RETRY_INITIAL: Duration = Duration::from_secs(2);
 const ADVERT_PUBLISH_RETRY_MAX: Duration = Duration::from_secs(30);
+const MESH_SIGNAL_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
 fn next_advert_publish_retry_delay(current: Duration) -> Duration {
     current.saturating_mul(2).min(ADVERT_PUBLISH_RETRY_MAX)
@@ -251,6 +252,14 @@ impl AdvertRelayConfig {
     }
 }
 
+#[derive(Clone)]
+struct CachedMeshTraversalAnswer {
+    offer: TraversalOffer,
+    sender_npub: String,
+    answer: TraversalAnswer,
+    expires_at_ms: u64,
+}
+
 pub struct NostrDiscovery {
     client: Client,
     keys: nostr::Keys,
@@ -263,6 +272,7 @@ pub struct NostrDiscovery {
     local_advert: RwLock<Option<OverlayAdvert>>,
     current_advert_event_id: RwLock<Option<EventId>>,
     pending_answers: Mutex<HashMap<String, oneshot::Sender<SignalEnvelope<TraversalAnswer>>>>,
+    answered_offers: Mutex<HashMap<String, CachedMeshTraversalAnswer>>,
     active_initiators: Mutex<HashSet<NostrPeerKey>>,
     active_refetches: Mutex<HashSet<NostrPeerKey>>,
     seen_sessions: Mutex<HashMap<String, u64>>,
@@ -375,6 +385,7 @@ impl NostrDiscovery {
             local_advert: RwLock::new(None),
             current_advert_event_id: RwLock::new(None),
             pending_answers: Mutex::new(HashMap::new()),
+            answered_offers: Mutex::new(HashMap::new()),
             active_initiators: Mutex::new(HashSet::new()),
             active_refetches: Mutex::new(HashSet::new()),
             seen_sessions: Mutex::new(HashMap::new()),

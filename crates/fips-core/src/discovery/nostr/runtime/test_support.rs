@@ -50,6 +50,7 @@ impl NostrDiscovery {
             local_advert: RwLock::new(None),
             current_advert_event_id: RwLock::new(None),
             pending_answers: Mutex::new(HashMap::new()),
+            answered_offers: Mutex::new(HashMap::new()),
             active_initiators: Mutex::new(HashSet::new()),
             active_refetches: Mutex::new(HashSet::new()),
             seen_sessions: Mutex::new(HashMap::new()),

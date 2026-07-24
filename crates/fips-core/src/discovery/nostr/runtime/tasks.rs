@@ -28,6 +28,7 @@ impl NostrDiscovery {
             let _ = task.await;
         }
         self.pending_answers.lock().await.clear();
+        self.answered_offers.lock().await.clear();
         self.active_initiators.lock().await.clear();
         self.active_refetches.lock().await.clear();
 

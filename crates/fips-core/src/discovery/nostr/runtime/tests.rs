@@ -943,3 +943,135 @@ async fn mesh_answer_resolves_pending_offer_without_nostr_event() {
     assert_eq!(envelope.payload, answer);
     assert_eq!(envelope.sender_npub, "npub1peer");
 }
+
+#[tokio::test(start_paused = true)]
+async fn mesh_offer_retries_until_answer_arrives() {
+    let discovery = Arc::new(NostrDiscovery::new_for_test());
+    let peer_npub = nostr::Keys::generate()
+        .public_key()
+        .to_bech32()
+        .expect("peer npub");
+    let offer = TraversalOffer {
+        message_type: "offer".to_string(),
+        session_id: "retry-session".to_string(),
+        issued_at: 1,
+        expires_at: u64::MAX,
+        nonce: "retry-nonce".to_string(),
+        sender_npub: discovery.npub.clone(),
+        recipient_npub: peer_npub.clone(),
+        reflexive_address: None,
+        local_addresses: Vec::new(),
+        stun_server: None,
+    };
+    let answer = TraversalAnswer {
+        message_type: "answer".to_string(),
+        session_id: offer.session_id.clone(),
+        issued_at: 1,
+        expires_at: u64::MAX,
+        nonce: "answer-nonce".to_string(),
+        sender_npub: peer_npub.clone(),
+        recipient_npub: discovery.npub.clone(),
+        in_reply_to: offer.nonce.clone(),
+        accepted: true,
+        reflexive_address: None,
+        local_addresses: Vec::new(),
+        stun_server: None,
+        punch: None,
+        reason: None,
+        offer_received_at: None,
+    };
+    let (tx, rx) = oneshot::channel();
+    let runtime = Arc::clone(&discovery);
+    let waiting_offer = offer.clone();
+    let waiting_peer = peer_npub.clone();
+    let wait = tokio::spawn(async move {
+        runtime
+            .wait_for_mesh_traversal_answer(&waiting_peer, &waiting_offer, rx)
+            .await
+    });
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(MESH_SIGNAL_RETRY_INTERVAL).await;
+    tokio::task::yield_now().await;
+
+    let signals = discovery.drain_mesh_signals().await;
+    assert_eq!(signals.len(), 1);
+    match &signals[0] {
+        MeshTraversalSignal::Offer {
+            peer_npub: repeated_peer,
+            offer: repeated_offer,
+        } => {
+            assert_eq!(repeated_peer, &peer_npub);
+            assert_eq!(repeated_offer, &offer);
+        }
+        MeshTraversalSignal::Answer { .. } => panic!("expected repeated offer"),
+    }
+
+    assert!(
+        tx.send(SignalEnvelope {
+            payload: answer.clone(),
+            sender_npub: peer_npub,
+        })
+        .is_ok()
+    );
+    let received = wait.await.expect("wait task").expect("mesh answer");
+    assert_eq!(received.payload, answer);
+}
+
+#[tokio::test]
+async fn duplicate_mesh_offer_replays_cached_answer() {
+    let discovery = Arc::new(NostrDiscovery::new_for_test());
+    let sender_npub = nostr::Keys::generate()
+        .public_key()
+        .to_bech32()
+        .expect("peer npub");
+    let offer = TraversalOffer {
+        message_type: "offer".to_string(),
+        session_id: "cached-session".to_string(),
+        issued_at: now_ms(),
+        expires_at: now_ms() + 60_000,
+        nonce: "cached-offer-nonce".to_string(),
+        sender_npub: sender_npub.clone(),
+        recipient_npub: discovery.npub.clone(),
+        reflexive_address: None,
+        local_addresses: Vec::new(),
+        stun_server: None,
+    };
+    let answer = TraversalAnswer {
+        message_type: "answer".to_string(),
+        session_id: offer.session_id.clone(),
+        issued_at: now_ms(),
+        expires_at: now_ms() + 60_000,
+        nonce: "cached-answer-nonce".to_string(),
+        sender_npub: discovery.npub.clone(),
+        recipient_npub: sender_npub.clone(),
+        in_reply_to: offer.nonce.clone(),
+        accepted: false,
+        reflexive_address: None,
+        local_addresses: Vec::new(),
+        stun_server: None,
+        punch: None,
+        reason: Some("test".to_string()),
+        offer_received_at: Some(now_ms()),
+    };
+    discovery
+        .cache_mesh_traversal_answer(&offer, &sender_npub, &answer)
+        .await;
+
+    discovery
+        .receive_mesh_traversal_offer(offer, sender_npub.clone())
+        .await;
+
+    let signals = discovery.drain_mesh_signals().await;
+    assert_eq!(signals.len(), 1);
+    match &signals[0] {
+        MeshTraversalSignal::Answer {
+            peer_npub,
+            answer: replayed,
+        } => {
+            assert_eq!(peer_npub, &sender_npub);
+            assert_eq!(replayed, &answer);
+        }
+        MeshTraversalSignal::Offer { .. } => panic!("expected cached answer"),
+    }
+}

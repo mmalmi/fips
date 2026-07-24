@@ -143,17 +143,14 @@ impl NostrDiscovery {
             "traversal: offer queued on authenticated FIPS session"
         );
 
-        let answer = match tokio::time::timeout(signal_answer_timeout(&self.config), rx).await {
-            Ok(Ok(answer)) => answer,
-            Ok(Err(_)) => {
+        let answer = match self
+            .wait_for_mesh_traversal_answer(&peer_config.npub, &offer, rx)
+            .await
+        {
+            Ok(answer) => answer,
+            Err(error) => {
                 let _ = self.pending_answers.lock().await.remove(&offer.nonce);
-                return Err(BootstrapError::Protocol(
-                    "answer channel closed".to_string(),
-                ));
-            }
-            Err(_) => {
-                let _ = self.pending_answers.lock().await.remove(&offer.nonce);
-                return Err(BootstrapError::SignalTimeout(peer_config.npub));
+                return Err(error);
             }
         };
 
@@ -247,6 +244,52 @@ impl NostrDiscovery {
         )
     }
 
+    pub(super) async fn wait_for_mesh_traversal_answer(
+        &self,
+        peer_npub: &str,
+        offer: &TraversalOffer,
+        mut rx: oneshot::Receiver<SignalEnvelope<TraversalAnswer>>,
+    ) -> Result<SignalEnvelope<TraversalAnswer>, BootstrapError> {
+        let deadline = tokio::time::sleep(signal_answer_timeout(&self.config));
+        tokio::pin!(deadline);
+        let mut retry = tokio::time::interval_at(
+            tokio::time::Instant::now() + MESH_SIGNAL_RETRY_INTERVAL,
+            MESH_SIGNAL_RETRY_INTERVAL,
+        );
+        retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            tokio::select! {
+                answer = &mut rx => {
+                    return answer.map_err(|_| {
+                        BootstrapError::Protocol("answer channel closed".to_string())
+                    });
+                }
+                () = &mut deadline => {
+                    return Err(BootstrapError::SignalTimeout(peer_npub.to_string()));
+                }
+                _ = retry.tick() => {
+                    if !self
+                        .emit_mesh_signal(MeshTraversalSignal::Offer {
+                            peer_npub: peer_npub.to_string(),
+                            offer: offer.clone(),
+                        })
+                        .await
+                    {
+                        return Err(BootstrapError::Protocol(
+                            "FIPS traversal offer queue closed".to_string(),
+                        ));
+                    }
+                    trace!(
+                        peer = %short_npub(peer_npub),
+                        session = %short_id(&offer.session_id),
+                        "traversal: repeated unanswered offer on authenticated FIPS session"
+                    );
+                }
+            }
+        }
+    }
+
     pub(crate) async fn receive_mesh_traversal_answer(
         &self,
         answer: TraversalAnswer,
@@ -290,6 +333,18 @@ impl NostrDiscovery {
                 peer = %short_npub(&sender_npub),
                 session = %short_id(&offer.session_id),
                 "traversal: ignoring mesh offer with mismatched type or recipient"
+            );
+            return;
+        }
+
+        if self
+            .replay_cached_mesh_traversal_answer(&offer, &sender_npub)
+            .await
+        {
+            debug!(
+                peer = %short_npub(&sender_npub),
+                session = %short_id(&offer.session_id),
+                "traversal: replayed cached answer for duplicate mesh offer"
             );
             return;
         }
@@ -409,6 +464,8 @@ impl NostrDiscovery {
             accepted.then(|| self.punch_hint()),
             Some(offer_received_at),
         );
+        self.cache_mesh_traversal_answer(&offer, &sender_npub, &answer)
+            .await;
         if !self
             .emit_mesh_signal(MeshTraversalSignal::Answer {
                 peer_npub: sender_npub.clone(),
@@ -470,5 +527,65 @@ impl NostrDiscovery {
         }
 
         Ok(())
+    }
+
+    pub(super) async fn cache_mesh_traversal_answer(
+        &self,
+        offer: &TraversalOffer,
+        sender_npub: &str,
+        answer: &TraversalAnswer,
+    ) {
+        let cap = self.config.seen_sessions_max_entries;
+        if cap == 0 {
+            return;
+        }
+        let now = now_ms();
+        let expires_at_ms = offer
+            .expires_at
+            .min(now.saturating_add(signal_answer_timeout(&self.config).as_millis() as u64));
+        let mut cache = self.answered_offers.lock().await;
+        cache.retain(|_, cached| cached.expires_at_ms > now);
+        if cache.len() >= cap && !cache.contains_key(&offer.session_id) {
+            let oldest = cache
+                .iter()
+                .min_by_key(|(_, cached)| cached.expires_at_ms)
+                .map(|(session_id, _)| session_id.clone());
+            if let Some(session_id) = oldest {
+                cache.remove(&session_id);
+            }
+        }
+        cache.insert(
+            offer.session_id.clone(),
+            CachedMeshTraversalAnswer {
+                offer: offer.clone(),
+                sender_npub: sender_npub.to_string(),
+                answer: answer.clone(),
+                expires_at_ms,
+            },
+        );
+    }
+
+    async fn replay_cached_mesh_traversal_answer(
+        &self,
+        offer: &TraversalOffer,
+        sender_npub: &str,
+    ) -> bool {
+        let now = now_ms();
+        let answer = {
+            let mut cache = self.answered_offers.lock().await;
+            cache.retain(|_, cached| cached.expires_at_ms > now);
+            cache.get(&offer.session_id).and_then(|cached| {
+                (cached.sender_npub == sender_npub && cached.offer == *offer)
+                    .then(|| cached.answer.clone())
+            })
+        };
+        let Some(answer) = answer else {
+            return false;
+        };
+        self.emit_mesh_signal(MeshTraversalSignal::Answer {
+            peer_npub: sender_npub.to_string(),
+            answer,
+        })
+        .await
     }
 }
