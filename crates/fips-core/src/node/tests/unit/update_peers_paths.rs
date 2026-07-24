@@ -794,7 +794,7 @@ async fn healthy_websocket_upgrade_skips_bootstrap_redial_and_unadvertised_udp_n
 }
 
 #[tokio::test]
-async fn configured_direct_refresh_ignores_traversal_cooldown_for_mesh_signal() {
+async fn configured_direct_refresh_waits_for_mesh_route_then_ignores_traversal_cooldown() {
     use crate::config::NostrDiscoveryPolicy;
 
     let peer_identity = Identity::generate();
@@ -827,13 +827,30 @@ async fn configured_direct_refresh_ignores_traversal_cooldown_for_mesh_signal() 
     node.nostr_discovery = Some(bootstrap.clone());
 
     assert!(
+        !node.request_nostr_bootstrap(&peer_config).await,
+        "configuration authorizes mesh signaling but must not start traversal before a route can carry it"
+    );
+    assert_eq!(
+        bootstrap.active_initiator_count_for_test().await,
+        0,
+        "an unsendable offer must not spawn a traversal task that will time out and poison cooldown"
+    );
+
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+    node.peers.insert(
+        peer_addr,
+        ActivePeer::new(peer, LinkId::new(7), Node::now_ms()),
+    );
+
+    assert!(
         node.request_nostr_bootstrap(&peer_config).await,
-        "configured direct refresh should still send a call-me-maybe style mesh/Nostr request"
+        "an authenticated mesh route should immediately carry direct negotiation"
     );
     assert_eq!(
         bootstrap.active_initiator_count_for_test().await,
         1,
-        "cooldown must not suppress immediate direct refresh probing for configured peers"
+        "cooldown must not suppress direct refresh once the mesh route is ready"
     );
 
     let mut mobile_peer = peer_config;
@@ -876,15 +893,16 @@ async fn unconfigured_nat_advert_without_fips_path_does_not_start_signaling() {
 }
 
 #[tokio::test]
-async fn mesh_signal_warms_session_instead_of_dropping_without_established_session() {
+async fn mesh_signal_warms_session_over_existing_multihop_route() {
     use super::spanning_tree::{run_tree_test, verify_tree_convergence};
     use crate::discovery::nostr::{MeshTraversalSignal, TraversalOffer};
 
-    let mut nodes = run_tree_test(2, &[(0, 1)], false).await;
+    let mut nodes = run_tree_test(3, &[(0, 1), (1, 2)], false).await;
     verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
 
-    let peer_node_addr = *nodes[1].node.node_addr();
-    let peer_npub = nodes[1].node.identity().npub();
+    let peer_node_addr = *nodes[2].node.node_addr();
+    let peer_npub = nodes[2].node.identity().npub();
     let peer_config = crate::config::PeerConfig {
         npub: peer_npub.clone(),
         alias: None,

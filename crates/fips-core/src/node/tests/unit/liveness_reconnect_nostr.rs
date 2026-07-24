@@ -197,7 +197,7 @@ async fn poll_nostr_discovery_established_fresh_bootstrap_data_skips_redundant_t
 }
 
 #[test]
-fn mesh_signaling_allows_configured_roster_peer_without_established_session() {
+fn mesh_signaling_authorizes_configured_roster_peer_without_established_session() {
     use crate::node::session::{EndToEndState, SessionEntry};
     use crate::noise::HandshakeState;
 
@@ -216,8 +216,8 @@ fn mesh_signaling_allows_configured_roster_peer_without_established_session() {
     let mut node = Node::new(config).expect("node");
 
     assert!(
-        node.mesh_signaling_allowed_for_peer(&peer_config),
-        "configured roster peers should be allowed to use mesh signaling before the end-to-end session is warm"
+        node.mesh_signaling_authorized_for_peer(&peer_config),
+        "configured roster peers should be authorized for mesh signaling before the end-to-end session is warm"
     );
 
     let mut initiator =
@@ -245,7 +245,7 @@ fn mesh_signaling_allows_configured_roster_peer_without_established_session() {
         ),
     );
 
-    assert!(node.mesh_signaling_allowed_for_peer(&peer_config));
+    assert!(node.mesh_signaling_authorized_for_peer(&peer_config));
     assert!(
         !node
             .configured_discovery_fallback_transit(&peer_addr)
@@ -255,7 +255,7 @@ fn mesh_signaling_allows_configured_roster_peer_without_established_session() {
 
     let unconfigured = Identity::generate();
     let unconfigured_peer = crate::config::PeerConfig::new(unconfigured.npub(), "udp", "nat");
-    assert!(!node.mesh_signaling_allowed_for_peer(&unconfigured_peer));
+    assert!(!node.mesh_signaling_authorized_for_peer(&unconfigured_peer));
 }
 
 async fn craft_and_send_msg1(

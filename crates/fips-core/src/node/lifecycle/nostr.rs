@@ -105,7 +105,10 @@ impl Node {
         best_existing.min(DEFAULT_ADDRESS_PRIORITY)
     }
 
-    pub(in crate::node) async fn request_nostr_bootstrap(&self, peer_config: &PeerConfig) -> bool {
+    pub(in crate::node) async fn request_nostr_bootstrap(
+        &mut self,
+        peer_config: &PeerConfig,
+    ) -> bool {
         if !self.config.node.discovery.nostr.enabled
             || self.config.node.discovery.nostr.policy
                 == crate::config::NostrDiscoveryPolicy::Disabled
@@ -128,12 +131,22 @@ impl Node {
         }
         bootstrap.set_outbound_admission(self.open_discovery_outbound_admission_check());
         bootstrap.set_direct_refresh_admission(self.outbound_direct_refresh_admission_check());
-        let mesh_signaling_allowed = self.mesh_signaling_allowed_for_peer(peer_config);
-        if !mesh_signaling_allowed {
+        if !self.mesh_signaling_authorized_for_peer(peer_config) {
             debug!(
                 npub = %peer_config.npub,
-                "Deferring NAT traversal until an authenticated FIPS signaling path exists"
+                "Rejecting NAT traversal without an authorized FIPS signaling peer"
             );
+            return false;
+        }
+        let Ok(peer_identity) = PeerIdentity::from_npub(&peer_config.npub) else {
+            return false;
+        };
+        if self.find_next_hop(peer_identity.node_addr()).is_none() {
+            debug!(
+                npub = %peer_config.npub,
+                "Deferring NAT traversal until an authenticated FIPS signaling route exists"
+            );
+            self.maybe_initiate_lookup(peer_identity.node_addr()).await;
             return false;
         }
         let started = bootstrap
@@ -142,13 +155,11 @@ impl Node {
         if started {
             info!(
                 npub = %peer_config.npub,
-                mesh_signaling_allowed,
                 "Started background UDP NAT traversal attempt"
             );
         } else {
             debug!(
                 npub = %peer_config.npub,
-                mesh_signaling_allowed,
                 "Background UDP NAT traversal attempt already in progress"
             );
         }
@@ -156,10 +167,10 @@ impl Node {
     }
 
     pub(super) fn nostr_cooldown_applies_to_peer_config(&self, peer_config: &PeerConfig) -> bool {
-        !peer_config.auto_reconnect || !self.mesh_signaling_allowed_for_peer(peer_config)
+        !peer_config.auto_reconnect || !self.mesh_signaling_authorized_for_peer(peer_config)
     }
 
-    pub(in crate::node) fn mesh_signaling_allowed_for_peer(
+    pub(in crate::node) fn mesh_signaling_authorized_for_peer(
         &self,
         peer_config: &PeerConfig,
     ) -> bool {
