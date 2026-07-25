@@ -31,6 +31,16 @@ const DNS_CACHE_TTL: Duration = Duration::from_secs(60);
 /// reports that the local route/source address is no longer usable.
 const LOCAL_ROUTE_SOCKET_RECOVERY_COOLDOWN: Duration = Duration::from_secs(5);
 
+/// Short, bounded waits for an interface and its bind address to settle after
+/// an observed network change. The whole sequence completes in two seconds;
+/// later network events can retry a carrier that remains unavailable.
+const CONFIGURED_SOCKET_REBIND_RETRY_DELAYS: [Duration; 4] = [
+    Duration::from_millis(50),
+    Duration::from_millis(150),
+    Duration::from_millis(450),
+    Duration::from_millis(1_350),
+];
+
 /// `/proc/net/snmp` describes the whole Linux network namespace and is only a
 /// diagnostic supplement to the socket's kernel drop counter. Sampling it on
 /// every one-second node tick spends measurable idle CPU parsing the same
@@ -741,7 +751,9 @@ impl UdpTransport {
     /// evidence that the underlay address or route changed. Active FMP/FSP
     /// sessions keep the same transport ID and pick up the new live socket.
     pub(crate) async fn rebind_after_network_change(&mut self) -> Result<bool, TransportError> {
-        if self.socket_origin != UdpSocketOrigin::Configured || !self.state.is_operational() {
+        if self.socket_origin != UdpSocketOrigin::Configured
+            || !(self.state.is_operational() || self.state.can_start())
+        {
             return Ok(false);
         }
 
@@ -757,12 +769,31 @@ impl UdpTransport {
     }
 
     async fn rebuild_configured_socket(&mut self) -> Result<(), TransportError> {
-        self.stop_async().await?;
-        if let Err(error) = self.start_async().await {
-            self.state = TransportState::Failed;
-            return Err(error);
+        if self.state.is_operational() {
+            self.stop_async().await?;
         }
-        Ok(())
+
+        for (attempt, retry_delay) in CONFIGURED_SOCKET_REBIND_RETRY_DELAYS
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            match self.start_async().await {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    warn!(
+                        transport_id = %self.transport_id,
+                        attempt = attempt + 1,
+                        retry_delay_ms = retry_delay.as_millis(),
+                        %error,
+                        "Configured UDP carrier rebind failed; retrying"
+                    );
+                    tokio::time::sleep(retry_delay).await;
+                }
+            }
+        }
+
+        self.start_async().await
     }
 
     /// Send a packet asynchronously.

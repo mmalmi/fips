@@ -149,6 +149,37 @@ async fn configured_udp_transport_rebinds_on_explicit_network_change_during_reco
 }
 
 #[tokio::test]
+async fn explicit_network_rebind_recovers_a_failed_configured_carrier() {
+    let (owner_tx, _owner_rx) = packet_channel(100);
+    let mut owner = UdpTransport::new(TransportId::new(1), None, make_config(0), owner_tx);
+    owner.start_exclusive_async().await.unwrap();
+    let owner_addr = owner.local_addr().unwrap();
+
+    let (candidate_tx, _candidate_rx) = packet_channel(100);
+    let mut candidate = UdpTransport::new(
+        TransportId::new(2),
+        None,
+        make_config(owner_addr.port()),
+        candidate_tx,
+    );
+    assert!(candidate.start_async().await.is_err());
+    assert_eq!(candidate.state(), TransportState::Failed);
+
+    let release_owner = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(75)).await;
+        owner.stop_async().await.unwrap();
+    });
+    assert!(
+        candidate.rebind_after_network_change().await.unwrap(),
+        "a positive network-change event must retry a failed configured carrier while the interface settles"
+    );
+    release_owner.await.unwrap();
+    assert_eq!(candidate.state(), TransportState::Up);
+    assert_eq!(candidate.local_addr(), Some(owner_addr));
+    candidate.stop_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn test_double_start_fails() {
     let (tx, _rx) = packet_channel(100);
     let mut transport = UdpTransport::new(TransportId::new(1), None, make_config(0), tx);
