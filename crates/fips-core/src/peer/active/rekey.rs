@@ -38,9 +38,9 @@ impl ActivePeer {
         self.rekey_in_progress = true;
     }
 
-    /// Check if rekey initiation is dampened (peer recently sent us msg1).
+    /// Check if rekey initiation is dampened after recent rekey activity.
     pub fn is_rekey_dampened(&self, dampening_secs: u64) -> bool {
-        match self.last_peer_rekey {
+        match self.last_rekey_dampening_at {
             Some(t) => t.elapsed().as_secs() < dampening_secs,
             None => false,
         }
@@ -48,7 +48,7 @@ impl ActivePeer {
 
     /// Record that the peer initiated a rekey (for dampening).
     pub fn record_peer_rekey(&mut self) {
-        self.last_peer_rekey = Some(Instant::now());
+        self.last_rekey_dampening_at = Some(Instant::now());
     }
 
     /// Get the pending new session's our_index.
@@ -157,6 +157,7 @@ impl ActivePeer {
         self.rekey_in_progress = false;
         self.rekey_msg1_resend_count = 0;
         self.rekey_jitter_secs = draw_rekey_jitter();
+        self.last_rekey_dampening_at = Some(Instant::now());
         self.last_heartbeat_sent = None;
         self.reset_replay_suppressed();
 
@@ -193,6 +194,7 @@ impl ActivePeer {
         self.rekey_in_progress = false;
         self.rekey_msg1_resend_count = 0;
         self.rekey_jitter_secs = draw_rekey_jitter();
+        self.last_rekey_dampening_at = Some(Instant::now());
         self.last_heartbeat_sent = None;
         self.reset_replay_suppressed();
 

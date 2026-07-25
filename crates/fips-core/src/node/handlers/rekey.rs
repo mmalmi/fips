@@ -23,7 +23,7 @@ const FSP_DRAIN_WINDOW_SECS: u64 = 45;
 
 /// Suppress local rekey initiation for this long after receiving
 /// a peer's rekey msg1.
-const REKEY_DAMPENING_SECS: u64 = 30;
+pub(in crate::node) const REKEY_DAMPENING_SECS: u64 = 30;
 
 /// Delay FMP initiator cutover after receiving msg2. The responder keeps the
 /// pending session until it authenticates the peer's K-bit flip.

@@ -207,8 +207,8 @@ pub struct ActivePeer {
     pending_rekey_completed_at: Option<Instant>,
     /// Whether a rekey is currently in progress (handshake sent, not yet complete).
     rekey_in_progress: bool,
-    /// When we last received a rekey msg1 from this peer (dampening).
-    last_peer_rekey: Option<Instant>,
+    /// Most recent peer-initiated rekey or authenticated K-bit cutover.
+    last_rekey_dampening_at: Option<Instant>,
     /// In-progress rekey: Noise handshake state (initiator only).
     rekey_handshake: Option<NoiseHandshakeState>,
     /// In-progress rekey: our new session index.
@@ -271,7 +271,7 @@ impl ActivePeer {
             pending_rekey_initiator: false,
             pending_rekey_completed_at: None,
             rekey_in_progress: false,
-            last_peer_rekey: None,
+            last_rekey_dampening_at: None,
             rekey_handshake: None,
             rekey_our_index: None,
             rekey_msg1: None,
@@ -349,7 +349,7 @@ impl ActivePeer {
             pending_rekey_initiator: false,
             pending_rekey_completed_at: None,
             rekey_in_progress: false,
-            last_peer_rekey: None,
+            last_rekey_dampening_at: None,
             rekey_handshake: None,
             rekey_our_index: None,
             rekey_msg1: None,

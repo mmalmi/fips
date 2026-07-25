@@ -7,6 +7,7 @@ pub(in crate::node) mod forwarding;
 mod handshake;
 mod mmp;
 mod rekey;
+pub(in crate::node) use rekey::REKEY_DAMPENING_SECS;
 mod rx_loop;
 pub(in crate::node) mod session;
 mod timeout;

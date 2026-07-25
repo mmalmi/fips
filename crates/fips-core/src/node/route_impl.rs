@@ -715,7 +715,10 @@ impl Node {
         // fallback affinity between the rekey cutover and the first direct FMP
         // return, so every authenticated recovery observation must release that
         // affinity before refreshing the FSP owner.
-        if !self.promoted_path_matches_configured_static_peer(dest) {
+        let authenticated_direct_udp = (self.active_peer_current_udp_candidate(dest).is_some()
+            || self.promoted_path_matches_configured_static_peer(dest))
+            && !self.active_peer_uses_bootstrap_transport(dest);
+        if !authenticated_direct_udp {
             return;
         }
 

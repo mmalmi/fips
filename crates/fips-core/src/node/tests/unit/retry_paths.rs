@@ -611,6 +611,63 @@ async fn direct_refresh_waits_for_fmp_drain_before_starting_another_rekey() {
     }
 }
 
+#[tokio::test]
+async fn direct_refresh_dampens_rekey_after_fmp_drain() {
+    let mut node = make_node();
+    let peer_full = Identity::generate();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(1);
+    let (conn, identity) =
+        make_completed_connection_for_identity(&mut node, link_id, transport_id, 1_000, &peer_full);
+    let node_addr = *identity.node_addr();
+    let peer_config = crate::config::PeerConfig::new(identity.npub(), "udp", "127.0.0.1:5000");
+
+    node.config.peers = vec![peer_config.clone()];
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, identity, 2_000).unwrap();
+    node.mark_session_direct_path_degraded(node_addr, Node::now_ms());
+
+    let pending_session = make_test_fmp_session(&node.identity, &peer_full, [0x03; 8], [0x04; 8]);
+    let peer = node.get_peer_mut(&node_addr).unwrap();
+    peer.set_pending_session(
+        pending_session,
+        SessionIndex::new(0x3030),
+        SessionIndex::new(0x4040),
+        true,
+    );
+    assert!(peer.cutover_to_new_session().is_some());
+    assert!(peer.complete_drain().is_some());
+
+    let (packet_tx, _packet_rx) = packet_channel(8);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("direct-retry".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    assert!(
+        node.initiate_active_peer_direct_refresh_connection(&peer_config)
+            .await
+            .unwrap(),
+        "the pending validation retry must remain scheduled during rekey dampening"
+    );
+    assert!(
+        !node.get_peer(&node_addr).unwrap().rekey_in_progress(),
+        "a recovery retry must not start another rekey immediately after the prior drain"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
 #[test]
 fn authenticated_direct_payload_recovery_abandons_obsolete_fmp_rekey() {
     let mut node = make_node();
@@ -686,6 +743,64 @@ fn fmp_rekey_cutover_does_not_validate_direct_fsp_payload() {
         node.retry_pending.contains_key(&node_addr),
         "direct probing must continue until FSP payload authenticates on the direct path"
     );
+}
+
+#[tokio::test]
+async fn authenticated_discovered_udp_recovery_releases_payload_hold_for_validation() {
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(1);
+    let (conn, identity) = make_completed_connection(&mut node, link_id, transport_id, 1_000);
+    let node_addr = *identity.node_addr();
+    let peer_config = crate::config::PeerConfig {
+        npub: identity.npub(),
+        alias: None,
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+
+    node.config.peers = vec![peer_config.clone()];
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, identity, 2_000).unwrap();
+    node.mark_session_direct_path_degraded(node_addr, Node::now_ms());
+    node.retry_pending
+        .insert(node_addr, super::super::retry::RetryState::new(peer_config));
+
+    let (packet_tx, _packet_rx) = packet_channel(8);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("discovered-direct".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    node.make_direct_payload_eligible_for_validation_after_fmp_recovery(&node_addr);
+
+    assert!(
+        node.session_direct_degradation
+            .has_pending_validation(&node_addr),
+        "authenticated FMP recovery must not itself validate FSP payload"
+    );
+    assert!(
+        !node.session_direct_path_degradation_active(&node_addr, Node::now_ms()),
+        "an authenticated discovered UDP carrier must be allowed to carry the direct FSP validation packet"
+    );
+    assert!(
+        node.retry_pending.contains_key(&node_addr),
+        "the retry remains until authenticated direct FSP payload completes validation"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
 }
 
 #[test]

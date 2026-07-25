@@ -89,6 +89,14 @@ impl Node {
                 if peer.is_draining() {
                     return Ok(true);
                 }
+                let dampening_secs = crate::node::handlers::REKEY_DAMPENING_SECS;
+                if peer.is_rekey_dampened(dampening_secs) {
+                    // The retry remains live, but a stale validation marker
+                    // must not rotate FMP epochs again as soon as the previous
+                    // drain ends. Periodic rekey uses the same dampening
+                    // window; recovery must not bypass it.
+                    return Ok(true);
+                }
             }
             if self.initiate_rekey(&peer_node_addr).await {
                 return Ok(true);
