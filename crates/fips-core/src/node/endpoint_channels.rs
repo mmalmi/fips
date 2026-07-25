@@ -264,6 +264,9 @@ pub(crate) enum NodeEndpointControlCommand {
         npubs: Vec<String>,
         response_tx: tokio::sync::oneshot::Sender<Result<usize, NodeError>>,
     },
+    RebindNetworkTransports {
+        response_tx: tokio::sync::oneshot::Sender<Result<usize, NodeError>>,
+    },
     RegisterIdentity {
         identity: crate::PeerIdentity,
         response_tx: tokio::sync::oneshot::Sender<bool>,

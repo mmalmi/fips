@@ -814,6 +814,26 @@ impl FipsEndpoint {
         }
     }
 
+    /// Rebind configured UDP carriers after an observed underlay change.
+    ///
+    /// The running node keeps authenticated peers and end-to-end sessions;
+    /// only the OS sockets that select the physical source address are
+    /// replaced. Call this before refreshing peer paths after a network roam.
+    pub async fn rebind_network_transports(&self) -> Result<usize, FipsEndpointError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        match self
+            .control(
+                "network transport rebind",
+                NodeEndpointControlCommand::RebindNetworkTransports { response_tx },
+                response_rx,
+            )
+            .await?
+        {
+            Ok(rebound) => Ok(rebound),
+            Err(error) => Err(FipsEndpointError::Node(error)),
+        }
+    }
+
     /// Register a DNS-resolved peer identity for subsequent IPv6 packet routing.
     ///
     /// This only populates the bounded identity cache. It does not configure,

@@ -725,11 +725,7 @@ impl UdpTransport {
         }
         self.last_local_route_socket_recovery = Some(now);
 
-        self.stop_async().await?;
-        if let Err(error) = self.start_async().await {
-            self.state = TransportState::Failed;
-            return Err(error);
-        }
+        self.rebuild_configured_socket().await?;
 
         info!(
             transport_id = %self.transport_id,
@@ -737,6 +733,36 @@ impl UdpTransport {
             "Rebuilt UDP transport after local route failure"
         );
         Ok(true)
+    }
+
+    /// Rebind the configured carrier after an observed network change.
+    ///
+    /// This bypasses reactive error cooldown because the caller has positive
+    /// evidence that the underlay address or route changed. Active FMP/FSP
+    /// sessions keep the same transport ID and pick up the new live socket.
+    pub(crate) async fn rebind_after_network_change(&mut self) -> Result<bool, TransportError> {
+        if self.socket_origin != UdpSocketOrigin::Configured || !self.state.is_operational() {
+            return Ok(false);
+        }
+
+        self.last_local_route_socket_recovery = Some(Instant::now());
+        self.rebuild_configured_socket().await?;
+
+        info!(
+            transport_id = %self.transport_id,
+            local_addr = %self.local_addr.map_or_else(|| "<unbound>".to_string(), |addr| addr.to_string()),
+            "Rebound configured UDP transport after network change"
+        );
+        Ok(true)
+    }
+
+    async fn rebuild_configured_socket(&mut self) -> Result<(), TransportError> {
+        self.stop_async().await?;
+        if let Err(error) = self.start_async().await {
+            self.state = TransportState::Failed;
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Send a packet asynchronously.

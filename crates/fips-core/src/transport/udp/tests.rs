@@ -123,6 +123,32 @@ async fn configured_udp_transport_recovers_socket_after_local_route_failure() {
 }
 
 #[tokio::test]
+async fn configured_udp_transport_rebinds_on_explicit_network_change_during_recovery_cooldown() {
+    let (tx, _rx) = packet_channel(100);
+    let mut transport = UdpTransport::new(TransportId::new(1), None, make_config(0), tx);
+
+    transport.start_async().await.unwrap();
+    assert!(transport.recover_local_route_socket().await.unwrap());
+    #[cfg(unix)]
+    let before = transport.send_snapshot().unwrap();
+
+    assert!(
+        transport.rebind_after_network_change().await.unwrap(),
+        "an observed network change must bypass reactive recovery cooldown"
+    );
+    assert_eq!(transport.state(), TransportState::Up);
+
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        let after = transport.send_snapshot().unwrap();
+        assert_ne!(before.socket.as_raw_fd(), after.socket.as_raw_fd());
+    }
+
+    transport.stop_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn test_double_start_fails() {
     let (tx, _rx) = packet_channel(100);
     let mut transport = UdpTransport::new(TransportId::new(1), None, make_config(0), tx);

@@ -1,6 +1,46 @@
 use super::*;
 
 #[tokio::test]
+async fn network_transport_rebind_preserves_peer_and_session_state() {
+    use crate::noise::HandshakeState;
+
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+    node.transports
+        .insert(transport_id, make_udp_transport_with_mtu(1, 1280).await);
+
+    let remote = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(remote.pubkey_full());
+    let remote_addr = TransportAddr::from_string("127.0.0.1:9");
+    let mut peer = ActivePeer::new(peer_identity, LinkId::new(1), 1_000);
+    peer.set_current_addr(transport_id, &remote_addr);
+    node.peers.insert(*remote.node_addr(), peer);
+
+    let session_remote = Identity::generate();
+    let session_addr = *session_remote.node_addr();
+    let handshake =
+        HandshakeState::new_initiator(node.identity.keypair(), session_remote.pubkey_full());
+    node.sessions.insert(
+        session_addr,
+        SessionEntry::new(
+            session_addr,
+            session_remote.pubkey_full(),
+            crate::node::session::EndToEndState::Initiating(handshake),
+            1_000,
+            true,
+        ),
+    );
+
+    assert_eq!(node.rebind_network_transports().await.unwrap(), 1);
+    assert!(node.peers.contains_key(remote.node_addr()));
+    assert!(node.sessions.get(&session_addr).is_some());
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
 async fn update_peers_preserves_input_priority_order() {
     let mut node = make_node();
     let first = Identity::generate();

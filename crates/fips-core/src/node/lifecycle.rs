@@ -342,6 +342,7 @@ fn interface_flags_allow_route_scope(flags: i32) -> bool {
 mod candidate_connect;
 mod control;
 mod discovery;
+mod network;
 mod nostr;
 mod nostr_advert;
 mod paths;
