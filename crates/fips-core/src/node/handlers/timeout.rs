@@ -323,13 +323,35 @@ impl Node {
                 Some((*addr, peer.clone()))
             })
             .collect();
+        let mut mesh_recoveries = Vec::new();
+        for addr in &timed_out {
+            if self.pending_session_traffic.has_traffic_for(addr) {
+                let selected_direct = self
+                    .find_next_hop(addr)
+                    .is_some_and(|peer| peer.node_addr() == addr);
+                mesh_recoveries.push((*addr, selected_direct));
+            }
+        }
 
         for addr in &timed_out {
             let name = self.peer_display_name(addr);
             info!(dest = %name, "Session handshake timed out, removing");
             self.remove_dataplane_fsp_owner(addr);
             self.sessions.remove(addr);
-            self.pending_session_traffic.remove_destination(addr);
+        }
+
+        // A carrier/session timeout is not a delivery decision. Keep the
+        // bounded pending payload queue and ask established mesh neighbors for
+        // another route while direct auto-connect recovery proceeds below.
+        for (addr, selected_direct) in mesh_recoveries {
+            if selected_direct {
+                // The FSP handshake just timed out over this carrier. Do not
+                // immediately feed the preserved payload back to the same
+                // apparently-healthy direct route; let a learned mesh route
+                // win while direct recovery continues independently.
+                self.mark_session_direct_path_degraded(addr, now_ms);
+            }
+            self.maybe_initiate_path_recovery_lookup(&addr).await;
         }
 
         for (peer_node_addr, peer_config) in direct_fallbacks {

@@ -161,6 +161,54 @@ async fn test_session_handshake_timeout() {
     );
 }
 
+#[tokio::test]
+async fn timed_out_session_preserves_payload_and_seeks_a_mesh_route() {
+    use crate::noise::HandshakeState;
+
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let destination = Identity::generate();
+    let dest_addr = *destination.node_addr();
+    add_direct_peer_for_identity(&mut node, &destination);
+    assert_eq!(
+        node.find_next_hop(&dest_addr).map(|peer| *peer.node_addr()),
+        Some(dest_addr),
+        "fixture must initially select the stale direct carrier"
+    );
+    let handshake =
+        HandshakeState::new_initiator(node.identity.keypair(), destination.pubkey_full());
+    node.sessions.insert(
+        dest_addr,
+        crate::node::session::SessionEntry::new(
+            dest_addr,
+            destination.pubkey_full(),
+            EndToEndState::Initiating(handshake),
+            1_000,
+            true,
+        ),
+    );
+    node.pending_session_traffic
+        .push_tun_packet(dest_addr, vec![0x60; 40], usize::MAX, usize::MAX);
+
+    let timeout_at = 1_000 + node.config.node.rate_limit.handshake_timeout_secs * 1_000 + 1;
+    node.resend_pending_session_handshakes(timeout_at).await;
+
+    assert!(node.sessions.get(&dest_addr).is_none());
+    assert!(
+        node.pending_session_traffic
+            .tun_packets_for(&dest_addr)
+            .is_some_and(|packets| packets.len() == 1),
+        "a failed carrier handshake must not discard queued user traffic"
+    );
+    assert!(
+        node.pending_lookups.contains_key(&dest_addr),
+        "handshake timeout must seek a fallback route through an established mesh neighbor"
+    );
+    assert!(
+        node.session_direct_path_degradation_active(&dest_addr, timeout_at),
+        "the failed direct carrier must yield to a discovered mesh route"
+    );
+}
+
 /// Test that session handshake timeout removes stale AwaitingMsg3 sessions.
 #[tokio::test]
 async fn test_session_awaiting_msg3_timeout() {
