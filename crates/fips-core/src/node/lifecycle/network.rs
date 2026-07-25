@@ -47,22 +47,25 @@ impl Node {
         }
 
         if !rebound_transport_ids.is_empty() {
-            let mut invalidated_peers = 0usize;
+            let mut invalidated_peers = Vec::new();
             for peer in self.peers.values_mut() {
                 if peer
                     .transport_id()
                     .is_some_and(|id| rebound_transport_ids.contains(&id))
                 {
+                    invalidated_peers.push(*peer.node_addr());
                     peer.mark_stale();
-                    invalidated_peers = invalidated_peers.saturating_add(1);
                 }
             }
+            let now_ms = Self::now_ms();
+            for peer_addr in &invalidated_peers {
+                self.mark_session_direct_path_degraded(*peer_addr, now_ms);
+            }
             debug!(
-                count = invalidated_peers,
-                "Marked rebound UDP peer tuples stale for authenticated path replacement"
+                count = invalidated_peers.len(),
+                "Invalidated direct session payload and rebound UDP peer tuples for authenticated path replacement"
             );
 
-            let now_ms = Self::now_ms();
             let due_connections: Vec<_> = self
                 .peers
                 .connection_iter()
