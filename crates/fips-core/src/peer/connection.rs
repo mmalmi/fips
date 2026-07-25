@@ -404,6 +404,19 @@ impl PeerConnection {
         self.next_resend_at_ms
     }
 
+    /// Make a scheduled outbound Msg1 retry immediately eligible.
+    ///
+    /// A positive local network-change event invalidates the route assumptions
+    /// behind the existing deadline and resend history. This preserves the
+    /// Noise state while granting the same candidate a fresh bounded resend
+    /// budget on the rebound carrier.
+    pub(crate) fn restart_handshake_resends(&mut self, now_ms: u64) {
+        if self.next_resend_at_ms > 0 {
+            self.resend_count = 0;
+            self.next_resend_at_ms = now_ms;
+        }
+    }
+
     /// Record a resend and schedule the next one.
     pub fn record_resend(&mut self, next_resend_at_ms: u64) {
         self.resend_count += 1;

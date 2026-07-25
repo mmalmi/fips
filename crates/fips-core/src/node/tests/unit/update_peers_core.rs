@@ -31,9 +31,69 @@ async fn network_transport_rebind_preserves_peer_and_session_state() {
         ),
     );
 
+    assert!(node.get_peer(remote.node_addr()).unwrap().is_healthy());
     assert_eq!(node.rebind_network_transports(None).await.unwrap(), 1);
-    assert!(node.peers.contains_key(remote.node_addr()));
+    let preserved_peer = node.get_peer(remote.node_addr()).unwrap();
+    assert!(
+        !preserved_peer.is_healthy() && preserved_peer.can_send(),
+        "a rebound carrier must preserve the peer but mark its old tuple stale so a freshly authenticated path can replace it"
+    );
     assert!(node.sessions.get(&session_addr).is_some());
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
+async fn network_transport_rebind_immediately_retries_inflight_udp_handshakes() {
+    let mut node = make_node();
+    node.config.node.rate_limit.handshake_max_resends = 1;
+    let transport_id = TransportId::new(1);
+    node.transports
+        .insert(transport_id, make_udp_transport_with_mtu(1, 1280).await);
+
+    let remote = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(remote.pubkey_full());
+    node.initiate_connection(
+        transport_id,
+        TransportAddr::from_string("127.0.0.1:9"),
+        peer_identity,
+    )
+    .await
+    .unwrap();
+
+    let link_id = node
+        .peers
+        .connection_keys()
+        .next()
+        .copied()
+        .expect("in-flight UDP handshake link");
+    let connection = node
+        .peers
+        .get_connection_mut(&link_id)
+        .expect("in-flight UDP handshake");
+    connection.record_resend(u64::MAX);
+    assert_eq!(connection.resend_count(), 1);
+    assert_eq!(connection.next_resend_at_ms(), u64::MAX);
+
+    assert_eq!(node.rebind_network_transports(None).await.unwrap(), 1);
+
+    let connection = node
+        .peers
+        .connection_values()
+        .next()
+        .expect("in-flight UDP handshake should remain allocated");
+    assert_eq!(
+        connection.resend_count(),
+        1,
+        "a rebound must grant one fresh resend instead of preserving the exhausted count"
+    );
+    assert_ne!(
+        connection.next_resend_at_ms(),
+        u64::MAX,
+        "positive network-change evidence must replace the old route's exhausted retry deadline"
+    );
 
     for transport in node.transports.values_mut() {
         transport.stop().await.ok();

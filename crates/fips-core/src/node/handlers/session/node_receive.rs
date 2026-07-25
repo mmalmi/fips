@@ -421,7 +421,6 @@ impl Node {
             fmp.packet_timestamp_ms,
         ) && arrived_from_source;
         let liveness_bookkeeping_allowed = arrived_from_source;
-        let packet_timestamp_ms = fmp.packet_timestamp_ms;
         let received_k_bit = fmp.fmp_flags & crate::node::wire::FLAG_KEY_EPOCH != 0;
         let _ = self.promote_dataplane_authenticated_pending_fmp_epoch(source_addr, received_k_bit);
         if liveness_bookkeeping_allowed {
@@ -453,10 +452,6 @@ impl Node {
                 && self
                     .session_direct_degradation
                     .has_pending_validation(source_addr)
-                && !self.session_direct_path_degradation_active(
-                    source_addr,
-                    packet_timestamp_ms,
-                )
                 && self
                     .peers
                     .get(source_addr)

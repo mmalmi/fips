@@ -176,7 +176,11 @@
         let peer_config = PeerConfig {
             npub: peer.npub(),
             alias: None,
-            addresses: vec![PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)],
+            addresses: vec![PeerAddress::with_priority(
+                "udp",
+                "198.51.100.20:61062",
+                1,
+            )],
             connect_policy: ConnectPolicy::AutoConnect,
             auto_reconnect: true,
             discovery_fallback_transit: true,
@@ -229,6 +233,39 @@
         assert!(
             !node.retry_pending.contains_key(&peer_addr),
             "fresh authenticated FMP return on the direct peer path should stop direct-probe churn"
+        );
+
+        node.mark_session_direct_path_degraded(peer_addr, Node::now_ms());
+        node.retry_pending
+            .insert(peer_addr, RetryState::new(node.config.peers[0].clone()));
+        assert!(node.session_direct_path_degradation_active(&peer_addr, Node::now_ms()));
+
+        node.record_authenticated_fmp_receive_facts(
+            crate::node::AuthenticatedFmpReceiveFacts {
+                source_peer: peer_identity,
+                transport_id,
+                remote_addr: &transport_addr,
+                packet_timestamp_ms: Node::now_ms(),
+                packet_len: 256,
+                fmp_counter: 12,
+                inner_timestamp_ms: 23,
+                fmp_flags: 0,
+            },
+            Some(&peer_addr),
+        );
+
+        assert!(
+            node.session_direct_degradation
+                .has_pending_validation(&peer_addr),
+            "direct FMP control must not stand in for authenticated FSP payload"
+        );
+        assert!(
+            !node.session_direct_path_degradation_active(&peer_addr, Node::now_ms()),
+            "authenticated direct FMP recovery must immediately release the payload hold for a direct validation packet"
+        );
+        assert!(
+            node.retry_pending.contains_key(&peer_addr),
+            "the bounded direct retry remains until authenticated direct FSP payload validates recovery"
         );
     }
 

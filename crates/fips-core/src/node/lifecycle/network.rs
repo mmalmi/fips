@@ -23,6 +23,7 @@ impl Node {
         }
 
         let mut rebound = 0usize;
+        let mut rebound_transport_ids = Vec::new();
 
         for (transport_id, transport) in &mut self.transports {
             let crate::transport::TransportHandle::Udp(udp) = transport else {
@@ -34,6 +35,7 @@ impl Node {
             {
                 Ok(true) => {
                     rebound = rebound.saturating_add(1);
+                    rebound_transport_ids.push(*transport_id);
                     info!(
                         transport_id = %transport_id,
                         "Rebound configured UDP carrier for network change"
@@ -41,6 +43,50 @@ impl Node {
                 }
                 Ok(false) => {}
                 Err(error) => return Err(NodeError::from_transport_error(error)),
+            }
+        }
+
+        if !rebound_transport_ids.is_empty() {
+            let mut invalidated_peers = 0usize;
+            for peer in self.peers.values_mut() {
+                if peer
+                    .transport_id()
+                    .is_some_and(|id| rebound_transport_ids.contains(&id))
+                {
+                    peer.mark_stale();
+                    invalidated_peers = invalidated_peers.saturating_add(1);
+                }
+            }
+            debug!(
+                count = invalidated_peers,
+                "Marked rebound UDP peer tuples stale for authenticated path replacement"
+            );
+
+            let now_ms = Self::now_ms();
+            let due_connections: Vec<_> = self
+                .peers
+                .connection_iter()
+                .filter(|(_, connection)| {
+                    connection.is_outbound()
+                        && connection
+                            .transport_id()
+                            .is_some_and(|id| rebound_transport_ids.contains(&id))
+                        && connection.handshake_state() == crate::peer::HandshakeState::SentMsg1
+                        && connection.handshake_msg1().is_some()
+                })
+                .map(|(link_id, _)| *link_id)
+                .collect();
+            for link_id in &due_connections {
+                if let Some(connection) = self.peers.get_connection_mut(link_id) {
+                    connection.restart_handshake_resends(now_ms);
+                }
+            }
+            self.resend_pending_handshakes(now_ms).await;
+            if !due_connections.is_empty() {
+                debug!(
+                    count = due_connections.len(),
+                    "Retried in-flight UDP handshakes on rebound carrier"
+                );
             }
         }
 
