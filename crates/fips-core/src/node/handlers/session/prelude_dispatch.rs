@@ -198,6 +198,7 @@ struct SessionDispatchFinish {
 struct SessionReceiveBatchCommit {
     previous_hops: Vec<NodeAddr>,
     direct_sources: Vec<NodeAddr>,
+    fallback_ingress: Vec<(NodeAddr, NodeAddr)>,
     retry_peers: Vec<NodeAddr>,
     pending_flush_sources: Vec<NodeAddr>,
 }
@@ -212,6 +213,7 @@ impl SessionReceiveBatchCommit {
     fn is_empty(&self) -> bool {
         self.previous_hops.is_empty()
             && self.direct_sources.is_empty()
+            && self.fallback_ingress.is_empty()
             && self.retry_peers.is_empty()
             && self.pending_flush_sources.is_empty()
     }
@@ -228,6 +230,13 @@ impl SessionReceiveBatchCommit {
             Self::push_unique(&mut self.direct_sources, completion.source_addr);
             completion.source_addr
         } else {
+            if !self
+                .fallback_ingress
+                .contains(&(completion.source_addr, completion.previous_hop_addr))
+            {
+                self.fallback_ingress
+                    .push((completion.source_addr, completion.previous_hop_addr));
+            }
             completion.previous_hop_addr
         };
         Self::push_unique(&mut self.retry_peers, retry_peer);
@@ -243,6 +252,7 @@ impl SessionReceiveBatchCommit {
     fn finish(self, node: &mut Node) -> Vec<NodeAddr> {
         if self.previous_hops.is_empty()
             && self.direct_sources.is_empty()
+            && self.fallback_ingress.is_empty()
             && self.retry_peers.is_empty()
             && self.pending_flush_sources.is_empty()
         {
@@ -263,6 +273,20 @@ impl SessionReceiveBatchCommit {
                 debug!(
                     src = %node.peer_display_name(&source_addr),
                     "Authenticated direct endpoint data restored direct payload routing"
+                );
+            }
+        }
+
+        for (source_addr, previous_hop_addr) in self.fallback_ingress {
+            if node.follow_authenticated_fallback_ingress_for_session_reply(
+                source_addr,
+                previous_hop_addr,
+                now_ms,
+            ) {
+                debug!(
+                    src = %node.peer_display_name(&source_addr),
+                    previous_hop = %node.peer_display_name(&previous_hop_addr),
+                    "Authenticated fallback application ingress moved the session reply path"
                 );
             }
         }

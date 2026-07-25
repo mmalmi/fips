@@ -109,6 +109,38 @@ impl Node {
         refreshed
     }
 
+    pub(in crate::node) fn follow_authenticated_fallback_ingress_for_session_reply(
+        &mut self,
+        source_addr: NodeAddr,
+        previous_hop_addr: NodeAddr,
+        now_ms: u64,
+    ) -> bool {
+        if source_addr == previous_hop_addr
+            || self.dataplane.fsp_owner_next_hop(&source_addr) != Some(source_addr)
+            || !self
+                .peers
+                .get(&source_addr)
+                .is_some_and(|peer| peer.can_send())
+            || !self
+                .peers
+                .get(&previous_hop_addr)
+                .is_some_and(|peer| peer.can_send())
+            || !self.dataplane_has_fmp_owner(&previous_hop_addr)
+        {
+            return false;
+        }
+
+        self.session_direct_degradation.mark_degraded(
+            source_addr,
+            now_ms,
+            SESSION_DIRECT_DEGRADED_HOLD_MS,
+        );
+        self.refresh_dataplane_fsp_owner_routes_via(
+            &source_addr,
+            Some(previous_hop_addr),
+        ) && self.dataplane.fsp_owner_next_hop(&source_addr) == Some(previous_hop_addr)
+    }
+
     pub(in crate::node) fn refresh_dataplane_fsp_owner_routes_after_fmp_owner_update(
         &mut self,
         next_hop_addr: &NodeAddr,

@@ -534,6 +534,82 @@
     }
 
     #[test]
+    fn authenticated_fallback_data_moves_direct_reply_owner_to_its_live_ingress() {
+        let local = Identity::generate();
+        let source = Identity::generate();
+        let source_addr = *source.node_addr();
+        let fallback = Identity::generate();
+        let fallback_addr = *fallback.node_addr();
+
+        let mut config = crate::config::Config::new();
+        config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;
+        let mut node = Node::with_identity(local, config).expect("node");
+
+        let direct_link = crate::transport::LinkId::new(1);
+        let (direct_connection, direct_identity) =
+            crate::node::tests::make_completed_connection_for_identity(
+                &mut node,
+                direct_link,
+                crate::transport::TransportId::new(1),
+                1_000,
+                &source,
+            );
+        node.add_connection(direct_connection).unwrap();
+        node.promote_connection(direct_link, direct_identity, 2_000)
+            .unwrap();
+        assert!(node.sync_dataplane_fmp_owner(&source_addr));
+
+        let fallback_link = crate::transport::LinkId::new(2);
+        let (fallback_connection, fallback_identity) =
+            crate::node::tests::make_completed_connection_for_identity(
+                &mut node,
+                fallback_link,
+                crate::transport::TransportId::new(2),
+                1_000,
+                &fallback,
+            );
+        node.add_connection(fallback_connection).unwrap();
+        node.promote_connection(fallback_link, fallback_identity, 2_000)
+            .unwrap();
+        assert!(node.sync_dataplane_fmp_owner(&fallback_addr));
+
+        node.sessions.insert(
+            source_addr,
+            established_entry(node.identity(), &source),
+        );
+        assert!(node.sync_dataplane_fsp_owner_from_current_session(&source_addr, 0));
+        assert_eq!(
+            node.dataplane.fsp_owner_next_hop(&source_addr),
+            Some(source_addr),
+            "fixture must start with replies pinned to the apparently healthy direct path"
+        );
+
+        let mut commit = SessionReceiveBatchCommit::default();
+        commit.push_receive_completion(SessionReceiveCompletion {
+            source_addr,
+            previous_hop_addr: fallback_addr,
+            direct_path: false,
+        });
+        let pending_flush = commit.finish(&mut node);
+
+        assert!(pending_flush.is_empty());
+        assert!(
+            node.session_direct_path_degradation_active(&source_addr, Node::now_ms()),
+            "authenticated application data on fallback is positive evidence that the direct session path cannot carry the reply"
+        );
+        assert_eq!(
+            node.dataplane.fsp_owner_next_hop(&source_addr),
+            Some(fallback_addr),
+            "the reply owner must immediately follow the authenticated live ingress instead of waiting for direct-link liveness expiry"
+        );
+        assert_eq!(
+            node.learned_route_table_snapshot(Node::now_ms()).route_count,
+            0,
+            "directional application ingress must remain reply affinity, not enter learned route rotation"
+        );
+    }
+
+    #[test]
     fn endpoint_data_batched_dispatch_reports_pending_flush_owner() {
         let local = Identity::generate();
         let peer = Identity::generate();
