@@ -1,6 +1,8 @@
 use super::*;
 use crate::node::ActivePeerCurrentSessionReplacement;
 
+const AUTHENTICATED_UDP_ROAM_QUIET_MS: u64 = 1_000;
+
 impl Node {
     /// Promote a connection to active peer after successful authentication.
     ///
@@ -79,6 +81,12 @@ impl Node {
                 && !connection_oriented_cross_connection
                 && (existing_peer.transport_id() != Some(transport_id)
                     || existing_peer.current_addr() != Some(&current_addr));
+            let authenticated_inbound_udp_roam = inbound_alternate_path
+                && existing_peer.transport_id() == Some(transport_id)
+                && existing_peer.idle_time(current_time_ms) >= AUTHENTICATED_UDP_ROAM_QUIET_MS
+                && self.transports.get(&transport_id).is_some_and(|transport| {
+                    transport.transport_type() == &crate::transport::TransportType::UDP
+                });
             let late_inbound_refresh_for_active_outbound = inbound_alternate_path
                 && existing_peer.fmp_mmp_is_initiator()
                 && existing_peer.handshake_msg2().is_none()
@@ -124,9 +132,14 @@ impl Node {
             // listener and accepted-stream source tuples naturally differ; an
             // opposite-direction candidate on the same transport still uses
             // the deterministic NodeAddr tie-breaker. UDP tuple changes remain
-            // eligible path refreshes.
+            // eligible path refreshes. A freshly authenticated inbound UDP
+            // handshake also proves that a peer which went quiet on its old
+            // source tuple has roamed. Accept that same-carrier migration after
+            // a short quiet interval instead of waiting for the stationary
+            // endpoint's generic link-dead timeout.
             let this_wins = remote_epoch_changed
                 || existing_path_unusable
+                || authenticated_inbound_udp_roam
                 || late_inbound_refresh_for_active_outbound
                 || if outbound_alternate_path {
                     outbound_alternate_path_wins

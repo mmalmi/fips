@@ -343,6 +343,102 @@ async fn same_tuple_late_inbound_refresh_uses_cross_connection_tie_breaker() {
 }
 
 #[tokio::test]
+async fn authenticated_inbound_udp_roam_replaces_quiet_old_source_tuple() {
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let (peer_full, peer_identity) = peer_identity_for_outbound_refresh_owner(&node);
+    let peer_node_addr = *peer_identity.node_addr();
+    let old_addr = TransportAddr::from_string("192.0.2.10:51820");
+    let roamed_addr = TransportAddr::from_string("198.51.100.20:39142");
+    node.config.peers = vec![auto_connect_peer(
+        peer_identity.npub().to_string(),
+        old_addr.as_str().unwrap(),
+    )];
+    refresh_configured_peer_cache_for_test(&mut node);
+
+    let old_link_id = LinkId::new(10);
+    let old_our_index = SessionIndex::new(11);
+    let old_their_index = SessionIndex::new(12);
+    let old_session =
+        make_test_fmp_session(&node.identity, &peer_full, node.startup_epoch, [0x11; 8]);
+    let old_peer = ActivePeer::with_session(
+        peer_identity,
+        old_link_id,
+        1_000,
+        ActivePeerSession {
+            session: old_session,
+            our_index: old_our_index,
+            their_index: old_their_index,
+            transport_id,
+            current_addr: old_addr,
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: false,
+            remote_epoch: Some([0x11; 8]),
+        },
+    );
+    assert!(old_peer.is_healthy());
+    node.peers.insert(peer_node_addr, old_peer);
+    node.peers
+        .insert_session_index((transport_id, old_our_index.as_u32()), peer_node_addr);
+
+    let new_link_id = LinkId::new(11);
+    let mut inbound = PeerConnection::inbound(new_link_id, 2_000);
+    let mut remote_outbound = PeerConnection::outbound(
+        LinkId::new(99),
+        PeerIdentity::from_pubkey_full(node.identity.pubkey_full()),
+        2_000,
+    );
+    let msg1 = remote_outbound
+        .start_handshake(peer_full.keypair(), [0x11; 8], 2_000)
+        .unwrap();
+    inbound
+        .receive_handshake_init(node.identity.keypair(), node.startup_epoch, &msg1, 2_000)
+        .unwrap();
+    let new_our_index = SessionIndex::new(77);
+    let new_their_index = SessionIndex::new(78);
+    inbound.set_our_index(new_our_index);
+    inbound.set_their_index(new_their_index);
+    inbound.set_transport_id(transport_id);
+    inbound.set_source_addr(roamed_addr.clone());
+    node.peers.insert_connection(new_link_id, inbound);
+
+    let result = node
+        .promote_connection(new_link_id, peer_identity, 2_100)
+        .unwrap();
+
+    assert!(
+        matches!(result, PromotionResult::CrossConnectionWon { .. }),
+        "a fresh authenticated UDP handshake from a changed source must replace the quiet pre-roam tuple without waiting for the remote link-dead timeout"
+    );
+    let active = node.get_peer(&peer_node_addr).unwrap();
+    assert_eq!(active.link_id(), new_link_id);
+    assert_eq!(active.current_addr(), Some(&roamed_addr));
+    assert_eq!(active.our_index(), Some(new_our_index));
+    assert_eq!(active.their_index(), Some(new_their_index));
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
 async fn higher_priority_discovered_inbound_path_replaces_relay_fallback() {
     let mut node = make_node();
     let (packet_tx, packet_rx) = packet_channel(64);
