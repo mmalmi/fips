@@ -3,28 +3,59 @@
         ///
         /// Enables `SO_RXQ_OVFL` for kernel drop counting (non-fatal if
         /// unsupported). Sets non-blocking mode for async integration.
+        #[cfg(test)]
         pub fn open(
             bind_addr: SocketAddr,
             recv_buf_size: usize,
             send_buf_size: usize,
         ) -> Result<Self, TransportError> {
-            Self::open_inner(bind_addr, recv_buf_size, send_buf_size)
+            Self::open_on_interface(bind_addr, recv_buf_size, send_buf_size, None)
+        }
+
+        pub fn open_on_interface(
+            bind_addr: SocketAddr,
+            recv_buf_size: usize,
+            send_buf_size: usize,
+            bind_interface: Option<&str>,
+        ) -> Result<Self, TransportError> {
+            Self::open_inner(
+                bind_addr,
+                recv_buf_size,
+                send_buf_size,
+                bind_interface,
+            )
         }
 
         /// Create a UDP socket whose address cannot be shared by another
         /// FIPS instance. Used as the same-host rendezvous ownership lock.
+        #[cfg(test)]
         pub fn open_exclusive(
             bind_addr: SocketAddr,
             recv_buf_size: usize,
             send_buf_size: usize,
         ) -> Result<Self, TransportError> {
-            Self::open_inner(bind_addr, recv_buf_size, send_buf_size)
+            Self::open_exclusive_on_interface(bind_addr, recv_buf_size, send_buf_size, None)
+        }
+
+        pub fn open_exclusive_on_interface(
+            bind_addr: SocketAddr,
+            recv_buf_size: usize,
+            send_buf_size: usize,
+            bind_interface: Option<&str>,
+        ) -> Result<Self, TransportError> {
+            Self::open_inner(
+                bind_addr,
+                recv_buf_size,
+                send_buf_size,
+                bind_interface,
+            )
         }
 
         fn open_inner(
             bind_addr: SocketAddr,
             recv_buf_size: usize,
             send_buf_size: usize,
+            bind_interface: Option<&str>,
         ) -> Result<Self, TransportError> {
             let domain = if bind_addr.is_ipv4() {
                 Domain::IPV4
@@ -37,6 +68,14 @@
             configure_socket_nonblocking(&sock)?;
 
             apply_darwin_udp_tuning(&sock, "udp-listen");
+            crate::transport::udp::underlay::bind_socket_to_interface(
+                &sock,
+                bind_addr,
+                bind_interface,
+            )
+            .map_err(|error| {
+                TransportError::StartFailed(format!("bind UDP socket to interface: {error}"))
+            })?;
 
             sock.bind(&bind_addr.into())
                 .map_err(|error| TransportError::bind_failed(bind_addr, error))?;
@@ -57,24 +96,35 @@
         /// Adopt an existing bound UDP socket.
         ///
         /// This preserves socket identity/NAT mapping created by bootstrap code.
-        pub fn adopt(
+        pub fn adopt_on_interface(
             socket: std::net::UdpSocket,
             recv_buf_size: usize,
             send_buf_size: usize,
+            bind_interface: Option<&str>,
         ) -> Result<Self, TransportError> {
-            Self::adopt_inner(socket, recv_buf_size, send_buf_size)
+            Self::adopt_inner(socket, recv_buf_size, send_buf_size, bind_interface)
         }
 
         fn adopt_inner(
             socket: std::net::UdpSocket,
             recv_buf_size: usize,
             send_buf_size: usize,
+            bind_interface: Option<&str>,
         ) -> Result<Self, TransportError> {
             let sock = Socket::from(socket);
 
             configure_socket_nonblocking(&sock)?;
 
             apply_darwin_udp_tuning(&sock, "udp-adopted");
+            let local_addr = socket_local_addr(&sock)?;
+            crate::transport::udp::underlay::bind_socket_to_interface(
+                &sock,
+                local_addr,
+                bind_interface,
+            )
+            .map_err(|error| {
+                TransportError::StartFailed(format!("bind UDP socket to interface: {error}"))
+            })?;
 
             configure_socket_buffer_sizes(&sock, recv_buf_size, send_buf_size)?;
 
@@ -98,6 +148,13 @@
             self.inner
                 .send_buffer_size()
                 .map_err(|e| TransportError::StartFailed(format!("get send buffer: {}", e)))
+        }
+
+        #[cfg(all(test, target_os = "macos"))]
+        pub(crate) fn bound_device_index_v4(
+            &self,
+        ) -> std::io::Result<Option<std::num::NonZeroU32>> {
+            self.inner.device_index_v4()
         }
 
         /// Synchronous send to a destination address.

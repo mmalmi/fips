@@ -145,7 +145,7 @@ impl NostrDiscovery {
         if self.config.stun_servers.is_empty() {
             return None;
         }
-        let socket = match bind_traversal_udp_socket() {
+        let socket = match bind_traversal_udp_socket(self.config.bind_interface.as_deref()) {
             Ok(s) => s,
             Err(err) => {
                 debug!(error = %err, "public-udp-addr: ephemeral bind failed");

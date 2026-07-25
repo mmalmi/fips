@@ -67,6 +67,15 @@ pub struct UdpConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bind_addr: Option<String>,
 
+    /// Physical underlay interface used by this socket.
+    ///
+    /// On platforms with interface-bound sockets (currently macOS and Linux),
+    /// this prevents a VPN carrier from being routed back into a system VPN
+    /// default route. The interface is resolved when the socket starts, so a
+    /// link change should restart or rebuild the transport with the new name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind_interface: Option<String>,
+
     /// UDP MTU (`mtu`). Defaults to 1280 (IPv6 minimum).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mtu: Option<u16>,

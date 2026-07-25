@@ -97,6 +97,28 @@ fn test_udp_socket_bind() {
     assert!(addr.ip().is_loopback());
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn raw_socket_binds_to_named_underlay_interface() {
+    let sock = UdpRawSocket::open_on_interface(
+        "0.0.0.0:0".parse().unwrap(),
+        65_536,
+        65_536,
+        Some("lo0"),
+    )
+    .expect("bind UDP test socket to loopback underlay");
+
+    let expected = std::num::NonZeroU32::new(unsafe {
+        libc::if_nametoindex(c"lo0".as_ptr())
+    })
+    .expect("lo0 interface index");
+    assert_eq!(
+        sock.bound_device_index_v4().unwrap(),
+        Some(expected),
+        "the kernel socket, not only config state, must own the underlay binding"
+    );
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn udp_gso_prefix_accepts_vectored_equal_len_payloads() {

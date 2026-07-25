@@ -47,6 +47,7 @@ mod platform {
         /// Sets non-blocking mode and configures buffer sizes. The socket
         /// is bound immediately so `local_addr()` returns the actual
         /// assigned address (important when binding to port 0).
+        #[cfg(test)]
         pub fn open(
             bind_addr: SocketAddr,
             recv_buf_size: usize,
@@ -55,12 +56,41 @@ mod platform {
             Self::open_inner(bind_addr, recv_buf_size, send_buf_size)
         }
 
+        pub fn open_on_interface(
+            bind_addr: SocketAddr,
+            recv_buf_size: usize,
+            send_buf_size: usize,
+            bind_interface: Option<&str>,
+        ) -> Result<Self, TransportError> {
+            if let Some(interface) = bind_interface {
+                return Err(TransportError::NotSupported(format!(
+                    "UDP interface binding is not supported on Windows: {interface}"
+                )));
+            }
+            Self::open_inner(bind_addr, recv_buf_size, send_buf_size)
+        }
+
         /// Create an exclusive UDP socket for same-host rendezvous ownership.
+        #[cfg(test)]
         pub fn open_exclusive(
             bind_addr: SocketAddr,
             recv_buf_size: usize,
             send_buf_size: usize,
         ) -> Result<Self, TransportError> {
+            Self::open_inner(bind_addr, recv_buf_size, send_buf_size)
+        }
+
+        pub fn open_exclusive_on_interface(
+            bind_addr: SocketAddr,
+            recv_buf_size: usize,
+            send_buf_size: usize,
+            bind_interface: Option<&str>,
+        ) -> Result<Self, TransportError> {
+            if let Some(interface) = bind_interface {
+                return Err(TransportError::NotSupported(format!(
+                    "UDP interface binding is not supported on Windows: {interface}"
+                )));
+            }
             Self::open_inner(bind_addr, recv_buf_size, send_buf_size)
         }
 
@@ -108,7 +138,7 @@ mod platform {
         }
 
         /// Adopt an existing bound UDP socket.
-        pub fn adopt(
+        fn adopt_inner(
             socket: std::net::UdpSocket,
             recv_buf_size: usize,
             send_buf_size: usize,
@@ -136,6 +166,20 @@ mod platform {
                 inner: sock,
                 local_addr,
             })
+        }
+
+        pub fn adopt_on_interface(
+            socket: std::net::UdpSocket,
+            recv_buf_size: usize,
+            send_buf_size: usize,
+            bind_interface: Option<&str>,
+        ) -> Result<Self, TransportError> {
+            if let Some(interface) = bind_interface {
+                return Err(TransportError::NotSupported(format!(
+                    "UDP interface binding is not supported on Windows: {interface}"
+                )));
+            }
+            Self::adopt_inner(socket, recv_buf_size, send_buf_size)
         }
 
         /// Get the local bound address.

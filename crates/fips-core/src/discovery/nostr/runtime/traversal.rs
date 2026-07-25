@@ -93,7 +93,7 @@ impl NostrDiscovery {
             })?;
         let peer_key = NostrPeerKey::from_public_key_ref(&target_pubkey);
 
-        let base_socket = bind_traversal_udp_socket()?;
+        let base_socket = bind_traversal_udp_socket(self.config.bind_interface.as_deref())?;
 
         let observation = observe_traversal_addresses(
             &base_socket,
@@ -438,7 +438,7 @@ impl NostrDiscovery {
             );
             return Ok(());
         }
-        let base_socket = bind_traversal_udp_socket()?;
+        let base_socket = bind_traversal_udp_socket(self.config.bind_interface.as_deref())?;
         let observation = observe_traversal_addresses(
             &base_socket,
             &self.config.stun_servers,

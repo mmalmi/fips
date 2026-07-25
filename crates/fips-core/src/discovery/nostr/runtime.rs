@@ -51,7 +51,7 @@ pub(in crate::discovery::nostr) use verified_event::VerifiedEvent;
 
 const ADVERT_CACHE_STALE_GRACE_MULTIPLIER: u64 = 2;
 
-fn bind_traversal_udp_socket() -> std::io::Result<std::net::UdpSocket> {
+fn bind_traversal_udp_socket(bind_interface: Option<&str>) -> std::io::Result<std::net::UdpSocket> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         use socket2::{Domain, Protocol, Socket, Type};
@@ -59,13 +59,20 @@ fn bind_traversal_udp_socket() -> std::io::Result<std::net::UdpSocket> {
         let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
         let _ = socket.set_reuse_address(true);
         let _ = socket.set_reuse_port(true);
-        socket.bind(&SocketAddr::from(([0, 0, 0, 0], 0)).into())?;
+        let bind_addr = SocketAddr::from(([0, 0, 0, 0], 0));
+        crate::transport::udp::underlay::bind_socket_to_interface(
+            &socket,
+            bind_addr,
+            bind_interface,
+        )?;
+        socket.bind(&bind_addr.into())?;
         let socket: std::net::UdpSocket = socket.into();
         socket.set_nonblocking(true)?;
         Ok(socket)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
+        let _ = bind_interface;
         let socket = std::net::UdpSocket::bind(("0.0.0.0", 0))?;
         socket.set_nonblocking(true)?;
         Ok(socket)

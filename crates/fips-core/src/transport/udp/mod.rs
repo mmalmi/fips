@@ -10,6 +10,8 @@ use super::{
 pub(crate) mod darwin_sockopts;
 pub(crate) mod socket;
 mod stats;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) mod underlay;
 use super::resolve_socket_addr;
 use crate::config::UdpConfig;
 use crate::discovery::is_punch_packet;
@@ -581,15 +583,17 @@ impl UdpTransport {
             });
         let bind_addr = self.require_start(bind_addr)?;
         let raw_socket = match origin {
-            UdpSocketOrigin::Configured => UdpRawSocket::open(
+            UdpSocketOrigin::Configured => UdpRawSocket::open_on_interface(
                 bind_addr,
                 self.config.recv_buf_size(),
                 self.config.send_buf_size(),
+                self.config.bind_interface.as_deref(),
             ),
-            UdpSocketOrigin::Exclusive => UdpRawSocket::open_exclusive(
+            UdpSocketOrigin::Exclusive => UdpRawSocket::open_exclusive_on_interface(
                 bind_addr,
                 self.config.recv_buf_size(),
                 self.config.send_buf_size(),
+                self.config.bind_interface.as_deref(),
             ),
             UdpSocketOrigin::Adopted => unreachable!("checked above"),
         };
@@ -641,6 +645,7 @@ impl UdpTransport {
         info!(
             name = self.name.as_deref(),
             local_addr = %self.local_addr.map_or_else(|| "<unbound>".to_string(), |addr| addr.to_string()),
+            bind_interface = self.config.bind_interface.as_deref(),
             recv_buf = actual_recv,
             send_buf = actual_send,
             socket_origin = origin.label(),
@@ -660,10 +665,11 @@ impl UdpTransport {
     ) -> Result<(), TransportError> {
         self.begin_start(UdpSocketOrigin::Adopted)?;
 
-        let raw_socket = UdpRawSocket::adopt(
+        let raw_socket = UdpRawSocket::adopt_on_interface(
             socket,
             self.config.recv_buf_size(),
             self.config.send_buf_size(),
+            self.config.bind_interface.as_deref(),
         );
         let raw_socket = self.require_start(raw_socket)?;
         self.install_raw_socket(raw_socket, UdpSocketOrigin::Adopted)

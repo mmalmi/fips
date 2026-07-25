@@ -143,6 +143,13 @@ pub struct NostrDiscoveryConfig {
     /// values are informational and are not treated as egress targets.
     #[serde(default = "NostrDiscoveryConfig::default_stun_servers")]
     pub stun_servers: Vec<String>,
+    /// Physical interface for STUN and UDP traversal sockets.
+    ///
+    /// This should match the UDP carrier's `bind_interface` when FIPS runs
+    /// inside a system VPN, preventing discovery packets from looping back
+    /// into the overlay default route.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind_interface: Option<String>,
     /// Whether to advertise local (RFC 1918 / ULA) interface addresses as
     /// host candidates in the traversal offer.
     ///
@@ -287,6 +294,7 @@ impl Default for NostrDiscoveryConfig {
             peerfinding_source: NostrPeerfindingSource::default(),
             advert_relays: Self::default_advert_relays(),
             stun_servers: Self::default_stun_servers(),
+            bind_interface: None,
             share_local_candidates: false,
             app: Self::default_app(),
             signal_ttl_secs: Self::default_signal_ttl_secs(),
