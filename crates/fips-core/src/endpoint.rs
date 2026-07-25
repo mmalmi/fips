@@ -819,12 +819,18 @@ impl FipsEndpoint {
     /// The running node keeps authenticated peers and end-to-end sessions;
     /// only the OS sockets that select the physical source address are
     /// replaced. Call this before refreshing peer paths after a network roam.
-    pub async fn rebind_network_transports(&self) -> Result<usize, FipsEndpointError> {
+    pub async fn rebind_network_transports(
+        &self,
+        bind_interface: Option<String>,
+    ) -> Result<usize, FipsEndpointError> {
         let (response_tx, response_rx) = oneshot::channel();
         match self
             .control(
                 "network transport rebind",
-                NodeEndpointControlCommand::RebindNetworkTransports { response_tx },
+                NodeEndpointControlCommand::RebindNetworkTransports {
+                    bind_interface,
+                    response_tx,
+                },
                 response_rx,
             )
             .await?

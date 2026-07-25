@@ -750,13 +750,20 @@ impl UdpTransport {
     /// This bypasses reactive error cooldown because the caller has positive
     /// evidence that the underlay address or route changed. Active FMP/FSP
     /// sessions keep the same transport ID and pick up the new live socket.
-    pub(crate) async fn rebind_after_network_change(&mut self) -> Result<bool, TransportError> {
+    pub(crate) async fn rebind_after_network_change(
+        &mut self,
+        bind_interface: Option<String>,
+    ) -> Result<bool, TransportError> {
         if self.socket_origin != UdpSocketOrigin::Configured
             || !(self.state.is_operational() || self.state.can_start())
         {
             return Ok(false);
         }
 
+        // Keep the desired interface even when the immediate rebuild fails.
+        // A later positive network event can then retry the same configured
+        // carrier without resurrecting the stale underlay binding.
+        self.config.bind_interface = bind_interface;
         self.last_local_route_socket_recovery = Some(Instant::now());
         self.rebuild_configured_socket().await?;
 

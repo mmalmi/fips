@@ -87,8 +87,11 @@ impl Node {
                 let result = self.refresh_peer_paths(npubs).await;
                 let _ = response_tx.send(result);
             }
-            NodeEndpointControlCommand::RebindNetworkTransports { response_tx } => {
-                let result = self.rebind_network_transports().await;
+            NodeEndpointControlCommand::RebindNetworkTransports {
+                bind_interface,
+                response_tx,
+            } => {
+                let result = self.rebind_network_transports(bind_interface).await;
                 let _ = response_tx.send(result);
             }
             NodeEndpointControlCommand::RegisterIdentity {

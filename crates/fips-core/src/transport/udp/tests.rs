@@ -133,7 +133,10 @@ async fn configured_udp_transport_rebinds_on_explicit_network_change_during_reco
     let before = transport.send_snapshot().unwrap();
 
     assert!(
-        transport.rebind_after_network_change().await.unwrap(),
+        transport
+            .rebind_after_network_change(None)
+            .await
+            .unwrap(),
         "an observed network change must bypass reactive recovery cooldown"
     );
     assert_eq!(transport.state(), TransportState::Up);
@@ -170,13 +173,43 @@ async fn explicit_network_rebind_recovers_a_failed_configured_carrier() {
         owner.stop_async().await.unwrap();
     });
     assert!(
-        candidate.rebind_after_network_change().await.unwrap(),
+        candidate
+            .rebind_after_network_change(None)
+            .await
+            .unwrap(),
         "a positive network-change event must retry a failed configured carrier while the interface settles"
     );
     release_owner.await.unwrap();
     assert_eq!(candidate.state(), TransportState::Up);
     assert_eq!(candidate.local_addr(), Some(owner_addr));
     candidate.stop_async().await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn explicit_network_rebind_moves_configured_carrier_to_new_interface() {
+    #[cfg(target_os = "macos")]
+    const LOOPBACK_INTERFACE: &str = "lo0";
+    #[cfg(not(target_os = "macos"))]
+    const LOOPBACK_INTERFACE: &str = "lo";
+
+    let (tx, _rx) = packet_channel(100);
+    let mut transport = UdpTransport::new(TransportId::new(1), None, make_config(0), tx);
+    transport.start_async().await.unwrap();
+
+    assert!(
+        transport
+            .rebind_after_network_change(Some(LOOPBACK_INTERFACE.to_string()))
+            .await
+            .unwrap(),
+        "an explicit network change must move the configured carrier to the selected interface"
+    );
+    assert_eq!(
+        transport.config.bind_interface.as_deref(),
+        Some(LOOPBACK_INTERFACE)
+    );
+    assert_eq!(transport.state(), TransportState::Up);
+    transport.stop_async().await.unwrap();
 }
 
 #[tokio::test]

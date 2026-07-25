@@ -31,7 +31,7 @@ async fn network_transport_rebind_preserves_peer_and_session_state() {
         ),
     );
 
-    assert_eq!(node.rebind_network_transports().await.unwrap(), 1);
+    assert_eq!(node.rebind_network_transports(None).await.unwrap(), 1);
     assert!(node.peers.contains_key(remote.node_addr()));
     assert!(node.sessions.get(&session_addr).is_some());
 

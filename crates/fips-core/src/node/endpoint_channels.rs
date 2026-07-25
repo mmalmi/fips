@@ -265,6 +265,7 @@ pub(crate) enum NodeEndpointControlCommand {
         response_tx: tokio::sync::oneshot::Sender<Result<usize, NodeError>>,
     },
     RebindNetworkTransports {
+        bind_interface: Option<String>,
         response_tx: tokio::sync::oneshot::Sender<Result<usize, NodeError>>,
     },
     RegisterIdentity {
