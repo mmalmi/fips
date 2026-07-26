@@ -630,6 +630,30 @@ impl Node {
         changed
     }
 
+    pub(in crate::node) fn restart_session_direct_path_validation(
+        &mut self,
+        dest: NodeAddr,
+        now_ms: u64,
+    ) {
+        self.session_direct_degradation.restart_validation(
+            dest,
+            now_ms,
+            SESSION_DIRECT_DEGRADED_HOLD_MS,
+        );
+        let _ = self.refresh_dataplane_fsp_owner_routes(&dest);
+    }
+
+    pub(in crate::node) fn authenticated_direct_payload_validates_route(
+        &mut self,
+        dest: &NodeAddr,
+        now_ms: u64,
+    ) -> bool {
+        self.session_direct_path_has_recent_data_return(dest, now_ms)
+            && self
+                .session_direct_degradation
+                .record_authenticated_payload_progress(dest, now_ms)
+    }
+
     pub(in crate::node) fn clear_session_direct_path_degraded(&mut self, dest: &NodeAddr) -> bool {
         let changed = self.session_direct_degradation.clear(dest);
         if changed {
@@ -668,21 +692,24 @@ impl Node {
             .fsp_owner_activity(dest)
             .and_then(|activity| activity.last_outbound_next_hop())
             .filter(|next_hop| next_hop != dest);
-        if direct_was_degraded || active_fallback_next_hop.is_some() {
+        let direct_validation_pending =
+            self.session_direct_degradation.has_pending_validation(dest);
+        if direct_validation_pending || active_fallback_next_hop.is_some() {
             if let Some(fallback_next_hop) = active_fallback_next_hop {
                 let _ = self
                     .dataplane
                     .forget_fsp_data_route(*dest, fallback_next_hop);
             }
+            let _ = self
+                .session_direct_degradation
+                .release_hold_for_validation(dest, now_ms);
+            let _ = self.refresh_dataplane_fsp_owner_routes(dest);
             debug!(
                 peer = %self.peer_display_name(dest),
                 direct_was_degraded,
                 released_fallback_affinity = active_fallback_next_hop.is_some(),
-                "Authenticated direct-path promotion restored payload eligibility"
+                "Authenticated direct-path promotion started payload validation"
             );
-            if !self.clear_session_direct_path_degraded(dest) {
-                let _ = self.refresh_dataplane_fsp_owner_routes(dest);
-            }
             return;
         }
 

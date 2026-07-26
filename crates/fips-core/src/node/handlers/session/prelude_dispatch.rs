@@ -267,7 +267,7 @@ impl SessionReceiveBatchCommit {
         }
 
         for source_addr in self.direct_sources {
-            if node.session_direct_path_has_recent_data_return(&source_addr, now_ms)
+            if node.authenticated_direct_payload_validates_route(&source_addr, now_ms)
                 && node.clear_session_direct_path_degraded(&source_addr)
             {
                 debug!(
@@ -679,7 +679,7 @@ impl SessionDispatchCommit {
             }
 
             if completion.direct_path
-                && node.session_direct_path_has_recent_data_return(
+                && node.authenticated_direct_payload_validates_route(
                     &completion.source_addr,
                     now_ms,
                 )

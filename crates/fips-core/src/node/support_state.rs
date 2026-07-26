@@ -54,9 +54,44 @@ impl LocalSendFailures {
     }
 }
 
+const DIRECT_PATH_VALIDATION_MIN_PACKETS: u8 = 5;
+const DIRECT_PATH_VALIDATION_MIN_SPAN_MS: u64 = 750;
+const DIRECT_PATH_VALIDATION_MAX_GAP_MS: u64 = 1_000;
+
+#[derive(Debug, Default)]
+struct DirectPathValidation {
+    degraded_until_ms: u64,
+    first_progress_ms: Option<u64>,
+    last_progress_ms: Option<u64>,
+    progress_packets: u8,
+}
+
+impl DirectPathValidation {
+    fn reset_progress(&mut self) {
+        self.first_progress_ms = None;
+        self.last_progress_ms = None;
+        self.progress_packets = 0;
+    }
+
+    fn record_progress(&mut self, now_ms: u64) -> bool {
+        if self.last_progress_ms.is_none_or(|last_ms| {
+            now_ms.saturating_sub(last_ms) > DIRECT_PATH_VALIDATION_MAX_GAP_MS
+        }) {
+            self.reset_progress();
+            self.first_progress_ms = Some(now_ms);
+        }
+        self.last_progress_ms = Some(now_ms);
+        self.progress_packets = self.progress_packets.saturating_add(1);
+        self.progress_packets >= DIRECT_PATH_VALIDATION_MIN_PACKETS
+            && self.first_progress_ms.is_some_and(|first_ms| {
+                now_ms.saturating_sub(first_ms) >= DIRECT_PATH_VALIDATION_MIN_SPAN_MS
+            })
+    }
+}
+
 #[derive(Debug, Default)]
 pub(in crate::node) struct SessionDirectDegradation {
-    degraded_until_ms: HashMap<NodeAddr, u64>,
+    validations: HashMap<NodeAddr, DirectPathValidation>,
 }
 
 impl SessionDirectDegradation {
@@ -64,15 +99,15 @@ impl SessionDirectDegradation {
         &self,
         now_ms: u64,
     ) -> impl Iterator<Item = NodeAddr> + '_ {
-        self.degraded_until_ms
+        self.validations
             .iter()
-            .filter_map(move |(dest, until_ms)| (*until_ms > now_ms).then_some(*dest))
+            .filter_map(move |(dest, state)| (state.degraded_until_ms > now_ms).then_some(*dest))
     }
 
     pub(in crate::node) fn is_degraded_at(&self, dest: &NodeAddr, now_ms: u64) -> bool {
-        self.degraded_until_ms
+        self.validations
             .get(dest)
-            .is_some_and(|until_ms| *until_ms > now_ms)
+            .is_some_and(|state| state.degraded_until_ms > now_ms)
     }
 
     pub(in crate::node) fn is_degraded(&self, dest: &NodeAddr, now_ms: u64) -> bool {
@@ -80,7 +115,7 @@ impl SessionDirectDegradation {
     }
 
     pub(in crate::node) fn has_pending_validation(&self, dest: &NodeAddr) -> bool {
-        self.degraded_until_ms.contains_key(dest)
+        self.validations.contains_key(dest)
     }
 
     pub(in crate::node) fn release_hold_for_validation(
@@ -88,10 +123,10 @@ impl SessionDirectDegradation {
         dest: &NodeAddr,
         now_ms: u64,
     ) -> bool {
-        let Some(until_ms) = self.degraded_until_ms.get_mut(dest) else {
+        let Some(state) = self.validations.get_mut(dest) else {
             return false;
         };
-        *until_ms = now_ms;
+        state.degraded_until_ms = now_ms;
         true
     }
 
@@ -102,14 +137,42 @@ impl SessionDirectDegradation {
         hold_ms: u64,
     ) -> bool {
         let until_ms = now_ms.saturating_add(hold_ms);
-        let entry = self.degraded_until_ms.entry(dest).or_insert(0);
-        let was_degraded = *entry > now_ms;
-        *entry = (*entry).max(until_ms);
+        let entry = self.validations.entry(dest).or_default();
+        let was_degraded = entry.degraded_until_ms > now_ms;
+        if !was_degraded {
+            entry.reset_progress();
+        }
+        entry.degraded_until_ms = entry.degraded_until_ms.max(until_ms);
         !was_degraded
     }
 
+    pub(in crate::node) fn restart_validation(
+        &mut self,
+        dest: NodeAddr,
+        now_ms: u64,
+        hold_ms: u64,
+    ) {
+        self.validations.insert(
+            dest,
+            DirectPathValidation {
+                degraded_until_ms: now_ms.saturating_add(hold_ms),
+                ..DirectPathValidation::default()
+            },
+        );
+    }
+
+    pub(in crate::node) fn record_authenticated_payload_progress(
+        &mut self,
+        dest: &NodeAddr,
+        now_ms: u64,
+    ) -> bool {
+        self.validations
+            .get_mut(dest)
+            .is_some_and(|state| state.record_progress(now_ms))
+    }
+
     pub(in crate::node) fn clear(&mut self, dest: &NodeAddr) -> bool {
-        self.degraded_until_ms.remove(dest).is_some()
+        self.validations.remove(dest).is_some()
     }
 }
 

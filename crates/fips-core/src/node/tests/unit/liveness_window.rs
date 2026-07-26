@@ -81,6 +81,35 @@ fn session_direct_degradation_owns_hold_extension_expiry_and_clear() {
 }
 
 #[test]
+fn direct_path_validation_requires_sustained_fresh_packet_progress() {
+    let dest = make_node_addr(0xB3);
+    let mut degradation = SessionDirectDegradation::default();
+    degradation.restart_validation(dest, 1_000, 20_000);
+
+    assert!(
+        !degradation.record_authenticated_payload_progress(&dest, 1_100),
+        "one authenticated packet can be in flight from the obsolete underlay"
+    );
+    assert!(
+        !degradation.record_authenticated_payload_progress(&dest, 1_350),
+        "a short stale burst must not restore route health"
+    );
+    assert!(!degradation.record_authenticated_payload_progress(&dest, 1_600));
+    assert!(!degradation.record_authenticated_payload_progress(&dest, 1_850));
+    assert!(
+        degradation.record_authenticated_payload_progress(&dest, 2_100),
+        "five fresh packets spanning one second prove sustained sequence progress"
+    );
+
+    degradation.restart_validation(dest, 3_000, 20_000);
+    assert!(!degradation.record_authenticated_payload_progress(&dest, 3_100));
+    assert!(
+        !degradation.record_authenticated_payload_progress(&dest, 4_200),
+        "a gap longer than the validation window must restart progress"
+    );
+}
+
+#[test]
 fn traversal_path_liveness_keeps_mobile_safe_floor() {
     assert_eq!(
         crate::node::handlers::traversal_path_liveness_timeout(

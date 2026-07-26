@@ -161,15 +161,28 @@ async fn handle_msg2_replaces_quiet_static_path_with_authenticated_alternate() {
 
 #[tokio::test]
 async fn handle_msg2_treats_late_reverse_tcp_dial_as_duplicate_carrier() {
-    run_late_reverse_tcp_dial_resolution(false).await;
+    run_late_reverse_tcp_dial_resolution(false, false).await;
 }
 
 #[tokio::test]
 async fn handle_msg2_replaces_payload_degraded_connection_oriented_carrier() {
-    run_late_reverse_tcp_dial_resolution(true).await;
+    run_late_reverse_tcp_dial_resolution(true, false).await;
 }
 
-async fn run_late_reverse_tcp_dial_resolution(payload_degraded: bool) {
+#[tokio::test]
+async fn handle_msg2_treats_healthy_same_url_tcp_dial_as_duplicate_carrier() {
+    run_late_reverse_tcp_dial_resolution(false, true).await;
+}
+
+#[tokio::test]
+async fn handle_msg2_replaces_payload_degraded_same_url_tcp_carrier() {
+    run_late_reverse_tcp_dial_resolution(true, true).await;
+}
+
+async fn run_late_reverse_tcp_dial_resolution(
+    payload_degraded: bool,
+    old_is_initiator: bool,
+) {
     let mut node = make_node();
     node.config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;
     let (packet_tx, packet_rx) = packet_channel(64);
@@ -203,8 +216,12 @@ async fn run_late_reverse_tcp_dial_resolution(payload_degraded: bool) {
         "the late duplicate must exercise the dangerous local-outbound-wins case"
     );
 
-    let accepted_source = TransportAddr::from_string("127.0.0.1:40002");
     let listener_addr = TransportAddr::from_string("127.0.0.1:8443");
+    let accepted_source = if old_is_initiator {
+        listener_addr.clone()
+    } else {
+        TransportAddr::from_string("127.0.0.1:40002")
+    };
     let recovery_target = Identity::generate();
     let recovery_target_addr = *recovery_target.node_addr();
     node.config.peers = vec![
@@ -247,7 +264,7 @@ async fn run_late_reverse_tcp_dial_resolution(payload_degraded: bool) {
             transport_id,
             current_addr: accepted_source.clone(),
             link_stats: crate::transport::LinkStats::new(),
-            is_initiator: false,
+            is_initiator: old_is_initiator,
             remote_epoch: Some([0x11; 8]),
         },
     );
@@ -362,7 +379,7 @@ async fn run_late_reverse_tcp_dial_resolution(payload_degraded: bool) {
         assert_eq!(active.current_addr(), Some(&accepted_source));
         assert_eq!(active.our_index(), Some(old_our_index));
         assert_eq!(active.their_index(), Some(old_their_index));
-        assert!(!active.fmp_mmp_is_initiator());
+        assert_eq!(active.fmp_mmp_is_initiator(), old_is_initiator);
         assert!(!node.links.contains_key(&new_link_id));
     }
 

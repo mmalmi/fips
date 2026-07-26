@@ -934,11 +934,6 @@ async fn handle_msg2_keeps_recently_authenticated_path_over_late_preferred_alter
     node.peers.insert(peer_node_addr, old_peer);
     node.peers
         .insert_session_index((transport_id, old_our_index.as_u32()), peer_node_addr);
-    node.session_direct_degradation.mark_degraded(
-        peer_node_addr,
-        Node::now_ms(),
-        SESSION_DIRECT_DEGRADED_HOLD_MS,
-    );
     node.links.insert(
         old_link_id,
         Link::connectionless(

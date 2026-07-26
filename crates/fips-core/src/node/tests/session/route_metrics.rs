@@ -504,12 +504,18 @@ fn test_authenticated_direct_promotion_releases_active_fallback_affinity() {
         Node::now_ms(),
     );
     let now_ms = Node::now_ms();
+    node.restart_session_direct_path_validation(remote_addr, now_ms);
 
     node.clear_session_direct_path_degraded_after_promotion(&remote_addr, now_ms);
 
     assert!(
         !node.session_direct_path_degradation_active(&remote_addr, now_ms),
         "a newly authenticated direct carrier must remain eligible for a bounded payload retry"
+    );
+    assert!(
+        node.session_direct_degradation
+            .has_pending_validation(&remote_addr),
+        "carrier authentication must not masquerade as sustained direct payload progress"
     );
     assert_eq!(
         node.dataplane

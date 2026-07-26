@@ -105,6 +105,13 @@ impl TraversalSignalPath {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IncomingMeshOfferAdmission {
+    Accepted,
+    Duplicate,
+    SuppressedByActiveInitiator,
+}
+
 /// Decide whether an incoming-offer responder session should be suppressed
 /// in favor of our own already-running outbound initiator session.
 ///
@@ -281,7 +288,7 @@ pub struct NostrDiscovery {
     current_advert_event_id: RwLock<Option<EventId>>,
     pending_answers: Mutex<HashMap<String, oneshot::Sender<SignalEnvelope<TraversalAnswer>>>>,
     answered_offers: Mutex<HashMap<String, CachedMeshTraversalAnswer>>,
-    active_initiators: Mutex<HashSet<NostrPeerKey>>,
+    active_initiators: Mutex<HashMap<NostrPeerKey, u64>>,
     active_refetches: Mutex<HashSet<NostrPeerKey>>,
     seen_sessions: Mutex<HashMap<String, u64>>,
     offer_slots: Arc<Semaphore>,
@@ -395,7 +402,7 @@ impl NostrDiscovery {
             current_advert_event_id: RwLock::new(None),
             pending_answers: Mutex::new(HashMap::new()),
             answered_offers: Mutex::new(HashMap::new()),
-            active_initiators: Mutex::new(HashSet::new()),
+            active_initiators: Mutex::new(HashMap::new()),
             active_refetches: Mutex::new(HashSet::new()),
             seen_sessions: Mutex::new(HashMap::new()),
             offer_slots,

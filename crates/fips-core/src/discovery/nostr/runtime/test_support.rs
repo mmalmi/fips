@@ -67,7 +67,7 @@ impl NostrDiscovery {
             current_advert_event_id: RwLock::new(None),
             pending_answers: Mutex::new(HashMap::new()),
             answered_offers: Mutex::new(HashMap::new()),
-            active_initiators: Mutex::new(HashSet::new()),
+            active_initiators: Mutex::new(HashMap::new()),
             active_refetches: Mutex::new(HashSet::new()),
             seen_sessions: Mutex::new(HashMap::new()),
             offer_slots,
@@ -153,10 +153,10 @@ impl NostrDiscovery {
 
     #[cfg(test)]
     pub(crate) async fn start_pending_initiator_for_test(&self, npub: &str) {
-        self.active_initiators
-            .lock()
-            .await
-            .insert(NostrPeerKey::parse(npub).expect("valid test npub"));
+        self.active_initiators.lock().await.insert(
+            NostrPeerKey::parse(npub).expect("valid test npub"),
+            now_ms(),
+        );
         assert!(
             self.spawn_child_task(std::future::pending()).await,
             "test discovery should accept a pending traversal task"

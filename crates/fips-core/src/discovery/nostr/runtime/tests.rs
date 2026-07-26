@@ -944,6 +944,104 @@ async fn mesh_answer_resolves_pending_offer_without_nostr_event() {
     assert_eq!(envelope.sender_npub, "npub1peer");
 }
 
+#[tokio::test]
+async fn stale_initiator_does_not_suppress_fresh_mesh_offer_after_roam() {
+    let discovery = NostrDiscovery::new_for_test();
+    let ours = PeerIdentity::from_npub(&discovery.npub).expect("local identity");
+    let peer_npub = loop {
+        let candidate = nostr::Keys::generate()
+            .public_key()
+            .to_bech32()
+            .expect("peer npub");
+        let theirs = PeerIdentity::from_npub(&candidate).expect("peer identity");
+        if suppress_responder_for_own_initiator(ours.node_addr(), theirs.node_addr(), true) {
+            break candidate;
+        }
+    };
+    let peer_key = NostrPeerKey::parse(&peer_npub).expect("peer key");
+    let started_at_ms = now_ms();
+    discovery
+        .active_initiators
+        .lock()
+        .await
+        .insert(peer_key, started_at_ms);
+
+    assert!(
+        discovery
+            .should_suppress_responder_for_active_initiator(
+                &peer_npub,
+                started_at_ms + MESH_SIGNAL_RETRY_INTERVAL.as_millis() as u64 - 1,
+            )
+            .await,
+        "the deterministic winner should suppress true simultaneous traversal glare"
+    );
+    assert!(
+        !discovery
+            .should_suppress_responder_for_active_initiator(
+                &peer_npub,
+                started_at_ms + MESH_SIGNAL_RETRY_INTERVAL.as_millis() as u64,
+            )
+            .await,
+        "an older initiator owns obsolete endpoints and must not suppress a post-roam offer"
+    );
+}
+
+#[tokio::test]
+async fn suppressed_mesh_offer_retry_is_admitted_after_glare_window() {
+    let discovery = NostrDiscovery::new_for_test();
+    let ours = PeerIdentity::from_npub(&discovery.npub).expect("local identity");
+    let peer_npub = loop {
+        let candidate = nostr::Keys::generate()
+            .public_key()
+            .to_bech32()
+            .expect("peer npub");
+        let theirs = PeerIdentity::from_npub(&candidate).expect("peer identity");
+        if suppress_responder_for_own_initiator(ours.node_addr(), theirs.node_addr(), true) {
+            break candidate;
+        }
+    };
+    let peer_key = NostrPeerKey::parse(&peer_npub).expect("peer key");
+    let started_at_ms = now_ms();
+    discovery
+        .active_initiators
+        .lock()
+        .await
+        .insert(peer_key, started_at_ms);
+    let retry_interval_ms = MESH_SIGNAL_RETRY_INTERVAL.as_millis() as u64;
+
+    assert_eq!(
+        discovery
+            .admit_incoming_mesh_offer(
+                &peer_npub,
+                "post-roam-offer",
+                started_at_ms + retry_interval_ms - 1,
+            )
+            .await,
+        IncomingMeshOfferAdmission::SuppressedByActiveInitiator
+    );
+    assert_eq!(
+        discovery
+            .admit_incoming_mesh_offer(
+                &peer_npub,
+                "post-roam-offer",
+                started_at_ms + retry_interval_ms,
+            )
+            .await,
+        IncomingMeshOfferAdmission::Accepted,
+        "suppression must not consume replay admission for the offer retry"
+    );
+    assert_eq!(
+        discovery
+            .admit_incoming_mesh_offer(
+                &peer_npub,
+                "post-roam-offer",
+                started_at_ms + retry_interval_ms + 1,
+            )
+            .await,
+        IncomingMeshOfferAdmission::Duplicate
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn mesh_offer_retries_until_answer_arrives() {
     let discovery = Arc::new(NostrDiscovery::new_for_test());

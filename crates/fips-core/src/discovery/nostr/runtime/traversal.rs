@@ -1,10 +1,54 @@
 use super::*;
 
 impl NostrDiscovery {
+    pub(super) async fn should_suppress_responder_for_active_initiator(
+        &self,
+        sender_npub: &str,
+        offer_received_at: u64,
+    ) -> bool {
+        let Ok(sender) = NostrPeerKey::parse(sender_npub) else {
+            return false;
+        };
+        let Some(started_at_ms) = self.active_initiators.lock().await.get(&sender).copied() else {
+            return false;
+        };
+        if offer_received_at.saturating_sub(started_at_ms)
+            >= MESH_SIGNAL_RETRY_INTERVAL.as_millis() as u64
+        {
+            return false;
+        }
+        let (Ok(ours), Ok(theirs)) = (
+            PeerIdentity::from_npub(&self.npub),
+            PeerIdentity::from_npub(sender_npub),
+        ) else {
+            return false;
+        };
+        suppress_responder_for_own_initiator(ours.node_addr(), theirs.node_addr(), true)
+    }
+
     pub(super) async fn accept_incoming_offer_session(&self, session_id: &str) -> bool {
         self.mark_session_seen(session_id, TraversalSignalPath::Mesh)
             .await
             .is_ok()
+    }
+
+    pub(super) async fn admit_incoming_mesh_offer(
+        &self,
+        sender_npub: &str,
+        session_id: &str,
+        offer_received_at: u64,
+    ) -> IncomingMeshOfferAdmission {
+        if self
+            .should_suppress_responder_for_active_initiator(sender_npub, offer_received_at)
+            .await
+        {
+            return IncomingMeshOfferAdmission::SuppressedByActiveInitiator;
+        }
+        if self.accept_incoming_offer_session(session_id).await {
+            IncomingMeshOfferAdmission::Accepted
+        } else {
+            IncomingMeshOfferAdmission::Duplicate
+        }
     }
 
     pub async fn request_connect(self: &Arc<Self>, peer_config: PeerConfig) {
@@ -29,9 +73,10 @@ impl NostrDiscovery {
         let peer_key = NostrPeerKey::parse(&peer_config.npub).ok();
         if let Some(peer_key) = peer_key {
             let mut active = self.active_initiators.lock().await;
-            if !active.insert(peer_key) {
+            if active.contains_key(&peer_key) {
                 return false;
             }
+            active.insert(peer_key, now_ms());
         }
 
         let runtime = Arc::clone(self);
@@ -358,19 +403,37 @@ impl NostrDiscovery {
             );
             return;
         };
-        if !self.accept_incoming_offer_session(&offer.session_id).await {
-            debug!(
-                peer = %short_npub(&sender_npub),
-                session = %short_id(&offer.session_id),
-                "duplicate inbound mesh traversal offer"
-            );
-            return;
+        let offer_received_at = now_ms();
+        match self
+            .admit_incoming_mesh_offer(&sender_npub, &offer.session_id, offer_received_at)
+            .await
+        {
+            IncomingMeshOfferAdmission::Accepted => {}
+            IncomingMeshOfferAdmission::Duplicate => {
+                debug!(
+                    peer = %short_npub(&sender_npub),
+                    session = %short_id(&offer.session_id),
+                    "duplicate inbound mesh traversal offer"
+                );
+                return;
+            }
+            IncomingMeshOfferAdmission::SuppressedByActiveInitiator => {
+                debug!(
+                    peer = %short_npub(&sender_npub),
+                    session = %short_id(&offer.session_id),
+                    "traversal: responder deferred because our fresh initiator wins"
+                );
+                return;
+            }
         }
 
         let runtime = Arc::clone(self);
         self.spawn_child_task(async move {
             let _permit = permit;
-            if let Err(err) = runtime.handle_incoming_mesh_offer(offer, sender_npub).await {
+            if let Err(err) = runtime
+                .handle_incoming_mesh_offer(offer, sender_npub, offer_received_at)
+                .await
+            {
                 debug!(error = %err, "failed to handle mesh traversal offer");
             }
         })
@@ -381,9 +444,9 @@ impl NostrDiscovery {
         self: Arc<Self>,
         offer: TraversalOffer,
         sender_npub: String,
+        offer_received_at: u64,
     ) -> Result<(), BootstrapError> {
         let peer_short = short_npub(&sender_npub);
-        let offer_received_at = now_ms();
         // This offer arrived through an authenticated FIPS session. A peer
         // traversal cooldown throttles our outbound attempts, but must not
         // reject the other side's attempt: after either peer roams, both can
@@ -419,25 +482,6 @@ impl NostrDiscovery {
                 offer_received_at = offer_received_at,
                 "traversal: mesh offer accepted within clock-skew tolerance"
             );
-        }
-        let have_active_initiator = if let Ok(sender) = NostrPeerKey::parse(&sender_npub) {
-            self.active_initiators.lock().await.contains(&sender)
-        } else {
-            false
-        };
-        if have_active_initiator
-            && let (Ok(ours), Ok(theirs)) = (
-                PeerIdentity::from_npub(&self.npub),
-                PeerIdentity::from_npub(&sender_npub),
-            )
-            && suppress_responder_for_own_initiator(ours.node_addr(), theirs.node_addr(), true)
-        {
-            debug!(
-                peer = %peer_short,
-                session = %short_id(&offer.session_id),
-                "traversal: responder suppressed because our initiator wins"
-            );
-            return Ok(());
         }
         let bind_interface = self.bind_interface.read().await.clone();
         let base_socket = bind_traversal_udp_socket(bind_interface.as_deref())?;

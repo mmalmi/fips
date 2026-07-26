@@ -425,19 +425,17 @@ impl Node {
             let reply_transport_handoff = packet.transport_id != outbound_transport_id;
             let authenticated_live_carrier =
                 self.active_peer_has_fresh_carrier_liveness(&peer_node_addr);
-            let payload_degraded_connection_oriented_carrier =
-                existing_path_unusable && connection_oriented_cross_connection;
             let preserve_authenticated_live_carrier = !remote_epoch_changed
                 && !simultaneous_inbound_session
                 && !active_peer_unusable
-                && !payload_degraded_connection_oriented_carrier
+                && !existing_path_unusable
                 && !reply_transport_handoff
                 && authenticated_live_carrier;
             let late_duplicate_carrier = !simultaneous_inbound_session
                 && (!outbound_path_differs || connection_oriented_cross_connection);
             let preserve_late_duplicate_carrier = !remote_epoch_changed
                 && !active_peer_unusable
-                && !payload_degraded_connection_oriented_carrier
+                && !existing_path_unusable
                 && !reply_transport_handoff
                 && late_duplicate_carrier;
             if outbound_alternate_path

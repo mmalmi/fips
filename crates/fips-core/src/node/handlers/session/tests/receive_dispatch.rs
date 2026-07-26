@@ -125,7 +125,7 @@
     }
 
     #[test]
-    fn route_matched_direct_data_clears_direct_degradation() {
+    fn one_route_matched_direct_packet_does_not_clear_direct_degradation() {
         let mut node = Node::new(crate::config::Config::new()).expect("node");
         let source_addr = *Identity::generate().node_addr();
         let now_ms = Node::now_ms();
@@ -155,8 +155,49 @@
         .finish_receive(&mut node);
 
         assert!(
-            !node.session_direct_path_degradation_active(&source_addr, now_ms),
-            "authenticated data returned on the active direct route should restore it"
+            node.session_direct_path_degradation_active(&source_addr, now_ms),
+            "one authenticated packet can be left in flight from the obsolete underlay"
+        );
+    }
+
+    #[test]
+    fn sustained_route_matched_direct_packets_clear_direct_degradation() {
+        let mut node = Node::new(crate::config::Config::new()).expect("node");
+        let source_addr = *Identity::generate().node_addr();
+        let now_ms = Node::now_ms();
+
+        crate::node::tests::seed_dataplane_fsp_data_sent_for_test(
+            &mut node,
+            source_addr,
+            source_addr,
+            now_ms,
+        );
+        crate::node::tests::seed_dataplane_fsp_data_rx_for_test(
+            &mut node,
+            source_addr,
+            source_addr,
+            now_ms,
+        );
+        node.restart_session_direct_path_validation(source_addr, now_ms);
+
+        for offset_ms in [100, 350, 600, 850] {
+            assert!(
+                !node.authenticated_direct_payload_validates_route(
+                    &source_addr,
+                    now_ms + offset_ms,
+                ),
+                "a short authenticated burst must keep route validation pending"
+            );
+        }
+        assert!(
+            node.authenticated_direct_payload_validates_route(&source_addr, now_ms + 1_100),
+            "five fresh packets spanning one second prove sustained direct progress"
+        );
+        assert!(node.clear_session_direct_path_degraded(&source_addr));
+        assert!(
+            !node
+                .session_direct_degradation
+                .has_pending_validation(&source_addr)
         );
     }
 
