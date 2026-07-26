@@ -50,7 +50,7 @@ impl UdpTransport {
         bind_interface: Option<String>,
     ) -> Result<Option<UdpNetworkRebindProbe>, TransportError> {
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
-        let bind_addr =
+        let bind_addr: SocketAddr =
             if self.socket_origin == UdpSocketOrigin::Adopted && self.state.is_operational() {
                 self.local_addr.ok_or(TransportError::NotStarted)?
             } else if self.socket_origin == UdpSocketOrigin::Configured
@@ -64,7 +64,7 @@ impl UdpTransport {
             };
 
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "ios")))]
-        let bind_addr = if self.socket_origin == UdpSocketOrigin::Configured
+        let bind_addr: SocketAddr = if self.socket_origin == UdpSocketOrigin::Configured
             && (self.state.is_operational() || self.state.can_start())
         {
             self.config.bind_addr().parse().map_err(|error| {
