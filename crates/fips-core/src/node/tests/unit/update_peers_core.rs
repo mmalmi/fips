@@ -406,6 +406,94 @@ async fn authenticated_transit_retries_a_rebind_lookup_without_waiting_for_backo
 }
 
 #[tokio::test]
+async fn authenticated_transit_starts_rebind_lookup_when_initial_rebind_had_no_fallback() {
+    let mut config = Config::new();
+    config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;
+    let remote = Identity::generate();
+    config.peers = vec![auto_connect_peer(remote.npub(), "127.0.0.1:9")];
+    let mut node = Node::new(config).unwrap();
+
+    let remote_addr = *remote.node_addr();
+    let direct_peer = make_active_test_peer(
+        &node,
+        &remote,
+        TransportId::new(1),
+        LinkId::new(1),
+        TransportAddr::from_string("127.0.0.1:9"),
+        SessionIndex::new(1),
+        SessionIndex::new(2),
+    );
+    node.peers.insert(remote_addr, direct_peer);
+    assert!(node.sync_dataplane_fmp_owner(&remote_addr));
+
+    let now_ms = Node::now_ms();
+    node.mark_session_direct_path_degraded(remote_addr, now_ms);
+    node.maybe_recover_degraded_session_routes(now_ms).await;
+    assert!(
+        !node.pending_lookups.contains_key(&remote_addr),
+        "the carrier event cannot send a fallback lookup before transit authenticates"
+    );
+    let baseline = node.stats().discovery.req_initiated;
+
+    let fallback = Identity::generate();
+    let fallback_addr = *fallback.node_addr();
+    let fallback_peer = make_active_test_peer(
+        &node,
+        &fallback,
+        TransportId::new(2),
+        LinkId::new(2),
+        TransportAddr::from_string("127.0.0.1:10"),
+        SessionIndex::new(3),
+        SessionIndex::new(4),
+    );
+    node.peers.insert(fallback_addr, fallback_peer);
+    assert!(node.sync_dataplane_fmp_owner(&fallback_addr));
+
+    node.retry_degraded_session_routes_after_peer_authenticated(fallback_addr, now_ms)
+        .await;
+
+    assert!(
+        node.pending_lookups.contains_key(&remote_addr),
+        "the first authenticated transit after a rebind must start the lookup that could not be sent at the carrier event"
+    );
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        baseline + 1,
+        "transit authentication should start exactly one bounded recovery lookup"
+    );
+}
+
+#[tokio::test]
+async fn network_transport_rebind_updates_nostr_traversal_interface() {
+    let mut node = make_node();
+    let discovery =
+        NostrDiscovery::new_for_test_with_bind_interface(Some("old-underlay".to_string()));
+    node.nostr_discovery = Some(discovery.clone());
+    let peer = Identity::generate();
+    discovery
+        .start_pending_initiator_for_test(&peer.npub())
+        .await;
+    assert_eq!(discovery.active_initiator_count_for_test().await, 1);
+
+    assert_eq!(
+        node.rebind_network_transports(Some("new-underlay".to_string()))
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        discovery.bind_interface_for_test().await.as_deref(),
+        Some("new-underlay"),
+        "STUN and traversal sockets must bind to the new carrier instead of the disabled one"
+    );
+    assert_eq!(
+        discovery.active_initiator_count_for_test().await,
+        0,
+        "the old-interface traversal must not suppress its replacement as already in progress"
+    );
+}
+
+#[tokio::test]
 async fn fallback_becoming_live_after_network_rebind_replaces_unusable_direct_payload() {
     let mut config = Config::new();
     config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;

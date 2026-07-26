@@ -1,6 +1,32 @@
 use super::*;
 
 impl NostrDiscovery {
+    async fn abort_child_tasks(&self) {
+        let tasks = std::mem::take(&mut *self.child_tasks.lock().await);
+        for task in &tasks {
+            task.abort();
+        }
+        for task in tasks {
+            let _ = task.await;
+        }
+    }
+
+    pub(crate) async fn rebind_network(&self, bind_interface: Option<String>) {
+        *self.bind_interface.write().await = bind_interface;
+        self.abort_child_tasks().await;
+        self.pending_answers.lock().await.clear();
+        self.answered_offers.lock().await.clear();
+        self.active_initiators.lock().await.clear();
+        self.active_refetches.lock().await.clear();
+        self.public_udp_addr_cache.write().await.clear();
+
+        let mut events = self.event_rx.lock().await;
+        while events.try_recv().is_ok() {}
+        drop(events);
+        let mut mesh_signals = self.mesh_signal_rx.lock().await;
+        while mesh_signals.try_recv().is_ok() {}
+    }
+
     pub async fn shutdown(&self) -> Result<(), BootstrapError> {
         self.shutting_down.store(true, Ordering::Release);
 
@@ -20,13 +46,7 @@ impl NostrDiscovery {
             let _ = task.await;
         }
 
-        let tasks = std::mem::take(&mut *self.child_tasks.lock().await);
-        for task in &tasks {
-            task.abort();
-        }
-        for task in tasks {
-            let _ = task.await;
-        }
+        self.abort_child_tasks().await;
         self.pending_answers.lock().await.clear();
         self.answered_offers.lock().await.clear();
         self.active_initiators.lock().await.clear();

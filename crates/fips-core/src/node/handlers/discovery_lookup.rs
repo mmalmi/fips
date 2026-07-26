@@ -307,12 +307,16 @@ impl Node {
         let recovery_candidates: Vec<NodeAddr> = self
             .session_direct_degradation
             .active_destinations(now_ms)
-            .filter(|dest| self.pending_lookups.contains_key(dest))
             .filter(|dest| self.is_sendable_fallback_lookup_peer(&peer_addr, dest))
             .take(MAX_DEGRADED_ROUTE_RECOVERIES_PER_PASS)
             .collect();
 
         for dest in recovery_candidates {
+            if !self.pending_lookups.contains_key(&dest) {
+                self.maybe_initiate_direct_path_fallback_lookup(&dest)
+                    .await;
+                continue;
+            }
             let ttl = self.config.node.discovery.ttl;
             if self.initiate_lookup(&dest, ttl).await == 0 {
                 continue;

@@ -1,6 +1,19 @@
 use super::*;
 
 impl NostrDiscovery {
+    pub(crate) fn new_for_test_with_bind_interface(
+        bind_interface: Option<String>,
+    ) -> Arc<NostrDiscovery> {
+        Arc::new(Self::new_for_test_with_config(NostrDiscoveryConfig {
+            bind_interface,
+            ..NostrDiscoveryConfig::default()
+        }))
+    }
+
+    pub(crate) async fn bind_interface_for_test(&self) -> Option<String> {
+        self.bind_interface.read().await.clone()
+    }
+
     /// Build a minimal `NostrDiscovery` for unit tests. No relay client is
     /// connected and no background tasks are spawned; only the in-memory
     /// `advert_cache` and `npub` are usable. Intended for cache-injection
@@ -43,6 +56,7 @@ impl NostrDiscovery {
             keys,
             pubkey,
             npub,
+            bind_interface: RwLock::new(config.bind_interface.clone()),
             relay_config: RwLock::new(AdvertRelayConfig::from(&config)),
             config,
             advert_cache: RwLock::new(HashMap::new()),
@@ -133,6 +147,18 @@ impl NostrDiscovery {
     #[cfg(test)]
     pub(crate) async fn active_initiator_count_for_test(&self) -> usize {
         self.active_initiators.lock().await.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn start_pending_initiator_for_test(&self, npub: &str) {
+        self.active_initiators
+            .lock()
+            .await
+            .insert(NostrPeerKey::parse(npub).expect("valid test npub"));
+        assert!(
+            self.spawn_child_task(std::future::pending()).await,
+            "test discovery should accept a pending traversal task"
+        );
     }
 
     #[cfg(test)]

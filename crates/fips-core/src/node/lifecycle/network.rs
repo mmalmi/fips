@@ -13,6 +13,9 @@ impl Node {
     ) -> Result<usize, NodeError> {
         let rebind_started_at_ms = Self::now_ms();
         self.config.node.discovery.nostr.bind_interface = bind_interface.clone();
+        if let Some(discovery) = self.nostr_discovery.clone() {
+            discovery.rebind_network(bind_interface.clone()).await;
+        }
         match &mut self.config.transports.udp {
             crate::config::TransportInstances::Single(config) => {
                 config.bind_interface.clone_from(&bind_interface);
