@@ -29,10 +29,12 @@ pub(in crate::node) const REKEY_DAMPENING_SECS: u64 = 30;
 /// pending session until it authenticates the peer's K-bit flip.
 const FMP_CUTOVER_DELAY_MS: u64 = 250;
 
-/// Delay FSP initiator cutover after handshake completion to allow the initial
-/// XK msg3 plus the exponential resend burst to reach the responder before
-/// K-bit-flipped data arrives.
-const FSP_CUTOVER_DELAY_MS: u64 = 35_000;
+/// Give the initial FSP msg3 and its first retry time to reach the responder,
+/// then flip promptly. The initiator retains the old receive epoch and keeps
+/// retransmitting msg3 until authenticated current-epoch traffic confirms the
+/// responder cut over, so waiting for the entire exponential retry budget only
+/// prolongs an outage and can collide with decrypt-failure recovery.
+const FSP_CUTOVER_DELAY_MS: u64 = 2_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SessionRekeyMsg3Resend {

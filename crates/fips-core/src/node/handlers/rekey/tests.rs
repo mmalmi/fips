@@ -116,7 +116,7 @@ fn active_fmp_peer(local: &Identity, peer: &Identity, tag: u32) -> ActivePeer {
 }
 
 #[test]
-fn fsp_cutover_delay_covers_msg3_retransmit_burst() {
+fn fsp_cutover_delay_allows_a_retry_without_waiting_for_the_full_burst() {
     let rate_limit = crate::config::RateLimitConfig::default();
     let resend_budget = (0..rate_limit.handshake_max_resends)
         .map(|resend| {
@@ -126,8 +126,12 @@ fn fsp_cutover_delay_covers_msg3_retransmit_burst() {
         .sum::<u64>();
 
     assert!(
-        FSP_CUTOVER_DELAY_MS >= resend_budget,
-        "FSP initiator cutover must allow msg3 retransmits before K-bit flip"
+        FSP_CUTOVER_DELAY_MS >= rate_limit.handshake_resend_interval_ms,
+        "FSP initiator cutover must allow the first msg3 retry before K-bit flip"
+    );
+    assert!(
+        FSP_CUTOVER_DELAY_MS < resend_budget,
+        "FSP initiator cutover must not wait for the full exponential retry budget"
     );
 }
 

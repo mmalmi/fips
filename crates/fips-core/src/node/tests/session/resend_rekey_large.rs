@@ -402,19 +402,25 @@ async fn rekey_initiator_resends_final_msg3_until_responder_has_pending_session(
         "responder should store the pending rekey session after resent msg3"
     );
 
+    let cutover_started = tokio::time::Instant::now();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            nodes[0].node.check_session_rekey().await;
+            if nodes[0]
+                .node
+                .get_session(&node1_addr)
+                .is_some_and(|entry| entry.current_k_bit() && entry.pending_new_session().is_none())
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("production rekey maintenance should cut over promptly");
     assert!(
-        nodes[0]
-            .node
-            .sessions
-            .get_mut(&node1_addr)
-            .is_some_and(|entry| entry.cutover_to_new_session(Node::now_ms())),
-        "initiator should cut over after the responder has installed its pending epoch"
-    );
-    assert!(
-        nodes[0]
-            .node
-            .sync_dataplane_fsp_owner_from_current_session(&node1_addr, 0),
-        "initiator dataplane should install the new FSP send epoch"
+        cutover_started.elapsed() < Duration::from_secs(5),
+        "FSP cutover must finish well before the old exponential resend window"
     );
 
     let mut node1_endpoint = nodes[1]
