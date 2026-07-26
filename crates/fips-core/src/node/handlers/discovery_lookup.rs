@@ -270,21 +270,15 @@ impl Node {
     /// or other transit peer authenticates again.
     pub(in crate::node) async fn maybe_recover_degraded_session_routes(&mut self, now_ms: u64) {
         let recovery_candidates: Vec<NodeAddr> = self
-            .retry_pending
-            .iter()
-            .filter_map(|(node_addr, _)| {
-                (self.session_direct_path_degradation_active(node_addr, now_ms)
-                    && !self.pending_lookups.contains_key(node_addr))
-                .then_some(*node_addr)
-            })
+            .session_direct_degradation
+            .active_destinations(now_ms)
+            .filter(|node_addr| !self.pending_lookups.contains_key(node_addr))
             .take(MAX_DEGRADED_ROUTE_RECOVERIES_PER_PASS)
             .collect();
 
         for node_addr in recovery_candidates {
-            if self.find_next_hop(&node_addr).is_none() {
-                self.maybe_initiate_direct_path_fallback_lookup(&node_addr)
-                    .await;
-            }
+            self.maybe_initiate_direct_path_fallback_lookup(&node_addr)
+                .await;
         }
     }
 
@@ -298,7 +292,9 @@ impl Node {
         &mut self,
         dest: &NodeAddr,
     ) {
-        if !self.retry_pending.contains_key(dest) {
+        if !self.retry_pending.contains_key(dest)
+            && !self.session_direct_path_degradation_active(dest, Self::now_ms())
+        {
             return;
         }
 

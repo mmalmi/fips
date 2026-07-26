@@ -60,6 +60,15 @@ pub(in crate::node) struct SessionDirectDegradation {
 }
 
 impl SessionDirectDegradation {
+    pub(in crate::node) fn active_destinations(
+        &self,
+        now_ms: u64,
+    ) -> impl Iterator<Item = NodeAddr> + '_ {
+        self.degraded_until_ms
+            .iter()
+            .filter_map(move |(dest, until_ms)| (*until_ms > now_ms).then_some(*dest))
+    }
+
     pub(in crate::node) fn is_degraded_at(&self, dest: &NodeAddr, now_ms: u64) -> bool {
         self.degraded_until_ms
             .get(dest)
