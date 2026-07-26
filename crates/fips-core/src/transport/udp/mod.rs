@@ -10,7 +10,7 @@ use super::{
 pub(crate) mod darwin_sockopts;
 pub(crate) mod socket;
 mod stats;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
 pub(crate) mod underlay;
 use super::resolve_socket_addr;
 use crate::config::UdpConfig;

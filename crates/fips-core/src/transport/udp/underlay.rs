@@ -2,7 +2,7 @@ use socket2::Socket;
 use std::io;
 use std::net::SocketAddr;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub(crate) fn bind_socket_to_interface(
     socket: &Socket,
     bind_addr: SocketAddr,
