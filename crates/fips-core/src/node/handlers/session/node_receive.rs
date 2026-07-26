@@ -411,6 +411,14 @@ impl Node {
         fmp: crate::node::AuthenticatedFmpReceiveFacts<'_>,
         previous_hop: Option<&NodeAddr>,
     ) {
+        if self.packet_predates_carrier_rebind(fmp.transport_id, fmp.packet_timestamp_ms) {
+            debug!(
+                transport_id = %fmp.transport_id,
+                packet_timestamp_ms = fmp.packet_timestamp_ms,
+                "Ignoring authenticated FMP bookkeeping queued by a previous carrier incarnation"
+            );
+            return;
+        }
         let now = Instant::now();
         let source_addr = fmp.source_node_addr();
         let arrived_from_source = previous_hop.is_none_or(|hop| hop == source_addr);

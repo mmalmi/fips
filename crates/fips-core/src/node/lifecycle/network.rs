@@ -10,6 +10,7 @@ impl Node {
         &mut self,
         bind_interface: Option<String>,
     ) -> Result<usize, NodeError> {
+        let rebind_started_at_ms = Self::now_ms();
         self.config.node.discovery.nostr.bind_interface = bind_interface.clone();
         match &mut self.config.transports.udp {
             crate::config::TransportInstances::Single(config) => {
@@ -52,6 +53,10 @@ impl Node {
         }
 
         if !refreshed_transport_ids.is_empty() {
+            for transport_id in &refreshed_transport_ids {
+                self.transport_rebind_packet_cutoffs_ms
+                    .insert(*transport_id, rebind_started_at_ms);
+            }
             let mut invalidated_peers = Vec::new();
             for peer in self.peers.values_mut() {
                 if peer
@@ -121,5 +126,15 @@ impl Node {
         }
 
         Ok(refreshed)
+    }
+
+    pub(in crate::node) fn packet_predates_carrier_rebind(
+        &self,
+        transport_id: crate::transport::TransportId,
+        packet_timestamp_ms: u64,
+    ) -> bool {
+        self.transport_rebind_packet_cutoffs_ms
+            .get(&transport_id)
+            .is_some_and(|cutoff_ms| packet_timestamp_ms <= *cutoff_ms)
     }
 }

@@ -32,6 +32,15 @@ impl Node {
     ///
     /// This completes an outbound handshake we initiated.
     pub(in crate::node) async fn handle_msg2(&mut self, packet: ReceivedPacket) {
+        if self.packet_predates_carrier_rebind(packet.transport_id, packet.timestamp_ms) {
+            debug!(
+                transport_id = %packet.transport_id,
+                remote_addr = %packet.remote_addr,
+                packet_timestamp_ms = packet.timestamp_ms,
+                "Dropping msg2 queued by a previous carrier incarnation"
+            );
+            return;
+        }
         // Parse header
         let header = match Msg2Header::parse(packet.data.as_slice()) {
             Some(h) => h,

@@ -207,6 +207,10 @@ pub struct Node {
     // === Transports & Links ===
     /// Active transports (owned by Node).
     transports: HashMap<TransportId, TransportHandle>,
+    /// Latest receive timestamp accepted from each rebuilt carrier. Packets
+    /// queued by the previous socket before a network change must not
+    /// authenticate or revive its stale peer tuples afterward.
+    transport_rebind_packet_cutoffs_ms: HashMap<TransportId, u64>,
     /// Platform-command BLE transport supplied by an embedded host.
     #[cfg(feature = "host-ble-transport")]
     host_ble_io: Option<HostBleIo>,

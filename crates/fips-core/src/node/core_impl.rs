@@ -81,6 +81,7 @@ impl Node {
             session_direct_degradation: SessionDirectDegradation::default(),
             recent_requests: RecentDiscoveryRequests::default(),
             transports: HashMap::new(),
+            transport_rebind_packet_cutoffs_ms: HashMap::new(),
             #[cfg(feature = "host-ble-transport")]
             host_ble_io: None,
             transport_drops: TransportDropTracker::default(),
@@ -227,6 +228,7 @@ impl Node {
             session_direct_degradation: SessionDirectDegradation::default(),
             recent_requests: RecentDiscoveryRequests::default(),
             transports: HashMap::new(),
+            transport_rebind_packet_cutoffs_ms: HashMap::new(),
             #[cfg(feature = "host-ble-transport")]
             host_ble_io: None,
             transport_drops: TransportDropTracker::default(),

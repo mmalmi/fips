@@ -86,6 +86,15 @@ impl Node {
     /// This creates a new inbound connection. Rate limiting is applied
     /// before any expensive crypto operations.
     pub(in crate::node) async fn handle_msg1(&mut self, packet: ReceivedPacket) {
+        if self.packet_predates_carrier_rebind(packet.transport_id, packet.timestamp_ms) {
+            debug!(
+                transport_id = %packet.transport_id,
+                remote_addr = %packet.remote_addr,
+                packet_timestamp_ms = packet.timestamp_ms,
+                "Dropping msg1 queued by a previous carrier incarnation"
+            );
+            return;
+        }
         debug!(
             transport_id = %packet.transport_id,
             remote_addr = %packet.remote_addr,

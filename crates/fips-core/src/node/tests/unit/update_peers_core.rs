@@ -261,6 +261,97 @@ async fn network_transport_rebind_discards_inflight_udp_handshakes() {
 }
 
 #[tokio::test]
+async fn network_transport_rebind_rejects_handshake_queued_by_old_carrier() {
+    use crate::node::wire::build_msg1;
+
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+    node.transports
+        .insert(transport_id, make_udp_transport_with_mtu(1, 1280).await);
+
+    let remote = Identity::generate();
+    let responder_identity = PeerIdentity::from_pubkey_full(node.identity.pubkey_full());
+    let received_at_ms = Node::now_ms();
+    let mut remote_connection =
+        PeerConnection::outbound(LinkId::new(1), responder_identity, received_at_ms);
+    let noise_msg1 = remote_connection
+        .start_handshake(remote.keypair(), [0x11; 8], received_at_ms)
+        .unwrap();
+    let wire_msg1 = build_msg1(SessionIndex::new(7), &noise_msg1);
+
+    assert_eq!(node.rebind_network_transports(None).await.unwrap(), 1);
+    node.handle_msg1(ReceivedPacket::with_timestamp(
+        transport_id,
+        TransportAddr::from_string("127.0.0.1:5000"),
+        crate::transport::PacketBuffer::new(wire_msg1),
+        received_at_ms,
+    ))
+    .await;
+
+    assert_eq!(
+        node.peer_count() + node.connection_count(),
+        0,
+        "a handshake already queued by the old socket must not authenticate a stale path after carrier rebind"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
+async fn network_transport_rebind_ignores_authenticated_receive_queued_by_old_carrier() {
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+    node.transports
+        .insert(transport_id, make_udp_transport_with_mtu(1, 1280).await);
+
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+    let transport_addr = TransportAddr::from_string("127.0.0.1:5000");
+    let received_at_ms = Node::now_ms();
+    let peer = make_active_test_peer(
+        &node,
+        &remote,
+        transport_id,
+        LinkId::new(1),
+        transport_addr.clone(),
+        SessionIndex::new(1),
+        SessionIndex::new(2),
+    );
+    node.peers.insert(remote_addr, peer);
+    assert!(node.sync_dataplane_fmp_owner(&remote_addr));
+
+    assert_eq!(node.rebind_network_transports(None).await.unwrap(), 1);
+    node.record_authenticated_fmp_receive_facts(
+        AuthenticatedFmpReceiveFacts {
+            source_peer: PeerIdentity::from_pubkey_full(remote.pubkey_full()),
+            transport_id,
+            remote_addr: &transport_addr,
+            packet_timestamp_ms: received_at_ms,
+            packet_len: 64,
+            fmp_counter: 1,
+            inner_timestamp_ms: 1,
+            fmp_flags: 0,
+        },
+        None,
+    );
+
+    assert!(
+        !node.get_peer(&remote_addr).unwrap().is_healthy(),
+        "queued authenticated traffic from the old socket must not revive its stale peer tuple"
+    );
+    assert!(
+        !node.dataplane_has_fmp_owner(&remote_addr),
+        "queued authenticated traffic from the old socket must not restore its withdrawn dataplane owner"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
 async fn network_transport_rebind_schedules_fresh_handshake_for_active_udp_peer() {
     let mut node = make_node();
     let transport_id = TransportId::new(1);
