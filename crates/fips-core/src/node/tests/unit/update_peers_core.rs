@@ -798,9 +798,33 @@ async fn refresh_peer_paths_redials_active_peer_on_same_known_candidate() {
     let peer_node_addr = *peer_identity.node_addr();
     let current_addr = TransportAddr::from_string("127.0.0.1:9");
     let old_link_id = LinkId::new(7);
-    let mut active_peer = ActivePeer::new(peer_identity, old_link_id, 1_000);
-    active_peer.set_current_addr(transport_id, &current_addr);
+    let active_peer = make_active_test_peer(
+        &node,
+        &peer_full,
+        transport_id,
+        old_link_id,
+        current_addr.clone(),
+        SessionIndex::new(11),
+        SessionIndex::new(12),
+    );
     node.peers.insert(peer_node_addr, active_peer);
+    assert!(node.sync_dataplane_fmp_owner(&peer_node_addr));
+
+    let mut session = SessionEntry::new(
+        peer_node_addr,
+        peer_full.pubkey_full(),
+        crate::node::session::EndToEndState::Established(make_test_fmp_session(
+            node.identity(),
+            &peer_full,
+            [0x51; 8],
+            [0x52; 8],
+        )),
+        1_000,
+        true,
+    );
+    session.mark_established(1_000);
+    node.sessions.insert(peer_node_addr, session);
+    assert!(node.sync_dataplane_fsp_owner_from_current_session(&peer_node_addr, 0));
 
     let peer = auto_connect_peer(peer_full.npub(), "127.0.0.1:9");
     node.config.peers = vec![peer.clone()];
@@ -821,6 +845,14 @@ async fn refresh_peer_paths_redials_active_peer_on_same_known_candidate() {
     let active = node.get_peer(&peer_node_addr).unwrap();
     assert_eq!(active.link_id(), old_link_id);
     assert_eq!(active.current_addr(), Some(&current_addr));
+    let preserved_session = node
+        .sessions
+        .get(&peer_node_addr)
+        .expect("refreshing a transport path must preserve the end-to-end session");
+    assert!(
+        !preserved_session.has_rekey_in_progress(),
+        "refreshing a transport path must preserve the established end-to-end key epoch"
+    );
 
     for transport in node.transports.values_mut() {
         transport.stop().await.ok();
