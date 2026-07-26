@@ -171,6 +171,7 @@ async fn handle_msg2_replaces_payload_degraded_connection_oriented_carrier() {
 
 async fn run_late_reverse_tcp_dial_resolution(payload_degraded: bool) {
     let mut node = make_node();
+    node.config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;
     let (packet_tx, packet_rx) = packet_channel(64);
     node.packet_tx = Some(packet_tx.clone());
     node.packet_rx = Some(packet_rx);
@@ -204,18 +205,30 @@ async fn run_late_reverse_tcp_dial_resolution(payload_degraded: bool) {
 
     let accepted_source = TransportAddr::from_string("127.0.0.1:40002");
     let listener_addr = TransportAddr::from_string("127.0.0.1:8443");
-    node.config.peers = vec![crate::config::PeerConfig {
-        npub: peer_full.npub(),
-        alias: None,
-        addresses: vec![crate::config::PeerAddress::with_priority(
-            "tcp",
-            listener_addr.to_string(),
-            20,
-        )],
-        connect_policy: crate::config::ConnectPolicy::AutoConnect,
-        auto_reconnect: true,
-        discovery_fallback_transit: true,
-    }];
+    let recovery_target = Identity::generate();
+    let recovery_target_addr = *recovery_target.node_addr();
+    node.config.peers = vec![
+        crate::config::PeerConfig {
+            npub: peer_full.npub(),
+            alias: None,
+            addresses: vec![crate::config::PeerAddress::with_priority(
+                "tcp",
+                listener_addr.to_string(),
+                20,
+            )],
+            connect_policy: crate::config::ConnectPolicy::AutoConnect,
+            auto_reconnect: true,
+            discovery_fallback_transit: true,
+        },
+        crate::config::PeerConfig {
+            npub: recovery_target.npub(),
+            alias: None,
+            addresses: vec![crate::config::PeerAddress::with_priority("udp", "nat", 1)],
+            connect_policy: crate::config::ConnectPolicy::AutoConnect,
+            auto_reconnect: true,
+            discovery_fallback_transit: false,
+        },
+    ];
     refresh_configured_peer_cache_for_test(&mut node);
 
     let old_link_id = LinkId::new(10);
@@ -265,6 +278,11 @@ async fn run_late_reverse_tcp_dial_resolution(payload_degraded: bool) {
         );
         node.session_direct_degradation.mark_degraded(
             peer_node_addr,
+            now_ms,
+            SESSION_DIRECT_DEGRADED_HOLD_MS,
+        );
+        node.session_direct_degradation.mark_degraded(
+            recovery_target_addr,
             now_ms,
             SESSION_DIRECT_DEGRADED_HOLD_MS,
         );
@@ -335,6 +353,10 @@ async fn run_late_reverse_tcp_dial_resolution(payload_degraded: bool) {
         assert_eq!(active.our_index(), Some(new_our_index));
         assert_eq!(active.their_index(), Some(new_their_index));
         assert!(!node.links.contains_key(&old_link_id));
+        assert!(
+            node.pending_lookups.contains_key(&recovery_target_addr),
+            "a replacement transit carrier must immediately retry peer routes stranded by the rebind"
+        );
     } else {
         assert_eq!(active.link_id(), old_link_id);
         assert_eq!(active.current_addr(), Some(&accepted_source));

@@ -598,6 +598,11 @@ impl Node {
                 }
                 self.bloom_state.mark_update_needed(peer_node_addr);
                 self.reset_discovery_backoff();
+                self.retry_degraded_session_routes_after_peer_authenticated(
+                    peer_node_addr,
+                    packet.timestamp_ms,
+                )
+                .await;
                 return;
             }
 
