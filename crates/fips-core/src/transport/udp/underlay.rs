@@ -39,6 +39,13 @@ pub(crate) fn bind_socket_to_interface(
 ) -> io::Result<()> {
     match interface {
         None => Ok(()),
-        Some(interface) => socket.bind_device(Some(interface.as_bytes())),
+        Some(interface) => socket
+            .bind_device(Some(interface.as_bytes()))
+            .map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("bind to interface {interface:?}: {error}"),
+                )
+            }),
     }
 }

@@ -225,7 +225,10 @@ async fn configured_rebind_apply_failure_rolls_back_live_socket() {
         .rebind_after_prepared_network_change(Some("fips-no-such0".to_string()))
         .await
         .expect_err("an interface that disappeared after preparation must fail apply");
-    assert!(error.to_string().contains("fips-no-such0"));
+    assert!(
+        error.to_string().contains("fips-no-such0"),
+        "unexpected rebind error: {error}"
+    );
     assert_eq!(transport.state(), TransportState::Up);
     assert_eq!(transport.local_addr(), Some(original_addr));
     assert_eq!(transport.config.bind_interface, None);
@@ -248,7 +251,10 @@ async fn adopted_rebind_apply_failure_rolls_back_live_socket_and_port() {
         .rebind_after_prepared_network_change(Some("fips-no-such0".to_string()))
         .await
         .expect_err("an interface that disappeared after preparation must fail apply");
-    assert!(error.to_string().contains("fips-no-such0"));
+    assert!(
+        error.to_string().contains("fips-no-such0"),
+        "unexpected rebind error: {error}"
+    );
     assert_eq!(transport.state(), TransportState::Up);
     assert_eq!(transport.local_addr(), Some(original_addr));
     assert_eq!(transport.config.bind_interface, None);
