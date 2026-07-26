@@ -57,11 +57,21 @@ impl Node {
     ) -> Result<bool, NodeError> {
         let peer_node_addr = *peer_identity.node_addr();
         let mut candidates = self.peer_address_candidates(peer_config).await;
-        let direct_validation_rekey = allow_same_path_refresh
-            && self.config.node.rekey.enabled
+        let direct_path_refresh_needed = allow_same_path_refresh
             && self
                 .session_direct_degradation
-                .has_pending_validation(&peer_node_addr)
+                .has_pending_validation(&peer_node_addr);
+        // A rebound socket cannot make a stale public endpoint reachable
+        // through endpoint-dependent NAT. Start authenticated traversal over
+        // the preserved mesh session immediately, in parallel with concrete
+        // address probes and rekey recovery.
+        let traversal_started = if direct_path_refresh_needed {
+            self.request_nostr_bootstrap(peer_config).await
+        } else {
+            false
+        };
+        let direct_validation_rekey = direct_path_refresh_needed
+            && self.config.node.rekey.enabled
             && self.peers.get(&peer_node_addr).is_some_and(|peer| {
                 peer.is_healthy()
                     && peer.can_send()
@@ -128,6 +138,9 @@ impl Node {
             });
 
         if candidates.is_empty() {
+            if traversal_started {
+                return Ok(true);
+            }
             return Err(NodeError::NoTransportForType(format!(
                 "no addresses known for {}",
                 peer_config.npub
@@ -144,12 +157,17 @@ impl Node {
             .collect();
 
         if alternatives.is_empty() {
-            return Ok(false);
+            return Ok(traversal_started);
         }
 
-        self.attempt_peer_address_list(peer_config, peer_identity, true, &alternatives)
+        match self
+            .attempt_peer_address_list(peer_config, peer_identity, true, &alternatives)
             .await
-            .map(|()| true)
+        {
+            Ok(()) => Ok(true),
+            Err(_) if traversal_started => Ok(true),
+            Err(error) => Err(error),
+        }
     }
 
     pub(in crate::node) async fn peer_address_candidates(

@@ -794,6 +794,78 @@ async fn healthy_websocket_upgrade_skips_bootstrap_redial_and_unadvertised_udp_n
 }
 
 #[tokio::test]
+async fn degraded_active_peer_refresh_starts_traversal_without_udp_nat_pseudocandidate() {
+    use crate::config::NostrDiscoveryPolicy;
+
+    let peer_full = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_full.npub(),
+        alias: None,
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.node.discovery.nostr.policy = NostrDiscoveryPolicy::ConfiguredOnly;
+    config.peers = vec![peer_config.clone()];
+    let mut node = Node::new(config).expect("node");
+
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
+    node.nostr_discovery = Some(bootstrap.clone());
+
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+    let transport_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.expect("start UDP transport");
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_node_addr = *peer_identity.node_addr();
+    let active = make_active_test_peer(
+        &node,
+        &peer_full,
+        transport_id,
+        LinkId::new(7),
+        TransportAddr::from_string("127.0.0.1:9"),
+        SessionIndex::new(11),
+        SessionIndex::new(12),
+    );
+    node.peers.insert(peer_node_addr, active);
+    assert!(node.sync_dataplane_fmp_owner(&peer_node_addr));
+    node.mark_session_direct_path_degraded(peer_node_addr, Node::now_ms());
+
+    assert!(
+        node.initiate_active_peer_direct_refresh_connection(&peer_config)
+            .await
+            .expect("refresh degraded active peer"),
+        "network-change refresh should start at least one recovery path"
+    );
+    assert_eq!(
+        bootstrap.active_initiator_count_for_test().await,
+        1,
+        "a configured npub and authenticated mesh route should start NAT traversal without a synthetic udp:nat address"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
 async fn configured_direct_refresh_waits_for_mesh_route_then_ignores_traversal_cooldown() {
     use crate::config::NostrDiscoveryPolicy;
 
