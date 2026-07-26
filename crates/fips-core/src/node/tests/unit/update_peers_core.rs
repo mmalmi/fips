@@ -179,6 +179,21 @@ async fn network_transport_rebind_discovers_fallback_when_transit_returns() {
         "fixture must begin on the direct path without a learned fallback route"
     );
 
+    let fallback = Identity::generate();
+    let fallback_addr = *fallback.node_addr();
+    let mut stale_fallback_peer = make_active_test_peer(
+        &node,
+        &fallback,
+        TransportId::new(2),
+        LinkId::new(2),
+        TransportAddr::from_string("127.0.0.1:10"),
+        SessionIndex::new(3),
+        SessionIndex::new(4),
+    );
+    stale_fallback_peer.mark_stale();
+    node.peers.insert(fallback_addr, stale_fallback_peer);
+    assert!(node.sync_dataplane_fmp_owner(&fallback_addr));
+
     let baseline = node.stats().discovery.req_initiated;
     assert_eq!(node.rebind_network_transports(None).await.unwrap(), 1);
     assert!(
@@ -187,11 +202,9 @@ async fn network_transport_rebind_discovers_fallback_when_transit_returns() {
     );
     assert!(
         !node.pending_lookups.contains_key(&remote_addr),
-        "recovery lookup should wait until an alternate adjacency can carry it"
+        "recovery lookup must not be stranded on an unhealthy transit adjacency"
     );
 
-    let fallback = Identity::generate();
-    let fallback_addr = *fallback.node_addr();
     let fallback_peer = make_active_test_peer(
         &node,
         &fallback,

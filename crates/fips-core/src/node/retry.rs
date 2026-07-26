@@ -774,26 +774,7 @@ impl Node {
             return;
         }
 
-        // A network rebind can briefly remove every connection-oriented
-        // transit adjacency along with the dead direct NAT tuple. Retry the
-        // existing bounded lookup as soon as any alternate adjacency returns,
-        // without waiting for the independently jittered direct-path retry.
-        let recovery_candidates: Vec<NodeAddr> = self
-            .retry_pending
-            .iter()
-            .filter_map(|(node_addr, _)| {
-                (self.session_direct_path_degradation_active(node_addr, now_ms)
-                    && !self.pending_lookups.contains_key(node_addr))
-                .then_some(*node_addr)
-            })
-            .take(MAX_RETRY_CONNECTIONS_PER_TICK)
-            .collect();
-        for node_addr in recovery_candidates {
-            if self.find_next_hop(&node_addr).is_none() {
-                self.maybe_initiate_direct_path_fallback_lookup(&node_addr)
-                    .await;
-            }
-        }
+        self.maybe_recover_degraded_session_routes(now_ms).await;
 
         // Collect retries that are due. Existing peers and live graph/FIPS
         // fallback sessions are direct-path refreshes; keep those in the

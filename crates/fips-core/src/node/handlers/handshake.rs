@@ -792,6 +792,8 @@ impl Node {
             Box::pin(self.complete_owned_msg2_bootstrap(&node_addr)).await;
         }
 
+        self.maybe_recover_degraded_session_routes(packet.timestamp_ms)
+            .await;
         self.msg1_rate_limiter.complete_handshake();
     }
 

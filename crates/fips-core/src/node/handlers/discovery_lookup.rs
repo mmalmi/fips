@@ -1,3 +1,5 @@
+const MAX_DEGRADED_ROUTE_RECOVERIES_PER_PASS: usize = 16;
+
 impl Node {
     /// Initiate a discovery lookup for a target node.
     ///
@@ -253,10 +255,37 @@ impl Node {
     pub(in crate::node) fn has_sendable_fallback_lookup_peer(&self, dest: &NodeAddr) -> bool {
         self.peers.iter().any(|(addr, peer)| {
             *addr != *dest
+                && peer.is_healthy()
                 && peer.can_send()
                 && (self.config.node.routing.mode != RoutingMode::ReplyLearned
                     || self.should_use_reply_learned_lookup_fallback_peer(addr, peer, dest))
         })
+    }
+
+    /// Recover degraded end-to-end sessions as soon as a transit adjacency is healthy.
+    ///
+    /// Carrier rebinding can invalidate direct NAT tuples and connection-oriented
+    /// seed adjacencies at the same instant. The direct retry remains independent;
+    /// this pass starts the existing bounded mesh lookup immediately when a seed
+    /// or other transit peer authenticates again.
+    pub(in crate::node) async fn maybe_recover_degraded_session_routes(&mut self, now_ms: u64) {
+        let recovery_candidates: Vec<NodeAddr> = self
+            .retry_pending
+            .iter()
+            .filter_map(|(node_addr, _)| {
+                (self.session_direct_path_degradation_active(node_addr, now_ms)
+                    && !self.pending_lookups.contains_key(node_addr))
+                .then_some(*node_addr)
+            })
+            .take(MAX_DEGRADED_ROUTE_RECOVERIES_PER_PASS)
+            .collect();
+
+        for node_addr in recovery_candidates {
+            if self.find_next_hop(&node_addr).is_none() {
+                self.maybe_initiate_direct_path_fallback_lookup(&node_addr)
+                    .await;
+            }
+        }
     }
 
     /// Ask existing mesh neighbors for a route after a direct path becomes suspect.

@@ -78,7 +78,6 @@ impl Node {
                 .collect();
             let now_ms = Self::now_ms();
             let mut invalidated_peers = Vec::new();
-            let mut recovery_peers = Vec::new();
             let mut preserved_udp_peers = 0usize;
             for (peer_addr, can_preserve_udp_session) in rebound_peers {
                 if can_preserve_udp_session {
@@ -94,7 +93,6 @@ impl Node {
                     if self.sync_dataplane_fmp_owner(&peer_addr) {
                         self.mark_session_direct_path_degraded(peer_addr, now_ms);
                         self.schedule_link_dead_reprobe(peer_addr, now_ms);
-                        recovery_peers.push(peer_addr);
                         preserved_udp_peers = preserved_udp_peers.saturating_add(1);
                         continue;
                     }
@@ -124,14 +122,8 @@ impl Node {
                 self.mark_session_direct_path_degraded(*peer_addr, now_ms);
                 self.refresh_dataplane_fsp_owner_routes_after_fmp_owner_update(peer_addr);
                 self.schedule_link_dead_reprobe(*peer_addr, now_ms);
-                recovery_peers.push(*peer_addr);
             }
-            for peer_addr in recovery_peers {
-                if self.find_next_hop(&peer_addr).is_none() {
-                    self.maybe_initiate_direct_path_fallback_lookup(&peer_addr)
-                        .await;
-                }
-            }
+            self.maybe_recover_degraded_session_routes(now_ms).await;
             debug!(
                 count = invalidated_peers.len(),
                 "Invalidated direct session payload and rebound UDP peer tuples for authenticated path replacement"

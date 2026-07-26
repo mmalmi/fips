@@ -733,7 +733,7 @@ impl Node {
                 // Clean up pending_outbound
                 self.pending_outbound.remove(&key);
 
-                match result {
+                let authenticated_path_updated = match result {
                     PromotionResult::Promoted(node_addr) => {
                         info!(
                             peer = %self.peer_display_name(&node_addr),
@@ -747,6 +747,7 @@ impl Node {
                         self.bloom_state.mark_update_needed(node_addr);
                         self.reset_discovery_backoff();
                         self.schedule_local_rendezvous_after_peer_authenticated(&node_addr);
+                        true
                     }
                     PromotionResult::CrossConnectionWon {
                         loser_link_id,
@@ -777,6 +778,7 @@ impl Node {
                         self.bloom_state.mark_update_needed(node_addr);
                         self.reset_discovery_backoff();
                         self.schedule_local_rendezvous_after_peer_authenticated(&node_addr);
+                        true
                     }
                     PromotionResult::CrossConnectionLost { winner_link_id } => {
                         self.close_cross_connection_loser_physical_path(
@@ -795,7 +797,12 @@ impl Node {
                             winner_link_id = %winner_link_id,
                             "Outbound cross-connection lost, keeping existing"
                         );
+                        false
                     }
+                };
+                if authenticated_path_updated {
+                    self.maybe_recover_degraded_session_routes(packet.timestamp_ms)
+                        .await;
                 }
             }
             Err(e) => {
