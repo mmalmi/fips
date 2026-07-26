@@ -697,7 +697,9 @@ impl Node {
                 Ok(PromotionResult::CrossConnectionLost { winner_link_id }) => {
                     self.close_cross_connection_loser_physical_path(link_id, Some(winner_link_id))
                         .await;
-                    self.remove_link(&link_id);
+                    if let Some(link) = self.remove_link(&link_id) {
+                        self.cleanup_bootstrap_transport_if_unused(link.transport_id());
+                    }
                     self.links.insert_addr(
                         (packet.transport_id, packet.remote_addr.clone()),
                         winner_link_id,
@@ -716,7 +718,9 @@ impl Node {
                         "Failed to promote inbound connection"
                     );
                     // Clean up on promotion failure
-                    self.remove_link(&link_id);
+                    if let Some(link) = self.remove_link(&link_id) {
+                        self.cleanup_bootstrap_transport_if_unused(link.transport_id());
+                    }
                     let _ = self.index_allocator.free(our_index);
                     self.msg1_rate_limiter.complete_handshake();
                     return;
@@ -773,7 +777,9 @@ impl Node {
         if let Some(loser_link_id) = loser_link_id {
             self.close_cross_connection_loser_physical_path(loser_link_id, Some(link_id))
                 .await;
-            self.remove_link(&loser_link_id);
+            if let Some(loser_link) = self.remove_link(&loser_link_id) {
+                self.cleanup_bootstrap_transport_if_unused(loser_link.transport_id());
+            }
             debug!(
                 peer = %self.peer_display_name(&node_addr),
                 loser_link_id = %loser_link_id,

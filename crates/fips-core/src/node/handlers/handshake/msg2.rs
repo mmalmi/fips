@@ -277,7 +277,9 @@ impl Node {
                 }
             }
             self.peers.remove_connection(&link_id);
-            self.remove_link(&link_id);
+            if let Some(link) = self.remove_link(&link_id) {
+                self.cleanup_bootstrap_transport_if_unused(link.transport_id());
+            }
             if let Some(idx) = our_index {
                 let _ = self.index_allocator.free(idx);
             }
@@ -766,7 +768,9 @@ impl Node {
                         )
                         .await;
                         // Clean up the losing connection's link
-                        self.remove_link(&loser_link_id);
+                        if let Some(loser_link) = self.remove_link(&loser_link_id) {
+                            self.cleanup_bootstrap_transport_if_unused(loser_link.transport_id());
+                        }
                         // Ensure address dispatch points to the winning link
                         self.links.insert_addr(
                             (packet.transport_id, packet.remote_addr.clone()),
@@ -794,7 +798,9 @@ impl Node {
                         )
                         .await;
                         // This connection lost — clean up its link
-                        self.remove_link(&link_id);
+                        if let Some(link) = self.remove_link(&link_id) {
+                            self.cleanup_bootstrap_transport_if_unused(link.transport_id());
+                        }
                         // Ensure address dispatch points to the winner's link
                         self.links.insert_addr(
                             (packet.transport_id, packet.remote_addr.clone()),

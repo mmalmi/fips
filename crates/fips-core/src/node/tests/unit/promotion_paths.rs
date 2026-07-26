@@ -661,6 +661,123 @@ async fn direct_inbound_path_replaces_unconfigured_websocket_bootstrap() {
 }
 
 #[tokio::test]
+async fn inbound_path_replacement_drops_superseded_bootstrap_transport() {
+    use crate::config::WebSocketConfig;
+    use crate::node::wire::build_msg1;
+    use crate::transport::websocket::WebSocketTransport;
+
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let bootstrap_transport_id = TransportId::new(1);
+    let mut bootstrap = WebSocketTransport::new(
+        bootstrap_transport_id,
+        None,
+        WebSocketConfig::default(),
+        packet_tx.clone(),
+        &node.identity,
+    );
+    bootstrap.start_async().await.unwrap();
+    node.transports.insert(
+        bootstrap_transport_id,
+        TransportHandle::WebSocket(Box::new(bootstrap)),
+    );
+
+    let direct_transport_id = TransportId::new(2);
+    let mut udp = UdpTransport::new(
+        direct_transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(direct_transport_id, TransportHandle::Udp(udp));
+
+    let (peer_full, peer_identity) = peer_identity_for_outbound_refresh_owner(&node);
+    let peer_node_addr = *peer_identity.node_addr();
+    let bootstrap_addr = TransportAddr::from_string("wss://seed.example/fips");
+    let old_link_id = LinkId::new(10);
+    let old_our_index = SessionIndex::new(11);
+    let old_their_index = SessionIndex::new(12);
+    let old_session =
+        make_test_fmp_session(&node.identity, &peer_full, node.startup_epoch, [0x11; 8]);
+    let old_peer = ActivePeer::with_session(
+        peer_identity,
+        old_link_id,
+        1_000,
+        ActivePeerSession {
+            session: old_session,
+            our_index: old_our_index,
+            their_index: old_their_index,
+            transport_id: bootstrap_transport_id,
+            current_addr: bootstrap_addr.clone(),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: false,
+            remote_epoch: Some([0x11; 8]),
+        },
+    );
+    node.peers.insert(peer_node_addr, old_peer);
+    node.peers.insert_session_index(
+        (bootstrap_transport_id, old_our_index.as_u32()),
+        peer_node_addr,
+    );
+    node.links.insert(
+        old_link_id,
+        Link::connectionless(
+            old_link_id,
+            bootstrap_transport_id,
+            bootstrap_addr,
+            LinkDirection::Inbound,
+            Duration::from_millis(100),
+        ),
+    );
+    node.bootstrap_transports
+        .register(bootstrap_transport_id, peer_identity.npub().to_string());
+
+    let direct_addr = TransportAddr::from_string("127.0.0.1:9000");
+    let sender_index = SessionIndex::new(78);
+    let mut remote_handshake = crate::noise::HandshakeState::new_initiator(
+        peer_full.keypair(),
+        node.identity.pubkey_full(),
+    );
+    remote_handshake.set_local_epoch([0x11; 8]);
+    let wire_msg1 = build_msg1(sender_index, &remote_handshake.write_message_1().unwrap());
+
+    node.handle_msg1(ReceivedPacket::with_timestamp(
+        direct_transport_id,
+        direct_addr.clone(),
+        crate::transport::PacketBuffer::new(wire_msg1),
+        2_100,
+    ))
+    .await;
+
+    let active = node
+        .get_peer(&peer_node_addr)
+        .expect("authenticated direct path should remain active");
+    assert_eq!(active.transport_id(), Some(direct_transport_id));
+    assert_eq!(active.current_addr(), Some(&direct_addr));
+    assert!(node.get_link(&old_link_id).is_none());
+    assert!(
+        !node.transports.contains_key(&bootstrap_transport_id),
+        "the production Msg1 replacement path must drop the superseded adopted carrier"
+    );
+    assert!(
+        !node.bootstrap_transports.contains(&bootstrap_transport_id),
+        "bootstrap bookkeeping must converge with the live transport registry"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
 async fn equal_priority_outbound_alternate_path_does_not_replace_healthy_peer() {
     let mut node = make_node();
     let peer_full = loop {
