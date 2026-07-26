@@ -287,6 +287,67 @@ async fn degraded_route_recovery_does_not_depend_on_direct_retry_state() {
 }
 
 #[tokio::test]
+async fn authenticated_transit_retries_a_rebind_lookup_without_waiting_for_backoff() {
+    let mut config = Config::new();
+    config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;
+    let remote = Identity::generate();
+    config.peers = vec![auto_connect_peer(remote.npub(), "127.0.0.1:9")];
+    let mut node = Node::new(config).unwrap();
+
+    let remote_addr = *remote.node_addr();
+    let direct_peer = make_active_test_peer(
+        &node,
+        &remote,
+        TransportId::new(1),
+        LinkId::new(1),
+        TransportAddr::from_string("127.0.0.1:9"),
+        SessionIndex::new(1),
+        SessionIndex::new(2),
+    );
+    node.peers.insert(remote_addr, direct_peer);
+    assert!(node.sync_dataplane_fmp_owner(&remote_addr));
+
+    let fallback = Identity::generate();
+    let fallback_addr = *fallback.node_addr();
+    let fallback_peer = make_active_test_peer(
+        &node,
+        &fallback,
+        TransportId::new(2),
+        LinkId::new(2),
+        TransportAddr::from_string("127.0.0.1:10"),
+        SessionIndex::new(3),
+        SessionIndex::new(4),
+    );
+    node.peers.insert(fallback_addr, fallback_peer);
+    assert!(node.sync_dataplane_fmp_owner(&fallback_addr));
+
+    let now_ms = Node::now_ms();
+    node.mark_session_direct_path_degraded(remote_addr, now_ms);
+    node.pending_lookups.insert(
+        remote_addr,
+        crate::node::handlers::discovery::PendingLookup::new(now_ms.saturating_sub(500)),
+    );
+    let baseline = node.stats().discovery.req_initiated;
+
+    node.retry_degraded_session_routes_after_peer_authenticated(fallback_addr, now_ms)
+        .await;
+
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        baseline + 1,
+        "a transit adjacency that authenticates after the rebind must resend the stranded lookup immediately"
+    );
+    assert_eq!(
+        node.pending_lookups
+            .get(&remote_addr)
+            .expect("recovery lookup remains bounded")
+            .last_sent_ms,
+        now_ms,
+        "the ordinary lookup timeout must continue from the real post-reauthentication send"
+    );
+}
+
+#[tokio::test]
 async fn fallback_becoming_live_after_network_rebind_replaces_unusable_direct_payload() {
     let mut config = Config::new();
     config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;

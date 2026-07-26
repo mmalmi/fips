@@ -253,13 +253,25 @@ impl Node {
     }
 
     pub(in crate::node) fn has_sendable_fallback_lookup_peer(&self, dest: &NodeAddr) -> bool {
-        self.peers.iter().any(|(addr, peer)| {
-            *addr != *dest
-                && peer.is_healthy()
-                && peer.can_send()
-                && (self.config.node.routing.mode != RoutingMode::ReplyLearned
-                    || self.should_use_reply_learned_lookup_fallback_peer(addr, peer, dest))
-        })
+        self.peers
+            .keys()
+            .any(|addr| self.is_sendable_fallback_lookup_peer(addr, dest))
+    }
+
+    fn is_sendable_fallback_lookup_peer(
+        &self,
+        peer_addr: &NodeAddr,
+        dest: &NodeAddr,
+    ) -> bool {
+        *peer_addr != *dest
+            && self.peers.get(peer_addr).is_some_and(|peer| {
+                peer.is_healthy()
+                    && peer.can_send()
+                    && (self.config.node.routing.mode != RoutingMode::ReplyLearned
+                        || self.should_use_reply_learned_lookup_fallback_peer(
+                            peer_addr, peer, dest,
+                        ))
+            })
     }
 
     /// Recover degraded end-to-end sessions as soon as a transit adjacency is healthy.
@@ -279,6 +291,40 @@ impl Node {
         for node_addr in recovery_candidates {
             self.maybe_initiate_direct_path_fallback_lookup(&node_addr)
                 .await;
+        }
+    }
+
+    /// Resend lookups that were launched while a rebound carrier had no usable transit.
+    ///
+    /// The ordinary lookup timer must remain bounded, but its pre-reauthentication
+    /// send cannot be allowed to hold a recovered relay behind the full
+    /// `[1, 2, 4, 8]` retry sequence.
+    pub(in crate::node) async fn retry_degraded_session_routes_after_peer_authenticated(
+        &mut self,
+        peer_addr: NodeAddr,
+        now_ms: u64,
+    ) {
+        let recovery_candidates: Vec<NodeAddr> = self
+            .session_direct_degradation
+            .active_destinations(now_ms)
+            .filter(|dest| self.pending_lookups.contains_key(dest))
+            .filter(|dest| self.is_sendable_fallback_lookup_peer(&peer_addr, dest))
+            .take(MAX_DEGRADED_ROUTE_RECOVERIES_PER_PASS)
+            .collect();
+
+        for dest in recovery_candidates {
+            let ttl = self.config.node.discovery.ttl;
+            if self.initiate_lookup(&dest, ttl).await == 0 {
+                continue;
+            }
+            if let Some(entry) = self.pending_lookups.get_mut(&dest) {
+                entry.last_sent_ms = now_ms;
+            }
+            debug!(
+                target_node = %self.peer_display_name(&dest),
+                transit = %self.peer_display_name(&peer_addr),
+                "Retried degraded route lookup after transit authenticated"
+            );
         }
     }
 
