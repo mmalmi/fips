@@ -321,9 +321,31 @@ fn healthy_configured_websocket_peer_keeps_direct_upgrade_retry() {
         crate::utils::index::SessionIndex::new(12),
     );
     node.peers.insert(peer_addr, active);
+    node.peers
+        .get_mut(&peer_addr)
+        .expect("active WebSocket peer")
+        .touch(Node::now_ms());
+    assert!(
+        !node.active_peer_has_fresh_carrier_liveness(&peer_addr),
+        "control-only WebSocket liveness must remain eligible for a direct upgrade"
+    );
     let now_ms = Node::now_ms();
+    let routed_source = *Identity::generate().node_addr();
+    seed_dataplane_fsp_data_sent_for_test(&mut node, routed_source, peer_addr, now_ms);
+    assert!(
+        node.active_peer_has_fresh_carrier_liveness(&peer_addr),
+        "active outbound application traffic must pin its selected carrier"
+    );
+    assert!(
+        node.dataplane
+            .forget_fsp_data_route(routed_source, peer_addr)
+    );
     seed_dataplane_fsp_data_rx_for_test(&mut node, peer_addr, peer_addr, now_ms);
     assert!(node.active_peer_has_fresh_endpoint_data_liveness(&peer_addr));
+    assert!(
+        node.active_peer_has_fresh_carrier_liveness(&peer_addr),
+        "authenticated application traffic must pin its live WebSocket carrier"
+    );
 
     node.queue_active_fallback_direct_retries();
 

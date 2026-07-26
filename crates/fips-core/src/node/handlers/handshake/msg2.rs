@@ -424,15 +424,29 @@ impl Node {
 
             if outbound_alternate_path {
                 let reply_transport_handoff = packet.transport_id != outbound_transport_id;
-                if !remote_epoch_changed
+                let authenticated_live_carrier =
+                    self.active_peer_has_fresh_carrier_liveness(&peer_node_addr);
+                let preserve_authenticated_live_carrier = !remote_epoch_changed
+                    && !active_peer_unusable
+                    && !reply_transport_handoff
+                    && authenticated_live_carrier;
+                let alternate_disallowed_by_priority = !remote_epoch_changed
                     && !existing_path_unusable
                     && !reply_transport_handoff
                     && !self.alternate_path_priority_allows_replace(
                         &peer_node_addr,
                         outbound_transport_id,
                         &outbound_addr,
-                    )
-                {
+                    );
+                if preserve_authenticated_live_carrier || alternate_disallowed_by_priority {
+                    debug!(
+                        peer = %self.peer_display_name(&peer_node_addr),
+                        authenticated_live_carrier,
+                        endpoint_payload_degraded = existing_path_unusable,
+                        candidate_transport_id = %outbound_transport_id,
+                        candidate_addr = %outbound_addr,
+                        "Discarding late alternate path while current carrier remains authenticated"
+                    );
                     let outbound_our_index = conn.our_index();
                     self.preserve_completed_static_send_addr(
                         &peer_node_addr,

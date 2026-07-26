@@ -870,7 +870,7 @@ async fn handle_msg2_keeps_healthy_peer_over_equal_priority_outbound_alternate_p
 }
 
 #[tokio::test]
-async fn handle_msg2_does_not_demote_healthy_static_path_to_lower_priority_alternate() {
+async fn handle_msg2_keeps_recently_authenticated_path_over_late_preferred_alternate() {
     let mut node = make_node();
     let (packet_tx, packet_rx) = packet_channel(64);
     node.packet_tx = Some(packet_tx.clone());
@@ -900,8 +900,8 @@ async fn handle_msg2_does_not_demote_healthy_static_path_to_lower_priority_alter
         npub: peer_full.npub(),
         alias: None,
         addresses: vec![
-            crate::config::PeerAddress::with_priority("udp", "127.0.0.1:8000", 10),
-            crate::config::PeerAddress::with_priority("udp", "127.0.0.1:9000", 100),
+            crate::config::PeerAddress::with_priority("udp", "127.0.0.1:8000", 100),
+            crate::config::PeerAddress::with_priority("udp", "127.0.0.1:9000", 10),
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
         auto_reconnect: true,
@@ -914,7 +914,7 @@ async fn handle_msg2_does_not_demote_healthy_static_path_to_lower_priority_alter
     let old_their_index = SessionIndex::new(12);
     let old_session =
         make_test_fmp_session(&node.identity, &peer_full, node.startup_epoch, [0x11; 8]);
-    let old_peer = ActivePeer::with_session(
+    let mut old_peer = ActivePeer::with_session(
         peer_identity,
         old_link_id,
         1_000,
@@ -930,9 +930,15 @@ async fn handle_msg2_does_not_demote_healthy_static_path_to_lower_priority_alter
         },
     );
     assert!(old_peer.can_send());
+    old_peer.touch(Node::now_ms());
     node.peers.insert(peer_node_addr, old_peer);
     node.peers
         .insert_session_index((transport_id, old_our_index.as_u32()), peer_node_addr);
+    node.session_direct_degradation.mark_degraded(
+        peer_node_addr,
+        Node::now_ms(),
+        SESSION_DIRECT_DEGRADED_HOLD_MS,
+    );
     node.links.insert(
         old_link_id,
         Link::connectionless(
@@ -994,7 +1000,7 @@ async fn handle_msg2_does_not_demote_healthy_static_path_to_lower_priority_alter
     );
     assert!(
         !node.links.contains_key(&new_link_id),
-        "lower-priority alternate link should be discarded"
+        "a late alternate handshake must not replace a carrier that just authenticated traffic"
     );
     assert_eq!(
         node.links

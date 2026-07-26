@@ -395,6 +395,30 @@ impl Node {
                 .is_some_and(|age_ms| age_ms <= fresh_after_ms)
     }
 
+    pub(in crate::node) fn active_peer_has_fresh_carrier_liveness(
+        &self,
+        peer_node_addr: &NodeAddr,
+    ) -> bool {
+        let now_ms = Self::now_ms();
+        let active_outbound_payload = self
+            .dataplane
+            .fsp_owner_destinations()
+            .into_iter()
+            .filter_map(|dest| self.dataplane.fsp_owner_activity(&dest))
+            .any(|activity| {
+                activity.last_outbound_next_hop() == Some(*peer_node_addr)
+                    && activity.has_recent_outbound_activity(
+                        now_ms,
+                        self.session_direct_path_exclusive_trust_timeout_ms(),
+                    )
+            });
+        active_outbound_payload
+            || self.active_peer_has_fresh_endpoint_data_liveness(peer_node_addr)
+            || (!self.active_peer_uses_websocket(peer_node_addr)
+                && !self.active_peer_uses_bootstrap_transport(peer_node_addr)
+                && self.active_peer_has_fresh_link_liveness(peer_node_addr))
+    }
+
     pub(in crate::node) fn active_peer_uses_bootstrap_transport(
         &self,
         peer_node_addr: &NodeAddr,
