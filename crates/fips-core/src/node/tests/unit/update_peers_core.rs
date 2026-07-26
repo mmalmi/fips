@@ -193,6 +193,10 @@ async fn network_transport_rebind_discovers_fallback_when_transit_returns() {
     stale_fallback_peer.mark_stale();
     node.peers.insert(fallback_addr, stale_fallback_peer);
     assert!(node.sync_dataplane_fmp_owner(&fallback_addr));
+    node.pending_lookups.insert(
+        remote_addr,
+        crate::node::handlers::discovery::PendingLookup::new(900),
+    );
 
     let baseline = node.stats().discovery.req_initiated;
     assert_eq!(node.rebind_network_transports(None).await.unwrap(), 1);

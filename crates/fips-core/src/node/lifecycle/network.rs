@@ -80,6 +80,7 @@ impl Node {
             let mut invalidated_peers = Vec::new();
             let mut preserved_udp_peers = 0usize;
             for (peer_addr, can_preserve_udp_session) in rebound_peers {
+                self.pending_lookups.remove(&peer_addr);
                 if can_preserve_udp_session {
                     let has_pending_rekey = self.peers.get(&peer_addr).is_some_and(|peer| {
                         peer.rekey_in_progress() || peer.pending_new_session().is_some()
