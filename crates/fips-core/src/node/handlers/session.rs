@@ -20,5 +20,6 @@ include!("session/post_node.rs");
 mod tests {
     include!("session/tests/registry.rs");
     include!("session/tests/receive_dispatch.rs");
+    include!("session/tests/receive_dispatch_tun.rs");
     include!("session/tests/rekey_recovery.rs");
 }

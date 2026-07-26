@@ -4,6 +4,7 @@ use super::*;
 
 mod admission;
 mod cleanup_and_resend;
+mod cleanup_rekey;
 mod rx_loop;
 mod static_and_cross;
 mod udp_two_node;
