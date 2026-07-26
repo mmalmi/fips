@@ -791,6 +791,113 @@
         );
     }
 
+    #[tokio::test]
+    async fn traversal_offer_received_on_fallback_moves_answer_to_that_ingress() {
+        use crate::discovery::nostr::{NostrDiscovery, TraversalOffer};
+
+        let local = Identity::generate();
+        let source = Identity::generate();
+        let source_addr = *source.node_addr();
+        let fallback = Identity::generate();
+        let fallback_addr = *fallback.node_addr();
+
+        let mut config = crate::config::Config::new();
+        config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;
+        config.peers.push(crate::config::PeerConfig::new(
+            source.npub(),
+            "udp",
+            "nat",
+        ));
+        let mut node = Node::with_identity(local, config).expect("node");
+
+        let direct_link = crate::transport::LinkId::new(1);
+        let (direct_connection, direct_identity) =
+            crate::node::tests::make_completed_connection_for_identity(
+                &mut node,
+                direct_link,
+                crate::transport::TransportId::new(1),
+                1_000,
+                &source,
+            );
+        node.add_connection(direct_connection).unwrap();
+        node.promote_connection(direct_link, direct_identity, 2_000)
+            .unwrap();
+        assert!(node.sync_dataplane_fmp_owner(&source_addr));
+
+        let fallback_link = crate::transport::LinkId::new(2);
+        let (fallback_connection, fallback_identity) =
+            crate::node::tests::make_completed_connection_for_identity(
+                &mut node,
+                fallback_link,
+                crate::transport::TransportId::new(2),
+                1_000,
+                &fallback,
+            );
+        node.add_connection(fallback_connection).unwrap();
+        node.promote_connection(fallback_link, fallback_identity, 2_000)
+            .unwrap();
+        assert!(node.sync_dataplane_fmp_owner(&fallback_addr));
+
+        node.sessions.insert(
+            source_addr,
+            established_entry(node.identity(), &source),
+        );
+        assert!(node.sync_dataplane_fsp_owner_from_current_session(&source_addr, 0));
+        assert_eq!(
+            node.dataplane.fsp_owner_next_hop(&source_addr),
+            Some(source_addr),
+            "fixture must begin with traversal answers pinned to the stale-looking direct path"
+        );
+
+        let bootstrap = std::sync::Arc::new(NostrDiscovery::new_for_test());
+        bootstrap.set_direct_refresh_admission(false);
+        node.nostr_discovery = Some(bootstrap.clone());
+        let now_ms = Node::now_ms();
+        let offer = TraversalOffer {
+            message_type: "offer".to_string(),
+            session_id: "roaming-offer".to_string(),
+            issued_at: now_ms,
+            expires_at: now_ms.saturating_add(10_000),
+            nonce: "roaming-nonce".to_string(),
+            sender_npub: source.npub(),
+            recipient_npub: node.identity().npub(),
+            reflexive_address: None,
+            local_addresses: Vec::new(),
+            stun_server: None,
+        };
+        let payload = serde_json::to_vec(&offer).expect("offer JSON");
+        let plaintext = fsp_prepend_inner_header(
+            0x0102_0304,
+            SessionMessageType::TraversalOffer.to_byte(),
+            0,
+            &payload,
+        );
+        AuthenticatedSessionDispatch::new(
+            source_addr,
+            fallback_addr,
+            false,
+            AuthenticatedSessionMessage::new(
+                PeerIdentity::from_pubkey_full(source.pubkey_full()),
+                crate::transport::PacketBuffer::new(plaintext),
+                SessionMessageType::TraversalOffer.to_byte(),
+            ),
+        )
+        .dispatch(&mut node)
+        .await;
+
+        assert!(
+            node.session_direct_path_degradation_active(&source_addr, Node::now_ms()),
+            "an authenticated traversal request on fallback proves the direct reply path needs replacement"
+        );
+        assert_eq!(
+            node.dataplane.fsp_owner_next_hop(&source_addr),
+            Some(fallback_addr),
+            "the traversal answer must follow the live authenticated ingress instead of the dead direct path"
+        );
+
+        bootstrap.shutdown().await.expect("shutdown discovery");
+    }
+
     #[test]
     fn endpoint_data_batched_dispatch_reports_pending_flush_owner() {
         let local = Identity::generate();

@@ -127,6 +127,11 @@ impl AuthenticatedSessionMessage {
             || self.msg_type == SessionMessageType::EndpointData.to_byte()
     }
 
+    fn proves_reply_path(&self) -> bool {
+        self.is_application_data()
+            || self.msg_type == SessionMessageType::TraversalOffer.to_byte()
+    }
+
     pub(in crate::node) fn into_endpoint_data_deliveries(mut self) -> Vec<EndpointDataDelivery> {
         debug_assert_eq!(self.msg_type, SessionMessageType::EndpointData.to_byte());
         // Keep the receive hot path allocation-free after AEAD open by making
@@ -286,7 +291,7 @@ impl SessionReceiveBatchCommit {
                 debug!(
                     src = %node.peer_display_name(&source_addr),
                     previous_hop = %node.peer_display_name(&previous_hop_addr),
-                    "Authenticated fallback application ingress moved the session reply path"
+                    "Authenticated fallback session ingress moved the reply path"
                 );
             }
         }
@@ -397,7 +402,7 @@ impl AuthenticatedSessionDispatch {
 
     fn receive_completion(&self) -> Option<SessionReceiveCompletion> {
         self.message
-            .is_application_data()
+            .proves_reply_path()
             .then_some(SessionReceiveCompletion {
                 source_addr: self.source_addr,
                 previous_hop_addr: self.previous_hop_addr,
@@ -672,38 +677,15 @@ fn ipv4_icmp_echo(packet: &[u8]) -> Option<(std::net::Ipv4Addr, std::net::Ipv4Ad
 
 impl SessionDispatchCommit {
     fn finish_receive(&self, node: &mut Node) -> SessionDispatchFinish {
-        let now_ms = Node::now_ms();
+        let mut batch_commit = SessionReceiveBatchCommit::default();
         if let Some(completion) = self.receive_completion {
-            if let Some(peer) = node.peers.get_mut(&completion.previous_hop_addr) {
-                peer.touch(now_ms);
-            }
-
-            if completion.direct_path
-                && node.authenticated_direct_payload_validates_route(
-                    &completion.source_addr,
-                    now_ms,
-                )
-                && node.clear_session_direct_path_degraded(&completion.source_addr)
-            {
-                debug!(
-                    src = %node.peer_display_name(&completion.source_addr),
-                    "Authenticated direct endpoint data restored direct payload routing"
-                );
-            }
-
-            let retry_peer = if completion.direct_path {
-                completion.source_addr
-            } else {
-                completion.previous_hop_addr
-            };
-            node.clear_retry_unless_direct_refresh_needed(&retry_peer);
-            clear_dataplane_confirmed_retransmits_for(node, &completion.source_addr);
+            batch_commit.push_receive_completion(completion);
         }
+        let pending_flush_sources = batch_commit.finish(node);
 
         SessionDispatchFinish {
-            pending_flush_dest: node
-                .pending_session_traffic
-                .has_traffic_for(&self.source_addr)
+            pending_flush_dest: pending_flush_sources
+                .contains(&self.source_addr)
                 .then_some(self.source_addr),
         }
     }
