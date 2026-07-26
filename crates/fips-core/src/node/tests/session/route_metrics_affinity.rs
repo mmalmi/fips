@@ -113,7 +113,13 @@ async fn test_path_broken_matches_last_outbound_branch_after_wrap_route_moves() 
     // branch. A newer authenticated handshake ingress may already pin the
     // replacement branch, but it did not carry that outbound payload.
     node.learned_routes
-        .record_failure(&remote_addr, &old_fallback);
+        .quarantine_failed_next_hop(
+            remote_addr,
+            old_fallback,
+            Node::now_ms(),
+            node.config.node.routing.learned_ttl_secs,
+            node.config.node.routing.max_learned_routes_per_dest,
+        );
     node.learn_reverse_route(remote_addr, old_fallback);
     assert!(node.sync_dataplane_fsp_owner_from_current_session_via(
         &remote_addr,

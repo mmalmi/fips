@@ -61,7 +61,13 @@ async fn established_session_lookup_does_not_revive_failed_payload_hop() {
 
     node.register_identity(target, target_identity.pubkey_full());
     node.learn_reverse_route(target, from);
-    node.learned_routes.record_failure(&target, &from);
+    node.learned_routes.quarantine_failed_next_hop(
+        target,
+        from,
+        Node::now_ms(),
+        node.config.node.routing.learned_ttl_secs,
+        node.config.node.routing.max_learned_routes_per_dest,
+    );
 
     let mut initiator =
         HandshakeState::new_initiator(node.identity().keypair(), target_identity.pubkey_full());

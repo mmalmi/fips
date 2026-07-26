@@ -894,12 +894,48 @@ impl Node {
         destination: NodeAddr,
         next_hop: NodeAddr,
     ) {
+        self.record_route_failure_inner(destination, next_hop, false);
+    }
+
+    pub(in crate::node) fn record_active_route_failure(
+        &mut self,
+        destination: NodeAddr,
+        next_hop: NodeAddr,
+    ) {
+        self.record_route_failure_inner(destination, next_hop, true);
+    }
+
+    fn record_route_failure_inner(
+        &mut self,
+        destination: NodeAddr,
+        next_hop: NodeAddr,
+        clear_failed_output: bool,
+    ) {
         if self.config.node.routing.mode != RoutingMode::ReplyLearned {
             return;
         }
+        let current_next_hop = self.dataplane.fsp_owner_next_hop(&destination);
         let _ = self.dataplane.forget_fsp_data_route(destination, next_hop);
-        self.learned_routes.record_failure(&destination, &next_hop);
-        let _ = self.refresh_dataplane_fsp_owner_routes(&destination);
+        self.learned_routes.quarantine_failed_next_hop(
+            destination,
+            next_hop,
+            Self::now_ms(),
+            self.config.node.routing.learned_ttl_secs,
+            self.config.node.routing.max_learned_routes_per_dest,
+        );
+
+        if !clear_failed_output || current_next_hop != Some(next_hop) {
+            return;
+        }
+
+        let replacement = self
+            .find_next_hop(&destination)
+            .map(|peer| *peer.node_addr())
+            .filter(|candidate| *candidate != next_hop);
+        let _ = self.refresh_dataplane_fsp_owner_routes_via(&destination, replacement);
+        if self.dataplane.fsp_owner_next_hop(&destination) == Some(next_hop) {
+            let _ = self.dataplane.clear_fsp_output_route(destination);
+        }
     }
 
     pub(crate) fn learned_route_table_snapshot(&self, now_ms: u64) -> LearnedRouteTableSnapshot {

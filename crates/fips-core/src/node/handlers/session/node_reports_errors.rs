@@ -106,7 +106,7 @@ impl Node {
             } else if loss >= SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD
                 && let Some(failed_next_hop) = last_outbound_next_hop
             {
-                self.record_route_failure(*src_addr, failed_next_hop);
+                self.record_active_route_failure(*src_addr, failed_next_hop);
                 debug!(
                     src = %peer_name,
                     failed_next_hop = %self.peer_display_name(&failed_next_hop),
@@ -316,7 +316,7 @@ impl Node {
         // when the reporting router is farther downstream. Release the
         // handshake pin and demote only that learned next hop; coordinates and
         // unrelated routes remain intact.
-        self.record_route_failure(msg.dest_addr, *previous_hop);
+        self.record_active_route_failure(msg.dest_addr, *previous_hop);
 
         // Send standalone CoordsWarmup immediately (rate-limited)
         if self

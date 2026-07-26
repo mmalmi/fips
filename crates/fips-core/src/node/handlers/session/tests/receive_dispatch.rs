@@ -712,7 +712,28 @@
             "alternate authenticated ingress must not churn a fallback with recent authenticated data return"
         );
 
-        node.record_route_failure(source_addr, replacement_fallback_addr);
+        node.record_active_route_failure(source_addr, replacement_fallback_addr);
+        let route_after_failure = node.dataplane.fsp_owner_next_hop(&source_addr);
+        assert_ne!(
+            route_after_failure,
+            Some(replacement_fallback_addr),
+            "explicit route failure must remove the failed fallback"
+        );
+        let mut commit = SessionReceiveBatchCommit::default();
+        commit.push_receive_completion(SessionReceiveCompletion {
+            source_addr,
+            previous_hop_addr: replacement_fallback_addr,
+            direct_path: false,
+        });
+        let pending_flush = commit.finish(&mut node);
+
+        assert!(pending_flush.is_empty());
+        assert_eq!(
+            node.dataplane.fsp_owner_next_hop(&source_addr),
+            route_after_failure,
+            "in-flight ingress from a just-failed branch must not immediately reinstate it"
+        );
+
         let mut commit = SessionReceiveBatchCommit::default();
         commit.push_receive_completion(SessionReceiveCompletion {
             source_addr,

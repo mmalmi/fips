@@ -110,22 +110,44 @@ impl LearnedRouteTable {
         Self::sort_and_truncate(routes, max_routes_per_dest);
     }
 
-    pub(crate) fn record_failure(&mut self, destination: &NodeAddr, next_hop: &NodeAddr) {
+    pub(crate) fn quarantine_failed_next_hop(
+        &mut self,
+        destination: NodeAddr,
+        next_hop: NodeAddr,
+        now_ms: u64,
+        ttl_secs: u64,
+        max_routes_per_dest: usize,
+    ) {
         if self
             .handshake_routes
-            .get(destination)
-            .is_some_and(|route| &route.next_hop == next_hop)
+            .get(&destination)
+            .is_some_and(|route| route.next_hop == next_hop)
         {
-            self.handshake_routes.remove(destination);
+            self.handshake_routes.remove(&destination);
         }
-        let Some(routes) = self.routes.get_mut(destination) else {
+        if max_routes_per_dest == 0 {
             return;
-        };
-
-        if let Some(route) = routes.iter_mut().find(|route| &route.next_hop == next_hop) {
+        }
+        let expires_at_ms = now_ms.saturating_add(ttl_secs.saturating_mul(1_000));
+        let routes = self.routes.entry(destination).or_default();
+        if let Some(route) = routes.iter_mut().find(|route| route.next_hop == next_hop) {
             route.failures = route.failures.saturating_add(1);
             route.score = (route.score * 0.5).max(MIN_ROUTE_SCORE);
             route.current_weight = route.current_weight.min(0.0);
+            route.expires_at_ms = expires_at_ms;
+        } else {
+            Self::sort_and_truncate(routes, max_routes_per_dest);
+            routes.truncate(max_routes_per_dest.saturating_sub(1));
+            routes.push(LearnedRoute {
+                next_hop,
+                last_seen_ms: now_ms,
+                expires_at_ms,
+                successes: 0,
+                failures: 1,
+                score: MIN_ROUTE_SCORE,
+                current_weight: 0.0,
+                selected: 0,
+            });
         }
     }
 
@@ -426,14 +448,37 @@ mod tests {
             "route with stronger local evidence should win"
         );
 
-        table.record_failure(&dest, &fast);
-        table.record_failure(&dest, &fast);
-        table.record_failure(&dest, &fast);
+        table.quarantine_failed_next_hop(dest, fast, 1_301, 60, 4);
+        table.quarantine_failed_next_hop(dest, fast, 1_302, 60, 4);
+        table.quarantine_failed_next_hop(dest, fast, 1_303, 60, 4);
 
         assert_eq!(
             table.select_next_hop(&dest, 1_400, |_| true),
             Some(slow),
             "failures should demote a learned route"
+        );
+    }
+
+    #[test]
+    fn failed_reply_affinity_stays_quarantined_at_route_capacity() {
+        let dest = addr(100);
+        let live = addr(1);
+        let failed_affinity = addr(2);
+        let mut table = LearnedRouteTable::default();
+
+        table.learn(dest, live, 1_000, 60, 1);
+        table.quarantine_failed_next_hop(dest, failed_affinity, 1_100, 60, 1);
+
+        assert!(
+            table
+                .failed_next_hops(&dest, 1_200)
+                .contains(&failed_affinity),
+            "a failed reply-only route must not be evicted before ingress can consult its quarantine"
+        );
+        assert_eq!(
+            table.select_next_hop(&dest, 1_200, |_| true),
+            None,
+            "a quarantined reply-only route must remain ineligible for payload"
         );
     }
 
@@ -487,7 +532,7 @@ mod tests {
             );
         }
 
-        table.record_failure(&dest, &proven);
+        table.quarantine_failed_next_hop(dest, proven, 2_001, 60, 4);
         assert_eq!(table.select_handshake_route(&dest, 2_100, |_| true), None);
         assert_eq!(
             table.select_next_hop(&dest, 2_100, |_| true),

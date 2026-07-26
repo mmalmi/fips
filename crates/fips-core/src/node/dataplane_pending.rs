@@ -67,7 +67,7 @@ impl Node {
         self.refresh_dataplane_fsp_owner_routes_via(node_addr, current_next_hop)
     }
 
-    fn refresh_dataplane_fsp_owner_routes_via(
+    pub(in crate::node) fn refresh_dataplane_fsp_owner_routes_via(
         &mut self,
         node_addr: &NodeAddr,
         preferred_next_hop: Option<NodeAddr>,
@@ -116,8 +116,12 @@ impl Node {
         now_ms: u64,
     ) -> bool {
         let current_next_hop = self.dataplane.fsp_owner_next_hop(&source_addr);
+        let failed_next_hops = self
+            .learned_routes
+            .failed_next_hops(&source_addr, now_ms);
         if source_addr == previous_hop_addr
             || current_next_hop == Some(previous_hop_addr)
+            || failed_next_hops.contains(&previous_hop_addr)
             || !self
                 .peers
                 .get(&previous_hop_addr)
