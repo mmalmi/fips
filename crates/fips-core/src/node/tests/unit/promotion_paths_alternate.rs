@@ -161,6 +161,15 @@ async fn handle_msg2_replaces_quiet_static_path_with_authenticated_alternate() {
 
 #[tokio::test]
 async fn handle_msg2_treats_late_reverse_tcp_dial_as_duplicate_carrier() {
+    run_late_reverse_tcp_dial_resolution(false).await;
+}
+
+#[tokio::test]
+async fn handle_msg2_replaces_payload_degraded_connection_oriented_carrier() {
+    run_late_reverse_tcp_dial_resolution(true).await;
+}
+
+async fn run_late_reverse_tcp_dial_resolution(payload_degraded: bool) {
     let mut node = make_node();
     let (packet_tx, packet_rx) = packet_channel(64);
     node.packet_tx = Some(packet_tx.clone());
@@ -245,6 +254,33 @@ async fn handle_msg2_treats_late_reverse_tcp_dial_as_duplicate_carrier() {
     );
     node.links
         .insert_addr((transport_id, accepted_source.clone()), old_link_id);
+    let packet_timestamp_ms = if payload_degraded {
+        let now_ms = Node::now_ms();
+        let routed_destination = *Identity::generate().node_addr();
+        seed_dataplane_fsp_data_sent_for_test(
+            &mut node,
+            routed_destination,
+            peer_node_addr,
+            now_ms,
+        );
+        node.session_direct_degradation.mark_degraded(
+            peer_node_addr,
+            now_ms,
+            SESSION_DIRECT_DEGRADED_HOLD_MS,
+        );
+        assert!(
+            node.active_peer_has_fresh_carrier_liveness(&peer_node_addr),
+            "recent outbound traffic reproduces the stale carrier pin after a network rebind"
+        );
+        assert!(
+            node.session_direct_path_blocks_direct_payload(&peer_node_addr, now_ms),
+            "the old carrier must still be awaiting authenticated endpoint payload"
+        );
+        now_ms.saturating_add(100)
+    } else {
+        2_100
+    };
+
     let new_link_id = LinkId::new(11);
     let mut new_conn = PeerConnection::outbound(new_link_id, peer_identity, 2_000);
     let msg1 = new_conn
@@ -283,18 +319,30 @@ async fn handle_msg2_treats_late_reverse_tcp_dial_as_duplicate_carrier() {
             new_our_index,
             &noise_msg2,
         )),
-        2_100,
+        packet_timestamp_ms,
     );
 
     node.handle_msg2(packet).await;
 
     let active = node.get_peer(&peer_node_addr).unwrap();
-    assert_eq!(active.link_id(), old_link_id);
-    assert_eq!(active.current_addr(), Some(&accepted_source));
-    assert_eq!(active.our_index(), Some(old_our_index));
-    assert_eq!(active.their_index(), Some(old_their_index));
-    assert!(!active.fmp_mmp_is_initiator());
-    assert!(!node.links.contains_key(&new_link_id));
+    if payload_degraded {
+        assert_eq!(
+            active.link_id(),
+            new_link_id,
+            "a completed replacement handshake must displace a payload-degraded carrier"
+        );
+        assert_eq!(active.current_addr(), Some(&listener_addr));
+        assert_eq!(active.our_index(), Some(new_our_index));
+        assert_eq!(active.their_index(), Some(new_their_index));
+        assert!(!node.links.contains_key(&old_link_id));
+    } else {
+        assert_eq!(active.link_id(), old_link_id);
+        assert_eq!(active.current_addr(), Some(&accepted_source));
+        assert_eq!(active.our_index(), Some(old_our_index));
+        assert_eq!(active.their_index(), Some(old_their_index));
+        assert!(!active.fmp_mmp_is_initiator());
+        assert!(!node.links.contains_key(&new_link_id));
+    }
 
     for transport in node.transports.values_mut() {
         transport.stop().await.ok();
