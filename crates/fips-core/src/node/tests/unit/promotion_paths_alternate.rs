@@ -182,15 +182,15 @@ async fn handle_msg2_treats_late_reverse_tcp_dial_as_duplicate_carrier() {
 
     let peer_full = loop {
         let candidate = Identity::generate();
-        if candidate.node_addr() < node.node_addr() {
+        if crate::peer::cross_connection_winner(node.node_addr(), candidate.node_addr(), true) {
             break candidate;
         }
     };
     let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
     let peer_node_addr = *peer_identity.node_addr();
     assert!(
-        !crate::peer::cross_connection_winner(node.node_addr(), &peer_node_addr, true),
-        "the larger local node's duplicate outbound must lose"
+        crate::peer::cross_connection_winner(node.node_addr(), &peer_node_addr, true),
+        "the late duplicate must exercise the dangerous local-outbound-wins case"
     );
 
     let accepted_source = TransportAddr::from_string("127.0.0.1:40002");
@@ -244,6 +244,17 @@ async fn handle_msg2_treats_late_reverse_tcp_dial_as_duplicate_carrier() {
     );
     node.links
         .insert_addr((transport_id, accepted_source.clone()), old_link_id);
+    let routed_source = *Identity::generate().node_addr();
+    seed_dataplane_fsp_data_rx_for_test(
+        &mut node,
+        routed_source,
+        peer_node_addr,
+        Node::now_ms(),
+    );
+    assert!(
+        node.active_peer_has_fresh_carrier_liveness(&peer_node_addr),
+        "authenticated routed application ingress must prove the established carrier is live"
+    );
 
     let new_link_id = LinkId::new(11);
     let mut new_conn = PeerConnection::outbound(new_link_id, peer_identity, 2_000);

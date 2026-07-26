@@ -421,15 +421,15 @@ impl Node {
             let outbound_alternate_path = remote_epoch_changed
                 || existing_path_unusable
                 || (outbound_path_differs && !connection_oriented_cross_connection);
+            let reply_transport_handoff = packet.transport_id != outbound_transport_id;
+            let authenticated_live_carrier =
+                self.active_peer_has_fresh_carrier_liveness(&peer_node_addr);
+            let preserve_authenticated_live_carrier = !remote_epoch_changed
+                && !active_peer_unusable
+                && !reply_transport_handoff
+                && authenticated_live_carrier;
 
-            if outbound_alternate_path {
-                let reply_transport_handoff = packet.transport_id != outbound_transport_id;
-                let authenticated_live_carrier =
-                    self.active_peer_has_fresh_carrier_liveness(&peer_node_addr);
-                let preserve_authenticated_live_carrier = !remote_epoch_changed
-                    && !active_peer_unusable
-                    && !reply_transport_handoff
-                    && authenticated_live_carrier;
+            if outbound_alternate_path || preserve_authenticated_live_carrier {
                 let alternate_disallowed_by_priority = !remote_epoch_changed
                     && !existing_path_unusable
                     && !reply_transport_handoff
