@@ -750,22 +750,20 @@ impl UdpTransport {
     /// This bypasses reactive error cooldown because the caller has positive
     /// evidence that the underlay address or route changed. Active FMP/FSP
     /// sessions keep the same transport ID. Configured carriers pick up a new
-    /// live socket; adopted NAT-traversal carriers retain their socket and
-    /// local port while their kernel interface binding moves in place.
+    /// live socket; adopted NAT-traversal carriers replace the stale socket
+    /// while retaining its local port.
     pub(crate) async fn rebind_after_network_change(
         &mut self,
         bind_interface: Option<String>,
     ) -> Result<bool, TransportError> {
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
         if self.socket_origin == UdpSocketOrigin::Adopted && self.state.is_operational() {
-            self.config.bind_interface = bind_interface;
-            let socket = self.socket.as_ref().ok_or(TransportError::NotStarted)?;
-            socket.retarget_interface(self.config.bind_interface.as_deref())?;
+            self.rebuild_adopted_socket(bind_interface).await?;
             info!(
                 transport_id = %self.transport_id,
                 local_addr = %self.local_addr.map_or_else(|| "<unbound>".to_string(), |addr| addr.to_string()),
                 bind_interface = self.config.bind_interface.as_deref(),
-                "Retargeted adopted UDP transport after network change"
+                "Rebuilt adopted UDP transport after network change"
             );
             return Ok(true);
         }
@@ -817,6 +815,51 @@ impl UdpTransport {
         }
 
         self.start_async().await
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
+    async fn rebuild_adopted_socket(
+        &mut self,
+        bind_interface: Option<String>,
+    ) -> Result<(), TransportError> {
+        let local_addr = self.local_addr.ok_or(TransportError::NotStarted)?;
+        self.config.bind_interface = bind_interface;
+        self.stop_async().await?;
+
+        for (attempt, retry_delay) in CONFIGURED_SOCKET_REBIND_RETRY_DELAYS
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            match self.start_adopted_replacement(local_addr) {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    warn!(
+                        transport_id = %self.transport_id,
+                        attempt = attempt + 1,
+                        retry_delay_ms = retry_delay.as_millis(),
+                        %error,
+                        "Adopted UDP carrier rebuild failed; retrying"
+                    );
+                    tokio::time::sleep(retry_delay).await;
+                }
+            }
+        }
+
+        self.start_adopted_replacement(local_addr)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
+    fn start_adopted_replacement(&mut self, local_addr: SocketAddr) -> Result<(), TransportError> {
+        self.begin_start(UdpSocketOrigin::Adopted)?;
+        let raw_socket = UdpRawSocket::open_on_interface(
+            local_addr,
+            self.config.recv_buf_size(),
+            self.config.send_buf_size(),
+            self.config.bind_interface.as_deref(),
+        );
+        let raw_socket = self.require_start(raw_socket)?;
+        self.install_raw_socket(raw_socket, UdpSocketOrigin::Adopted)
     }
 
     /// Send a packet asynchronously.

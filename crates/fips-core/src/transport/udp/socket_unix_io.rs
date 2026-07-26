@@ -67,14 +67,6 @@
     }
 
     impl AsyncUdpSocket {
-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
-        pub(crate) fn retarget_interface(
-            &self,
-            interface: Option<&str>,
-        ) -> Result<(), TransportError> {
-            self.inner.get_ref().retarget_interface(interface)
-        }
-
         #[cfg(all(test, target_os = "macos"))]
         pub(crate) fn bound_device_index_v4(
             &self,

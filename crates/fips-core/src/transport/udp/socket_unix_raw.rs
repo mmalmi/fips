@@ -157,23 +157,6 @@
             self.inner.device_index_v4()
         }
 
-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
-        pub(crate) fn retarget_interface(
-            &self,
-            interface: Option<&str>,
-        ) -> Result<(), TransportError> {
-            crate::transport::udp::underlay::retarget_socket_to_interface(
-                &self.inner,
-                self.local_addr,
-                interface,
-            )
-            .map_err(|error| {
-                TransportError::StartFailed(format!(
-                    "retarget UDP socket to interface: {error}"
-                ))
-            })
-        }
-
         /// Synchronous send to a destination address.
         ///
         /// Returns the number of bytes sent, or an `io::Error`.

@@ -31,22 +31,6 @@ pub(crate) fn bind_socket_to_interface(
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-pub(crate) fn retarget_socket_to_interface(
-    socket: &Socket,
-    bind_addr: SocketAddr,
-    interface: Option<&str>,
-) -> io::Result<()> {
-    if interface.is_some() {
-        return bind_socket_to_interface(socket, bind_addr, interface);
-    }
-    if bind_addr.is_ipv4() {
-        socket.bind_device_by_index_v4(None)
-    } else {
-        socket.bind_device_by_index_v6(None)
-    }
-}
-
 #[cfg(target_os = "linux")]
 pub(crate) fn bind_socket_to_interface(
     socket: &Socket,
@@ -57,13 +41,4 @@ pub(crate) fn bind_socket_to_interface(
         None => Ok(()),
         Some(interface) => socket.bind_device(Some(interface.as_bytes())),
     }
-}
-
-#[cfg(target_os = "linux")]
-pub(crate) fn retarget_socket_to_interface(
-    socket: &Socket,
-    _bind_addr: SocketAddr,
-    interface: Option<&str>,
-) -> io::Result<()> {
-    socket.bind_device(interface.map(str::as_bytes))
 }

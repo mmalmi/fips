@@ -214,9 +214,7 @@ async fn explicit_network_rebind_moves_configured_carrier_to_new_interface() {
 
 #[cfg(target_os = "macos")]
 #[tokio::test]
-async fn explicit_network_rebind_retargets_adopted_carrier_without_replacing_socket() {
-    use std::os::fd::AsRawFd;
-
+async fn explicit_network_rebind_moves_adopted_carrier_and_preserves_port() {
     let adopted = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
     adopted.set_nonblocking(true).unwrap();
     let (tx, _rx) = packet_channel(100);
@@ -224,6 +222,8 @@ async fn explicit_network_rebind_retargets_adopted_carrier_without_replacing_soc
     transport.adopt_socket_async(adopted).await.unwrap();
 
     let before = transport.send_snapshot().unwrap();
+    let before_addr = before.local_addr;
+    drop(before);
     assert!(
         transport
             .rebind_after_network_change(Some("lo0".to_string()))
@@ -233,9 +233,8 @@ async fn explicit_network_rebind_retargets_adopted_carrier_without_replacing_soc
     );
     let after = transport.send_snapshot().unwrap();
     assert_eq!(
-        before.socket.as_raw_fd(),
-        after.socket.as_raw_fd(),
-        "retargeting an adopted carrier must retain its socket and NAT-traversal port"
+        before_addr, after.local_addr,
+        "the replacement must preserve the local NAT-traversal port"
     );
     let expected = std::num::NonZeroU32::new(unsafe { libc::if_nametoindex(c"lo0".as_ptr()) })
         .expect("lo0 interface index");
