@@ -109,6 +109,10 @@ async fn network_transport_rebind_moves_established_payload_to_live_fallback() {
     assert_eq!(node.rebind_network_transports(None).await.unwrap(), 1);
 
     assert!(
+        !node.dataplane_has_fmp_owner(&remote_addr),
+        "a peer bound to a rebuilt carrier must stop owning dataplane routes until the replacement path authenticates"
+    );
+    assert!(
         node.session_direct_path_degradation_active(&remote_addr, Node::now_ms()),
         "positive carrier-change evidence must immediately invalidate direct session payload eligibility"
     );
@@ -189,8 +193,8 @@ async fn fallback_becoming_live_after_network_rebind_moves_established_payload()
     assert_eq!(node.rebind_network_transports(None).await.unwrap(), 1);
     assert_eq!(
         node.dataplane.fsp_owner_next_hop(&remote_addr),
-        Some(remote_addr),
-        "the old owner remains only until an alternate FMP carrier becomes usable"
+        None,
+        "payload must not retain the withdrawn direct owner while no replacement carrier is usable"
     );
 
     assert!(node.sync_dataplane_fmp_owner(&fallback_addr));

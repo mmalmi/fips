@@ -73,7 +73,9 @@ impl Node {
                         "carrier rebind invalidated pending key epoch",
                     );
                 }
+                self.remove_dataplane_fmp_owner(peer_addr);
                 self.mark_session_direct_path_degraded(*peer_addr, now_ms);
+                self.refresh_dataplane_fsp_owner_routes_after_fmp_owner_update(peer_addr);
                 self.schedule_link_dead_reprobe(*peer_addr, now_ms);
             }
             debug!(
