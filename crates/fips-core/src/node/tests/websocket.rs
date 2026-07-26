@@ -87,6 +87,185 @@ async fn url_only_seed_hint_completes_noise_ik_and_datagram_exchange() {
 }
 
 #[tokio::test]
+async fn client_network_rebind_replaces_stationary_seed_carrier_and_preserves_payload() {
+    let server = make_websocket_node(WebSocketConfig {
+        bind_addr: Some("127.0.0.1:0".into()),
+        ..Default::default()
+    })
+    .await;
+    let seed_url = server.addr.to_string();
+    let client = make_websocket_node(WebSocketConfig {
+        seed_urls: vec![seed_url],
+        reconnect_initial_ms: Some(10),
+        reconnect_max_ms: Some(50),
+        ..Default::default()
+    })
+    .await;
+    let mut nodes = vec![server, client];
+    for node in &mut nodes {
+        node.node.config.node.link_dead_timeout_secs = 30;
+        node.node.config.node.discovery.nostr.enabled = true;
+        node.node.config.node.discovery.nostr.policy =
+            crate::config::NostrDiscoveryPolicy::ConfiguredOnly;
+    }
+    let server_addr = *nodes[0].node.node_addr();
+    let client_addr = *nodes[1].node.node_addr();
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            for node in &mut nodes {
+                node.node.poll_transport_discovery().await;
+                node.node.poll_pending_connects().await;
+            }
+            run_synthetic_node_work(&mut nodes).await;
+            process_available_packets(&mut nodes).await;
+            if nodes[0].node.get_peer(&client_addr).is_some()
+                && nodes[1].node.get_peer(&server_addr).is_some()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the initial WebSocket adjacency must authenticate");
+
+    populate_all_coord_caches(&mut nodes);
+    let mut server_endpoint = nodes[0]
+        .node
+        .attach_endpoint_data_io(8)
+        .expect("server endpoint data I/O");
+    let mut client_endpoint = nodes[1]
+        .node
+        .attach_endpoint_data_io(8)
+        .expect("client endpoint data I/O");
+    let server_identity = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
+    let client_identity = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
+
+    super::session::send_endpoint_data_via_dataplane(
+        &mut nodes[1].node,
+        server_identity,
+        b"before-rebind".to_vec(),
+    )
+    .await
+    .expect("pre-rebind endpoint data should queue or send");
+    let before = super::session::recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut server_endpoint.event_rx,
+        Duration::from_secs(5),
+        "pre-rebind WebSocket endpoint payload",
+    )
+    .await;
+    assert_eq!(
+        super::session::expect_single_endpoint_data_event(before)
+            .payload
+            .as_slice(),
+        b"before-rebind"
+    );
+
+    let server_old_link = nodes[0]
+        .node
+        .get_peer(&client_addr)
+        .expect("server active client")
+        .link_id();
+    let client_old_link = nodes[1]
+        .node
+        .get_peer(&server_addr)
+        .expect("client active server")
+        .link_id();
+    assert!(
+        nodes[1]
+            .node
+            .get_session(&server_addr)
+            .is_some_and(|session| session.is_established()),
+        "the end-to-end session must be established before carrier replacement"
+    );
+
+    assert_eq!(
+        nodes[1].node.rebind_network_transports(None).await.unwrap(),
+        1,
+        "the client network event must rebuild its configured WebSocket carrier"
+    );
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            for node in &mut nodes {
+                node.node.poll_transport_discovery().await;
+                node.node.poll_pending_connects().await;
+            }
+            run_synthetic_node_work(&mut nodes).await;
+            process_available_packets(&mut nodes).await;
+            let server_replaced = nodes[0]
+                .node
+                .get_peer(&client_addr)
+                .is_some_and(|peer| peer.link_id() != server_old_link && peer.can_send());
+            let client_replaced = nodes[1]
+                .node
+                .get_peer(&server_addr)
+                .is_some_and(|peer| peer.link_id() != client_old_link && peer.can_send());
+            if server_replaced && client_replaced {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("both ends must adopt the fresh carrier without waiting for link-dead timeout");
+
+    assert!(
+        nodes[1]
+            .node
+            .get_session(&server_addr)
+            .is_some_and(|session| session.is_established()),
+        "carrier replacement must preserve the established end-to-end session"
+    );
+
+    super::session::send_endpoint_data_via_dataplane(
+        &mut nodes[1].node,
+        server_identity,
+        b"client-after-rebind".to_vec(),
+    )
+    .await
+    .expect("client post-rebind endpoint data should send");
+    let client_to_server = super::session::recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut server_endpoint.event_rx,
+        Duration::from_secs(2),
+        "client-to-server payload after WebSocket carrier replacement",
+    )
+    .await;
+    assert_eq!(
+        super::session::expect_single_endpoint_data_event(client_to_server)
+            .payload
+            .as_slice(),
+        b"client-after-rebind"
+    );
+
+    super::session::send_endpoint_data_via_dataplane(
+        &mut nodes[0].node,
+        client_identity,
+        b"server-after-rebind".to_vec(),
+    )
+    .await
+    .expect("server post-rebind endpoint data should send");
+    let server_to_client = super::session::recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut client_endpoint.event_rx,
+        Duration::from_secs(2),
+        "server-to-client payload after WebSocket carrier replacement",
+    )
+    .await;
+    assert_eq!(
+        super::session::expect_single_endpoint_data_event(server_to_client)
+            .payload
+            .as_slice(),
+        b"server-after-rebind"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
 async fn open_discovery_listener_routes_first_contact_between_websocket_clients() {
     let seed = make_websocket_node(WebSocketConfig {
         bind_addr: Some("127.0.0.1:0".into()),
