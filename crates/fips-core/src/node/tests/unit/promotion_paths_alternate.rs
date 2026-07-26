@@ -340,7 +340,7 @@ async fn authenticated_packet_migrates_healthy_udp_peer_to_observed_source() {
     udp.start_async().await.unwrap();
     node.transports
         .insert(transport_id, TransportHandle::Udp(udp));
-    let active = ActivePeer::with_session(
+    let mut active = ActivePeer::with_session(
         peer_identity,
         LinkId::new(10),
         1_000,
@@ -356,6 +356,7 @@ async fn authenticated_packet_migrates_healthy_udp_peer_to_observed_source() {
         },
     );
     assert!(active.can_send());
+    active.mark_heartbeat_sent(std::time::Instant::now());
     node.peers.insert(peer_node_addr, active);
     let public_fmp_receive = |packet_timestamp_ms, fmp_counter| AuthenticatedFmpReceiveFacts {
         source_peer: peer_identity,
@@ -383,6 +384,10 @@ async fn authenticated_packet_migrates_healthy_udp_peer_to_observed_source() {
         active.idle_time(2_500),
         500,
         "authenticated tuple migration should refresh same-peer liveness"
+    );
+    assert!(
+        active.last_heartbeat_sent().is_none(),
+        "authenticated tuple migration must request a prompt return heartbeat instead of waiting for the steady-state interval"
     );
 
     for transport in node.transports.values_mut() {

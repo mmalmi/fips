@@ -738,6 +738,11 @@ impl ActivePeer {
         self.last_heartbeat_sent = Some(now);
     }
 
+    /// Request a heartbeat on the next link-liveness tick.
+    pub fn request_heartbeat(&mut self) {
+        self.last_heartbeat_sent = None;
+    }
+
     // === State Updates ===
 
     /// Update last seen timestamp.

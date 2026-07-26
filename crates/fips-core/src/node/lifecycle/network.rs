@@ -92,7 +92,7 @@ impl Node {
                 .collect();
             let now_ms = Self::now_ms();
             let mut invalidated_peers = Vec::new();
-            let mut preserved_udp_peers = 0usize;
+            let mut preserved_udp_peers = Vec::new();
             for (peer_addr, can_preserve_udp_session) in rebound_peers {
                 self.pending_lookups.remove(&peer_addr);
                 if can_preserve_udp_session {
@@ -108,7 +108,7 @@ impl Node {
                     if self.sync_dataplane_fmp_owner(&peer_addr) {
                         self.mark_session_direct_path_degraded(peer_addr, now_ms);
                         self.schedule_link_dead_reprobe(peer_addr, now_ms);
-                        preserved_udp_peers = preserved_udp_peers.saturating_add(1);
+                        preserved_udp_peers.push(peer_addr);
                         continue;
                     }
                 }
@@ -117,11 +117,31 @@ impl Node {
                     peer.mark_stale();
                 }
             }
-            if preserved_udp_peers > 0 {
+            if !preserved_udp_peers.is_empty() {
                 debug!(
-                    count = preserved_udp_peers,
+                    count = preserved_udp_peers.len(),
                     "Preserved authenticated UDP sessions while routing payload through validated fallback paths"
                 );
+            }
+            let heartbeat = [crate::protocol::LinkMessageType::Heartbeat.to_byte()];
+            for peer_addr in &preserved_udp_peers {
+                match self
+                    .send_dataplane_fmp_link_plaintext(peer_addr, &heartbeat, false)
+                    .await
+                {
+                    Ok(()) => {
+                        if let Some(peer) = self.peers.get_mut(peer_addr) {
+                            peer.mark_heartbeat_sent(std::time::Instant::now());
+                        }
+                    }
+                    Err(error) => {
+                        debug!(
+                            peer = %self.peer_display_name(peer_addr),
+                            %error,
+                            "Failed to probe preserved UDP session after network rebind"
+                        );
+                    }
+                }
             }
             for peer_addr in &invalidated_peers {
                 let has_pending_rekey = self.peers.get(peer_addr).is_some_and(|peer| {

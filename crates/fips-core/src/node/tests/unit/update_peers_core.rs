@@ -108,7 +108,7 @@ async fn network_transport_rebind_preserves_session_but_uses_live_fallback_for_p
 
     let remote = Identity::generate();
     let remote_addr = *remote.node_addr();
-    let direct_peer = make_active_test_peer(
+    let mut direct_peer = make_active_test_peer(
         &node,
         &remote,
         rebound_transport_id,
@@ -117,6 +117,8 @@ async fn network_transport_rebind_preserves_session_but_uses_live_fallback_for_p
         SessionIndex::new(1),
         SessionIndex::new(2),
     );
+    let heartbeat_before_rebind = std::time::Instant::now() - Duration::from_secs(30);
+    direct_peer.mark_heartbeat_sent(heartbeat_before_rebind);
     node.peers.insert(remote_addr, direct_peer);
     assert!(node.sync_dataplane_fmp_owner(&remote_addr));
 
@@ -161,6 +163,12 @@ async fn network_transport_rebind_preserves_session_but_uses_live_fallback_for_p
     assert!(
         node.dataplane_has_fmp_owner(&remote_addr),
         "an authenticated peer must install the rebound carrier's live socket without discarding its Noise session"
+    );
+    assert!(
+        node.get_peer(&remote_addr)
+            .and_then(ActivePeer::last_heartbeat_sent)
+            .is_some_and(|sent| sent > heartbeat_before_rebind),
+        "the rebound UDP carrier must immediately send authenticated traffic so the stationary peer can learn its new source tuple"
     );
     assert!(
         node.session_direct_path_degradation_active(&remote_addr, Node::now_ms()),

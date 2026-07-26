@@ -454,6 +454,9 @@ impl Node {
                 self.clear_retry_unless_direct_refresh_needed(source_addr);
             }
             if update.address_changed {
+                if let Some(peer) = self.peers.get_mut(source_addr) {
+                    peer.request_heartbeat();
+                }
                 self.sync_dataplane_fmp_owner(source_addr);
             }
             let direct_payload_validation_ready = update.liveness_bookkeeping_recorded
