@@ -206,7 +206,7 @@ async fn fallback_becoming_live_after_network_rebind_moves_established_payload()
 }
 
 #[tokio::test]
-async fn network_transport_rebind_immediately_retries_inflight_udp_handshakes() {
+async fn network_transport_rebind_discards_inflight_udp_handshakes() {
     let mut node = make_node();
     node.config.node.rate_limit.handshake_max_resends = 1;
     let transport_id = TransportId::new(1);
@@ -215,13 +215,15 @@ async fn network_transport_rebind_immediately_retries_inflight_udp_handshakes() 
 
     let remote = Identity::generate();
     let peer_identity = PeerIdentity::from_pubkey_full(remote.pubkey_full());
-    node.initiate_connection(
-        transport_id,
-        TransportAddr::from_string("127.0.0.1:9"),
-        peer_identity,
-    )
-    .await
-    .unwrap();
+    let remote_addr = TransportAddr::from_string("127.0.0.1:9");
+    node.config.peers = vec![auto_connect_peer(
+        remote.npub(),
+        remote_addr.as_str().unwrap(),
+    )];
+    node.configured_peers = crate::node::ConfiguredPeerLookup::from_config(&node.config);
+    node.initiate_connection(transport_id, remote_addr, peer_identity)
+        .await
+        .unwrap();
 
     let link_id = node
         .peers
@@ -239,20 +241,14 @@ async fn network_transport_rebind_immediately_retries_inflight_udp_handshakes() 
 
     assert_eq!(node.rebind_network_transports(None).await.unwrap(), 1);
 
-    let connection = node
-        .peers
-        .connection_values()
-        .next()
-        .expect("in-flight UDP handshake should remain allocated");
     assert_eq!(
-        connection.resend_count(),
-        1,
-        "a rebound must grant one fresh resend instead of preserving the exhausted count"
+        node.connection_count(),
+        0,
+        "a handshake created on the old carrier must not survive the rebind and later promote a stale path"
     );
-    assert_ne!(
-        connection.next_resend_at_ms(),
-        u64::MAX,
-        "positive network-change evidence must replace the old route's exhausted retry deadline"
+    assert!(
+        node.retry_pending.contains_key(remote.node_addr()),
+        "discarding the stale handshake must schedule a fresh bounded retry on the rebuilt carrier"
     );
 
     for transport in node.transports.values_mut() {

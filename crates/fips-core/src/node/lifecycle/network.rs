@@ -81,29 +81,33 @@ impl Node {
                 "Invalidated direct session payload and rebound UDP peer tuples for authenticated path replacement"
             );
 
-            let due_connections: Vec<_> = self
+            let stale_connections: Vec<_> = self
                 .peers
                 .connection_iter()
                 .filter(|(_, connection)| {
-                    connection.is_outbound()
-                        && connection
-                            .transport_id()
-                            .is_some_and(|id| refreshed_transport_ids.contains(&id))
-                        && connection.handshake_state() == crate::peer::HandshakeState::SentMsg1
-                        && connection.handshake_msg1().is_some()
+                    connection
+                        .transport_id()
+                        .is_some_and(|id| refreshed_transport_ids.contains(&id))
                 })
-                .map(|(link_id, _)| *link_id)
+                .map(|(link_id, connection)| {
+                    let expected_identity = if connection.is_outbound() {
+                        connection.expected_identity().copied()
+                    } else {
+                        None
+                    };
+                    (*link_id, expected_identity)
+                })
                 .collect();
-            for link_id in &due_connections {
-                if let Some(connection) = self.peers.get_connection_mut(link_id) {
-                    connection.restart_handshake_resends(now_ms);
+            for (link_id, expected_identity) in &stale_connections {
+                self.cleanup_stale_connection(*link_id, now_ms);
+                if let Some(identity) = expected_identity {
+                    self.schedule_local_route_retry(*identity.node_addr(), now_ms);
                 }
             }
-            self.resend_pending_handshakes(now_ms).await;
-            if !due_connections.is_empty() {
+            if !stale_connections.is_empty() {
                 debug!(
-                    count = due_connections.len(),
-                    "Retried in-flight UDP handshakes on rebound carrier"
+                    count = stale_connections.len(),
+                    "Discarded in-flight handshakes created on rebuilt carriers"
                 );
             }
         }
