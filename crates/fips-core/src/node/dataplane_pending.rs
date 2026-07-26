@@ -132,8 +132,13 @@ impl Node {
             && self
                 .dataplane
                 .fsp_owner_activity(&source_addr)
-                .and_then(|activity| activity.last_outbound_next_hop())
-                == Some(current_fallback)
+                .is_some_and(|activity| {
+                    activity.has_recent_data_return_from(
+                        &current_fallback,
+                        now_ms,
+                        self.session_direct_path_exclusive_trust_timeout_ms(),
+                    )
+                })
             && self
                 .peers
                 .get(&current_fallback)

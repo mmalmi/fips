@@ -681,15 +681,26 @@
         assert!(pending_flush.is_empty());
         assert_eq!(
             node.dataplane.fsp_owner_next_hop(&source_addr),
-            Some(fallback_addr),
-            "alternate authenticated ingress must not churn a live fallback reply affinity"
+            Some(replacement_fallback_addr),
+            "alternate authenticated ingress must immediately replace a fallback without authenticated data return"
         );
 
-        node.record_route_failure(source_addr, fallback_addr);
+        crate::node::tests::seed_dataplane_fsp_data_sent_for_test(
+            &mut node,
+            source_addr,
+            replacement_fallback_addr,
+            Node::now_ms(),
+        );
+        crate::node::tests::seed_dataplane_fsp_data_rx_for_test(
+            &mut node,
+            source_addr,
+            replacement_fallback_addr,
+            Node::now_ms(),
+        );
         let mut commit = SessionReceiveBatchCommit::default();
         commit.push_receive_completion(SessionReceiveCompletion {
             source_addr,
-            previous_hop_addr: replacement_fallback_addr,
+            previous_hop_addr: fallback_addr,
             direct_path: false,
         });
         let pending_flush = commit.finish(&mut node);
@@ -698,6 +709,22 @@
         assert_eq!(
             node.dataplane.fsp_owner_next_hop(&source_addr),
             Some(replacement_fallback_addr),
+            "alternate authenticated ingress must not churn a fallback with recent authenticated data return"
+        );
+
+        node.record_route_failure(source_addr, replacement_fallback_addr);
+        let mut commit = SessionReceiveBatchCommit::default();
+        commit.push_receive_completion(SessionReceiveCompletion {
+            source_addr,
+            previous_hop_addr: fallback_addr,
+            direct_path: false,
+        });
+        let pending_flush = commit.finish(&mut node);
+
+        assert!(pending_flush.is_empty());
+        assert_eq!(
+            node.dataplane.fsp_owner_next_hop(&source_addr),
+            Some(fallback_addr),
             "new authenticated fallback ingress must replace an explicitly failed fallback reply owner immediately"
         );
     }
