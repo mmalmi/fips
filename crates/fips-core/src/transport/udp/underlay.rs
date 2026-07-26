@@ -31,7 +31,7 @@ pub(crate) fn bind_socket_to_interface(
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "android", target_os = "linux"))]
 pub(crate) fn bind_socket_to_interface(
     socket: &Socket,
     _bind_addr: SocketAddr,
