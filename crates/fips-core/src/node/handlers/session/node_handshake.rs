@@ -664,8 +664,12 @@ impl Node {
                 session
                     .recv_cipher_clone()
                     .map(|open| (!entry.current_k_bit(), open));
-            self.sessions
-                .install_rekey_responder_pending_session(*src_addr, entry, session);
+            self.sessions.install_rekey_responder_pending_session(
+                *src_addr,
+                entry,
+                session,
+                Self::now_ms(),
+            );
             if let Some((pending_k_bit, open)) = pending_receive {
                 self.install_dataplane_fsp_pending_receive_epoch(src_addr, pending_k_bit, open);
             }

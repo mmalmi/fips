@@ -203,9 +203,21 @@ fn fsp_owner_uses_session_age_when_no_packet_has_authenticated() {
         owner,
         OwnerConfig::new(1, 8).with_fsp_session_start_ms(1_000),
     );
+    mover
+        .submit_socket_packet(
+            packet(owner, 1, 1, PacketClass::Bulk, OutputTarget::Transport)
+                .with_activity_tick(ActivityTick::new(15_000)),
+        )
+        .unwrap();
+    assert_eq!(dispatch_available(&mut mover, 8).len(), 1);
 
     let activity = mover.owner_fsp_activity(owner).unwrap();
-    assert_eq!(activity.authenticated_inbound_or_session_age_ms(16_000), Some(15_000));
+    assert_eq!(activity.last_rx_age_ms(16_000), Some(1_000));
+    assert_eq!(
+        activity.authenticated_inbound_or_session_age_ms(16_000),
+        Some(15_000),
+        "an unauthenticated reservation must not postpone split-session recovery"
+    );
 }
 
 #[test]
@@ -489,6 +501,30 @@ fn fsp_owner_authenticates_pending_receive_epoch_before_cutover() {
         .owner_mut(owner)
         .unwrap()
         .set_crypto_keys(OwnerCryptoKeys::new(test_key(old_key), test_key(old_key)));
+    assert!(
+        mover
+            .owner_mut(owner)
+            .unwrap()
+            .install_fsp_pending_receive_epoch(true, test_key(new_key))
+    );
+    assert!(
+        mover
+            .owner_mut(owner)
+            .unwrap()
+            .has_fsp_pending_receive_epoch(true)
+    );
+    assert!(
+        mover
+            .owner_mut(owner)
+            .unwrap()
+            .clear_fsp_pending_receive_epoch()
+    );
+    assert!(
+        !mover
+            .owner_mut(owner)
+            .unwrap()
+            .has_fsp_pending_receive_epoch(true)
+    );
     assert!(
         mover
             .owner_mut(owner)

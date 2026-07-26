@@ -3,8 +3,12 @@
 /// either side (e.g. peer restarted with new keys but our entry still holds
 /// the old keys, or vice versa) without dropping the old session while the
 /// new XK handshake completes.
-const DECRYPT_FAILURE_RECOVERY_THRESHOLD: u32 = 32;
-const DECRYPT_FAILURE_RECOVERY_QUIET_MS: u64 = 15_000;
+///
+/// Eight failures plus five seconds without authenticated inbound traffic is
+/// long enough to reject transient reordering, but short enough to recover
+/// before a roaming peer's previous-epoch drain window closes.
+const DECRYPT_FAILURE_RECOVERY_THRESHOLD: u32 = 8;
+const DECRYPT_FAILURE_RECOVERY_QUIET_MS: u64 = 5_000;
 fn pending_rekey_wins_tiebreak(
     our_addr: &NodeAddr,
     peer_addr: &NodeAddr,
@@ -34,6 +38,12 @@ fn should_start_decrypt_failure_rekey(
         && entry_can_recover
         && authenticated_inbound_age_ms
             .is_some_and(|age_ms| age_ms >= DECRYPT_FAILURE_RECOVERY_QUIET_MS)
+}
+
+fn session_can_recover_from_decrypt_failures(entry: &SessionEntry, now_ms: u64) -> bool {
+    let pending_epoch_is_stalled = entry.pending_new_session().is_none()
+        || now_ms.saturating_sub(entry.rekey_completed_ms()) >= DECRYPT_FAILURE_RECOVERY_QUIET_MS;
+    entry.is_established() && !entry.has_rekey_in_progress() && pending_epoch_is_stalled
 }
 
 impl crate::node::SessionRegistry {
@@ -131,8 +141,10 @@ impl crate::node::SessionRegistry {
         remote_addr: NodeAddr,
         mut entry: SessionEntry,
         session: NoiseSession,
+        now_ms: u64,
     ) -> Option<SessionEntry> {
         entry.set_pending_session(session);
+        entry.set_rekey_completed_ms(now_ms);
         entry.clear_handshake_payload();
         self.insert(remote_addr, entry)
     }

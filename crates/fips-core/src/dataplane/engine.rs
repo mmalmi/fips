@@ -146,6 +146,11 @@ impl Dataplane {
             .clear_owner_fmp_pending_receive_epoch(owner)
     }
 
+    pub(crate) fn clear_owner_fsp_pending_receive_epoch(&mut self, owner: OwnerId) -> bool {
+        self.owner_shard_mut(owner)
+            .clear_owner_fsp_pending_receive_epoch(owner)
+    }
+
     pub(crate) fn owner_fsp_mmp_snapshot(
         &self,
         owner: OwnerId,

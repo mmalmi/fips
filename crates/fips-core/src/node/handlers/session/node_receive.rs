@@ -516,9 +516,7 @@ impl Node {
             );
             return false;
         };
-        let entry_can_recover = entry.is_established()
-            && !entry.has_rekey_in_progress()
-            && entry.pending_new_session().is_none();
+        let entry_can_recover = session_can_recover_from_decrypt_failures(entry, now_ms);
         let Some(consecutive) = self.dataplane.record_fsp_decrypt_failure(src_addr) else {
             debug!(
                 src = %self.peer_display_name(&src_addr),
@@ -543,6 +541,20 @@ impl Node {
                 consecutive_failures = consecutive,
                 "Session AEAD failures exceeded threshold; starting recovery rekey"
             );
+            let abandoned_stalled_pending = self.sessions.get_mut(&src_addr).is_some_and(|entry| {
+                if entry.pending_new_session().is_none() {
+                    return false;
+                }
+                entry.abandon_rekey();
+                true
+            });
+            if abandoned_stalled_pending {
+                let _ = self.clear_dataplane_fsp_pending_receive_epoch(&src_addr);
+                debug!(
+                    peer = %self.peer_display_name(&src_addr),
+                    "Discarded stalled pending FSP epoch before recovery rekey"
+                );
+            }
             if !self.initiate_session_rekey(&src_addr).await {
                 debug!(
                     peer = %self.peer_display_name(&src_addr),

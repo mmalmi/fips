@@ -60,23 +60,18 @@
     }
 
     #[test]
-    fn decrypt_failure_recovery_rekey_requires_threshold_and_no_pending_rekey() {
+    fn decrypt_failure_recovery_rekey_requires_threshold_and_no_active_handshake() {
         let local = Identity::generate();
         let peer = Identity::generate();
         let mut entry = established_entry(&local, &peer);
-        let can_recover = |entry: &SessionEntry| {
-            entry.is_established()
-                && !entry.has_rekey_in_progress()
-                && entry.pending_new_session().is_none()
-        };
 
         assert!(!should_start_decrypt_failure_rekey(
-            can_recover(&entry),
+            session_can_recover_from_decrypt_failures(&entry, 10_000),
             DECRYPT_FAILURE_RECOVERY_THRESHOLD - 1,
             Some(DECRYPT_FAILURE_RECOVERY_QUIET_MS)
         ));
         assert!(should_start_decrypt_failure_rekey(
-            can_recover(&entry),
+            session_can_recover_from_decrypt_failures(&entry, 10_000),
             DECRYPT_FAILURE_RECOVERY_THRESHOLD,
             Some(DECRYPT_FAILURE_RECOVERY_QUIET_MS)
         ));
@@ -84,18 +79,26 @@
         let rekey = HandshakeState::new_xk_initiator(local.keypair(), peer.pubkey_full());
         entry.set_rekey_state(rekey, true);
         assert!(!should_start_decrypt_failure_rekey(
-            false,
+            session_can_recover_from_decrypt_failures(&entry, 10_000),
             DECRYPT_FAILURE_RECOVERY_THRESHOLD,
             Some(DECRYPT_FAILURE_RECOVERY_QUIET_MS)
         ));
         entry.abandon_rekey();
 
         entry.set_pending_session(make_xk_session(&local, &peer));
-        assert!(!should_start_decrypt_failure_rekey(
-            false,
+        entry.set_rekey_completed_ms(9_999);
+        assert!(!session_can_recover_from_decrypt_failures(
+            &entry, 10_000
+        ));
+        entry.set_rekey_completed_ms(1_000);
+        assert!(session_can_recover_from_decrypt_failures(
+            &entry, 10_000
+        ));
+        assert!(should_start_decrypt_failure_rekey(
+            session_can_recover_from_decrypt_failures(&entry, 10_000),
             DECRYPT_FAILURE_RECOVERY_THRESHOLD,
             Some(DECRYPT_FAILURE_RECOVERY_QUIET_MS)
-        ));
+        ), "a stalled completed epoch must not permanently block recovery");
     }
 
     #[test]

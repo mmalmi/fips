@@ -551,6 +551,7 @@ pub(crate) struct DataplaneFspOwnerActivity {
     owner: NodeAddr,
     fsp_session_start_ms: Option<u64>,
     last_rx_activity: Option<ActivityTick>,
+    last_authenticated_rx_activity: Option<ActivityTick>,
     last_rx_previous_hop: Option<NodeAddr>,
     last_rx_data_activity: Option<ActivityTick>,
     last_rx_data_previous_hop: Option<NodeAddr>,
@@ -579,10 +580,12 @@ impl DataplaneFspOwnerActivity {
     }
 
     pub(crate) fn authenticated_inbound_or_session_age_ms(self, now_ms: u64) -> Option<u64> {
-        self.last_rx_age_ms(now_ms).or_else(|| {
-            self.fsp_session_start_ms
-                .map(|start_ms| now_ms.saturating_sub(start_ms))
-        })
+        self.last_authenticated_rx_activity
+            .map(|tick| tick.age_ms(now_ms))
+            .or_else(|| {
+                self.fsp_session_start_ms
+                    .map(|start_ms| now_ms.saturating_sub(start_ms))
+            })
     }
 
     pub(crate) fn last_rx_data_age_ms(self, now_ms: u64) -> Option<u64> {
@@ -753,6 +756,7 @@ pub(crate) struct OwnerState {
     fsp_lifecycle_confirmed: bool,
     source_peer: Option<crate::PeerIdentity>,
     last_rx_activity: Option<ActivityTick>,
+    last_authenticated_rx_activity: Option<ActivityTick>,
     last_rx_previous_hop: Option<NodeAddr>,
     last_rx_data_activity: Option<ActivityTick>,
     last_rx_data_previous_hop: Option<NodeAddr>,

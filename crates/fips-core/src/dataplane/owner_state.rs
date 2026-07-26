@@ -45,6 +45,7 @@ impl OwnerState {
             fsp_lifecycle_confirmed: false,
             source_peer: config.source_peer,
             last_rx_activity: None,
+            last_authenticated_rx_activity: None,
             last_rx_previous_hop: None,
             last_rx_data_activity: None,
             last_rx_data_previous_hop: None,
@@ -103,6 +104,7 @@ impl OwnerState {
         self.fsp_lifecycle_confirmed = false;
         self.source_peer = None;
         self.last_rx_activity = None;
+        self.last_authenticated_rx_activity = None;
         self.last_rx_previous_hop = None;
         self.last_rx_data_activity = None;
         self.last_rx_data_previous_hop = None;
@@ -258,6 +260,16 @@ impl OwnerState {
             && self.pending_fsp_k_bit == Some(received_k_bit)
             && self.pending_fsp_open.is_some()
             && self.pending_fsp_replay_window.is_some()
+    }
+
+    pub(crate) fn clear_fsp_pending_receive_epoch(&mut self) -> bool {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return false;
+        }
+        self.pending_fsp_open = None;
+        self.pending_fsp_k_bit = None;
+        self.pending_fsp_replay_window = None;
+        true
     }
 
     pub(crate) fn set_fmp_epoch(
@@ -596,6 +608,7 @@ impl OwnerState {
             owner: self.owner.node_addr(),
             fsp_session_start_ms: self.fsp_session_start_ms,
             last_rx_activity: self.last_rx_activity,
+            last_authenticated_rx_activity: self.last_authenticated_rx_activity,
             last_rx_previous_hop: self.last_rx_previous_hop,
             last_rx_data_activity: self.last_rx_data_activity,
             last_rx_data_previous_hop: self.last_rx_data_previous_hop,

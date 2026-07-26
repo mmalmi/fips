@@ -210,6 +210,9 @@ impl OwnerState {
         {
             self.last_rx_previous_hop = Some(previous_hop);
         }
+        if let Some(tick) = activity_tick {
+            note_activity(&mut self.last_authenticated_rx_activity, tick);
+        }
         if dataplane_fsp_message_is_application_data(msg_type) {
             if let Some(tick) = activity_tick
                 && note_activity(&mut self.last_rx_data_activity, tick)

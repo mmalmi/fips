@@ -249,13 +249,19 @@
         entry.set_handshake_payload(vec![0xee], 7_050);
         assert!(
             sessions
-                .install_rekey_responder_pending_session(peer_addr, entry, pending_session)
+                .install_rekey_responder_pending_session(
+                    peer_addr,
+                    entry,
+                    pending_session,
+                    7_000,
+                )
                 .is_some()
         );
         let entry = sessions
             .get(&peer_addr)
             .expect("responder pending rekey should be installed");
         assert!(entry.pending_new_session().is_some());
+        assert_eq!(entry.rekey_completed_ms(), 7_000);
         assert_eq!(entry.handshake_payload(), None);
         assert_eq!(entry.rekey_msg3_payload(), None);
     }
