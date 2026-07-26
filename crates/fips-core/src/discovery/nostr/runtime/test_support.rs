@@ -1,6 +1,7 @@
 use super::*;
 
 impl NostrDiscovery {
+    #[cfg(test)]
     pub(crate) fn new_for_test_with_bind_interface(
         bind_interface: Option<String>,
     ) -> Arc<NostrDiscovery> {
@@ -10,6 +11,7 @@ impl NostrDiscovery {
         }))
     }
 
+    #[cfg(test)]
     pub(crate) async fn bind_interface_for_test(&self) -> Option<String> {
         self.bind_interface.read().await.clone()
     }
