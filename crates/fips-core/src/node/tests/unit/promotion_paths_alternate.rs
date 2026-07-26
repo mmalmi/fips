@@ -302,22 +302,22 @@ async fn handle_msg2_treats_late_reverse_tcp_dial_as_duplicate_carrier() {
 }
 
 #[tokio::test]
-async fn authenticated_packet_rotates_configured_static_path_to_observed_source() {
+async fn authenticated_packet_migrates_healthy_udp_peer_to_observed_source() {
     let local_identity = Identity::generate();
     let peer_full = Identity::generate();
     let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
     let peer_node_addr = *peer_identity.node_addr();
     let transport_id = TransportId::new(1);
-    let static_addr = TransportAddr::from_string("127.0.0.1:8000");
-    let public_addr = TransportAddr::from_string("203.0.113.9:9000");
+    let static_addr = TransportAddr::from_string("192.0.2.10:8000");
+    let public_addr = TransportAddr::from_string("198.51.100.20:9000");
 
     let mut config = Config::new();
     config.peers = vec![crate::config::PeerConfig {
         npub: peer_full.npub(),
         alias: None,
         addresses: vec![
-            crate::config::PeerAddress::with_priority("udp", "127.0.0.1:8000", 10),
-            crate::config::PeerAddress::with_priority("udp", "203.0.113.9:9000", 200),
+            crate::config::PeerAddress::with_priority("udp", "192.0.2.10:8000", 10),
+            crate::config::PeerAddress::with_priority("udp", "198.51.100.20:9000", 200),
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
         auto_reconnect: true,
@@ -376,42 +376,14 @@ async fn authenticated_packet_rotates_configured_static_path_to_observed_source(
     let active = node.get_peer(&peer_node_addr).expect("peer");
     assert_eq!(
         active.current_addr(),
-        Some(&static_addr),
-        "a healthy configured static path should not be overwritten by a lower-priority observed source tuple"
+        Some(&public_addr),
+        "an authenticated packet on the same UDP carrier must move replies to the peer's observed source tuple"
     );
     assert_eq!(
         active.idle_time(2_500),
         500,
-        "suppressed alternate-path rotation should still refresh authenticated same-peer liveness"
+        "authenticated tuple migration should refresh same-peer liveness"
     );
-
-    node.mark_session_direct_path_degraded(peer_node_addr, 3_000);
-    node.record_authenticated_fmp_receive_facts(
-        public_fmp_receive(3_100, 2),
-        Some(&peer_node_addr),
-    );
-
-    let active = node.get_peer(&peer_node_addr).expect("peer");
-    assert_eq!(
-        active.current_addr(),
-        Some(&public_addr),
-        "degraded sessions should keep accepting authenticated traffic from the observed path"
-    );
-    assert_eq!(active.idle_time(3_100), 0);
-
-    node.config.peers[0].addresses[0].seen_at_ms = Some(2_000);
-    node.record_authenticated_fmp_receive_facts(
-        public_fmp_receive(3_200, 3),
-        Some(&peer_node_addr),
-    );
-
-    let active = node.get_peer(&peer_node_addr).expect("peer");
-    assert_eq!(
-        active.current_addr(),
-        Some(&public_addr),
-        "degraded discovered paths should still be allowed to roam to an authenticated alternate"
-    );
-    assert_eq!(active.idle_time(3_200), 0);
 
     for transport in node.transports.values_mut() {
         transport.stop().await.ok();

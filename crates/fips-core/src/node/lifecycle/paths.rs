@@ -751,6 +751,22 @@ impl Node {
             return true;
         }
 
+        // A valid packet opened by the current FMP session on the same UDP
+        // socket is authoritative endpoint-roaming evidence. The configured
+        // address only ordered the original dial; continuing to send replies
+        // there after the peer's NAT tuple changes creates one-way traffic.
+        if peer.transport_id() == Some(candidate_transport_id)
+            && matches!(
+                self.transports.get(&candidate_transport_id),
+                Some(crate::transport::TransportHandle::Udp(_))
+            )
+            && peer.current_addr().is_some_and(|current_addr| {
+                !self.is_local_rendezvous_path(candidate_transport_id, current_addr)
+            })
+        {
+            return true;
+        }
+
         let current_path_sendable = peer.can_send();
         if !current_path_sendable
             || self.session_direct_path_blocks_direct_payload(peer_node_addr, now_ms)
