@@ -128,6 +128,84 @@ async fn network_transport_rebind_moves_established_payload_to_live_fallback() {
 }
 
 #[tokio::test]
+async fn fallback_becoming_live_after_network_rebind_moves_established_payload() {
+    let mut config = Config::new();
+    config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let rebound_transport_id = TransportId::new(1);
+    node.transports.insert(
+        rebound_transport_id,
+        make_udp_transport_with_mtu(1, 1280).await,
+    );
+
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+    let direct_peer = make_active_test_peer(
+        &node,
+        &remote,
+        rebound_transport_id,
+        LinkId::new(1),
+        TransportAddr::from_string("127.0.0.1:9"),
+        SessionIndex::new(1),
+        SessionIndex::new(2),
+    );
+    node.peers.insert(remote_addr, direct_peer);
+    assert!(node.sync_dataplane_fmp_owner(&remote_addr));
+
+    let fallback = Identity::generate();
+    let fallback_addr = *fallback.node_addr();
+    let fallback_peer = make_active_test_peer(
+        &node,
+        &fallback,
+        TransportId::new(2),
+        LinkId::new(2),
+        TransportAddr::from_string("127.0.0.1:10"),
+        SessionIndex::new(3),
+        SessionIndex::new(4),
+    );
+    node.peers.insert(fallback_addr, fallback_peer);
+    node.learn_reverse_route(remote_addr, fallback_addr);
+
+    let mut session = SessionEntry::new(
+        remote_addr,
+        remote.pubkey_full(),
+        crate::node::session::EndToEndState::Established(make_test_fmp_session(
+            node.identity(),
+            &remote,
+            [0x41; 8],
+            [0x42; 8],
+        )),
+        1_000,
+        true,
+    );
+    session.mark_established(1_000);
+    node.sessions.insert(remote_addr, session);
+    assert!(node.sync_dataplane_fsp_owner_from_current_session(&remote_addr, 0));
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&remote_addr),
+        Some(remote_addr)
+    );
+
+    assert_eq!(node.rebind_network_transports(None).await.unwrap(), 1);
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&remote_addr),
+        Some(remote_addr),
+        "the old owner remains only until an alternate FMP carrier becomes usable"
+    );
+
+    assert!(node.sync_dataplane_fmp_owner(&fallback_addr));
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&remote_addr),
+        Some(fallback_addr),
+        "a fallback that recovers just after the carrier rebind must immediately take over the established payload"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
 async fn network_transport_rebind_immediately_retries_inflight_udp_handshakes() {
     let mut node = make_node();
     node.config.node.rate_limit.handshake_max_resends = 1;

@@ -146,13 +146,17 @@ impl Node {
         next_hop_addr: &NodeAddr,
     ) -> usize {
         let destinations = self.dataplane.fsp_owner_destinations();
+        let now_ms = Self::now_ms();
         let mut refreshed = 0usize;
         for dest in destinations {
             let current_next_hop = self.dataplane.fsp_owner_next_hop(&dest);
             let current_uses_next_hop = current_next_hop == Some(*next_hop_addr);
-            let current_is_ready = current_next_hop
+            let current_owner_is_ready = current_next_hop
                 .is_some_and(|current| self.dataplane_has_fmp_owner(&current));
-            if current_is_ready && !current_uses_next_hop {
+            let current_direct_is_degraded = current_next_hop == Some(dest)
+                && self.session_direct_path_degradation_active(&dest, now_ms);
+            let current_route_is_ready = current_owner_is_ready && !current_direct_is_degraded;
+            if current_route_is_ready && !current_uses_next_hop {
                 continue;
             }
             let would_use_next_hop = self
@@ -161,7 +165,7 @@ impl Node {
             if !(current_uses_next_hop || would_use_next_hop) {
                 continue;
             }
-            let route_ready = if current_is_ready {
+            let route_ready = if current_route_is_ready {
                 self.refresh_dataplane_fsp_owner_routes_retaining_current(&dest)
             } else {
                 self.refresh_dataplane_fsp_owner_routes(&dest)
