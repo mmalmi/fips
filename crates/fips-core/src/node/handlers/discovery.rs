@@ -267,7 +267,19 @@ impl Node {
                     now_ms,
                     path_mtu,
                 );
-                self.pin_handshake_reverse_route(target, *from);
+                let session_established = self
+                    .sessions
+                    .get(&target)
+                    .is_some_and(|entry| entry.is_established());
+                if session_established {
+                    debug!(
+                        target = %self.peer_display_name(&target),
+                        next_hop = %self.peer_display_name(from),
+                        "Keeping established payload route failure after control-plane lookup"
+                    );
+                } else {
+                    self.pin_handshake_reverse_route(target, *from);
+                }
 
                 // Mirror path_mtu into the FipsAddress-keyed read-only lookup
                 // map used by the TUN reader/writer at TCP MSS clamp time.
@@ -310,10 +322,6 @@ impl Node {
                 self.pending_lookups.remove(&target);
 
                 let has_queued_traffic = self.pending_session_traffic.has_traffic_for(&target);
-                let session_established = self
-                    .sessions
-                    .get(&target)
-                    .is_some_and(|entry| entry.is_established());
 
                 // If an established session exists, reset the dataplane owner warmup budget.
                 if session_established {

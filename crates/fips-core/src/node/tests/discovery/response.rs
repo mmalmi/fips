@@ -46,6 +46,64 @@ async fn test_response_originator_caches_route() {
 }
 
 #[tokio::test]
+async fn established_session_lookup_does_not_revive_failed_payload_hop() {
+    use crate::node::session::{EndToEndState, SessionEntry};
+    use crate::noise::HandshakeState;
+
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let from = make_node_addr(0xAA);
+    let target_identity = Identity::generate();
+    let target = *target_identity.node_addr();
+    let root = make_node_addr(0xF0);
+    let coords = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
+
+    node.register_identity(target, target_identity.pubkey_full());
+    node.learn_reverse_route(target, from);
+    node.learned_routes.record_failure(&target, &from);
+
+    let mut initiator =
+        HandshakeState::new_initiator(node.identity().keypair(), target_identity.pubkey_full());
+    let mut responder = HandshakeState::new_responder(target_identity.keypair());
+    initiator.set_local_epoch([1; 8]);
+    responder.set_local_epoch([2; 8]);
+    let msg1 = initiator.write_message_1().expect("session msg1");
+    responder.read_message_1(&msg1).expect("session read msg1");
+    let msg2 = responder.write_message_2().expect("session msg2");
+    initiator.read_message_2(&msg2).expect("session read msg2");
+    let session = initiator.into_session().expect("established session");
+    node.sessions.insert(
+        target,
+        SessionEntry::new(
+            target,
+            target_identity.pubkey_full(),
+            EndToEndState::Established(session),
+            1_000,
+            false,
+        ),
+    );
+    assert!(
+        node.learned_routes
+            .failed_next_hops(&target, Node::now_ms())
+            .contains(&from),
+        "fixture must begin with a recently failed payload next hop"
+    );
+
+    let proof_data = LookupResponse::proof_bytes(556, &target, &coords);
+    let response = LookupResponse::new(556, target, coords, target_identity.sign(&proof_data));
+    node.handle_lookup_response(&from, &response.encode()[1..])
+        .await;
+
+    assert!(
+        node.learned_routes
+            .failed_next_hops(&target, Node::now_ms())
+            .contains(&from),
+        "a control-plane lookup response must not erase an established session's payload failure"
+    );
+}
+
+#[tokio::test]
 async fn test_response_transit_learns_target_route() {
     let mut config = Config::new();
     config.node.routing.mode = RoutingMode::ReplyLearned;
