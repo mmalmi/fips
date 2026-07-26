@@ -132,6 +132,95 @@ async fn network_transport_rebind_preserves_session_but_uses_live_fallback_for_p
 }
 
 #[tokio::test]
+async fn network_transport_rebind_discovers_fallback_when_transit_returns() {
+    let mut config = Config::new();
+    config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;
+    let remote = Identity::generate();
+    config.peers = vec![auto_connect_peer(remote.npub(), "127.0.0.1:9")];
+    let mut node = Node::new(config).unwrap();
+    let rebound_transport_id = TransportId::new(1);
+    node.transports.insert(
+        rebound_transport_id,
+        make_udp_transport_with_mtu(1, 1280).await,
+    );
+
+    let remote_addr = *remote.node_addr();
+    let direct_peer = make_active_test_peer(
+        &node,
+        &remote,
+        rebound_transport_id,
+        LinkId::new(1),
+        TransportAddr::from_string("127.0.0.1:9"),
+        SessionIndex::new(1),
+        SessionIndex::new(2),
+    );
+    node.peers.insert(remote_addr, direct_peer);
+    assert!(node.sync_dataplane_fmp_owner(&remote_addr));
+
+    let mut session = SessionEntry::new(
+        remote_addr,
+        remote.pubkey_full(),
+        crate::node::session::EndToEndState::Established(make_test_fmp_session(
+            node.identity(),
+            &remote,
+            [0x51; 8],
+            [0x52; 8],
+        )),
+        1_000,
+        true,
+    );
+    session.mark_established(1_000);
+    node.sessions.insert(remote_addr, session);
+    assert!(node.sync_dataplane_fsp_owner_from_current_session(&remote_addr, 0));
+    assert_eq!(
+        node.find_next_hop(&remote_addr)
+            .map(|peer| *peer.node_addr()),
+        Some(remote_addr),
+        "fixture must begin on the direct path without a learned fallback route"
+    );
+
+    let baseline = node.stats().discovery.req_initiated;
+    assert_eq!(node.rebind_network_transports(None).await.unwrap(), 1);
+    assert!(
+        node.retry_pending.contains_key(&remote_addr),
+        "fresh direct candidates should still be reprobed after the underlay changes"
+    );
+    assert!(
+        !node.pending_lookups.contains_key(&remote_addr),
+        "recovery lookup should wait until an alternate adjacency can carry it"
+    );
+
+    let fallback = Identity::generate();
+    let fallback_addr = *fallback.node_addr();
+    let fallback_peer = make_active_test_peer(
+        &node,
+        &fallback,
+        TransportId::new(2),
+        LinkId::new(2),
+        TransportAddr::from_string("127.0.0.1:10"),
+        SessionIndex::new(3),
+        SessionIndex::new(4),
+    );
+    node.peers.insert(fallback_addr, fallback_peer);
+    assert!(node.sync_dataplane_fmp_owner(&fallback_addr));
+    node.process_pending_retries(Node::now_ms()).await;
+
+    assert!(
+        node.pending_lookups.contains_key(&remote_addr),
+        "the returned transit neighbor must be asked for a replacement route before the direct retry is due"
+    );
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        baseline + 1,
+        "a network rebind should start exactly one bounded recovery lookup"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
 async fn fallback_becoming_live_after_network_rebind_replaces_unusable_direct_payload() {
     let mut config = Config::new();
     config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;

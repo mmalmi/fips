@@ -96,7 +96,6 @@ impl PendingDiscoveryLookups {
         self.entries.remove(dest)
     }
 
-    #[cfg(test)]
     pub(crate) fn contains_key(&self, dest: &NodeAddr) -> bool {
         self.entries.contains_key(dest)
     }
