@@ -409,6 +409,24 @@ impl WebSocketTransport {
             .unwrap_or_else(|error| error.into_inner())
             .remove(addr);
     }
+
+    /// Replace TCP-backed WebSocket carriers after a confirmed network change.
+    ///
+    /// An established stream can remain locally "connected" long after its
+    /// source address or NAT mapping vanished. Restarting this configured
+    /// transport closes those stale streams and immediately redials its seed
+    /// URLs while preserving the transport ID used by authenticated FIPS
+    /// peer and session state.
+    pub(crate) async fn restart_after_network_change(&mut self) -> Result<bool, TransportError> {
+        if !(self.state.is_operational() || self.state.can_start()) {
+            return Ok(false);
+        }
+        if self.state.is_operational() {
+            self.stop_async().await?;
+        }
+        self.start_async().await?;
+        Ok(true)
+    }
 }
 
 impl Transport for WebSocketTransport {

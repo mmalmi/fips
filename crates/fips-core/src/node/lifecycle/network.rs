@@ -22,23 +22,28 @@ impl Node {
             }
         }
 
-        let mut rebound = 0usize;
-        let mut rebound_transport_ids = Vec::new();
+        let mut refreshed = 0usize;
+        let mut refreshed_transport_ids = Vec::new();
 
         for (transport_id, transport) in &mut self.transports {
-            let crate::transport::TransportHandle::Udp(udp) = transport else {
-                continue;
+            let refresh_result = match transport {
+                crate::transport::TransportHandle::Udp(udp) => {
+                    udp.rebind_after_network_change(bind_interface.clone())
+                        .await
+                }
+                crate::transport::TransportHandle::WebSocket(websocket) => {
+                    websocket.restart_after_network_change().await
+                }
+                _ => Ok(false),
             };
-            match udp
-                .rebind_after_network_change(bind_interface.clone())
-                .await
-            {
+            match refresh_result {
                 Ok(true) => {
-                    rebound = rebound.saturating_add(1);
-                    rebound_transport_ids.push(*transport_id);
+                    refreshed = refreshed.saturating_add(1);
+                    refreshed_transport_ids.push(*transport_id);
                     info!(
                         transport_id = %transport_id,
-                        "Rebound configured UDP carrier for network change"
+                        transport = transport.transport_type().name,
+                        "Refreshed configured carrier for network change"
                     );
                 }
                 Ok(false) => {}
@@ -46,12 +51,12 @@ impl Node {
             }
         }
 
-        if !rebound_transport_ids.is_empty() {
+        if !refreshed_transport_ids.is_empty() {
             let mut invalidated_peers = Vec::new();
             for peer in self.peers.values_mut() {
                 if peer
                     .transport_id()
-                    .is_some_and(|id| rebound_transport_ids.contains(&id))
+                    .is_some_and(|id| refreshed_transport_ids.contains(&id))
                 {
                     invalidated_peers.push(*peer.node_addr());
                     peer.mark_stale();
@@ -83,7 +88,7 @@ impl Node {
                     connection.is_outbound()
                         && connection
                             .transport_id()
-                            .is_some_and(|id| rebound_transport_ids.contains(&id))
+                            .is_some_and(|id| refreshed_transport_ids.contains(&id))
                         && connection.handshake_state() == crate::peer::HandshakeState::SentMsg1
                         && connection.handshake_msg1().is_some()
                 })
@@ -109,6 +114,6 @@ impl Node {
             debug!(%error, "Failed to refresh local advert after network rebind");
         }
 
-        Ok(rebound)
+        Ok(refreshed)
     }
 }

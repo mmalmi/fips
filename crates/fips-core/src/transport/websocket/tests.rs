@@ -145,6 +145,62 @@ async fn configured_seed_reconnects_after_listener_restart() {
     replacement_server.stop_async().await.unwrap();
 }
 
+#[tokio::test]
+async fn configured_seed_reconnects_immediately_after_network_change() {
+    let server_identity = Identity::generate();
+    let (server_packet_tx, _server_packet_rx) = packet_channel(8);
+    let mut server = WebSocketTransport::new(
+        TransportId::new(1),
+        None,
+        WebSocketConfig {
+            bind_addr: Some("127.0.0.1:0".into()),
+            ..Default::default()
+        },
+        server_packet_tx,
+        &server_identity,
+    );
+    server.start_async().await.unwrap();
+    let seed_url =
+        TransportAddr::from_string(&format!("ws://{}/fips", server.local_addr().unwrap()));
+
+    let client_identity = Identity::generate();
+    let (client_packet_tx, _client_packet_rx) = packet_channel(8);
+    let mut client = WebSocketTransport::new(
+        TransportId::new(2),
+        None,
+        WebSocketConfig {
+            seed_urls: vec![seed_url.to_string()],
+            reconnect_initial_ms: Some(10),
+            reconnect_max_ms: Some(40),
+            ..Default::default()
+        },
+        client_packet_tx,
+        &client_identity,
+    );
+    client.start_async().await.unwrap();
+    wait_for_connection(&client, &seed_url).await;
+
+    assert!(client.restart_after_network_change().await.unwrap());
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if client.stats().connections_opened >= 2
+                && client.connection_state_sync(&seed_url) == ConnectionState::Connected
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect(
+        "configured WebSocket seed did not redial promptly after positive network-change evidence",
+    );
+    assert_eq!(client.transport_id(), TransportId::new(2));
+
+    client.stop_async().await.unwrap();
+    server.stop_async().await.unwrap();
+}
+
 #[test]
 fn websocket_url_validation_rejects_remote_plaintext_and_bad_limits() {
     let remote_plaintext = WebSocketConfig {
