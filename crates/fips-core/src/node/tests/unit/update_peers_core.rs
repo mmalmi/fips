@@ -46,7 +46,7 @@ async fn network_transport_rebind_preserves_peer_and_session_state() {
 }
 
 #[tokio::test]
-async fn network_transport_rebind_preserves_established_udp_payload_path() {
+async fn network_transport_rebind_preserves_session_but_uses_live_fallback_for_payload() {
     let mut config = Config::new();
     config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;
     let mut node = Node::new(config).unwrap();
@@ -113,13 +113,13 @@ async fn network_transport_rebind_preserves_established_udp_payload_path() {
         "an authenticated peer must install the rebound carrier's live socket without discarding its Noise session"
     );
     assert!(
-        !node.session_direct_path_degradation_active(&remote_addr, Node::now_ms()),
-        "a local socket replacement must not invalidate an authenticated end-to-end session"
+        node.session_direct_path_degradation_active(&remote_addr, Node::now_ms()),
+        "a network change invalidates the old NAT tuple until authenticated payload returns"
     );
     assert_eq!(
         node.dataplane.fsp_owner_next_hop(&remote_addr),
-        Some(remote_addr),
-        "established payload must immediately use the same authenticated peer through the rebound UDP socket"
+        Some(fallback_addr),
+        "established payload must immediately use the live mesh fallback instead of trusting the old direct tuple"
     );
     assert!(
         node.sessions.get(&remote_addr).is_some(),

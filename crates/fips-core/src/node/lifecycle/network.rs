@@ -4,8 +4,9 @@ impl Node {
     /// Rebind configured UDP carriers after an observed underlay change.
     ///
     /// Transport IDs, authenticated peers, and end-to-end sessions remain
-    /// intact. Adopted NAT-traversal sockets are left alone; the normal direct
-    /// path refresh races fresh candidates over the rebound configured carrier.
+    /// intact. UDP sockets move to the new underlay, direct payload is held
+    /// behind validated mesh fallback, and fresh direct candidates race in
+    /// parallel.
     pub(in crate::node) async fn rebind_network_transports(
         &mut self,
         bind_interface: Option<String>,
@@ -75,6 +76,7 @@ impl Node {
                     ))
                 })
                 .collect();
+            let now_ms = Self::now_ms();
             let mut invalidated_peers = Vec::new();
             let mut preserved_udp_peers = 0usize;
             for (peer_addr, can_preserve_udp_session) in rebound_peers {
@@ -89,6 +91,8 @@ impl Node {
                         );
                     }
                     if self.sync_dataplane_fmp_owner(&peer_addr) {
+                        self.mark_session_direct_path_degraded(peer_addr, now_ms);
+                        self.schedule_link_dead_reprobe(peer_addr, now_ms);
                         preserved_udp_peers = preserved_udp_peers.saturating_add(1);
                         continue;
                     }
@@ -101,10 +105,9 @@ impl Node {
             if preserved_udp_peers > 0 {
                 debug!(
                     count = preserved_udp_peers,
-                    "Installed rebound UDP sockets without discarding authenticated sessions"
+                    "Preserved authenticated UDP sessions while routing payload through validated fallback paths"
                 );
             }
-            let now_ms = Self::now_ms();
             for peer_addr in &invalidated_peers {
                 let has_pending_rekey = self.peers.get(peer_addr).is_some_and(|peer| {
                     peer.rekey_in_progress() || peer.pending_new_session().is_some()
