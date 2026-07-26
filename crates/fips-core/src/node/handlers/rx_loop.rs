@@ -5,6 +5,7 @@ use crate::control::{ControlMessage, ControlSenders, ControlSocket, commands};
 use crate::dataplane::DataplaneFastIngressRx;
 use crate::node::{
     EndpointDataBatchRx, EndpointEventSender, Node, NodeError, endpoint_data_batch_channel,
+    lifecycle::NetworkRebindCompletion,
 };
 use crate::transport::PacketRx;
 use crate::upper::tun::TunOutboundRx;
@@ -162,6 +163,9 @@ impl Node {
             tokio::time::interval(Duration::from_secs(self.config.node.tick_interval_secs));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut maintenance_state = RxLoopMaintenanceState::default();
+        let (network_rebind_completion_tx, mut network_rebind_completion_rx) =
+            tokio::sync::mpsc::channel::<NetworkRebindCompletion>(1);
+        let mut network_rebind_in_progress = false;
 
         // Set up control socket channels. Read-only queries are separated
         // from mutating commands so operator status reads can get reserved
@@ -285,12 +289,28 @@ impl Node {
                         ENDPOINT_DRAIN_BUDGET,
                     ).await;
                 }
+                Some(completion) = network_rebind_completion_rx.recv() => {
+                    network_rebind_in_progress = false;
+                    self.complete_network_rebind(completion).await;
+                }
                 // Endpoint control carries management/lifecycle commands.
                 // Endpoint payload batches stay on the data lane; this branch
                 // keeps control work from waiting behind hot raw receive.
                 // Endpoint data batches intentionally remain below packet_rx.
                 Some(command) = endpoint_control_rx.recv() => {
-                    self.handle_endpoint_control(command).await;
+                    if let Some(request) = self.handle_endpoint_control(command).await {
+                        if network_rebind_in_progress {
+                            request.reject(NodeError::TransportError(
+                                "network transport rebind already in progress".to_string(),
+                            ));
+                        } else {
+                            network_rebind_in_progress = true;
+                            self.spawn_network_rebind_preparation(
+                                request,
+                                network_rebind_completion_tx.clone(),
+                            );
+                        }
+                    }
                 }
                 packet = dataplane_runtime.packet_rx.recv() => {
                     match packet {

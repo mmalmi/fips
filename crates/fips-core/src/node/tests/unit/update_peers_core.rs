@@ -32,7 +32,7 @@ async fn network_transport_rebind_preserves_peer_and_session_state() {
     );
 
     assert!(node.get_peer(remote.node_addr()).unwrap().is_healthy());
-    assert_eq!(node.rebind_network_transports(None).await.unwrap(), 1);
+    assert_eq!(node.apply_prepared_network_rebind(None).await.unwrap(), 1);
     let preserved_peer = node.get_peer(remote.node_addr()).unwrap();
     assert!(
         !preserved_peer.is_healthy() && preserved_peer.can_send(),
@@ -75,7 +75,7 @@ async fn network_transport_rebind_replaces_udp_upgrade_for_configured_websocket_
     assert!(node.sync_dataplane_fmp_owner(&seed_addr));
     assert!(node.get_peer(&seed_addr).unwrap().is_healthy());
 
-    assert_eq!(node.rebind_network_transports(None).await.unwrap(), 1);
+    assert_eq!(node.apply_prepared_network_rebind(None).await.unwrap(), 1);
 
     assert!(
         !node.get_peer(&seed_addr).unwrap().is_healthy(),
@@ -158,7 +158,7 @@ async fn network_transport_rebind_preserves_session_but_uses_live_fallback_for_p
         "fixture must start with established payload pinned to the direct carrier"
     );
 
-    assert_eq!(node.rebind_network_transports(None).await.unwrap(), 1);
+    assert_eq!(node.apply_prepared_network_rebind(None).await.unwrap(), 1);
 
     assert!(
         node.dataplane_has_fmp_owner(&remote_addr),
@@ -257,7 +257,7 @@ async fn network_transport_rebind_discovers_fallback_when_transit_returns() {
     );
 
     let baseline = node.stats().discovery.req_initiated;
-    assert_eq!(node.rebind_network_transports(None).await.unwrap(), 1);
+    assert_eq!(node.apply_prepared_network_rebind(None).await.unwrap(), 1);
     assert!(
         node.retry_pending.contains_key(&remote_addr),
         "fresh direct candidates should still be reprobed after the underlay changes"
@@ -476,7 +476,7 @@ async fn network_transport_rebind_updates_nostr_traversal_interface() {
     assert_eq!(discovery.active_initiator_count_for_test().await, 1);
 
     assert_eq!(
-        node.rebind_network_transports(Some("new-underlay".to_string()))
+        node.apply_prepared_network_rebind(Some("new-underlay".to_string()))
             .await
             .unwrap(),
         0
@@ -491,6 +491,118 @@ async fn network_transport_rebind_updates_nostr_traversal_interface() {
         0,
         "the old-interface traversal must not suppress its replacement as already in progress"
     );
+}
+
+#[tokio::test]
+async fn later_websocket_apply_failure_rolls_back_udp_and_network_config() {
+    #[cfg(target_os = "macos")]
+    const LOOPBACK_INTERFACE: &str = "lo0";
+    #[cfg(all(not(target_os = "macos"), not(windows)))]
+    const LOOPBACK_INTERFACE: &str = "lo";
+    #[cfg(windows)]
+    const LOOPBACK_INTERFACE: &str = "ignored-by-windows-udp";
+
+    let mut node = make_node();
+    let discovery = NostrDiscovery::new_for_test_with_bind_interface(None);
+    node.nostr_discovery = Some(discovery.clone());
+
+    let reserved_udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let udp_addr = reserved_udp.local_addr().unwrap();
+    drop(reserved_udp);
+    let udp_id = TransportId::new(1);
+    let (udp_packet_tx, _udp_packet_rx) = packet_channel(64);
+    let mut udp = UdpTransport::new(
+        udp_id,
+        Some("transactional-udp".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some(udp_addr.to_string()),
+            ..Default::default()
+        },
+        udp_packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    assert_eq!(udp.local_addr(), Some(udp_addr));
+    node.transports.insert(udp_id, TransportHandle::Udp(udp));
+
+    let occupied_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let websocket_id = TransportId::new(2);
+    let (websocket_packet_tx, _websocket_packet_rx) = packet_channel(64);
+    let websocket = crate::transport::websocket::WebSocketTransport::new(
+        websocket_id,
+        Some("blocked-websocket".to_string()),
+        crate::config::WebSocketConfig {
+            bind_addr: Some(occupied_listener.local_addr().unwrap().to_string()),
+            ..Default::default()
+        },
+        websocket_packet_tx,
+        node.identity(),
+    );
+    node.transports.insert(
+        websocket_id,
+        TransportHandle::WebSocket(Box::new(websocket)),
+    );
+
+    let error = node
+        .apply_prepared_network_rebind(Some(LOOPBACK_INTERFACE.to_string()))
+        .await
+        .expect_err("the occupied WebSocket listen port must fail carrier apply");
+    assert!(error.to_string().contains("transport error"));
+    assert_eq!(node.config.node.discovery.nostr.bind_interface, None);
+    assert_eq!(discovery.bind_interface_for_test().await, None);
+    match &node.config.transports.udp {
+        crate::config::TransportInstances::Single(config) => {
+            assert_eq!(config.bind_interface, None);
+        }
+        crate::config::TransportInstances::Named(configs) => {
+            assert!(
+                configs
+                    .values()
+                    .all(|config| config.bind_interface.is_none())
+            );
+        }
+    }
+    assert!(
+        node.transport_rebind_packet_cutoffs_ms.is_empty(),
+        "a rolled-back carrier must not invalidate packets or peer state"
+    );
+
+    let udp = match node.transports.get(&udp_id).unwrap() {
+        TransportHandle::Udp(udp) => udp,
+        _ => panic!("expected UDP carrier"),
+    };
+    assert_eq!(
+        node.transports.get(&udp_id).unwrap().state(),
+        crate::transport::TransportState::Up
+    );
+    assert_eq!(udp.local_addr(), Some(udp_addr));
+    assert_eq!(udp.network_bind_interface(), None);
+
+    let receiver = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let receiver_addr = TransportAddr::from_string(&receiver.local_addr().unwrap().to_string());
+    node.transports
+        .get(&udp_id)
+        .unwrap()
+        .send(&receiver_addr, b"rollback-live")
+        .await
+        .unwrap();
+    let mut payload = [0u8; 32];
+    let received = tokio::time::timeout(Duration::from_secs(1), receiver.recv(&mut payload))
+        .await
+        .expect("rolled-back UDP carrier delivery")
+        .unwrap();
+    assert_eq!(&payload[..received], b"rollback-live");
+    assert_eq!(
+        node.transports.get(&websocket_id).unwrap().state(),
+        crate::transport::TransportState::Configured,
+        "failed WebSocket start must restore its pre-apply lifecycle state"
+    );
+
+    node.transports
+        .get_mut(&udp_id)
+        .unwrap()
+        .stop()
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -556,7 +668,7 @@ async fn fallback_becoming_live_after_network_rebind_replaces_unusable_direct_pa
         .expect("direct peer exists")
         .mark_stale();
 
-    assert_eq!(node.rebind_network_transports(None).await.unwrap(), 1);
+    assert_eq!(node.apply_prepared_network_rebind(None).await.unwrap(), 1);
     assert_eq!(
         node.dataplane.fsp_owner_next_hop(&remote_addr),
         None,
@@ -609,7 +721,7 @@ async fn network_transport_rebind_discards_inflight_udp_handshakes() {
     assert_eq!(connection.resend_count(), 1);
     assert_eq!(connection.next_resend_at_ms(), u64::MAX);
 
-    assert_eq!(node.rebind_network_transports(None).await.unwrap(), 1);
+    assert_eq!(node.apply_prepared_network_rebind(None).await.unwrap(), 1);
 
     assert_eq!(
         node.connection_count(),
@@ -645,7 +757,7 @@ async fn network_transport_rebind_rejects_handshake_queued_by_old_carrier() {
         .unwrap();
     let wire_msg1 = build_msg1(SessionIndex::new(7), &noise_msg1);
 
-    assert_eq!(node.rebind_network_transports(None).await.unwrap(), 1);
+    assert_eq!(node.apply_prepared_network_rebind(None).await.unwrap(), 1);
     node.handle_msg1(ReceivedPacket::with_timestamp(
         transport_id,
         TransportAddr::from_string("127.0.0.1:5000"),
@@ -688,7 +800,7 @@ async fn network_transport_rebind_ignores_queued_receive_without_discarding_live
     node.peers.insert(remote_addr, peer);
     assert!(node.sync_dataplane_fmp_owner(&remote_addr));
 
-    assert_eq!(node.rebind_network_transports(None).await.unwrap(), 1);
+    assert_eq!(node.apply_prepared_network_rebind(None).await.unwrap(), 1);
     let last_seen_after_rebind = node.get_peer(&remote_addr).unwrap().last_seen();
     node.record_authenticated_fmp_receive_facts(
         AuthenticatedFmpReceiveFacts {
@@ -742,7 +854,7 @@ async fn network_transport_rebind_schedules_fresh_handshake_for_active_udp_peer(
     )];
 
     let before_rebind_ms = Node::now_ms();
-    assert_eq!(node.rebind_network_transports(None).await.unwrap(), 1);
+    assert_eq!(node.apply_prepared_network_rebind(None).await.unwrap(), 1);
 
     let retry = node
         .retry_pending
@@ -800,7 +912,7 @@ async fn network_transport_rebind_discards_pending_rekey_but_keeps_current_sessi
         remote_addr.as_str().unwrap(),
     )];
 
-    assert_eq!(node.rebind_network_transports(None).await.unwrap(), 1);
+    assert_eq!(node.apply_prepared_network_rebind(None).await.unwrap(), 1);
     let rebound_peer = node.get_peer(remote.node_addr()).unwrap();
     assert!(
         rebound_peer.pending_new_session().is_none(),

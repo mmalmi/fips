@@ -834,10 +834,13 @@ async fn endpoint_peer_snapshot_does_not_treat_stale_historical_rx_as_connected(
     node.peers.insert(peer_addr, active);
 
     let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-    node.handle_endpoint_control(crate::node::NodeEndpointControlCommand::PeerSnapshot {
-        response_tx,
-    })
-    .await;
+    assert!(
+        node.handle_endpoint_control(crate::node::NodeEndpointControlCommand::PeerSnapshot {
+            response_tx,
+        })
+        .await
+        .is_none()
+    );
     let peers = response_rx.await.expect("peer snapshot response");
     let peer = peers.first().expect("one peer");
     assert!(
@@ -876,10 +879,13 @@ async fn endpoint_peer_snapshot_treats_fresh_rx_as_connected() {
     node.peers.insert(peer_addr, active);
 
     let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-    node.handle_endpoint_control(crate::node::NodeEndpointControlCommand::PeerSnapshot {
-        response_tx,
-    })
-    .await;
+    assert!(
+        node.handle_endpoint_control(crate::node::NodeEndpointControlCommand::PeerSnapshot {
+            response_tx,
+        })
+        .await
+        .is_none()
+    );
     let peers = response_rx.await.expect("peer snapshot response");
     let peer = peers.first().expect("one peer");
     assert!(

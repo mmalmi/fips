@@ -410,22 +410,47 @@ impl WebSocketTransport {
             .remove(addr);
     }
 
-    /// Replace TCP-backed WebSocket carriers after a confirmed network change.
+    /// Replace TCP-backed WebSocket streams after a confirmed network change.
     ///
     /// An established stream can remain locally "connected" long after its
-    /// source address or NAT mapping vanished. Restarting this configured
-    /// transport closes those stale streams and immediately redials its seed
-    /// URLs while preserving the transport ID used by authenticated FIPS
-    /// peer and session state.
+    /// source address or NAT mapping vanished. Dropping the connection senders
+    /// closes stale streams and wakes the existing seed dialers without
+    /// releasing and racing to reacquire a configured listener socket.
     pub(crate) async fn restart_after_network_change(&mut self) -> Result<bool, TransportError> {
         if !(self.state.is_operational() || self.state.can_start()) {
             return Ok(false);
         }
         if self.state.is_operational() {
+            self.runtime.pool.lock().await.clear();
+            self.runtime
+                .states
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clear();
+            return Ok(true);
+        }
+        let previous_state = self.state;
+        let previous_local_addr = self.local_addr;
+        match self.start_async().await {
+            Ok(()) => Ok(true),
+            Err(error) => {
+                self.runtime.running.store(false, Ordering::Release);
+                self.local_addr = previous_local_addr;
+                self.state = previous_state;
+                Err(error)
+            }
+        }
+    }
+
+    pub(crate) async fn rollback_network_change_start(
+        &mut self,
+        previous_state: TransportState,
+    ) -> Result<(), TransportError> {
+        if self.state.is_operational() {
             self.stop_async().await?;
         }
-        self.start_async().await?;
-        Ok(true)
+        self.state = previous_state;
+        Ok(())
     }
 }
 

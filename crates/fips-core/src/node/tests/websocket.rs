@@ -182,7 +182,11 @@ async fn client_network_rebind_replaces_stationary_seed_carrier_and_preserves_pa
     );
 
     assert_eq!(
-        nodes[1].node.rebind_network_transports(None).await.unwrap(),
+        nodes[1]
+            .node
+            .apply_prepared_network_rebind(None)
+            .await
+            .unwrap(),
         1,
         "the client network event must rebuild its configured WebSocket carrier"
     );

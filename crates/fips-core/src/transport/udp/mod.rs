@@ -8,6 +8,7 @@ use super::{
 };
 #[cfg(target_os = "macos")]
 pub(crate) mod darwin_sockopts;
+mod rebind;
 pub(crate) mod socket;
 mod stats;
 #[cfg(any(
@@ -28,6 +29,8 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, trace, warn};
+
+pub(crate) use rebind::UdpNetworkRebindProbe;
 
 /// DNS cache TTL for hostname resolution (60 seconds).
 const DNS_CACHE_TTL: Duration = Duration::from_secs(60);
@@ -757,13 +760,30 @@ impl UdpTransport {
     /// sessions keep the same transport ID. Configured carriers pick up a new
     /// live socket; adopted NAT-traversal carriers replace the stale socket
     /// while retaining its local port.
-    pub(crate) async fn rebind_after_network_change(
+    pub(crate) async fn rebind_after_prepared_network_change(
         &mut self,
         bind_interface: Option<String>,
     ) -> Result<bool, TransportError> {
+        let previous_bind_interface = self.config.bind_interface.clone();
+        let previous_recovery = self.last_local_route_socket_recovery;
+        let was_operational = self.state.is_operational();
+
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
         if self.socket_origin == UdpSocketOrigin::Adopted && self.state.is_operational() {
-            self.rebuild_adopted_socket(bind_interface).await?;
+            let previous_local_addr = self.local_addr.ok_or(TransportError::NotStarted)?;
+            if let Err(error) = self.rebuild_adopted_socket_once(bind_interface).await {
+                self.config.bind_interface = previous_bind_interface;
+                self.last_local_route_socket_recovery = previous_recovery;
+                return match self
+                    .rollback_adopted_socket_after_rebind_failure(previous_local_addr)
+                    .await
+                {
+                    Ok(()) => Err(error),
+                    Err(rollback) => Err(TransportError::StartFailed(format!(
+                        "network rebind failed: {error}; rollback failed: {rollback}"
+                    ))),
+                };
+            }
             info!(
                 transport_id = %self.transport_id,
                 local_addr = %self.local_addr.map_or_else(|| "<unbound>".to_string(), |addr| addr.to_string()),
@@ -784,7 +804,19 @@ impl UdpTransport {
         // carrier without resurrecting the stale underlay binding.
         self.config.bind_interface = bind_interface;
         self.last_local_route_socket_recovery = Some(Instant::now());
-        self.rebuild_configured_socket().await?;
+        if let Err(error) = self.rebuild_configured_socket_once().await {
+            self.config.bind_interface = previous_bind_interface;
+            self.last_local_route_socket_recovery = previous_recovery;
+            if was_operational
+                && !self.state.is_operational()
+                && let Err(rollback) = self.start_async().await
+            {
+                return Err(TransportError::StartFailed(format!(
+                    "network rebind failed: {error}; rollback failed: {rollback}"
+                )));
+            }
+            return Err(error);
+        }
 
         info!(
             transport_id = %self.transport_id,
@@ -792,6 +824,17 @@ impl UdpTransport {
             "Rebound configured UDP transport after network change"
         );
         Ok(true)
+    }
+
+    pub(crate) fn network_bind_interface(&self) -> Option<String> {
+        self.config.bind_interface.clone()
+    }
+
+    async fn rebuild_configured_socket_once(&mut self) -> Result<(), TransportError> {
+        if self.state.is_operational() {
+            self.stop_async().await?;
+        }
+        self.start_async().await
     }
 
     async fn rebuild_configured_socket(&mut self) -> Result<(), TransportError> {
@@ -823,34 +866,24 @@ impl UdpTransport {
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
-    async fn rebuild_adopted_socket(
+    async fn rebuild_adopted_socket_once(
         &mut self,
         bind_interface: Option<String>,
     ) -> Result<(), TransportError> {
         let local_addr = self.local_addr.ok_or(TransportError::NotStarted)?;
         self.config.bind_interface = bind_interface;
         self.stop_async().await?;
+        self.start_adopted_replacement(local_addr)
+    }
 
-        for (attempt, retry_delay) in CONFIGURED_SOCKET_REBIND_RETRY_DELAYS
-            .iter()
-            .copied()
-            .enumerate()
-        {
-            match self.start_adopted_replacement(local_addr) {
-                Ok(()) => return Ok(()),
-                Err(error) => {
-                    warn!(
-                        transport_id = %self.transport_id,
-                        attempt = attempt + 1,
-                        retry_delay_ms = retry_delay.as_millis(),
-                        %error,
-                        "Adopted UDP carrier rebuild failed; retrying"
-                    );
-                    tokio::time::sleep(retry_delay).await;
-                }
-            }
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
+    async fn rollback_adopted_socket_after_rebind_failure(
+        &mut self,
+        local_addr: SocketAddr,
+    ) -> Result<(), TransportError> {
+        if self.state.is_operational() {
+            return Ok(());
         }
-
         self.start_adopted_replacement(local_addr)
     }
 

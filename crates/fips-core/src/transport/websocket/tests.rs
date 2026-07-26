@@ -201,6 +201,34 @@ async fn configured_seed_reconnects_immediately_after_network_change() {
     server.stop_async().await.unwrap();
 }
 
+#[tokio::test]
+async fn network_change_keeps_live_websocket_listener_bound() {
+    let identity = Identity::generate();
+    let (packet_tx, _packet_rx) = packet_channel(8);
+    let mut server = WebSocketTransport::new(
+        TransportId::new(1),
+        None,
+        WebSocketConfig {
+            bind_addr: Some("127.0.0.1:0".into()),
+            ..Default::default()
+        },
+        packet_tx,
+        &identity,
+    );
+    server.start_async().await.unwrap();
+    let listener_addr = server.local_addr().unwrap();
+
+    assert!(server.restart_after_network_change().await.unwrap());
+    assert_eq!(server.state(), TransportState::Up);
+    assert_eq!(server.local_addr(), Some(listener_addr));
+    tokio::time::timeout(Duration::from_secs(1), TcpStream::connect(listener_addr))
+        .await
+        .expect("listener must remain available during WebSocket stream refresh")
+        .expect("connect to retained WebSocket listener");
+
+    server.stop_async().await.unwrap();
+}
+
 #[test]
 fn websocket_url_validation_rejects_remote_plaintext_and_bad_limits() {
     let remote_plaintext = WebSocketConfig {

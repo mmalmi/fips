@@ -11,6 +11,36 @@ fn make_config(port: u16) -> UdpConfig {
     }
 }
 
+async fn prepare_and_rebind(
+    transport: &mut UdpTransport,
+    bind_interface: Option<String>,
+) -> Result<bool, TransportError> {
+    if let Some(probe) = transport.network_rebind_probe(bind_interface.clone())? {
+        probe.prepare().await?;
+    }
+    transport
+        .rebind_after_prepared_network_change(bind_interface)
+        .await
+}
+
+async fn assert_udp_send(transport: &UdpTransport, payload: &[u8]) {
+    let receiver = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("UDP receiver");
+    let receiver_addr = receiver.local_addr().expect("UDP receiver address");
+    let target = TransportAddr::from_string(&receiver_addr.to_string());
+    transport
+        .send_async(&target, payload)
+        .await
+        .expect("restored UDP carrier send");
+    let mut received = [0u8; 64];
+    let received_len = timeout(Duration::from_secs(1), receiver.recv(&mut received))
+        .await
+        .expect("restored UDP carrier delivery")
+        .expect("UDP receive");
+    assert_eq!(&received[..received_len], payload);
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn udp_receive_batch_width_matches_dataplane_reference() {
@@ -133,10 +163,7 @@ async fn configured_udp_transport_rebinds_on_explicit_network_change_during_reco
     let before = transport.send_snapshot().unwrap();
 
     assert!(
-        transport
-            .rebind_after_network_change(None)
-            .await
-            .unwrap(),
+        prepare_and_rebind(&mut transport, None).await.unwrap(),
         "an observed network change must bypass reactive recovery cooldown"
     );
     assert_eq!(transport.state(), TransportState::Up);
@@ -173,16 +200,61 @@ async fn explicit_network_rebind_recovers_a_failed_configured_carrier() {
         owner.stop_async().await.unwrap();
     });
     assert!(
-        candidate
-            .rebind_after_network_change(None)
-            .await
-            .unwrap(),
+        prepare_and_rebind(&mut candidate, None).await.unwrap(),
         "a positive network-change event must retry a failed configured carrier while the interface settles"
     );
     release_owner.await.unwrap();
     assert_eq!(candidate.state(), TransportState::Up);
     assert_eq!(candidate.local_addr(), Some(owner_addr));
     candidate.stop_async().await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn configured_rebind_apply_failure_rolls_back_live_socket() {
+    let port = {
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("ephemeral UDP port");
+        socket.local_addr().expect("ephemeral UDP address").port()
+    };
+    let (tx, _rx) = packet_channel(100);
+    let mut transport = UdpTransport::new(TransportId::new(1), None, make_config(port), tx);
+    transport.start_async().await.unwrap();
+    let original_addr = transport.local_addr().unwrap();
+
+    let error = transport
+        .rebind_after_prepared_network_change(Some("fips-no-such0".to_string()))
+        .await
+        .expect_err("an interface that disappeared after preparation must fail apply");
+    assert!(error.to_string().contains("fips-no-such0"));
+    assert_eq!(transport.state(), TransportState::Up);
+    assert_eq!(transport.local_addr(), Some(original_addr));
+    assert_eq!(transport.config.bind_interface, None);
+    assert_udp_send(&transport, b"configured rollback").await;
+
+    transport.stop_async().await.unwrap();
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
+#[tokio::test]
+async fn adopted_rebind_apply_failure_rolls_back_live_socket_and_port() {
+    let adopted = std::net::UdpSocket::bind("127.0.0.1:0").expect("adopted UDP socket");
+    let original_addr = adopted.local_addr().expect("adopted UDP address");
+    adopted.set_nonblocking(true).unwrap();
+    let (tx, _rx) = packet_channel(100);
+    let mut transport = UdpTransport::new(TransportId::new(1), None, make_config(0), tx);
+    transport.adopt_socket_async(adopted).await.unwrap();
+
+    let error = transport
+        .rebind_after_prepared_network_change(Some("fips-no-such0".to_string()))
+        .await
+        .expect_err("an interface that disappeared after preparation must fail apply");
+    assert!(error.to_string().contains("fips-no-such0"));
+    assert_eq!(transport.state(), TransportState::Up);
+    assert_eq!(transport.local_addr(), Some(original_addr));
+    assert_eq!(transport.config.bind_interface, None);
+    assert_udp_send(&transport, b"adopted rollback").await;
+
+    transport.stop_async().await.unwrap();
 }
 
 #[cfg(unix)]
@@ -198,8 +270,7 @@ async fn explicit_network_rebind_moves_configured_carrier_to_new_interface() {
     transport.start_async().await.unwrap();
 
     assert!(
-        transport
-            .rebind_after_network_change(Some(LOOPBACK_INTERFACE.to_string()))
+        prepare_and_rebind(&mut transport, Some(LOOPBACK_INTERFACE.to_string()))
             .await
             .unwrap(),
         "an explicit network change must move the configured carrier to the selected interface"
@@ -225,8 +296,7 @@ async fn explicit_network_rebind_moves_adopted_carrier_and_preserves_port() {
     let before_addr = before.local_addr;
     drop(before);
     assert!(
-        transport
-            .rebind_after_network_change(Some("lo0".to_string()))
+        prepare_and_rebind(&mut transport, Some("lo0".to_string()))
             .await
             .unwrap(),
         "a live NAT-traversal carrier must follow the selected underlay without discarding its UDP port"

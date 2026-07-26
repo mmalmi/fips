@@ -10,7 +10,7 @@ use crate::node::wire::{FLAG_CE, FLAG_SP};
 use crate::node::{
     EndpointDataDelivery, EndpointDataPayload, EndpointServiceDatagramDelivery,
     LocalSessionPayload, Node, NodeEndpointControlCommand, NodeEndpointDataBatch, NodeEndpointPeer,
-    NodeEndpointRelayStatus, NodeError,
+    NodeEndpointRelayStatus, NodeError, lifecycle::NetworkRebindRequest,
     SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD, SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
     SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
 };

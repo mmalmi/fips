@@ -77,7 +77,7 @@ impl Node {
     pub(in crate::node) async fn handle_endpoint_control(
         &mut self,
         command: NodeEndpointControlCommand,
-    ) {
+    ) -> Option<NetworkRebindRequest> {
         match command {
             NodeEndpointControlCommand::UpdatePeers { peers, response_tx } => {
                 let result = self.update_peers(peers).await;
@@ -91,8 +91,7 @@ impl Node {
                 bind_interface,
                 response_tx,
             } => {
-                let result = self.rebind_network_transports(bind_interface).await;
-                let _ = response_tx.send(result);
+                return Some(NetworkRebindRequest::new(bind_interface, response_tx));
             }
             NodeEndpointControlCommand::RegisterIdentity {
                 identity,
@@ -320,6 +319,7 @@ impl Node {
                 let _ = response_tx.send(result);
             }
         }
+        None
     }
 
 }

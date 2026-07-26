@@ -343,6 +343,7 @@ mod candidate_connect;
 mod control;
 mod discovery;
 mod network;
+pub(in crate::node) use network::{NetworkRebindCompletion, NetworkRebindRequest};
 mod nostr;
 mod nostr_advert;
 mod paths;

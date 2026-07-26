@@ -115,7 +115,7 @@ async fn orphan_forward_receipt_does_not_block_queued_endpoint_peer_snapshot() {
             .recv()
             .await
             .expect("queued endpoint control command");
-        node.handle_endpoint_control(command).await;
+        assert!(node.handle_endpoint_control(command).await.is_none());
         let peers = response_rx.await.expect("peer snapshot response");
         (node, drained, peers)
     };

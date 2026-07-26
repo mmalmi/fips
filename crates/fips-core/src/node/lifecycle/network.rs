@@ -1,68 +1,151 @@
 use super::*;
+use crate::transport::udp::UdpNetworkRebindProbe;
+use crate::transport::{Transport, TransportError};
+
+pub(in crate::node) struct NetworkRebindRequest {
+    bind_interface: Option<String>,
+    response_tx: tokio::sync::oneshot::Sender<Result<usize, NodeError>>,
+}
+
+impl NetworkRebindRequest {
+    pub(in crate::node) fn new(
+        bind_interface: Option<String>,
+        response_tx: tokio::sync::oneshot::Sender<Result<usize, NodeError>>,
+    ) -> Self {
+        Self {
+            bind_interface,
+            response_tx,
+        }
+    }
+
+    pub(in crate::node) fn reject(self, error: NodeError) {
+        let _ = self.response_tx.send(Err(error));
+    }
+}
+
+pub(in crate::node) struct NetworkRebindCompletion {
+    request: NetworkRebindRequest,
+    preparation: Result<(), NodeError>,
+}
+
+struct AppliedNetworkRebind {
+    refreshed: usize,
+    affected_transport_ids: Vec<crate::transport::TransportId>,
+    affected_udp_transport_ids: Vec<crate::transport::TransportId>,
+}
+
+enum CarrierRebindRollback {
+    Udp {
+        transport_id: crate::transport::TransportId,
+        bind_interface: Option<String>,
+    },
+    WebSocketStart {
+        transport_id: crate::transport::TransportId,
+        state: crate::transport::TransportState,
+    },
+}
 
 impl Node {
+    pub(in crate::node) fn spawn_network_rebind_preparation(
+        &self,
+        request: NetworkRebindRequest,
+        completion_tx: tokio::sync::mpsc::Sender<NetworkRebindCompletion>,
+    ) {
+        let probes = self.network_rebind_probes(request.bind_interface.clone());
+        tokio::spawn(async move {
+            let preparation = match probes {
+                Ok(probes) => futures::future::try_join_all(
+                    probes.into_iter().map(UdpNetworkRebindProbe::prepare),
+                )
+                .await
+                .map(drop)
+                .map_err(NodeError::from_transport_error),
+                Err(error) => Err(NodeError::from_transport_error(error)),
+            };
+            let _ = completion_tx
+                .send(NetworkRebindCompletion {
+                    request,
+                    preparation,
+                })
+                .await;
+        });
+    }
+
+    fn network_rebind_probes(
+        &self,
+        bind_interface: Option<String>,
+    ) -> Result<Vec<UdpNetworkRebindProbe>, TransportError> {
+        let bind_interface = udp_bind_interface(bind_interface);
+        self.transports
+            .values()
+            .filter_map(|transport| match transport {
+                crate::transport::TransportHandle::Udp(udp) => {
+                    Some(udp.network_rebind_probe(bind_interface.clone()))
+                }
+                _ => None,
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(|probes| probes.into_iter().flatten().collect())
+    }
+
+    pub(in crate::node) async fn complete_network_rebind(
+        &mut self,
+        completion: NetworkRebindCompletion,
+    ) {
+        let NetworkRebindCompletion {
+            request,
+            preparation,
+        } = completion;
+        let result = match preparation {
+            Ok(()) => {
+                self.apply_prepared_network_rebind(request.bind_interface.clone())
+                    .await
+            }
+            Err(error) => Err(error),
+        };
+        let _ = request.response_tx.send(result);
+    }
+
     /// Rebind configured UDP carriers after an observed underlay change.
     ///
     /// Transport IDs, authenticated peers, and end-to-end sessions remain
     /// intact. UDP sockets move to the new underlay, direct payload is held
     /// behind validated mesh fallback, and fresh direct candidates race in
     /// parallel.
-    pub(in crate::node) async fn rebind_network_transports(
+    pub(in crate::node) async fn apply_prepared_network_rebind(
         &mut self,
         bind_interface: Option<String>,
     ) -> Result<usize, NodeError> {
         let rebind_started_at_ms = Self::now_ms();
+        let udp_bind_interface = udp_bind_interface(bind_interface.clone());
+        let AppliedNetworkRebind {
+            refreshed,
+            affected_transport_ids,
+            affected_udp_transport_ids,
+        } = self
+            .apply_carrier_network_rebinds(udp_bind_interface.clone())
+            .await?;
+
+        // Carrier changes are reversible while discovery and desired config
+        // still describe the old network. Commit those shared settings only
+        // after every fallible carrier apply has succeeded.
         self.config.node.discovery.nostr.bind_interface = bind_interface.clone();
         if let Some(discovery) = self.nostr_discovery.clone() {
             discovery.rebind_network(bind_interface.clone()).await;
         }
         match &mut self.config.transports.udp {
             crate::config::TransportInstances::Single(config) => {
-                config.bind_interface.clone_from(&bind_interface);
+                config.bind_interface.clone_from(&udp_bind_interface);
             }
             crate::config::TransportInstances::Named(configs) => {
                 for config in configs.values_mut() {
-                    config.bind_interface.clone_from(&bind_interface);
+                    config.bind_interface.clone_from(&udp_bind_interface);
                 }
             }
         }
 
-        let mut refreshed = 0usize;
-        let mut refreshed_transport_ids = Vec::new();
-        let mut refreshed_udp_transport_ids = Vec::new();
-
-        for (transport_id, transport) in &mut self.transports {
-            let is_udp = matches!(transport, crate::transport::TransportHandle::Udp(_));
-            let refresh_result = match transport {
-                crate::transport::TransportHandle::Udp(udp) => {
-                    udp.rebind_after_network_change(bind_interface.clone())
-                        .await
-                }
-                crate::transport::TransportHandle::WebSocket(websocket) => {
-                    websocket.restart_after_network_change().await
-                }
-                _ => Ok(false),
-            };
-            match refresh_result {
-                Ok(true) => {
-                    refreshed = refreshed.saturating_add(1);
-                    refreshed_transport_ids.push(*transport_id);
-                    if is_udp {
-                        refreshed_udp_transport_ids.push(*transport_id);
-                    }
-                    info!(
-                        transport_id = %transport_id,
-                        transport = transport.transport_type().name,
-                        "Refreshed configured carrier for network change"
-                    );
-                }
-                Ok(false) => {}
-                Err(error) => return Err(NodeError::from_transport_error(error)),
-            }
-        }
-
-        if !refreshed_transport_ids.is_empty() {
-            for transport_id in &refreshed_transport_ids {
+        if !affected_transport_ids.is_empty() {
+            for transport_id in &affected_transport_ids {
                 self.transport_rebind_packet_cutoffs_ms
                     .insert(*transport_id, rebind_started_at_ms);
             }
@@ -79,9 +162,9 @@ impl Node {
                                     && address.transport.eq_ignore_ascii_case("websocket")
                             })
                         });
-                    refreshed_transport_ids.contains(&transport_id).then_some((
+                    affected_transport_ids.contains(&transport_id).then_some((
                         *peer.node_addr(),
-                        refreshed_udp_transport_ids.contains(&transport_id)
+                        affected_udp_transport_ids.contains(&transport_id)
                             && peer.is_healthy()
                             && peer.can_send()
                             // A configured WebSocket seed can opportunistically
@@ -173,7 +256,7 @@ impl Node {
                 .filter(|(_, connection)| {
                     connection
                         .transport_id()
-                        .is_some_and(|id| refreshed_transport_ids.contains(&id))
+                        .is_some_and(|id| affected_transport_ids.contains(&id))
                 })
                 .map(|(link_id, connection)| {
                     let expected_identity = if connection.is_outbound() {
@@ -207,6 +290,198 @@ impl Node {
         Ok(refreshed)
     }
 
+    async fn apply_carrier_network_rebinds(
+        &mut self,
+        udp_bind_interface: Option<String>,
+    ) -> Result<AppliedNetworkRebind, NodeError> {
+        let mut transport_ids = self.transports.keys().copied().collect::<Vec<_>>();
+        transport_ids.sort_unstable_by_key(crate::transport::TransportId::as_u32);
+        let live_websocket_ids = transport_ids
+            .iter()
+            .copied()
+            .filter(|transport_id| {
+                matches!(
+                    self.transports.get(transport_id),
+                    Some(crate::transport::TransportHandle::WebSocket(websocket))
+                        if websocket.state().is_operational()
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let mut refreshed = 0usize;
+        let mut affected_transport_ids = Vec::new();
+        let mut affected_udp_transport_ids = Vec::new();
+        let mut rollbacks = Vec::new();
+
+        // Apply UDP and inactive WebSocket carriers first. Both can fail, and
+        // each successful change has enough state captured here to undo it.
+        // Live WebSocket stream refreshes are deferred because they cannot
+        // fail and do not replace their listener.
+        for transport_id in transport_ids.iter().copied() {
+            let Some(transport) = self.transports.get_mut(&transport_id) else {
+                continue;
+            };
+            let (refresh_result, rollback) = match transport {
+                crate::transport::TransportHandle::Udp(udp) => {
+                    let previous_bind_interface = udp.network_bind_interface();
+                    (
+                        udp.rebind_after_prepared_network_change(udp_bind_interface.clone())
+                            .await,
+                        Some(CarrierRebindRollback::Udp {
+                            transport_id,
+                            bind_interface: previous_bind_interface,
+                        }),
+                    )
+                }
+                crate::transport::TransportHandle::WebSocket(websocket)
+                    if !websocket.state().is_operational() =>
+                {
+                    let previous_state = websocket.state();
+                    (
+                        websocket.restart_after_network_change().await,
+                        Some(CarrierRebindRollback::WebSocketStart {
+                            transport_id,
+                            state: previous_state,
+                        }),
+                    )
+                }
+                _ => continue,
+            };
+
+            match refresh_result {
+                Ok(true) => {
+                    refreshed = refreshed.saturating_add(1);
+                    affected_transport_ids.push(transport_id);
+                    if matches!(rollback, Some(CarrierRebindRollback::Udp { .. })) {
+                        affected_udp_transport_ids.push(transport_id);
+                    }
+                    if let Some(rollback) = rollback {
+                        rollbacks.push(rollback);
+                    }
+                    info!(
+                        transport_id = %transport_id,
+                        transport = transport.transport_type().name,
+                        "Refreshed configured carrier for network change"
+                    );
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    warn!(
+                        transport_id = %transport_id,
+                        transport = transport.transport_type().name,
+                        %error,
+                        "Carrier failed during prepared network rebind"
+                    );
+                    return Err(self
+                        .rollback_carrier_network_rebinds(error, rollbacks)
+                        .await);
+                }
+            }
+        }
+
+        for transport_id in live_websocket_ids {
+            let Some(crate::transport::TransportHandle::WebSocket(websocket)) =
+                self.transports.get_mut(&transport_id)
+            else {
+                continue;
+            };
+            if !websocket.state().is_operational() {
+                continue;
+            }
+            match websocket.restart_after_network_change().await {
+                Ok(true) => {
+                    refreshed = refreshed.saturating_add(1);
+                    affected_transport_ids.push(transport_id);
+                    info!(
+                        transport_id = %transport_id,
+                        transport = websocket.transport_type().name,
+                        "Refreshed configured carrier for network change"
+                    );
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    warn!(
+                        transport_id = %transport_id,
+                        transport = websocket.transport_type().name,
+                        %error,
+                        "Carrier failed during prepared network rebind"
+                    );
+                    return Err(self
+                        .rollback_carrier_network_rebinds(error, rollbacks)
+                        .await);
+                }
+            }
+        }
+
+        Ok(AppliedNetworkRebind {
+            refreshed,
+            affected_transport_ids,
+            affected_udp_transport_ids,
+        })
+    }
+
+    async fn rollback_carrier_network_rebinds(
+        &mut self,
+        apply_error: TransportError,
+        rollbacks: Vec<CarrierRebindRollback>,
+    ) -> NodeError {
+        let mut rollback_errors = Vec::new();
+        for rollback in rollbacks.into_iter().rev() {
+            let (transport_id, result) = match rollback {
+                CarrierRebindRollback::Udp {
+                    transport_id,
+                    bind_interface,
+                } => {
+                    let result = match self.transports.get_mut(&transport_id) {
+                        Some(crate::transport::TransportHandle::Udp(udp)) => udp
+                            .rebind_after_prepared_network_change(bind_interface)
+                            .await
+                            .map(drop),
+                        _ => Err(TransportError::NotStarted),
+                    };
+                    (transport_id, result)
+                }
+                CarrierRebindRollback::WebSocketStart {
+                    transport_id,
+                    state,
+                } => {
+                    let result = match self.transports.get_mut(&transport_id) {
+                        Some(crate::transport::TransportHandle::WebSocket(websocket)) => {
+                            websocket.rollback_network_change_start(state).await
+                        }
+                        _ => Err(TransportError::NotStarted),
+                    };
+                    (transport_id, result)
+                }
+            };
+            match result {
+                Ok(()) => {
+                    info!(
+                        transport_id = %transport_id,
+                        "Rolled back carrier after network rebind failure"
+                    );
+                }
+                Err(error) => {
+                    warn!(
+                        transport_id = %transport_id,
+                        %error,
+                        "Carrier rollback failed after network rebind failure"
+                    );
+                    rollback_errors.push(format!("{transport_id}: {error}"));
+                }
+            }
+        }
+
+        if rollback_errors.is_empty() {
+            NodeError::from_transport_error(apply_error)
+        } else {
+            NodeError::from_transport_error(TransportError::StartFailed(format!(
+                "network rebind failed: {apply_error}; rollback failed: {}",
+                rollback_errors.join("; ")
+            )))
+        }
+    }
+
     pub(in crate::node) fn packet_predates_carrier_rebind(
         &self,
         transport_id: crate::transport::TransportId,
@@ -215,5 +490,17 @@ impl Node {
         self.transport_rebind_packet_cutoffs_ms
             .get(&transport_id)
             .is_some_and(|cutoff_ms| packet_timestamp_ms <= *cutoff_ms)
+    }
+}
+
+fn udp_bind_interface(bind_interface: Option<String>) -> Option<String> {
+    #[cfg(windows)]
+    {
+        let _ = bind_interface;
+        None
+    }
+    #[cfg(not(windows))]
+    {
+        bind_interface
     }
 }
