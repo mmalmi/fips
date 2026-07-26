@@ -115,12 +115,9 @@ impl Node {
         previous_hop_addr: NodeAddr,
         now_ms: u64,
     ) -> bool {
+        let current_next_hop = self.dataplane.fsp_owner_next_hop(&source_addr);
         if source_addr == previous_hop_addr
-            || self.dataplane.fsp_owner_next_hop(&source_addr) != Some(source_addr)
-            || !self
-                .peers
-                .get(&source_addr)
-                .is_some_and(|peer| peer.can_send())
+            || current_next_hop == Some(previous_hop_addr)
             || !self
                 .peers
                 .get(&previous_hop_addr)

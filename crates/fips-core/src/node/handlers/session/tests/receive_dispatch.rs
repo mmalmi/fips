@@ -534,7 +534,7 @@
     }
 
     #[test]
-    fn authenticated_fallback_data_moves_direct_reply_owner_to_its_live_ingress() {
+    fn authenticated_fallback_data_moves_stale_reply_owner_to_its_live_ingress() {
         let local = Identity::generate();
         let source = Identity::generate();
         let source_addr = *source.node_addr();
@@ -606,6 +606,37 @@
             node.learned_route_table_snapshot(Node::now_ms()).route_count,
             0,
             "directional application ingress must remain reply affinity, not enter learned route rotation"
+        );
+
+        let replacement_fallback = Identity::generate();
+        let replacement_fallback_addr = *replacement_fallback.node_addr();
+        let replacement_link = crate::transport::LinkId::new(3);
+        let (replacement_connection, replacement_identity) =
+            crate::node::tests::make_completed_connection_for_identity(
+                &mut node,
+                replacement_link,
+                crate::transport::TransportId::new(3),
+                1_000,
+                &replacement_fallback,
+            );
+        node.add_connection(replacement_connection).unwrap();
+        node.promote_connection(replacement_link, replacement_identity, 2_000)
+            .unwrap();
+        assert!(node.sync_dataplane_fmp_owner(&replacement_fallback_addr));
+
+        let mut commit = SessionReceiveBatchCommit::default();
+        commit.push_receive_completion(SessionReceiveCompletion {
+            source_addr,
+            previous_hop_addr: replacement_fallback_addr,
+            direct_path: false,
+        });
+        let pending_flush = commit.finish(&mut node);
+
+        assert!(pending_flush.is_empty());
+        assert_eq!(
+            node.dataplane.fsp_owner_next_hop(&source_addr),
+            Some(replacement_fallback_addr),
+            "new authenticated fallback ingress must replace an older fallback reply owner immediately"
         );
     }
 
