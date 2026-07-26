@@ -607,6 +607,52 @@
             0,
             "directional application ingress must remain reply affinity, not enter learned route rotation"
         );
+        crate::node::tests::seed_dataplane_fsp_data_sent_for_test(
+            &mut node,
+            source_addr,
+            fallback_addr,
+            Node::now_ms(),
+        );
+
+        let direct_transport_id = node
+            .get_peer(&source_addr)
+            .and_then(|peer| peer.transport_id())
+            .expect("direct transport");
+        let direct_transport_addr = node
+            .get_peer(&source_addr)
+            .and_then(|peer| peer.current_addr())
+            .cloned()
+            .expect("direct address");
+        node.config.peers.push(crate::config::PeerConfig::new(
+            source.npub(),
+            "udp",
+            direct_transport_addr.to_string(),
+        ));
+        node.configured_peers = crate::node::ConfiguredPeerLookup::from_config(&node.config);
+        node.make_direct_payload_eligible_for_validation_after_fmp_recovery(&source_addr);
+        assert_eq!(
+            node.dataplane.fsp_owner_next_hop(&source_addr),
+            Some(fallback_addr),
+            "direct control eligibility alone must retain the authenticated fallback"
+        );
+        node.record_authenticated_fmp_receive_facts(
+            crate::node::AuthenticatedFmpReceiveFacts {
+                source_peer: crate::PeerIdentity::from_pubkey_full(source.pubkey_full()),
+                transport_id: direct_transport_id,
+                remote_addr: &direct_transport_addr,
+                packet_timestamp_ms: Node::now_ms(),
+                packet_len: 128,
+                fmp_counter: 1,
+                inner_timestamp_ms: 1,
+                fmp_flags: 0,
+            },
+            Some(&source_addr),
+        );
+        assert_eq!(
+            node.dataplane.fsp_owner_next_hop(&source_addr),
+            Some(fallback_addr),
+            "direct control traffic must not displace the fallback that just carried authenticated application data"
+        );
 
         let replacement_fallback = Identity::generate();
         let replacement_fallback_addr = *replacement_fallback.node_addr();

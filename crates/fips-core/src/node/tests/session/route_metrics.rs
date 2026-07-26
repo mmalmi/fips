@@ -527,7 +527,7 @@ fn test_authenticated_direct_promotion_releases_active_fallback_affinity() {
 }
 
 #[test]
-fn test_fmp_rekey_releases_fallback_affinity_without_validating_fsp() {
+fn test_fmp_rekey_keeps_authenticated_fallback_until_direct_payload_validates() {
     let mut node = make_reply_learned_node_with_tree_peer();
     let fallback_next_hop = *node.peer_ids().next().expect("fallback peer");
     assert!(node.sync_dataplane_fmp_owner(&fallback_next_hop));
@@ -578,21 +578,21 @@ fn test_fmp_rekey_releases_fallback_affinity_without_validating_fsp() {
         "FMP control must not validate direct FSP payload"
     );
     assert!(
-        !node.session_direct_path_degradation_active(&remote_addr, Node::now_ms()),
-        "authenticated direct FMP recovery must end the hard payload hold so validation traffic can use the direct carrier"
+        node.session_direct_path_degradation_active(&remote_addr, Node::now_ms()),
+        "direct FMP control must not end a payload hold established by live fallback application traffic"
     );
     assert_eq!(
         node.dataplane
             .fsp_owner_activity(&remote_addr)
             .and_then(|activity| activity.last_outbound_next_hop()),
-        None,
-        "authenticated direct FMP recovery must release stale fallback flow affinity"
+        Some(fallback_next_hop),
+        "direct FMP control must retain the fallback flow that already carried authenticated payload"
     );
     assert_eq!(
         node.find_next_hop(&remote_addr)
             .map(|peer| *peer.node_addr()),
-        Some(remote_addr),
-        "the next FSP payload should probe the recovered direct carrier"
+        Some(fallback_next_hop),
+        "application payload must stay on the proven fallback while direct recovery continues"
     );
 
     assert!(node.sync_dataplane_fsp_owner_from_current_session_via(
@@ -655,8 +655,8 @@ fn test_fmp_rekey_releases_fallback_affinity_without_validating_fsp() {
     );
     assert_eq!(
         node.dataplane.fsp_owner_next_hop(&remote_addr),
-        Some(remote_addr),
-        "reviving a rekey-recovered carrier must immediately make the next FSP payload validate direct"
+        Some(fallback_next_hop),
+        "reviving direct control must not displace the fallback until direct endpoint payload validates"
     );
 }
 
