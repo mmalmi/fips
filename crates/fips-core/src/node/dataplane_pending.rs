@@ -127,6 +127,28 @@ impl Node {
             return false;
         }
 
+        if let Some(current_fallback) = current_next_hop.filter(|hop| hop != &source_addr)
+            && self.session_direct_path_degradation_active(&source_addr, now_ms)
+            && self
+                .dataplane
+                .fsp_owner_activity(&source_addr)
+                .and_then(|activity| activity.last_outbound_next_hop())
+                == Some(current_fallback)
+            && self
+                .peers
+                .get(&current_fallback)
+                .is_some_and(|peer| peer.can_send())
+            && self.dataplane_has_fmp_owner(&current_fallback)
+        {
+            debug!(
+                src = %self.peer_display_name(&source_addr),
+                current_fallback = %self.peer_display_name(&current_fallback),
+                alternate_ingress = %self.peer_display_name(&previous_hop_addr),
+                "Keeping active fallback reply affinity across alternate ingress"
+            );
+            return false;
+        }
+
         self.session_direct_degradation.mark_degraded(
             source_addr,
             now_ms,

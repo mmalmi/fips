@@ -681,8 +681,24 @@
         assert!(pending_flush.is_empty());
         assert_eq!(
             node.dataplane.fsp_owner_next_hop(&source_addr),
+            Some(fallback_addr),
+            "alternate authenticated ingress must not churn a live fallback reply affinity"
+        );
+
+        node.record_route_failure(source_addr, fallback_addr);
+        let mut commit = SessionReceiveBatchCommit::default();
+        commit.push_receive_completion(SessionReceiveCompletion {
+            source_addr,
+            previous_hop_addr: replacement_fallback_addr,
+            direct_path: false,
+        });
+        let pending_flush = commit.finish(&mut node);
+
+        assert!(pending_flush.is_empty());
+        assert_eq!(
+            node.dataplane.fsp_owner_next_hop(&source_addr),
             Some(replacement_fallback_addr),
-            "new authenticated fallback ingress must replace an older fallback reply owner immediately"
+            "new authenticated fallback ingress must replace an explicitly failed fallback reply owner immediately"
         );
     }
 
