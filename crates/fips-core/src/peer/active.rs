@@ -172,7 +172,7 @@ pub struct ActivePeer {
     // === Handshake Resend ===
     /// Wire-format msg2 for resend on duplicate msg1 (responder only).
     /// Cleared after the handshake timeout window.
-    handshake_msg2: Option<Vec<u8>>,
+    handshake_msg2: Option<(Vec<u8>, u64)>,
 
     // === Replay Detection Suppression ===
     /// Number of replay detections suppressed since last session reset.
@@ -542,13 +542,22 @@ impl ActivePeer {
     // === Handshake Resend ===
 
     /// Store wire-format msg2 for resend on duplicate msg1.
-    pub fn set_handshake_msg2(&mut self, msg2: Vec<u8>) {
-        self.handshake_msg2 = Some(msg2);
+    pub fn set_handshake_msg2(&mut self, msg2: Vec<u8>, generated_at: u64) {
+        self.handshake_msg2 = Some((msg2, generated_at));
     }
 
     /// Get stored msg2 bytes for resend.
     pub fn handshake_msg2(&self) -> Option<&[u8]> {
-        self.handshake_msg2.as_deref()
+        self.handshake_msg2
+            .as_ref()
+            .map(|(msg2, _generated_at)| msg2.as_slice())
+    }
+
+    /// When the retained msg2 was generated.
+    pub fn handshake_msg2_generated_at(&self) -> Option<u64> {
+        self.handshake_msg2
+            .as_ref()
+            .map(|(_msg2, generated_at)| *generated_at)
     }
 
     /// Clear stored msg2 (no longer needed after handshake window).

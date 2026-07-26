@@ -436,7 +436,7 @@ async fn handle_msg1_treats_same_epoch_stale_peer_as_recovery() {
             remote_epoch: Some(remote_epoch),
         },
     );
-    active.set_handshake_msg2(vec![0x02, 0x03, 0x04]);
+    active.set_handshake_msg2(vec![0x02, 0x03, 0x04], 1_000);
     active.mark_stale();
     node.peers.insert(peer_node_addr, active);
     node.peers

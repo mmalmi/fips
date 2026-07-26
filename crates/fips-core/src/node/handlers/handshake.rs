@@ -497,7 +497,7 @@ impl Node {
                                 return;
                             };
                             if let Some(peer) = self.peers.get_mut(&peer_node_addr) {
-                                peer.set_handshake_msg2(wire_msg2.clone());
+                                peer.set_handshake_msg2(wire_msg2.clone(), packet.timestamp_ms);
                             }
                             self.log_registered_peer_session_index_result(
                                 &peer_node_addr,
@@ -727,7 +727,7 @@ impl Node {
         // fails, duplicate Msg1 can safely retry without allocating or
         // advertising another receiver index.
         if let Some(peer) = self.peers.get_mut(&node_addr) {
-            peer.set_handshake_msg2(wire_msg2.clone());
+            peer.set_handshake_msg2(wire_msg2.clone(), packet.timestamp_ms);
         }
 
         let receiver_route_owned = self.ensure_owned_msg2_receiver_route(&node_addr);

@@ -355,7 +355,7 @@ async fn link_dead_marks_direct_path_stale_and_preserves_queued_packets() {
             remote_epoch: None,
         },
     );
-    active.set_handshake_msg2(vec![0x02, 0x03, 0x04]);
+    active.set_handshake_msg2(vec![0x02, 0x03, 0x04], 0);
     node.peers.insert(peer_addr, active);
     super::super::seed_dataplane_fmp_rx_for_test(
         &mut node,

@@ -366,6 +366,7 @@ impl Node {
                 }
             };
             let preferred_send_addr = conn.preferred_send_addr().cloned();
+            let outbound_started_at = conn.started_at();
 
             let outbound_transport_id = conn.transport_id().unwrap_or(packet.transport_id);
             let outbound_addr = conn
@@ -398,26 +399,26 @@ impl Node {
                     )
                 })
                 .unwrap_or((false, false, false, false));
-            // An inbound session whose Msg2 is still retained is the other
-            // half of this simultaneous handshake, not the stale carrier that
-            // triggered the reconnect. Resolve that pair with the deterministic
-            // cross-connection tie-breaker even while the older FSP payload
-            // session remains degraded. Otherwise both endpoints can promote
-            // their own outbound Noise session and install mutually unrelated
-            // FMP keys/receiver indices.
-            let simultaneous_inbound_session = self
-                .peers
-                .get(&peer_node_addr)
-                .is_some_and(|peer| peer.handshake_msg2().is_some());
-            let existing_path_unusable = active_peer_unusable
-                || (!simultaneous_inbound_session
-                    && (self.session_direct_path_blocks_direct_payload(
+            // A retained Msg2 proves simultaneity only when it was generated
+            // after this outbound dial started. Msg2 is deliberately retained
+            // for retransmission, so its presence alone must not turn a much
+            // later refresh into a cross-connection race and replace an
+            // already matched carrier.
+            let simultaneous_inbound_session =
+                self.peers.get(&peer_node_addr).is_some_and(|peer| {
+                    peer.handshake_msg2_generated_at()
+                        .is_some_and(|generated_at| generated_at >= outbound_started_at)
+                });
+            let existing_path_unusable = !simultaneous_inbound_session
+                && (active_peer_unusable
+                    || self.session_direct_path_blocks_direct_payload(
                         &peer_node_addr,
                         packet.timestamp_ms,
-                    ) || self.session_direct_path_exclusive_trust_expired(
+                    )
+                    || self.session_direct_path_exclusive_trust_expired(
                         &peer_node_addr,
                         packet.timestamp_ms,
-                    )));
+                    ));
             let outbound_alternate_path = remote_epoch_changed
                 || existing_path_unusable
                 || (outbound_path_differs && !connection_oriented_cross_connection);
@@ -425,11 +426,20 @@ impl Node {
             let authenticated_live_carrier =
                 self.active_peer_has_fresh_carrier_liveness(&peer_node_addr);
             let preserve_authenticated_live_carrier = !remote_epoch_changed
+                && !simultaneous_inbound_session
                 && !active_peer_unusable
                 && !reply_transport_handoff
                 && authenticated_live_carrier;
-
-            if outbound_alternate_path || preserve_authenticated_live_carrier {
+            let late_duplicate_carrier = !simultaneous_inbound_session
+                && (!outbound_path_differs || connection_oriented_cross_connection);
+            let preserve_late_duplicate_carrier = !remote_epoch_changed
+                && !active_peer_unusable
+                && !reply_transport_handoff
+                && late_duplicate_carrier;
+            if outbound_alternate_path
+                || preserve_authenticated_live_carrier
+                || preserve_late_duplicate_carrier
+            {
                 let alternate_disallowed_by_priority = !remote_epoch_changed
                     && !existing_path_unusable
                     && !reply_transport_handoff
@@ -438,10 +448,14 @@ impl Node {
                         outbound_transport_id,
                         &outbound_addr,
                     );
-                if preserve_authenticated_live_carrier || alternate_disallowed_by_priority {
+                if preserve_authenticated_live_carrier
+                    || preserve_late_duplicate_carrier
+                    || alternate_disallowed_by_priority
+                {
                     debug!(
                         peer = %self.peer_display_name(&peer_node_addr),
                         authenticated_live_carrier,
+                        late_duplicate_carrier,
                         endpoint_payload_degraded = existing_path_unusable,
                         candidate_transport_id = %outbound_transport_id,
                         candidate_addr = %outbound_addr,

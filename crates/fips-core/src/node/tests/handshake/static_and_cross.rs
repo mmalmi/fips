@@ -292,6 +292,26 @@ async fn test_cross_connection_both_initiate() {
     // authenticated inbound/outbound FMP handshake pair.
     node_a.mark_session_direct_path_degraded(peer_b_node_addr, Node::now_ms());
     node_b.mark_session_direct_path_degraded(peer_a_node_addr, Node::now_ms());
+    assert!(
+        node_a
+            .get_peer(&peer_b_node_addr)
+            .zip(node_a.get_connection(&link_id_a_out))
+            .is_some_and(|(peer, conn)| {
+                peer.handshake_msg2_generated_at()
+                    .is_some_and(|generated_at| generated_at >= conn.started_at())
+            }),
+        "A retained inbound msg2 must causally follow its simultaneous outbound dial"
+    );
+    assert!(
+        node_b
+            .get_peer(&peer_a_node_addr)
+            .zip(node_b.get_connection(&link_id_b_out))
+            .is_some_and(|(peer, conn)| {
+                peer.handshake_msg2_generated_at()
+                    .is_some_and(|generated_at| generated_at >= conn.started_at())
+            }),
+        "B retained inbound msg2 must causally follow its simultaneous outbound dial"
+    );
 
     // === Phase 3: Both nodes receive msg2 responses ===
     // The msg2 was sent during handle_msg1 processing. When handle_msg2

@@ -402,6 +402,75 @@ async fn rekey_initiator_resends_final_msg3_until_responder_has_pending_session(
         "responder should store the pending rekey session after resent msg3"
     );
 
+    assert!(
+        nodes[0]
+            .node
+            .sessions
+            .get_mut(&node1_addr)
+            .is_some_and(|entry| entry.cutover_to_new_session(Node::now_ms())),
+        "initiator should cut over after the responder has installed its pending epoch"
+    );
+    assert!(
+        nodes[0]
+            .node
+            .sync_dataplane_fsp_owner_from_current_session(&node1_addr, 0),
+        "initiator dataplane should install the new FSP send epoch"
+    );
+
+    let mut node1_endpoint = nodes[1]
+        .node
+        .attach_endpoint_data_io(8)
+        .expect("responder endpoint data I/O should attach");
+    let node1_identity = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
+    send_endpoint_data_via_dataplane(
+        &mut nodes[0].node,
+        node1_identity,
+        b"new-epoch-initiator-proof".to_vec(),
+    )
+    .await
+    .expect("initiator should send over the new FSP epoch");
+    let event = recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut node1_endpoint.event_rx,
+        Duration::from_secs(10),
+        "responder new-epoch initiator proof",
+    )
+    .await;
+    assert_eq!(
+        expect_single_endpoint_data_event(event).payload.as_slice(),
+        &b"new-epoch-initiator-proof"[..]
+    );
+    assert!(
+        nodes[1].node.get_session(&node0_addr).is_some_and(|entry| {
+            entry.current_k_bit() && entry.pending_new_session().is_none()
+        }),
+        "authenticated new-epoch traffic should cut the responder over"
+    );
+
+    let mut node0_endpoint = nodes[0]
+        .node
+        .attach_endpoint_data_io(8)
+        .expect("initiator endpoint data I/O should attach");
+    let node0_identity = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
+    send_endpoint_data_via_dataplane(
+        &mut nodes[1].node,
+        node0_identity,
+        b"new-epoch-responder-proof".to_vec(),
+    )
+    .await
+    .expect("responder should reply over the new FSP epoch");
+    let event = recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut node0_endpoint.event_rx,
+        Duration::from_secs(10),
+        "initiator new-epoch responder proof",
+    )
+    .await;
+    assert_eq!(
+        expect_single_endpoint_data_event(event).payload.as_slice(),
+        &b"new-epoch-responder-proof"[..]
+    );
+
     cleanup_nodes(&mut nodes).await;
 }
 

@@ -214,7 +214,7 @@ async fn handle_msg2_treats_late_reverse_tcp_dial_as_duplicate_carrier() {
     let old_their_index = SessionIndex::new(12);
     let old_session =
         make_test_fmp_session(&node.identity, &peer_full, node.startup_epoch, [0x11; 8]);
-    let old_peer = ActivePeer::with_session(
+    let mut old_peer = ActivePeer::with_session(
         peer_identity,
         old_link_id,
         1_000,
@@ -229,6 +229,7 @@ async fn handle_msg2_treats_late_reverse_tcp_dial_as_duplicate_carrier() {
             remote_epoch: Some([0x11; 8]),
         },
     );
+    old_peer.set_handshake_msg2(vec![0x42], 1_000);
     node.peers.insert(peer_node_addr, old_peer);
     node.peers
         .insert_session_index((transport_id, old_our_index.as_u32()), peer_node_addr);
@@ -244,18 +245,6 @@ async fn handle_msg2_treats_late_reverse_tcp_dial_as_duplicate_carrier() {
     );
     node.links
         .insert_addr((transport_id, accepted_source.clone()), old_link_id);
-    let routed_source = *Identity::generate().node_addr();
-    seed_dataplane_fsp_data_rx_for_test(
-        &mut node,
-        routed_source,
-        peer_node_addr,
-        Node::now_ms(),
-    );
-    assert!(
-        node.active_peer_has_fresh_carrier_liveness(&peer_node_addr),
-        "authenticated routed application ingress must prove the established carrier is live"
-    );
-
     let new_link_id = LinkId::new(11);
     let mut new_conn = PeerConnection::outbound(new_link_id, peer_identity, 2_000);
     let msg1 = new_conn
