@@ -1,4 +1,5 @@
 use super::*;
+use crate::Identity;
 use crate::config::NostrPeerfindingSource;
 use crate::discovery::nostr::{
     NostrAdvertIngestOutcome, OverlayTransportKind, TraversalAddress, TraversalOffer,
@@ -24,6 +25,28 @@ fn event_channel_capacity_tracks_open_and_inbound_limits() {
     config.open_discovery_max_pending = 5000;
     config.max_concurrent_incoming_offers = 1;
     assert_eq!(event_channel_capacity(&config), 4096);
+}
+
+#[tokio::test]
+async fn queued_bootstrap_event_wakes_the_node_immediately() {
+    let discovery = NostrDiscovery::new_for_test();
+    discovery
+        .emit_event(BootstrapEvent::Failed {
+            peer_config: crate::config::PeerConfig::new(
+                Identity::generate().npub(),
+                "udp",
+                "127.0.0.1:9",
+            ),
+            reason: "notification test".to_string(),
+        })
+        .await;
+
+    tokio::time::timeout(
+        std::time::Duration::from_millis(50),
+        discovery.node_event_notify().notified(),
+    )
+    .await
+    .expect("completed traversal events must wake the node instead of waiting for its next one-second maintenance tick");
 }
 
 #[test]

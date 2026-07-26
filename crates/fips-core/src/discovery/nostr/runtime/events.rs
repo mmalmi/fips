@@ -1,6 +1,10 @@
 use super::*;
 
 impl NostrDiscovery {
+    pub(crate) fn node_event_notify(&self) -> Arc<Notify> {
+        self.node_event_notify.clone()
+    }
+
     pub async fn drain_events(&self) -> Vec<BootstrapEvent> {
         let mut out = Vec::new();
         let mut rx = self.event_rx.lock().await;
@@ -32,6 +36,8 @@ impl NostrDiscovery {
                 peer = %short_npub(&peer_npub),
                 "dropping Nostr traversal event because node event receiver is closed"
             );
+        } else {
+            self.node_event_notify.notify_one();
         }
     }
 
@@ -48,6 +54,7 @@ impl NostrDiscovery {
             );
             return false;
         }
+        self.node_event_notify.notify_one();
         true
     }
 }

@@ -106,14 +106,28 @@ impl Node {
             } else if loss >= SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD
                 && let Some(failed_next_hop) = last_outbound_next_hop
             {
-                self.record_active_route_failure(*src_addr, failed_next_hop);
-                debug!(
-                    src = %peer_name,
-                    failed_next_hop = %self.peer_display_name(&failed_next_hop),
-                    loss = format_args!("{:.1}%", loss * 100.0),
-                    sample_packets = span,
-                    "Session loss demoted active fallback route"
-                );
+                if self.has_proven_alternate_session_route(
+                    src_addr,
+                    &failed_next_hop,
+                    now_ms,
+                ) {
+                    self.record_active_route_failure(*src_addr, failed_next_hop);
+                    debug!(
+                        src = %peer_name,
+                        failed_next_hop = %self.peer_display_name(&failed_next_hop),
+                        loss = format_args!("{:.1}%", loss * 100.0),
+                        sample_packets = span,
+                        "Session loss demoted active fallback route"
+                    );
+                } else {
+                    debug!(
+                        src = %peer_name,
+                        active_next_hop = %self.peer_display_name(&failed_next_hop),
+                        loss = format_args!("{:.1}%", loss * 100.0),
+                        sample_packets = span,
+                        "Session loss preserved the only proven fallback route while discovering a replacement"
+                    );
+                }
                 self.maybe_initiate_path_recovery_lookup(src_addr).await;
             }
         }

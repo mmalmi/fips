@@ -8,7 +8,9 @@ use crate::node::{
 };
 use crate::transport::PacketRx;
 use crate::upper::tun::TunOutboundRx;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::Notify;
 use tokio::sync::mpsc::Receiver;
 use tracing::{debug, info, warn};
 
@@ -193,6 +195,10 @@ impl Node {
             tx
         });
         let dataplane_readiness_notify = self.dataplane.readiness_notify();
+        let nostr_node_event_notify = self
+            .nostr_discovery
+            .as_ref()
+            .map(|discovery| discovery.node_event_notify());
         let mut dataplane_runtime = RxLoopDataplaneRuntime {
             packet_rx,
             dataplane_fast_ingress_rx,
@@ -268,6 +274,9 @@ impl Node {
                             "Drained queued packets after rx-loop maintenance"
                         );
                     }
+                }
+                _ = wait_for_optional_notify(nostr_node_event_notify.as_ref()) => {
+                    self.poll_nostr_discovery().await;
                 }
                 Some(message) = control_query_rx.recv() => {
                     self.drain_control_queries(
@@ -757,6 +766,13 @@ impl Node {
         self.check_bloom_state().await;
         self.compute_mesh_size();
         self.record_stats_history();
+    }
+}
+
+async fn wait_for_optional_notify(notify: Option<&Arc<Notify>>) {
+    match notify {
+        Some(notify) => notify.notified().await,
+        None => std::future::pending().await,
     }
 }
 

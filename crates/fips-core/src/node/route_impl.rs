@@ -560,7 +560,7 @@ impl Node {
             .node
             .heartbeat_interval_secs
             .saturating_mul(1000)
-            .saturating_add(1_500)
+            .saturating_add(500)
             .max(SESSION_DIRECT_MIN_EXCLUSIVE_TRUST_MS)
     }
 
@@ -930,6 +930,35 @@ impl Node {
         next_hop: NodeAddr,
     ) {
         self.record_route_failure_inner(destination, next_hop, true);
+    }
+
+    pub(in crate::node) fn has_proven_alternate_session_route(
+        &self,
+        destination: &NodeAddr,
+        current_next_hop: &NodeAddr,
+        now_ms: u64,
+    ) -> bool {
+        if destination != current_next_hop
+            && self
+                .peers
+                .get(destination)
+                .is_some_and(|peer| peer.is_healthy() && peer.can_send())
+            && !self.session_direct_path_degradation_active(destination, now_ms)
+            && self.session_direct_path_has_recent_data_return(destination, now_ms)
+        {
+            return true;
+        }
+
+        self.learned_routes.has_sendable_alternate(
+            destination,
+            current_next_hop,
+            now_ms,
+            |next_hop| {
+                self.peers
+                    .get(next_hop)
+                    .is_some_and(|peer| peer.is_healthy() && peer.can_send())
+            },
+        )
     }
 
     fn record_route_failure_inner(

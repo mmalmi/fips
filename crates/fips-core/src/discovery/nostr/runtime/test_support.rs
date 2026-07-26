@@ -75,6 +75,7 @@ impl NostrDiscovery {
             event_rx: Mutex::new(event_rx),
             mesh_signal_tx,
             mesh_signal_rx: Mutex::new(mesh_signal_rx),
+            node_event_notify: Arc::new(Notify::new()),
             relay_task: Mutex::new(None),
             relay_refresh: Notify::new(),
             publish_task: Mutex::new(None),

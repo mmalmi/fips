@@ -399,6 +399,74 @@ async fn test_session_receiver_loss_from_previous_route_does_not_degrade_promote
 }
 
 #[tokio::test]
+async fn test_session_receiver_loss_preserves_only_working_fallback_route() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let only_fallback = *node.peer_ids().next().expect("only fallback peer");
+    assert!(node.sync_dataplane_fmp_owner(&only_fallback));
+
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+    install_established_session_with_mmp(&mut node, &remote);
+    node.learn_reverse_route(remote_addr, only_fallback);
+    assert!(node.sync_dataplane_fsp_owner_from_current_session_via(
+        &remote_addr,
+        Some(only_fallback),
+        0,
+    ));
+    seed_dataplane_fsp_data_sent_for_test(&mut node, remote_addr, only_fallback, Node::now_ms());
+
+    let baseline = SessionReceiverReport {
+        highest_counter: 100,
+        cumulative_packets_recv: 100,
+        cumulative_bytes_recv: 10_000,
+        timestamp_echo: 0,
+        dwell_time: 0,
+        max_burst_loss: 0,
+        mean_burst_loss: 0,
+        jitter: 0,
+        ecn_ce_count: 0,
+        owd_trend: 0,
+        burst_loss_count: 0,
+        cumulative_reorder_count: 0,
+        interval_packets_recv: 0,
+        interval_bytes_recv: 0,
+    }
+    .encode();
+    node.handle_session_receiver_report(&remote_addr, &baseline)
+        .await;
+
+    let lossy = SessionReceiverReport {
+        highest_counter: 120,
+        cumulative_packets_recv: 115,
+        cumulative_bytes_recv: 11_500,
+        timestamp_echo: session_timestamp_echo_for(50),
+        dwell_time: 0,
+        max_burst_loss: 5,
+        mean_burst_loss: 5,
+        jitter: 0,
+        ecn_ce_count: 0,
+        owd_trend: 0,
+        burst_loss_count: 1,
+        cumulative_reorder_count: 0,
+        interval_packets_recv: 15,
+        interval_bytes_recv: 1_500,
+    }
+    .encode();
+    node.handle_session_receiver_report(&remote_addr, &lossy)
+        .await;
+
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&remote_addr),
+        Some(only_fallback),
+        "moderate loss must not turn the only authenticated payload route into a total outage"
+    );
+    assert!(
+        node.pending_lookups.contains_key(&remote_addr),
+        "loss on the only route should discover a replacement while preserving current payload"
+    );
+}
+
+#[tokio::test]
 async fn test_session_receiver_loss_replaces_active_fallback_route() {
     let mut node = make_reply_learned_node_with_tree_peer();
     let failed_fallback = *node.peer_ids().next().expect("failed fallback peer");
@@ -663,6 +731,17 @@ fn test_fmp_rekey_keeps_authenticated_fallback_until_direct_payload_validates() 
         node.dataplane.fsp_owner_next_hop(&remote_addr),
         Some(fallback_next_hop),
         "reviving direct control must not displace the fallback until direct endpoint payload validates"
+    );
+}
+
+#[test]
+fn test_direct_trust_timeout_leaves_room_for_sub_four_second_roaming_recovery() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    node.config.node.heartbeat_interval_secs = 2;
+
+    assert!(
+        node.session_direct_path_exclusive_trust_timeout_ms() <= 2_500,
+        "the remote endpoint must start fallback discovery early enough to recover sustained payload within the four-second roaming budget"
     );
 }
 

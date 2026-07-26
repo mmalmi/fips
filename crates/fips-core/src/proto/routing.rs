@@ -219,6 +219,26 @@ impl LearnedRouteTable {
             .collect()
     }
 
+    pub(crate) fn has_sendable_alternate<F>(
+        &self,
+        destination: &NodeAddr,
+        excluded_next_hop: &NodeAddr,
+        now_ms: u64,
+        mut can_send: F,
+    ) -> bool
+    where
+        F: FnMut(&NodeAddr) -> bool,
+    {
+        self.routes.get(destination).is_some_and(|routes| {
+            routes.iter().any(|route| {
+                route.next_hop != *excluded_next_hop
+                    && route.expires_at_ms > now_ms
+                    && route.failures == 0
+                    && can_send(&route.next_hop)
+            })
+        })
+    }
+
     pub(crate) fn select_next_hop<F>(
         &mut self,
         destination: &NodeAddr,
