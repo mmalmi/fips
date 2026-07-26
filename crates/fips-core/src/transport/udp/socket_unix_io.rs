@@ -67,6 +67,21 @@
     }
 
     impl AsyncUdpSocket {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
+        pub(crate) fn retarget_interface(
+            &self,
+            interface: Option<&str>,
+        ) -> Result<(), TransportError> {
+            self.inner.get_ref().retarget_interface(interface)
+        }
+
+        #[cfg(all(test, target_os = "macos"))]
+        pub(crate) fn bound_device_index_v4(
+            &self,
+        ) -> std::io::Result<Option<std::num::NonZeroU32>> {
+            self.inner.get_ref().bound_device_index_v4()
+        }
+
         /// Whether Linux UDP_GRO receive offload was accepted by the kernel.
         #[cfg(target_os = "linux")]
         pub(crate) fn udp_gro_enabled(&self) -> bool {

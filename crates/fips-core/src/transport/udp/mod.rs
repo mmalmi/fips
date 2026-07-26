@@ -718,9 +718,9 @@ impl UdpTransport {
     /// bound UDP socket after moving between Wi-Fi networks or a hotspot. Peer
     /// retry alone cannot heal that socket. Rebinding preserves the configured
     /// listen port while letting the kernel select the new underlay path.
-    /// NAT-traversal sockets are excluded because recreating one would discard
-    /// the established mapping. Exclusive sockets are also excluded: their
-    /// live bind is an ownership lock and must never be dropped for recovery.
+    /// Adopted NAT-traversal sockets are excluded from this reactive rebuild
+    /// because replacing one would discard its traversal handoff. Exclusive
+    /// sockets are also excluded: their live bind is an ownership lock.
     pub(crate) async fn recover_local_route_socket(&mut self) -> Result<bool, TransportError> {
         if self.socket_origin != UdpSocketOrigin::Configured || !self.state.is_operational() {
             return Ok(false);
@@ -745,15 +745,31 @@ impl UdpTransport {
         Ok(true)
     }
 
-    /// Rebind the configured carrier after an observed network change.
+    /// Rebind or retarget a carrier after an observed network change.
     ///
     /// This bypasses reactive error cooldown because the caller has positive
     /// evidence that the underlay address or route changed. Active FMP/FSP
-    /// sessions keep the same transport ID and pick up the new live socket.
+    /// sessions keep the same transport ID. Configured carriers pick up a new
+    /// live socket; adopted NAT-traversal carriers retain their socket and
+    /// local port while their kernel interface binding moves in place.
     pub(crate) async fn rebind_after_network_change(
         &mut self,
         bind_interface: Option<String>,
     ) -> Result<bool, TransportError> {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
+        if self.socket_origin == UdpSocketOrigin::Adopted && self.state.is_operational() {
+            self.config.bind_interface = bind_interface;
+            let socket = self.socket.as_ref().ok_or(TransportError::NotStarted)?;
+            socket.retarget_interface(self.config.bind_interface.as_deref())?;
+            info!(
+                transport_id = %self.transport_id,
+                local_addr = %self.local_addr.map_or_else(|| "<unbound>".to_string(), |addr| addr.to_string()),
+                bind_interface = self.config.bind_interface.as_deref(),
+                "Retargeted adopted UDP transport after network change"
+            );
+            return Ok(true);
+        }
+
         if self.socket_origin != UdpSocketOrigin::Configured
             || !(self.state.is_operational() || self.state.can_start())
         {

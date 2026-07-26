@@ -212,6 +212,47 @@ async fn explicit_network_rebind_moves_configured_carrier_to_new_interface() {
     transport.stop_async().await.unwrap();
 }
 
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn explicit_network_rebind_retargets_adopted_carrier_without_replacing_socket() {
+    use std::os::fd::AsRawFd;
+
+    let adopted = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    adopted.set_nonblocking(true).unwrap();
+    let (tx, _rx) = packet_channel(100);
+    let mut transport = UdpTransport::new(TransportId::new(1), None, make_config(0), tx);
+    transport.adopt_socket_async(adopted).await.unwrap();
+
+    let before = transport.send_snapshot().unwrap();
+    assert!(
+        transport
+            .rebind_after_network_change(Some("lo0".to_string()))
+            .await
+            .unwrap(),
+        "a live NAT-traversal carrier must follow the selected underlay without discarding its UDP port"
+    );
+    let after = transport.send_snapshot().unwrap();
+    assert_eq!(
+        before.socket.as_raw_fd(),
+        after.socket.as_raw_fd(),
+        "retargeting an adopted carrier must retain its socket and NAT-traversal port"
+    );
+    let expected = std::num::NonZeroU32::new(unsafe { libc::if_nametoindex(c"lo0".as_ptr()) })
+        .expect("lo0 interface index");
+    assert_eq!(
+        after.socket.bound_device_index_v4().unwrap(),
+        Some(expected),
+        "the retained kernel socket must move to the selected underlay"
+    );
+    assert_eq!(
+        transport.config.bind_interface.as_deref(),
+        Some("lo0"),
+        "the adopted carrier must retain the selected underlay for later network events"
+    );
+
+    transport.stop_async().await.unwrap();
+}
+
 #[tokio::test]
 async fn test_double_start_fails() {
     let (tx, _rx) = packet_channel(100);
