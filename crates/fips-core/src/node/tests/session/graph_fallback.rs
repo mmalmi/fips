@@ -283,20 +283,13 @@ async fn direct_established_endpoint_data_falls_back_after_link_dead() {
     );
 
     nodes[alice].node.remove_link_dead_peer(&bob_addr);
-    nodes[bob].node.remove_link_dead_peer(&alice_addr);
 
     let alice_next_hop = *nodes[alice]
         .node
         .find_next_hop(&bob_addr)
         .expect("alice should have fallback next hop")
         .node_addr();
-    let bob_next_hop = *nodes[bob]
-        .node
-        .find_next_hop(&alice_addr)
-        .expect("bob should have fallback next hop")
-        .node_addr();
     assert_eq!(alice_next_hop, charlie_addr);
-    assert_eq!(bob_next_hop, charlie_addr);
 
     send_endpoint_data_via_dataplane(
         &mut nodes[alice].node,
@@ -305,13 +298,6 @@ async fn direct_established_endpoint_data_falls_back_after_link_dead() {
     )
     .await
     .expect("alice fallback endpoint data should send");
-    send_endpoint_data_via_dataplane(
-        &mut nodes[bob].node,
-        alice_identity,
-        b"bob-fallback".to_vec(),
-    )
-    .await
-    .expect("bob fallback endpoint data should send");
     drain_to_quiescence(&mut nodes).await;
 
     let event = recv_endpoint_event_while_draining(
@@ -324,6 +310,20 @@ async fn direct_established_endpoint_data_falls_back_after_link_dead() {
     let message = expect_single_endpoint_data_event(event);
     assert_eq!(*message.source_peer.node_addr(), alice_addr);
     assert_eq!(message.payload.as_slice(), &b"alice-fallback"[..]);
+
+    assert_eq!(
+        nodes[bob].node.dataplane.fsp_owner_next_hop(&alice_addr),
+        Some(charlie_addr),
+        "authenticated fallback ingress must move the still-healthy peer's reply path off its stale direct tuple"
+    );
+    send_endpoint_data_via_dataplane(
+        &mut nodes[bob].node,
+        alice_identity,
+        b"bob-fallback".to_vec(),
+    )
+    .await
+    .expect("bob fallback endpoint data should send");
+    drain_to_quiescence(&mut nodes).await;
 
     let event = recv_endpoint_event_while_draining(
         &mut nodes,

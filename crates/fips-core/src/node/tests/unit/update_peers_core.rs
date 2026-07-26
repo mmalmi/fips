@@ -229,6 +229,66 @@ async fn network_transport_rebind_schedules_fresh_handshake_for_active_udp_peer(
 }
 
 #[tokio::test]
+async fn network_transport_rebind_discards_pending_rekey_and_starts_full_path_replacement() {
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+    node.transports
+        .insert(transport_id, make_udp_transport_with_mtu(1, 1280).await);
+
+    let remote = Identity::generate();
+    let remote_addr = TransportAddr::from_string("127.0.0.1:9");
+    let mut peer = make_active_test_peer(
+        &node,
+        &remote,
+        transport_id,
+        LinkId::new(1),
+        remote_addr.clone(),
+        SessionIndex::new(10),
+        SessionIndex::new(20),
+    );
+    peer.set_pending_session(
+        make_test_fmp_session(&node.identity, &remote, [0x03; 8], [0x04; 8]),
+        SessionIndex::new(11),
+        SessionIndex::new(21),
+        false,
+    );
+    node.peers.insert(*remote.node_addr(), peer);
+    node.config.peers = vec![auto_connect_peer(
+        remote.npub(),
+        remote_addr.as_str().unwrap(),
+    )];
+
+    assert_eq!(node.rebind_network_transports(None).await.unwrap(), 1);
+    let rebound_peer = node.get_peer(remote.node_addr()).unwrap();
+    assert!(
+        rebound_peer.pending_new_session().is_none(),
+        "a carrier change must discard a pending key epoch tied to the old path"
+    );
+
+    let peer_config = node.config.peers[0].clone();
+    assert!(
+        node.initiate_active_peer_direct_refresh_connection(&peer_config)
+            .await
+            .unwrap(),
+        "the rebound carrier must start an authenticated replacement immediately"
+    );
+    let rebound_peer = node.get_peer(remote.node_addr()).unwrap();
+    assert!(
+        !rebound_peer.rekey_in_progress(),
+        "an explicitly stale carrier must use a full path handshake, not rotate keys on the dead path"
+    );
+    assert_eq!(
+        node.connection_count(),
+        1,
+        "the full replacement handshake must be in flight on the rebound carrier"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
 async fn update_peers_preserves_input_priority_order() {
     let mut node = make_node();
     let first = Identity::generate();

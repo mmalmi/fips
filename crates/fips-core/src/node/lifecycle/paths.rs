@@ -63,7 +63,8 @@ impl Node {
                 .session_direct_degradation
                 .has_pending_validation(&peer_node_addr)
             && self.peers.get(&peer_node_addr).is_some_and(|peer| {
-                peer.can_send()
+                peer.is_healthy()
+                    && peer.can_send()
                     && self
                         .active_peer_current_udp_candidate(&peer_node_addr)
                         .is_some()

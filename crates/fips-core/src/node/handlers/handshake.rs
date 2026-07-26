@@ -277,6 +277,14 @@ impl Node {
                 packet.transport_id,
                 &packet.remote_addr,
             );
+            let changed_udp_path =
+                self.transports
+                    .get(&packet.transport_id)
+                    .is_some_and(|transport| {
+                        transport.transport_type() == &crate::transport::TransportType::UDP
+                    })
+                    && (existing_peer.transport_id() != Some(packet.transport_id)
+                        || existing_peer.current_addr() != Some(&packet.remote_addr));
 
             match (existing_epoch, new_epoch) {
                 (Some(existing), Some(new)) if existing != new => {
@@ -354,6 +362,7 @@ impl Node {
                             || (self.config.node.rekey.enabled
                                 && existing_peer.has_session()
                                 && existing_peer.is_healthy()
+                                && !changed_udp_path
                                 && session_age_secs >= 30)
                         {
                             // A locally initiated pending session is about to

@@ -59,6 +59,15 @@ impl Node {
             }
             let now_ms = Self::now_ms();
             for peer_addr in &invalidated_peers {
+                let has_pending_rekey = self.peers.get(peer_addr).is_some_and(|peer| {
+                    peer.rekey_in_progress() || peer.pending_new_session().is_some()
+                });
+                if has_pending_rekey {
+                    self.abandon_fmp_rekey_for_peer(
+                        peer_addr,
+                        "carrier rebind invalidated pending key epoch",
+                    );
+                }
                 self.mark_session_direct_path_degraded(*peer_addr, now_ms);
                 self.schedule_link_dead_reprobe(*peer_addr, now_ms);
             }

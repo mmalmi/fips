@@ -934,3 +934,124 @@ async fn responder_rekey_msg1_resends_duplicates_and_replaces_orphaned_pending_s
     initiator_transport.stop_async().await.unwrap();
     crate::unregister_sim_network(&network_name);
 }
+
+#[tokio::test]
+async fn fresh_msg1_from_changed_udp_source_replaces_path_instead_of_starting_rekey() {
+    use crate::ReceivedPacket;
+    use crate::node::wire::build_msg1;
+    use crate::peer::{ActivePeer, ActivePeerSession};
+    use crate::transport::{LinkStats, TransportHandle};
+
+    let mut responder = make_node();
+    responder.config.node.rekey.enabled = true;
+    let initiator = Identity::generate();
+    let initiator_peer = PeerIdentity::from_pubkey_full(initiator.pubkey_full());
+    let initiator_addr = *initiator_peer.node_addr();
+    let transport_id = TransportId::new(1);
+    let retained_link_id = responder.allocate_link_id();
+    let old_remote_addr = TransportAddr::from_string("127.0.0.1:9");
+    let current_our_index = responder.index_allocator.allocate().unwrap();
+    let current_their_index = SessionIndex::new(20);
+    let remote_epoch = [0xA1; 8];
+
+    let mut current_initiator = crate::noise::HandshakeState::new_initiator(
+        initiator.keypair(),
+        responder.identity.pubkey_full(),
+    );
+    let mut current_responder =
+        crate::noise::HandshakeState::new_responder(responder.identity.keypair());
+    current_initiator.set_local_epoch(remote_epoch);
+    current_responder.set_local_epoch(responder.startup_epoch);
+    let current_msg1 = current_initiator.write_message_1().unwrap();
+    current_responder.read_message_1(&current_msg1).unwrap();
+    let current_msg2 = current_responder.write_message_2().unwrap();
+    current_initiator.read_message_2(&current_msg2).unwrap();
+    let current_session = current_responder.into_session().unwrap();
+    let mut active = ActivePeer::with_session(
+        initiator_peer,
+        retained_link_id,
+        1_000,
+        ActivePeerSession {
+            session: current_session,
+            our_index: current_our_index,
+            their_index: current_their_index,
+            transport_id,
+            current_addr: old_remote_addr.clone(),
+            link_stats: LinkStats::new(),
+            is_initiator: false,
+            remote_epoch: Some(remote_epoch),
+        },
+    );
+    active.set_session_established_at_for_test(std::time::Instant::now() - Duration::from_secs(31));
+    responder
+        .peers
+        .insert_with_current_session_index(initiator_addr, active);
+    responder.links.insert(
+        retained_link_id,
+        Link::connectionless(
+            retained_link_id,
+            transport_id,
+            old_remote_addr.clone(),
+            LinkDirection::Inbound,
+            Duration::from_millis(1),
+        ),
+    );
+    responder
+        .links
+        .insert_addr((transport_id, old_remote_addr), retained_link_id);
+    assert!(responder.sync_dataplane_fmp_owner(&initiator_addr));
+
+    let (packet_tx, _packet_rx) = packet_channel(16);
+    let mut responder_transport = UdpTransport::new(
+        transport_id,
+        Some("changed-source-responder".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    responder_transport.start_async().await.unwrap();
+    responder
+        .transports
+        .insert(transport_id, TransportHandle::Udp(responder_transport));
+
+    let roamed_socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let roamed_addr = TransportAddr::from_string(&roamed_socket.local_addr().unwrap().to_string());
+    let replacement_their_index = SessionIndex::new(77);
+    let mut replacement_initiator = crate::noise::HandshakeState::new_initiator(
+        initiator.keypair(),
+        responder.identity.pubkey_full(),
+    );
+    replacement_initiator.set_local_epoch(remote_epoch);
+    let replacement_msg1 = build_msg1(
+        replacement_their_index,
+        &replacement_initiator.write_message_1().unwrap(),
+    );
+
+    responder
+        .handle_msg1(ReceivedPacket::with_timestamp(
+            transport_id,
+            roamed_addr.clone(),
+            crate::transport::PacketBuffer::new(replacement_msg1),
+            2_000,
+        ))
+        .await;
+
+    let mut msg2 = [0u8; 512];
+    tokio::time::timeout(Duration::from_millis(100), roamed_socket.recv(&mut msg2))
+        .await
+        .expect("the changed UDP source must receive the replacement Msg2")
+        .expect("replacement Msg2 receive");
+    let replaced = responder.get_peer(&initiator_addr).unwrap();
+    assert_eq!(replaced.current_addr(), Some(&roamed_addr));
+    assert_eq!(replaced.their_index(), Some(replacement_their_index));
+    assert!(
+        replaced.pending_new_session().is_none(),
+        "a changed UDP source is a full path replacement, not a responder-pending rekey"
+    );
+
+    for transport in responder.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
