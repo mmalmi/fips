@@ -46,6 +46,56 @@ async fn network_transport_rebind_preserves_peer_and_session_state() {
 }
 
 #[tokio::test]
+async fn network_transport_rebind_replaces_udp_upgrade_for_configured_websocket_peer() {
+    let seed = Identity::generate();
+    let mut config = Config::new();
+    config.peers = vec![crate::config::PeerConfig::new(
+        seed.npub(),
+        "websocket",
+        "wss://seed.example/fips",
+    )];
+    let mut node = Node::new(config).unwrap();
+    let rebound_transport_id = TransportId::new(1);
+    node.transports.insert(
+        rebound_transport_id,
+        make_udp_transport_with_mtu(1, 1280).await,
+    );
+
+    let seed_addr = *seed.node_addr();
+    let upgraded_udp_peer = make_active_test_peer(
+        &node,
+        &seed,
+        rebound_transport_id,
+        LinkId::new(1),
+        TransportAddr::from_string("127.0.0.1:9"),
+        SessionIndex::new(1),
+        SessionIndex::new(2),
+    );
+    node.peers.insert(seed_addr, upgraded_udp_peer);
+    assert!(node.sync_dataplane_fmp_owner(&seed_addr));
+    assert!(node.get_peer(&seed_addr).unwrap().is_healthy());
+
+    assert_eq!(node.rebind_network_transports(None).await.unwrap(), 1);
+
+    assert!(
+        !node.get_peer(&seed_addr).unwrap().is_healthy(),
+        "a peer reached through an opportunistic UDP upgrade must yield to its configured WebSocket path after the UDP underlay changes"
+    );
+    assert!(
+        !node.dataplane_has_fmp_owner(&seed_addr),
+        "the stale UDP seed tuple must not block the rebuilt WebSocket carrier from becoming active"
+    );
+    assert!(
+        node.retry_pending.contains_key(&seed_addr),
+        "the configured WebSocket seed must be redialed immediately"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
 async fn network_transport_rebind_preserves_session_but_uses_live_fallback_for_payload() {
     let mut config = Config::new();
     config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;

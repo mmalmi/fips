@@ -68,11 +68,25 @@ impl Node {
                 .values()
                 .filter_map(|peer| {
                     let transport_id = peer.transport_id()?;
+                    let has_configured_websocket_path = self
+                        .configured_peer(peer.node_addr())
+                        .is_some_and(|configured| {
+                            configured.addresses.iter().any(|address| {
+                                address.is_configured()
+                                    && address.transport.eq_ignore_ascii_case("websocket")
+                            })
+                        });
                     refreshed_transport_ids.contains(&transport_id).then_some((
                         *peer.node_addr(),
                         refreshed_udp_transport_ids.contains(&transport_id)
                             && peer.is_healthy()
-                            && peer.can_send(),
+                            && peer.can_send()
+                            // A configured WebSocket seed can opportunistically
+                            // upgrade to UDP. That UDP tuple dies with the
+                            // underlay, while leaving it "healthy" rejects the
+                            // rebuilt WebSocket carrier and strands fallback
+                            // routing. Re-authenticate the configured carrier.
+                            && !has_configured_websocket_path,
                     ))
                 })
                 .collect();
