@@ -46,7 +46,7 @@ async fn network_transport_rebind_preserves_peer_and_session_state() {
 }
 
 #[tokio::test]
-async fn network_transport_rebind_moves_established_payload_to_live_fallback() {
+async fn network_transport_rebind_preserves_established_udp_payload_path() {
     let mut config = Config::new();
     config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;
     let mut node = Node::new(config).unwrap();
@@ -109,17 +109,17 @@ async fn network_transport_rebind_moves_established_payload_to_live_fallback() {
     assert_eq!(node.rebind_network_transports(None).await.unwrap(), 1);
 
     assert!(
-        !node.dataplane_has_fmp_owner(&remote_addr),
-        "a peer bound to a rebuilt carrier must stop owning dataplane routes until the replacement path authenticates"
+        node.dataplane_has_fmp_owner(&remote_addr),
+        "an authenticated peer must install the rebound carrier's live socket without discarding its Noise session"
     );
     assert!(
-        node.session_direct_path_degradation_active(&remote_addr, Node::now_ms()),
-        "positive carrier-change evidence must immediately invalidate direct session payload eligibility"
+        !node.session_direct_path_degradation_active(&remote_addr, Node::now_ms()),
+        "a local socket replacement must not invalidate an authenticated end-to-end session"
     );
     assert_eq!(
         node.dataplane.fsp_owner_next_hop(&remote_addr),
-        Some(fallback_addr),
-        "an established payload owner must move to the already-live graph fallback during the rebind"
+        Some(remote_addr),
+        "established payload must immediately use the same authenticated peer through the rebound UDP socket"
     );
     assert!(
         node.sessions.get(&remote_addr).is_some(),
@@ -132,7 +132,7 @@ async fn network_transport_rebind_moves_established_payload_to_live_fallback() {
 }
 
 #[tokio::test]
-async fn fallback_becoming_live_after_network_rebind_moves_established_payload() {
+async fn fallback_becoming_live_after_network_rebind_replaces_unusable_direct_payload() {
     let mut config = Config::new();
     config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;
     let mut node = Node::new(config).unwrap();
@@ -189,6 +189,10 @@ async fn fallback_becoming_live_after_network_rebind_moves_established_payload()
         node.dataplane.fsp_owner_next_hop(&remote_addr),
         Some(remote_addr)
     );
+    node.peers
+        .get_mut(&remote_addr)
+        .expect("direct peer exists")
+        .mark_stale();
 
     assert_eq!(node.rebind_network_transports(None).await.unwrap(), 1);
     assert_eq!(
@@ -300,7 +304,7 @@ async fn network_transport_rebind_rejects_handshake_queued_by_old_carrier() {
 }
 
 #[tokio::test]
-async fn network_transport_rebind_ignores_authenticated_receive_queued_by_old_carrier() {
+async fn network_transport_rebind_ignores_queued_receive_without_discarding_live_session() {
     let mut node = make_node();
     let transport_id = TransportId::new(1);
     node.transports
@@ -323,6 +327,7 @@ async fn network_transport_rebind_ignores_authenticated_receive_queued_by_old_ca
     assert!(node.sync_dataplane_fmp_owner(&remote_addr));
 
     assert_eq!(node.rebind_network_transports(None).await.unwrap(), 1);
+    let last_seen_after_rebind = node.get_peer(&remote_addr).unwrap().last_seen();
     node.record_authenticated_fmp_receive_facts(
         AuthenticatedFmpReceiveFacts {
             source_peer: PeerIdentity::from_pubkey_full(remote.pubkey_full()),
@@ -338,12 +343,17 @@ async fn network_transport_rebind_ignores_authenticated_receive_queued_by_old_ca
     );
 
     assert!(
-        !node.get_peer(&remote_addr).unwrap().is_healthy(),
-        "queued authenticated traffic from the old socket must not revive its stale peer tuple"
+        node.get_peer(&remote_addr).unwrap().is_healthy(),
+        "the rebound socket must retain the authenticated peer session"
+    );
+    assert_eq!(
+        node.get_peer(&remote_addr).unwrap().last_seen(),
+        last_seen_after_rebind,
+        "queued authenticated traffic from the old socket must not refresh path liveness"
     );
     assert!(
-        !node.dataplane_has_fmp_owner(&remote_addr),
-        "queued authenticated traffic from the old socket must not restore its withdrawn dataplane owner"
+        node.dataplane_has_fmp_owner(&remote_addr),
+        "the live session must keep its dataplane owner on the rebound socket"
     );
 
     for transport in node.transports.values_mut() {
@@ -398,7 +408,7 @@ async fn network_transport_rebind_schedules_fresh_handshake_for_active_udp_peer(
 }
 
 #[tokio::test]
-async fn network_transport_rebind_discards_pending_rekey_and_starts_full_path_replacement() {
+async fn network_transport_rebind_discards_pending_rekey_but_keeps_current_session() {
     let mut node = make_node();
     let transport_id = TransportId::new(1);
     node.transports
@@ -422,6 +432,7 @@ async fn network_transport_rebind_discards_pending_rekey_and_starts_full_path_re
         false,
     );
     node.peers.insert(*remote.node_addr(), peer);
+    assert!(node.sync_dataplane_fmp_owner(remote.node_addr()));
     node.config.peers = vec![auto_connect_peer(
         remote.npub(),
         remote_addr.as_str().unwrap(),
@@ -433,23 +444,15 @@ async fn network_transport_rebind_discards_pending_rekey_and_starts_full_path_re
         rebound_peer.pending_new_session().is_none(),
         "a carrier change must discard a pending key epoch tied to the old path"
     );
-
-    let peer_config = node.config.peers[0].clone();
     assert!(
-        node.initiate_active_peer_direct_refresh_connection(&peer_config)
-            .await
-            .unwrap(),
-        "the rebound carrier must start an authenticated replacement immediately"
+        rebound_peer.is_healthy() && rebound_peer.can_send(),
+        "the current authenticated epoch must survive the local socket replacement"
     );
-    let rebound_peer = node.get_peer(remote.node_addr()).unwrap();
+    assert!(node.dataplane_has_fmp_owner(remote.node_addr()));
+
     assert!(
         !rebound_peer.rekey_in_progress(),
-        "an explicitly stale carrier must use a full path handshake, not rotate keys on the dead path"
-    );
-    assert_eq!(
-        node.connection_count(),
-        1,
-        "the full replacement handshake must be in flight on the rebound carrier"
+        "discarding the pending epoch must not immediately rotate the preserved current epoch"
     );
 
     for transport in node.transports.values_mut() {

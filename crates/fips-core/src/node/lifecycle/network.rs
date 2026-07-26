@@ -25,8 +25,10 @@ impl Node {
 
         let mut refreshed = 0usize;
         let mut refreshed_transport_ids = Vec::new();
+        let mut refreshed_udp_transport_ids = Vec::new();
 
         for (transport_id, transport) in &mut self.transports {
+            let is_udp = matches!(transport, crate::transport::TransportHandle::Udp(_));
             let refresh_result = match transport {
                 crate::transport::TransportHandle::Udp(udp) => {
                     udp.rebind_after_network_change(bind_interface.clone())
@@ -41,6 +43,9 @@ impl Node {
                 Ok(true) => {
                     refreshed = refreshed.saturating_add(1);
                     refreshed_transport_ids.push(*transport_id);
+                    if is_udp {
+                        refreshed_udp_transport_ids.push(*transport_id);
+                    }
                     info!(
                         transport_id = %transport_id,
                         transport = transport.transport_type().name,
@@ -57,15 +62,47 @@ impl Node {
                 self.transport_rebind_packet_cutoffs_ms
                     .insert(*transport_id, rebind_started_at_ms);
             }
+            let rebound_peers: Vec<_> = self
+                .peers
+                .values()
+                .filter_map(|peer| {
+                    let transport_id = peer.transport_id()?;
+                    refreshed_transport_ids.contains(&transport_id).then_some((
+                        *peer.node_addr(),
+                        refreshed_udp_transport_ids.contains(&transport_id)
+                            && peer.is_healthy()
+                            && peer.can_send(),
+                    ))
+                })
+                .collect();
             let mut invalidated_peers = Vec::new();
-            for peer in self.peers.values_mut() {
-                if peer
-                    .transport_id()
-                    .is_some_and(|id| refreshed_transport_ids.contains(&id))
-                {
-                    invalidated_peers.push(*peer.node_addr());
+            let mut preserved_udp_peers = 0usize;
+            for (peer_addr, can_preserve_udp_session) in rebound_peers {
+                if can_preserve_udp_session {
+                    let has_pending_rekey = self.peers.get(&peer_addr).is_some_and(|peer| {
+                        peer.rekey_in_progress() || peer.pending_new_session().is_some()
+                    });
+                    if has_pending_rekey {
+                        self.abandon_fmp_rekey_for_peer(
+                            &peer_addr,
+                            "carrier rebind invalidated pending key epoch",
+                        );
+                    }
+                    if self.sync_dataplane_fmp_owner(&peer_addr) {
+                        preserved_udp_peers = preserved_udp_peers.saturating_add(1);
+                        continue;
+                    }
+                }
+                invalidated_peers.push(peer_addr);
+                if let Some(peer) = self.peers.get_mut(&peer_addr) {
                     peer.mark_stale();
                 }
+            }
+            if preserved_udp_peers > 0 {
+                debug!(
+                    count = preserved_udp_peers,
+                    "Installed rebound UDP sockets without discarding authenticated sessions"
+                );
             }
             let now_ms = Self::now_ms();
             for peer_addr in &invalidated_peers {
