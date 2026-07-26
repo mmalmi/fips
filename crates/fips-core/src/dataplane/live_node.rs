@@ -334,16 +334,23 @@ impl DataplaneLiveNode {
         Ok(())
     }
 
-    pub(crate) fn install_owner_fsp_pending_receive_epoch(
+    pub(crate) fn install_owner_fsp_pending_epoch(
         &mut self,
         owner: OwnerId,
         pending_k_bit: bool,
         open: AeadKey,
+        seal: AeadKey,
+        send_counter_authority: crate::noise::SendCounterAuthority,
     ) -> Result<(), DataplaneLiveOwnerError> {
         let Some(owner_state) = self.driver.owner_mut(owner) else {
             return Err(DataplaneLiveOwnerError::UnknownOwner);
         };
-        if !owner_state.install_fsp_pending_receive_epoch(pending_k_bit, open) {
+        if !owner_state.install_fsp_pending_epoch(
+            pending_k_bit,
+            open,
+            seal,
+            send_counter_authority,
+        ) {
             return Err(DataplaneLiveOwnerError::OwnerMismatch);
         }
         Ok(())

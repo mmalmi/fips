@@ -3,7 +3,7 @@
 //! Checks all active peers on each tick for:
 //! 1. Rekey trigger (time elapsed or send counter exceeded)
 //! 2. Drain window expiry (clean up previous session after cutover)
-//! 3. Initiator-side cutover (first send after handshake completion)
+//! 3. Initiator-side pending-epoch probes after handshake completion
 
 use crate::NodeAddr;
 use crate::node::Node;
@@ -29,12 +29,11 @@ pub(in crate::node) const REKEY_DAMPENING_SECS: u64 = 30;
 /// pending session until it authenticates the peer's K-bit flip.
 const FMP_CUTOVER_DELAY_MS: u64 = 250;
 
-/// Give the initial FSP msg3 and its first retry time to reach the responder,
-/// then flip promptly. The initiator retains the old receive epoch and keeps
-/// retransmitting msg3 until authenticated current-epoch traffic confirms the
-/// responder cut over, so waiting for the entire exponential retry budget only
-/// prolongs an outage and can collide with decrypt-failure recovery.
-const FSP_CUTOVER_DELAY_MS: u64 = 2_000;
+/// Give the initial FSP msg3 and its first retry time to reach the responder
+/// before probing the pending epoch. Application traffic stays on the proven
+/// epoch until authenticated pending-epoch traffic comes back.
+const FSP_PENDING_EPOCH_PROBE_DELAY_MS: u64 = 2_000;
+const FSP_PENDING_EPOCH_PROBE_INTERVAL_MS: u64 = 1_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SessionRekeyMsg3Resend {
@@ -84,7 +83,7 @@ enum FmpRekeyInitiationSkip {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct SessionRekeyTickPlan {
-    cutover: Vec<NodeAddr>,
+    probe: Vec<NodeAddr>,
     drain: Vec<NodeAddr>,
     initiate: Vec<NodeAddr>,
 }
@@ -96,7 +95,8 @@ struct SessionRekeyTickConfig {
     rekey_after_messages: u64,
     drain_ms: u64,
     dampening_ms: u64,
-    cutover_delay_ms: u64,
+    probe_delay_ms: u64,
+    probe_interval_ms: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -368,9 +368,9 @@ impl crate::node::SessionRegistry {
             if entry.pending_new_session().is_some()
                 && !entry.has_rekey_in_progress()
                 && entry.is_rekey_initiator()
-                && tick.now_ms.saturating_sub(entry.rekey_completed_ms()) >= tick.cutover_delay_ms
+                && entry.rekey_probe_due(tick.now_ms, tick.probe_delay_ms, tick.probe_interval_ms)
             {
-                plan.cutover.push(*node_addr);
+                plan.probe.push(*node_addr);
                 continue;
             }
 
@@ -400,11 +400,12 @@ impl crate::node::SessionRegistry {
         plan
     }
 
-    fn cutover_due_session_rekey(
+    fn record_due_session_rekey_probe(
         &mut self,
         dest_addr: &NodeAddr,
         now_ms: u64,
-        cutover_delay_ms: u64,
+        probe_delay_ms: u64,
+        probe_interval_ms: u64,
     ) -> bool {
         let Some(entry) = self.get_mut(dest_addr) else {
             return false;
@@ -412,11 +413,12 @@ impl crate::node::SessionRegistry {
         if entry.pending_new_session().is_none()
             || entry.has_rekey_in_progress()
             || !entry.is_rekey_initiator()
-            || now_ms.saturating_sub(entry.rekey_completed_ms()) < cutover_delay_ms
+            || !entry.rekey_probe_due(now_ms, probe_delay_ms, probe_interval_ms)
         {
             return false;
         }
-        entry.cutover_to_new_session(now_ms)
+        entry.record_rekey_probe(now_ms);
+        true
     }
 
     fn complete_due_session_rekey_drain(
@@ -802,8 +804,8 @@ impl Node {
     /// Periodic session (FSP) rekey check. Called from the tick loop.
     ///
     /// For each established session:
-    /// - If the initiator has a pending session past the liveness timer,
-    ///   perform K-bit cutover
+    /// - If the initiator has a pending session past the delivery grace period,
+    ///   send an authenticated pending-epoch probe while payload stays current
     /// - If the drain window has expired, clear stale-epoch metadata
     /// - If the rekey timer/counter fires, initiate a new XK handshake
     pub(in crate::node) async fn check_session_rekey(&mut self) {
@@ -817,7 +819,8 @@ impl Node {
             rekey_after_messages: self.config.node.rekey.after_messages,
             drain_ms: FSP_DRAIN_WINDOW_SECS * 1000,
             dampening_ms: REKEY_DAMPENING_SECS * 1000,
-            cutover_delay_ms: FSP_CUTOVER_DELAY_MS,
+            probe_delay_ms: FSP_PENDING_EPOCH_PROBE_DELAY_MS,
+            probe_interval_ms: FSP_PENDING_EPOCH_PROBE_INTERVAL_MS,
         };
 
         let dataplane = &self.dataplane;
@@ -827,18 +830,31 @@ impl Node {
                 .map_or(0, |activity| activity.send_counter())
         });
 
-        // Execute cutover for initiator side
-        for node_addr in plan.cutover {
-            if self.sessions.cutover_due_session_rekey(
+        // Probe the pending epoch without moving application traffic off the
+        // proven current epoch. The responder promotes only after successful
+        // authentication; its next encrypted packet confirms the cutover back
+        // to the initiator.
+        for node_addr in plan.probe {
+            if self.sessions.record_due_session_rekey_probe(
                 &node_addr,
                 tick.now_ms,
-                tick.cutover_delay_ms,
+                tick.probe_delay_ms,
+                tick.probe_interval_ms,
             ) {
-                debug!(
-                    peer = %self.peer_display_name(&node_addr),
-                    "FSP rekey cutover complete (initiator), K-bit flipped"
-                );
-                self.sync_dataplane_fsp_owner_from_current_session(&node_addr, 0);
+                match self
+                    .send_dataplane_fsp_pending_epoch_probe(&node_addr)
+                    .await
+                {
+                    Ok(()) => trace!(
+                        peer = %self.peer_display_name(&node_addr),
+                        "Sent authenticated FSP pending-epoch probe"
+                    ),
+                    Err(error) => debug!(
+                        peer = %self.peer_display_name(&node_addr),
+                        error = %error,
+                        "Failed to send authenticated FSP pending-epoch probe"
+                    ),
+                }
             }
         }
 

@@ -255,17 +255,21 @@ impl Node {
             .is_ok()
     }
 
-    pub(in crate::node) fn install_dataplane_fsp_pending_receive_epoch(
+    pub(in crate::node) fn install_dataplane_fsp_pending_epoch(
         &mut self,
         node_addr: &NodeAddr,
         pending_k_bit: bool,
         open: ring::aead::LessSafeKey,
+        seal: ring::aead::LessSafeKey,
+        send_counter_authority: crate::noise::SendCounterAuthority,
     ) -> bool {
         self.dataplane
-            .install_owner_fsp_pending_receive_epoch(
+            .install_owner_fsp_pending_epoch(
                 OwnerId::fsp_node(*node_addr),
                 pending_k_bit,
                 std::sync::Arc::new(open),
+                std::sync::Arc::new(seal),
+                send_counter_authority,
             )
             .is_ok()
     }

@@ -411,15 +411,8 @@ impl Node {
         msg_type: u8,
         payload: &[u8],
     ) -> Result<(), NodeError> {
-        self.send_dataplane_fsp_control_outbound(
-            dest_addr,
-            msg_type,
-            None,
-            payload,
-            None,
-            "FSP control message",
-        )
-        .await
+        self.send_dataplane_fsp_control_outbound(dest_addr, msg_type, None, payload, None, false)
+            .await
     }
 
     pub(in crate::node) async fn send_dataplane_fsp_coords_warmup(
@@ -433,7 +426,22 @@ impl Node {
             Some(crate::node::session_wire::FSP_FLAG_CP),
             &[],
             Some(coords_prefix),
-            "FSP coords warmup",
+            false,
+        )
+        .await
+    }
+
+    pub(in crate::node) async fn send_dataplane_fsp_pending_epoch_probe(
+        &mut self,
+        dest_addr: &NodeAddr,
+    ) -> Result<(), NodeError> {
+        self.send_dataplane_fsp_control_outbound(
+            dest_addr,
+            SessionMessageType::CoordsWarmup.to_byte(),
+            None,
+            &[],
+            None,
+            true,
         )
         .await
     }
@@ -521,8 +529,13 @@ impl Node {
         fsp_flags_override: Option<u8>,
         payload: &[u8],
         coords_prefix: Option<Vec<u8>>,
-        label: &str,
+        pending_epoch: bool,
     ) -> Result<(), NodeError> {
+        let label = if pending_epoch {
+            "FSP pending-epoch probe"
+        } else {
+            "FSP control message"
+        };
         if !self.dataplane_has_fsp_owner(dest_addr) {
             return Err(NodeError::SendFailed {
                 node_addr: *dest_addr,
@@ -557,6 +570,9 @@ impl Node {
         .with_fsp_inner_header(msg_type, inner_flags)
         .with_activity_tick(activity_tick)
         .with_send_token(send_token);
+        if pending_epoch {
+            outbound = outbound.with_pending_fsp_epoch();
+        }
         if let Some(prefix) = coords_prefix {
             outbound = outbound.with_fsp_cleartext_prefix(prefix);
         } else {

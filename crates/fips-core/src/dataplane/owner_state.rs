@@ -17,6 +17,8 @@ impl OwnerState {
             pending_fmp_replay_window: None,
             previous_fsp_open: None,
             pending_fsp_open: None,
+            pending_fsp_seal: None,
+            pending_fsp_send_counter_authority: None,
             pending_fsp_k_bit: None,
             pending_fsp_replay_window: None,
             active_path: None,
@@ -82,6 +84,8 @@ impl OwnerState {
         self.pending_fmp_replay_window = None;
         self.previous_fsp_open = None;
         self.pending_fsp_open = None;
+        self.pending_fsp_seal = None;
+        self.pending_fsp_send_counter_authority = None;
         self.pending_fsp_k_bit = None;
         self.pending_fsp_replay_window = None;
         self.fmp_session_start_ms = None;
@@ -195,6 +199,8 @@ impl OwnerState {
         if let Some(replay) = promoted_pending_replay {
             self.replay_window = replay;
             self.pending_fsp_open = None;
+            self.pending_fsp_seal = None;
+            self.pending_fsp_send_counter_authority = None;
             self.pending_fsp_k_bit = None;
             self.pending_fsp_replay_window = None;
         }
@@ -255,6 +261,21 @@ impl OwnerState {
         true
     }
 
+    pub(crate) fn install_fsp_pending_epoch(
+        &mut self,
+        pending_k_bit: bool,
+        open: AeadKey,
+        seal: AeadKey,
+        send_counter_authority: crate::noise::SendCounterAuthority,
+    ) -> bool {
+        if !self.install_fsp_pending_receive_epoch(pending_k_bit, open) {
+            return false;
+        }
+        self.pending_fsp_seal = Some(seal);
+        self.pending_fsp_send_counter_authority = Some(send_counter_authority);
+        true
+    }
+
     pub(crate) fn has_fsp_pending_receive_epoch(&self, received_k_bit: bool) -> bool {
         self.owner.protocol() == PacketProtocol::Fsp
             && self.pending_fsp_k_bit == Some(received_k_bit)
@@ -267,6 +288,8 @@ impl OwnerState {
             return false;
         }
         self.pending_fsp_open = None;
+        self.pending_fsp_seal = None;
+        self.pending_fsp_send_counter_authority = None;
         self.pending_fsp_k_bit = None;
         self.pending_fsp_replay_window = None;
         true
@@ -310,6 +333,8 @@ impl OwnerState {
         }
         if self.pending_fsp_k_bit == Some(current_k_bit) {
             self.pending_fsp_open = None;
+            self.pending_fsp_seal = None;
+            self.pending_fsp_send_counter_authority = None;
             self.pending_fsp_k_bit = None;
             self.pending_fsp_replay_window = None;
         }
@@ -403,8 +428,14 @@ impl OwnerState {
         self.send_counter_authority = Some(authority);
     }
 
-    fn seal_key(&self) -> Option<AeadKey> {
-        self.crypto_keys.as_ref().map(|keys| keys.seal.clone())
+    fn seal_key(&self, send_epoch: OutboundSendEpoch) -> Option<AeadKey> {
+        match send_epoch {
+            OutboundSendEpoch::Current => self.crypto_keys.as_ref().map(|keys| keys.seal.clone()),
+            OutboundSendEpoch::Pending if self.owner.protocol() == PacketProtocol::Fsp => {
+                self.pending_fsp_seal.clone()
+            }
+            OutboundSendEpoch::Pending => None,
+        }
     }
 
     fn open_key(&self, epoch: DataplaneReceiveEpoch) -> Option<AeadKey> {

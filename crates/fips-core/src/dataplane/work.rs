@@ -77,6 +77,7 @@ impl CryptoOwnerRun {
             && first.lane == reservation.lane
             && self.next_order == reservation.order
             && self.is_open() == is_open
+            && first.send_epoch == reservation.send_epoch
             && (!is_open || first.source_path == reservation.source_path)
             && self.open_fsp_session_payload == open_fsp_session_payload
     }
@@ -502,6 +503,7 @@ impl From<OwnerReserveError> for PacketDropReason {
             OwnerReserveError::Replay => Self::Replay,
             OwnerReserveError::InFlightFull => Self::OwnerInFlightFull,
             OwnerReserveError::StaleGeneration => Self::StaleGeneration,
+            OwnerReserveError::MissingKeys => Self::CryptoFailed,
             OwnerReserveError::CounterExhausted => Self::CounterExhausted,
         }
     }

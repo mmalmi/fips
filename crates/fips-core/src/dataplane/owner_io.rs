@@ -85,6 +85,7 @@ impl OwnerState {
                 activity_tick: packet.activity_tick,
                 fmp_timestamp_ms: None,
                 fsp_timestamp_ms: None,
+                send_epoch: OutboundSendEpoch::Current,
                 send_token: None,
             },
             receive_epoch,
@@ -104,7 +105,7 @@ impl OwnerState {
             return Err(OwnerReserveError::InFlightFull);
         }
 
-        let counter = self.reserve_send_counter()?;
+        let counter = self.reserve_send_counter(packet.send_epoch)?;
         let output_path = self.active_path.clone();
         let path_mtu = if self.owner.protocol() == PacketProtocol::Fsp
             && self.fsp_wrap_route.is_none()
@@ -172,6 +173,7 @@ impl OwnerState {
             activity_tick: packet.activity_tick,
             fmp_timestamp_ms,
             fsp_timestamp_ms,
+            send_epoch: packet.send_epoch,
             send_token: packet.send_token,
         };
         Ok((reservation, packet))
@@ -677,7 +679,19 @@ impl OwnerState {
         *flags |= crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT;
     }
 
-    fn reserve_send_counter(&mut self) -> Result<u64, OwnerReserveError> {
+    fn reserve_send_counter(
+        &mut self,
+        send_epoch: OutboundSendEpoch,
+    ) -> Result<u64, OwnerReserveError> {
+        if send_epoch == OutboundSendEpoch::Pending {
+            let authority = self
+                .pending_fsp_send_counter_authority
+                .as_ref()
+                .ok_or(OwnerReserveError::MissingKeys)?;
+            return authority
+                .reserve()
+                .map_err(|_| OwnerReserveError::CounterExhausted);
+        }
         if let Some(authority) = &self.send_counter_authority {
             let counter = authority
                 .reserve()

@@ -416,10 +416,17 @@ impl Node {
                 );
                 return;
             }
-            let pending_receive =
-                session
-                    .recv_cipher_clone()
-                    .map(|open| (!entry.current_k_bit(), open));
+            let pending_epoch = session
+                .recv_cipher_clone()
+                .zip(session.send_cipher_clone())
+                .map(|(open, seal)| {
+                    (
+                        !entry.current_k_bit(),
+                        open,
+                        seal,
+                        session.send_counter_authority(),
+                    )
+                });
             self.sessions.install_rekey_initiator_pending_session(
                 *src_addr,
                 entry,
@@ -428,8 +435,14 @@ impl Node {
                 now_ms,
                 resend_interval,
             );
-            if let Some((pending_k_bit, open)) = pending_receive {
-                self.install_dataplane_fsp_pending_receive_epoch(src_addr, pending_k_bit, open);
+            if let Some((pending_k_bit, open, seal, send_counter_authority)) = pending_epoch {
+                self.install_dataplane_fsp_pending_epoch(
+                    src_addr,
+                    pending_k_bit,
+                    open,
+                    seal,
+                    send_counter_authority,
+                );
             }
             self.refresh_dataplane_fsp_owner_routes(src_addr);
 
@@ -660,18 +673,31 @@ impl Node {
                 return;
             }
 
-            let pending_receive =
-                session
-                    .recv_cipher_clone()
-                    .map(|open| (!entry.current_k_bit(), open));
+            let pending_epoch = session
+                .recv_cipher_clone()
+                .zip(session.send_cipher_clone())
+                .map(|(open, seal)| {
+                    (
+                        !entry.current_k_bit(),
+                        open,
+                        seal,
+                        session.send_counter_authority(),
+                    )
+                });
             self.sessions.install_rekey_responder_pending_session(
                 *src_addr,
                 entry,
                 session,
                 Self::now_ms(),
             );
-            if let Some((pending_k_bit, open)) = pending_receive {
-                self.install_dataplane_fsp_pending_receive_epoch(src_addr, pending_k_bit, open);
+            if let Some((pending_k_bit, open, seal, send_counter_authority)) = pending_epoch {
+                self.install_dataplane_fsp_pending_epoch(
+                    src_addr,
+                    pending_k_bit,
+                    open,
+                    seal,
+                    send_counter_authority,
+                );
             }
             self.learn_reverse_route(*src_addr, *previous_hop_addr);
             self.refresh_dataplane_fsp_owner_routes(src_addr);

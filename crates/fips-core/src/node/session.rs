@@ -100,8 +100,10 @@ pub(crate) struct SessionEntry {
     /// Dampening: last time peer sent us a rekey msg1 (Unix ms).
     last_peer_rekey_ms: u64,
     /// When the FSP rekey handshake completed (initiator sent msg3, Unix ms).
-    /// Used to defer cutover until msg3 has time to reach the responder.
+    /// Used to defer pending-epoch probes until msg3 has time to reach the responder.
     rekey_completed_ms: u64,
+    /// Most recent authenticated pending-epoch probe attempt (Unix ms).
+    rekey_probe_last_ms: u64,
     /// Encoded SessionMsg3 payload retained for rekey retransmission.
     rekey_msg3_payload: Option<Vec<u8>>,
     /// Next rekey msg3 retransmission deadline (Unix ms). 0 = unscheduled.
@@ -142,6 +144,7 @@ impl SessionEntry {
             rekey_initiator: false,
             last_peer_rekey_ms: 0,
             rekey_completed_ms: 0,
+            rekey_probe_last_ms: 0,
             rekey_msg3_payload: None,
             rekey_msg3_next_resend_ms: 0,
             rekey_msg3_resend_count: 0,
@@ -224,6 +227,7 @@ impl SessionEntry {
         self.rekey_initiator = false;
         self.last_peer_rekey_ms = 0;
         self.rekey_completed_ms = 0;
+        self.rekey_probe_last_ms = 0;
         self.clear_rekey_msg3_payload();
         self.rekey_jitter_secs = draw_rekey_jitter();
     }
@@ -381,6 +385,22 @@ impl SessionEntry {
     /// Record when the FSP rekey handshake completed (initiator side).
     pub(crate) fn set_rekey_completed_ms(&mut self, ms: u64) {
         self.rekey_completed_ms = ms;
+        self.rekey_probe_last_ms = 0;
+    }
+
+    pub(crate) fn rekey_probe_due(
+        &self,
+        now_ms: u64,
+        initial_delay_ms: u64,
+        interval_ms: u64,
+    ) -> bool {
+        now_ms.saturating_sub(self.rekey_completed_ms) >= initial_delay_ms
+            && (self.rekey_probe_last_ms == 0
+                || now_ms.saturating_sub(self.rekey_probe_last_ms) >= interval_ms)
+    }
+
+    pub(crate) fn record_rekey_probe(&mut self, now_ms: u64) {
+        self.rekey_probe_last_ms = now_ms;
     }
 
     /// Retain the encoded rekey SessionMsg3 payload for retransmission.
@@ -425,6 +445,7 @@ impl SessionEntry {
         self.clear_rekey_msg3_payload();
         if self.pending_new_session.is_none() {
             self.rekey_completed_ms = 0;
+            self.rekey_probe_last_ms = 0;
         }
     }
 
@@ -480,12 +501,14 @@ impl SessionEntry {
         self.rekey_state = None;
         self.rekey_initiator = false;
         self.rekey_completed_ms = 0;
+        self.rekey_probe_last_ms = 0;
         self.rekey_jitter_secs = draw_rekey_jitter();
 
         true
     }
 
     /// Cut over to the pending new session (initiator side).
+    #[cfg(test)]
     pub(crate) fn cutover_to_new_session(&mut self, now_ms: u64) -> bool {
         self.promote_pending(now_ms)
     }
@@ -533,6 +556,7 @@ impl SessionEntry {
         self.pending_new_session = None;
         self.rekey_initiator = false;
         self.rekey_completed_ms = 0;
+        self.rekey_probe_last_ms = 0;
         self.clear_rekey_msg3_payload();
     }
 }

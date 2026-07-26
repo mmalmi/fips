@@ -496,7 +496,7 @@ impl DataplaneOwnerShard {
                             if let Some(run) = prepared_run.take() {
                                 prepared.push(run);
                             }
-                            match owner.seal_key() {
+                            match owner.seal_key(work.reservation.send_epoch) {
                                 Some(seal_key) => {
                                     prepared_run = Some(PreparedCryptoRun::seal(work, seal_key));
                                 }

@@ -116,7 +116,7 @@ fn active_fmp_peer(local: &Identity, peer: &Identity, tag: u32) -> ActivePeer {
 }
 
 #[test]
-fn fsp_cutover_delay_allows_a_retry_without_waiting_for_the_full_burst() {
+fn fsp_pending_epoch_probe_allows_a_retry_without_waiting_for_the_full_burst() {
     let rate_limit = crate::config::RateLimitConfig::default();
     let resend_budget = (0..rate_limit.handshake_max_resends)
         .map(|resend| {
@@ -126,12 +126,12 @@ fn fsp_cutover_delay_allows_a_retry_without_waiting_for_the_full_burst() {
         .sum::<u64>();
 
     assert!(
-        FSP_CUTOVER_DELAY_MS >= rate_limit.handshake_resend_interval_ms,
-        "FSP initiator cutover must allow the first msg3 retry before K-bit flip"
+        FSP_PENDING_EPOCH_PROBE_DELAY_MS >= rate_limit.handshake_resend_interval_ms,
+        "FSP pending-epoch probing must allow the first msg3 retry"
     );
     assert!(
-        FSP_CUTOVER_DELAY_MS < resend_budget,
-        "FSP initiator cutover must not wait for the full exponential retry budget"
+        FSP_PENDING_EPOCH_PROBE_DELAY_MS < resend_budget,
+        "FSP pending-epoch probing must not wait for the full exponential retry budget"
     );
 }
 
@@ -663,7 +663,8 @@ fn session_registry_owns_rekey_tick_selection() {
         rekey_after_messages: u64::MAX,
         drain_ms,
         dampening_ms: REKEY_DAMPENING_SECS * 1000,
-        cutover_delay_ms: FSP_CUTOVER_DELAY_MS,
+        probe_delay_ms: FSP_PENDING_EPOCH_PROBE_DELAY_MS,
+        probe_interval_ms: FSP_PENDING_EPOCH_PROBE_INTERVAL_MS,
     };
 
     let mut cutover = established_entry(&local, &cutover_peer, 1_000);
@@ -671,7 +672,7 @@ fn session_registry_owns_rekey_tick_selection() {
         &mut cutover,
         &local,
         &cutover_peer,
-        now_ms - FSP_CUTOVER_DELAY_MS - 500,
+        now_ms - FSP_PENDING_EPOCH_PROBE_DELAY_MS - 500,
     );
 
     let mut early_cutover = established_entry(&local, &early_cutover_peer, 1_000);
@@ -679,7 +680,7 @@ fn session_registry_owns_rekey_tick_selection() {
         &mut early_cutover,
         &local,
         &early_cutover_peer,
-        now_ms - FSP_CUTOVER_DELAY_MS + 500,
+        now_ms - FSP_PENDING_EPOCH_PROBE_DELAY_MS + 500,
     );
 
     let drain_cutover_ms = now_ms - drain_ms - 1_000;
@@ -711,13 +712,13 @@ fn session_registry_owns_rekey_tick_selection() {
     sessions.insert(*msg3_peer.node_addr(), msg3);
 
     let mut plan = sessions.plan_session_rekey_tick(tick, |_| 0);
-    plan.cutover.sort();
+    plan.probe.sort();
     plan.drain.sort();
     plan.initiate.sort();
 
-    let mut expected_cutover = vec![*cutover_peer.node_addr()];
-    expected_cutover.sort();
-    assert_eq!(plan.cutover, expected_cutover);
+    let mut expected_probe = vec![*cutover_peer.node_addr()];
+    expected_probe.sort();
+    assert_eq!(plan.probe, expected_probe);
 
     let mut expected_drain = vec![*drain_peer.node_addr(), *drain_and_rekey_peer.node_addr()];
     expected_drain.sort();
@@ -729,22 +730,22 @@ fn session_registry_owns_rekey_tick_selection() {
 }
 
 #[test]
-fn session_registry_owns_rekey_tick_cutover_and_drain_mutation() {
+fn session_registry_owns_rekey_tick_probe_and_drain_mutation() {
     let local = Identity::generate();
     let cutover_peer = Identity::generate();
     let early_cutover_peer = Identity::generate();
     let drain_peer = Identity::generate();
     let early_drain_peer = Identity::generate();
 
-    let now_ms = FSP_CUTOVER_DELAY_MS + 20_000;
     let drain_ms = FSP_DRAIN_WINDOW_SECS * 1000;
+    let now_ms = FSP_PENDING_EPOCH_PROBE_DELAY_MS + drain_ms + 20_000;
 
     let mut cutover = established_entry(&local, &cutover_peer, 1_000);
     arm_completed_initiator_rekey(
         &mut cutover,
         &local,
         &cutover_peer,
-        now_ms - FSP_CUTOVER_DELAY_MS - 500,
+        now_ms - FSP_PENDING_EPOCH_PROBE_DELAY_MS - 500,
     );
 
     let mut early_cutover = established_entry(&local, &early_cutover_peer, 1_000);
@@ -752,7 +753,7 @@ fn session_registry_owns_rekey_tick_cutover_and_drain_mutation() {
         &mut early_cutover,
         &local,
         &early_cutover_peer,
-        now_ms - FSP_CUTOVER_DELAY_MS + 500,
+        now_ms - FSP_PENDING_EPOCH_PROBE_DELAY_MS + 500,
     );
 
     let mut drain = established_entry(&local, &drain_peer, 1_000);
@@ -769,22 +770,30 @@ fn session_registry_owns_rekey_tick_cutover_and_drain_mutation() {
     sessions.insert(*drain_peer.node_addr(), drain);
     sessions.insert(*early_drain_peer.node_addr(), early_drain);
 
-    assert!(sessions.cutover_due_session_rekey(
+    assert!(sessions.record_due_session_rekey_probe(
         cutover_peer.node_addr(),
         now_ms,
-        FSP_CUTOVER_DELAY_MS
+        FSP_PENDING_EPOCH_PROBE_DELAY_MS,
+        FSP_PENDING_EPOCH_PROBE_INTERVAL_MS,
     ));
     let cutover = sessions
         .get(cutover_peer.node_addr())
-        .expect("cutover session should remain");
-    assert!(cutover.pending_new_session().is_none());
-    assert!(cutover.is_draining());
-    assert_eq!(cutover.rekey_completed_ms(), 0);
+        .expect("probed session should remain");
+    assert!(cutover.pending_new_session().is_some());
+    assert!(!cutover.is_draining());
+    assert_ne!(cutover.rekey_completed_ms(), 0);
+    assert!(!sessions.record_due_session_rekey_probe(
+        cutover_peer.node_addr(),
+        now_ms,
+        FSP_PENDING_EPOCH_PROBE_DELAY_MS,
+        FSP_PENDING_EPOCH_PROBE_INTERVAL_MS,
+    ));
 
-    assert!(!sessions.cutover_due_session_rekey(
+    assert!(!sessions.record_due_session_rekey_probe(
         early_cutover_peer.node_addr(),
         now_ms,
-        FSP_CUTOVER_DELAY_MS
+        FSP_PENDING_EPOCH_PROBE_DELAY_MS,
+        FSP_PENDING_EPOCH_PROBE_INTERVAL_MS,
     ));
     assert!(
         sessions

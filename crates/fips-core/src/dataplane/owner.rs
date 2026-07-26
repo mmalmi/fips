@@ -449,6 +449,7 @@ pub(crate) struct OwnerReservation {
     activity_tick: Option<ActivityTick>,
     fmp_timestamp_ms: Option<u32>,
     fsp_timestamp_ms: Option<u32>,
+    send_epoch: OutboundSendEpoch,
     send_token: Option<u64>,
 }
 
@@ -537,6 +538,7 @@ pub(crate) enum OwnerReserveError {
     Replay,
     InFlightFull,
     StaleGeneration,
+    MissingKeys,
     CounterExhausted,
 }
 
@@ -737,6 +739,8 @@ pub(crate) struct OwnerState {
     pending_fmp_replay_window: Option<ReplayWindow>,
     previous_fsp_open: Option<AeadKey>,
     pending_fsp_open: Option<AeadKey>,
+    pending_fsp_seal: Option<AeadKey>,
+    pending_fsp_send_counter_authority: Option<crate::noise::SendCounterAuthority>,
     pending_fsp_k_bit: Option<bool>,
     pending_fsp_replay_window: Option<ReplayWindow>,
     active_path: Option<TransportPath>,

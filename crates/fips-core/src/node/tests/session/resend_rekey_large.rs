@@ -233,7 +233,7 @@ async fn rekey_initiator_resends_final_msg3_until_responder_has_pending_session(
         .node
         .rate_limit
         .handshake_resend_interval_ms = 5;
-    nodes[0].node.config.node.rate_limit.handshake_max_resends = 3;
+    nodes[0].node.config.node.rate_limit.handshake_max_resends = 10;
 
     let node0_addr = *nodes[0].node.node_addr();
     let node1_addr = *nodes[1].node.node_addr();
@@ -338,7 +338,46 @@ async fn rekey_initiator_resends_final_msg3_until_responder_has_pending_session(
         .node
         .attach_endpoint_data_io(8)
         .expect("initiator endpoint data I/O should attach");
+    let mut node1_endpoint = nodes[1]
+        .node
+        .attach_endpoint_data_io(8)
+        .expect("responder endpoint data I/O should attach");
     let node0_identity = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
+    let node1_identity = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
+
+    nodes[0]
+        .node
+        .sessions
+        .get_mut(&node1_addr)
+        .expect("initiator pending rekey session")
+        .set_rekey_completed_ms(Node::now_ms().saturating_sub(10_000));
+    nodes[0].node.check_session_rekey().await;
+    assert!(
+        nodes[0].node.get_session(&node1_addr).is_some_and(|entry| {
+            !entry.current_k_bit() && entry.pending_new_session().is_some()
+        }),
+        "a due rekey must not move application traffic before the responder authenticates the pending epoch"
+    );
+
+    send_endpoint_data_via_dataplane(
+        &mut nodes[0].node,
+        node1_identity,
+        b"old-session-initiator-proof".to_vec(),
+    )
+    .await
+    .expect("initiator old session should remain usable while msg3 is missing");
+    let event = recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut node1_endpoint.event_rx,
+        Duration::from_secs(10),
+        "responder old-session initiator proof endpoint data",
+    )
+    .await;
+    assert_eq!(
+        expect_single_endpoint_data_event(event).payload.as_slice(),
+        &b"old-session-initiator-proof"[..]
+    );
+
     send_endpoint_data_via_dataplane(
         &mut nodes[1].node,
         node0_identity,
@@ -403,31 +442,57 @@ async fn rekey_initiator_resends_final_msg3_until_responder_has_pending_session(
     );
 
     let cutover_started = tokio::time::Instant::now();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            nodes[0].node.check_session_rekey().await;
-            if nodes[0]
-                .node
-                .get_session(&node1_addr)
-                .is_some_and(|entry| entry.current_k_bit() && entry.pending_new_session().is_none())
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("production rekey maintenance should cut over promptly");
+    nodes[0]
+        .node
+        .sessions
+        .get_mut(&node1_addr)
+        .expect("initiator pending rekey session")
+        .set_rekey_completed_ms(Node::now_ms().saturating_sub(10_000));
+    nodes[0].node.check_session_rekey().await;
+    wait_for_session_state_for_node(
+        &mut nodes,
+        1,
+        &node0_addr,
+        "responder authenticated pending epoch",
+        |entry| entry.current_k_bit() && entry.pending_new_session().is_none(),
+    )
+    .await;
     assert!(
         cutover_started.elapsed() < Duration::from_secs(5),
-        "FSP cutover must finish well before the old exponential resend window"
+        "the authenticated pending-epoch probe must reach the responder promptly"
+    );
+    assert!(
+        nodes[0].node.get_session(&node1_addr).is_some_and(|entry| {
+            !entry.current_k_bit() && entry.pending_new_session().is_some()
+        }),
+        "the initiator must retain its proven epoch until the responder sends authenticated pending-epoch traffic"
     );
 
-    let mut node1_endpoint = nodes[1]
-        .node
-        .attach_endpoint_data_io(8)
-        .expect("responder endpoint data I/O should attach");
-    let node1_identity = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
+    send_endpoint_data_via_dataplane(
+        &mut nodes[1].node,
+        node0_identity,
+        b"new-epoch-responder-proof".to_vec(),
+    )
+    .await
+    .expect("responder should reply over the authenticated new FSP epoch");
+    let event = recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut node0_endpoint.event_rx,
+        Duration::from_secs(10),
+        "initiator new-epoch responder proof",
+    )
+    .await;
+    assert_eq!(
+        expect_single_endpoint_data_event(event).payload.as_slice(),
+        &b"new-epoch-responder-proof"[..]
+    );
+    assert!(
+        nodes[0].node.get_session(&node1_addr).is_some_and(|entry| {
+            entry.current_k_bit() && entry.pending_new_session().is_none()
+        }),
+        "authenticated responder traffic should promote the initiator"
+    );
+
     send_endpoint_data_via_dataplane(
         &mut nodes[0].node,
         node1_identity,
@@ -451,30 +516,6 @@ async fn rekey_initiator_resends_final_msg3_until_responder_has_pending_session(
             entry.current_k_bit() && entry.pending_new_session().is_none()
         }),
         "authenticated new-epoch traffic should cut the responder over"
-    );
-
-    let mut node0_endpoint = nodes[0]
-        .node
-        .attach_endpoint_data_io(8)
-        .expect("initiator endpoint data I/O should attach");
-    let node0_identity = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
-    send_endpoint_data_via_dataplane(
-        &mut nodes[1].node,
-        node0_identity,
-        b"new-epoch-responder-proof".to_vec(),
-    )
-    .await
-    .expect("responder should reply over the new FSP epoch");
-    let event = recv_endpoint_event_while_draining(
-        &mut nodes,
-        &mut node0_endpoint.event_rx,
-        Duration::from_secs(10),
-        "initiator new-epoch responder proof",
-    )
-    .await;
-    assert_eq!(
-        expect_single_endpoint_data_event(event).payload.as_slice(),
-        &b"new-epoch-responder-proof"[..]
     );
 
     cleanup_nodes(&mut nodes).await;

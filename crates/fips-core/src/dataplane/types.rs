@@ -205,6 +205,13 @@ pub(crate) enum OutboundWire {
     Fsp { flags: u8 },
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum OutboundSendEpoch {
+    #[default]
+    Current,
+    Pending,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OutboundPostSeal {
     Transport,
@@ -230,6 +237,7 @@ pub(crate) struct OutboundPacket {
     fsp_send_receipt: Option<DataplaneFspSendReceipt>,
     send_token: Option<u64>,
     activity_tick: Option<ActivityTick>,
+    send_epoch: OutboundSendEpoch,
     payload: PacketBuffer,
 }
 
@@ -257,6 +265,7 @@ impl OutboundPacket {
             fsp_send_receipt: None,
             send_token: None,
             activity_tick: None,
+            send_epoch: OutboundSendEpoch::Current,
             payload,
         }
     }
@@ -280,8 +289,17 @@ impl OutboundPacket {
             fsp_send_receipt: None,
             send_token: None,
             activity_tick: None,
+            send_epoch: OutboundSendEpoch::Current,
             payload,
         }
+    }
+
+    pub(crate) fn with_pending_fsp_epoch(mut self) -> Self {
+        if let OutboundWire::Fsp { flags } = &mut self.wire {
+            *flags ^= crate::node::session_wire::FSP_FLAG_K;
+            self.send_epoch = OutboundSendEpoch::Pending;
+        }
+        self
     }
 
     pub(crate) fn with_fsp_inner_header(mut self, msg_type: u8, inner_flags: u8) -> Self {
