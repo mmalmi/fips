@@ -183,6 +183,52 @@ async fn network_transport_rebind_immediately_retries_inflight_udp_handshakes() 
 }
 
 #[tokio::test]
+async fn network_transport_rebind_schedules_fresh_handshake_for_active_udp_peer() {
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+    node.transports
+        .insert(transport_id, make_udp_transport_with_mtu(1, 1280).await);
+
+    let remote = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(remote.pubkey_full());
+    let remote_addr = TransportAddr::from_string("127.0.0.1:9");
+    let mut peer = ActivePeer::new(peer_identity, LinkId::new(1), 1_000);
+    peer.set_current_addr(transport_id, &remote_addr);
+    node.peers.insert(*remote.node_addr(), peer);
+    node.config.peers = vec![auto_connect_peer(
+        remote.npub(),
+        remote_addr.as_str().unwrap(),
+    )];
+
+    let before_rebind_ms = Node::now_ms();
+    assert_eq!(node.rebind_network_transports(None).await.unwrap(), 1);
+
+    let retry = node
+        .retry_pending
+        .get(remote.node_addr())
+        .expect("a carrier rebind must immediately queue a fresh authenticated path probe");
+    assert!(retry.reconnect);
+    assert_eq!(retry.retry_count, 0);
+    assert!(
+        retry.retry_after_ms <= before_rebind_ms + 1_500,
+        "the active peer probe must use the bounded link-dead delay, not the generic liveness timeout"
+    );
+    assert!(
+        retry
+            .peer_config
+            .addresses
+            .iter()
+            .any(|candidate| candidate.transport == "udp"
+                && candidate.addr == remote_addr.as_str().unwrap()),
+        "the last authenticated UDP tuple must remain probeable on the rebound carrier"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
 async fn update_peers_preserves_input_priority_order() {
     let mut node = make_node();
     let first = Identity::generate();

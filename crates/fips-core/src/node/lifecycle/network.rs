@@ -60,6 +60,7 @@ impl Node {
             let now_ms = Self::now_ms();
             for peer_addr in &invalidated_peers {
                 self.mark_session_direct_path_degraded(*peer_addr, now_ms);
+                self.schedule_link_dead_reprobe(*peer_addr, now_ms);
             }
             debug!(
                 count = invalidated_peers.len(),
