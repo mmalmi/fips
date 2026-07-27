@@ -185,14 +185,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           for attempt in $(seq 1 120); do
-            if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            release_id="$(
+              gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+                --jq '.[] | select(.tag_name == env.GITHUB_REF_NAME and .draft == true) | .id'
+            )"
+            if [[ "$release_id" =~ ^[0-9]+$ ]]; then
               exit 0
             fi
-            echo "Release ${GITHUB_REF_NAME} not available yet; waiting..."
+            echo "Draft release ${GITHUB_REF_NAME} not available yet; waiting..."
             sleep 15
           done
 
-          echo "Timed out waiting for release ${GITHUB_REF_NAME}" >&2
+          echo "Timed out waiting for draft release ${GITHUB_REF_NAME}" >&2
           exit 1
 
       - name: Upload Windows assets

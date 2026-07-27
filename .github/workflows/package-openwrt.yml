@@ -567,14 +567,14 @@ jobs:
 
           for attempt in $(seq 1 180); do
             release_json="$(
-              gh release view "${GITHUB_REF_NAME}" \
-                --repo "${GITHUB_REPOSITORY}" \
-                --json assets,isDraft
+              gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+                | jq --arg tag "${GITHUB_REF_NAME}" '
+                    [.[] | select(.tag_name == $tag and .draft == true)]
+                    | if length == 1 then .[0]
+                      else error("expected exactly one matching draft release")
+                      end
+                  '
             )"
-            if [[ "$(jq -r '.isDraft' <<<"$release_json")" != "true" ]]; then
-              echo "Refusing to modify non-draft release ${GITHUB_REF_NAME}" >&2
-              exit 1
-            fi
 
             assets="$(jq -r '.assets[].name' <<<"$release_json")"
             complete=1
@@ -592,10 +592,14 @@ jobs:
             done
 
             if [[ "$complete" -eq 1 ]]; then
-              gh release edit "${GITHUB_REF_NAME}" \
-                --repo "${GITHUB_REPOSITORY}" \
-                --draft=false \
-                --verify-tag
+              release_id="$(jq -r '.id' <<<"$release_json")"
+              [[ "$release_id" =~ ^[0-9]+$ ]]
+              gh api \
+                --method PATCH \
+                -H "X-GitHub-Api-Version: 2026-03-10" \
+                "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+                -F draft=false \
+                >/dev/null
               exit 0
             fi
 
