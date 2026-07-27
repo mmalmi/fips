@@ -537,8 +537,71 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Create release
+      - name: Create draft release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.ipk
           generate_release_notes: true
+          draft: true
+
+      - name: Publish only after every platform asset is present
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="${GITHUB_REF_NAME#v}"
+          required_assets=(
+            "fips_${GITHUB_REF_NAME}_aarch64_cortex-a53.ipk"
+            "fips_${GITHUB_REF_NAME}_x86_64.ipk"
+            "fips-${version}-linux-aarch64.tar.gz"
+            "fips-${version}-linux-x86_64.tar.gz"
+            "fips-${version}-macos-arm64.pkg"
+            "fips-${version}-macos-x86_64.pkg"
+            "fips-${version}-windows-x86_64.zip"
+            "checksums-linux.txt"
+            "checksums-macos.txt"
+            "checksums-windows.txt"
+          )
+
+          for attempt in $(seq 1 180); do
+            release_json="$(
+              gh release view "${GITHUB_REF_NAME}" \
+                --repo "${GITHUB_REPOSITORY}" \
+                --json assets,isDraft
+            )"
+            if [[ "$(jq -r '.isDraft' <<<"$release_json")" != "true" ]]; then
+              echo "Refusing to modify non-draft release ${GITHUB_REF_NAME}" >&2
+              exit 1
+            fi
+
+            assets="$(jq -r '.assets[].name' <<<"$release_json")"
+            complete=1
+            for asset in "${required_assets[@]}"; do
+              if ! grep -Fqx "$asset" <<<"$assets"; then
+                complete=0
+                break
+              fi
+            done
+            for architecture in amd64 arm64; do
+              if ! grep -Eq "^fips_[^/]+_${architecture}\\.deb$" <<<"$assets"; then
+                complete=0
+                break
+              fi
+            done
+
+            if [[ "$complete" -eq 1 ]]; then
+              gh release edit "${GITHUB_REF_NAME}" \
+                --repo "${GITHUB_REPOSITORY}" \
+                --draft=false \
+                --verify-tag
+              exit 0
+            fi
+
+            echo "Waiting for Linux, macOS, and Windows assets (${attempt}/180)..."
+            sleep 10
+          done
+
+          echo "Timed out waiting for a complete ${GITHUB_REF_NAME} release" >&2
+          exit 1
