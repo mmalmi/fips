@@ -186,6 +186,9 @@ jobs:
       - name: Run unit tests
         run: cargo nextest run --all --profile ci
 
+      - name: Run integration harness parser tests
+        run: python3 -m unittest discover -s testing/static/scripts/tests -p 'test_*.py'
+
       - name: Publish test report (Checks tab)
         uses: dorny/test-reporter@v2
         if: always()

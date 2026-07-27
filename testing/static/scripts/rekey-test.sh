@@ -189,6 +189,8 @@ PHASE_TIMESTAMPS="$ARTIFACT_DIR/phase-timestamps.tsv"
 PROBE_DIR="$ARTIFACT_DIR/continuous-probes"
 PROBE_SUMMARY_JSON="$ARTIFACT_DIR/continuous-probes.json"
 PROBE_SUMMARY_TSV="$ARTIFACT_DIR/continuous-probes.tsv"
+EPOCH_SUMMARY_JSON="$ARTIFACT_DIR/fsp-epoch-evidence.json"
+EPOCH_SUMMARY_TSV="$ARTIFACT_DIR/fsp-epoch-evidence.tsv"
 
 record_phase() {
     local phase="$1"
@@ -259,6 +261,7 @@ fi
 # Wait times derived from rekey timer
 BASELINE_CONVERGENCE_TIMEOUT=60
 REKEY_SETTLE=12        # > FMP drain window so post-rekey link samples are off the old session
+FSP_DRAIN_WINDOW_SECS=45
 # First FMP rekey should follow shortly after the configured interval once the mesh is
 # fully converged. Keep this bounded to preserve a meaningful scheduling check
 # while still allowing for log visibility at the timeout edge.
@@ -417,6 +420,26 @@ assert_continuous_probes() {
         PASSED=$((PASSED + 1))
     else
         echo "  ✗ Continuous sequenced payload delivery failed"
+        FAILED=$((FAILED + 1))
+    fi
+}
+
+assert_staggered_epoch_evidence() {
+    capture_artifacts
+    if python3 "$SCRIPT_DIR/analyze_rekey_epochs.py" "$ARTIFACT_DIR/logs" \
+        --initiator-node b \
+        --initiator-npub "$NPUB_B" \
+        --target "a=$NPUB_A" \
+        --target "d=$NPUB_D" \
+        --target "e=$NPUB_E" \
+        --min-cycles 2 \
+        --drain-seconds "$FSP_DRAIN_WINDOW_SECS" \
+        --json "$EPOCH_SUMMARY_JSON" \
+        --tsv "$EPOCH_SUMMARY_TSV"; then
+        echo "  ✓ Per-session FSP epochs: two post-drain alternating cycles"
+        PASSED=$((PASSED + 1))
+    else
+        echo "  ✗ Per-session FSP epoch evidence failed"
         FAILED=$((FAILED + 1))
     fi
 }
@@ -672,6 +695,9 @@ fi
 
 stop_continuous_probes
 assert_continuous_probes
+if [ "$REKEY_SCENARIO" = "staggered-overlap" ]; then
+    assert_staggered_epoch_evidence
+fi
 
 # Positive checks: rekey machinery worked. The overlap lane deliberately
 # isolates FSP's counter trigger; ordinary lanes retain the FMP assertion.
