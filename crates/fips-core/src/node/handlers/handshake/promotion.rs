@@ -71,6 +71,8 @@ impl Node {
         if let Some(existing_peer) = self.peers.get(&peer_node_addr) {
             let existing_link_id = existing_peer.link_id();
             let existing_path_unusable = !existing_peer.is_healthy() || !existing_peer.can_send();
+            let opposite_direction_cross_connection =
+                existing_peer.fmp_mmp_is_initiator() != is_outbound;
             let connection_oriented_cross_connection = self
                 .is_connection_oriented_cross_connection(existing_peer, transport_id, is_outbound);
             let outbound_alternate_path = is_outbound
@@ -157,8 +159,15 @@ impl Node {
                     outbound_alternate_path_wins
                 } else if inbound_alternate_path {
                     inbound_alternate_path_wins
-                } else {
+                } else if opposite_direction_cross_connection {
                     cross_connection_winner(self.identity.node_addr(), &peer_node_addr, is_outbound)
+                } else {
+                    // The NodeAddr rule arbitrates the two opposite halves of
+                    // one cross-connection. Applying it to a second handshake
+                    // in the same direction can replace only one endpoint's
+                    // Noise owner while the peer keeps the first matching
+                    // owner. A healthy same-carrier duplicate therefore loses.
+                    false
                 };
 
             if this_wins {

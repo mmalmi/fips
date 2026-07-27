@@ -648,3 +648,145 @@ async fn test_late_static_outbound_resend_completes_after_opposite_direction_pro
         t.stop().await.ok();
     }
 }
+
+/// Two production dial sources (for example a configured static address and
+/// LAN discovery) can race from the same UDP socket to the same peer. The
+/// responder must keep the first authenticated inbound owner while the
+/// initiator keeps the matching first outbound owner. Replacing the responder
+/// with the second inbound handshake while the initiator discards its second
+/// outbound handshake leaves complementary directions but mismatched Noise
+/// sessions, so the direct FSP SessionAck can never return.
+#[tokio::test]
+async fn duplicate_same_tuple_outbound_dials_preserve_fmp_owner_and_session_ack() {
+    use crate::node::tests::spanning_tree::{
+        cleanup_nodes, drain_all_packets, initiate_handshake, make_test_node,
+    };
+    use crate::node::wire::{Msg1Header, Msg2Header};
+    use tokio::time::{Duration, timeout};
+
+    let node_0 = make_test_node().await;
+    let node_1 = make_test_node().await;
+    let mut nodes = if node_0.node.node_addr() < node_1.node.node_addr() {
+        vec![node_0, node_1]
+    } else {
+        vec![node_1, node_0]
+    };
+
+    let initiator_addr = *nodes[0].node.node_addr();
+    let responder_addr = *nodes[1].node.node_addr();
+    let responder_pubkey = nodes[1].node.identity().pubkey_full();
+
+    // Model the static-address and LAN-discovery dials that production can
+    // launch in the same event-loop turn.
+    initiate_handshake(&mut nodes, 0, 1).await;
+    initiate_handshake(&mut nodes, 0, 1).await;
+
+    let first_msg1 = timeout(Duration::from_secs(1), async {
+        loop {
+            let packet = nodes[1]
+                .packet_rx
+                .recv()
+                .await
+                .expect("responder packet channel open");
+            if Msg1Header::parse(packet.data.as_slice()).is_some() {
+                break packet;
+            }
+        }
+    })
+    .await
+    .expect("responder should receive first production-path Msg1");
+    nodes[1].node.handle_msg1(first_msg1).await;
+    let first_responder_link = nodes[1]
+        .node
+        .get_peer(&initiator_addr)
+        .expect("first Msg1 should install an inbound owner")
+        .link_id();
+
+    let second_msg1 = timeout(Duration::from_secs(1), async {
+        loop {
+            let packet = nodes[1]
+                .packet_rx
+                .recv()
+                .await
+                .expect("responder packet channel open");
+            if Msg1Header::parse(packet.data.as_slice()).is_some() {
+                break packet;
+            }
+        }
+    })
+    .await
+    .expect("responder should receive the racing duplicate Msg1");
+    nodes[1].node.handle_msg1(second_msg1).await;
+
+    // Process the canonical first Msg2. A losing duplicate responder index
+    // must not be advertised; if old code did advertise one, the normal drain
+    // below processes it and proves that it cannot split ownership.
+    let msg2 = timeout(Duration::from_secs(1), async {
+        loop {
+            let packet = nodes[0]
+                .packet_rx
+                .recv()
+                .await
+                .expect("initiator packet channel open");
+            if Msg2Header::parse(packet.data.as_slice()).is_some() {
+                break packet;
+            }
+        }
+    })
+    .await
+    .expect("initiator should receive the canonical Msg2 reply");
+    nodes[0].node.handle_msg2(msg2).await;
+
+    drain_all_packets(&mut nodes, false).await;
+    populate_all_coord_caches(&mut nodes);
+
+    // Exercise the actual encrypted production path. With split FMP owners,
+    // the responder cannot decrypt SessionSetup and no SessionAck arrives.
+    nodes[0]
+        .node
+        .initiate_session(responder_addr, responder_pubkey)
+        .await
+        .expect("direct FSP session initiation should start");
+    drain_all_packets(&mut nodes, false).await;
+
+    let initiator_peer = nodes[0]
+        .node
+        .get_peer(&responder_addr)
+        .expect("initiator should retain responder");
+    let responder_peer = nodes[1]
+        .node
+        .get_peer(&initiator_addr)
+        .expect("responder should retain initiator");
+
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&responder_addr)
+            .is_some_and(|session| session.is_established()),
+        "SessionAck must return over the canonical FMP owner"
+    );
+    assert!(
+        nodes[1]
+            .node
+            .get_session(&initiator_addr)
+            .is_some_and(|session| session.is_established()),
+        "responder must complete the same direct FSP session"
+    );
+    assert!(
+        initiator_peer.fmp_mmp_is_initiator(),
+        "smaller initiator should keep the canonical outbound owner"
+    );
+    assert!(
+        !responder_peer.fmp_mmp_is_initiator(),
+        "larger responder should keep the complementary inbound owner"
+    );
+    assert_eq!(
+        responder_peer.link_id(),
+        first_responder_link,
+        "a same-direction duplicate must not replace an authenticated owner"
+    );
+    assert_eq!(initiator_peer.their_index(), responder_peer.our_index());
+    assert_eq!(responder_peer.their_index(), initiator_peer.our_index());
+
+    cleanup_nodes(&mut nodes).await;
+}
