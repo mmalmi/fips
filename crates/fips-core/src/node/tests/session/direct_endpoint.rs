@@ -497,6 +497,7 @@ fn simultaneous_fsp_role_change_replaces_obsolete_initiator_route() {
         let mut nodes = run_tree_test(3, &edges, false).await;
         verify_tree_convergence(&nodes);
         populate_all_coord_caches(&mut nodes);
+        drain_to_quiescence(&mut nodes).await;
         for node in &mut nodes {
             node.node.config.node.routing.mode = RoutingMode::ReplyLearned;
         }
@@ -526,6 +527,20 @@ fn simultaneous_fsp_role_change_replaces_obsolete_initiator_route() {
         )
         .await
         .expect("responder should start as an initiator");
+        // Stage the losing initiator's setup at the winner without consuming it.
+        // This deterministically exercises the initiator-to-responder role change.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                process_available_packets_for_node(&mut nodes[1]).await;
+                if nodes[winner].packet_rx.queued_packets_for_test() > 0 {
+                    break;
+                }
+                run_session_retransmit_work(&mut nodes).await;
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the responder's setup should reach the winner before it starts");
         send_endpoint_data_via_dataplane(
             &mut nodes[winner].node,
             responder_identity,
@@ -545,21 +560,26 @@ fn simultaneous_fsp_role_change_replaces_obsolete_initiator_route() {
             "both endpoints should be initiating before the role-change packet is processed"
         );
 
-        assert!(
-            wait_process_packets_for_node(&mut nodes, 1).await > 0,
-            "the transit node should forward the simultaneous setups"
-        );
-        assert!(
-            wait_process_packets_for_node(&mut nodes, responder).await > 0,
-            "the tiebreak loser should process the winner's setup"
-        );
-        assert!(
-            nodes[responder]
-                .node
-                .get_session(&winner_addr)
-                .is_some_and(|entry| entry.is_awaiting_msg3()),
-            "the larger address should switch to responder"
-        );
+        // Drive only the transit and losing endpoint until the production session
+        // state arrives; unrelated retransmits must not satisfy this wait.
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if nodes[responder]
+                    .node
+                    .get_session(&winner_addr)
+                    .is_some_and(|entry| entry.is_awaiting_msg3())
+                {
+                    break;
+                }
+
+                run_session_retransmit_work(&mut nodes).await;
+                process_available_packets_for_node(&mut nodes[1]).await;
+                process_available_packets_for_node(&mut nodes[responder]).await;
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the larger address should switch to responder");
         let active_route = nodes[responder]
             .node
             .learned_routes
