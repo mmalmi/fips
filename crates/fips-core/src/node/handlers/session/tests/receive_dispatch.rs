@@ -1,4 +1,6 @@
-    use crate::node::session_wire::fsp_prepend_inner_header;
+    use crate::node::{
+        SESSION_DIRECT_DEGRADED_HOLD_MS, session_wire::fsp_prepend_inner_header,
+    };
 
     #[test]
     fn application_receive_refreshes_previous_hop_peer_without_direct_source_trust() {
@@ -789,4 +791,38 @@
             Some(fallback_addr),
             "new authenticated fallback ingress must replace an explicitly failed fallback reply owner immediately"
         );
+
+        // Keep exercising the production route-following function invoked by
+        // post-authentication application receive completion. A live
+        // asymmetric path can return every packet through the same fallback
+        // for much longer than the initial direct-degradation hold; each
+        // authenticated return must keep that proven reply owner stable
+        // across every hold boundary.
+        let mut ingress_ms = Node::now_ms().saturating_add(1_000);
+        for cycle in 1..=4 {
+            assert!(
+                !node.follow_authenticated_fallback_ingress_for_session_reply(
+                    source_addr,
+                    fallback_addr,
+                    ingress_ms,
+                ),
+                "cycle {cycle}: the existing authenticated fallback must not rewrite its owner"
+            );
+            assert_eq!(
+                node.dataplane.fsp_owner_next_hop(&source_addr),
+                Some(fallback_addr),
+                "cycle {cycle}: the proven reply owner must remain stable"
+            );
+            assert!(
+                node.session_direct_path_degradation_active(
+                    &source_addr,
+                    ingress_ms
+                        .saturating_add(SESSION_DIRECT_DEGRADED_HOLD_MS)
+                        .saturating_sub(1),
+                ),
+                "cycle {cycle}: authenticated fallback return must renew the hold"
+            );
+            ingress_ms = ingress_ms
+                .saturating_add(SESSION_DIRECT_DEGRADED_HOLD_MS.saturating_sub(1_000));
+        }
     }

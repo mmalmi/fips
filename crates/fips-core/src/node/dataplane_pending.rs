@@ -120,7 +120,6 @@ impl Node {
             .learned_routes
             .failed_next_hops(&source_addr, now_ms);
         if source_addr == previous_hop_addr
-            || current_next_hop == Some(previous_hop_addr)
             || failed_next_hops.contains(&previous_hop_addr)
             || !self
                 .peers
@@ -128,6 +127,20 @@ impl Node {
                 .is_some_and(|peer| peer.can_send())
             || !self.dataplane_has_fmp_owner(&previous_hop_addr)
         {
+            return false;
+        }
+
+        if current_next_hop == Some(previous_hop_addr) {
+            // Authenticated application return on the selected fallback is
+            // continuing path proof. Renew the suppression window without
+            // replacing the dataplane owner; otherwise the hold expires under
+            // active traffic, direct control refresh briefly displaces the
+            // proven reply route, and the next fallback packet moves it back.
+            self.session_direct_degradation.mark_degraded(
+                source_addr,
+                now_ms,
+                SESSION_DIRECT_DEGRADED_HOLD_MS,
+            );
             return false;
         }
 
