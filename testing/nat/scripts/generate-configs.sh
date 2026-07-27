@@ -22,16 +22,21 @@ mkdir -p "$OUTPUT_DIR/$SCENARIO"
 
 keys_a="$(python3 "$DERIVE_KEYS" "$MESH_NAME" "a")"
 keys_b="$(python3 "$DERIVE_KEYS" "$MESH_NAME" "b")"
+keys_seed="$(python3 "$DERIVE_KEYS" "$MESH_NAME" "seed")"
 
 nsec_a="$(echo "$keys_a" | awk -F= '/^nsec=/{print $2}')"
 npub_a="$(echo "$keys_a" | awk -F= '/^npub=/{print $2}')"
 nsec_b="$(echo "$keys_b" | awk -F= '/^nsec=/{print $2}')"
 npub_b="$(echo "$keys_b" | awk -F= '/^npub=/{print $2}')"
+nsec_seed="$(echo "$keys_seed" | awk -F= '/^nsec=/{print $2}')"
+npub_seed="$(echo "$keys_seed" | awk -F= '/^npub=/{print $2}')"
 
 relay_addr="ws://172.31.254.30:7777"
 stun_addr="stun:172.31.254.40:3478"
 share_local_candidates=false
 lan_discovery_enabled=true
+routing_mode=tree
+seed_peer_block=""
 if [ "$SCENARIO" = "lan" ] || [ "$SCENARIO" = "nostr-publish-consume" ] \
         || [ "$SCENARIO" = "stun-faults" ]; then
     relay_addr="ws://172.31.10.30:7777"
@@ -48,6 +53,26 @@ if [ "$SCENARIO" = "stun-faults" ]; then
     # The fault test needs STUN failure to be observable. mDNS would otherwise
     # reconnect the same-link test peers immediately and mask the injected fault.
     lan_discovery_enabled=false
+fi
+
+if [ "$SCENARIO" = "cone" ] || [ "$SCENARIO" = "stun-faults" ]; then
+    routing_mode=reply_learned
+    seed_addr="172.31.254.20:2121"
+    if [ "$SCENARIO" = "stun-faults" ]; then
+        seed_addr="172.31.10.20:2121"
+    fi
+    seed_peer_block=$(cat <<EOF
+  - npub: "$npub_seed"
+    alias: "seed"
+    addresses:
+      - transport: udp
+        addr: "$seed_addr"
+        priority: 1
+    connect_policy: auto_connect
+    auto_reconnect: true
+    discovery_fallback_transit: true
+EOF
+)
 fi
 
 peer_block_a=$(cat <<EOF
@@ -88,6 +113,8 @@ write_config() {
 node:
   identity:
     nsec: "$nsec"
+  routing:
+    mode: $routing_mode
   retry:
     max_retries: 3
     base_interval_secs: 2
@@ -135,11 +162,35 @@ peers:
 $peer_block
     connect_policy: auto_connect
     auto_reconnect: true
+$seed_peer_block
 EOF
 }
 
 write_config "$OUTPUT_DIR/$SCENARIO/node-a.yaml" "$nsec_a" "$peer_block_a"
 write_config "$OUTPUT_DIR/$SCENARIO/node-b.yaml" "$nsec_b" "$peer_block_b"
+
+cat > "$OUTPUT_DIR/$SCENARIO/seed.yaml" <<EOF
+node:
+  identity:
+    nsec: "$nsec_seed"
+  routing:
+    mode: reply_learned
+
+tun:
+  enabled: false
+
+dns:
+  enabled: false
+
+transports:
+  udp:
+    bind_addr: "0.0.0.0:2121"
+    mtu: 1472
+    public: true
+    accept_connections: true
+
+peers: []
+EOF
 
 # stun-faults runs two real FIPS daemons:
 #   stun-fault-node (key "a") — target of tc/iptables faults via the shim
@@ -160,6 +211,7 @@ fi
 cat > "$OUTPUT_DIR/$SCENARIO/npubs.env" <<EOF
 NPUB_A=$npub_a
 NPUB_B=$npub_b
+NPUB_SEED=$npub_seed
 MESH_NAME=$MESH_NAME
 SCENARIO=$SCENARIO
 EOF
@@ -167,3 +219,4 @@ EOF
 echo "Generated NAT lab configs for scenario=$SCENARIO mesh=$MESH_NAME"
 echo "NPUB_A=$npub_a"
 echo "NPUB_B=$npub_b"
+echo "NPUB_SEED=$npub_seed"

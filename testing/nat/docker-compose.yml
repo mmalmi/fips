@@ -53,6 +53,26 @@ services:
       shared-lan:
         ipv4_address: 172.31.10.40
 
+  # Traversal signaling is carried over authenticated FIPS routes. This
+  # public UDP seed gives isolated peers a production-like transit adjacency
+  # before they negotiate a direct path; it does not advertise through Nostr.
+  seed:
+    <<: *fips-common
+    profiles: ["cone", "stun-faults"]
+    container_name: fips-nat-seed
+    hostname: fips-nat-seed
+    environment:
+      - FIPS_TEST_MODE=fips-only
+      - RUST_LOG=info,fips_core::node::handlers::discovery=debug
+    volumes:
+      - ../docker/resolv.conf:/etc/resolv.conf:ro
+      - ./generated-configs/${NAT_SCENARIO:-cone}/seed.yaml:/etc/fips/fips.yaml:ro
+    networks:
+      wan:
+        ipv4_address: 172.31.254.20
+      shared-lan:
+        ipv4_address: 172.31.10.20
+
   nat-a:
     build:
       context: ./router
@@ -107,6 +127,7 @@ services:
     depends_on:
       - nat-a
       - relay
+      - seed
       - stun
     entrypoint:
       - /usr/local/bin/nat-node-entrypoint.sh
@@ -133,6 +154,7 @@ services:
     depends_on:
       - nat-b
       - relay
+      - seed
       - stun
     entrypoint:
       - /usr/local/bin/nat-node-entrypoint.sh
@@ -291,6 +313,7 @@ services:
     hostname: fips-nat-stun-fault-node
     depends_on:
       - relay
+      - seed
       - stun
     volumes:
       - ../docker/resolv.conf:/etc/resolv.conf:ro
@@ -312,6 +335,7 @@ services:
     hostname: fips-nat-stun-fault-peer
     depends_on:
       - relay
+      - seed
       - stun
     volumes:
       - ../docker/resolv.conf:/etc/resolv.conf:ro

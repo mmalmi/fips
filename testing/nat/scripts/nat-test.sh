@@ -210,6 +210,7 @@ dump_stun_udp_probe() {
 dump_cone_diagnostics() {
     echo ""
     echo "=== cone diagnostics ==="
+    dump_fips_state fips-nat-seed 172.31.254.30 7777 172.31.254.40 3478
     dump_fips_state fips-nat-cone-a 172.31.254.30 7777 172.31.254.40 3478
     dump_node_udp_probe fips-nat-cone-a
     dump_fips_state fips-nat-cone-b 172.31.254.30 7777 172.31.254.40 3478
@@ -265,6 +266,7 @@ assert_peer_path() {
     local container="$1"
     local expected_transport="$2"
     local expected_prefix="$3"
+    local expected_npub="${4:-}"
     docker exec "$container" fipsctl show peers \
         | python3 -c "
 import json, sys
@@ -274,11 +276,12 @@ if not peers:
     raise SystemExit(1)
 matches = [p for p in peers
            if p.get('transport_type', '') == sys.argv[1]
-           and p.get('transport_addr', '').startswith(sys.argv[2])]
+           and p.get('transport_addr', '').startswith(sys.argv[2])
+           and (not sys.argv[3] or p.get('npub', '') == sys.argv[3])]
 if not matches:
-    paths = [(p.get('transport_type', ''), p.get('transport_addr', '')) for p in peers]
-    raise SystemExit(f'peer path mismatch: expected {sys.argv[1]!r} at {sys.argv[2]!r}, got {paths!r}')
-" "$expected_transport" "$expected_prefix"
+    paths = [(p.get('npub', ''), p.get('transport_type', ''), p.get('transport_addr', '')) for p in peers]
+    raise SystemExit(f'peer path mismatch: expected npub={sys.argv[3]!r} {sys.argv[1]!r} at {sys.argv[2]!r}, got {paths!r}')
+" "$expected_transport" "$expected_prefix" "$expected_npub"
 }
 
 wait_for_peer_path() {
@@ -286,11 +289,12 @@ wait_for_peer_path() {
     local expected_transport="$2"
     local expected_prefix="$3"
     local timeout="${4:-30}"
+    local expected_npub="${5:-}"
     local started="$SECONDS"
     local deadline=$((started + timeout))
 
     while ((SECONDS < deadline)); do
-        if assert_peer_path "$container" "$expected_transport" "$expected_prefix" \
+        if assert_peer_path "$container" "$expected_transport" "$expected_prefix" "$expected_npub" \
             >/dev/null 2>&1; then
             echo "  $container: ${expected_transport} peer at ${expected_prefix}* after $((SECONDS - started))s"
             return 0
@@ -298,7 +302,7 @@ wait_for_peer_path() {
         sleep 1
     done
     echo "  $container: TIMEOUT waiting for ${expected_transport} peer at ${expected_prefix}* after ${timeout}s"
-    assert_peer_path "$container" "$expected_transport" "$expected_prefix" || true
+    assert_peer_path "$container" "$expected_transport" "$expected_prefix" "$expected_npub" || true
     return 1
 }
 
@@ -316,16 +320,6 @@ addresses = [link.get('remote_addr', '') for link in links]
 if not any(addr.startswith(sys.argv[1]) for addr in addresses):
     raise SystemExit(f'link addr mismatch: expected prefix {sys.argv[1]!r}, got {addresses!r}')
 " "$expected_prefix"
-}
-
-require_bootstrap_activity() {
-    local container="$1"
-    local logs
-    logs="$(docker logs "$container" 2>&1 || true)"
-    if ! grep -Eq "bootstrap failed|Started (background UDP |Nostr( UDP)? )NAT traversal attempt|Direct-path NAT traversal upgrade failed" <<<"$logs"; then
-        echo "Expected bootstrap activity in ${container} logs" >&2
-        return 1
-    fi
 }
 
 wait_for_ping_peer() {
@@ -350,22 +344,30 @@ run_cone() {
     echo "=== NAT lab: cone ==="
     cleanup
     "$GENERATE_SCRIPT" cone
-    "${COMPOSE[@]}" --profile cone up -d --build --force-recreate
+    NAT_SCENARIO=cone "${COMPOSE[@]}" --profile cone up -d --build --force-recreate
     "$TOPOLOGY_SCRIPT" cone
-    wait_for_peer_path fips-nat-cone-a udp 172.31.254. 45 || {
-        dump_cone_diagnostics
-        return 1
-    }
-    wait_for_peer_path fips-nat-cone-b udp 172.31.254. 45 || {
-        dump_cone_diagnostics
-        return 1
-    }
-    assert_peer_path fips-nat-cone-a udp 172.31.254.
-    assert_peer_path fips-nat-cone-b udp 172.31.254.
-    assert_link_path fips-nat-cone-a 172.31.254.
-    assert_link_path fips-nat-cone-b 172.31.254.
     # shellcheck disable=SC1090
     source "$NAT_DIR/generated-configs/cone/npubs.env"
+    wait_for_peer_path fips-nat-cone-a udp 172.31.254.20: 30 "$NPUB_SEED" || {
+        dump_cone_diagnostics
+        return 1
+    }
+    wait_for_peer_path fips-nat-cone-b udp 172.31.254.20: 30 "$NPUB_SEED" || {
+        dump_cone_diagnostics
+        return 1
+    }
+    wait_for_peer_path fips-nat-cone-a udp 172.31.254.11: 45 "$NPUB_B" || {
+        dump_cone_diagnostics
+        return 1
+    }
+    wait_for_peer_path fips-nat-cone-b udp 172.31.254.10: 45 "$NPUB_A" || {
+        dump_cone_diagnostics
+        return 1
+    }
+    assert_peer_path fips-nat-cone-a udp 172.31.254.11: "$NPUB_B"
+    assert_peer_path fips-nat-cone-b udp 172.31.254.10: "$NPUB_A"
+    assert_link_path fips-nat-cone-a 172.31.254.11:
+    assert_link_path fips-nat-cone-b 172.31.254.10:
     wait_for_ping_peer fips-nat-cone-a "$NPUB_B" 30
     wait_for_ping_peer fips-nat-cone-b "$NPUB_A" 30
     cleanup
@@ -377,22 +379,22 @@ run_symmetric() {
     NAT_MODE_A=symmetric NAT_MODE_B=symmetric "$GENERATE_SCRIPT" symmetric
     NAT_MODE_A=symmetric NAT_MODE_B=symmetric "${COMPOSE[@]}" --profile symmetric up -d --build --force-recreate
     "$TOPOLOGY_SCRIPT" symmetric
-    wait_for_peer_path fips-nat-symmetric-a tcp 172.31.254.11: 60 || {
-        dump_symmetric_diagnostics
-        return 1
-    }
-    wait_for_peer_path fips-nat-symmetric-b tcp 172.31.254.10: 60 || {
-        dump_symmetric_diagnostics
-        return 1
-    }
-    assert_peer_path fips-nat-symmetric-a tcp 172.31.254.11:
-    assert_peer_path fips-nat-symmetric-b tcp 172.31.254.10:
-    assert_link_path fips-nat-symmetric-a 172.31.254.11:
-    assert_link_path fips-nat-symmetric-b 172.31.254.10:
-    require_bootstrap_activity fips-nat-symmetric-a
-    require_bootstrap_activity fips-nat-symmetric-b
     # shellcheck disable=SC1090
     source "$NAT_DIR/generated-configs/symmetric/npubs.env"
+    wait_for_peer_path fips-nat-symmetric-a tcp 172.31.254.11: 60 "$NPUB_B" || {
+        dump_symmetric_diagnostics
+        return 1
+    }
+    wait_for_peer_path fips-nat-symmetric-b tcp 172.31.254.10: 60 "$NPUB_A" || {
+        dump_symmetric_diagnostics
+        return 1
+    }
+    assert_peer_path fips-nat-symmetric-a tcp 172.31.254.11: "$NPUB_B"
+    assert_peer_path fips-nat-symmetric-b tcp 172.31.254.10: "$NPUB_A"
+    assert_link_path fips-nat-symmetric-a 172.31.254.11:
+    assert_link_path fips-nat-symmetric-b 172.31.254.10:
+    # The authenticated TCP peer/link plus bidirectional encrypted traffic
+    # are the fallback contract. Direct-upgrade log timing is not.
     wait_for_ping_peer fips-nat-symmetric-a "$NPUB_B" 30
     wait_for_ping_peer fips-nat-symmetric-b "$NPUB_A" 30
     cleanup
@@ -403,20 +405,20 @@ run_lan() {
     cleanup
     "$GENERATE_SCRIPT" lan
     "${COMPOSE[@]}" --profile lan up -d --build --force-recreate
-    wait_for_peer_path fips-nat-lan-a udp 172.31.10. 45 || {
-        dump_lan_diagnostics
-        return 1
-    }
-    wait_for_peer_path fips-nat-lan-b udp 172.31.10. 45 || {
-        dump_lan_diagnostics
-        return 1
-    }
-    assert_peer_path fips-nat-lan-a udp 172.31.10.
-    assert_peer_path fips-nat-lan-b udp 172.31.10.
-    assert_link_path fips-nat-lan-a 172.31.10.
-    assert_link_path fips-nat-lan-b 172.31.10.
     # shellcheck disable=SC1090
     source "$NAT_DIR/generated-configs/lan/npubs.env"
+    wait_for_peer_path fips-nat-lan-a udp 172.31.10.11: 45 "$NPUB_B" || {
+        dump_lan_diagnostics
+        return 1
+    }
+    wait_for_peer_path fips-nat-lan-b udp 172.31.10.10: 45 "$NPUB_A" || {
+        dump_lan_diagnostics
+        return 1
+    }
+    assert_peer_path fips-nat-lan-a udp 172.31.10.11: "$NPUB_B"
+    assert_peer_path fips-nat-lan-b udp 172.31.10.10: "$NPUB_A"
+    assert_link_path fips-nat-lan-a 172.31.10.11:
+    assert_link_path fips-nat-lan-b 172.31.10.10:
     wait_for_ping_peer fips-nat-lan-a "$NPUB_B" 30
     wait_for_ping_peer fips-nat-lan-b "$NPUB_A" 30
     cleanup

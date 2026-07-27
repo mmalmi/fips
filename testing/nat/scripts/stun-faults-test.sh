@@ -69,7 +69,7 @@ require_test_image() {
 dump_diagnostics() {
     echo ""
     echo "=== stun-faults diagnostics ==="
-    for c in "$NODE" "$PEER" "$SHIM" "$STUN_CONTAINER"; do
+    for c in "$NODE" "$PEER" fips-nat-seed "$SHIM" "$STUN_CONTAINER"; do
         echo ""
         echo "--- $c: logs (last 80) ---"
         docker logs "$c" 2>&1 | tail -80 || true
@@ -221,27 +221,50 @@ preflight_assert_stun_active() {
     return 1
 }
 
+wait_for_seed_peer() {
+    local container="$1"
+    local npub="$2"
+    local timeout_secs="${3:-30}"
+    local deadline=$(( SECONDS + timeout_secs ))
+    while (( SECONDS < deadline )); do
+        if docker exec "$container" fipsctl show peers 2>/dev/null \
+                | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+expected = sys.argv[1]
+raise SystemExit(not any(
+    peer.get("npub") == expected
+    and peer.get("connectivity") == "connected"
+    and peer.get("transport_type") == "udp"
+    and peer.get("transport_addr", "").startswith("172.31.10.20:")
+    for peer in data.get("peers", [])
+))
+' "$npub"; then
+            echo "  $container: authenticated seed route ready"
+            return 0
+        fi
+        sleep 1
+    done
+    echo "seed route did not become ready in $container within ${timeout_secs}s" >&2
+    return 1
+}
+
 run_test() {
     echo "=== stun-faults-test: setup ==="
     cleanup
     "$GENERATE_SCRIPT" "$SCENARIO"
-    "${COMPOSE[@]}" --profile "$PROFILE" up -d --build --force-recreate
+    # shellcheck disable=SC1090
+    source "$NAT_DIR/generated-configs/$SCENARIO/npubs.env"
+    NAT_SCENARIO="$SCENARIO" "${COMPOSE[@]}" --profile "$PROFILE" \
+        up -d --build --force-recreate
 
-    # Give the daemons time to come up. Both fault-node and fault-peer
-    # need to start, publish their adverts to the relay, and discover
-    # each other before the fault-node will reach the STUN client.
+    # Both peers must first authenticate to the FIPS seed. This is the
+    # production signaling route used to exchange traversal offers.
     echo ""
-    echo "--- waiting for daemons to start ---"
-    sleep 10
-
-    if ! docker exec "$NODE" pidof fips >/dev/null 2>&1; then
+    echo "--- waiting for authenticated seed routes ---"
+    if ! wait_for_seed_peer "$NODE" "$NPUB_SEED" 30 \
+            || ! wait_for_seed_peer "$PEER" "$NPUB_SEED" 30; then
         dump_diagnostics
-        echo "fips daemon failed to start in $NODE" >&2
-        return 1
-    fi
-    if ! docker exec "$PEER" pidof fips >/dev/null 2>&1; then
-        dump_diagnostics
-        echo "fips daemon failed to start in $PEER" >&2
         return 1
     fi
 
