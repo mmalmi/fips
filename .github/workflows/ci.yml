@@ -327,12 +327,27 @@ jobs:
           - suite: rekey
             type: rekey
             topology: rekey
+            rekey_scenario: standard
+            accept_off_nodes: ""
+            outbound_only_nodes: ""
           - suite: rekey-accept-off
-            type: rekey-accept-off
+            type: rekey
             topology: rekey-accept-off
+            rekey_scenario: standard
+            accept_off_nodes: b
+            outbound_only_nodes: ""
           - suite: rekey-outbound-only
-            type: rekey-outbound-only
+            type: rekey
             topology: rekey-outbound-only
+            rekey_scenario: standard
+            accept_off_nodes: ""
+            outbound_only_nodes: b
+          - suite: rekey-staggered-overlap
+            type: rekey
+            topology: rekey-outbound-only
+            rekey_scenario: staggered-overlap
+            accept_off_nodes: ""
+            outbound_only_nodes: b
           - suite: acl-allowlist
             type: acl-allowlist
           # ── Firewall baseline (fips0 nftables default-deny) ────────────
@@ -493,104 +508,56 @@ jobs:
           docker compose -f testing/static/docker-compose.yml \
             --profile ${{ matrix.topology }} down --volumes --remove-orphans
 
-      # ── Rekey integration test ──────────────────────────────────────────────
-      - name: Generate and inject configs (rekey)
+      # ── Rekey integration tests ─────────────────────────────────────────────
+      - name: Generate and inject rekey configs
         if: matrix.type == 'rekey'
+        env:
+          REKEY_TOPOLOGY: ${{ matrix.topology }}
+          REKEY_SCENARIO: ${{ matrix.rekey_scenario }}
+          REKEY_ACCEPT_OFF_NODES: ${{ matrix.accept_off_nodes }}
+          REKEY_OUTBOUND_ONLY_NODES: ${{ matrix.outbound_only_nodes }}
         run: |
-          bash testing/static/scripts/generate-configs.sh rekey
+          bash testing/static/scripts/generate-configs.sh "${{ matrix.topology }}"
           bash testing/static/scripts/rekey-test.sh inject-config
 
-      - name: Start containers (rekey)
+      - name: Start rekey containers
         if: matrix.type == 'rekey'
         run: |
           docker compose -f testing/static/docker-compose.yml \
-            --profile rekey up -d
+            --profile "${{ matrix.topology }}" up -d
 
       - name: Run rekey test
         if: matrix.type == 'rekey'
+        env:
+          REKEY_TOPOLOGY: ${{ matrix.topology }}
+          REKEY_SCENARIO: ${{ matrix.rekey_scenario }}
+          REKEY_ACCEPT_OFF_NODES: ${{ matrix.accept_off_nodes }}
+          REKEY_OUTBOUND_ONLY_NODES: ${{ matrix.outbound_only_nodes }}
         run: bash testing/static/scripts/rekey-test.sh
 
-      - name: Collect logs on failure (rekey)
-        if: matrix.type == 'rekey' && failure()
-        run: |
-          docker compose -f testing/static/docker-compose.yml \
-            --profile rekey logs --no-color
+      - name: Collect complete rekey diagnostics
+        if: matrix.type == 'rekey' && always()
+        env:
+          REKEY_TOPOLOGY: ${{ matrix.topology }}
+          REKEY_SCENARIO: ${{ matrix.rekey_scenario }}
+          REKEY_ACCEPT_OFF_NODES: ${{ matrix.accept_off_nodes }}
+          REKEY_OUTBOUND_ONLY_NODES: ${{ matrix.outbound_only_nodes }}
+        run: bash testing/static/scripts/rekey-test.sh collect-artifacts
 
-      - name: Stop containers (rekey)
+      - name: Upload complete rekey diagnostics
+        if: matrix.type == 'rekey' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rekey-${{ matrix.suite }}-${{ github.run_attempt }}
+          path: testing/static/artifacts/rekey-${{ matrix.topology }}-${{ matrix.rekey_scenario }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Stop rekey containers
         if: matrix.type == 'rekey' && always()
         run: |
           docker compose -f testing/static/docker-compose.yml \
-            --profile rekey down --volumes --remove-orphans
-
-      # ── Rekey + accept_connections=false variant ──────────────────────────
-      - name: Generate and inject configs (rekey-accept-off)
-        if: matrix.type == 'rekey-accept-off'
-        env:
-          REKEY_TOPOLOGY: rekey-accept-off
-          REKEY_ACCEPT_OFF_NODES: b
-        run: |
-          bash testing/static/scripts/generate-configs.sh rekey-accept-off
-          bash testing/static/scripts/rekey-test.sh inject-config
-
-      - name: Start containers (rekey-accept-off)
-        if: matrix.type == 'rekey-accept-off'
-        run: |
-          docker compose -f testing/static/docker-compose.yml \
-            --profile rekey-accept-off up -d
-
-      - name: Run rekey test (accept-off variant)
-        if: matrix.type == 'rekey-accept-off'
-        env:
-          REKEY_TOPOLOGY: rekey-accept-off
-          REKEY_ACCEPT_OFF_NODES: b
-        run: bash testing/static/scripts/rekey-test.sh
-
-      - name: Collect logs on failure (rekey-accept-off)
-        if: matrix.type == 'rekey-accept-off' && failure()
-        run: |
-          docker compose -f testing/static/docker-compose.yml \
-            --profile rekey-accept-off logs --no-color | tail -300
-
-      - name: Stop containers (rekey-accept-off)
-        if: matrix.type == 'rekey-accept-off' && always()
-        run: |
-          docker compose -f testing/static/docker-compose.yml \
-            --profile rekey-accept-off down --volumes --remove-orphans
-
-      # ── Rekey + udp.outbound_only=true variant ─────────────────────────────
-      - name: Generate and inject configs (rekey-outbound-only)
-        if: matrix.type == 'rekey-outbound-only'
-        env:
-          REKEY_TOPOLOGY: rekey-outbound-only
-          REKEY_OUTBOUND_ONLY_NODES: b
-        run: |
-          bash testing/static/scripts/generate-configs.sh rekey-outbound-only
-          bash testing/static/scripts/rekey-test.sh inject-config
-
-      - name: Start containers (rekey-outbound-only)
-        if: matrix.type == 'rekey-outbound-only'
-        run: |
-          docker compose -f testing/static/docker-compose.yml \
-            --profile rekey-outbound-only up -d
-
-      - name: Run rekey test (outbound-only variant)
-        if: matrix.type == 'rekey-outbound-only'
-        env:
-          REKEY_TOPOLOGY: rekey-outbound-only
-          REKEY_OUTBOUND_ONLY_NODES: b
-        run: bash testing/static/scripts/rekey-test.sh
-
-      - name: Collect logs on failure (rekey-outbound-only)
-        if: matrix.type == 'rekey-outbound-only' && failure()
-        run: |
-          docker compose -f testing/static/docker-compose.yml \
-            --profile rekey-outbound-only logs --no-color | tail -300
-
-      - name: Stop containers (rekey-outbound-only)
-        if: matrix.type == 'rekey-outbound-only' && always()
-        run: |
-          docker compose -f testing/static/docker-compose.yml \
-            --profile rekey-outbound-only down --volumes --remove-orphans
+            --profile "${{ matrix.topology }}" down --volumes --remove-orphans
 
       # ── ACL allowlist integration test ─────────────────────────────────────
       - name: Run ACL allowlist integration test

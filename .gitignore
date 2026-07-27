@@ -26,6 +26,7 @@ dist/
 *.ipk
 
 sim-results/
+testing/static/artifacts/
 
 # Python
 __pycache__/

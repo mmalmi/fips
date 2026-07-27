@@ -16,7 +16,7 @@
 #
 # Integration suites (default coverage):
 #   static-mesh, static-chain, static-mesh-perf, rekey, rekey-accept-off,
-#   rekey-outbound-only, gateway,
+#   rekey-outbound-only, rekey-staggered-overlap, gateway,
 #   acl-allowlist, firewall, nat-cone, nat-symmetric, nat-lan,
 #   nostr-publish-consume, stun-faults,
 #   chaos-smoke-10, chaos-churn-mixed-10, chaos-ethernet-mesh,
@@ -56,7 +56,7 @@ ONLY_SUITE=""
 # All integration suites matching ci.yml
 STATIC_SUITES=(static-mesh static-chain)
 STATIC_PERF_SUITES=(static-mesh-perf)
-REKEY_SUITES=(rekey rekey-accept-off rekey-outbound-only)
+REKEY_SUITES=(rekey rekey-accept-off rekey-outbound-only rekey-staggered-overlap)
 # Each entry: "display-name scenario [--flag value ...]"
 CHAOS_SUITES=(
     "smoke-10 smoke-10"
@@ -369,29 +369,61 @@ run_static_perf() {
     record "static-$topology-perf" $rc
 }
 
-# Run the rekey integration test
-run_rekey() {
+# Run one rekey topology/scenario using the same production-path harness as CI.
+run_rekey_variant() {
+    local suite="$1"
+    local topology="$2"
+    local scenario="$3"
+    local accept_off_nodes="$4"
+    local outbound_only_nodes="$5"
     local compose="testing/static/docker-compose.yml"
     local rc=0
+    local rekey_env=(
+        "REKEY_TOPOLOGY=$topology"
+        "REKEY_SCENARIO=$scenario"
+        "REKEY_ACCEPT_OFF_NODES=$accept_off_nodes"
+        "REKEY_OUTBOUND_ONLY_NODES=$outbound_only_nodes"
+    )
 
-    info "[rekey] Generating configs"
-    bash testing/static/scripts/generate-configs.sh rekey || { record "rekey" 1; return; }
-    bash testing/static/scripts/rekey-test.sh inject-config || { record "rekey" 1; return; }
+    info "[$suite] Generating configs"
+    bash testing/static/scripts/generate-configs.sh "$topology" || \
+        { record "$suite" 1; return; }
+    env "${rekey_env[@]}" bash testing/static/scripts/rekey-test.sh inject-config || \
+        { record "$suite" 1; return; }
 
-    info "[rekey] Starting containers"
-    docker compose -f "$compose" --profile rekey up -d || { record "rekey" 1; return; }
+    info "[$suite] Starting containers"
+    docker compose -f "$compose" --profile "$topology" up -d || \
+        { record "$suite" 1; return; }
 
-    info "[rekey] Running rekey test"
-    if bash testing/static/scripts/rekey-test.sh; then
+    info "[$suite] Running rekey test"
+    if env "${rekey_env[@]}" bash testing/static/scripts/rekey-test.sh; then
         rc=0
     else
         rc=1
-        info "[rekey] Collecting failure logs"
-        docker compose -f "$compose" --profile rekey logs --no-color 2>&1 | tail -100
     fi
 
-    docker compose -f "$compose" --profile rekey down --volumes --remove-orphans 2>/dev/null
-    record "rekey" $rc
+    env "${rekey_env[@]}" \
+        bash testing/static/scripts/rekey-test.sh collect-artifacts >/dev/null 2>&1 || true
+    docker compose -f "$compose" --profile "$topology" \
+        down --volumes --remove-orphans 2>/dev/null
+    record "$suite" $rc
+}
+
+run_rekey() {
+    run_rekey_variant rekey rekey standard "" ""
+}
+
+run_rekey_accept_off() {
+    run_rekey_variant rekey-accept-off rekey-accept-off standard b ""
+}
+
+run_rekey_outbound_only() {
+    run_rekey_variant rekey-outbound-only rekey-outbound-only standard "" b
+}
+
+run_rekey_staggered_overlap() {
+    run_rekey_variant \
+        rekey-staggered-overlap rekey-outbound-only staggered-overlap "" b
 }
 
 # Run a chaos scenario
@@ -447,71 +479,6 @@ run_sidecar() {
     fi
 
     record "sidecar" $rc
-}
-
-# Run the rekey-accept-off integration variant. Same harness as run_rekey
-# but on a 2-node topology with udp.accept_connections=false on node-b.
-run_rekey_accept_off() {
-    local compose="testing/static/docker-compose.yml"
-    local rc=0
-
-    info "[rekey-accept-off] Generating configs"
-    bash testing/static/scripts/generate-configs.sh rekey-accept-off || \
-        { record "rekey-accept-off" 1; return; }
-    REKEY_TOPOLOGY=rekey-accept-off REKEY_ACCEPT_OFF_NODES=b \
-        bash testing/static/scripts/rekey-test.sh inject-config || \
-        { record "rekey-accept-off" 1; return; }
-
-    info "[rekey-accept-off] Starting containers"
-    docker compose -f "$compose" --profile rekey-accept-off up -d || \
-        { record "rekey-accept-off" 1; return; }
-
-    info "[rekey-accept-off] Running rekey test"
-    if REKEY_TOPOLOGY=rekey-accept-off REKEY_ACCEPT_OFF_NODES=b \
-        bash testing/static/scripts/rekey-test.sh; then
-        rc=0
-    else
-        rc=1
-        info "[rekey-accept-off] Collecting failure logs"
-        docker compose -f "$compose" --profile rekey-accept-off logs --no-color 2>&1 | tail -100
-    fi
-
-    docker compose -f "$compose" --profile rekey-accept-off down --volumes --remove-orphans 2>/dev/null
-    record "rekey-accept-off" $rc
-}
-
-# Run the rekey-outbound-only integration variant. Same harness as
-# run_rekey but with udp.outbound_only=true on node-b plus its peer
-# addrs rewritten from numeric docker IPs to docker hostnames so the
-# addr_to_link key form mismatches inbound packet source addrs (the
-# production trigger for the rekey-msg1 carve-out gap).
-run_rekey_outbound_only() {
-    local compose="testing/static/docker-compose.yml"
-    local rc=0
-
-    info "[rekey-outbound-only] Generating configs"
-    bash testing/static/scripts/generate-configs.sh rekey-outbound-only || \
-        { record "rekey-outbound-only" 1; return; }
-    REKEY_TOPOLOGY=rekey-outbound-only REKEY_OUTBOUND_ONLY_NODES=b \
-        bash testing/static/scripts/rekey-test.sh inject-config || \
-        { record "rekey-outbound-only" 1; return; }
-
-    info "[rekey-outbound-only] Starting containers"
-    docker compose -f "$compose" --profile rekey-outbound-only up -d || \
-        { record "rekey-outbound-only" 1; return; }
-
-    info "[rekey-outbound-only] Running rekey test"
-    if REKEY_TOPOLOGY=rekey-outbound-only REKEY_OUTBOUND_ONLY_NODES=b \
-        bash testing/static/scripts/rekey-test.sh; then
-        rc=0
-    else
-        rc=1
-        info "[rekey-outbound-only] Collecting failure logs"
-        docker compose -f "$compose" --profile rekey-outbound-only logs --no-color 2>&1 | tail -100
-    fi
-
-    docker compose -f "$compose" --profile rekey-outbound-only down --volumes --remove-orphans 2>/dev/null
-    record "rekey-outbound-only" $rc
 }
 
 # Run ACL allowlist integration test
@@ -645,10 +612,11 @@ run_integration() {
         run_static_perf "$topology"
     done
 
-    # Rekey + rekey-accept-off + rekey-outbound-only variants
+    # Rekey variants share container names, so keep them serial.
     run_rekey
     run_rekey_accept_off
     run_rekey_outbound_only
+    run_rekey_staggered_overlap
 
     # Gateway
     run_gateway
@@ -756,6 +724,8 @@ run_suite() {
             run_rekey_accept_off ;;
         rekey-outbound-only)
             run_rekey_outbound_only ;;
+        rekey-staggered-overlap)
+            run_rekey_staggered_overlap ;;
         gateway)
             run_gateway ;;
         acl-allowlist)
