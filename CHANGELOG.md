@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.42] - 2026-07-27
+
+### Fixed
+
+- Assemble Linux, macOS, Windows, and OpenWrt packages in one draft before
+  publishing, so immutable GitHub releases cannot lock out slower platform
+  assets.
+- Release `fips-core` and `fips-endpoint` 0.4.42 together. FMP, FSP,
+  discovery, routing, and physical transport wire formats are unchanged.
+
 ## [0.4.41] - 2026-07-27
 
 ### Fixed
