@@ -265,3 +265,30 @@
         assert_eq!(entry.handshake_payload(), None);
         assert_eq!(entry.rekey_msg3_payload(), None);
     }
+
+    #[test]
+    fn incoming_rekey_is_deferred_until_previous_epoch_drain_completes() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let peer_addr = *peer.node_addr();
+        let (pending_session, _) = make_xk_session_pair(&local, &peer);
+        let mut entry = established_entry(&local, &peer);
+        entry.set_pending_session(pending_session);
+        assert!(entry.cutover_to_new_session(2_000));
+
+        let mut sessions = crate::node::SessionRegistry::default();
+        sessions.insert(peer_addr, entry);
+
+        assert!(
+            sessions.should_defer_incoming_session_rekey(&peer_addr),
+            "peer-initiated rekey must not reuse the previous epoch's one-bit K value"
+        );
+        sessions
+            .get_mut(&peer_addr)
+            .expect("draining session")
+            .complete_drain();
+        assert!(
+            !sessions.should_defer_incoming_session_rekey(&peer_addr),
+            "a retransmitted rekey msg1 should be accepted after drain retirement"
+        );
+    }

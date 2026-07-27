@@ -561,6 +561,7 @@ fn session_registry_owns_session_rekey_initiation_eligibility() {
     let initiating_peer = Identity::generate();
     let in_progress_peer = Identity::generate();
     let pending_peer = Identity::generate();
+    let draining_peer = Identity::generate();
 
     let ready = established_entry(&local, &ready_peer, 1_000);
     let initiating = initiating_entry(&local, &initiating_peer, 1_000);
@@ -575,11 +576,17 @@ fn session_registry_owns_session_rekey_initiation_eligibility() {
     let mut pending = established_entry(&local, &pending_peer, 1_000);
     pending.set_pending_session(pending_session);
 
+    let (draining_session, _) = make_xk_session_pair(&local, &draining_peer);
+    let mut draining = established_entry(&local, &draining_peer, 1_000);
+    draining.set_pending_session(draining_session);
+    assert!(draining.cutover_to_new_session(2_000));
+
     let mut sessions = crate::node::SessionRegistry::default();
     sessions.insert(*ready_peer.node_addr(), ready);
     sessions.insert(*initiating_peer.node_addr(), initiating);
     sessions.insert(*in_progress_peer.node_addr(), in_progress);
     sessions.insert(*pending_peer.node_addr(), pending);
+    sessions.insert(*draining_peer.node_addr(), draining);
 
     assert_eq!(
         sessions
@@ -604,6 +611,11 @@ fn session_registry_owns_session_rekey_initiation_eligibility() {
     assert_eq!(
         sessions.prepare_session_rekey_initiation(pending_peer.node_addr()),
         Err(SessionRekeyInitiationSkip::RekeyInProgress)
+    );
+    assert_eq!(
+        sessions.prepare_session_rekey_initiation(draining_peer.node_addr()),
+        Err(SessionRekeyInitiationSkip::RekeyInProgress),
+        "a one-bit K epoch cannot start another rekey while the previous epoch drains"
     );
 }
 
@@ -724,9 +736,20 @@ fn session_registry_owns_rekey_tick_selection() {
     expected_drain.sort();
     assert_eq!(plan.drain, expected_drain);
 
-    let mut expected_initiate = vec![*drain_and_rekey_peer.node_addr(), *rekey_peer.node_addr()];
+    let mut expected_initiate = vec![*rekey_peer.node_addr()];
     expected_initiate.sort();
     assert_eq!(plan.initiate, expected_initiate);
+
+    assert!(sessions.complete_due_session_rekey_drain(
+        drain_and_rekey_peer.node_addr(),
+        now_ms,
+        drain_ms
+    ));
+    let followup = sessions.plan_session_rekey_tick(tick, |_| 0);
+    assert!(
+        followup.initiate.contains(drain_and_rekey_peer.node_addr()),
+        "the timer-due rekey should start on the tick after drain retirement"
+    );
 }
 
 #[test]

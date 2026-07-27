@@ -327,7 +327,10 @@ impl crate::node::SessionRegistry {
         if !entry.is_established() {
             return Err(SessionRekeyInitiationSkip::NotEstablished);
         }
-        if entry.has_rekey_in_progress() || entry.pending_new_session().is_some() {
+        if entry.has_rekey_in_progress()
+            || entry.pending_new_session().is_some()
+            || entry.is_draining()
+        {
             return Err(SessionRekeyInitiationSkip::RekeyInProgress);
         }
         Ok(SessionRekeyInitiation {
@@ -365,6 +368,13 @@ impl crate::node::SessionRegistry {
                 continue;
             }
 
+            if entry.is_draining() {
+                if entry.drain_expired(tick.now_ms, tick.drain_ms) {
+                    plan.drain.push(*node_addr);
+                }
+                continue;
+            }
+
             if entry.pending_new_session().is_some()
                 && !entry.has_rekey_in_progress()
                 && entry.is_rekey_initiator()
@@ -372,10 +382,6 @@ impl crate::node::SessionRegistry {
             {
                 plan.probe.push(*node_addr);
                 continue;
-            }
-
-            if entry.is_draining() && entry.drain_expired(tick.now_ms, tick.drain_ms) {
-                plan.drain.push(*node_addr);
             }
 
             if entry.has_rekey_in_progress()

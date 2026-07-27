@@ -47,6 +47,11 @@ fn session_can_recover_from_decrypt_failures(entry: &SessionEntry, now_ms: u64) 
 }
 
 impl crate::node::SessionRegistry {
+    fn should_defer_incoming_session_rekey(&self, source_addr: &NodeAddr) -> bool {
+        self.get(source_addr)
+            .is_some_and(|entry| entry.is_established() && entry.is_draining())
+    }
+
     fn record_handshake_resend(&mut self, source_addr: &NodeAddr, next_resend_at_ms: u64) -> bool {
         let Some(entry) = self.get_mut(source_addr) else {
             return false;

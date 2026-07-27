@@ -29,6 +29,20 @@ impl Node {
         }
         self.cache_current_root_coords(*src_addr, setup.src_coords.clone(), Self::now_ms());
 
+        // K is one bit, so a pending epoch cannot coexist with both current and
+        // previous. Drop this attempt and let msg1 retransmission retry after drain.
+        if self.config.node.rekey.enabled
+            && self
+                .sessions
+                .should_defer_incoming_session_rekey(src_addr)
+        {
+            debug!(
+                src = %self.peer_display_name(src_addr),
+                "Deferring FSP rekey msg1 until previous key epoch drain completes"
+            );
+            return;
+        }
+
         // Check for existing session with this remote
         let mut changed_from_initiator_to_responder = false;
         if let Some(existing) = self.sessions.get(src_addr) {
