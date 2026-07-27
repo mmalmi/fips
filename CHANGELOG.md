@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.43] - 2026-07-27
+
+### Fixed
+
+- Defer local, scheduled, recovery, and peer-initiated FSP rekeys until the
+  previous key epoch finishes draining, preventing a pending epoch from
+  reusing the one-bit K value still owned by the previous epoch.
+- Resume due rekeys immediately after drain retirement and accept retransmitted
+  peer rekey messages then.
+- Release `fips-core` and `fips-endpoint` 0.4.43 together. FMP, FSP,
+  discovery, routing, and physical transport wire formats are unchanged.
+
 ## [0.4.42] - 2026-07-27
 
 ### Fixed
