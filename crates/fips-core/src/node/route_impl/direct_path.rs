@@ -238,7 +238,7 @@ impl Node {
             self.session_direct_degradation.has_pending_validation(dest);
         debug!(
             peer = %self.peer_display_name(dest),
-            released_fallback_affinity = fallback_next_hop.is_some(),
+            preserved_fallback_affinity = fallback_next_hop.is_some(),
             refreshed,
             pending_payload_validation,
             "Authenticated FMP recovery made direct FSP payload eligible for validation"
