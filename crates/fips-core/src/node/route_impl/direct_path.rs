@@ -166,19 +166,14 @@ impl Node {
         let direct_validation_pending =
             self.session_direct_degradation.has_pending_validation(dest);
         if direct_validation_pending || active_fallback_next_hop.is_some() {
-            if let Some(fallback_next_hop) = active_fallback_next_hop {
-                let _ = self
-                    .dataplane
-                    .forget_fsp_data_route(*dest, fallback_next_hop);
-            }
             let _ = self
                 .session_direct_degradation
                 .release_hold_for_validation(dest, now_ms);
-            let _ = self.refresh_dataplane_fsp_owner_routes(dest);
+            let _ = self.refresh_dataplane_fsp_owner_routes_via(dest, Some(*dest));
             debug!(
                 peer = %self.peer_display_name(dest),
                 direct_was_degraded,
-                released_fallback_affinity = active_fallback_next_hop.is_some(),
+                preserved_fallback_affinity = active_fallback_next_hop.is_some(),
                 "Authenticated direct-path promotion started payload validation"
             );
             return;

@@ -550,54 +550,72 @@ async fn test_session_receiver_loss_replaces_active_fallback_route() {
 }
 
 #[test]
-fn test_authenticated_direct_promotion_releases_active_fallback_affinity() {
+fn test_repeated_direct_promotion_preserves_fallback_until_payload_validates() {
     let mut node = make_reply_learned_node_with_tree_peer();
     let fallback_next_hop = *node.peer_ids().next().expect("fallback peer");
     assert!(node.sync_dataplane_fmp_owner(&fallback_next_hop));
 
     let remote = Identity::generate();
     let remote_addr = *remote.node_addr();
-    add_direct_peer_for_identity(&mut node, &remote);
+    let direct_link = LinkId::new(91);
+    let (direct_conn, direct_identity) = make_completed_connection_for_identity(
+        &mut node,
+        direct_link,
+        TransportId::new(91),
+        1_000,
+        &remote,
+    );
+    node.add_connection(direct_conn).unwrap();
+    node.promote_connection(direct_link, direct_identity, 2_000)
+        .unwrap();
+    assert!(node.sync_dataplane_fmp_owner(&remote_addr));
     install_established_session_with_mmp(&mut node, &remote);
     node.learn_reverse_route(remote_addr, fallback_next_hop);
-    assert!(node.sync_dataplane_fsp_owner_from_current_session_via(
-        &remote_addr,
-        Some(fallback_next_hop),
-        0,
-    ));
-    seed_dataplane_fsp_data_sent_for_test(
-        &mut node,
-        remote_addr,
-        fallback_next_hop,
-        Node::now_ms(),
-    );
-    let now_ms = Node::now_ms();
-    node.restart_session_direct_path_validation(remote_addr, now_ms);
+    assert!(node.sync_dataplane_fsp_owner_from_current_session(&remote_addr, 0));
 
-    node.clear_session_direct_path_degraded_after_promotion(&remote_addr, now_ms);
+    for cycle in 1..=2 {
+        let now_ms = Node::now_ms();
+        assert!(node.mark_session_direct_path_degraded(remote_addr, now_ms));
+        assert_eq!(
+            node.dataplane.fsp_owner_next_hop(&remote_addr),
+            Some(fallback_next_hop),
+            "cycle {cycle}: direct degradation must atomically repin the established owner to fallback"
+        );
+        seed_dataplane_fsp_data_sent_for_test(&mut node, remote_addr, fallback_next_hop, now_ms);
 
-    assert!(
-        !node.session_direct_path_degradation_active(&remote_addr, now_ms),
-        "a newly authenticated direct carrier must remain eligible for a bounded payload retry"
-    );
-    assert!(
-        node.session_direct_degradation
-            .has_pending_validation(&remote_addr),
-        "carrier authentication must not masquerade as sustained direct payload progress"
-    );
-    assert_eq!(
-        node.dataplane
-            .fsp_owner_activity(&remote_addr)
-            .and_then(|activity| activity.last_outbound_next_hop()),
-        None,
-        "fresh promotion must release the prior fallback flow affinity"
-    );
-    assert_eq!(
-        node.find_next_hop(&remote_addr)
-            .map(|peer| *peer.node_addr()),
-        Some(remote_addr),
-        "freshly promoted direct peer should win route selection once fallback affinity is released"
-    );
+        node.clear_session_direct_path_degraded_after_promotion(&remote_addr, now_ms);
+
+        assert!(
+            !node.session_direct_path_degradation_active(&remote_addr, now_ms),
+            "cycle {cycle}: authenticated direct carrier must get a bounded payload retry"
+        );
+        assert!(
+            node.session_direct_degradation
+                .has_pending_validation(&remote_addr),
+            "cycle {cycle}: carrier authentication must not masquerade as direct payload progress"
+        );
+        assert_eq!(
+            node.dataplane.fsp_owner_next_hop(&remote_addr),
+            Some(remote_addr),
+            "cycle {cycle}: promotion must stage direct payload validation"
+        );
+        assert_eq!(
+            node.dataplane
+                .fsp_owner_activity(&remote_addr)
+                .and_then(|activity| activity.last_outbound_next_hop()),
+            Some(fallback_next_hop),
+            "cycle {cycle}: staging direct validation must retain the proven fallback"
+        );
+
+        seed_dataplane_fsp_data_sent_for_test(&mut node, remote_addr, remote_addr, now_ms);
+        seed_dataplane_fsp_data_rx_for_test(&mut node, remote_addr, remote_addr, now_ms);
+        assert!(node.clear_session_direct_path_degraded(&remote_addr));
+        assert_eq!(
+            node.dataplane.fsp_owner_next_hop(&remote_addr),
+            Some(remote_addr),
+            "cycle {cycle}: authenticated direct payload must complete restoration"
+        );
+    }
 }
 
 #[test]
