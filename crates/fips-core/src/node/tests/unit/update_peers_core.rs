@@ -96,7 +96,7 @@ async fn network_transport_rebind_replaces_udp_upgrade_for_configured_websocket_
 }
 
 #[tokio::test]
-async fn network_transport_rebind_replaces_repeated_shared_carrier_affinity() {
+async fn network_transport_rebind_replaces_repeated_rebuilt_carrier_affinity() {
     let mut config = Config::new();
     config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;
     let mut node = Node::new(config).unwrap();
@@ -104,6 +104,23 @@ async fn network_transport_rebind_replaces_repeated_shared_carrier_affinity() {
     node.transports.insert(
         rebound_transport_id,
         make_udp_transport_with_mtu(1, 1280).await,
+    );
+    let fallback_transport_id = TransportId::new(2);
+    let (fallback_packet_tx, _fallback_packet_rx) = packet_channel(64);
+    let mut fallback_transport = crate::transport::websocket::WebSocketTransport::new(
+        fallback_transport_id,
+        None,
+        crate::config::WebSocketConfig::default(),
+        fallback_packet_tx,
+        node.identity(),
+    );
+    fallback_transport
+        .start_async()
+        .await
+        .expect("start fallback WebSocket carrier");
+    node.transports.insert(
+        fallback_transport_id,
+        TransportHandle::WebSocket(Box::new(fallback_transport)),
     );
 
     let remote = Identity::generate();
@@ -127,9 +144,9 @@ async fn network_transport_rebind_replaces_repeated_shared_carrier_affinity() {
     let fallback_peer = make_active_test_peer(
         &node,
         &fallback,
-        rebound_transport_id,
+        fallback_transport_id,
         LinkId::new(2),
-        TransportAddr::from_string("127.0.0.1:10"),
+        TransportAddr::from_string("wss://seed.example/fips"),
         SessionIndex::new(3),
         SessionIndex::new(4),
     );
@@ -240,18 +257,17 @@ async fn network_transport_rebind_replaces_repeated_shared_carrier_affinity() {
                 .is_some(),
             "rebind {rebind}: fixture must contain direct inbound evidence on the shared carrier"
         );
-        assert_eq!(node.apply_prepared_network_rebind(None).await.unwrap(), 1);
-        assert_eq!(
-            node.dataplane.fsp_owner_next_hop(&remote_addr),
-            Some(fallback_addr),
-            "rebind {rebind}: the established owner should stay ready on the recalculated fallback route"
+        assert_eq!(node.apply_prepared_network_rebind(None).await.unwrap(), 2);
+        assert!(
+            node.dataplane.fsp_owner_next_hop(&remote_addr).is_some(),
+            "rebind {rebind}: the established owner should stay ready while rebuilt carriers reauthenticate"
         );
         assert_eq!(
             node.dataplane
                 .fsp_owner_activity(&remote_addr)
                 .and_then(|activity| activity.last_outbound_next_hop()),
             None,
-            "rebind {rebind}: route affinity from the previous shared-carrier incarnation must not suppress fresh route selection"
+            "rebind {rebind}: route affinity from the previous rebuilt-carrier incarnation must not suppress fresh route selection"
         );
         if rebind == 1 {
             assert!(
@@ -268,7 +284,7 @@ async fn network_transport_rebind_replaces_repeated_shared_carrier_affinity() {
             node.dataplane
                 .min_fsp_data_rx_age_for_next_hop(&remote_addr, Node::now_ms()),
             None,
-            "rebind {rebind}: inbound evidence from another peer on the rebuilt shared carrier must also be discarded"
+            "rebind {rebind}: inbound evidence from another peer on a rebuilt carrier must also be discarded"
         );
         assert!(
             node.sessions

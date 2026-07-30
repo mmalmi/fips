@@ -9,8 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Invalidate stale FSP route and liveness evidence when a shared UDP carrier is
-  rebound, preventing old fallback affinity from delaying payload recovery.
+- Invalidate stale FSP route and liveness evidence for every carrier rebuilt
+  after a network change, preventing old fallback affinity from delaying
+  payload recovery.
 - Preserve end-to-end sessions and rekey drain state while direct and transit
   adjacencies authenticate on the replacement socket.
 - Release `fips-core` and `fips-endpoint` 0.4.48 together. FMP, FSP,
