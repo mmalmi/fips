@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.48] - 2026-07-31
+
+### Fixed
+
+- Invalidate stale FSP route and liveness evidence when a shared UDP carrier is
+  rebound, preventing old fallback affinity from delaying payload recovery.
+- Preserve end-to-end sessions and rekey drain state while direct and transit
+  adjacencies authenticate on the replacement socket.
+- Release `fips-core` and `fips-endpoint` 0.4.48 together. FMP, FSP,
+  discovery, routing, and physical transport wire formats are unchanged.
+
 ## [0.4.47] - 2026-07-30
 
 ### Fixed
