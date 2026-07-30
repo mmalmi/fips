@@ -341,6 +341,52 @@ impl OwnerState {
         true
     }
 
+    pub(crate) fn invalidate_fsp_carrier_activity(&mut self, next_hops: &[NodeAddr]) -> bool {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return false;
+        }
+
+        let mut invalidated = false;
+        if self
+            .last_outbound_next_hop
+            .is_some_and(|next_hop| next_hops.contains(&next_hop))
+        {
+            self.last_tx_activity = None;
+            self.last_tx_data_activity = None;
+            self.last_outbound_next_hop = None;
+            invalidated = true;
+        }
+        if self
+            .last_rx_previous_hop
+            .is_some_and(|next_hop| next_hops.contains(&next_hop))
+        {
+            self.last_rx_activity = None;
+            self.last_authenticated_rx_activity = None;
+            self.last_rx_previous_hop = None;
+            invalidated = true;
+        }
+        if self
+            .last_rx_data_previous_hop
+            .is_some_and(|next_hop| next_hops.contains(&next_hop))
+        {
+            self.last_rx_data_activity = None;
+            self.last_rx_data_previous_hop = None;
+            invalidated = true;
+        }
+        if self
+            .last_data_return_next_hop
+            .is_some_and(|next_hop| next_hops.contains(&next_hop))
+        {
+            self.last_data_return_activity = None;
+            self.last_data_return_next_hop = None;
+            invalidated = true;
+        }
+        if invalidated {
+            self.fsp_mmp_path_changed_since_report = true;
+        }
+        invalidated
+    }
+
     fn collect_fsp_mmp_reports(
         &mut self,
         now: std::time::Instant,

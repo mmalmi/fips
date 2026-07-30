@@ -176,6 +176,26 @@ impl Node {
                     ))
                 })
                 .collect();
+            let rebound_udp_peer_addrs = self
+                .peers
+                .values()
+                .filter(|peer| {
+                    peer.transport_id()
+                        .is_some_and(|id| affected_udp_transport_ids.contains(&id))
+                })
+                .map(|peer| *peer.node_addr())
+                .collect::<Vec<_>>();
+            for dest in self.dataplane.fsp_owner_destinations() {
+                // Route activity is evidence about one concrete carrier
+                // incarnation. Keeping it across a shared UDP socket rebuild
+                // can pin an established FSP owner to the old fallback while
+                // the direct and transit adjacencies reauthenticate on the
+                // new socket. Keep the end-to-end session and recompute its
+                // output route, but discard that pre-rebind affinity first.
+                let _ = self
+                    .dataplane
+                    .invalidate_fsp_carrier_activity(dest, &rebound_udp_peer_addrs);
+            }
             let now_ms = Self::now_ms();
             let mut invalidated_peers = Vec::new();
             let mut preserved_udp_peers = Vec::new();

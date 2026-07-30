@@ -96,7 +96,7 @@ async fn network_transport_rebind_replaces_udp_upgrade_for_configured_websocket_
 }
 
 #[tokio::test]
-async fn network_transport_rebind_preserves_session_but_uses_live_fallback_for_payload() {
+async fn network_transport_rebind_replaces_repeated_shared_carrier_affinity() {
     let mut config = Config::new();
     config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;
     let mut node = Node::new(config).unwrap();
@@ -127,7 +127,7 @@ async fn network_transport_rebind_preserves_session_but_uses_live_fallback_for_p
     let fallback_peer = make_active_test_peer(
         &node,
         &fallback,
-        TransportId::new(2),
+        rebound_transport_id,
         LinkId::new(2),
         TransportAddr::from_string("127.0.0.1:10"),
         SessionIndex::new(3),
@@ -158,7 +158,142 @@ async fn network_transport_rebind_preserves_session_but_uses_live_fallback_for_p
         "fixture must start with established payload pinned to the direct carrier"
     );
 
-    assert_eq!(node.apply_prepared_network_rebind(None).await.unwrap(), 1);
+    let mut scenario_now_ms = Node::now_ms();
+    for cycle in 1..=2 {
+        let now_ms = scenario_now_ms;
+        node.restart_session_direct_path_validation(remote_addr, now_ms);
+        assert_eq!(
+            node.dataplane.fsp_owner_next_hop(&remote_addr),
+            Some(fallback_addr),
+            "cycle {cycle}: the proven fallback must carry payload while direct recovers"
+        );
+        seed_dataplane_fsp_data_sent_for_test(&mut node, remote_addr, fallback_addr, now_ms);
+        seed_dataplane_fsp_data_rx_for_test(&mut node, remote_addr, fallback_addr, now_ms);
+
+        node.clear_session_direct_path_degraded_after_promotion(&remote_addr, now_ms);
+        for offset_ms in [100, 350, 600, 850, 1_100] {
+            seed_dataplane_fsp_data_sent_for_test(
+                &mut node,
+                remote_addr,
+                remote_addr,
+                now_ms + offset_ms,
+            );
+            seed_dataplane_fsp_data_rx_for_test(
+                &mut node,
+                remote_addr,
+                remote_addr,
+                now_ms + offset_ms,
+            );
+            assert_eq!(
+                node.authenticated_direct_payload_validates_route(
+                    &remote_addr,
+                    now_ms + offset_ms,
+                ),
+                offset_ms == 1_100,
+                "cycle {cycle}: direct recovery must require sustained authenticated payload"
+            );
+        }
+        assert!(
+            node.clear_session_direct_path_degraded(&remote_addr),
+            "cycle {cycle}: authenticated direct payload should complete recovery"
+        );
+        scenario_now_ms += 2_000;
+    }
+
+    let now_ms = scenario_now_ms;
+    let pending_epoch = make_test_fmp_session(node.identity(), &remote, [0x41; 8], [0x42; 8]);
+    let session = node
+        .sessions
+        .get_mut(&remote_addr)
+        .expect("established endpoint session");
+    session.set_pending_session(pending_epoch);
+    assert!(session.cutover_to_new_session(now_ms));
+    assert!(session.is_draining(), "fixture must model rekey drain");
+    assert!(node.sync_dataplane_fsp_owner_from_current_session_via(
+        &remote_addr,
+        Some(fallback_addr),
+        0,
+    ));
+    seed_dataplane_fsp_data_sent_for_test(&mut node, remote_addr, fallback_addr, now_ms);
+    seed_dataplane_fsp_data_rx_for_test(&mut node, remote_addr, fallback_addr, now_ms);
+    assert_eq!(
+        node.dataplane
+            .fsp_owner_activity(&remote_addr)
+            .and_then(|activity| activity.last_outbound_next_hop()),
+        Some(fallback_addr),
+        "fixture must begin with proven fallback affinity from the old carrier incarnation"
+    );
+
+    for rebind in 1..=2 {
+        if rebind == 2 {
+            assert!(
+                node.dataplane
+                    .forget_fsp_data_route(remote_addr, fallback_addr),
+                "fixture must retain authenticated return evidence after forgetting its outbound affinity"
+            );
+        }
+        scenario_now_ms += 1;
+        seed_dataplane_fsp_data_rx_for_test(&mut node, remote_addr, remote_addr, scenario_now_ms);
+        assert!(
+            node.dataplane
+                .min_fsp_data_rx_age_for_next_hop(&remote_addr, scenario_now_ms)
+                .is_some(),
+            "rebind {rebind}: fixture must contain direct inbound evidence on the shared carrier"
+        );
+        assert_eq!(node.apply_prepared_network_rebind(None).await.unwrap(), 1);
+        assert_eq!(
+            node.dataplane.fsp_owner_next_hop(&remote_addr),
+            Some(fallback_addr),
+            "rebind {rebind}: the established owner should stay ready on the recalculated fallback route"
+        );
+        assert_eq!(
+            node.dataplane
+                .fsp_owner_activity(&remote_addr)
+                .and_then(|activity| activity.last_outbound_next_hop()),
+            None,
+            "rebind {rebind}: route affinity from the previous shared-carrier incarnation must not suppress fresh route selection"
+        );
+        if rebind == 1 {
+            assert!(
+                !node
+                    .dataplane
+                    .fsp_owner_activity(&remote_addr)
+                    .is_some_and(|activity| {
+                        activity.has_recent_outbound_activity(Node::now_ms(), u64::MAX)
+                    }),
+                "rebind {rebind}: tagged outbound liveness from the previous carrier incarnation must not keep the rebuilt path trusted"
+            );
+        }
+        assert_eq!(
+            node.dataplane
+                .min_fsp_data_rx_age_for_next_hop(&remote_addr, Node::now_ms()),
+            None,
+            "rebind {rebind}: inbound evidence from another peer on the rebuilt shared carrier must also be discarded"
+        );
+        assert!(
+            node.sessions
+                .get(&remote_addr)
+                .is_some_and(SessionEntry::is_draining),
+            "rebind {rebind}: carrier replacement must preserve the draining end-to-end session"
+        );
+
+        seed_dataplane_fsp_data_sent_for_test(
+            &mut node,
+            remote_addr,
+            fallback_addr,
+            Node::now_ms(),
+        );
+        assert!(
+            !node
+                .dataplane
+                .fsp_owner_activity(&remote_addr)
+                .is_some_and(|activity| {
+                    activity.has_recent_data_return_from(&fallback_addr, Node::now_ms(), u64::MAX)
+                }),
+            "rebind {rebind}: a new send on the same next-hop identity must not inherit authenticated return evidence from the previous carrier incarnation"
+        );
+        seed_dataplane_fsp_data_rx_for_test(&mut node, remote_addr, fallback_addr, Node::now_ms());
+    }
 
     assert!(
         node.dataplane_has_fmp_owner(&remote_addr),
@@ -169,19 +304,6 @@ async fn network_transport_rebind_preserves_session_but_uses_live_fallback_for_p
             .and_then(ActivePeer::last_heartbeat_sent)
             .is_some_and(|sent| sent > heartbeat_before_rebind),
         "the rebound UDP carrier must immediately send authenticated traffic so the stationary peer can learn its new source tuple"
-    );
-    assert!(
-        node.session_direct_path_degradation_active(&remote_addr, Node::now_ms()),
-        "a network change invalidates the old NAT tuple until authenticated payload returns"
-    );
-    assert_eq!(
-        node.dataplane.fsp_owner_next_hop(&remote_addr),
-        Some(fallback_addr),
-        "established payload must immediately use the live mesh fallback instead of trusting the old direct tuple"
-    );
-    assert!(
-        node.sessions.get(&remote_addr).is_some(),
-        "carrier rebinding must preserve the end-to-end session"
     );
 
     for transport in node.transports.values_mut() {

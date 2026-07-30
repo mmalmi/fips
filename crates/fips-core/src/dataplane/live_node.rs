@@ -609,6 +609,16 @@ impl DataplaneLiveNode {
             .is_some_and(|owner| owner.forget_fsp_data_route(next_hop))
     }
 
+    pub(crate) fn invalidate_fsp_carrier_activity(
+        &mut self,
+        dest_addr: NodeAddr,
+        next_hops: &[NodeAddr],
+    ) -> bool {
+        self.driver
+            .owner_mut(OwnerId::fsp_node(dest_addr))
+            .is_some_and(|owner| owner.invalidate_fsp_carrier_activity(next_hops))
+    }
+
     pub(crate) fn clear_fsp_output_route(&mut self, dest_addr: NodeAddr) -> bool {
         let Some(owner) = self.driver.owner_mut(OwnerId::fsp_node(dest_addr)) else {
             return false;
