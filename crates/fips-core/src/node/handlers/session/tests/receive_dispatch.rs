@@ -675,8 +675,15 @@
         node.make_direct_payload_eligible_for_validation_after_fmp_recovery(&source_addr);
         assert_eq!(
             node.dataplane.fsp_owner_next_hop(&source_addr),
+            Some(source_addr),
+            "authenticated direct recovery must stage one prompt FSP validation route"
+        );
+        assert_eq!(
+            node.dataplane
+                .fsp_owner_activity(&source_addr)
+                .and_then(|activity| activity.last_outbound_next_hop()),
             Some(fallback_addr),
-            "direct control eligibility alone must retain the authenticated fallback"
+            "staging direct validation must preserve the proven fallback until direct payload is sent"
         );
         node.record_authenticated_fmp_receive_facts(
             crate::node::AuthenticatedFmpReceiveFacts {
@@ -693,8 +700,8 @@
         );
         assert_eq!(
             node.dataplane.fsp_owner_next_hop(&source_addr),
-            Some(fallback_addr),
-            "direct control traffic must not displace the fallback that just carried authenticated application data"
+            Some(source_addr),
+            "fresh authenticated direct control must keep the bounded FSP validation staged"
         );
 
         let replacement_fallback = Identity::generate();

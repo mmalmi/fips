@@ -209,14 +209,18 @@ impl Node {
         // prove that end-to-end FSP payload has returned to the direct path;
         // routed fallback traffic can remain healthy at the same time. Keep
         // the degradation marker and retry loop until authenticated direct FSP
-        // receive activity clears them. Authenticated application traffic on a
-        // fallback is stronger path evidence than direct control traffic, so
-        // retain that payload affinity for the hard degradation hold. Fresh
-        // direct promotion can still start a bounded validation immediately;
-        // otherwise the control path may retry payload after the hold expires.
+        // receive activity clears them, but stage one direct FSP route now.
+        // The previous fallback activity and learned route remain intact until
+        // the staged direct payload is actually sent, so ordinary direct-path
+        // trust expiry can immediately return traffic to the fallback if that
+        // bounded validation gets no authenticated response.
         let authenticated_direct_udp = (self.active_peer_current_udp_candidate(dest).is_some()
             || self.promoted_path_matches_configured_static_peer(dest))
-            && !self.active_peer_uses_bootstrap_transport(dest);
+            && !self.active_peer_uses_bootstrap_transport(dest)
+            && self
+                .peers
+                .get(dest)
+                .is_some_and(|peer| peer.is_healthy() && peer.can_send());
         if !authenticated_direct_udp {
             return;
         }
@@ -226,22 +230,10 @@ impl Node {
             .fsp_owner_activity(dest)
             .and_then(|activity| activity.last_outbound_next_hop())
             .filter(|next_hop| next_hop != dest);
-        if fallback_next_hop.is_some()
-            && self.session_direct_path_degradation_active(dest, Self::now_ms())
-        {
-            debug!(
-                peer = %self.peer_display_name(dest),
-                "Keeping authenticated fallback payload affinity while direct control recovers"
-            );
-            return;
-        }
-        if let Some(next_hop) = fallback_next_hop {
-            let _ = self.dataplane.forget_fsp_data_route(*dest, next_hop);
-        }
         let _ = self
             .session_direct_degradation
             .release_hold_for_validation(dest, Self::now_ms());
-        let refreshed = self.refresh_dataplane_fsp_owner_routes(dest);
+        let refreshed = self.refresh_dataplane_fsp_owner_routes_via(dest, Some(*dest));
         let pending_payload_validation =
             self.session_direct_degradation.has_pending_validation(dest);
         debug!(

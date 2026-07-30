@@ -601,7 +601,7 @@ fn test_authenticated_direct_promotion_releases_active_fallback_affinity() {
 }
 
 #[test]
-fn test_fmp_rekey_keeps_authenticated_fallback_until_direct_payload_validates() {
+fn test_fmp_recovery_stages_prompt_direct_payload_validation_without_discarding_fallback() {
     let mut node = make_reply_learned_node_with_tree_peer();
     let fallback_next_hop = *node.peer_ids().next().expect("fallback peer");
     assert!(node.sync_dataplane_fmp_owner(&fallback_next_hop));
@@ -652,21 +652,33 @@ fn test_fmp_rekey_keeps_authenticated_fallback_until_direct_payload_validates() 
         "FMP control must not validate direct FSP payload"
     );
     assert!(
-        node.session_direct_path_degradation_active(&remote_addr, Node::now_ms()),
-        "direct FMP control must not end a payload hold established by live fallback application traffic"
+        !node.session_direct_path_degradation_active(&remote_addr, Node::now_ms()),
+        "authenticated direct FMP recovery must release the hard hold immediately so FSP can validate the recovered carrier"
+    );
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&remote_addr),
+        Some(remote_addr),
+        "the recovered direct carrier must be staged for a bounded FSP payload validation without waiting for the 20-second hold"
     );
     assert_eq!(
         node.dataplane
             .fsp_owner_activity(&remote_addr)
             .and_then(|activity| activity.last_outbound_next_hop()),
         Some(fallback_next_hop),
-        "direct FMP control must retain the fallback flow that already carried authenticated payload"
+        "staging direct validation must retain the authenticated fallback affinity until a direct payload is actually sent"
     );
     assert_eq!(
         node.find_next_hop(&remote_addr)
             .map(|peer| *peer.node_addr()),
         Some(fallback_next_hop),
-        "application payload must stay on the proven fallback while direct recovery continues"
+        "the proven fallback must remain available while the one staged direct validation is awaiting authenticated payload"
+    );
+    seed_dataplane_fsp_data_sent_for_test(&mut node, remote_addr, remote_addr, Node::now_ms());
+    assert_eq!(
+        node.find_next_hop(&remote_addr)
+            .map(|peer| *peer.node_addr()),
+        Some(fallback_next_hop),
+        "a direct validation without authenticated return must immediately leave the proven fallback eligible"
     );
 
     assert!(node.sync_dataplane_fsp_owner_from_current_session_via(
@@ -729,8 +741,15 @@ fn test_fmp_rekey_keeps_authenticated_fallback_until_direct_payload_validates() 
     );
     assert_eq!(
         node.dataplane.fsp_owner_next_hop(&remote_addr),
+        Some(remote_addr),
+        "authenticated direct control recovery must promptly stage an FSP validation instead of waiting for the hard hold"
+    );
+    assert_eq!(
+        node.dataplane
+            .fsp_owner_activity(&remote_addr)
+            .and_then(|activity| activity.last_outbound_next_hop()),
         Some(fallback_next_hop),
-        "reviving direct control must not displace the fallback until direct endpoint payload validates"
+        "the proven fallback remains recorded until staged direct FSP payload is actually sent"
     );
 }
 
