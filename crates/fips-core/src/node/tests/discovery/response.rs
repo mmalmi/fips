@@ -166,10 +166,19 @@ async fn degraded_session_defers_lookup_and_adopts_a_recovered_response_hop() {
         "transit authentication must immediately send the retained lookup"
     );
 
+    let request_id = node
+        .pending_lookups
+        .last_origin_request_id(&target)
+        .expect("recovered transit must carry a current origin lookup request");
     let root = *node.tree_state().my_coords().root_id();
     let coords = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
-    let proof_data = LookupResponse::proof_bytes(557, &target, &coords);
-    let response = LookupResponse::new(557, target, coords, target_identity.sign(&proof_data));
+    let proof_data = LookupResponse::proof_bytes(request_id, &target, &coords);
+    let response = LookupResponse::new(
+        request_id,
+        target,
+        coords,
+        target_identity.sign(&proof_data),
+    );
     node.handle_lookup_response(&transit, &response.encode()[1..])
         .await;
 
@@ -183,6 +192,58 @@ async fn degraded_session_defers_lookup_and_adopts_a_recovered_response_hop() {
         node.dataplane.fsp_owner_next_hop(&target),
         Some(transit),
         "the authenticated response hop must restore the established FSP owner"
+    );
+}
+
+#[tokio::test]
+async fn stale_signed_response_does_not_repin_an_established_degraded_session() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let target_identity = Identity::generate();
+    let target = *target_identity.node_addr();
+
+    assert!(node.register_endpoint_identity(target, target_identity.pubkey_full()));
+    insert_established_session(&mut node, &target_identity);
+    assert!(node.sync_dataplane_fsp_owner_from_current_session(&target, 0));
+    assert!(node.mark_session_direct_path_degraded(target, Node::now_ms()));
+    node.maybe_initiate_lookup(&target).await;
+    assert!(
+        node.pending_lookups.contains_key(&target),
+        "fixture must retain the deferred lookup while no transit is available"
+    );
+
+    let transit_link = LinkId::new(8);
+    let transit_transport = TransportId::new(8);
+    let (transit_connection, transit_identity) =
+        make_completed_connection(&mut node, transit_link, transit_transport, 2_000);
+    let transit = *transit_identity.node_addr();
+    node.add_connection(transit_connection).unwrap();
+    node.promote_connection(transit_link, transit_identity, 3_000)
+        .unwrap();
+    assert!(node.sync_dataplane_fmp_owner(&transit));
+
+    let stale_request_id = 0x5a11_e000;
+    let root = *node.tree_state().my_coords().root_id();
+    let coords = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
+    let proof_data = LookupResponse::proof_bytes(stale_request_id, &target, &coords);
+    let stale_response = LookupResponse::new(
+        stale_request_id,
+        target,
+        coords,
+        target_identity.sign(&proof_data),
+    );
+    node.handle_lookup_response(&transit, &stale_response.encode()[1..])
+        .await;
+
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&target),
+        None,
+        "a target-signed response outside the active origin lookup must not repin payload"
+    );
+    assert!(
+        node.pending_lookups.contains_key(&target),
+        "rejecting a stale response must leave the real recovery lookup pending"
     );
 }
 

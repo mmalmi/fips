@@ -5,8 +5,8 @@ impl Node {
     ///
     /// Creates a LookupRequest and sends it to tree peers whose bloom
     /// filters contain the target. Returns the number of peers sent to.
-    /// The originator does NOT record the request_id in recent_requests,
-    /// so when the response arrives, it's recognized as "our request".
+    /// The originator does not record the request ID in `recent_requests`;
+    /// `pending_lookups` correlates its responses instead.
     pub(in crate::node) async fn initiate_lookup(&mut self, target: &NodeAddr, ttl: u8) -> usize {
         self.stats_mut().discovery.req_initiated += 1;
 
@@ -62,6 +62,8 @@ impl Node {
             return 0;
         }
 
+        self.pending_lookups
+            .record_origin_request(target, request.request_id);
         let encoded = request.encode();
 
         for peer_addr in peer_addrs {

@@ -212,6 +212,23 @@ impl Node {
                 // We originated this request — verify proof before caching
                 let target = response.target;
                 let path_mtu = response.path_mtu;
+                let session_established = self
+                    .sessions
+                    .get(&target)
+                    .is_some_and(|entry| entry.is_established());
+                if session_established
+                    && !self
+                        .pending_lookups
+                        .matches_origin_request(&target, response.request_id)
+                {
+                    debug!(
+                        request_id = response.request_id,
+                        target = %self.peer_display_name(&target),
+                        next_hop = %self.peer_display_name(from),
+                        "Ignoring uncorrelated lookup response for established session"
+                    );
+                    return;
+                }
 
                 // Look up the target's public key from identity_cache
                 let mut prefix = [0u8; 15];
@@ -267,10 +284,6 @@ impl Node {
                     now_ms,
                     path_mtu,
                 );
-                let session_established = self
-                    .sessions
-                    .get(&target)
-                    .is_some_and(|entry| entry.is_established());
                 let response_hop_quarantined = session_established
                     && self
                         .learned_routes
