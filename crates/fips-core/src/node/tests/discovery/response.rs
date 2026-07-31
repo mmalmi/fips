@@ -1,5 +1,30 @@
 use super::*;
 use crate::node::route_impl::TransitNextHopPlan;
+use crate::node::session::{EndToEndState, SessionEntry};
+use crate::noise::HandshakeState;
+
+fn insert_established_session(node: &mut Node, target: &Identity) {
+    let mut initiator =
+        HandshakeState::new_initiator(node.identity().keypair(), target.pubkey_full());
+    let mut responder = HandshakeState::new_responder(target.keypair());
+    initiator.set_local_epoch([1; 8]);
+    responder.set_local_epoch([2; 8]);
+    let msg1 = initiator.write_message_1().expect("session msg1");
+    responder.read_message_1(&msg1).expect("session read msg1");
+    let msg2 = responder.write_message_2().expect("session msg2");
+    initiator.read_message_2(&msg2).expect("session read msg2");
+    let session = initiator.into_session().expect("established session");
+    node.sessions.insert(
+        *target.node_addr(),
+        SessionEntry::new(
+            *target.node_addr(),
+            target.pubkey_full(),
+            EndToEndState::Established(session),
+            1_000,
+            false,
+        ),
+    );
+}
 
 #[tokio::test]
 async fn test_response_decode_error() {
@@ -47,9 +72,6 @@ async fn test_response_originator_caches_route() {
 
 #[tokio::test]
 async fn established_session_lookup_does_not_revive_failed_payload_hop() {
-    use crate::node::session::{EndToEndState, SessionEntry};
-    use crate::noise::HandshakeState;
-
     let mut config = Config::new();
     config.node.routing.mode = RoutingMode::ReplyLearned;
     let mut node = Node::new(config).unwrap();
@@ -69,26 +91,7 @@ async fn established_session_lookup_does_not_revive_failed_payload_hop() {
         node.config.node.routing.max_learned_routes_per_dest,
     );
 
-    let mut initiator =
-        HandshakeState::new_initiator(node.identity().keypair(), target_identity.pubkey_full());
-    let mut responder = HandshakeState::new_responder(target_identity.keypair());
-    initiator.set_local_epoch([1; 8]);
-    responder.set_local_epoch([2; 8]);
-    let msg1 = initiator.write_message_1().expect("session msg1");
-    responder.read_message_1(&msg1).expect("session read msg1");
-    let msg2 = responder.write_message_2().expect("session msg2");
-    initiator.read_message_2(&msg2).expect("session read msg2");
-    let session = initiator.into_session().expect("established session");
-    node.sessions.insert(
-        target,
-        SessionEntry::new(
-            target,
-            target_identity.pubkey_full(),
-            EndToEndState::Established(session),
-            1_000,
-            false,
-        ),
-    );
+    insert_established_session(&mut node, &target_identity);
     assert!(
         node.learned_routes
             .failed_next_hops(&target, Node::now_ms())
@@ -106,6 +109,80 @@ async fn established_session_lookup_does_not_revive_failed_payload_hop() {
             .failed_next_hops(&target, Node::now_ms())
             .contains(&from),
         "a control-plane lookup response must not erase an established session's payload failure"
+    );
+}
+
+#[tokio::test]
+async fn degraded_session_defers_lookup_and_adopts_a_recovered_response_hop() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let target_identity = Identity::generate();
+    let target = *target_identity.node_addr();
+    let failed_hop = make_node_addr(0xA0);
+
+    assert!(node.register_endpoint_identity(target, target_identity.pubkey_full()));
+    node.learn_reverse_route(target, failed_hop);
+    node.learned_routes.quarantine_failed_next_hop(
+        target,
+        failed_hop,
+        Node::now_ms(),
+        node.config.node.routing.learned_ttl_secs,
+        node.config.node.routing.max_learned_routes_per_dest,
+    );
+
+    insert_established_session(&mut node, &target_identity);
+    assert!(node.sync_dataplane_fsp_owner_from_current_session(&target, 0));
+    assert_eq!(node.dataplane.fsp_owner_next_hop(&target), None);
+    assert!(node.mark_session_direct_path_degraded(target, Node::now_ms()));
+
+    let initiated_before = node.stats().discovery.req_initiated;
+    node.maybe_initiate_lookup(&target).await;
+    assert!(
+        node.pending_lookups.contains_key(&target),
+        "an established degraded session must retain one deferred lookup until transit returns"
+    );
+    node.maybe_initiate_lookup(&target).await;
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        initiated_before + 1,
+        "repeated endpoint payload must deduplicate behind the deferred lookup"
+    );
+
+    let transit_link = LinkId::new(7);
+    let transit_transport = TransportId::new(7);
+    let (transit_connection, transit_identity) =
+        make_completed_connection(&mut node, transit_link, transit_transport, 2_000);
+    let transit = *transit_identity.node_addr();
+    node.add_connection(transit_connection).unwrap();
+    node.promote_connection(transit_link, transit_identity, 3_000)
+        .unwrap();
+    assert!(node.sync_dataplane_fmp_owner(&transit));
+    node.retry_degraded_session_routes_after_peer_authenticated(transit, Node::now_ms())
+        .await;
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        initiated_before + 2,
+        "transit authentication must immediately send the retained lookup"
+    );
+
+    let root = *node.tree_state().my_coords().root_id();
+    let coords = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
+    let proof_data = LookupResponse::proof_bytes(557, &target, &coords);
+    let response = LookupResponse::new(557, target, coords, target_identity.sign(&proof_data));
+    node.handle_lookup_response(&transit, &response.encode()[1..])
+        .await;
+
+    assert!(
+        node.learned_routes
+            .failed_next_hops(&target, Node::now_ms())
+            .contains(&failed_hop),
+        "recovery must not clear the quarantined payload branch"
+    );
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&target),
+        Some(transit),
+        "the authenticated response hop must restore the established FSP owner"
     );
 }
 

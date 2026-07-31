@@ -271,13 +271,22 @@ impl Node {
                     .sessions
                     .get(&target)
                     .is_some_and(|entry| entry.is_established());
-                if session_established {
+                let response_hop_quarantined = session_established
+                    && self
+                        .learned_routes
+                        .failed_next_hops(&target, now_ms)
+                        .contains(from);
+                if response_hop_quarantined {
                     debug!(
                         target = %self.peer_display_name(&target),
                         next_hop = %self.peer_display_name(from),
                         "Keeping established payload route failure after control-plane lookup"
                     );
                 } else {
+                    // The target signature authenticates this response, and the
+                    // FMP ingress authenticates its new transit hop. Reuse the
+                    // established FSP session on that proven branch while
+                    // retaining any separately quarantined failed branch.
                     self.pin_handshake_reverse_route(target, *from);
                 }
 

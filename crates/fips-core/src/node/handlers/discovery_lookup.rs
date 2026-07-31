@@ -219,11 +219,16 @@ impl Node {
         let ttl = self.config.node.discovery.ttl;
         let sent = self.initiate_lookup(dest, ttl).await;
 
-        // If no peer was eligible, no LookupRequest left this node. Treat it as
-        // topology not warm yet rather than a destination failure; startup can
-        // race the first endpoint-data/control ping ahead of transit handshakes.
+        // If no peer was eligible, no LookupRequest left this node. Fresh
+        // startup may race endpoint data ahead of transit handshakes, so leave
+        // that destination immediately retryable. An established session whose
+        // route is already degraded instead retains one deferred entry: repeated
+        // payload deduplicates behind it, and peer authentication retries it
+        // immediately through the recovered transit.
         if sent == 0 {
-            self.pending_lookups.remove(dest);
+            if !self.session_direct_path_degradation_active(dest, now_ms) {
+                self.pending_lookups.remove(dest);
+            }
             debug!(
                 target_node = %self.peer_display_name(dest),
                 "Discovery deferred, no eligible lookup peers"
