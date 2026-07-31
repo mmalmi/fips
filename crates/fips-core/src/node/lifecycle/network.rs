@@ -32,6 +32,7 @@ struct AppliedNetworkRebind {
     refreshed: usize,
     affected_transport_ids: Vec<crate::transport::TransportId>,
     affected_udp_transport_ids: Vec<crate::transport::TransportId>,
+    changed_interface_udp_transport_ids: Vec<crate::transport::TransportId>,
 }
 
 enum CarrierRebindRollback {
@@ -122,6 +123,7 @@ impl Node {
             refreshed,
             affected_transport_ids,
             affected_udp_transport_ids,
+            changed_interface_udp_transport_ids,
         } = self
             .apply_carrier_network_rebinds(udp_bind_interface.clone())
             .await?;
@@ -165,6 +167,7 @@ impl Node {
                     affected_transport_ids.contains(&transport_id).then_some((
                         *peer.node_addr(),
                         affected_udp_transport_ids.contains(&transport_id)
+                            && !changed_interface_udp_transport_ids.contains(&transport_id)
                             && peer.is_healthy()
                             && peer.can_send()
                             // A configured WebSocket seed can opportunistically
@@ -326,6 +329,7 @@ impl Node {
         let mut refreshed = 0usize;
         let mut affected_transport_ids = Vec::new();
         let mut affected_udp_transport_ids = Vec::new();
+        let mut changed_interface_udp_transport_ids = Vec::new();
         let mut rollbacks = Vec::new();
 
         // Apply UDP and inactive WebSocket carriers first. Both can fail, and
@@ -367,8 +371,11 @@ impl Node {
                 Ok(true) => {
                     refreshed = refreshed.saturating_add(1);
                     affected_transport_ids.push(transport_id);
-                    if matches!(rollback, Some(CarrierRebindRollback::Udp { .. })) {
+                    if let Some(CarrierRebindRollback::Udp { bind_interface, .. }) = &rollback {
                         affected_udp_transport_ids.push(transport_id);
+                        if bind_interface != &udp_bind_interface {
+                            changed_interface_udp_transport_ids.push(transport_id);
+                        }
                     }
                     if let Some(rollback) = rollback {
                         rollbacks.push(rollback);
@@ -432,6 +439,7 @@ impl Node {
             refreshed,
             affected_transport_ids,
             affected_udp_transport_ids,
+            changed_interface_udp_transport_ids,
         })
     }
 

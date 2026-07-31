@@ -45,6 +45,81 @@ async fn network_transport_rebind_preserves_peer_and_session_state() {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn network_transport_rebind_reauthenticates_udp_peer_when_interface_changes() {
+    #[cfg(target_os = "macos")]
+    const LOOPBACK_INTERFACE: &str = "lo0";
+    #[cfg(target_os = "linux")]
+    const LOOPBACK_INTERFACE: &str = "lo";
+
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+    node.transports
+        .insert(transport_id, make_udp_transport_with_mtu(1, 1280).await);
+
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+    let current_addr = TransportAddr::from_string("127.0.0.1:9");
+    let peer = make_active_test_peer(
+        &node,
+        &remote,
+        transport_id,
+        LinkId::new(1),
+        current_addr.clone(),
+        SessionIndex::new(1),
+        SessionIndex::new(2),
+    );
+    node.peers.insert(remote_addr, peer);
+    assert!(node.sync_dataplane_fmp_owner(&remote_addr));
+    node.config.peers = vec![auto_connect_peer(
+        remote.npub(),
+        current_addr.as_str().expect("socket address"),
+    )];
+
+    let mut session = SessionEntry::new(
+        remote_addr,
+        remote.pubkey_full(),
+        crate::node::session::EndToEndState::Established(make_test_fmp_session(
+            node.identity(),
+            &remote,
+            [0x51; 8],
+            [0x52; 8],
+        )),
+        1_000,
+        true,
+    );
+    session.mark_established(1_000);
+    node.sessions.insert(remote_addr, session);
+
+    assert_eq!(
+        node.apply_prepared_network_rebind(Some(LOOPBACK_INTERFACE.to_string()))
+            .await
+            .unwrap(),
+        1
+    );
+    assert!(
+        !node.get_peer(&remote_addr).unwrap().is_healthy(),
+        "a UDP link authenticated on another physical interface must be reauthenticated"
+    );
+    assert!(
+        !node.dataplane_has_fmp_owner(&remote_addr),
+        "the old-interface UDP tuple must not retain dataplane ownership"
+    );
+    assert!(
+        node.retry_pending.contains_key(&remote_addr),
+        "the configured endpoint must be redialed immediately on the new interface"
+    );
+    assert!(
+        node.sessions.get(&remote_addr).is_some(),
+        "interface replacement must preserve the end-to-end session"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
 #[tokio::test]
 async fn network_transport_rebind_replaces_udp_upgrade_for_configured_websocket_peer() {
     let seed = Identity::generate();
