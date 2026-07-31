@@ -23,12 +23,18 @@ fi
 
 baseline_for() {
   case "$1" in
+    crates/fips-core/src/node/retry.rs) echo 1006 ;;
+    crates/fips-core/src/node/tests/session/route_metrics.rs) echo 1011 ;;
+    crates/fips-core/src/node/tests/unit/update_peers_core.rs) echo 1268 ;;
     *) echo "$MAX_LINES" ;;
   esac
 }
 
 baseline_paths() {
   cat <<'PATHS'
+crates/fips-core/src/node/retry.rs
+crates/fips-core/src/node/tests/session/route_metrics.rs
+crates/fips-core/src/node/tests/unit/update_peers_core.rs
 PATHS
 }
 

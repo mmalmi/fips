@@ -288,7 +288,12 @@ async fn test_discovery_warms_established_session_over_fresh_fallback_route() {
     .await;
     nodes[0].node.coord_cache_mut().remove(&dest_addr);
 
-    let request_id = 5150;
+    nodes[0].node.maybe_initiate_lookup(&dest_addr).await;
+    let request_id = nodes[0]
+        .node
+        .pending_lookups
+        .last_origin_request_id(&dest_addr)
+        .expect("fixture must originate the lookup response being exercised");
     let fresh_coords = nodes[2].node.tree_state().my_coords().clone();
     let proof_data =
         crate::protocol::LookupResponse::proof_bytes(request_id, &dest_addr, &fresh_coords);
@@ -368,7 +373,12 @@ async fn test_discovery_flushes_queued_tun_for_established_session_with_fresh_ro
         usize::MAX,
     );
 
-    let request_id = 4242;
+    nodes[0].node.maybe_initiate_lookup(&dest_addr).await;
+    let request_id = nodes[0]
+        .node
+        .pending_lookups
+        .last_origin_request_id(&dest_addr)
+        .expect("fixture must originate the lookup response being exercised");
     let fresh_coords = nodes[2].node.tree_state().my_coords().clone();
     let proof_data =
         crate::protocol::LookupResponse::proof_bytes(request_id, &dest_addr, &fresh_coords);
