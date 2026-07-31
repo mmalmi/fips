@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.49] - 2026-07-31
+
+### Fixed
+
+- Reauthenticate UDP peers after a physical-interface change at the existing
+  safe handshake interval, restoring authenticated traffic within the roaming
+  deadline without weakening replay or source-thrash protection.
+- Replace stale WebSocket carriers immediately after a rebind while preserving
+  the established end-to-end session.
+- Correlate established-session lookup responses with locally originated
+  requests before changing cached routes, preventing stale replayed responses
+  from repinning traffic.
+- Restore routed sessions through recovered transit carriers and retry affected
+  peers immediately after a network change.
+- Release `fips-core` and `fips-endpoint` 0.4.49 together. FMP, FSP,
+  discovery, routing, and physical transport wire formats are unchanged.
+
 ## [0.4.48] - 2026-07-31
 
 ### Fixed
