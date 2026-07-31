@@ -87,7 +87,7 @@ async fn url_only_seed_hint_completes_noise_ik_and_datagram_exchange() {
 }
 
 #[tokio::test]
-async fn client_network_rebind_replaces_stationary_seed_carrier_and_preserves_payload() {
+async fn explicit_network_rebind_bypasses_ordinary_seed_backoff_and_preserves_payload() {
     let server = make_websocket_node(WebSocketConfig {
         bind_addr: Some("127.0.0.1:0".into()),
         ..Default::default()
@@ -96,8 +96,8 @@ async fn client_network_rebind_replaces_stationary_seed_carrier_and_preserves_pa
     let seed_url = server.addr.to_string();
     let client = make_websocket_node(WebSocketConfig {
         seed_urls: vec![seed_url],
-        reconnect_initial_ms: Some(10),
-        reconnect_max_ms: Some(50),
+        reconnect_initial_ms: Some(5_000),
+        reconnect_max_ms: Some(5_000),
         ..Default::default()
     })
     .await;
@@ -214,7 +214,7 @@ async fn client_network_rebind_replaces_stationary_seed_carrier_and_preserves_pa
         }
     })
     .await
-    .expect("both ends must adopt the fresh carrier without waiting for link-dead timeout");
+    .expect("an explicit network rebind must bypass ordinary seed reconnect backoff");
 
     assert!(
         nodes[1]
@@ -270,7 +270,7 @@ async fn client_network_rebind_replaces_stationary_seed_carrier_and_preserves_pa
 }
 
 #[tokio::test]
-async fn open_discovery_listener_routes_first_contact_between_websocket_clients() {
+async fn open_discovery_routes_and_recovers_routed_websocket_clients() {
     let seed = make_websocket_node(WebSocketConfig {
         bind_addr: Some("127.0.0.1:0".into()),
         ..Default::default()
@@ -290,8 +290,8 @@ async fn open_discovery_listener_routes_first_contact_between_websocket_clients(
 
     let guest = make_websocket_node(WebSocketConfig {
         seed_urls: vec![router_url],
-        reconnect_initial_ms: Some(10),
-        reconnect_max_ms: Some(50),
+        reconnect_initial_ms: Some(5_000),
+        reconnect_max_ms: Some(5_000),
         ..Default::default()
     })
     .await;
@@ -397,6 +397,10 @@ async fn open_discovery_listener_routes_first_contact_between_websocket_clients(
         "lookup should traverse the WSS listener and return a guest route"
     );
 
+    let mut guest_endpoint = nodes[2]
+        .node
+        .attach_endpoint_data_io(8)
+        .expect("guest endpoint data I/O");
     nodes[3]
         .node
         .initiate_session(guest_addr, guest_pubkey)
@@ -431,6 +435,108 @@ async fn open_discovery_listener_routes_first_contact_between_websocket_clients(
             .get_session(&admin_addr)
             .is_some_and(|session| session.is_established()),
         "the guest session should establish over WSS seed/router transit"
+    );
+
+    let guest_identity = PeerIdentity::from_pubkey_full(nodes[2].node.identity().pubkey_full());
+    super::session::send_endpoint_data_via_dataplane(
+        &mut nodes[3].node,
+        guest_identity,
+        b"routed-before-rebind".to_vec(),
+    )
+    .await
+    .expect("pre-rebind routed endpoint data should send");
+    let before = super::session::recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut guest_endpoint.event_rx,
+        Duration::from_secs(2),
+        "pre-rebind routed WebSocket endpoint payload",
+    )
+    .await;
+    assert_eq!(
+        super::session::expect_single_endpoint_data_event(before)
+            .payload
+            .as_slice(),
+        b"routed-before-rebind"
+    );
+
+    let router_old_guest_link = nodes[1]
+        .node
+        .get_peer(&guest_addr)
+        .expect("router active guest")
+        .link_id();
+    let guest_old_router_link = nodes[2]
+        .node
+        .get_peer(&router_addr)
+        .expect("guest active router")
+        .link_id();
+    assert_eq!(
+        nodes[2]
+            .node
+            .apply_prepared_network_rebind(None)
+            .await
+            .unwrap(),
+        1,
+        "the routed guest network event must rebuild its configured WebSocket carrier"
+    );
+    assert!(
+        nodes[2]
+            .node
+            .get_session(&admin_addr)
+            .is_some_and(|session| session.is_established()),
+        "the routed end-to-end session must survive carrier replacement"
+    );
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            for node in &mut nodes {
+                node.node.poll_transport_discovery().await;
+                node.node.poll_pending_connects().await;
+            }
+            run_synthetic_node_work(&mut nodes).await;
+            process_available_packets(&mut nodes).await;
+            let router_replaced = nodes[1]
+                .node
+                .get_peer(&guest_addr)
+                .is_some_and(|peer| peer.link_id() != router_old_guest_link && peer.can_send());
+            let guest_replaced = nodes[2]
+                .node
+                .get_peer(&router_addr)
+                .is_some_and(|peer| peer.link_id() != guest_old_router_link && peer.can_send());
+            if router_replaced && guest_replaced {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("routed npub recovery must bypass ordinary seed reconnect backoff");
+
+    super::session::send_endpoint_data_via_dataplane(
+        &mut nodes[3].node,
+        guest_identity,
+        b"routed-after-rebind".to_vec(),
+    )
+    .await
+    .expect("post-rebind routed endpoint data should send");
+    let after = super::session::recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut guest_endpoint.event_rx,
+        Duration::from_secs(2),
+        "post-rebind routed WebSocket endpoint payload",
+    )
+    .await;
+    assert_eq!(
+        super::session::expect_single_endpoint_data_event(after)
+            .payload
+            .as_slice(),
+        b"routed-after-rebind"
+    );
+    assert!(
+        nodes[3]
+            .node
+            .get_session(&guest_addr)
+            .is_some_and(|session| session.is_established()),
+        "the routed admin session must remain established after guest recovery"
     );
 
     cleanup_nodes(&mut nodes).await;

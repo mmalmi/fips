@@ -146,6 +146,57 @@ async fn configured_seed_reconnects_after_listener_restart() {
 }
 
 #[tokio::test]
+async fn ordinary_seed_close_keeps_configured_reconnect_backoff() {
+    let server_identity = Identity::generate();
+    let (server_packet_tx, _server_packet_rx) = packet_channel(8);
+    let mut server = WebSocketTransport::new(
+        TransportId::new(1),
+        None,
+        WebSocketConfig {
+            bind_addr: Some("127.0.0.1:0".into()),
+            ..Default::default()
+        },
+        server_packet_tx,
+        &server_identity,
+    );
+    server.start_async().await.unwrap();
+    let seed_url =
+        TransportAddr::from_string(&format!("ws://{}/fips", server.local_addr().unwrap()));
+
+    let client_identity = Identity::generate();
+    let (client_packet_tx, _client_packet_rx) = packet_channel(8);
+    let mut client = WebSocketTransport::new(
+        TransportId::new(2),
+        None,
+        WebSocketConfig {
+            seed_urls: vec![seed_url.to_string()],
+            reconnect_initial_ms: Some(400),
+            reconnect_max_ms: Some(400),
+            ..Default::default()
+        },
+        client_packet_tx,
+        &client_identity,
+    );
+    client.start_async().await.unwrap();
+    wait_for_connection(&client, &seed_url).await;
+    let opened_before_close = client.stats().connections_opened;
+
+    client.close_connection_async(&seed_url).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        client.stats().connections_opened,
+        opened_before_close,
+        "an ordinary close must retain configured reconnect pacing"
+    );
+
+    wait_for_connection(&client, &seed_url).await;
+    assert!(client.stats().connections_opened > opened_before_close);
+
+    client.stop_async().await.unwrap();
+    server.stop_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn configured_seed_reconnects_immediately_after_network_change() {
     let server_identity = Identity::generate();
     let (server_packet_tx, _server_packet_rx) = packet_channel(8);
@@ -170,8 +221,8 @@ async fn configured_seed_reconnects_immediately_after_network_change() {
         None,
         WebSocketConfig {
             seed_urls: vec![seed_url.to_string()],
-            reconnect_initial_ms: Some(10),
-            reconnect_max_ms: Some(40),
+            reconnect_initial_ms: Some(5_000),
+            reconnect_max_ms: Some(5_000),
             ..Default::default()
         },
         client_packet_tx,
@@ -181,7 +232,7 @@ async fn configured_seed_reconnects_immediately_after_network_change() {
     wait_for_connection(&client, &seed_url).await;
 
     assert!(client.restart_after_network_change().await.unwrap());
-    tokio::time::timeout(Duration::from_secs(1), async {
+    tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             if client.stats().connections_opened >= 2
                 && client.connection_state_sync(&seed_url) == ConnectionState::Connected
@@ -199,6 +250,94 @@ async fn configured_seed_reconnects_immediately_after_network_change() {
 
     client.stop_async().await.unwrap();
     server.stop_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn network_rebind_rejects_inflight_seed_handshake_before_replacement() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let seed_url =
+        TransportAddr::from_string(&format!("ws://{}/fips", listener.local_addr().unwrap()));
+    let (handshake_blocked_tx, handshake_blocked_rx) = tokio::sync::oneshot::channel();
+    let (release_handshake_tx, release_handshake_rx) = tokio::sync::oneshot::channel();
+    let (old_handshake_done_tx, old_handshake_done_rx) = tokio::sync::oneshot::channel();
+    let (old_dial_observed_tx, old_dial_observed_rx) = tokio::sync::oneshot::channel();
+    let (replacement_ready_tx, replacement_ready_rx) = tokio::sync::oneshot::channel();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server_task = tokio::spawn(async move {
+        let (old_stream, _) = listener.accept().await.unwrap();
+        handshake_blocked_tx.send(()).unwrap();
+        release_handshake_rx.await.unwrap();
+        let old_connection = tokio_tungstenite::accept_async(old_stream).await.ok();
+        old_handshake_done_tx
+            .send(old_connection.is_some())
+            .unwrap();
+        old_dial_observed_rx.await.unwrap();
+
+        let (replacement_stream, _) = listener.accept().await.unwrap();
+        let replacement = tokio_tungstenite::accept_async(replacement_stream)
+            .await
+            .unwrap();
+        replacement_ready_tx.send(()).unwrap();
+        let _ = shutdown_rx.await;
+        drop(replacement);
+        drop(old_connection);
+    });
+
+    let client_identity = Identity::generate();
+    let (client_packet_tx, _client_packet_rx) = packet_channel(8);
+    let mut client = WebSocketTransport::new(
+        TransportId::new(2),
+        None,
+        WebSocketConfig {
+            seed_urls: vec![seed_url.to_string()],
+            connect_timeout_ms: Some(10_000),
+            reconnect_initial_ms: Some(5_000),
+            reconnect_max_ms: Some(5_000),
+            ..Default::default()
+        },
+        client_packet_tx,
+        &client_identity,
+    );
+    client.start_async().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), handshake_blocked_rx)
+        .await
+        .expect("the first seed handshake must reach the blocking server")
+        .unwrap();
+
+    assert!(client.restart_after_network_change().await.unwrap());
+    release_handshake_tx.send(()).unwrap();
+    let old_network_handshake_completed =
+        tokio::time::timeout(Duration::from_secs(2), old_handshake_done_rx)
+            .await
+            .expect("the released old-network handshake must finish or observe cancellation")
+            .unwrap();
+    let stale_connection_survived = tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            if client.stats().connections_opened > 0
+                && client.connection_state_sync(&seed_url) == ConnectionState::Connected
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .is_ok();
+    assert!(
+        !stale_connection_survived,
+        "the old-network in-flight dial completed after pool clearing and survived as connected (handshake completed: {old_network_handshake_completed})"
+    );
+    old_dial_observed_tx.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), replacement_ready_rx)
+        .await
+        .expect("the replacement seed handshake must bypass normal reconnect backoff")
+        .unwrap();
+    wait_for_connection(&client, &seed_url).await;
+    assert_eq!(client.stats().connections_opened, 1);
+
+    client.stop_async().await.unwrap();
+    shutdown_tx.send(()).ok();
+    server_task.await.unwrap();
 }
 
 #[tokio::test]

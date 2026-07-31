@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Mutex, Semaphore, mpsc};
+use tokio::sync::{Mutex, Semaphore, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig as TungsteniteConfig;
@@ -106,6 +106,8 @@ struct Runtime {
     total_slots: Arc<Semaphore>,
     inbound_slots: Arc<Semaphore>,
     generation: Arc<AtomicU64>,
+    // Only explicit network changes advance this value; ordinary closes retain backoff.
+    network_rebind_generation: watch::Sender<u64>,
     stats: Arc<WebSocketStats>,
 }
 
@@ -166,6 +168,7 @@ impl WebSocketTransport {
     ) -> Self {
         let max_connections = config.max_connections();
         let max_inbound = config.max_inbound_connections();
+        let (network_rebind_generation, _) = watch::channel(0);
         let runtime = Runtime {
             transport_id,
             config: config.clone(),
@@ -178,6 +181,7 @@ impl WebSocketTransport {
             total_slots: Arc::new(Semaphore::new(max_connections)),
             inbound_slots: Arc::new(Semaphore::new(max_inbound)),
             generation: Arc::new(AtomicU64::new(1)),
+            network_rebind_generation,
             stats: Arc::new(WebSocketStats::default()),
         };
         Self {
@@ -421,12 +425,18 @@ impl WebSocketTransport {
             return Ok(false);
         }
         if self.state.is_operational() {
-            self.runtime.pool.lock().await.clear();
+            // Serialize the generation cutover with outbound pool insertion.
+            let mut pool = self.runtime.pool.lock().await;
+            self.runtime
+                .network_rebind_generation
+                .send_modify(|generation| *generation = generation.wrapping_add(1));
+            pool.clear();
             self.runtime
                 .states
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .clear();
+            drop(pool);
             return Ok(true);
         }
         let previous_state = self.state;
@@ -528,10 +538,18 @@ async fn run_accept_loop(runtime: Runtime, listener: TcpListener) {
             continue;
         };
         let accepted_runtime = runtime.clone();
+        let accepted_network_rebind_generation = *runtime.network_rebind_generation.borrow();
         tokio::spawn(async move {
             let _inbound_permit = inbound_permit;
             let _total_permit = total_permit;
-            if let Err(error) = accept_connection(accepted_runtime, stream, peer_addr).await {
+            if let Err(error) = accept_connection(
+                accepted_runtime,
+                stream,
+                peer_addr,
+                accepted_network_rebind_generation,
+            )
+            .await
+            {
                 debug!(%peer_addr, %error, "WebSocket inbound connection ended");
             }
         });
@@ -543,6 +561,7 @@ async fn accept_connection(
     runtime: Runtime,
     stream: TcpStream,
     peer_addr: SocketAddr,
+    network_rebind_generation: u64,
 ) -> Result<(), TransportError> {
     let path = runtime.config.path().to_owned();
     let callback = move |request: &Request, response: Response| {
@@ -567,19 +586,31 @@ async fn accept_connection(
         generation,
         Direction::Inbound,
         false,
+        network_rebind_generation,
     )
     .await
 }
 
 async fn run_seed_dialer(runtime: Runtime, addr: TransportAddr) {
     let mut delay_ms = runtime.config.reconnect_initial_ms();
+    let mut network_rebind_generation = runtime.network_rebind_generation.subscribe();
+    let mut observed_network_rebind = *network_rebind_generation.borrow_and_update();
     while runtime.running.load(Ordering::Acquire) {
         runtime.set_state(&addr, ConnectionState::Connecting);
         runtime
             .stats
             .reconnect_attempts
             .fetch_add(1, Ordering::Relaxed);
-        let result = dial_and_run(runtime.clone(), addr.clone()).await;
+        let result = tokio::select! {
+            result = dial_and_run(runtime.clone(), addr.clone()) => result,
+            changed = network_rebind_generation.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                observed_network_rebind = *network_rebind_generation.borrow_and_update();
+                continue;
+            }
+        };
         if !runtime.running.load(Ordering::Acquire) {
             break;
         }
@@ -595,7 +626,21 @@ async fn run_seed_dialer(runtime: Runtime, addr: TransportAddr) {
                     .min(runtime.config.reconnect_max_ms());
             }
         }
-        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        let requested_network_rebind = *network_rebind_generation.borrow_and_update();
+        if requested_network_rebind != observed_network_rebind {
+            observed_network_rebind = requested_network_rebind;
+            // The rebind itself closed this connection, so make one prompt replacement attempt.
+            continue;
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(delay_ms)) => {}
+            changed = network_rebind_generation.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                observed_network_rebind = *network_rebind_generation.borrow_and_update();
+            }
+        }
     }
 }
 
@@ -607,6 +652,7 @@ async fn run_one_shot_dial(runtime: Runtime, addr: TransportAddr) {
 }
 
 async fn dial_and_run(runtime: Runtime, addr: TransportAddr) -> Result<(), TransportError> {
+    let network_rebind_generation = *runtime.network_rebind_generation.borrow();
     let _slot = runtime
         .total_slots
         .clone()
@@ -631,6 +677,7 @@ async fn dial_and_run(runtime: Runtime, addr: TransportAddr) -> Result<(), Trans
         generation,
         Direction::Outbound,
         true,
+        network_rebind_generation,
     )
     .await
 }
@@ -642,6 +689,7 @@ async fn run_connection<S>(
     generation: u64,
     direction: Direction,
     request_key_hint: bool,
+    expected_network_rebind_generation: u64,
 ) -> Result<(), TransportError>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -650,6 +698,12 @@ where
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(runtime.config.max_send_queue());
     {
         let mut pool = runtime.pool.lock().await;
+        // A handshake started on the previous underlay must not repopulate the cleared pool.
+        if *runtime.network_rebind_generation.borrow() != expected_network_rebind_generation {
+            return Err(TransportError::StartFailed(
+                "network changed during WebSocket handshake".into(),
+            ));
+        }
         if pool.contains_key(&addr) {
             return Err(TransportError::AlreadyStarted);
         }
