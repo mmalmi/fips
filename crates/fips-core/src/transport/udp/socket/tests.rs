@@ -99,7 +99,13 @@ fn test_udp_socket_bind() {
 
 #[test]
 fn ipv4_and_ipv6_wildcard_sockets_share_one_port() {
-    let ipv6 = UdpRawSocket::open("[::]:0".parse().unwrap(), 65_536, 65_536)
+    let ipv6 = UdpRawSocket::open_on_interface(
+        "[::]:0".parse().unwrap(),
+        65_536,
+        65_536,
+        None,
+        true,
+    )
         .expect("bind IPv6 wildcard UDP socket");
     let port = ipv6.local_addr().port();
     let ipv4 = UdpRawSocket::open(
@@ -121,6 +127,7 @@ fn raw_socket_binds_to_named_underlay_interface() {
         65_536,
         65_536,
         Some("lo0"),
+        false,
     )
     .expect("bind UDP test socket to loopback underlay");
 

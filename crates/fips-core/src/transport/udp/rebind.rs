@@ -6,6 +6,7 @@ pub(crate) struct UdpNetworkRebindProbe {
     bind_interface: Option<String>,
     recv_buf_size: usize,
     send_buf_size: usize,
+    ipv6_only: bool,
 }
 
 impl UdpNetworkRebindProbe {
@@ -39,6 +40,7 @@ impl UdpNetworkRebindProbe {
             self.recv_buf_size,
             self.send_buf_size,
             self.bind_interface.as_deref(),
+            self.ipv6_only,
         )
         .map(drop)
     }
@@ -90,6 +92,7 @@ impl UdpTransport {
             bind_interface,
             recv_buf_size: self.config.recv_buf_size(),
             send_buf_size: self.config.send_buf_size(),
+            ipv6_only: self.ipv6_only,
         }))
     }
 }

@@ -351,6 +351,9 @@ pub struct UdpTransport {
     name: Option<String>,
     /// Configuration.
     config: UdpConfig,
+    /// Restrict an IPv6 wildcard socket when it has an explicit same-port
+    /// IPv4 companion. Legacy single IPv6 transports retain dual-stack mode.
+    ipv6_only: bool,
     /// Current state.
     state: TransportState,
     /// Bound socket (None until started).
@@ -409,6 +412,7 @@ impl UdpTransport {
             transport_id,
             name,
             config,
+            ipv6_only: false,
             state: TransportState::Configured,
             socket: None,
             packet_tx,
@@ -424,6 +428,11 @@ impl UdpTransport {
             },
             dns_cache: StdMutex::new(HashMap::new()),
         }
+    }
+
+    pub(crate) fn with_ipv6_only(mut self, ipv6_only: bool) -> Self {
+        self.ipv6_only = ipv6_only;
+        self
     }
 
     /// Get the instance name (if configured as a named instance).
@@ -606,12 +615,14 @@ impl UdpTransport {
                 self.config.recv_buf_size(),
                 self.config.send_buf_size(),
                 self.config.bind_interface.as_deref(),
+                self.ipv6_only,
             ),
             UdpSocketOrigin::Exclusive => UdpRawSocket::open_exclusive_on_interface(
                 bind_addr,
                 self.config.recv_buf_size(),
                 self.config.send_buf_size(),
                 self.config.bind_interface.as_deref(),
+                self.ipv6_only,
             ),
             UdpSocketOrigin::Adopted => unreachable!("checked above"),
         };
@@ -895,6 +906,7 @@ impl UdpTransport {
             self.config.recv_buf_size(),
             self.config.send_buf_size(),
             self.config.bind_interface.as_deref(),
+            false,
         );
         let raw_socket = self.require_start(raw_socket)?;
         self.install_raw_socket(raw_socket, UdpSocketOrigin::Adopted)

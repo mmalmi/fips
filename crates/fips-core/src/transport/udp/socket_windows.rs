@@ -53,7 +53,7 @@ mod platform {
             recv_buf_size: usize,
             send_buf_size: usize,
         ) -> Result<Self, TransportError> {
-            Self::open_inner(bind_addr, recv_buf_size, send_buf_size)
+            Self::open_inner(bind_addr, recv_buf_size, send_buf_size, false)
         }
 
         pub fn open_on_interface(
@@ -61,13 +61,14 @@ mod platform {
             recv_buf_size: usize,
             send_buf_size: usize,
             bind_interface: Option<&str>,
+            ipv6_only: bool,
         ) -> Result<Self, TransportError> {
             if let Some(interface) = bind_interface {
                 return Err(TransportError::NotSupported(format!(
                     "UDP interface binding is not supported on Windows: {interface}"
                 )));
             }
-            Self::open_inner(bind_addr, recv_buf_size, send_buf_size)
+            Self::open_inner(bind_addr, recv_buf_size, send_buf_size, ipv6_only)
         }
 
         /// Create an exclusive UDP socket for same-host rendezvous ownership.
@@ -77,7 +78,7 @@ mod platform {
             recv_buf_size: usize,
             send_buf_size: usize,
         ) -> Result<Self, TransportError> {
-            Self::open_inner(bind_addr, recv_buf_size, send_buf_size)
+            Self::open_inner(bind_addr, recv_buf_size, send_buf_size, false)
         }
 
         pub fn open_exclusive_on_interface(
@@ -85,19 +86,21 @@ mod platform {
             recv_buf_size: usize,
             send_buf_size: usize,
             bind_interface: Option<&str>,
+            ipv6_only: bool,
         ) -> Result<Self, TransportError> {
             if let Some(interface) = bind_interface {
                 return Err(TransportError::NotSupported(format!(
                     "UDP interface binding is not supported on Windows: {interface}"
                 )));
             }
-            Self::open_inner(bind_addr, recv_buf_size, send_buf_size)
+            Self::open_inner(bind_addr, recv_buf_size, send_buf_size, ipv6_only)
         }
 
         fn open_inner(
             bind_addr: SocketAddr,
             recv_buf_size: usize,
             send_buf_size: usize,
+            ipv6_only: bool,
         ) -> Result<Self, TransportError> {
             let domain = if bind_addr.is_ipv4() {
                 Domain::IPV4
@@ -107,7 +110,7 @@ mod platform {
             let sock = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))
                 .map_err(|e| TransportError::StartFailed(format!("socket create failed: {}", e)))?;
 
-            if bind_addr.is_ipv6() {
+            if bind_addr.is_ipv6() && ipv6_only {
                 sock.set_only_v6(true).map_err(|error| {
                     TransportError::StartFailed(format!("set IPV6_V6ONLY failed: {error}"))
                 })?;

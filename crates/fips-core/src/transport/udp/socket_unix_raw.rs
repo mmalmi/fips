@@ -9,7 +9,7 @@
             recv_buf_size: usize,
             send_buf_size: usize,
         ) -> Result<Self, TransportError> {
-            Self::open_on_interface(bind_addr, recv_buf_size, send_buf_size, None)
+            Self::open_on_interface(bind_addr, recv_buf_size, send_buf_size, None, false)
         }
 
         pub fn open_on_interface(
@@ -17,12 +17,14 @@
             recv_buf_size: usize,
             send_buf_size: usize,
             bind_interface: Option<&str>,
+            ipv6_only: bool,
         ) -> Result<Self, TransportError> {
             Self::open_inner(
                 bind_addr,
                 recv_buf_size,
                 send_buf_size,
                 bind_interface,
+                ipv6_only,
             )
         }
 
@@ -34,7 +36,13 @@
             recv_buf_size: usize,
             send_buf_size: usize,
         ) -> Result<Self, TransportError> {
-            Self::open_exclusive_on_interface(bind_addr, recv_buf_size, send_buf_size, None)
+            Self::open_exclusive_on_interface(
+                bind_addr,
+                recv_buf_size,
+                send_buf_size,
+                None,
+                false,
+            )
         }
 
         pub fn open_exclusive_on_interface(
@@ -42,12 +50,14 @@
             recv_buf_size: usize,
             send_buf_size: usize,
             bind_interface: Option<&str>,
+            ipv6_only: bool,
         ) -> Result<Self, TransportError> {
             Self::open_inner(
                 bind_addr,
                 recv_buf_size,
                 send_buf_size,
                 bind_interface,
+                ipv6_only,
             )
         }
 
@@ -56,6 +66,7 @@
             recv_buf_size: usize,
             send_buf_size: usize,
             bind_interface: Option<&str>,
+            ipv6_only: bool,
         ) -> Result<Self, TransportError> {
             let domain = if bind_addr.is_ipv4() {
                 Domain::IPV4
@@ -65,7 +76,7 @@
             let sock = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))
                 .map_err(|e| TransportError::StartFailed(format!("socket create failed: {}", e)))?;
 
-            if bind_addr.is_ipv6() {
+            if bind_addr.is_ipv6() && ipv6_only {
                 sock.set_only_v6(true).map_err(|error| {
                     TransportError::StartFailed(format!("set IPV6_V6ONLY failed: {error}"))
                 })?;

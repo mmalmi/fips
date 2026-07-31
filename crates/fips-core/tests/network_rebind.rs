@@ -47,6 +47,28 @@ async fn same_port_dual_family_udp_authenticates_and_delivers_over_both_families
     server.shutdown().await.expect("server endpoint shutdown");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn legacy_single_ipv6_wildcard_accepts_ipv4_client() {
+    let port = available_udp_port();
+    let server = bind_endpoint(single_udp_config(format!("[::]:{port}"))).await;
+
+    let mut client_config = single_udp_config("127.0.0.1:0".to_string());
+    client_config.peers.push(PeerConfig::new(
+        server.npub(),
+        "udp",
+        format!("127.0.0.1:{port}"),
+    ));
+    let client = bind_endpoint(client_config).await;
+
+    wait_for_connected_peer(&client, server.npub()).await;
+    wait_for_connected_peer(&server, client.npub()).await;
+    assert_delivery(&client, &server, b"legacy IPv4-mapped request").await;
+    assert_delivery(&server, &client, b"legacy IPv4-mapped reply").await;
+
+    client.shutdown().await.expect("client endpoint shutdown");
+    server.shutdown().await.expect("server endpoint shutdown");
+}
+
 #[cfg(any(
     target_os = "android",
     target_os = "ios",
@@ -182,6 +204,20 @@ fn dual_family_config(port: u16) -> Config {
     config
 }
 
+fn single_udp_config(bind_addr: String) -> Config {
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = false;
+    config.node.discovery.lan.enabled = false;
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    config.transports.udp = TransportInstances::Single(UdpConfig {
+        bind_addr: Some(bind_addr),
+        advertise_on_nostr: Some(false),
+        public: Some(false),
+        ..UdpConfig::default()
+    });
+    config
+}
+
 async fn bind_endpoint(config: Config) -> Arc<FipsEndpoint> {
     Arc::new(
         FipsEndpoint::builder()
@@ -189,7 +225,7 @@ async fn bind_endpoint(config: Config) -> Arc<FipsEndpoint> {
             .without_system_tun()
             .bind()
             .await
-            .expect("dual-family endpoint bind"),
+            .expect("test endpoint bind"),
     )
 }
 

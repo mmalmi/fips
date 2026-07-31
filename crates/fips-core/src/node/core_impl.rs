@@ -352,11 +352,20 @@ impl Node {
             .iter()
             .map(|(name, config)| (name.map(|s| s.to_string()), config.clone()))
             .collect();
+        let ipv4_bindings: HashSet<_> = udp_instances
+            .iter()
+            .filter(|(name, _)| name.is_some())
+            .filter_map(|(_, config)| wildcard_udp_binding(config, false))
+            .collect();
 
         // Create UDP transport instances
         for (name, udp_config) in udp_instances {
             let transport_id = self.allocate_transport_id();
-            let udp = UdpTransport::new(transport_id, name, udp_config, packet_tx.clone());
+            let ipv6_only = name.is_some()
+                && wildcard_udp_binding(&udp_config, true)
+                    .is_some_and(|binding| ipv4_bindings.contains(&binding));
+            let udp = UdpTransport::new(transport_id, name, udp_config, packet_tx.clone())
+                .with_ipv6_only(ipv6_only);
             transports.push(TransportHandle::Udp(udp));
         }
 
@@ -675,4 +684,20 @@ impl Node {
 
         Ok((transport_id, TransportAddr::from_string(addr_str)))
     }
+}
+
+fn wildcard_udp_binding(
+    config: &crate::config::UdpConfig,
+    ipv6: bool,
+) -> Option<(u16, Option<String>)> {
+    if config.outbound_only() {
+        return None;
+    }
+    let addr = config
+        .bind_addr
+        .as_deref()?
+        .parse::<std::net::SocketAddr>()
+        .ok()?;
+    (addr.ip().is_unspecified() && addr.is_ipv6() == ipv6 && addr.port() != 0)
+        .then(|| (addr.port(), config.bind_interface.clone()))
 }
