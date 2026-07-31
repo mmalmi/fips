@@ -1,7 +1,13 @@
 use std::process::Command;
 
+fn git_command() -> Command {
+    let mut command = Command::new("git");
+    command.current_dir(env!("CARGO_MANIFEST_DIR"));
+    command
+}
+
 fn git_output(args: &[&str]) -> Option<String> {
-    Command::new("git")
+    git_command()
         .args(args)
         .output()
         .ok()
@@ -16,7 +22,7 @@ fn main() {
     println!("cargo:rustc-env=FIPS_GIT_HASH={git_hash}");
 
     // Dirty working tree
-    let dirty = Command::new("git")
+    let dirty = git_command()
         .args(["status", "--porcelain"])
         .output()
         .ok()
