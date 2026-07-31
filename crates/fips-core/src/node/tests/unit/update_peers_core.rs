@@ -508,6 +508,109 @@ async fn network_transport_rebind_discovers_fallback_when_transit_returns() {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn network_rebind_recovers_an_addressless_session_after_its_transit_returns() {
+    #[cfg(target_os = "macos")]
+    const LOOPBACK_INTERFACE: &str = "lo0";
+    #[cfg(target_os = "linux")]
+    const LOOPBACK_INTERFACE: &str = "lo";
+
+    let mut config = Config::new();
+    config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let rebound_transport_id = TransportId::new(1);
+    node.transports.insert(
+        rebound_transport_id,
+        make_udp_transport_with_mtu(1, 1280).await,
+    );
+
+    let transit = Identity::generate();
+    let transit_addr = *transit.node_addr();
+    let transit_peer = make_active_test_peer(
+        &node,
+        &transit,
+        rebound_transport_id,
+        LinkId::new(1),
+        TransportAddr::from_string("127.0.0.1:9"),
+        SessionIndex::new(1),
+        SessionIndex::new(2),
+    );
+    node.peers.insert(transit_addr, transit_peer);
+    assert!(node.sync_dataplane_fmp_owner(&transit_addr));
+
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+    node.learn_reverse_route(remote_addr, transit_addr);
+    let mut session = SessionEntry::new(
+        remote_addr,
+        remote.pubkey_full(),
+        crate::node::session::EndToEndState::Established(make_test_fmp_session(
+            node.identity(),
+            &remote,
+            [0x51; 8],
+            [0x52; 8],
+        )),
+        1_000,
+        true,
+    );
+    session.mark_established(1_000);
+    node.sessions.insert(remote_addr, session);
+    assert!(node.sync_dataplane_fsp_owner_from_current_session(&remote_addr, 0));
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&remote_addr),
+        Some(transit_addr),
+        "fixture must route the addressless target through an authenticated graph peer"
+    );
+    assert!(
+        node.get_peer(&remote_addr).is_none(),
+        "the target must not have a direct transport connection"
+    );
+
+    assert_eq!(
+        node.apply_prepared_network_rebind(Some(LOOPBACK_INTERFACE.to_string()))
+            .await
+            .unwrap(),
+        1
+    );
+    assert!(
+        node.sessions
+            .get(&remote_addr)
+            .is_some_and(SessionEntry::is_established),
+        "carrier replacement must preserve the end-to-end session"
+    );
+
+    let returned_transit = make_active_test_peer(
+        &node,
+        &transit,
+        rebound_transport_id,
+        LinkId::new(2),
+        TransportAddr::from_string("127.0.0.1:9"),
+        SessionIndex::new(3),
+        SessionIndex::new(4),
+    );
+    node.peers.insert(transit_addr, returned_transit);
+    assert!(node.sync_dataplane_fmp_owner(&transit_addr));
+    let now_ms = Node::now_ms();
+    let baseline = node.stats().discovery.req_initiated;
+    node.retry_degraded_session_routes_after_peer_authenticated(transit_addr, now_ms)
+        .await;
+
+    assert!(
+        node.pending_lookups.contains_key(&remote_addr),
+        "the returned graph peer must trigger npub route discovery for the stranded routed session"
+    );
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        baseline + 1,
+        "recovery must issue exactly one bounded lookup without a direct endpoint"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
 #[tokio::test]
 async fn degraded_route_recovery_does_not_depend_on_direct_retry_state() {
     let mut config = Config::new();

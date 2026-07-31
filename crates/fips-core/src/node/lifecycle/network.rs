@@ -183,6 +183,22 @@ impl Node {
                 .iter()
                 .map(|(peer_addr, _)| *peer_addr)
                 .collect::<Vec<_>>();
+            let routed_fsp_destinations = self
+                .dataplane
+                .fsp_owner_destinations()
+                .into_iter()
+                .filter(|dest| {
+                    self.dataplane
+                        .fsp_owner_next_hop(dest)
+                        .is_some_and(|next_hop| {
+                            next_hop != *dest && rebound_carrier_peer_addrs.contains(&next_hop)
+                        })
+                })
+                .collect::<Vec<_>>();
+            let now_ms = Self::now_ms();
+            for dest in &routed_fsp_destinations {
+                self.restart_session_direct_path_validation(*dest, now_ms);
+            }
             for dest in self.dataplane.fsp_owner_destinations() {
                 // Route activity is evidence about one concrete carrier
                 // incarnation. Keeping it across a UDP or WebSocket rebuild
@@ -194,7 +210,6 @@ impl Node {
                     .dataplane
                     .invalidate_fsp_carrier_activity(dest, &rebound_carrier_peer_addrs);
             }
-            let now_ms = Self::now_ms();
             let mut invalidated_peers = Vec::new();
             let mut preserved_udp_peers = Vec::new();
             for (peer_addr, can_preserve_udp_session) in rebound_peers {
