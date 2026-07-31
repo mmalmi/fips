@@ -226,7 +226,6 @@ impl Node {
                     }
                     if self.sync_dataplane_fmp_owner(&peer_addr) {
                         self.restart_session_direct_path_validation(peer_addr, now_ms);
-                        self.schedule_link_dead_reprobe(peer_addr, now_ms);
                         preserved_udp_peers.push(peer_addr);
                         continue;
                     }
@@ -275,7 +274,6 @@ impl Node {
                 self.remove_dataplane_fmp_owner(peer_addr);
                 self.restart_session_direct_path_validation(*peer_addr, now_ms);
                 self.refresh_dataplane_fsp_owner_routes_after_fmp_owner_update(peer_addr);
-                self.schedule_link_dead_reprobe(*peer_addr, now_ms);
             }
             self.maybe_recover_degraded_session_routes(now_ms).await;
             debug!(
@@ -300,11 +298,24 @@ impl Node {
                     (*link_id, expected_identity)
                 })
                 .collect();
+            let mut rebind_reprobe_peers = preserved_udp_peers
+                .iter()
+                .chain(invalidated_peers.iter())
+                .copied()
+                .collect::<Vec<_>>();
             for (link_id, expected_identity) in &stale_connections {
                 self.cleanup_stale_connection(*link_id, now_ms);
                 if let Some(identity) = expected_identity {
-                    self.schedule_local_route_retry(*identity.node_addr(), now_ms);
+                    rebind_reprobe_peers.push(*identity.node_addr());
                 }
+            }
+            rebind_reprobe_peers.sort_unstable();
+            rebind_reprobe_peers.dedup();
+            for peer_addr in rebind_reprobe_peers {
+                self.schedule_network_rebind_reprobe(peer_addr, now_ms);
+            }
+            if !changed_interface_udp_transport_ids.is_empty() {
+                self.process_pending_retries(now_ms).await;
             }
             if !stale_connections.is_empty() {
                 debug!(

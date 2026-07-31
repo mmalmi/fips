@@ -552,10 +552,10 @@ impl Node {
     /// routing free to carry traffic, but make the direct retry loop eligible
     /// again quickly instead of preserving old traversal cooldowns or
     /// exponential backoff from this dead path.
-    pub(super) fn schedule_link_dead_reprobe(&mut self, node_addr: NodeAddr, now_ms: u64) {
+    pub(super) fn schedule_link_dead_reprobe(&mut self, node_addr: NodeAddr, now_ms: u64) -> bool {
         let retry_cfg = &self.config.node.retry;
         if retry_cfg.max_retries == 0 {
-            return;
+            return false;
         }
 
         let authenticated_address = self.active_peer_current_udp_candidate(&node_addr);
@@ -585,7 +585,7 @@ impl Node {
             });
 
         let Some(peer_config) = peer_config else {
-            return;
+            return false;
         };
 
         if !peer_config.auto_reconnect {
@@ -593,7 +593,7 @@ impl Node {
                 peer = %self.peer_display_name(&node_addr),
                 "Auto-reconnect disabled for peer, skipping link-dead direct re-probe"
             );
-            return;
+            return false;
         }
 
         let jitter_ms = link_dead_reprobe_jitter_ms(&node_addr);
@@ -615,6 +615,17 @@ impl Node {
             jitter_ms,
             "Scheduling quick direct re-probe after link-dead removal"
         );
+        true
+    }
+
+    /// Explicit carrier replacement already proves that the old socket cannot
+    /// recover. Reuse the link-dead state without its failure-detection delay.
+    pub(super) fn schedule_network_rebind_reprobe(&mut self, node_addr: NodeAddr, now_ms: u64) {
+        if self.schedule_link_dead_reprobe(node_addr, now_ms)
+            && let Some(state) = self.retry_pending.get_mut(&node_addr)
+        {
+            state.retry_after_ms = now_ms;
+        }
     }
 
     fn schedule_active_direct_refresh_no_transport_cooldown(

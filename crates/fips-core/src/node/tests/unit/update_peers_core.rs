@@ -92,6 +92,7 @@ async fn network_transport_rebind_reauthenticates_udp_peer_when_interface_change
     session.mark_established(1_000);
     node.sessions.insert(remote_addr, session);
 
+    assert_eq!(node.connection_count(), 0);
     assert_eq!(
         node.apply_prepared_network_rebind(Some(LOOPBACK_INTERFACE.to_string()))
             .await
@@ -109,6 +110,10 @@ async fn network_transport_rebind_reauthenticates_udp_peer_when_interface_change
     assert!(
         node.retry_pending.contains_key(&remote_addr),
         "the configured endpoint must be redialed immediately on the new interface"
+    );
+    assert!(
+        node.connection_count() > 0,
+        "a changed physical interface must start the fresh authenticated path probe inside the carrier rebind instead of waiting for link-dead jitter or a maintenance tick"
     );
     assert!(
         node.sessions.get(&remote_addr).is_some(),
@@ -1169,7 +1174,6 @@ async fn network_transport_rebind_schedules_fresh_handshake_for_active_udp_peer(
         remote_addr.as_str().unwrap(),
     )];
 
-    let before_rebind_ms = Node::now_ms();
     assert_eq!(node.apply_prepared_network_rebind(None).await.unwrap(), 1);
 
     let retry = node
@@ -1179,8 +1183,8 @@ async fn network_transport_rebind_schedules_fresh_handshake_for_active_udp_peer(
     assert!(retry.reconnect);
     assert_eq!(retry.retry_count, 0);
     assert!(
-        retry.retry_after_ms <= before_rebind_ms + 1_500,
-        "the active peer probe must use the bounded link-dead delay, not the generic liveness timeout"
+        retry.retry_after_ms <= Node::now_ms(),
+        "the rebuilt carrier must not inherit link-dead jitter"
     );
     assert!(
         retry
