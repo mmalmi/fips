@@ -47,7 +47,7 @@ async fn network_transport_rebind_preserves_peer_and_session_state() {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
-async fn network_transport_rebind_reauthenticates_udp_peer_when_interface_changes() {
+async fn network_transport_rebind_defers_udp_reauthentication_until_tuple_is_quiet() {
     #[cfg(target_os = "macos")]
     const LOOPBACK_INTERFACE: &str = "lo0";
     #[cfg(target_os = "linux")]
@@ -92,6 +92,7 @@ async fn network_transport_rebind_reauthenticates_udp_peer_when_interface_change
     session.mark_established(1_000);
     node.sessions.insert(remote_addr, session);
 
+    let rebind_started_at_ms = Node::now_ms();
     assert_eq!(node.connection_count(), 0);
     assert_eq!(
         node.apply_prepared_network_rebind(Some(LOOPBACK_INTERFACE.to_string()))
@@ -107,13 +108,25 @@ async fn network_transport_rebind_reauthenticates_udp_peer_when_interface_change
         !node.dataplane_has_fmp_owner(&remote_addr),
         "the old-interface UDP tuple must not retain dataplane ownership"
     );
+    let first_probe_at_ms = node
+        .retry_pending
+        .get(&remote_addr)
+        .expect("the configured endpoint must remain scheduled on the new interface")
+        .retry_after_ms;
+    let quiet_interval_ms = node.config.node.rate_limit.handshake_resend_interval_ms;
     assert!(
-        node.retry_pending.contains_key(&remote_addr),
-        "the configured endpoint must be redialed immediately on the new interface"
+        first_probe_at_ms >= rebind_started_at_ms.saturating_add(quiet_interval_ms),
+        "the first fresh handshake must wait for the route and stationary peer's old tuple to settle"
     );
+    assert_eq!(
+        node.connection_count(),
+        0,
+        "the rebind must not waste a handshake inside the stationary peer's anti-thrash interval"
+    );
+    node.process_pending_retries(first_probe_at_ms).await;
     assert!(
         node.connection_count() > 0,
-        "a changed physical interface must start the fresh authenticated path probe inside the carrier rebind instead of waiting for link-dead jitter or a maintenance tick"
+        "the fresh authenticated path probe must start as soon as the quiet interval ends"
     );
     assert!(
         node.sessions.get(&remote_addr).is_some(),

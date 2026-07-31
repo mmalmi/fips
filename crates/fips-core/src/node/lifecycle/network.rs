@@ -312,7 +312,20 @@ impl Node {
             rebind_reprobe_peers.sort_unstable();
             rebind_reprobe_peers.dedup();
             for peer_addr in rebind_reprobe_peers {
+                let changed_interface_udp_peer = self.peers.get(&peer_addr).is_some_and(|peer| {
+                    peer.transport_id().is_some_and(|transport_id| {
+                        changed_interface_udp_transport_ids.contains(&transport_id)
+                    })
+                });
                 self.schedule_network_rebind_reprobe(peer_addr, now_ms);
+                if changed_interface_udp_peer
+                    && let Some(retry) = self.retry_pending.get_mut(&peer_addr)
+                {
+                    // Let the new underlay route settle and the stationary
+                    // peer's old UDP tuple pass its authenticated roam guard.
+                    retry.retry_after_ms = now_ms
+                        .saturating_add(self.config.node.rate_limit.handshake_resend_interval_ms);
+                }
             }
             if !changed_interface_udp_transport_ids.is_empty() {
                 self.process_pending_retries(now_ms).await;
