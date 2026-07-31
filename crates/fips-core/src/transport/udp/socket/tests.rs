@@ -97,6 +97,22 @@ fn test_udp_socket_bind() {
     assert!(addr.ip().is_loopback());
 }
 
+#[test]
+fn ipv4_and_ipv6_wildcard_sockets_share_one_port() {
+    let ipv6 = UdpRawSocket::open("[::]:0".parse().unwrap(), 65_536, 65_536)
+        .expect("bind IPv6 wildcard UDP socket");
+    let port = ipv6.local_addr().port();
+    let ipv4 = UdpRawSocket::open(
+        SocketAddr::from(([0, 0, 0, 0], port)),
+        65_536,
+        65_536,
+    )
+    .expect("bind IPv4 wildcard UDP socket on the IPv6 listener port");
+
+    assert_eq!(ipv4.local_addr().port(), port);
+    assert_eq!(ipv6.local_addr().port(), port);
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn raw_socket_binds_to_named_underlay_interface() {

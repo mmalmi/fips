@@ -177,6 +177,16 @@ fn test_outbound_only_forces_ephemeral_bind() {
 }
 
 #[test]
+fn outbound_only_preserves_ipv6_socket_family() {
+    let cfg = UdpConfig {
+        bind_addr: Some("[::]:2121".to_string()),
+        outbound_only: Some(true),
+        ..Default::default()
+    };
+    assert_eq!(cfg.bind_addr(), "[::]:0");
+}
+
+#[test]
 fn test_outbound_only_forces_advertise_off() {
     let cfg = UdpConfig {
         advertise_on_nostr: Some(true),

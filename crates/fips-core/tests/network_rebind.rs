@@ -1,14 +1,51 @@
+use std::collections::HashMap;
 use std::net::{SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
 
-use fips_core::config::{RoutingMode, TransportInstances};
-use fips_core::{Config, FipsEndpoint, PeerIdentity, UdpConfig};
+use fips_core::config::{NostrDiscoveryPolicy, PeerConfig, RoutingMode, TransportInstances};
+use fips_core::{Config, FipsEndpoint, Identity, PeerIdentity, UdpConfig, encode_nsec};
 use tokio::time::timeout;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const CONTROL_PROGRESS_TIMEOUT: Duration = Duration::from_millis(250);
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn same_port_dual_family_udp_authenticates_and_delivers_over_both_families() {
+    let port = available_udp_port();
+    let server_identity = Identity::generate();
+    let mut server_config = dual_family_config(port);
+    server_config.node.identity.nsec = Some(encode_nsec(&server_identity.keypair().secret_key()));
+    let server = bind_endpoint(server_config).await;
+
+    for (target, ipv6) in [
+        (format!("127.0.0.1:{port}"), false),
+        (format!("[::1]:{port}"), true),
+    ] {
+        let mut client_config = dual_family_config(0);
+        client_config
+            .peers
+            .push(PeerConfig::new(server.npub(), "udp", target));
+        let client = bind_endpoint(client_config).await;
+
+        wait_for_connected_peer(&client, server.npub()).await;
+        wait_for_connected_peer(&server, client.npub()).await;
+        assert_peer_family(&client, server.npub(), ipv6).await;
+        assert_peer_family(&server, client.npub(), ipv6).await;
+        assert_delivery(&client, &server, if ipv6 { b"IPv6" } else { b"IPv4" }).await;
+        assert_delivery(
+            &server,
+            &client,
+            if ipv6 { b"IPv6 reply" } else { b"IPv4 reply" },
+        )
+        .await;
+
+        client.shutdown().await.expect("client endpoint shutdown");
+    }
+
+    server.shutdown().await.expect("server endpoint shutdown");
+}
 
 #[cfg(any(
     target_os = "android",
@@ -124,6 +161,57 @@ async fn endpoint(rendezvous_addr: SocketAddrV4, discovery_scope: &str) -> Arc<F
             .await
             .expect("local endpoint"),
     )
+}
+
+fn dual_family_config(port: u16) -> Config {
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = false;
+    config.node.discovery.nostr.policy = NostrDiscoveryPolicy::Open;
+    config.node.discovery.lan.enabled = false;
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let udp = |bind_addr| UdpConfig {
+        bind_addr: Some(bind_addr),
+        advertise_on_nostr: Some(false),
+        public: Some(false),
+        ..UdpConfig::default()
+    };
+    config.transports.udp = TransportInstances::Named(HashMap::from([
+        ("ipv4".to_string(), udp(format!("0.0.0.0:{port}"))),
+        ("ipv6".to_string(), udp(format!("[::]:{port}"))),
+    ]));
+    config
+}
+
+async fn bind_endpoint(config: Config) -> Arc<FipsEndpoint> {
+    Arc::new(
+        FipsEndpoint::builder()
+            .config(config)
+            .without_system_tun()
+            .bind()
+            .await
+            .expect("dual-family endpoint bind"),
+    )
+}
+
+async fn assert_peer_family(endpoint: &FipsEndpoint, npub: &str, ipv6: bool) {
+    let peer = endpoint
+        .peers()
+        .await
+        .expect("peer snapshot")
+        .into_iter()
+        .find(|peer| peer.npub == npub && peer.connected)
+        .expect("connected peer");
+    let addr = peer
+        .transport_addr
+        .expect("authenticated UDP transport address")
+        .parse::<SocketAddr>()
+        .expect("socket transport address");
+    assert_eq!(addr.is_ipv6(), ipv6, "peer used the wrong UDP family");
+}
+
+fn available_udp_port() -> u16 {
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("ephemeral UDP port");
+    socket.local_addr().expect("ephemeral UDP address").port()
 }
 
 async fn wait_for_connected_peer(endpoint: &FipsEndpoint, npub: &str) {

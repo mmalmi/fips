@@ -65,6 +65,12 @@
             let sock = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))
                 .map_err(|e| TransportError::StartFailed(format!("socket create failed: {}", e)))?;
 
+            if bind_addr.is_ipv6() {
+                sock.set_only_v6(true).map_err(|error| {
+                    TransportError::StartFailed(format!("set IPV6_V6ONLY failed: {error}"))
+                })?;
+            }
+
             configure_socket_nonblocking(&sock)?;
 
             apply_darwin_udp_tuning(&sock, "udp-listen");

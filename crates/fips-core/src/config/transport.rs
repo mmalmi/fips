@@ -62,8 +62,8 @@ const DEFAULT_UDP_SEND_BUF: usize = 8 * 1024 * 1024;
 pub struct UdpConfig {
     /// Bind address (`bind_addr`). Defaults to "0.0.0.0:2121".
     ///
-    /// When `outbound_only = true`, this field is ignored and the transport
-    /// binds to `0.0.0.0:0` (kernel-assigned ephemeral port) regardless.
+    /// When `outbound_only = true`, the configured address family is retained
+    /// while the transport binds to a kernel-assigned ephemeral port.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bind_addr: Option<String>,
 
@@ -111,8 +111,8 @@ pub struct UdpConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_addr: Option<String>,
     /// Outbound-only mode. When true, the transport binds to a kernel-
-    /// assigned ephemeral port (`0.0.0.0:0`) instead of the configured
-    /// `bind_addr`, refuses inbound handshake msg1, and is never
+    /// assigned ephemeral port instead of the configured `bind_addr`, refuses
+    /// inbound handshake msg1, and is never
     /// advertised on Nostr regardless of `advertise_on_nostr`. Use this
     /// to participate in the mesh as a pure client — initiate outbound
     /// links without exposing an inbound listener on a known port.
@@ -135,11 +135,21 @@ pub struct UdpConfig {
 impl UdpConfig {
     /// Get the bind address, using default if not configured.
     ///
-    /// When `outbound_only = true`, returns `0.0.0.0:0` so the kernel picks
-    /// an ephemeral source port and no listener is exposed on a known port.
+    /// When `outbound_only = true`, returns an IPv4 or IPv6 wildcard with port
+    /// zero so the kernel picks an ephemeral source port without changing the
+    /// configured socket family.
     pub fn bind_addr(&self) -> &str {
         if self.outbound_only() {
-            "0.0.0.0:0"
+            if self
+                .bind_addr
+                .as_deref()
+                .and_then(|addr| addr.parse::<SocketAddr>().ok())
+                .is_some_and(|addr| addr.is_ipv6())
+            {
+                "[::]:0"
+            } else {
+                "0.0.0.0:0"
+            }
         } else {
             self.bind_addr.as_deref().unwrap_or(DEFAULT_UDP_BIND_ADDR)
         }

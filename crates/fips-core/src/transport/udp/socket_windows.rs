@@ -107,6 +107,12 @@ mod platform {
             let sock = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))
                 .map_err(|e| TransportError::StartFailed(format!("socket create failed: {}", e)))?;
 
+            if bind_addr.is_ipv6() {
+                sock.set_only_v6(true).map_err(|error| {
+                    TransportError::StartFailed(format!("set IPV6_V6ONLY failed: {error}"))
+                })?;
+            }
+
             sock.set_nonblocking(true).map_err(|e| {
                 TransportError::StartFailed(format!("set nonblocking failed: {}", e))
             })?;
