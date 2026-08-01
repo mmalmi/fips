@@ -281,6 +281,34 @@ impl Node {
             })
     }
 
+    /// Whether established payload already has a usable indirect owner.
+    ///
+    /// This gates only periodic discovery. Direct-path degradation and retry
+    /// state remain active so direct recovery continues independently.
+    fn has_healthy_fallback_fsp_owner(&self, dest: &NodeAddr, now_ms: u64) -> bool {
+        if !self
+            .sessions
+            .get(dest)
+            .is_some_and(|session| session.is_established())
+        {
+            return false;
+        }
+        let Some(next_hop) = self.dataplane.fsp_owner_next_hop(dest) else {
+            return false;
+        };
+
+        next_hop != *dest
+            && self.dataplane_has_fmp_owner(&next_hop)
+            && self
+                .peers
+                .get(&next_hop)
+                .is_some_and(|peer| peer.is_healthy() && peer.can_send())
+            && !self
+                .learned_routes
+                .failed_next_hops(dest, now_ms)
+                .contains(&next_hop)
+    }
+
     /// Recover degraded end-to-end sessions as soon as a transit adjacency is healthy.
     ///
     /// Carrier rebinding can invalidate direct NAT tuples and connection-oriented
@@ -292,6 +320,7 @@ impl Node {
             .session_direct_degradation
             .active_destinations(now_ms)
             .filter(|node_addr| !self.pending_lookups.contains_key(node_addr))
+            .filter(|node_addr| !self.has_healthy_fallback_fsp_owner(node_addr, now_ms))
             .take(MAX_DEGRADED_ROUTE_RECOVERIES_PER_PASS)
             .collect();
 

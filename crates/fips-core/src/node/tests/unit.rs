@@ -8,6 +8,7 @@ use crate::transport::udp::UdpTransport;
 use crate::transport::{TransportHandle, packet_channel};
 
 mod config_capacity_classifiers;
+mod degraded_route_idle;
 mod endpoint_events;
 mod link_registry_rx;
 mod liveness_fallback;
