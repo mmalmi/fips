@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.52] - 2026-08-01
+
+### Fixed
+
+- Keep established sessions quiet after successful fallback-route recovery by
+  suppressing recurring discovery while their indirect FSP owner is healthy
+  and sendable, without delaying direct-path retries or recovery after that
+  fallback becomes unusable.
+- Release `fips-core` and `fips-endpoint` 0.4.52 together. FMP, FSP,
+  discovery, routing, and physical transport wire formats are unchanged.
+
 ## [0.4.51] - 2026-08-01
 
 ### Fixed
