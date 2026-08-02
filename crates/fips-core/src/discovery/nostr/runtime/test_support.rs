@@ -26,6 +26,21 @@ impl NostrDiscovery {
     }
 
     #[cfg(test)]
+    pub(crate) fn new_for_test_with_identity(identity: &crate::Identity) -> Self {
+        let mut discovery = Self::new_for_test();
+        let keys = nostr::Keys::parse(&hex::encode(identity.keypair().secret_bytes()))
+            .expect("test identity key");
+        discovery.client = Client::builder()
+            .signer(keys.clone())
+            .opts(ClientOptions::new().autoconnect(false))
+            .build();
+        discovery.pubkey = keys.public_key();
+        discovery.npub = identity.npub();
+        discovery.keys = keys;
+        discovery
+    }
+
+    #[cfg(test)]
     pub(crate) fn new_for_test_with_config(config: NostrDiscoveryConfig) -> Self {
         Self::new_unstarted_with_config(config)
     }
@@ -70,6 +85,8 @@ impl NostrDiscovery {
             active_initiators: Mutex::new(HashMap::new()),
             active_refetches: Mutex::new(HashSet::new()),
             seen_sessions: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            received_mesh_offer_count: std::sync::atomic::AtomicUsize::new(0),
             offer_slots,
             event_tx,
             event_rx: Mutex::new(event_rx),
@@ -143,8 +160,29 @@ impl NostrDiscovery {
     }
 
     #[cfg(test)]
+    pub(crate) async fn emit_event_for_test(&self, event: BootstrapEvent) {
+        self.emit_event(event).await;
+    }
+
+    #[cfg(test)]
     pub(crate) fn push_mesh_signal_for_test(&self, signal: MeshTraversalSignal) {
         let _ = self.mesh_signal_tx.try_send(signal);
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn emit_mesh_signal_for_test(&self, signal: MeshTraversalSignal) -> bool {
+        self.emit_mesh_signal(signal).await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn npub_for_test(&self) -> String {
+        self.npub.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn received_mesh_offer_count_for_test(&self) -> usize {
+        self.received_mesh_offer_count
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     #[cfg(test)]

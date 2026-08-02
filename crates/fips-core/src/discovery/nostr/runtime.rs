@@ -291,6 +291,8 @@ pub struct NostrDiscovery {
     active_initiators: Mutex<HashMap<NostrPeerKey, u64>>,
     active_refetches: Mutex<HashSet<NostrPeerKey>>,
     seen_sessions: Mutex<HashMap<String, u64>>,
+    #[cfg(test)]
+    received_mesh_offer_count: std::sync::atomic::AtomicUsize,
     offer_slots: Arc<Semaphore>,
     event_tx: mpsc::Sender<BootstrapEvent>,
     event_rx: Mutex<mpsc::Receiver<BootstrapEvent>>,
@@ -406,6 +408,8 @@ impl NostrDiscovery {
             active_initiators: Mutex::new(HashMap::new()),
             active_refetches: Mutex::new(HashSet::new()),
             seen_sessions: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            received_mesh_offer_count: std::sync::atomic::AtomicUsize::new(0),
             offer_slots,
             event_tx,
             event_rx: Mutex::new(event_rx),

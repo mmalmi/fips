@@ -1,9 +1,12 @@
 use super::*;
+use std::time::Instant;
 
 #[path = "lan_discovery.rs"]
 mod lan_discovery;
 
 impl Node {
+    const NOSTR_NODE_EVENT_DRAIN_BUDGET: usize = 1;
+
     /// Poll all transports for discovered peers and auto-connect.
     ///
     /// Called from the tick handler. Iterates operational transports,
@@ -147,20 +150,46 @@ impl Node {
     }
 
     pub(in crate::node) async fn poll_nostr_discovery(&mut self) {
-        #[cfg(feature = "webrtc-transport")]
-        self.drain_webrtc_session_signals().await;
-        self.flush_pending_mesh_signals().await;
+        self.poll_nostr_discovery_work(None).await;
+    }
+
+    pub(in crate::node) async fn poll_nostr_discovery_event_turn(
+        &mut self,
+        max_elapsed: std::time::Duration,
+    ) {
+        self.poll_nostr_discovery_work(Some(Instant::now() + max_elapsed))
+            .await;
+    }
+
+    async fn poll_nostr_discovery_work(&mut self, deadline: Option<Instant>) {
+        if deadline.is_none() {
+            #[cfg(feature = "webrtc-transport")]
+            self.drain_webrtc_session_signals().await;
+        }
+        self.flush_pending_mesh_signals(Self::NOSTR_NODE_EVENT_DRAIN_BUDGET)
+            .await;
 
         let Some(bootstrap) = self.nostr_discovery.clone() else {
             return;
         };
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            bootstrap.node_event_notify().notify_one();
+            return;
+        }
 
         bootstrap.set_outbound_admission(self.open_discovery_outbound_admission_check());
         bootstrap.set_direct_refresh_admission(self.outbound_direct_refresh_admission_check());
 
         self.drain_nostr_mesh_signals(&bootstrap).await;
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            bootstrap.node_event_notify().notify_one();
+            return;
+        }
 
-        for event in bootstrap.drain_events().await {
+        for event in bootstrap
+            .drain_node_events(Self::NOSTR_NODE_EVENT_DRAIN_BUDGET)
+            .await
+        {
             match event {
                 BootstrapEvent::Established { traversal } => {
                     let peer_identity = match PeerIdentity::from_npub(&traversal.peer_npub) {
@@ -337,6 +366,10 @@ impl Node {
             }
         }
 
+        if deadline.is_some() {
+            return;
+        }
+
         self.maybe_run_startup_open_discovery_sweep(&bootstrap)
             .await;
         self.queue_open_discovery_retries(&bootstrap).await;
@@ -413,7 +446,10 @@ impl Node {
         &mut self,
         bootstrap: &std::sync::Arc<NostrDiscovery>,
     ) {
-        for signal in bootstrap.drain_mesh_signals().await {
+        for signal in bootstrap
+            .drain_node_mesh_signals(Self::NOSTR_NODE_EVENT_DRAIN_BUDGET)
+            .await
+        {
             let (peer_npub, msg_type, payload) = match &signal {
                 MeshTraversalSignal::Offer { peer_npub, offer } => {
                     let payload = match serde_json::to_vec(&offer) {
@@ -490,7 +526,7 @@ impl Node {
         }
     }
 
-    async fn flush_pending_mesh_signals(&mut self) {
+    async fn flush_pending_mesh_signals(&mut self, limit: usize) {
         let ready = self
             .pending_mesh_signals
             .keys()
@@ -501,12 +537,18 @@ impl Node {
                     .is_some_and(|entry| entry.is_established())
             })
             .collect::<Vec<_>>();
+        let mut remaining_budget = limit;
         for peer_addr in ready {
+            if remaining_budget == 0 {
+                break;
+            }
             let Some(signals) = self.pending_mesh_signals.remove(&peer_addr) else {
                 continue;
             };
+            let processed = remaining_budget.min(signals.len());
+            let mut signals = signals.into_iter();
             let mut failed = Vec::new();
-            for signal in signals {
+            for signal in signals.by_ref().take(processed) {
                 if self
                     .send_session_msg(&peer_addr, signal.msg_type, &signal.payload)
                     .await
@@ -515,9 +557,19 @@ impl Node {
                     failed.push(signal);
                 }
             }
+            failed.extend(signals);
             if !failed.is_empty() {
                 self.pending_mesh_signals.insert(peer_addr, failed);
             }
+            remaining_budget = remaining_budget.saturating_sub(processed);
+        }
+        if self.pending_mesh_signals.keys().any(|peer_addr| {
+            self.sessions
+                .get(peer_addr)
+                .is_some_and(|entry| entry.is_established())
+        }) && let Some(discovery) = &self.nostr_discovery
+        {
+            discovery.node_event_notify().notify_one();
         }
     }
 

@@ -10,10 +10,23 @@ pub struct FipsEndpointBuilder {
     local_instance_roles: Vec<crate::discovery::local::LocalInstanceCapability>,
     disable_system_networking: bool,
     packet_channel_capacity: usize,
+    #[cfg(test)]
+    test_nostr_discovery: Option<TestNostrDiscovery>,
     #[cfg(feature = "host-ble-transport")]
     host_ble: Option<HostBleAttachment>,
     #[cfg(feature = "host-ble-transport")]
     host_ble_config: Option<crate::config::BleConfig>,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct TestNostrDiscovery(Arc<crate::discovery::nostr::NostrDiscovery>);
+
+#[cfg(test)]
+impl std::fmt::Debug for TestNostrDiscovery {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("TestNostrDiscovery(..)")
+    }
 }
 
 #[cfg(feature = "host-ble-transport")]
@@ -39,6 +52,8 @@ impl Default for FipsEndpointBuilder {
             local_instance_roles: Vec::new(),
             disable_system_networking: true,
             packet_channel_capacity: DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY,
+            #[cfg(test)]
+            test_nostr_discovery: None,
             #[cfg(feature = "host-ble-transport")]
             host_ble: None,
             #[cfg(feature = "host-ble-transport")]
@@ -193,9 +208,18 @@ impl FipsEndpointBuilder {
         direct_sink: Option<EndpointDirectSink>,
     ) -> Result<FipsEndpoint, FipsEndpointError> {
         let config = self.prepared_config();
+        #[cfg(test)]
+        let test_nostr_discovery = self
+            .test_nostr_discovery
+            .as_ref()
+            .map(|value| value.0.clone());
 
         let mut node = Node::new(config)?;
         node.set_local_instance_roles(self.local_instance_roles);
+        #[cfg(test)]
+        if let Some(discovery) = test_nostr_discovery {
+            node.set_nostr_discovery_for_test(discovery);
+        }
         #[cfg(feature = "host-ble-transport")]
         if let Some(attachment) = &self.host_ble {
             let io = attachment
@@ -250,5 +274,16 @@ impl FipsEndpointBuilder {
             shutdown_tx: std::sync::Mutex::new(Some(shutdown_tx)),
             task: std::sync::Mutex::new(Some(task)),
         })
+    }
+}
+
+#[cfg(test)]
+impl FipsEndpointBuilder {
+    pub(super) async fn bind_with_nostr_discovery_for_test(
+        mut self,
+        discovery: Arc<crate::discovery::nostr::NostrDiscovery>,
+    ) -> Result<FipsEndpoint, FipsEndpointError> {
+        self.test_nostr_discovery = Some(TestNostrDiscovery(discovery));
+        self.bind().await
     }
 }

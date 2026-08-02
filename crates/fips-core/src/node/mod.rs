@@ -436,6 +436,16 @@ pub struct Node {
     host_map: Arc<HostMap>,
 }
 
+#[cfg(test)]
+impl Node {
+    pub(crate) fn set_nostr_discovery_for_test(
+        &mut self,
+        discovery: std::sync::Arc<crate::discovery::nostr::NostrDiscovery>,
+    ) {
+        self.nostr_discovery = Some(discovery);
+    }
+}
+
 impl fmt::Debug for Node {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Node")

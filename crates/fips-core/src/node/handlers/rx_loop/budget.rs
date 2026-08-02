@@ -30,6 +30,8 @@ pub(super) const RX_LOOP_BULK_SERVICE_MAX_ELAPSED: Duration = Duration::from_mil
 pub(super) const RX_LOOP_FAST_MAINTENANCE_TIMEOUT: Duration = Duration::from_secs(2);
 pub(super) const RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT: Duration = Duration::from_millis(100);
 pub(super) const RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT: Duration = Duration::from_millis(10);
+pub(super) const RX_LOOP_NOSTR_EVENT_TURN_BUDGET: Duration = Duration::from_millis(10);
+pub(super) const RX_LOOP_NOSTR_EVENT_TURN_INTERVAL: Duration = Duration::from_millis(5);
 pub(super) const RX_LOOP_RECENT_DATA_ACTIVITY_WINDOW: Duration = Duration::from_secs(2);
 const RX_LOOP_FAULT_MAX_DELAY_MS: u64 = 5_000;
 

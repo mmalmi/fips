@@ -374,6 +374,9 @@ impl NostrDiscovery {
         offer: TraversalOffer,
         sender_npub: String,
     ) {
+        #[cfg(test)]
+        self.received_mesh_offer_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if offer.message_type != "offer" || offer.recipient_npub != self.npub {
             debug!(
                 peer = %short_npub(&sender_npub),

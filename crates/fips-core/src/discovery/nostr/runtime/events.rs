@@ -6,19 +6,38 @@ impl NostrDiscovery {
     }
 
     pub async fn drain_events(&self) -> Vec<BootstrapEvent> {
+        self.drain_node_events(usize::MAX).await
+    }
+
+    pub(crate) async fn drain_node_events(&self, limit: usize) -> Vec<BootstrapEvent> {
         let mut out = Vec::new();
         let mut rx = self.event_rx.lock().await;
-        while let Ok(event) = rx.try_recv() {
+        while out.len() < limit
+            && let Ok(event) = rx.try_recv()
+        {
             out.push(event);
+        }
+        if out.len() == limit {
+            self.node_event_notify.notify_one();
         }
         out
     }
 
+    #[cfg(test)]
     pub(crate) async fn drain_mesh_signals(&self) -> Vec<MeshTraversalSignal> {
+        self.drain_node_mesh_signals(usize::MAX).await
+    }
+
+    pub(crate) async fn drain_node_mesh_signals(&self, limit: usize) -> Vec<MeshTraversalSignal> {
         let mut out = Vec::new();
         let mut rx = self.mesh_signal_rx.lock().await;
-        while let Ok(signal) = rx.try_recv() {
+        while out.len() < limit
+            && let Ok(signal) = rx.try_recv()
+        {
             out.push(signal);
+        }
+        if out.len() == limit {
+            self.node_event_notify.notify_one();
         }
         out
     }

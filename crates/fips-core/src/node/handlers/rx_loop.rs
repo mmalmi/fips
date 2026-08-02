@@ -218,6 +218,7 @@ impl Node {
         // tick so the reserved-progress branch below represents a due periodic
         // maintenance turn, not an eager pre-data maintenance pass.
         tick.tick().await;
+        let mut nostr_event_turn_not_before = Instant::now();
 
         loop {
             tokio::select! {
@@ -279,9 +280,6 @@ impl Node {
                         );
                     }
                 }
-                _ = wait_for_optional_notify(nostr_node_event_notify.as_ref()) => {
-                    self.poll_nostr_discovery().await;
-                }
                 Some(message) = control_query_rx.recv() => {
                     self.drain_control_queries(
                         &mut control_query_rx,
@@ -311,6 +309,19 @@ impl Node {
                             );
                         }
                     }
+                }
+                // Discovery receives an explicitly rate-limited fair turn:
+                // lifecycle control stays reserved, while hot discovery can
+                // delay dataplane work by at most one timeboxed turn per gap.
+                _ = wait_for_optional_notify_after(
+                    nostr_node_event_notify.as_ref(),
+                    nostr_event_turn_not_before,
+                ) => {
+                    self.poll_nostr_discovery_event_turn(
+                        RX_LOOP_NOSTR_EVENT_TURN_BUDGET,
+                    ).await;
+                    nostr_event_turn_not_before =
+                        Instant::now() + RX_LOOP_NOSTR_EVENT_TURN_INTERVAL;
                 }
                 packet = dataplane_runtime.packet_rx.recv() => {
                     match packet {
@@ -794,6 +805,11 @@ async fn wait_for_optional_notify(notify: Option<&Arc<Notify>>) {
         Some(notify) => notify.notified().await,
         None => std::future::pending().await,
     }
+}
+
+async fn wait_for_optional_notify_after(notify: Option<&Arc<Notify>>, not_before: Instant) {
+    tokio::time::sleep(not_before.saturating_duration_since(Instant::now())).await;
+    wait_for_optional_notify(notify).await;
 }
 
 async fn rx_loop_fast_maintenance_within_budget<F>(maintenance: F) -> bool
