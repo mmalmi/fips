@@ -504,6 +504,35 @@ impl crate::node::SessionRegistry {
 }
 
 impl Node {
+    pub(in crate::node) fn retire_fmp_rekey_drain_for_dead_path(
+        &mut self,
+        node_addr: &NodeAddr,
+        reason: &'static str,
+    ) -> bool {
+        let peer_name = self.peer_display_name(node_addr);
+        let drained = self.peers.get_mut(node_addr).and_then(|peer| {
+            let transport_id = peer.previous_transport_id().or_else(|| peer.transport_id());
+            peer.complete_drain()
+                .map(|old_our_index| (transport_id, old_our_index))
+        });
+        let Some((transport_id, old_our_index)) = drained else {
+            return false;
+        };
+
+        if let Some(transport_id) = transport_id {
+            self.deregister_session_index((transport_id, old_our_index.as_u32()));
+        }
+        let _ = self.index_allocator.free(old_our_index);
+        let _ = self.sync_dataplane_fmp_owner(node_addr);
+        debug!(
+            peer = %peer_name,
+            old_index = %old_our_index,
+            reason,
+            "Retired previous FMP epoch after path replacement"
+        );
+        true
+    }
+
     pub(in crate::node) fn abandon_fmp_rekey_for_peer(
         &mut self,
         node_addr: &NodeAddr,

@@ -189,6 +189,48 @@ async fn network_transport_rebind_replaces_udp_upgrade_for_configured_websocket_
 }
 
 #[tokio::test]
+async fn network_transport_rebind_retires_previous_carrier_rekey_drain() {
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+    let mut config = Config::new();
+    config.peers = vec![auto_connect_peer(remote.npub(), "127.0.0.1:9")];
+    let mut node = Node::new(config).unwrap();
+    let transport_id = TransportId::new(1);
+    node.transports
+        .insert(transport_id, make_udp_transport_with_mtu(1, 1280).await);
+
+    let mut peer = make_active_test_peer(
+        &node,
+        &remote,
+        transport_id,
+        LinkId::new(1),
+        TransportAddr::from_string("127.0.0.1:9"),
+        SessionIndex::new(1),
+        SessionIndex::new(2),
+    );
+    peer.set_pending_session(
+        make_test_fmp_session(node.identity(), &remote, [0x41; 8], [0x42; 8]),
+        SessionIndex::new(3),
+        SessionIndex::new(4),
+        true,
+    );
+    assert!(peer.cutover_to_new_session().is_some());
+    assert!(peer.is_draining(), "fixture requires an active FMP drain");
+    node.peers.insert(remote_addr, peer);
+    assert!(node.sync_dataplane_fmp_owner(&remote_addr));
+
+    assert_eq!(node.apply_prepared_network_rebind(None).await.unwrap(), 1);
+    assert!(
+        !node.get_peer(&remote_addr).unwrap().is_draining(),
+        "carrier replacement must retire the previous carrier epoch instead of blocking the next recovery rekey until the ordinary drain timeout"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
 async fn network_transport_rebind_replaces_repeated_rebuilt_carrier_affinity() {
     let mut config = Config::new();
     config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;

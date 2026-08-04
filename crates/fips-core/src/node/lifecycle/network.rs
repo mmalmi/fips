@@ -214,6 +214,12 @@ impl Node {
             let mut preserved_udp_peers = Vec::new();
             for (peer_addr, can_preserve_udp_session) in rebound_peers {
                 self.pending_lookups.remove(&peer_addr);
+                // Packets queued on the previous carrier incarnation are
+                // rejected by transport_rebind_packet_cutoffs_ms above. Its
+                // previous FMP epoch can therefore no longer drain useful
+                // traffic; retaining it blocks the next recovery rekey when
+                // two network changes happen inside the ordinary drain window.
+                self.retire_fmp_rekey_drain_for_dead_path(&peer_addr, "network carrier rebind");
                 if can_preserve_udp_session {
                     let has_pending_rekey = self.peers.get(&peer_addr).is_some_and(|peer| {
                         peer.rekey_in_progress() || peer.pending_new_session().is_some()

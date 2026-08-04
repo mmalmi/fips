@@ -762,6 +762,14 @@ impl Node {
             self.record_link_dead_path_failure(&dead_peer.node_addr, now_ms)
                 .await;
             self.abandon_fmp_rekey_for_peer(&dead_peer.node_addr, "link-dead direct path");
+            // A confirmed-dead carrier cannot drain useful packets from its
+            // previous FMP epoch. Keeping that epoch blocks the configured
+            // peer's immediate authenticated reconnect until the normal drain
+            // timeout even when its physical transport has already returned.
+            self.retire_fmp_rekey_drain_for_dead_path(
+                &dead_peer.node_addr,
+                "link-dead direct path",
+            );
             self.remove_link_dead_peer(&dead_peer.node_addr);
             self.schedule_link_dead_reprobe(dead_peer.node_addr, now_ms);
             if let Some(peer_config) = self
