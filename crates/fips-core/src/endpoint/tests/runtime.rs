@@ -57,6 +57,42 @@ async fn endpoint_starts_without_system_tun() {
     endpoint.shutdown().await.expect("shutdown should succeed");
 }
 
+#[tokio::test]
+async fn endpoint_reports_bound_udp_listener_without_nostr_discovery() {
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = false;
+    config.transports.udp = TransportInstances::Single(UdpConfig {
+        bind_addr: Some("127.0.0.1:0".to_string()),
+        advertise_on_nostr: Some(false),
+        outbound_only: Some(false),
+        accept_connections: Some(true),
+        ..UdpConfig::default()
+    });
+    let endpoint = FipsEndpoint::builder()
+        .config(config)
+        .without_system_tun()
+        .bind()
+        .await
+        .expect("endpoint should bind");
+
+    assert!(
+        endpoint
+            .local_advertised_endpoints()
+            .await
+            .expect("advert snapshot")
+            .is_empty()
+    );
+    let addrs = endpoint
+        .bound_udp_listen_addrs()
+        .await
+        .expect("bound listener snapshot");
+    assert_eq!(addrs.len(), 1);
+    assert!(addrs[0].ip().is_loopback());
+    assert_ne!(addrs[0].port(), 0);
+
+    endpoint.shutdown().await.expect("shutdown should succeed");
+}
+
 mod control_progress;
 #[tokio::test(start_paused = true)]
 async fn endpoint_control_times_out_for_wedged_node() {

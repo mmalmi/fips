@@ -346,6 +346,20 @@ impl FipsEndpoint {
         Ok(self.local_capability_directory.snapshot())
     }
 
+    /// Snapshot addresses owned by operational UDP transports that accept inbound
+    /// FIPS handshakes. Advert visibility does not affect this socket state.
+    pub async fn bound_udp_listen_addrs(
+        &self,
+    ) -> Result<Vec<std::net::SocketAddr>, FipsEndpointError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.control(
+            "bound UDP listener snapshot",
+            NodeEndpointControlCommand::BoundUdpListenAddrs { response_tx },
+            response_rx,
+        )
+        .await
+    }
+
     /// Send application-owned endpoint payloads to one resolved peer.
     ///
     /// This is the canonical endpoint-data send path for applications that

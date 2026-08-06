@@ -246,6 +246,9 @@ pub(crate) enum NodeEndpointControlCommand {
         response_tx:
             tokio::sync::oneshot::Sender<Vec<crate::discovery::nostr::OverlayEndpointAdvert>>,
     },
+    BoundUdpListenAddrs {
+        response_tx: tokio::sync::oneshot::Sender<Vec<std::net::SocketAddr>>,
+    },
     LocalNostrDiscoveryAdvertEvent {
         response_tx: tokio::sync::oneshot::Sender<Result<Option<nostr::Event>, NodeError>>,
     },

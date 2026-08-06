@@ -273,6 +273,22 @@ impl Node {
                 };
                 let _ = response_tx.send(endpoints);
             }
+            NodeEndpointControlCommand::BoundUdpListenAddrs { response_tx } => {
+                let mut addrs = self
+                    .transports
+                    .iter()
+                    .filter(|(id, handle)| {
+                        !self.is_local_rendezvous_transport(id)
+                            && handle.is_operational()
+                            && handle.transport_type().name == "udp"
+                            && handle.accept_connections()
+                    })
+                    .filter_map(|(_, handle)| handle.local_addr())
+                    .collect::<Vec<_>>();
+                addrs.sort_unstable();
+                addrs.dedup();
+                let _ = response_tx.send(addrs);
+            }
             NodeEndpointControlCommand::LocalNostrDiscoveryAdvertEvent { response_tx } => {
                 let result = if let Some(discovery) = self.nostr_discovery_handle() {
                     discovery
