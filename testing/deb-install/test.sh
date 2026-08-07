@@ -57,12 +57,12 @@ cleanup_container() {
 
 file_mtime() {
     local path="$1"
-    stat -f '%m' "$path" 2>/dev/null || stat -c '%Y' "$path" 2>/dev/null || echo 0
+    stat -c '%Y' "$path" 2>/dev/null || stat -f '%m' "$path" 2>/dev/null || echo 0
 }
 
 file_size() {
     local path="$1"
-    stat -f '%z' "$path" 2>/dev/null || stat -c '%s' "$path" 2>/dev/null || echo 0
+    stat -c '%s' "$path" 2>/dev/null || stat -f '%z' "$path" 2>/dev/null || echo 0
 }
 
 newest_source_mtime() {
