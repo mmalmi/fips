@@ -10,6 +10,7 @@
 #   /usr/local/bin/fipsctl        CLI query tool
 #   /usr/local/bin/fipstop        TUI monitor
 #   /usr/local/bin/fips-gateway   Outbound LAN gateway binary (opt-in)
+#   /usr/local/bin/fips-health-probe  End-to-end WebRTC/FSP health probe
 #   /etc/fips/fips.yaml           Configuration (preserved if exists)
 #   /etc/fips/hosts               Host-to-npub mappings (preserved if exists)
 #   /etc/fips/fips.nft            Mesh-interface nftables baseline (preserved if exists)
@@ -18,6 +19,7 @@
 #   /etc/systemd/system/fips-dns.service       DNS routing for .fips domain (enabled)
 #   /etc/systemd/system/fips-gateway.service   Gateway unit (NOT enabled; opt-in)
 #   /etc/systemd/system/fips-firewall.service  Firewall baseline unit (NOT enabled; opt-in)
+#   /etc/systemd/system/fips-healthcheck.{service,timer}  Health probe (NOT enabled; opt-in)
 
 set -euo pipefail
 
@@ -37,6 +39,11 @@ fi
 
 if [ ! -f "${SCRIPT_DIR}/fips" ]; then
     echo "Error: fips binary not found in ${SCRIPT_DIR}" >&2
+    exit 1
+fi
+
+if [ ! -f "${SCRIPT_DIR}/fips-health-probe" ]; then
+    echo "Error: fips-health-probe binary not found in ${SCRIPT_DIR}" >&2
     exit 1
 fi
 
@@ -68,6 +75,7 @@ fi
 if [ -f "${SCRIPT_DIR}/fips-gateway" ]; then
     install -m 0755 "${SCRIPT_DIR}/fips-gateway" "${INSTALL_PREFIX}/bin/fips-gateway"
 fi
+install -m 0755 "${SCRIPT_DIR}/fips-health-probe" "${INSTALL_PREFIX}/bin/fips-health-probe"
 
 # --- Install configuration ---
 
@@ -134,6 +142,8 @@ fi
 if [ -f "${SCRIPT_DIR}/fips-firewall.service" ]; then
     install -m 0644 "${SCRIPT_DIR}/fips-firewall.service" "${SYSTEMD_DIR}/fips-firewall.service"
 fi
+install -m 0644 "${SCRIPT_DIR}/fips-healthcheck.service" "${SYSTEMD_DIR}/fips-healthcheck.service"
+install -m 0644 "${SCRIPT_DIR}/fips-healthcheck.timer" "${SYSTEMD_DIR}/fips-healthcheck.timer"
 # DNS helpers ship flat in the tarball alongside install.sh; from a
 # source checkout they live under packaging/common/. Resolve from
 # either layout.
@@ -145,8 +155,12 @@ else
     install -m 0755 "${SCRIPT_DIR}/../common/fips-dns-setup" /usr/lib/fips/fips-dns-setup
     install -m 0755 "${SCRIPT_DIR}/../common/fips-dns-teardown" /usr/lib/fips/fips-dns-teardown
 fi
+install -m 0755 "${SCRIPT_DIR}/fips-healthcheck" /usr/lib/fips/fips-healthcheck
+install -d -m 0755 /usr/local/share/doc/fips
+install -m 0644 "${SCRIPT_DIR}/fips-health-probe.env.example" \
+    /usr/local/share/doc/fips/fips-health-probe.env.example
 systemctl daemon-reload
-echo "systemd units and DNS scripts installed."
+echo "systemd units, DNS scripts, and health probe installed."
 
 # --- Configure runtime directory group ownership ---
 # systemd creates /run/fips/ with RuntimeDirectory, but we need the
@@ -200,6 +214,11 @@ echo ""
 echo "  Outbound LAN gateway (bridge unmodified LAN hosts to .fips):"
 echo "    sudo systemctl enable --now fips-gateway.service"
 echo "    Configure under the gateway: section of ${CONFIG_FILE}"
+echo ""
+echo "  End-to-end public path health check:"
+echo "    Copy /usr/local/share/doc/fips/fips-health-probe.env.example"
+echo "    to /etc/fips/fips-health-probe.env, configure it, then run:"
+echo "    sudo systemctl enable --now fips-healthcheck.timer"
 echo ""
 echo "Monitor:"
 echo "  sudo journalctl -u fips -f"

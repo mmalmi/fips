@@ -293,6 +293,23 @@ DOCKERFILE
     else
         fail "/usr/bin/fips-gateway missing"
     fi
+    if docker exec "$name" test -x /usr/bin/fips-health-probe && \
+       docker exec "$name" test -x /usr/lib/fips/fips-healthcheck; then
+        pass "health probe binary and wrapper installed"
+    else
+        fail "health probe binary or wrapper missing"
+    fi
+    health_output=$(docker exec "$name" env \
+        FIPS_HEALTH_TARGET_NPUB=invalid \
+        FIPS_HEALTH_SEED_URLS=wss://seed.invalid \
+        /usr/lib/fips/fips-healthcheck 2>&1 || true)
+    if echo "$health_output" | grep -q "invalid target npub" && \
+       ! echo "$health_output" | grep -q "unexpected argument"; then
+        pass "installed health wrapper matches the current probe CLI"
+    else
+        fail "installed health wrapper and probe CLI disagree"
+        echo "$health_output" | tail -10
+    fi
     if docker exec "$name" test -f /etc/fips/fips.yaml; then
         pass "/etc/fips/fips.yaml conffile installed"
     else
@@ -310,6 +327,12 @@ DOCKERFILE
         pass "fips-dns.service enabled by postinst"
     else
         fail "fips-dns.service not enabled after install"
+    fi
+    if docker exec "$name" test -f /lib/systemd/system/fips-healthcheck.service && \
+       docker exec "$name" test -f /lib/systemd/system/fips-healthcheck.timer; then
+        pass "healthcheck service and timer installed"
+    else
+        fail "healthcheck service or timer missing"
     fi
 
     # ── nftables firewall baseline (v0.3.0) ──────────────────────────

@@ -16,6 +16,7 @@ sudo ./install.sh
 | fipsctl (CLI) | /usr/local/bin/fipsctl |
 | fipstop (TUI) | /usr/local/bin/fipstop |
 | fips-gateway (LAN bridge) | /usr/local/bin/fips-gateway |
+| fips-health-probe | /usr/local/bin/fips-health-probe |
 | Configuration | /etc/fips/fips.yaml |
 | Identity key | /etc/fips/fips.key (auto-generated) |
 | Public key | /etc/fips/fips.pub (auto-generated) |
@@ -27,12 +28,14 @@ sudo ./install.sh
 | Gateway unit | /etc/systemd/system/fips-gateway.service (NOT enabled) |
 | Firewall unit | /etc/systemd/system/fips-firewall.service (NOT enabled) |
 | DNS helpers | /usr/lib/fips/fips-dns-{setup,teardown} |
+| Health probe wrapper | /usr/lib/fips/fips-healthcheck |
+| Health probe units | /etc/systemd/system/fips-healthcheck.{service,timer} (NOT enabled) |
 
 A system group `fips` is created for control socket access. By
 default, only `fips.service` and `fips-dns.service` are enabled at
 install time. `fips-gateway.service` and `fips-firewall.service`
-are installed but require explicit operator opt-in (see the
-sections below).
+and `fips-healthcheck.timer` are installed but require explicit operator opt-in
+(see the sections below).
 
 ## Post-Install Configuration
 
@@ -176,6 +179,22 @@ to come up, and runs `fips-gateway --config /etc/fips/fips.yaml`.
 Inbound port-forward rules can be added in the same `gateway:`
 block.
 
+### 8. Functional health probe (optional)
+
+Copy the example, set the target identity and at least one WSS seed URL, then
+enable the timer:
+
+```bash
+sudo cp /usr/local/share/doc/fips/fips-health-probe.env.example \
+  /etc/fips/fips-health-probe.env
+sudo editor /etc/fips/fips-health-probe.env
+sudo systemctl enable --now fips-healthcheck.timer
+```
+
+The probe verifies discovery, authenticated WebRTC/FMP setup, and a
+target-attributed FSP echo. Protect the environment file as mode `0600` when it
+contains `FIPS_HEALTH_SECRET`.
+
 ## Firewall Ports
 
 | Port | Protocol | Purpose |
@@ -185,10 +204,11 @@ block.
 
 ## Service Management
 
-The install ships four units. `fips.service` and `fips-dns.service`
+The install ships six units. `fips.service` and `fips-dns.service`
 are enabled at install time. `fips-gateway.service` and
 `fips-firewall.service` are installed but disabled until the
-operator opts in.
+operator opts in. `fips-healthcheck.service` is run by the likewise opt-in
+`fips-healthcheck.timer`.
 
 ```bash
 # Daemon
@@ -202,11 +222,13 @@ sudo systemctl restart fips-dns
 # Optional services (opt-in)
 sudo systemctl enable --now fips-firewall   # mesh-interface nftables baseline
 sudo systemctl enable --now fips-gateway    # outbound LAN gateway
+sudo systemctl enable --now fips-healthcheck.timer  # public path health probe
 
 # View logs (any of the units above)
 sudo journalctl -u fips -f
 sudo journalctl -u fips-gateway -f
 sudo journalctl -u fips-firewall -f
+sudo journalctl -u fips-healthcheck -f
 
 # Switch to debug logging
 sudo systemctl set-environment RUST_LOG=debug

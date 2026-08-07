@@ -3,8 +3,8 @@ set -eu
 
 PROBE=${FIPS_HEALTH_PROBE:-$(command -v fips-health-probe || true)}
 TARGET_NPUB=${FIPS_HEALTH_TARGET_NPUB:-}
+SEED_URLS=${FIPS_HEALTH_SEED_URLS:-}
 TIMEOUT_SECONDS=${FIPS_HEALTH_TIMEOUT_SECONDS:-25}
-APP=${FIPS_HEALTH_APP:-fips-overlay-v1}
 
 if [ -z "$PROBE" ]; then
     echo "fips-healthcheck: fips-health-probe not found" >&2
@@ -16,9 +16,14 @@ if [ -z "$TARGET_NPUB" ]; then
     exit 1
 fi
 
-set -- --target-npub "$TARGET_NPUB" --timeout-seconds "$TIMEOUT_SECONDS" --app "$APP"
-for relay in ${FIPS_HEALTH_RELAYS:-}; do
-    set -- "$@" --relay "$relay"
+if [ -z "$SEED_URLS" ]; then
+    echo "fips-healthcheck: FIPS_HEALTH_SEED_URLS is not configured" >&2
+    exit 1
+fi
+
+set -- --target-npub "$TARGET_NPUB" --timeout-seconds "$TIMEOUT_SECONDS"
+for seed_url in $SEED_URLS; do
+    set -- "$@" --seed-url "$seed_url"
 done
 
 outer_timeout=$((TIMEOUT_SECONDS + 8))

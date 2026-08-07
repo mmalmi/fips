@@ -22,7 +22,7 @@ fi
 # Stop dependents (firewall, gateway, dns) before the daemon to avoid
 # noisy "fips0 disappeared" cascades during the teardown.
 
-for unit in fips-gateway.service fips-firewall.service fips-dns.service fips.service; do
+for unit in fips-healthcheck.timer fips-healthcheck.service fips-gateway.service fips-firewall.service fips-dns.service fips.service; do
     if systemctl is-active --quiet "${unit}" 2>/dev/null; then
         echo "Stopping ${unit}..."
         systemctl stop "${unit}"
@@ -38,6 +38,8 @@ rm -f /etc/systemd/system/fips.service
 rm -f /etc/systemd/system/fips-dns.service
 rm -f /etc/systemd/system/fips-gateway.service
 rm -f /etc/systemd/system/fips-firewall.service
+rm -f /etc/systemd/system/fips-healthcheck.service
+rm -f /etc/systemd/system/fips-healthcheck.timer
 rm -rf /usr/lib/fips/
 systemctl daemon-reload
 echo "systemd units and DNS scripts removed."
@@ -53,7 +55,9 @@ rm -f /etc/tmpfiles.d/fips.conf
 
 # --- Remove binaries ---
 
-rm -f /usr/local/bin/fips /usr/local/bin/fipsctl /usr/local/bin/fipstop /usr/local/bin/fips-gateway
+rm -f /usr/local/bin/fips /usr/local/bin/fipsctl /usr/local/bin/fipstop \
+    /usr/local/bin/fips-gateway /usr/local/bin/fips-health-probe
+rm -f /usr/local/share/doc/fips/fips-health-probe.env.example
 echo "Binaries removed."
 
 # --- Optionally remove configuration and group ---

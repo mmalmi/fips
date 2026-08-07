@@ -98,7 +98,7 @@ rm -rf "${STAGING_DIR}"
 mkdir -p "${STAGING_DIR}"
 
 # Copy binaries
-for bin in fips fipsctl fipstop fips-gateway; do
+for bin in fips fipsctl fipstop fips-gateway fips-health-probe; do
     if [[ ! -f "${BINARY_DIR}/${bin}" ]]; then
         echo "Missing binary: ${BINARY_DIR}/${bin}" >&2
         exit 1
@@ -115,7 +115,8 @@ fi
     "${STAGING_DIR}/fips" \
     "${STAGING_DIR}/fipsctl" \
     "${STAGING_DIR}/fipstop" \
-    "${STAGING_DIR}/fips-gateway"
+    "${STAGING_DIR}/fips-gateway" \
+    "${STAGING_DIR}/fips-health-probe"
 
 # Copy packaging files
 cp "${SCRIPT_DIR}/install.sh" "${STAGING_DIR}/"
@@ -129,6 +130,10 @@ cp "${PACKAGING_DIR}/common/hosts" "${STAGING_DIR}/"
 cp "${PACKAGING_DIR}/common/fips.nft" "${STAGING_DIR}/"
 cp "${PACKAGING_DIR}/common/fips-dns-setup" "${STAGING_DIR}/"
 cp "${PACKAGING_DIR}/common/fips-dns-teardown" "${STAGING_DIR}/"
+cp "${PACKAGING_DIR}/common/fips-healthcheck" "${STAGING_DIR}/"
+cp "${PACKAGING_DIR}/debian/fips-health-probe.env.example" "${STAGING_DIR}/"
+cp "${PACKAGING_DIR}/debian/fips-healthcheck.service" "${STAGING_DIR}/"
+cp "${PACKAGING_DIR}/debian/fips-healthcheck.timer" "${STAGING_DIR}/"
 cp "${SCRIPT_DIR}/README.install.md" "${STAGING_DIR}/"
 
 chmod +x "${STAGING_DIR}/install.sh" "${STAGING_DIR}/uninstall.sh"
