@@ -237,8 +237,51 @@ impl Node {
         let peer_node_addr = *peer_identity.node_addr();
         let mut concrete_budget = self.path_candidate_attempt_budget(&peer_node_addr);
         let mut started_candidate_this_pass = false;
+        // Priority is a failover order, not permission to race every known
+        // path at once.  Racing lower-priority learned endpoints alongside an
+        // operator-configured endpoint lets a slower handshake replace the
+        // preferred path after it has already authenticated.  Start with the
+        // best tier and unlock one additional tier after each failed retry so
+        // stale configured endpoints still retain an automatic fallback.
+        let mut allowed_priority = {
+            let unlocked_tiers = self
+                .retry_pending
+                .get(&peer_node_addr)
+                .map(|state| state.retry_count.saturating_add(1) as usize)
+                .unwrap_or(1);
+            let mut priorities = addresses
+                .iter()
+                .map(|addr| addr.priority)
+                .collect::<Vec<_>>();
+            priorities.sort_unstable();
+            priorities.dedup();
+            priorities
+                .get(unlocked_tiers.saturating_sub(1))
+                .or_else(|| priorities.last())
+                .copied()
+        };
+        let mut viable_concrete_attempt_in_allowed_tier = false;
 
         for addr in addresses {
+            if allowed_priority.is_some_and(|priority| addr.priority > priority) {
+                if !viable_concrete_attempt_in_allowed_tier {
+                    // Pseudo-addresses such as udp:nat and candidates that
+                    // cannot use any local transport do not consume a
+                    // priority tier. Fall through to the next tier in the
+                    // same pass instead of waiting for a retry that cannot be
+                    // scheduled from a purely local failure.
+                    allowed_priority = Some(addr.priority);
+                } else {
+                    debug!(
+                        npub = %peer_config.npub,
+                        priority = addr.priority,
+                        allowed_priority = allowed_priority.unwrap_or(addr.priority),
+                        "Deferring lower-priority peer address until a later retry"
+                    );
+                    continue;
+                }
+            }
+
             if addr.transport == "udp" && addr.addr.eq_ignore_ascii_case("nat") {
                 if !allow_bootstrap_nat {
                     continue;
@@ -342,6 +385,7 @@ impl Node {
 
             if self.is_connecting_to_peer_on_path(&peer_node_addr, transport_id, &remote_addr) {
                 attempted = true;
+                viable_concrete_attempt_in_allowed_tier = true;
                 debug!(
                     npub = %peer_config.npub,
                     transport_id = %transport_id,
@@ -384,6 +428,7 @@ impl Node {
                 Ok(()) => {
                     attempted = true;
                     started_candidate_this_pass = true;
+                    viable_concrete_attempt_in_allowed_tier = true;
                     concrete_budget = concrete_budget.saturating_sub(1);
                 }
                 Err(e @ NodeError::AccessDenied(_)) => return Err(e),

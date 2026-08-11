@@ -776,11 +776,12 @@ impl FipsEndpoint {
     }
 
     /// Replace the runtime peer list. Newly added auto-connect peers get
-    /// dialed immediately using every known address (overlay-fresh first,
-    /// then operator/cache hints). Removed peers are dropped from the
-    /// retry queue but stay connected if they currently are — the regular
-    /// liveness timeout reaps idle sessions. Existing entries get their
-    /// `addresses` field refreshed so the next retry sees the latest hints.
+    /// dialed immediately using the best-priority address tier; failed retries
+    /// progressively unlock lower-priority fallback tiers. Removed peers are
+    /// dropped from the retry queue but stay connected if they currently are —
+    /// the regular liveness timeout reaps idle sessions. Existing entries get
+    /// their `addresses` field refreshed so the next retry sees the latest
+    /// hints.
     ///
     /// Pass an empty `addresses` vector for a peer if you want fips to
     /// resolve them entirely from the Nostr advert at dial time.
