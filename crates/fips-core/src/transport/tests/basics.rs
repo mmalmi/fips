@@ -147,6 +147,27 @@ fn test_transport_addr_from_string() {
 }
 
 #[test]
+fn transport_addr_from_socket_addr_preserves_ipv6_scope_id() {
+    let socket_addr = std::net::SocketAddr::V6(std::net::SocketAddrV6::new(
+        "fe80::1234".parse().unwrap(),
+        51820,
+        0,
+        14,
+    ));
+
+    let addr = TransportAddr::from_socket_addr(socket_addr);
+
+    assert_eq!(addr.as_str(), Some("[fe80::1234%14]:51820"));
+    assert_eq!(
+        addr.as_str()
+            .unwrap()
+            .parse::<std::net::SocketAddr>()
+            .unwrap(),
+        socket_addr
+    );
+}
+
+#[test]
 fn test_link_stats_basic() {
     let mut stats = LinkStats::new();
 
