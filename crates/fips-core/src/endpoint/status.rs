@@ -80,7 +80,18 @@ impl FipsEndpointPeer {
 }
 
 pub(super) fn is_reusable_udp_socket_addr(addr: &SocketAddr) -> bool {
-    addr.port() != 0 && !addr.ip().is_unspecified() && !addr.ip().is_multicast()
+    addr.port() != 0
+        && !addr.ip().is_unspecified()
+        && !addr.ip().is_multicast()
+        && !matches!(
+            addr,
+            SocketAddr::V6(v6)
+                if ipv6_is_unicast_link_local(*v6.ip()) && v6.scope_id() == 0
+        )
+}
+
+fn ipv6_is_unicast_link_local(ip: std::net::Ipv6Addr) -> bool {
+    (ip.segments()[0] & 0xffc0) == 0xfe80
 }
 
 /// Live Nostr relay state visible to an embedded application.

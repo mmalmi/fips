@@ -489,6 +489,11 @@ impl TransportAddr {
                 let mut buf = Vec::with_capacity(56);
                 buf.push(b'[');
                 write!(&mut buf, "{}", addr.ip()).expect("Vec<u8>::write_fmt is infallible");
+                if addr.scope_id() != 0 {
+                    buf.push(b'%');
+                    write!(&mut buf, "{}", addr.scope_id())
+                        .expect("Vec<u8>::write_fmt is infallible");
+                }
                 buf.push(b']');
                 buf.push(b':');
                 push_decimal_u16(&mut buf, addr.port());

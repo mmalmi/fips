@@ -96,7 +96,60 @@ async fn test_nat_bootstrap_failure_falls_back_to_direct_udp_address() {
 }
 
 #[tokio::test]
-async fn test_try_peer_addresses_races_all_concrete_udp_candidates() {
+async fn test_try_peer_addresses_races_only_best_priority_tier() {
+    let peer_identity = Identity::generate();
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![
+            crate::config::PeerAddress::with_priority("udp", "127.0.0.1:9", 1),
+            crate::config::PeerAddress::with_priority("udp", "127.0.0.1:10", 1),
+            crate::config::PeerAddress::with_priority("udp", "127.0.0.1:11", 2),
+        ],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer_identity = PeerIdentity::from_npub(&peer_config.npub).unwrap();
+
+    node.try_peer_addresses(&peer_config, peer_identity, false)
+        .await
+        .unwrap();
+
+    let mut addrs = node
+        .peers
+        .connection_values()
+        .filter_map(|conn| conn.source_addr().and_then(|addr| addr.as_str()))
+        .collect::<Vec<_>>();
+    addrs.sort();
+    assert_eq!(addrs, vec!["127.0.0.1:10", "127.0.0.1:9"]);
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
+async fn test_try_peer_addresses_unlocks_lower_priority_after_failed_retry() {
     let peer_identity = Identity::generate();
     let mut node = make_node();
     let (packet_tx, packet_rx) = packet_channel(64);
@@ -129,6 +182,10 @@ async fn test_try_peer_addresses_races_all_concrete_udp_candidates() {
         discovery_fallback_transit: true,
     };
     let peer_identity = PeerIdentity::from_npub(&peer_config.npub).unwrap();
+    let peer_node_addr = *peer_identity.node_addr();
+    let mut retry = crate::node::retry::RetryState::new(peer_config.clone());
+    retry.retry_count = 1;
+    node.retry_pending.insert(peer_node_addr, retry);
 
     node.try_peer_addresses(&peer_config, peer_identity, false)
         .await
@@ -349,6 +406,27 @@ fn test_private_udp_hint_requires_matching_local_scope() {
         udp_remote_addr_locally_plausible_with_evidence(hotspot_local, public_remote, &[], None),
         "public UDP endpoint candidates do not need local subnet evidence"
     );
+}
+
+#[test]
+fn unscoped_ipv6_link_local_udp_hint_is_never_plausible() {
+    let local: SocketAddr = "[::]:51820".parse().unwrap();
+    let unscoped: SocketAddr = "[fe80::1234]:51820".parse().unwrap();
+    let scoped: SocketAddr = "[fe80::1234%14]:51820".parse().unwrap();
+    let local_link: IpAddr = "fe80::5678".parse().unwrap();
+
+    assert!(!udp_remote_addr_locally_plausible_with_evidence(
+        local,
+        unscoped,
+        &[],
+        Some(local_link),
+    ));
+    assert!(udp_remote_addr_locally_plausible_with_evidence(
+        local,
+        scoped,
+        &[],
+        Some(local_link),
+    ));
 }
 
 #[tokio::test]
