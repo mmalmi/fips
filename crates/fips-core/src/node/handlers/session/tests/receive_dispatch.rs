@@ -479,6 +479,34 @@
             None,
             "MMP reports must not reset session idle"
         );
+        assert_eq!(
+            report_dispatch.direct_validation_source(),
+            None,
+            "routed MMP reports must not validate or move the fallback reply path"
+        );
+
+        let direct_report_plaintext = fsp_prepend_inner_header(
+            0x0102_0305,
+            SessionMessageType::SenderReport.to_byte(),
+            0,
+            b"direct report",
+        );
+        let direct_report_dispatch = AuthenticatedSessionDispatch::new(
+            source_addr,
+            source_addr,
+            false,
+            AuthenticatedSessionMessage::new(
+                source_peer,
+                crate::transport::PacketBuffer::new(direct_report_plaintext),
+                SessionMessageType::SenderReport.to_byte(),
+            ),
+        );
+        assert_eq!(direct_report_dispatch.receive_completion(), None);
+        assert_eq!(
+            direct_report_dispatch.direct_validation_source(),
+            Some(source_addr),
+            "authenticated direct FSP control should validate only the direct adjacency"
+        );
     }
 
     #[test]

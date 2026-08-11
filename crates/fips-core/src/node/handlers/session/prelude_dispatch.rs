@@ -202,7 +202,7 @@ struct SessionDispatchFinish {
 #[derive(Debug, Default)]
 struct SessionReceiveBatchCommit {
     previous_hops: Vec<NodeAddr>,
-    direct_sources: Vec<NodeAddr>,
+    direct_validation_sources: Vec<NodeAddr>,
     fallback_ingress: Vec<(NodeAddr, NodeAddr)>,
     retry_peers: Vec<NodeAddr>,
     pending_flush_sources: Vec<NodeAddr>,
@@ -217,7 +217,7 @@ impl SessionDispatchFinish {
 impl SessionReceiveBatchCommit {
     fn is_empty(&self) -> bool {
         self.previous_hops.is_empty()
-            && self.direct_sources.is_empty()
+            && self.direct_validation_sources.is_empty()
             && self.fallback_ingress.is_empty()
             && self.retry_peers.is_empty()
             && self.pending_flush_sources.is_empty()
@@ -232,7 +232,10 @@ impl SessionReceiveBatchCommit {
     fn push_receive_completion(&mut self, completion: SessionReceiveCompletion) {
         Self::push_unique(&mut self.previous_hops, completion.previous_hop_addr);
         let retry_peer = if completion.direct_path {
-            Self::push_unique(&mut self.direct_sources, completion.source_addr);
+            Self::push_unique(
+                &mut self.direct_validation_sources,
+                completion.source_addr,
+            );
             completion.source_addr
         } else {
             if !self
@@ -251,12 +254,19 @@ impl SessionReceiveBatchCommit {
     fn push_dispatch(&mut self, dispatch: &AuthenticatedSessionDispatch) {
         if let Some(completion) = dispatch.receive_completion() {
             self.push_receive_completion(completion);
+        } else if let Some(source_addr) = dispatch.direct_validation_source() {
+            // Authenticated FSP control received from the destination itself
+            // proves that the end-to-end session is alive on the direct
+            // carrier. It may validate that adjacency, but it must not refresh
+            // application/session-idle bookkeeping or create fallback reply
+            // affinity.
+            Self::push_unique(&mut self.direct_validation_sources, source_addr);
         }
     }
 
     fn finish(self, node: &mut Node) -> Vec<NodeAddr> {
         if self.previous_hops.is_empty()
-            && self.direct_sources.is_empty()
+            && self.direct_validation_sources.is_empty()
             && self.fallback_ingress.is_empty()
             && self.retry_peers.is_empty()
             && self.pending_flush_sources.is_empty()
@@ -271,13 +281,13 @@ impl SessionReceiveBatchCommit {
             }
         }
 
-        for source_addr in self.direct_sources {
-            if node.authenticated_direct_payload_validates_route(&source_addr, now_ms)
+        for source_addr in self.direct_validation_sources {
+            if node.authenticated_direct_session_validates_route(&source_addr, now_ms)
                 && node.clear_session_direct_path_degraded(&source_addr)
             {
                 debug!(
                     src = %node.peer_display_name(&source_addr),
-                    "Authenticated direct endpoint data restored direct payload routing"
+                    "Authenticated direct FSP traffic restored direct payload routing"
                 );
             }
         }
@@ -408,6 +418,10 @@ impl AuthenticatedSessionDispatch {
                 previous_hop_addr: self.previous_hop_addr,
                 direct_path: self.previous_hop_addr == self.source_addr,
             })
+    }
+
+    fn direct_validation_source(&self) -> Option<NodeAddr> {
+        (self.previous_hop_addr == self.source_addr).then_some(self.source_addr)
     }
 
     fn commit(&self) -> SessionDispatchCommit {

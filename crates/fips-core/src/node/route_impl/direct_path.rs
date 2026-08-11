@@ -114,15 +114,23 @@ impl Node {
         let _ = self.refresh_dataplane_fsp_owner_routes(&dest);
     }
 
+    pub(in crate::node) fn authenticated_direct_session_validates_route(
+        &mut self,
+        dest: &NodeAddr,
+        now_ms: u64,
+    ) -> bool {
+        self.session_direct_degradation
+            .record_authenticated_payload_progress(dest, now_ms)
+    }
+
+    #[cfg(test)]
     pub(in crate::node) fn authenticated_direct_payload_validates_route(
         &mut self,
         dest: &NodeAddr,
         now_ms: u64,
     ) -> bool {
         self.session_direct_path_has_recent_data_return(dest, now_ms)
-            && self
-                .session_direct_degradation
-                .record_authenticated_payload_progress(dest, now_ms)
+            && self.authenticated_direct_session_validates_route(dest, now_ms)
     }
 
     pub(in crate::node) fn clear_session_direct_path_degraded(&mut self, dest: &NodeAddr) -> bool {
