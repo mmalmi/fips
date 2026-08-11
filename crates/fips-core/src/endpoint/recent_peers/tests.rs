@@ -171,6 +171,33 @@ fn only_connected_reusable_udp_paths_become_restart_endpoints() {
 }
 
 #[test]
+fn unscoped_ipv6_link_local_is_not_reused_but_scoped_is() {
+    let local = npub();
+    let remote = npub();
+    let mut recent = RecentPeers::new(local, "scope").unwrap();
+
+    recent
+        .observe_authenticated_peer(
+            &endpoint_peer(remote.clone(), "udp", "[fe80::1234]:51820"),
+            1_000,
+        )
+        .unwrap();
+    assert!(recent.peers[&remote].endpoints.is_empty());
+
+    recent
+        .observe_authenticated_peer(
+            &endpoint_peer(remote.clone(), "udp", "[fe80::1234%14]:51820"),
+            2_000,
+        )
+        .unwrap();
+    assert_eq!(recent.peers[&remote].endpoints.len(), 1);
+    assert_eq!(
+        recent.peers[&remote].endpoints[0].addr,
+        "[fe80::1234%14]:51820"
+    );
+}
+
+#[test]
 fn validation_rejects_endpoint_newer_than_peer_authentication() {
     let local = npub();
     let remote = npub();

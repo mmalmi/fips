@@ -127,7 +127,7 @@ fn udp_remote_addr_locally_plausible(
     provenance: PeerAddressProvenance,
     evidence: &UdpRouteEvidence,
 ) -> bool {
-    if udp_remote_addr_invalid(remote_addr.ip()) {
+    if udp_socket_addr_invalid(remote_addr) {
         return false;
     }
     if provenance != PeerAddressProvenance::Learned {
@@ -148,7 +148,7 @@ pub(in crate::node) fn udp_remote_addr_locally_plausible_with_evidence(
     route_probe_local_ip: Option<IpAddr>,
 ) -> bool {
     let remote_ip = remote_addr.ip();
-    if udp_remote_addr_invalid(remote_ip) {
+    if udp_socket_addr_invalid(remote_addr) {
         return false;
     }
     if !udp_remote_addr_requires_local_scope(remote_ip) {
@@ -172,6 +172,15 @@ fn udp_remote_addr_invalid(ip: IpAddr) -> bool {
         IpAddr::V4(v4) => v4.is_unspecified() || v4.is_multicast() || v4.is_broadcast(),
         IpAddr::V6(v6) => v6.is_unspecified() || v6.is_multicast(),
     }
+}
+
+fn udp_socket_addr_invalid(addr: SocketAddr) -> bool {
+    udp_remote_addr_invalid(addr.ip())
+        || matches!(
+            addr,
+            SocketAddr::V6(v6)
+                if (v6.ip().segments()[0] & 0xffc0) == 0xfe80 && v6.scope_id() == 0
+        )
 }
 
 fn udp_remote_addr_requires_local_scope(ip: IpAddr) -> bool {

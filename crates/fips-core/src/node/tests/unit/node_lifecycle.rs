@@ -351,6 +351,27 @@ fn test_private_udp_hint_requires_matching_local_scope() {
     );
 }
 
+#[test]
+fn unscoped_ipv6_link_local_udp_hint_is_never_plausible() {
+    let local: SocketAddr = "[::]:51820".parse().unwrap();
+    let unscoped: SocketAddr = "[fe80::1234]:51820".parse().unwrap();
+    let scoped: SocketAddr = "[fe80::1234%14]:51820".parse().unwrap();
+    let local_link: IpAddr = "fe80::5678".parse().unwrap();
+
+    assert!(!udp_remote_addr_locally_plausible_with_evidence(
+        local,
+        unscoped,
+        &[],
+        Some(local_link),
+    ));
+    assert!(udp_remote_addr_locally_plausible_with_evidence(
+        local,
+        scoped,
+        &[],
+        Some(local_link),
+    ));
+}
+
 #[tokio::test]
 async fn test_active_peer_match_rejects_unresolvable_numeric_udp_candidate() {
     let mut node = make_node();
