@@ -384,6 +384,20 @@ impl Node {
             if peer_config.auto_reconnect {
                 self.schedule_link_dead_reprobe(node_addr, now_ms);
             }
+
+            // The caller has stronger end-to-end liveness evidence than the
+            // first-hop routing tables: an established participant can be
+            // silent even while its current transit peer remains healthy.
+            // Race bounded route rediscovery with the direct probe and retain
+            // the current session/owner until an authenticated replacement
+            // route arrives.
+            if self
+                .sessions
+                .get(&node_addr)
+                .is_some_and(|session| session.is_established())
+            {
+                self.maybe_initiate_path_recovery_lookup(&node_addr).await;
+            }
         }
 
         Ok(refreshed)

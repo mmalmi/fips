@@ -494,6 +494,94 @@ async fn refresh_peer_paths_redials_active_peer_on_same_known_candidate() {
 }
 
 #[tokio::test]
+async fn refresh_peer_paths_rediscovers_stale_established_fallback_session() {
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+    let remote_config = auto_connect_peer(remote.npub(), "127.0.0.1:9");
+    let transit = Identity::generate();
+    let transit_addr = *transit.node_addr();
+    let transit_config = auto_connect_peer(transit.npub(), "127.0.0.1:10");
+
+    let mut config = Config::new();
+    config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;
+    config.peers = vec![remote_config.clone(), transit_config];
+    let mut node = Node::new(config).unwrap();
+
+    let transport_id = TransportId::new(1);
+    node.transports
+        .insert(transport_id, make_udp_transport_with_mtu(1, 1280).await);
+    let transit_peer = make_active_test_peer(
+        &node,
+        &transit,
+        transport_id,
+        LinkId::new(2),
+        TransportAddr::from_string("127.0.0.1:10"),
+        SessionIndex::new(3),
+        SessionIndex::new(4),
+    );
+    node.peers.insert(transit_addr, transit_peer);
+    assert!(node.sync_dataplane_fmp_owner(&transit_addr));
+    node.learn_reverse_route(remote_addr, transit_addr);
+
+    let mut session = SessionEntry::new(
+        remote_addr,
+        remote.pubkey_full(),
+        crate::node::session::EndToEndState::Established(make_test_fmp_session(
+            node.identity(),
+            &remote,
+            [0x51; 8],
+            [0x52; 8],
+        )),
+        1_000,
+        true,
+    );
+    session.mark_established(1_000);
+    node.sessions.insert(remote_addr, session);
+    assert!(node.sync_dataplane_fsp_owner_from_current_session(&remote_addr, 0));
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&remote_addr),
+        Some(transit_addr),
+        "fixture must begin with an established session over a live mesh neighbor"
+    );
+    assert!(
+        !node.session_direct_path_degradation_active(&remote_addr, Node::now_ms()),
+        "the app-level stale signal must not depend on a short-lived internal degradation marker"
+    );
+
+    let baseline = node.stats().discovery.req_initiated;
+    let refreshed = node
+        .refresh_peer_paths(vec![remote_config.npub])
+        .await
+        .unwrap();
+
+    assert_eq!(refreshed, 1, "the direct path should still be raced");
+    assert!(
+        node.pending_lookups.contains_key(&remote_addr),
+        "refreshing a stale participant must also seek a fresh route through the mesh"
+    );
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        baseline + 1,
+        "one explicit refresh should start one bounded mesh lookup"
+    );
+    assert!(
+        node.sessions
+            .get(&remote_addr)
+            .is_some_and(SessionEntry::is_established),
+        "route rediscovery must preserve the end-to-end session"
+    );
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&remote_addr),
+        Some(transit_addr),
+        "route rediscovery must preserve the current owner until a replacement is authenticated"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
 async fn refresh_peer_paths_continues_after_an_unreachable_peer() {
     let mut node = make_node();
     let (packet_tx, packet_rx) = packet_channel(64);
