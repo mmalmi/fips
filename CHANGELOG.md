@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.58] - 2026-08-16
+
+### Fixed
+
+- Negotiate a fresh direct UDP path over an active authenticated mesh fallback
+  while probing learned concrete endpoint hints, so stale pre-roam NAT mappings
+  cannot suppress hole punching until the fallback route also dies.
+- Release `fips-core` and `fips-endpoint` 0.4.58 together. FMP, FSP,
+  discovery, routing, and physical transport wire formats are unchanged.
+
 ## [0.4.57] - 2026-08-16
 
 ### Fixed
