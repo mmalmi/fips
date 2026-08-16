@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.57] - 2026-08-16
+
+### Fixed
+
+- Rediscover a bounded mesh route when an application explicitly refreshes an
+  established but silent peer, while racing direct recovery and preserving the
+  current end-to-end session until a replacement route authenticates.
+- Release `fips-core` and `fips-endpoint` 0.4.57 together. FMP, FSP,
+  discovery, routing, and physical transport wire formats are unchanged.
+
 ## [0.4.56] - 2026-08-07
 
 ### Fixed
