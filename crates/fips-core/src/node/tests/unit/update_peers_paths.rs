@@ -541,7 +541,7 @@ async fn active_nostr_peer_without_static_addresses_only_retests_observed_udp_pa
 }
 
 #[tokio::test]
-async fn active_fallback_uses_cached_direct_advert_as_probe_hint() {
+async fn active_fallback_concrete_hints_also_start_mesh_traversal() {
     use crate::discovery::nostr::{OverlayEndpointAdvert, OverlayTransportKind};
 
     let mut node = make_node();
@@ -568,7 +568,11 @@ async fn active_fallback_uses_cached_direct_advert_as_probe_hint() {
     let peer_config = crate::config::PeerConfig {
         npub: peer_full.npub(),
         alias: None,
-        addresses: vec![crate::config::PeerAddress::with_priority("udp", "nat", 1)],
+        addresses: vec![crate::config::PeerAddress::with_priority(
+            "udp",
+            "127.0.0.1:8",
+            1,
+        )],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
         auto_reconnect: true,
         discovery_fallback_transit: false,
@@ -614,7 +618,7 @@ async fn active_fallback_uses_cached_direct_advert_as_probe_hint() {
     assert_eq!(
         bootstrap.active_initiator_count_for_test().await,
         1,
-        "probing a cached endpoint must not suppress the fresh Nostr/mesh traversal request"
+        "an active mesh fallback must negotiate a fresh direct path even when concrete hints exist"
     );
 
     for transport in node.transports.values_mut() {
