@@ -298,7 +298,7 @@ async fn active_direct_refresh_prioritizes_configured_static_over_observed_udp_e
 }
 
 #[tokio::test]
-async fn active_fallback_static_hint_does_not_invent_nostr_traversal() {
+async fn active_bootstrap_refresh_renegotiates_without_discovery_hint() {
     use crate::config::NostrDiscoveryPolicy;
     use crate::node::session::{EndToEndState, SessionEntry};
     use crate::noise::HandshakeState;
@@ -382,8 +382,8 @@ async fn active_fallback_static_hint_does_not_invent_nostr_traversal() {
     );
     assert_eq!(
         bootstrap.active_initiator_count_for_test().await,
-        0,
-        "a static endpoint without udp:nat must not invent a NAT traversal attempt"
+        1,
+        "an authenticated bootstrap path must renegotiate direct connectivity without relying on an expiring discovery hint"
     );
 
     for transport in node.transports.values_mut() {

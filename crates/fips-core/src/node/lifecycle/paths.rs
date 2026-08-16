@@ -61,16 +61,14 @@ impl Node {
             && self
                 .session_direct_degradation
                 .has_pending_validation(&peer_node_addr);
-        let bootstrap_direct_refresh_needed = allow_same_path_refresh
-            && self.active_peer_uses_bootstrap_transport(&peer_node_addr)
-            && candidates.iter().any(|candidate| {
-                !candidate.is_configured() && candidate.transport.eq_ignore_ascii_case("udp")
-            });
+        let bootstrap_direct_refresh_needed =
+            allow_same_path_refresh && self.active_peer_uses_bootstrap_transport(&peer_node_addr);
         // A rebound socket cannot make a stale public endpoint reachable
-        // through endpoint-dependent NAT. Likewise, concrete learned hints
-        // can all name the old mapping while a bootstrap path is active.
-        // Negotiate a fresh direct route over the preserved mesh session in
-        // parallel with concrete address probes and rekey recovery.
+        // through endpoint-dependent NAT. Learned hints can all name the old
+        // mapping or expire while a bootstrap path stays active, so they are
+        // probes rather than prerequisites. Negotiate a fresh direct route
+        // over the preserved authenticated session in parallel with concrete
+        // address probes and rekey recovery.
         let traversal_started = if direct_path_refresh_needed || bootstrap_direct_refresh_needed {
             self.request_nostr_bootstrap(peer_config).await
         } else {
