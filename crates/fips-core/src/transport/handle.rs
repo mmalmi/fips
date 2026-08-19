@@ -487,10 +487,13 @@ impl TransportHandle {
     }
 
     /// Schedule cleanup for a connection removed by a synchronous node path.
-    pub fn close_connection_detached(&self, _addr: &TransportAddr) {
+    pub fn close_connection_detached(&self, addr: &TransportAddr) {
+        if let TransportHandle::WebSocket(transport) = self {
+            transport.close_connection_detached(addr);
+        }
         #[cfg(feature = "webrtc-transport")]
         if let TransportHandle::WebRtc(transport) = self {
-            transport.close_connection_detached(_addr);
+            transport.close_connection_detached(addr);
         }
     }
 

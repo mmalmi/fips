@@ -160,6 +160,115 @@ async fn url_only_seed_hint_completes_noise_ik_and_datagram_exchange() {
 }
 
 #[tokio::test]
+async fn link_dead_inbound_websocket_closes_physical_carrier() {
+    let server = make_websocket_node(WebSocketConfig {
+        bind_addr: Some("127.0.0.1:0".into()),
+        ..Default::default()
+    })
+    .await;
+    let client = make_websocket_node(WebSocketConfig {
+        seed_urls: vec![server.addr.to_string()],
+        reconnect_initial_ms: Some(100),
+        reconnect_max_ms: Some(100),
+        ..Default::default()
+    })
+    .await;
+    let mut nodes = vec![server, client];
+    let server_addr = *nodes[0].node.node_addr();
+    let client_addr = *nodes[1].node.node_addr();
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            for node in &mut nodes {
+                node.node.poll_transport_discovery().await;
+                node.node.poll_pending_connects().await;
+            }
+            run_synthetic_node_work(&mut nodes).await;
+            process_available_packets(&mut nodes).await;
+            if nodes[0].node.get_peer(&client_addr).is_some()
+                && nodes[1].node.get_peer(&server_addr).is_some()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the initial WebSocket adjacency must authenticate");
+
+    nodes[0].node.config.node.link_dead_timeout_secs = 30;
+    super::seed_dataplane_fmp_rx_for_test(&mut nodes[0].node, client_addr, Duration::from_secs(31));
+    nodes[0]
+        .node
+        .peers
+        .get_mut(&client_addr)
+        .expect("server client peer")
+        .touch(Node::now_ms().saturating_sub(31_000));
+
+    nodes[0].node.check_link_heartbeats().await;
+    assert!(
+        nodes[0].node.get_peer(&client_addr).is_none(),
+        "the server must evict the stale authenticated route before accepting a replacement"
+    );
+
+    let reconnected = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            for node in &mut nodes {
+                node.node.poll_transport_discovery().await;
+                node.node.poll_pending_connects().await;
+            }
+            run_synthetic_node_work(&mut nodes).await;
+            process_available_packets(&mut nodes).await;
+            let server_closed = nodes[0]
+                .node
+                .transports
+                .get(&nodes[0].transport_id)
+                .and_then(|transport| {
+                    transport
+                        .transport_stats()
+                        .get("connections_closed")
+                        .and_then(serde_json::Value::as_u64)
+                })
+                .is_some_and(|closed| closed >= 1);
+            let client_reconnected = nodes[1]
+                .node
+                .transports
+                .get(&nodes[1].transport_id)
+                .and_then(|transport| {
+                    transport
+                        .transport_stats()
+                        .get("connections_opened")
+                        .and_then(serde_json::Value::as_u64)
+                })
+                .is_some_and(|opened| opened >= 2);
+            if server_closed && client_reconnected {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(
+        reconnected.is_ok(),
+        "a link-dead inbound WebSocket must close so its client observes carrier loss and reconnects; server={:?} client={:?} server_peer={} client_peer={}",
+        nodes[0]
+            .node
+            .transports
+            .get(&nodes[0].transport_id)
+            .map(TransportHandle::transport_stats),
+        nodes[1]
+            .node
+            .transports
+            .get(&nodes[1].transport_id)
+            .map(TransportHandle::transport_stats),
+        nodes[0].node.get_peer(&client_addr).is_some(),
+        nodes[1].node.get_peer(&server_addr).is_some(),
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
 async fn explicit_network_rebind_bypasses_ordinary_seed_backoff_and_preserves_payload() {
     let server = make_websocket_node(WebSocketConfig {
         bind_addr: Some("127.0.0.1:0".into()),

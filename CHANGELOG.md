@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.62] - 2026-08-20
+
+### Fixed
+
+- Close an inbound WebSocket carrier when its authenticated FMP peer becomes
+  link-dead, allowing browser clients to observe the loss, reconnect, and
+  authenticate a fresh route instead of remaining on an orphaned socket.
+- Release `fips-core` and `fips-endpoint` 0.4.62 together. FMP, FSP,
+  discovery, routing, and physical transport wire formats are unchanged.
+
 ## [0.4.61] - 2026-08-20
 
 ### Fixed

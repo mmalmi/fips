@@ -414,6 +414,20 @@ impl WebSocketTransport {
             .remove(addr);
     }
 
+    /// Schedule connection cleanup from synchronous node-lifecycle paths.
+    pub fn close_connection_detached(&self, addr: &TransportAddr) {
+        let runtime = self.runtime.clone();
+        let addr = addr.clone();
+        tokio::spawn(async move {
+            runtime.pool.lock().await.remove(&addr);
+            runtime
+                .states
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&addr);
+        });
+    }
+
     /// Replace TCP-backed WebSocket streams after a confirmed network change.
     ///
     /// An established stream can remain locally "connected" long after its
