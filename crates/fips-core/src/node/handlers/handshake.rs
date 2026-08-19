@@ -642,6 +642,9 @@ impl Node {
             )
             .is_err()
         {
+            if let Some(transport) = self.transports.get(&packet.transport_id) {
+                transport.close_connection(&packet.remote_addr).await;
+            }
             self.msg1_rate_limiter.complete_handshake();
             return;
         }

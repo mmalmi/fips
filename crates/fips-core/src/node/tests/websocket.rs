@@ -1,8 +1,10 @@
 use super::*;
 use crate::config::WebSocketConfig;
+use crate::node::acl::PeerAclReloader;
 use crate::transport::websocket::WebSocketTransport;
 use crate::transport::{TransportAddr, TransportHandle, TransportId, packet_channel};
 use spanning_tree::{TestNode, cleanup_nodes, process_available_packets, run_synthetic_node_work};
+use std::fs;
 use std::time::Duration;
 
 async fn make_websocket_node(config: WebSocketConfig) -> TestNode {
@@ -31,6 +33,77 @@ async fn make_websocket_node(config: WebSocketConfig) -> TestNode {
         tun_outbound_tx,
         addr,
     }
+}
+
+#[tokio::test]
+async fn peer_acl_rejection_closes_the_websocket_carrier() {
+    let server = make_websocket_node(WebSocketConfig {
+        bind_addr: Some("127.0.0.1:0".into()),
+        ..Default::default()
+    })
+    .await;
+    let client = make_websocket_node(WebSocketConfig {
+        seed_urls: vec![server.addr.to_string()],
+        reconnect_initial_ms: Some(1_000),
+        reconnect_max_ms: Some(1_000),
+        ..Default::default()
+    })
+    .await;
+    let mut nodes = vec![server, client];
+    let acl_dir = tempfile::tempdir().unwrap();
+    fs::write(
+        acl_dir.path().join("peers.deny"),
+        format!("{}\n", nodes[1].node.identity().npub()),
+    )
+    .unwrap();
+    nodes[0].node.peer_acl = PeerAclReloader::with_paths(
+        acl_dir.path().join("peers.allow"),
+        acl_dir.path().join("peers.deny"),
+    );
+
+    let closed = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            for node in &mut nodes {
+                node.node.poll_transport_discovery().await;
+                node.node.poll_pending_connects().await;
+            }
+            run_synthetic_node_work(&mut nodes).await;
+            process_available_packets(&mut nodes).await;
+            let closed = nodes[0]
+                .node
+                .transports
+                .get(&nodes[0].transport_id)
+                .and_then(|transport| {
+                    transport
+                        .transport_stats()
+                        .get("connections_closed")
+                        .and_then(serde_json::Value::as_u64)
+                })
+                .unwrap_or(0);
+            if closed > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(
+        closed.is_ok(),
+        "an ACL-rejected WebSocket client must release its physical carrier; server={:?} client={:?}",
+        nodes[0]
+            .node
+            .transports
+            .get(&nodes[0].transport_id)
+            .map(TransportHandle::transport_stats),
+        nodes[1]
+            .node
+            .transports
+            .get(&nodes[1].transport_id)
+            .map(TransportHandle::transport_stats),
+    );
+
+    assert!(nodes[0].node.peers().next().is_none());
+    cleanup_nodes(&mut nodes).await;
 }
 
 #[tokio::test]

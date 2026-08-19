@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.60] - 2026-08-19
+
+### Fixed
+
+- Close connection-oriented carriers immediately when the authenticated peer
+  ACL rejects a handshake, so rejected WebSocket clients cannot retain seed
+  capacity while retrying.
+- Release `fips-core` and `fips-endpoint` 0.4.60 together. FMP, FSP,
+  discovery, routing, and physical transport wire formats are unchanged.
+
 ## [0.4.59] - 2026-08-16
 
 ### Fixed
