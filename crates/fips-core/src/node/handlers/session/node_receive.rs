@@ -529,6 +529,19 @@ impl Node {
             );
             return false;
         };
+        if should_evict_decrypt_failure_session(consecutive, authenticated_inbound_age_ms) {
+            warn!(
+                peer = %self.peer_display_name(&src_addr),
+                consecutive_failures = consecutive,
+                source,
+                "Persistent session AEAD failures exceeded recovery budget; evicting poisoned session"
+            );
+            self.remove_dataplane_fsp_owner(&src_addr);
+            self.sessions.remove(&src_addr);
+            self.pending_session_traffic.remove_destination(&src_addr);
+            self.pending_lookups.remove(&src_addr);
+            return true;
+        }
         let recover_session =
             should_start_decrypt_failure_rekey(entry_can_recover, consecutive, authenticated_inbound_age_ms);
         debug!(

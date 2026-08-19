@@ -120,6 +120,57 @@
         ));
     }
 
+    #[tokio::test]
+    async fn persistent_decrypt_failures_evict_poisoned_session() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let peer_addr = *peer.node_addr();
+        let mut node = Node::with_identity(local, crate::config::Config::new()).expect("node");
+        node.sessions.insert(
+            peer_addr,
+            SessionEntry::new(
+                peer_addr,
+                peer.pubkey_full(),
+                EndToEndState::Established(make_xk_session(&node.identity, &peer)),
+                1,
+                true,
+            ),
+        );
+        assert!(
+            node.sync_dataplane_fsp_owner_from_current_session(&peer_addr, 0),
+            "fixture must install the production dataplane session owner"
+        );
+
+        for counter in 1..DECRYPT_FAILURE_EVICTION_THRESHOLD {
+            assert!(
+                node.handle_dataplane_fsp_decrypt_failure(peer_addr, u64::from(counter), false)
+                    .await,
+                "known poisoned session should consume reported decrypt failures"
+            );
+            assert!(
+                node.sessions.get(&peer_addr).is_some(),
+                "recovery gets a bounded chance before eviction"
+            );
+        }
+
+        assert!(
+            node.handle_dataplane_fsp_decrypt_failure(
+                peer_addr,
+                u64::from(DECRYPT_FAILURE_EVICTION_THRESHOLD),
+                false,
+            )
+            .await
+        );
+        assert!(
+            node.sessions.get(&peer_addr).is_none(),
+            "a permanently poisoned session must not consume receive-loop capacity forever"
+        );
+        assert!(
+            !node.dataplane_has_fsp_owner(&peer_addr),
+            "eviction must remove the stale crypto owner"
+        );
+    }
+
     #[test]
     fn recovery_rekey_uses_old_session_until_cutover_and_new_session_after() {
         let local = Identity::generate();

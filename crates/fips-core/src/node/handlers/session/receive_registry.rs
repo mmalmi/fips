@@ -9,6 +9,11 @@
 /// before a roaming peer's previous-epoch drain window closes.
 const DECRYPT_FAILURE_RECOVERY_THRESHOLD: u32 = 8;
 const DECRYPT_FAILURE_RECOVERY_QUIET_MS: u64 = 5_000;
+/// Stop spending receive-loop capacity on a session that has stayed unable to
+/// authenticate traffic through several complete recovery-rekey attempts.
+/// Removing only the end-to-end session lets the next valid setup establish a
+/// clean epoch without discarding an otherwise healthy carrier peer.
+const DECRYPT_FAILURE_EVICTION_THRESHOLD: u32 = 64;
 fn pending_rekey_wins_tiebreak(
     our_addr: &NodeAddr,
     peer_addr: &NodeAddr,
@@ -36,6 +41,15 @@ fn should_start_decrypt_failure_rekey(
 ) -> bool {
     consecutive >= DECRYPT_FAILURE_RECOVERY_THRESHOLD
         && entry_can_recover
+        && authenticated_inbound_age_ms
+            .is_some_and(|age_ms| age_ms >= DECRYPT_FAILURE_RECOVERY_QUIET_MS)
+}
+
+fn should_evict_decrypt_failure_session(
+    consecutive: u32,
+    authenticated_inbound_age_ms: Option<u64>,
+) -> bool {
+    consecutive >= DECRYPT_FAILURE_EVICTION_THRESHOLD
         && authenticated_inbound_age_ms
             .is_some_and(|age_ms| age_ms >= DECRYPT_FAILURE_RECOVERY_QUIET_MS)
 }
