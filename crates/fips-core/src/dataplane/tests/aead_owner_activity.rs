@@ -782,6 +782,16 @@ fn fsp_owner_owns_session_receiver_reports_and_path_mtu_signals() {
             ActivityTick::new(3_950),
         )
     );
+    mover
+        .process_fsp_mmp_receiver_report(
+            owner,
+            &rr,
+            Some(owner.node_addr()),
+            3_990,
+            std::time::Instant::now(),
+            128,
+        )
+        .expect("owner should process a duplicate session receiver report");
     assert!(
         mover
             .owner_fsp_activity(owner)
@@ -790,8 +800,8 @@ fn fsp_owner_owns_session_receiver_reports_and_path_mtu_signals() {
                 &owner.node_addr(),
                 4_000,
                 2_500,
-            ),
-        "fresh reverse application traffic must not hide a stale delivery report for the outbound direct path"
+        ),
+        "fresh reverse traffic and duplicate receiver reports must not hide frozen delivery counters for the outbound direct path"
     );
 
     assert_eq!(mover.seed_fsp_path_mtu(owner, 1400), Ok(()));

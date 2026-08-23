@@ -139,6 +139,7 @@ impl OwnerState {
                         self.fsp_mmp_path_changed_since_report = true;
                         self.last_delivery_report_activity = None;
                         self.last_delivery_report_next_hop = None;
+                        self.last_delivery_report_cumulative_packets_recv = None;
                     }
                     self.last_outbound_next_hop = Some(next_hop);
                 }
@@ -326,6 +327,7 @@ impl OwnerState {
             self.fsp_mmp_path_changed_since_report = true;
             self.last_delivery_report_activity = None;
             self.last_delivery_report_next_hop = None;
+            self.last_delivery_report_cumulative_packets_recv = None;
         }
         self.last_outbound_next_hop = Some(next_hop);
         note_activity(&mut self.last_tx_activity, tick);
@@ -344,6 +346,7 @@ impl OwnerState {
         self.last_outbound_next_hop = None;
         self.last_delivery_report_activity = None;
         self.last_delivery_report_next_hop = None;
+        self.last_delivery_report_cumulative_packets_recv = None;
         true
     }
 
@@ -391,6 +394,7 @@ impl OwnerState {
             self.fsp_mmp_path_changed_since_report = true;
             self.last_delivery_report_activity = None;
             self.last_delivery_report_next_hop = None;
+            self.last_delivery_report_cumulative_packets_recv = None;
         }
         invalidated
     }
@@ -607,12 +611,21 @@ impl OwnerState {
         }
 
         let our_timestamp_ms = now_ms.wrapping_sub(session_start_ms) as u32;
-        // An authenticated receiver report is the remote endpoint's
-        // directional acknowledgement for the route that carried our most
-        // recent session data. Track it separately from reverse app traffic.
+        // Only advancing receive counters prove directional delivery. A peer
+        // can keep sending authenticated reports over the surviving reverse
+        // direction while the forward NAT tuple is blackholed; those reports
+        // have frozen counters and must not refresh direct-path trust.
         if let Some(next_hop) = last_outbound_next_hop {
-            self.last_delivery_report_activity = Some(ActivityTick::new(now_ms));
-            self.last_delivery_report_next_hop = Some(next_hop);
+            let report_advanced = self.last_delivery_report_next_hop != Some(next_hop)
+                || self
+                    .last_delivery_report_cumulative_packets_recv
+                    .is_none_or(|previous| rr.cumulative_packets_recv > previous);
+            if report_advanced {
+                self.last_delivery_report_activity = Some(ActivityTick::new(now_ms));
+                self.last_delivery_report_next_hop = Some(next_hop);
+                self.last_delivery_report_cumulative_packets_recv =
+                    Some(rr.cumulative_packets_recv);
+            }
         }
         mmp.metrics
             .process_receiver_report(rr, our_timestamp_ms, now);

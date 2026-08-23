@@ -55,6 +55,7 @@ impl OwnerState {
             last_data_return_next_hop: None,
             last_delivery_report_activity: None,
             last_delivery_report_next_hop: None,
+            last_delivery_report_cumulative_packets_recv: None,
             last_tx_activity: None,
             last_tx_data_activity: None,
             last_outbound_next_hop: None,
@@ -118,6 +119,7 @@ impl OwnerState {
         self.last_data_return_next_hop = None;
         self.last_delivery_report_activity = None;
         self.last_delivery_report_next_hop = None;
+        self.last_delivery_report_cumulative_packets_recv = None;
         self.last_tx_data_activity = None;
         self.last_outbound_next_hop = None;
         self.fsp_mmp_path_changed_since_report = false;
@@ -651,6 +653,8 @@ impl OwnerState {
             last_data_return_next_hop: self.last_data_return_next_hop,
             last_delivery_report_activity: self.last_delivery_report_activity,
             last_delivery_report_next_hop: self.last_delivery_report_next_hop,
+            last_delivery_report_cumulative_packets_recv: self
+                .last_delivery_report_cumulative_packets_recv,
             receiver_reports_enabled: self
                 .fsp_mmp
                 .as_ref()
