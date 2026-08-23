@@ -137,6 +137,8 @@ impl OwnerState {
                 if let Some(next_hop) = fsp_next_hop {
                     if self.last_outbound_next_hop != Some(next_hop) {
                         self.fsp_mmp_path_changed_since_report = true;
+                        self.last_delivery_report_activity = None;
+                        self.last_delivery_report_next_hop = None;
                     }
                     self.last_outbound_next_hop = Some(next_hop);
                 }
@@ -322,6 +324,8 @@ impl OwnerState {
         }
         if self.last_outbound_next_hop != Some(next_hop) {
             self.fsp_mmp_path_changed_since_report = true;
+            self.last_delivery_report_activity = None;
+            self.last_delivery_report_next_hop = None;
         }
         self.last_outbound_next_hop = Some(next_hop);
         note_activity(&mut self.last_tx_activity, tick);
@@ -338,6 +342,8 @@ impl OwnerState {
             return false;
         }
         self.last_outbound_next_hop = None;
+        self.last_delivery_report_activity = None;
+        self.last_delivery_report_next_hop = None;
         true
     }
 
@@ -383,6 +389,8 @@ impl OwnerState {
         }
         if invalidated {
             self.fsp_mmp_path_changed_since_report = true;
+            self.last_delivery_report_activity = None;
+            self.last_delivery_report_next_hop = None;
         }
         invalidated
     }
@@ -599,6 +607,13 @@ impl OwnerState {
         }
 
         let our_timestamp_ms = now_ms.wrapping_sub(session_start_ms) as u32;
+        // An authenticated receiver report is the remote endpoint's
+        // directional acknowledgement for the route that carried our most
+        // recent session data. Track it separately from reverse app traffic.
+        if let Some(next_hop) = last_outbound_next_hop {
+            self.last_delivery_report_activity = Some(ActivityTick::new(now_ms));
+            self.last_delivery_report_next_hop = Some(next_hop);
+        }
         mmp.metrics
             .process_receiver_report(rr, our_timestamp_ms, now);
         let sample = mmp.metrics.take_forward_loss_evidence(min_loss_sample);

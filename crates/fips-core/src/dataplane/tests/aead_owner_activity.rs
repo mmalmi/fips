@@ -116,7 +116,7 @@ fn fsp_owner_tracks_data_return_without_registry_side_channel() {
         "authenticated application data should still count as general session activity"
     );
     assert!(
-        activity.has_recent_outbound_without_data_return_from(
+        activity.has_recent_outbound_without_delivery_feedback_from(
             &next_hop.node_addr(),
             115,
             20,
@@ -124,7 +124,7 @@ fn fsp_owner_tracks_data_return_without_registry_side_channel() {
         "direct inbound data must not masquerade as return traffic for a routed fallback send"
     );
     assert!(
-        !activity.has_recent_outbound_without_data_return_from(
+        !activity.has_recent_outbound_without_delivery_feedback_from(
             &owner.node_addr(),
             115,
             20,
@@ -716,6 +716,13 @@ fn fsp_owner_owns_session_receiver_reports_and_path_mtu_signals() {
         interval_packets_recv: 0,
         interval_bytes_recv: 0,
     };
+    assert!(
+        mover.owner_mut(owner).unwrap().record_fsp_data_sent(
+            owner.node_addr(),
+            1200,
+            ActivityTick::new(1_050),
+        )
+    );
     let report = mover
         .process_fsp_mmp_receiver_report(
             owner,
@@ -728,6 +735,64 @@ fn fsp_owner_owns_session_receiver_reports_and_path_mtu_signals() {
         .expect("owner should process session receiver report");
     assert!(report.used_direct_next_hop);
     assert_eq!(report.mode, crate::mmp::MmpMode::Full);
+
+    assert!(
+        mover.owner_mut(owner).unwrap().record_fsp_data_sent(
+            owner.node_addr(),
+            1200,
+            ActivityTick::new(1_200),
+        )
+    );
+    assert!(
+        !mover
+            .owner_fsp_activity(owner)
+            .unwrap()
+            .has_recent_outbound_without_delivery_feedback_from(
+                &owner.node_addr(),
+                1_300,
+                2_500,
+            ),
+        "a fresh delivery report should validate recent direct-path sends"
+    );
+    assert!(
+        mover
+            .record_authenticated_fsp_session(DataplaneAuthenticatedFspSession::new(
+                owner.node_addr(),
+                owner.node_addr(),
+                crate::protocol::SessionMessageType::EndpointData.to_byte(),
+                32,
+                FspReceiveSync {
+                    counter: 41,
+                    received_k_bit: false,
+                    timestamp: 20,
+                    plaintext_len: FSP_INNER_HEADER_SIZE + 32,
+                    ce_flag: false,
+                    path_mtu: u16::MAX,
+                    spin_bit: false,
+                },
+                Some(ActivityTick::new(3_900)),
+                std::time::Instant::now(),
+            ),)
+            .is_some()
+    );
+    assert!(
+        mover.owner_mut(owner).unwrap().record_fsp_data_sent(
+            owner.node_addr(),
+            1200,
+            ActivityTick::new(3_950),
+        )
+    );
+    assert!(
+        mover
+            .owner_fsp_activity(owner)
+            .unwrap()
+            .has_recent_outbound_without_delivery_feedback_from(
+                &owner.node_addr(),
+                4_000,
+                2_500,
+            ),
+        "fresh reverse application traffic must not hide a stale delivery report for the outbound direct path"
+    );
 
     assert_eq!(mover.seed_fsp_path_mtu(owner, 1400), Ok(()));
     assert_eq!(

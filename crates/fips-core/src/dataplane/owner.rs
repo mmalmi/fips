@@ -559,6 +559,9 @@ pub(crate) struct DataplaneFspOwnerActivity {
     last_rx_data_previous_hop: Option<NodeAddr>,
     last_data_return_activity: Option<ActivityTick>,
     last_data_return_next_hop: Option<NodeAddr>,
+    last_delivery_report_activity: Option<ActivityTick>,
+    last_delivery_report_next_hop: Option<NodeAddr>,
+    receiver_reports_enabled: bool,
     last_tx_data_activity: Option<ActivityTick>,
     last_outbound_next_hop: Option<NodeAddr>,
     current_k_bit: bool,
@@ -686,16 +689,29 @@ impl DataplaneFspOwnerActivity {
             && inbound_data_stale
     }
 
-    pub(crate) fn has_recent_outbound_without_data_return_from(
+    pub(crate) fn has_recent_outbound_without_delivery_feedback_from(
         self,
         next_hop: &NodeAddr,
         now_ms: u64,
         timeout_ms: u64,
     ) -> bool {
+        // Receiver reports are directional proof: unlike arbitrary inbound
+        // application data, they confirm that the remote endpoint received
+        // packets from our selected outbound next hop. This distinction is
+        // what exposes a one-way NAT blackhole while reverse traffic survives.
+        let has_recent_delivery_feedback = if self.receiver_reports_enabled {
+            self.last_delivery_report_next_hop == Some(*next_hop)
+                && self
+                    .last_delivery_report_activity
+                    .map(|tick| tick.age_ms(now_ms))
+                    .is_some_and(|age_ms| age_ms <= timeout_ms)
+        } else {
+            self.has_recent_data_return_from(next_hop, now_ms, timeout_ms)
+        };
         self.data_packets_sent > 0
             && self.last_outbound_next_hop == Some(*next_hop)
             && self.has_recent_outbound_activity(now_ms, timeout_ms)
-            && !self.has_recent_data_return_from(next_hop, now_ms, timeout_ms)
+            && !has_recent_delivery_feedback
     }
 
     fn tracks_inbound_next_hop(self, next_hop: &NodeAddr) -> bool {
@@ -766,6 +782,8 @@ pub(crate) struct OwnerState {
     last_rx_data_previous_hop: Option<NodeAddr>,
     last_data_return_activity: Option<ActivityTick>,
     last_data_return_next_hop: Option<NodeAddr>,
+    last_delivery_report_activity: Option<ActivityTick>,
+    last_delivery_report_next_hop: Option<NodeAddr>,
     last_tx_activity: Option<ActivityTick>,
     last_tx_data_activity: Option<ActivityTick>,
     last_outbound_next_hop: Option<NodeAddr>,

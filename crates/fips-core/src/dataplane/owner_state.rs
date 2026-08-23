@@ -53,6 +53,8 @@ impl OwnerState {
             last_rx_data_previous_hop: None,
             last_data_return_activity: None,
             last_data_return_next_hop: None,
+            last_delivery_report_activity: None,
+            last_delivery_report_next_hop: None,
             last_tx_activity: None,
             last_tx_data_activity: None,
             last_outbound_next_hop: None,
@@ -114,6 +116,8 @@ impl OwnerState {
         self.last_rx_data_previous_hop = None;
         self.last_data_return_activity = None;
         self.last_data_return_next_hop = None;
+        self.last_delivery_report_activity = None;
+        self.last_delivery_report_next_hop = None;
         self.last_tx_data_activity = None;
         self.last_outbound_next_hop = None;
         self.fsp_mmp_path_changed_since_report = false;
@@ -645,6 +649,12 @@ impl OwnerState {
             last_rx_data_previous_hop: self.last_rx_data_previous_hop,
             last_data_return_activity: self.last_data_return_activity,
             last_data_return_next_hop: self.last_data_return_next_hop,
+            last_delivery_report_activity: self.last_delivery_report_activity,
+            last_delivery_report_next_hop: self.last_delivery_report_next_hop,
+            receiver_reports_enabled: self
+                .fsp_mmp
+                .as_ref()
+                .is_some_and(|mmp| mmp.mode() != crate::mmp::MmpMode::Minimal),
             last_tx_data_activity: self.last_tx_data_activity,
             last_outbound_next_hop: self.last_outbound_next_hop,
             current_k_bit: self.fsp_current_k_bit,

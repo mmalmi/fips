@@ -50,7 +50,7 @@ impl Node {
         let Some(activity) = self.dataplane.fsp_owner_activity(dest) else {
             return false;
         };
-        activity.has_recent_outbound_without_data_return_from(
+        activity.has_recent_outbound_without_delivery_feedback_from(
             dest,
             now_ms,
             self.session_direct_path_exclusive_trust_timeout_ms(),
