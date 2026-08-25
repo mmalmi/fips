@@ -331,7 +331,7 @@ impl Node {
         remote_addr: SocketAddr,
         provenance: PeerAddressProvenance,
     ) -> Option<(TransportId, SocketAddr)> {
-        if udp_remote_addr_invalid(remote_addr.ip()) {
+        if udp_socket_addr_invalid(remote_addr) {
             return None;
         }
         let evidence = UdpRouteEvidence::capture(remote_addr, provenance);

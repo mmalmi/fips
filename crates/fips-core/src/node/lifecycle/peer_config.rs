@@ -562,10 +562,11 @@ impl Node {
     }
 
     /// Initiate a connection from the retry path. Identical to
-    /// [`initiate_peer_connection`] today — both paths fan out across every
-    /// known address (explicit priority first, then freshness) in a single
-    /// pass. The two entry points stay separate so callers can be distinguished
-    /// in tracing.
+    /// [`initiate_peer_connection`] except that each failed retry unlocks one
+    /// additional address-priority tier. Addresses inside the same tier race
+    /// together; lower-priority fallbacks cannot replace a preferred path that
+    /// has already authenticated. The two entry points stay separate so
+    /// callers can be distinguished in tracing.
     pub(in crate::node) async fn initiate_peer_retry_connection(
         &mut self,
         peer_config: &crate::config::PeerConfig,

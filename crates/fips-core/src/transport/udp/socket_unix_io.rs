@@ -226,12 +226,65 @@
                     unsafe { &*(storage as *const _ as *const libc::sockaddr_in6) };
                 let ip = std::net::Ipv6Addr::from(addr.sin6_addr.s6_addr);
                 let port = u16::from_be(addr.sin6_port);
-                Ok(SocketAddr::from((ip, port)))
+                let flowinfo = u32::from_be(addr.sin6_flowinfo);
+                Ok(SocketAddr::V6(std::net::SocketAddrV6::new(
+                    ip,
+                    port,
+                    flowinfo,
+                    addr.sin6_scope_id,
+                )))
             }
             family => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("unsupported address family: {}", family),
             )),
+        }
+    }
+
+    #[cfg(test)]
+    mod sockaddr_tests {
+        use super::*;
+
+        #[test]
+        fn ipv6_sockaddr_conversion_preserves_scope_and_flowinfo() {
+            let ip: std::net::Ipv6Addr = "fe80::1234".parse().unwrap();
+            let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+            let raw: &mut libc::sockaddr_in6 =
+                unsafe { &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in6) };
+
+            #[cfg(any(
+                target_os = "aix",
+                target_os = "freebsd",
+                target_os = "haiku",
+                target_os = "hurd",
+                target_os = "illumos",
+                target_os = "macos",
+                target_os = "netbsd",
+                target_os = "openbsd",
+                target_os = "solaris",
+                target_os = "visionos"
+            ))]
+            {
+                raw.sin6_len = std::mem::size_of::<libc::sockaddr_in6>() as u8;
+            }
+            raw.sin6_family = libc::AF_INET6 as libc::sa_family_t;
+            raw.sin6_port = 51820u16.to_be();
+            raw.sin6_flowinfo = 0x1234_5678u32.to_be();
+            raw.sin6_addr = libc::in6_addr {
+                s6_addr: ip.octets(),
+            };
+            raw.sin6_scope_id = 14;
+
+            let converted = sockaddr_to_socket_addr(&storage).unwrap();
+            assert_eq!(
+                converted,
+                SocketAddr::V6(std::net::SocketAddrV6::new(
+                    ip,
+                    51820,
+                    0x1234_5678,
+                    14
+                ))
+            );
         }
     }
 

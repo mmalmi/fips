@@ -86,6 +86,7 @@ async fn process_pending_retries_races_primary_path_for_active_bootstrap_peer() 
 
     let peer = auto_connect_peer(peer_full.npub(), "127.0.0.1:9");
     node.config.peers = vec![peer.clone()];
+    refresh_configured_peer_cache_for_test(&mut node);
     let mut state = super::super::retry::RetryState::new(peer);
     state.retry_after_ms = 0;
     state.reconnect = true;
@@ -96,8 +97,8 @@ async fn process_pending_retries_races_primary_path_for_active_bootstrap_peer() 
     assert_eq!(node.peer_count(), 1);
     assert_eq!(
         node.connection_count(),
-        2,
-        "retry maintenance should race the configured direct path and re-probe the old UDP path while fallback remains active"
+        1,
+        "retry maintenance should try only the configured direct path before its lower-priority old UDP fallback"
     );
     let attempted: std::collections::HashSet<_> = node
         .peers
@@ -108,7 +109,6 @@ async fn process_pending_retries_races_primary_path_for_active_bootstrap_peer() 
                 .flatten()
         })
         .collect();
-    assert!(attempted.contains("127.0.0.1:8"));
     assert!(attempted.contains("127.0.0.1:9"));
     assert!(
         node.retry_pending
@@ -377,8 +377,8 @@ async fn active_bootstrap_refresh_renegotiates_without_discovery_hint() {
 
     assert_eq!(
         node.connection_count(),
-        2,
-        "static direct hint and old UDP path should be raced while fallback remains active"
+        1,
+        "static direct hint should be tried before the lower-priority old UDP path while fallback remains active"
     );
     assert_eq!(
         bootstrap.active_initiator_count_for_test().await,
