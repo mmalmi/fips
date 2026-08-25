@@ -885,7 +885,11 @@ fn planned_remote_endpoints_reject_never_routable_and_zero_port_targets() {
 
     assert_eq!(
         endpoints.remotes,
-        vec!["198.51.100.20:63000".parse().unwrap()]
+        vec![
+            "198.51.100.20:63000"
+                .parse::<std::net::SocketAddr>()
+                .unwrap(),
+        ]
     );
 }
 
@@ -942,7 +946,11 @@ fn private_reflexive_target_requires_a_lan_vantage_point() {
     .expect("same-LAN reflexive address should remain usable");
     assert_eq!(
         lan_vantage.remotes,
-        vec!["192.168.1.20:63000".parse().unwrap()]
+        vec![
+            "192.168.1.20:63000"
+                .parse::<std::net::SocketAddr>()
+                .unwrap(),
+        ]
     );
 }
 
