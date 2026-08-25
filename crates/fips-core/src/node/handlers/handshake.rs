@@ -12,9 +12,10 @@ use crate::{NodeAddr, PeerIdentity};
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
-/// Refuse an epoch change while the peering it would destroy has carried
-/// authenticated traffic recently, and dampen repeated accepted changes for
-/// the same identity. A msg1 epoch is authenticated but remains replayable.
+/// Refuse an epoch change while the peering it would destroy still has an open
+/// carrier and has carried authenticated traffic recently, and dampen repeated
+/// accepted changes for the same identity. A msg1 epoch is authenticated but
+/// remains replayable.
 /// Fifteen seconds fits the normal 1/3/7/15-second handshake resend ladder
 /// while staying below the default dead-link timeout.
 const EPOCH_RESTART_MIN_INTERVAL_SECS: u64 = 15;
@@ -417,11 +418,24 @@ impl Node {
                             .is_some_and(|accepted_at| {
                                 accepted_at.elapsed().as_secs() < EPOCH_RESTART_MIN_INTERVAL_SECS
                             });
-                    let peering_is_live = peering_idle_ms < EPOCH_RESTART_MIN_INTERVAL_SECS * 1000;
+                    let carrier_is_open = existing_peer
+                        .transport_id()
+                        .zip(existing_peer.current_addr())
+                        .and_then(|(transport_id, addr)| {
+                            self.transports
+                                .get(&transport_id)
+                                .map(|transport| transport.connection_state(addr))
+                        })
+                        .is_some_and(|state| {
+                            matches!(state, crate::transport::ConnectionState::Connected)
+                        });
+                    let peering_is_live =
+                        carrier_is_open && peering_idle_ms < EPOCH_RESTART_MIN_INTERVAL_SECS * 1000;
                     if peering_is_live || dampened {
                         debug!(
                             peer = %self.peer_display_name(&peer_node_addr),
                             idle_ms = peering_idle_ms,
+                            carrier_is_open,
                             dampened,
                             "Epoch mismatch dampened, dropping msg1"
                         );

@@ -50,12 +50,26 @@ fn install_peering_at_different_epoch(
 
 #[tokio::test]
 async fn epoch_mismatch_against_live_peering_does_not_replace_it() {
+    use crate::config::UdpConfig;
+    use crate::transport::TransportHandle;
+    use crate::transport::udp::UdpTransport;
+
     let mut responder = make_node();
     let initiator = make_node();
     let peer_addr = *initiator.node_addr();
     let transport_id = TransportId::new(1);
     let source_addr = TransportAddr::from_string("127.0.0.1:41001");
     let now_ms = Node::now_ms();
+    let (packet_tx, _packet_rx) = packet_channel(8);
+    responder.transports.insert(
+        transport_id,
+        TransportHandle::Udp(UdpTransport::new(
+            transport_id,
+            None,
+            UdpConfig::default(),
+            packet_tx,
+        )),
+    );
     let retained_link = install_peering_at_different_epoch(
         &mut responder,
         &initiator,
