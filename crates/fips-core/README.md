@@ -1,13 +1,7 @@
-# fips-core
+# fips-core — frozen
 
-Core FIPS mesh protocol implementation.
+This package is frozen. This final release changes only this notice; its library code is unchanged. No further releases are planned under the `fips-core` name.
 
-This crate contains the reusable mesh node, transport, discovery, routing,
-Noise session, endpoint, control, and TUN integration code used by FIPS-based
-applications.
+For new development with Nostr VPN's independently evolved implementation, use [`nvpn-fips-core`](https://crates.io/crates/nvpn-fips-core). Source: [`mmalmi/fips`](https://github.com/mmalmi/fips).
 
-FIPS is under active development. APIs and wire behavior are not yet stable.
-
-## Repository
-
-https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/fips
+For the original FIPS project, see [`jmcorgan/fips`](https://github.com/jmcorgan/fips).

@@ -1,13 +1,7 @@
-# fips-identity
+# fips-identity — frozen
 
-Identity primitives for FIPS nodes.
+This package is frozen. This final release changes only this notice; its library code is unchanged. No further releases are planned under the `fips-identity` name.
 
-This crate provides Nostr-style secp256k1 identity handling, npub/nsec
-encoding helpers, FIPS node addresses, and authentication challenge types used
-by the FIPS mesh crates.
+For new development with Nostr VPN's independently evolved implementation, use [`nvpn-fips-identity`](https://crates.io/crates/nvpn-fips-identity). Source: [`mmalmi/fips`](https://github.com/mmalmi/fips).
 
-FIPS is under active development. APIs and wire behavior are not yet stable.
-
-## Repository
-
-https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/fips
+For the original FIPS project, see [`jmcorgan/fips`](https://github.com/jmcorgan/fips).
