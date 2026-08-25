@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.63] - 2026-08-25
+
 ### Added
 
 - Bound end-to-end session growth with `node.limits.max_sessions` (default
@@ -17,9 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Align the default `node.rekey.after_messages` policy with upstream at
-  `65536`. This is a local initiation threshold, not a wire-format value;
-  explicitly configured thresholds retain their previous behavior.
+- Align the default `node.rekey.after_messages` policy with the original FIPS
+  implementation at `65536`. This is a local initiation threshold, not a
+  wire-format value; explicitly configured thresholds retain their previous
+  behavior.
 
 ### Fixed
 
@@ -27,8 +30,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   addresses and sources, and make traversal freshness survive host suspend.
 - Reject malformed frame-length declarations and unactionable or
   uncorroborated path-MTU routing signals before they affect session state.
+- Detect asymmetric direct-path blackholes through peer-reported delivery
+  progress, and keep a healthy bootstrap or fallback path available while a
+  one-way direct path recovers.
+- Require cumulative delivery progress before treating receiver reports as
+  proof of a healthy direct path, so stale or repeated reports cannot mask a
+  blackhole.
 - FMP, FSP, discovery, routing, and physical transport wire formats remain
   unchanged.
+- Release `fips-core` and `fips-endpoint` 0.4.63 together.
 
 ## [0.4.62] - 2026-08-20
 

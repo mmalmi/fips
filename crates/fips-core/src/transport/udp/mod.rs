@@ -71,36 +71,6 @@ pub(crate) const UDP_RECV_BATCH_SIZE: usize = 128;
 #[cfg(target_os = "linux")]
 const UDP_GRO_RECV_BUFFER_SIZE: usize = u16::MAX as usize;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn debug_udp_fmp_batch(
-    stage: &'static str,
-    transport_id: TransportId,
-    packets: &[ReceivedPacket],
-    accepted_fast_ingress: Option<usize>,
-) {
-    if !tracing::enabled!(tracing::Level::DEBUG) {
-        return;
-    }
-
-    for packet in packets {
-        let Ok(header) = crate::dataplane::FmpWireHeader::parse(packet.data.as_slice()) else {
-            continue;
-        };
-        debug!(
-            stage,
-            transport_id = %transport_id,
-            remote_addr = %packet.remote_addr,
-            receiver_idx = header.receiver_idx(),
-            counter = header.counter(),
-            flags = header.flags(),
-            bytes = packet.data.len(),
-            accepted_fast_ingress,
-            batch_packets = packets.len(),
-            "UDP FMP receive handoff"
-        );
-    }
-}
-
 #[derive(Clone)]
 pub(crate) struct UdpSendSnapshot {
     socket: AsyncUdpSocket,
