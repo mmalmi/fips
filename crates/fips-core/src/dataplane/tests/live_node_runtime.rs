@@ -411,7 +411,12 @@
         assert_eq!(first_feed.summary().dispatched(), 1);
         let inline_outputs = first_feed.summary().outputs_sent();
         assert!(inline_outputs <= 1);
-        assert_eq!(first_feed.summary().completions(), inline_outputs);
+        let inline_completions = first_feed.summary().completions();
+        assert!(
+            inline_completions <= inline_outputs
+                && inline_outputs <= inline_completions.saturating_add(1),
+            "the initial dispatch may add one same-turn output beyond drained completions"
+        );
         assert_eq!(first_feed.transport_sent(), inline_outputs);
 
         if inline_outputs == 0 {
