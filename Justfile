@@ -8,7 +8,7 @@ rust-file-lines:
     ./scripts/check-rust-file-lines.sh
 
 test-core:
-    cargo test -p fips-core -- --nocapture
+    cargo test -p nvpn-fips-core -- --nocapture
 
 test-sim:
     cargo test -p fips-sim -- --nocapture
@@ -19,7 +19,7 @@ linux-dataplane-safety:
     ./scripts/test-dataplane-safety-linux-docker.sh
 
 clippy-core:
-    cargo clippy -p fips-core --all-targets
+    cargo clippy -p nvpn-fips-core --all-targets
 
 clippy-sim:
     cargo clippy -p fips-sim --all-targets

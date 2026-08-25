@@ -59,7 +59,7 @@ Fast validation tier for pure dataplane ownership/type-boundary changes.
 
 Options:
   --skip-docker           Do not run the focused Linux Docker slice.
-  --skip-release-check    Do not run cargo check -p fips-core --release.
+  --skip-release-check    Do not run cargo check -p nvpn-fips-core --release.
   --no-batch-defaults     Run every default filter separately.
   --local-filter FILTER   Add a local cargo test filter.
   --linux-filter FILTER   Add a Linux Docker cargo test filter.
@@ -152,13 +152,13 @@ echo "--- cargo fmt --check ---"
 cargo fmt --check
 
 for filter in "${LOCAL_FILTERS[@]}"; do
-  echo "--- cargo test -p fips-core ${filter} ---"
-  cargo test -p fips-core "$filter" -- --nocapture
+  echo "--- cargo test -p nvpn-fips-core ${filter} ---"
+  cargo test -p nvpn-fips-core "$filter" -- --nocapture
 done
 
 if [[ "$RUN_RELEASE_CHECK" -eq 1 ]]; then
-  echo "--- cargo check -p fips-core --release ---"
-  cargo check -p fips-core --release
+  echo "--- cargo check -p nvpn-fips-core --release ---"
+  cargo check -p nvpn-fips-core --release
 fi
 
 if [[ "$RUN_DOCKER" -eq 1 ]]; then

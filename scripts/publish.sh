@@ -1,5 +1,5 @@
 #!/bin/bash
-# Publish FIPS library crates to crates.io in dependency tiers.
+# Publish the Nostr VPN FIPS library crates to crates.io in dependency tiers.
 #
 # Usage:
 #   ./scripts/publish.sh           # Publish all publishable crates
@@ -36,15 +36,15 @@ for arg in "$@"; do
 done
 
 TIER_1_CRATES=(
-    "fips-identity"
+    "nvpn-fips-identity"
 )
 
 TIER_2_CRATES=(
-    "fips-core"
+    "nvpn-fips-core"
 )
 
 TIER_3_CRATES=(
-    "fips-endpoint"
+    "nvpn-fips-endpoint"
 )
 
 ALL_CRATES=(
@@ -64,11 +64,11 @@ publish_crate() {
     if [[ -n "$ALLOW_DIRTY" ]]; then
         cargo_args+=("$ALLOW_DIRTY")
     fi
-    if [[ -n "$DRY_RUN" && "$crate" == "fips-core" ]]; then
-        cargo_args+=(--config 'patch.crates-io.fips-identity.path="crates/fips-identity"')
+    if [[ -n "$DRY_RUN" && "$crate" == "nvpn-fips-core" ]]; then
+        cargo_args+=(--config 'patch.crates-io.nvpn-fips-identity.path="crates/fips-identity"')
     fi
-    if [[ -n "$DRY_RUN" && "$crate" == "fips-endpoint" ]]; then
-        cargo_args+=(--config 'patch.crates-io.fips-core.path="crates/fips-core"')
+    if [[ -n "$DRY_RUN" && "$crate" == "nvpn-fips-endpoint" ]]; then
+        cargo_args+=(--config 'patch.crates-io.nvpn-fips-core.path="crates/fips-core"')
     fi
 
     echo ""
@@ -142,7 +142,7 @@ if [[ -n "$DRY_RUN" ]]; then
     echo "=== DRY RUN MODE ==="
 fi
 
-echo "Publishing FIPS crates to crates.io"
+echo "Publishing Nostr VPN FIPS crates to crates.io"
 cd "$REPO_DIR"
 
 publish_tier "Tier 1" "${TIER_1_CRATES[@]}"

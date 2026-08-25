@@ -1,12 +1,15 @@
 [package]
-name = "fips-endpoint"
-version = "0.4.64"
+name = "nvpn-fips-endpoint"
+version = "0.4.65"
 edition = "2024"
-description = "App-facing FIPS EndpointData API"
+description = "Nostr VPN's app-facing FIPS EndpointData API"
 license = "MIT"
-authors = ["Johnathan Corgan <jcorgan@corganlabs.com>"]
+authors = ["Nostr VPN contributors", "Johnathan Corgan <jcorgan@corganlabs.com>"]
 repository = "https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/fips"
 readme = "README.md"
 
+[lib]
+name = "fips_endpoint"
+
 [dependencies]
-fips-core = { version = "=0.4.64", path = "../fips-core" }
+fips-core = { package = "nvpn-fips-core", version = "=0.4.65", path = "../fips-core" }

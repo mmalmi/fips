@@ -8,6 +8,12 @@
 A distributed, decentralized network routing protocol for mesh nodes
 connecting over arbitrary transports.
 
+This repository contains the independently evolved FIPS implementation used by
+[Nostr VPN](https://github.com/mmalmi/nostr-vpn). Its Rust libraries are
+published under the `nvpn-fips-*` crate namespace. The
+[original FIPS project](https://github.com/jmcorgan/fips) is maintained by
+Johnathan Corgan.
+
 > FIPS is under active development. The protocol and APIs are not yet stable.
 > See [Status & Roadmap](#status--roadmap) below.
 
@@ -85,7 +91,7 @@ endpoints.
 ## Building
 
 ```bash
-git clone https://github.com/jmcorgan/fips.git
+git clone https://github.com/mmalmi/fips.git
 cd fips
 cargo build --release
 ```

@@ -1,12 +1,15 @@
 [package]
-name = "fips-identity"
-version = "0.3.2"
+name = "nvpn-fips-identity"
+version = "0.3.3"
 edition = "2024"
-description = "FIPS identity, npub, node address, and FIPS address primitives"
+description = "Nostr VPN FIPS identity, npub, node address, and address primitives"
 license = "MIT"
-authors = ["Johnathan Corgan <jcorgan@corganlabs.com>"]
+authors = ["Nostr VPN contributors", "Johnathan Corgan <jcorgan@corganlabs.com>"]
 repository = "https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/fips"
 readme = "README.md"
+
+[lib]
+name = "fips_identity"
 
 [dependencies]
 secp256k1 = { version = "0.30", features = ["rand", "global-context"] }

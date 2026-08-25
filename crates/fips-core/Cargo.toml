@@ -1,12 +1,15 @@
 [package]
-name = "fips-core"
-version = "0.4.64"
+name = "nvpn-fips-core"
+version = "0.4.65"
 edition = "2024"
-description = "Reusable FIPS mesh, endpoint, transport, and protocol library"
+description = "Nostr VPN's reusable FIPS mesh, endpoint, transport, and protocol library"
 license = "MIT"
-authors = ["Johnathan Corgan <jcorgan@corganlabs.com>"]
+authors = ["Nostr VPN contributors", "Johnathan Corgan <jcorgan@corganlabs.com>"]
 repository = "https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/fips"
 readme = "README.md"
+
+[lib]
+name = "fips_core"
 
 [features]
 default = []
@@ -15,7 +18,7 @@ webrtc-transport = ["dep:bytes", "dep:if-addrs", "dep:webrtc"]
 host-ble-transport = []
 
 [dependencies]
-fips-identity = { version = "0.3.2", path = "../fips-identity" }
+fips-identity = { package = "nvpn-fips-identity", version = "=0.3.3", path = "../fips-identity" }
 
 secp256k1 = { version = "0.30", features = ["rand", "global-context"] }
 sha2 = "0.10"

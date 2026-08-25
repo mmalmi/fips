@@ -90,14 +90,14 @@ docker run --rm \
     export CARGO_TARGET_DIR=/cargo-target
     messages="$(mktemp)"
     trap '\''rm -f "$messages"'\'' EXIT
-    cargo test -p fips-core --lib --locked --no-run --message-format=json >"$messages"
+    cargo test -p nvpn-fips-core --lib --locked --no-run --message-format=json >"$messages"
     test_bin="$(
       grep '\''"name":"fips_core"'\'' "$messages" \
         | sed -n '\''s/.*"executable":"\([^"]*\)".*/\1/p'\'' \
         | tail -n 1
     )"
     if [[ -z "$test_bin" || ! -x "$test_bin" ]]; then
-      echo "failed to resolve the fips-core library test binary" >&2
+      echo "failed to resolve the nvpn-fips-core library test binary" >&2
       exit 1
     fi
     test_list="$($test_bin --list --format terse)"

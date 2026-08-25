@@ -1259,9 +1259,9 @@ version = "0.3.0-dev"
 dependencies = [
  "clap",
  "dirs",
- "fips-core",
  "hex",
  "nostr-sdk",
+ "nvpn-fips-core",
  "ratatui",
  "serde_json",
  "tokio",
@@ -1272,76 +1272,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "fips-core"
-version = "0.4.64"
-dependencies = [
- "base64",
- "bluer",
- "bytes",
- "dirs",
- "fips-identity",
- "futures",
- "hex",
- "hkdf",
- "if-addrs",
- "libc",
- "mdns-sd",
- "nostr",
- "nostr-sdk",
- "portable-atomic",
- "procfs",
- "rand 0.10.1",
- "ring",
- "rtnetlink",
- "rustables",
- "secp256k1 0.30.0",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2",
- "simple-dns",
- "socket2 0.6.2",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-socks",
- "tokio-tungstenite",
- "tracing",
- "tun",
- "uuid",
- "webrtc",
- "windows-sys 0.61.2",
- "wintun",
- "zeroize",
-]
-
-[[package]]
-name = "fips-endpoint"
-version = "0.4.64"
-dependencies = [
- "fips-core",
-]
-
-[[package]]
-name = "fips-identity"
-version = "0.3.2"
-dependencies = [
- "bech32",
- "hex",
- "rand 0.10.1",
- "secp256k1 0.30.0",
- "sha2",
- "thiserror 2.0.18",
- "zeroize",
-]
-
-[[package]]
 name = "fips-sim"
 version = "0.3.0-dev"
 dependencies = [
- "fips-core",
  "hex",
  "nostr",
+ "nvpn-fips-core",
  "rand 0.10.1",
  "serde",
  "serde_json",
@@ -2399,6 +2335,70 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c7398b9c8b70908f6371f47ed36737907c87c52af34c268fed0bf0ceb92ead9"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "nvpn-fips-core"
+version = "0.4.65"
+dependencies = [
+ "base64",
+ "bluer",
+ "bytes",
+ "dirs",
+ "futures",
+ "hex",
+ "hkdf",
+ "if-addrs",
+ "libc",
+ "mdns-sd",
+ "nostr",
+ "nostr-sdk",
+ "nvpn-fips-identity",
+ "portable-atomic",
+ "procfs",
+ "rand 0.10.1",
+ "ring",
+ "rtnetlink",
+ "rustables",
+ "secp256k1 0.30.0",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "simple-dns",
+ "socket2 0.6.2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-socks",
+ "tokio-tungstenite",
+ "tracing",
+ "tun",
+ "uuid",
+ "webrtc",
+ "windows-sys 0.61.2",
+ "wintun",
+ "zeroize",
+]
+
+[[package]]
+name = "nvpn-fips-endpoint"
+version = "0.4.65"
+dependencies = [
+ "nvpn-fips-core",
+]
+
+[[package]]
+name = "nvpn-fips-identity"
+version = "0.3.3"
+dependencies = [
+ "bech32",
+ "hex",
+ "rand 0.10.1",
+ "secp256k1 0.30.0",
+ "sha2",
+ "thiserror 2.0.18",
+ "zeroize",
 ]
 
 [[package]]

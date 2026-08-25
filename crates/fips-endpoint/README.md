@@ -1,10 +1,19 @@
-# fips-endpoint
+# nvpn-fips-endpoint
 
-Small app-facing FIPS endpoint facade.
+Small app-facing endpoint facade from the independently evolved FIPS
+implementation used by [Nostr VPN](https://github.com/mmalmi/nostr-vpn).
 
 This crate re-exports the public endpoint, configuration, and identity types
 needed by applications that embed a FIPS endpoint without depending directly on
-the full `fips-core` API surface.
+the full `fips_core` API surface.
+
+The package is named `nvpn-fips-endpoint`; its Rust library and import name
+remains `fips_endpoint` for source compatibility.
+
+```toml
+[dependencies]
+fips-endpoint = { package = "nvpn-fips-endpoint", version = "0.4.65" }
+```
 
 FIPS is under active development. APIs and wire behavior are not yet stable.
 
@@ -32,6 +41,8 @@ transports. If it exits, one surviving process acquires the released socket
 after jitter and peers authenticate again. Simultaneous processes need
 distinct FIPS transport identities.
 
-## Repository
+## Projects
 
-https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/fips
+- [Nostr VPN FIPS implementation](https://github.com/mmalmi/fips)
+- [Original FIPS project](https://github.com/jmcorgan/fips), maintained by
+  Johnathan Corgan

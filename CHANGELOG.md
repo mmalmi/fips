@@ -7,8 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.65] - 2026-08-25
+
+### Changed
+
+- Publish the Nostr VPN implementation as `nvpn-fips-identity` 0.3.3,
+  `nvpn-fips-core` 0.4.65, and `nvpn-fips-endpoint` 0.4.65. Rust library and
+  import names remain `fips_identity`, `fips_core`, and `fips_endpoint`, so
+  consumers only need to select the renamed Cargo packages.
+- Leave all prior `fips-*` releases intact and unyanked. The original FIPS
+  project remains available at <https://github.com/jmcorgan/fips>.
+
 ### Fixed
 
+- Allow an authenticated peer with a closed connection-oriented carrier to
+  reconnect immediately after restart while retaining epoch-replay protection
+  for live carriers and dampening repeated accepted epoch changes.
 - Preserve healthy FMP and FSP sessions when replayable or malformed
   handshake traffic announces a conflicting epoch, and dampen repeated peer
   restart churn without changing same-epoch roaming recovery.

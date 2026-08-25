@@ -5,7 +5,7 @@
 Clone the repo:
 
 ```
-git clone https://github.com/jmcorgan/fips.git
+git clone https://github.com/mmalmi/fips.git
 cd fips
 ```
 
