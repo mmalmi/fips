@@ -25,10 +25,12 @@ fn peer_addresses_are_optional_with_ble_discovery() {
 }
 
 #[test]
-fn peer_addresses_are_required_when_ble_auto_connect_is_off() {
+fn addressless_overlay_peers_remain_valid_when_ble_auto_connect_is_off() {
     let mut config = peer_without_addresses();
     config.node.discovery.nostr.enabled = false;
     config.transports.ble = TransportInstances::Single(BleConfig::default());
 
-    assert!(config.validate().is_err());
+    config
+        .validate()
+        .expect("a later authenticated adjacency can still resolve the overlay peer");
 }

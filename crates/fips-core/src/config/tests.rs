@@ -698,7 +698,7 @@ fn test_validate_transport_advert_requires_nostr_enabled() {
 }
 
 #[test]
-fn test_validate_empty_peer_addresses_require_a_resolution_path() {
+fn test_validate_empty_peer_addresses_preserve_overlay_destinations() {
     let mut config = Config {
         peers: vec![PeerConfig {
             npub: "npub1peer".to_string(),
@@ -708,13 +708,13 @@ fn test_validate_empty_peer_addresses_require_a_resolution_path() {
     };
     config.node.discovery.nostr.enabled = false;
 
-    let err = config.validate().expect_err("validation should fail");
-    assert!(err.to_string().contains("WebSocket seed URL"));
+    config
+        .validate()
+        .expect("an authenticated future adjacency can route to an addressless overlay peer");
 }
 
 #[test]
 fn test_validate_peer_addresses_optional_with_nostr_enabled() {
-    // Empty addresses + Nostr discovery disabled -> error.
     let mut config = Config {
         peers: vec![PeerConfig {
             npub: "npub1peer".to_string(),
@@ -722,10 +722,6 @@ fn test_validate_peer_addresses_optional_with_nostr_enabled() {
         }],
         ..Default::default()
     };
-    let err = config.validate().expect_err("validation should fail");
-    assert!(err.to_string().contains("at least one address"));
-
-    // Empty addresses + Nostr discovery enabled -> ok.
     config.node.discovery.nostr.enabled = true;
     config
         .validate()

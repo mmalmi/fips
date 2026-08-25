@@ -27,7 +27,7 @@ fn test_node_with_identity() {
 }
 
 #[test]
-fn test_node_with_identity_validates_config() {
+fn test_node_with_identity_preserves_addressless_overlay_peer() {
     let identity = Identity::generate();
     let mut config = Config::new();
     config.node.discovery.nostr.enabled = false;
@@ -36,8 +36,9 @@ fn test_node_with_identity_validates_config() {
         ..Default::default()
     }];
 
-    let err = Node::with_identity(identity, config).expect_err("expected config validation error");
-    assert!(matches!(err, NodeError::Config(_)));
+    let node = Node::with_identity(identity, config)
+        .expect("a later authenticated adjacency can still resolve the overlay peer");
+    assert_eq!(node.state(), NodeState::Created);
 }
 
 #[test]

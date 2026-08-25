@@ -675,33 +675,6 @@ impl Config {
             ));
         }
 
-        let ble_discovery_enabled = self
-            .transports
-            .ble
-            .iter()
-            .any(|(_, config)| config.scan() && config.auto_connect());
-        let can_resolve_addressless_peers = nostr.enabled
-            || self
-                .transports
-                .websocket
-                .iter()
-                .any(|(_, cfg)| !cfg.seed_urls.is_empty())
-            || self
-                .transports
-                .ethernet
-                .iter()
-                .any(|(_, cfg)| cfg.discovery())
-            || ble_discovery_enabled;
-
-        for (i, peer) in self.peers.iter().enumerate() {
-            if peer.addresses.is_empty() && !can_resolve_addressless_peers {
-                return Err(ConfigError::Validation(format!(
-                    "peers[{i}] ({}): must specify at least one address, a WebSocket seed URL, or an enabled peer-discovery transport",
-                    peer.npub
-                )));
-            }
-        }
-
         let has_nat_udp_advert = self
             .transports
             .udp

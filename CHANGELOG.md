@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.64] - 2026-08-25
+
+### Fixed
+
+- Preserve addressless configured overlay peers when physical discovery is
+  currently unavailable. A later authenticated inbound or fallback adjacency
+  can still discover and route those destinations, including after a mobile
+  tunnel restart.
+- Release `fips-core` and `fips-endpoint` 0.4.64 together. FMP, FSP,
+  discovery, routing, and physical transport wire formats are unchanged.
+
 ## [0.4.63] - 2026-08-25
 
 ### Added
