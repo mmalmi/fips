@@ -30,6 +30,9 @@ write_file "$GENERATED_DIR/node-a/fips.yaml" <<'EOF'
 node:
   identity:
     persistent: true
+  discovery:
+    lan:
+      enabled: false
 
 tun:
   enabled: true
@@ -95,6 +98,9 @@ write_file "$GENERATED_DIR/node-b/fips.yaml" <<'EOF'
 node:
   identity:
     persistent: true
+  discovery:
+    lan:
+      enabled: false
 
 tun:
   enabled: true
@@ -148,6 +154,9 @@ write_file "$GENERATED_DIR/node-c/fips.yaml" <<'EOF'
 node:
   identity:
     persistent: true
+  discovery:
+    lan:
+      enabled: false
 
 tun:
   enabled: true
@@ -191,6 +200,9 @@ write_file "$GENERATED_DIR/node-d/fips.yaml" <<'EOF'
 node:
   identity:
     persistent: true
+  discovery:
+    lan:
+      enabled: false
 
 tun:
   enabled: true
@@ -234,6 +246,9 @@ write_file "$GENERATED_DIR/node-e/fips.yaml" <<'EOF'
 node:
   identity:
     persistent: true
+  discovery:
+    lan:
+      enabled: false
 
 tun:
   enabled: true
@@ -264,6 +279,9 @@ write_file "$GENERATED_DIR/node-f/fips.yaml" <<'EOF'
 node:
   identity:
     persistent: true
+  discovery:
+    lan:
+      enabled: false
 
 tun:
   enabled: true

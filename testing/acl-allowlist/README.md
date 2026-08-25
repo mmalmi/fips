@@ -13,6 +13,9 @@ This lets us test three different node behaviors at once:
 - outsiders (`c`, `d`) allow everyone locally, but still cannot join because insiders reject them
 - allowed remotes (`e`, `f`) rely on the insider ACLs and do not need local ACL files
 
+LAN discovery is disabled in these fixtures so the asserted peer sets reflect
+only the explicit static connections above.
+
 ## Test Identities
 
 Allowed:
