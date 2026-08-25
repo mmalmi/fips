@@ -609,8 +609,12 @@ fn session_registry_owns_session_rekey_initiation_eligibility() {
         Err(SessionRekeyInitiationSkip::RekeyInProgress)
     );
     assert_eq!(
-        sessions.prepare_session_rekey_initiation(pending_peer.node_addr()),
-        Err(SessionRekeyInitiationSkip::RekeyInProgress)
+        sessions
+            .prepare_session_rekey_initiation(pending_peer.node_addr())
+            .expect("a recovery handshake may be armed beside a stalled pending epoch"),
+        SessionRekeyInitiation {
+            dest_pubkey: pending_peer.pubkey_full(),
+        }
     );
     assert_eq!(
         sessions.prepare_session_rekey_initiation(draining_peer.node_addr()),
@@ -670,6 +674,7 @@ fn session_registry_owns_rekey_tick_selection() {
     let now_ms = 20_000_000;
     let drain_ms = FSP_DRAIN_WINDOW_SECS * 1000;
     let tick = SessionRekeyTickConfig {
+        initiate_enabled: true,
         now_ms,
         rekey_after_secs: 10_000,
         rekey_after_messages: u64::MAX,
@@ -740,6 +745,22 @@ fn session_registry_owns_rekey_tick_selection() {
     expected_initiate.sort();
     assert_eq!(plan.initiate, expected_initiate);
 
+    let mut disabled_plan = sessions.plan_session_rekey_tick(
+        SessionRekeyTickConfig {
+            initiate_enabled: false,
+            ..tick
+        },
+        |_| 0,
+    );
+    disabled_plan.probe.sort();
+    disabled_plan.drain.sort();
+    assert_eq!(disabled_plan.probe, plan.probe);
+    assert_eq!(disabled_plan.drain, plan.drain);
+    assert!(
+        disabled_plan.initiate.is_empty(),
+        "disabling local initiation must not disable responder lifecycle work"
+    );
+
     assert!(sessions.complete_due_session_rekey_drain(
         drain_and_rekey_peer.node_addr(),
         now_ms,
@@ -749,6 +770,54 @@ fn session_registry_owns_rekey_tick_selection() {
     assert!(
         followup.initiate.contains(drain_and_rekey_peer.node_addr()),
         "the timer-due rekey should start on the tick after drain retirement"
+    );
+}
+
+#[tokio::test]
+async fn disabled_local_initiation_still_reaps_responder_drain_and_msg3_retry_state() {
+    let local = Identity::generate();
+    let pending_peer = Identity::generate();
+    let draining_peer = Identity::generate();
+    let mut config = crate::config::Config::new();
+    config.node.rekey.enabled = false;
+    config.node.rate_limit.handshake_max_resends = 0;
+    let mut node = Node::with_identity(local, config).expect("node");
+
+    let mut pending = established_entry(&node.identity, &pending_peer, 1_000);
+    pending.set_rekey_state(
+        NoiseHandshakeState::new_xk_initiator(node.identity.keypair(), pending_peer.pubkey_full()),
+        true,
+    );
+    let (pending_session, _) = make_xk_session_pair(&node.identity, &pending_peer);
+    pending.set_pending_session(pending_session);
+    pending.set_rekey_completed_ms(1_000);
+    pending.set_rekey_msg3_payload(vec![0x91], 1_001);
+
+    let mut draining = established_entry(&node.identity, &draining_peer, 1_000);
+    draining.set_rekey_state(
+        NoiseHandshakeState::new_xk_responder(node.identity.keypair()),
+        false,
+    );
+    let (_, draining_session) = make_xk_session_pair(&draining_peer, &node.identity);
+    draining.set_pending_session(draining_session);
+    assert!(draining.cutover_to_new_session(1));
+
+    node.sessions.insert(*pending_peer.node_addr(), pending);
+    node.sessions.insert(*draining_peer.node_addr(), draining);
+
+    node.resend_pending_session_msg3(u64::MAX).await;
+    let pending = node.sessions.get(pending_peer.node_addr()).unwrap();
+    assert!(pending.pending_new_session().is_some());
+    assert!(pending.rekey_msg3_payload().is_none());
+
+    node.check_session_rekey().await;
+    assert!(
+        !node
+            .sessions
+            .get(draining_peer.node_addr())
+            .unwrap()
+            .is_draining(),
+        "peer-driven drain retirement must run with local initiation disabled"
     );
 }
 

@@ -398,6 +398,40 @@ impl NostrDiscovery {
             return;
         }
 
+        // Validate the authenticated sender and freshness before consuming an
+        // admission slot or inserting the session id into the replay cache.
+        // Otherwise an invalid offer can poison a session id that a later
+        // legitimate offer needs. Exact retries with a cached answer remain
+        // handled above so a valid in-flight retry retains its fast path.
+        let offer_received_at = now_ms();
+        let outcome = match validate_offer_freshness(
+            &offer,
+            offer_received_at,
+            self.config.signal_ttl_secs * 1000,
+            &sender_npub,
+            &self.npub,
+        ) {
+            Ok(outcome) => outcome,
+            Err(err) => {
+                debug!(
+                    peer = %short_npub(&sender_npub),
+                    session = %short_id(&offer.session_id),
+                    error = %err,
+                    "traversal: ignoring invalid mesh offer"
+                );
+                return;
+            }
+        };
+        if outcome == FreshnessOutcome::FreshWithinSkewTolerance {
+            debug!(
+                peer = %short_npub(&sender_npub),
+                session = %short_id(&offer.session_id),
+                offer_issued_at = offer.issued_at,
+                offer_received_at = offer_received_at,
+                "traversal: mesh offer accepted within clock-skew tolerance"
+            );
+        }
+
         let permit = match self.offer_admission.try_admit(&sender_npub) {
             Ok(permit) => permit,
             Err(super::super::offer_admission::OfferAdmissionReject::SenderFull) => {
@@ -417,7 +451,6 @@ impl NostrDiscovery {
                 return;
             }
         };
-        let offer_received_at = now_ms();
         match self
             .admit_incoming_mesh_offer(&sender_npub, &offer.session_id, offer_received_at)
             .await
@@ -481,22 +514,6 @@ impl NostrDiscovery {
             local = offer.local_addresses.len(),
             "traversal: mesh offer received"
         );
-        let outcome = validate_offer_freshness(
-            &offer,
-            offer_received_at,
-            self.config.signal_ttl_secs * 1000,
-            &sender_npub,
-            &self.npub,
-        )?;
-        if outcome == FreshnessOutcome::FreshWithinSkewTolerance {
-            debug!(
-                peer = %peer_short,
-                session = %short_id(&offer.session_id),
-                offer_issued_at = offer.issued_at,
-                offer_received_at = offer_received_at,
-                "traversal: mesh offer accepted within clock-skew tolerance"
-            );
-        }
         let bind_interface = self.bind_interface.read().await.clone();
         let base_socket = bind_traversal_udp_socket(bind_interface.as_deref())?;
         let observation = observe_traversal_addresses(

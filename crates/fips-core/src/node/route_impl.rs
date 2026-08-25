@@ -17,13 +17,10 @@ impl Node {
         coords: crate::tree::TreeCoordinate,
         now_ms: u64,
     ) -> bool {
-        if coords.node_addr() != &node_addr
-            || coords.root_id() != self.tree_state.my_coords().root_id()
-        {
-            return false;
-        }
-        self.coord_cache.insert(node_addr, coords, now_ms);
-        true
+        let current_root = *self.tree_state.my_coords().root_id();
+        self.coord_cache
+            .insert_current_root_hint(node_addr, coords, &current_root, now_ms)
+            .is_some_and(|outcome| outcome != crate::cache::HintOutcome::Rejected)
     }
 
     /// Check if a peer is a tree neighbor (parent or child in the spanning tree).
@@ -608,10 +605,6 @@ impl Node {
         destination: &NodeAddr,
         previous_hop: &NodeAddr,
     ) -> bool {
-        if self.config.node.routing.mode != RoutingMode::ReplyLearned {
-            return true;
-        }
-
         // Once established traffic has selected a branch, match feedback to
         // the branch that actually carried the last outbound payload. The
         // handshake pin may still name the authenticated msg2 ingress until
@@ -642,10 +635,12 @@ impl Node {
         // affinity when the failure is recorded makes later errors from the
         // same branch stale.
         // Before any payload has selected a branch, the dataplane owner's wrap
-        // route is the best authenticated local match available.
+        // route is the best authenticated local match available. With no
+        // recorded route at all there is no provenance for a plaintext routing
+        // signal, so fail closed rather than trusting any authenticated peer.
         self.dataplane
             .fsp_owner_next_hop(destination)
-            .is_none_or(|next_hop| next_hop == *previous_hop)
+            .is_some_and(|next_hop| next_hop == *previous_hop)
     }
 
     pub(in crate::node) fn record_route_failure(

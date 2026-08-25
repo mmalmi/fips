@@ -355,7 +355,7 @@
         let mut coord_cache = crate::cache::CoordCache::new(8, 1_000);
         turn.fsp_coord_warmups()[0]
             .clone()
-            .apply_to(&mut coord_cache, 10);
+            .apply_to(&mut coord_cache, &root_addr, 10);
         assert_eq!(coord_cache.get(&source_addr, 10), Some(&source_coords));
         assert_eq!(coord_cache.get(&local_addr, 10), Some(&local_coords));
         assert_eq!(turn.fsp_session_ingress_count(), 1);
@@ -369,6 +369,30 @@
             Some(1),
             "authenticated FSP output collection should reset the owner failure streak"
         );
+    }
+
+    #[test]
+    fn fsp_coord_warmup_rejects_foreign_roots_and_claimed_key_mismatches() {
+        let current_root = NodeAddr::from_bytes([0xd0; 16]);
+        let foreign_root = NodeAddr::from_bytes([0xd1; 16]);
+        let source_addr = NodeAddr::from_bytes([0xd2; 16]);
+        let local_addr = NodeAddr::from_bytes([0xd3; 16]);
+        let other_addr = NodeAddr::from_bytes([0xd4; 16]);
+        let foreign = crate::tree::TreeCoordinate::from_addrs(vec![source_addr, foreign_root])
+            .unwrap();
+        let mismatched = crate::tree::TreeCoordinate::from_addrs(vec![other_addr, current_root])
+            .unwrap();
+        let warmup = DataplaneFspCoordWarmup::from_parsed(
+            source_addr,
+            local_addr,
+            Some(foreign),
+            Some(mismatched),
+        );
+        let mut coord_cache = crate::cache::CoordCache::new(8, 1_000);
+
+        warmup.apply_to(&mut coord_cache, &current_root, 10);
+
+        assert!(coord_cache.is_empty());
     }
 
     #[tokio::test]

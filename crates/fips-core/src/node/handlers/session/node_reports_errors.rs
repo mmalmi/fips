@@ -1,4 +1,52 @@
+/// Outcome of the receive-side routing-signal admission check.
+///
+/// These signals are plaintext inside the end-to-end envelope.  The
+/// authenticated previous hop tells us which local branch delivered them,
+/// but the destination named in the body is still attacker-controlled.  Keep
+/// structurally impossible source/destination pairings separate from benign
+/// late signals for operator visibility.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RoutingSignalVerdict {
+    Admit,
+    Forged,
+    Unbound,
+}
+
+impl RoutingSignalVerdict {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Admit => "admit",
+            Self::Forged => "forged",
+            Self::Unbound => "unbound",
+        }
+    }
+}
+
 impl Node {
+    /// Admit a plaintext routing signal only for a destination this node has
+    /// bound by initiating a session or completing the peer's handshake.
+    ///
+    /// A responder that is still awaiting msg3 is intentionally insufficient:
+    /// its table key came from an unauthenticated address claimed in msg1.
+    fn routing_signal_verdict(
+        &self,
+        previous_hop: &NodeAddr,
+        dest: &NodeAddr,
+    ) -> RoutingSignalVerdict {
+        if dest == self.node_addr() || previous_hop == dest {
+            return RoutingSignalVerdict::Forged;
+        }
+        if self
+            .sessions
+            .get(dest)
+            .is_some_and(|entry| entry.is_established() || entry.is_initiator())
+        {
+            RoutingSignalVerdict::Admit
+        } else {
+            RoutingSignalVerdict::Unbound
+        }
+    }
+
     // === Session-layer MMP report handlers ===
 
     /// Handle an incoming session-layer SenderReport (msg_type 0x11).
@@ -106,11 +154,7 @@ impl Node {
             } else if loss >= SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD
                 && let Some(failed_next_hop) = last_outbound_next_hop
             {
-                if self.has_proven_alternate_session_route(
-                    src_addr,
-                    &failed_next_hop,
-                    now_ms,
-                ) {
+                if self.has_proven_alternate_session_route(src_addr, &failed_next_hop, now_ms) {
                     self.record_active_route_failure(*src_addr, failed_next_hop);
                     debug!(
                         src = %peer_name,
@@ -161,9 +205,7 @@ impl Node {
         };
 
         if notif.path_mtu < crate::mmp::MIN_ACTIONABLE_PATH_MTU {
-            self.stats_mut()
-                .errors
-                .path_mtu_notification_below_floor += 1;
+            self.stats_mut().errors.path_mtu_notification_below_floor += 1;
             warn!(
                 src = %self.peer_display_name(src_addr),
                 reported_mtu = notif.path_mtu,
@@ -202,38 +244,27 @@ impl Node {
         // time value until a reactive MtuExceeded happens to fire. Keep the
         // tighter of existing-or-new — never loosen the clamp.
         let fips_addr = crate::FipsAddress::from_node_addr(src_addr);
-        match self.path_mtu_lookup.write() {
-            Ok(mut map) => match map.get(&fips_addr).copied() {
-                Some(existing) if existing <= change.new_mtu => {
-                    debug!(
-                        dest = %peer_name,
-                        fips_addr = %fips_addr,
-                        new_mtu = change.new_mtu,
-                        existing,
-                        "PathMtuNotification: keeping tighter existing path_mtu_lookup value"
-                    );
-                }
-                other => {
-                    map.insert(fips_addr, change.new_mtu);
-                    debug!(
-                        dest = %peer_name,
-                        fips_addr = %fips_addr,
-                        new_mtu = change.new_mtu,
-                        prior = ?other,
-                        map_len = map.len(),
-                        "PathMtuNotification: tightened path_mtu_lookup"
-                    );
-                }
-            },
-            Err(e) => {
-                warn!(
-                    dest = %peer_name,
-                    fips_addr = %fips_addr,
-                    new_mtu = change.new_mtu,
-                    error = %e,
-                    "path_mtu_lookup write lock poisoned; PathMtuNotification not reflected"
-                );
-            }
+        match self.record_held_path_mtu(fips_addr, change.new_mtu) {
+            PathMtuUpdate::Kept { current } => debug!(
+                dest = %peer_name,
+                fips_addr = %fips_addr,
+                new_mtu = change.new_mtu,
+                existing = current.mtu,
+                "PathMtuNotification: keeping tighter existing path_mtu_lookup value"
+            ),
+            PathMtuUpdate::Updated { prior, .. } => debug!(
+                dest = %peer_name,
+                fips_addr = %fips_addr,
+                new_mtu = change.new_mtu,
+                prior = ?prior,
+                "PathMtuNotification: tightened path_mtu_lookup"
+            ),
+            PathMtuUpdate::Unavailable => warn!(
+                dest = %peer_name,
+                fips_addr = %fips_addr,
+                new_mtu = change.new_mtu,
+                "path_mtu_lookup unavailable; PathMtuNotification not reflected"
+            ),
         }
     }
 
@@ -243,7 +274,11 @@ impl Node {
     /// coordinates for the destination. Send a standalone CoordsWarmup
     /// immediately (rate-limited), trigger discovery, and reset the
     /// warmup counter for subsequent data packets.
-    async fn handle_coords_required(&mut self, previous_hop: &NodeAddr, inner: &[u8]) {
+    pub(in crate::node) async fn handle_coords_required(
+        &mut self,
+        previous_hop: &NodeAddr,
+        inner: &[u8],
+    ) {
         self.stats_mut().errors.coords_required += 1;
 
         let msg = match CoordsRequired::decode(inner) {
@@ -253,6 +288,22 @@ impl Node {
                 return;
             }
         };
+
+        let verdict = self.routing_signal_verdict(previous_hop, &msg.dest_addr);
+        if verdict != RoutingSignalVerdict::Admit {
+            self.stats_mut().errors.coords_required_unbound += 1;
+            if verdict == RoutingSignalVerdict::Forged {
+                self.stats_mut().errors.routing_signal_forged += 1;
+            }
+            debug!(
+                dest = %msg.dest_addr,
+                reporter = %msg.reporter,
+                previous_hop = %previous_hop,
+                verdict = verdict.label(),
+                "Ignoring CoordsRequired for a destination this node has not bound"
+            );
+            return;
+        }
 
         debug!(
             dest = %msg.dest_addr,
@@ -312,7 +363,11 @@ impl Node {
     /// The router has coordinates but still can't route to the destination.
     /// Send a standalone CoordsWarmup immediately (rate-limited), invalidate
     /// cached coordinates, trigger re-discovery, and reset the warmup counter.
-    async fn handle_path_broken(&mut self, previous_hop: &NodeAddr, inner: &[u8]) {
+    pub(in crate::node) async fn handle_path_broken(
+        &mut self,
+        previous_hop: &NodeAddr,
+        inner: &[u8],
+    ) {
         self.stats_mut().errors.path_broken += 1;
 
         let msg = match PathBroken::decode(inner) {
@@ -322,6 +377,22 @@ impl Node {
                 return;
             }
         };
+
+        let verdict = self.routing_signal_verdict(previous_hop, &msg.dest_addr);
+        if verdict != RoutingSignalVerdict::Admit {
+            self.stats_mut().errors.path_broken_unbound += 1;
+            if verdict == RoutingSignalVerdict::Forged {
+                self.stats_mut().errors.routing_signal_forged += 1;
+            }
+            debug!(
+                dest = %msg.dest_addr,
+                reporter = %msg.reporter,
+                previous_hop = %previous_hop,
+                verdict = verdict.label(),
+                "Ignoring PathBroken for a destination this node has not bound"
+            );
+            return;
+        }
 
         debug!(
             dest = %msg.dest_addr,
@@ -424,18 +495,20 @@ impl Node {
         );
 
         // The plaintext routing-error carrier is not end-to-end
-        // authenticated. Only let it affect a destination for which this node
-        // owns live session state, and only from the branch that carried our
-        // most recent outbound traffic.
-        let bound = self.sessions.get(&msg.dest_addr).is_some_and(|entry| {
-            entry.is_established() || entry.is_initiator()
-        });
-        if !bound {
+        // authenticated. Only let it affect a destination this node bound,
+        // and only from the branch that carried our most recent traffic.
+        let verdict = self.routing_signal_verdict(previous_hop, &msg.dest_addr);
+        if verdict != RoutingSignalVerdict::Admit {
             self.stats_mut().errors.mtu_exceeded_unbound += 1;
+            if verdict == RoutingSignalVerdict::Forged {
+                self.stats_mut().errors.routing_signal_forged += 1;
+            }
             debug!(
                 dest = %peer_name,
                 reporter = %msg.reporter,
-                "Ignoring MtuExceeded for an unbound destination"
+                previous_hop = %previous_hop,
+                verdict = verdict.label(),
+                "Ignoring MtuExceeded for a destination this node has not bound"
             );
             return;
         }
@@ -508,39 +581,27 @@ impl Node {
         // dropped a packet is authoritative for "what fits". Keep the
         // tighter of existing-or-new — never loosen the clamp.
         let fips_addr = crate::FipsAddress::from_node_addr(&msg.dest_addr);
-        match self.path_mtu_lookup.write() {
-            Ok(mut map) => match map.get(&fips_addr).copied() {
-                Some(existing) if existing <= msg.mtu => {
-                    debug!(
-                        dest = %peer_name,
-                        fips_addr = %fips_addr,
-                        bottleneck_mtu = msg.mtu,
-                        existing,
-                        "Reactive MtuExceeded: keeping tighter existing path_mtu_lookup value"
-                    );
-                }
-                other => {
-                    map.insert(fips_addr, msg.mtu);
-                    debug!(
-                        dest = %peer_name,
-                        fips_addr = %fips_addr,
-                        bottleneck_mtu = msg.mtu,
-                        prior = ?other,
-                        map_len = map.len(),
-                        "Reactive MtuExceeded: tightened path_mtu_lookup"
-                    );
-                }
-            },
-            Err(e) => {
-                warn!(
-                    dest = %peer_name,
-                    fips_addr = %fips_addr,
-                    bottleneck_mtu = msg.mtu,
-                    error = %e,
-                    "path_mtu_lookup write lock poisoned; reactive MtuExceeded not reflected"
-                );
-            }
+        match self.record_held_path_mtu(fips_addr, msg.mtu) {
+            PathMtuUpdate::Kept { current } => debug!(
+                dest = %peer_name,
+                fips_addr = %fips_addr,
+                bottleneck_mtu = msg.mtu,
+                existing = current.mtu,
+                "Reactive MtuExceeded: keeping tighter existing path_mtu_lookup value"
+            ),
+            PathMtuUpdate::Updated { prior, .. } => debug!(
+                dest = %peer_name,
+                fips_addr = %fips_addr,
+                bottleneck_mtu = msg.mtu,
+                prior = ?prior,
+                "Reactive MtuExceeded: tightened path_mtu_lookup"
+            ),
+            PathMtuUpdate::Unavailable => warn!(
+                dest = %peer_name,
+                fips_addr = %fips_addr,
+                bottleneck_mtu = msg.mtu,
+                "path_mtu_lookup unavailable; reactive MtuExceeded not reflected"
+            ),
         }
     }
-
 }

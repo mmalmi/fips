@@ -1,4 +1,38 @@
 use super::*;
+use zeroize::Zeroize;
+
+#[test]
+fn cipher_state_clears_retained_key_material() {
+    fn assert_zeroize_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+    assert_zeroize_on_drop::<CipherState>();
+
+    let mut cipher = CipherState::new([7; 32]);
+    let verifier = CipherState::new([7; 32]);
+    let plaintext = b"old-key plaintext";
+    let ciphertext = cipher.encrypt(plaintext).unwrap();
+    assert_eq!(
+        verifier.decrypt_with_counter(&ciphertext, 0).unwrap(),
+        plaintext
+    );
+    assert_eq!(cipher.nonce(), 1);
+    assert!(cipher.has_cached_cipher());
+
+    let mut observed = cipher.retained_key_bytes();
+    assert_eq!(observed, [7; 32]);
+    observed.zeroize();
+    cipher.zeroize();
+
+    assert_eq!(cipher.retained_key_bytes(), [0; 32]);
+    assert_eq!(cipher.nonce(), 0);
+    assert!(!cipher.has_key());
+    assert!(!cipher.has_cached_cipher());
+    assert!(cipher.cipher_clone().is_none());
+    assert_ne!(
+        cipher.decrypt_with_counter(&ciphertext, 0).unwrap(),
+        plaintext,
+        "a zeroized state must not retain the old AEAD key"
+    );
+}
 
 #[test]
 fn test_full_handshake() {

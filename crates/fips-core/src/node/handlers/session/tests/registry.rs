@@ -85,6 +85,47 @@
     }
 
     #[test]
+    fn rejected_remote_authentication_does_not_mutate_the_established_identity() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let attacker = Identity::generate();
+        let mut entry = established_entry(&local, &peer);
+        let original_pubkey = *entry.remote_pubkey();
+        let original_identity = entry.remote_identity();
+
+        assert!(!entry.authenticate_remote(*peer.node_addr(), attacker.pubkey_full()));
+        assert_eq!(*entry.remote_pubkey(), original_pubkey);
+        assert_eq!(entry.remote_identity(), original_identity);
+    }
+
+    #[test]
+    fn abandoning_only_a_rekey_handshake_preserves_the_completed_epoch_and_role() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let mut entry = established_entry(&local, &peer);
+
+        entry.set_rekey_state(
+            HandshakeState::new_xk_initiator(local.keypair(), peer.pubkey_full()),
+            true,
+        );
+        entry.set_pending_session(make_xk_session(&local, &peer));
+        entry.set_rekey_completed_ms(5_000);
+        entry.set_rekey_msg3_payload(vec![0x33], 5_250);
+        entry.set_rekey_state(HandshakeState::new_xk_responder(local.keypair()), false);
+        entry.set_handshake_payload(vec![0x22], 5_250);
+
+        entry.abandon_handshake();
+
+        assert!(entry.is_established());
+        assert!(entry.pending_new_session().is_some());
+        assert!(entry.pending_rekey_initiator());
+        assert_eq!(entry.rekey_completed_ms(), 5_000);
+        assert_eq!(entry.rekey_msg3_payload(), Some([0x33].as_slice()));
+        assert!(!entry.has_rekey_in_progress());
+        assert_eq!(entry.handshake_payload(), None);
+    }
+
+    #[test]
     fn session_registry_owns_session_initiation_skip_policy() {
         let local = Identity::generate();
         let established_peer = Identity::generate();

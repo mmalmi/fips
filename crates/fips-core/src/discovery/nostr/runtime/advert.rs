@@ -50,7 +50,7 @@ impl NostrDiscovery {
             return NostrAdvertIngestOutcome::Rejected;
         };
 
-        let created_at = event.created_at.as_secs();
+        let created_at = Self::effective_created_at_secs(event.created_at.as_secs(), now_ms());
         let mut cache = self.advert_cache.write().await;
         let existing_created_at = cache.get(&author_key).map(|existing| existing.created_at);
         if existing_created_at.is_some_and(|existing| existing > created_at) {
@@ -222,21 +222,19 @@ impl NostrDiscovery {
             Err(_) => return NostrRefetchOutcome::Skipped,
         };
 
-        let mut newest: Option<(u64, &Event)> = None;
-        for ev in events.iter() {
-            let ts = ev.created_at.as_secs();
-            match newest {
-                Some((cur, _)) if ts <= cur => {}
-                _ => newest = Some((ts, ev)),
+        let Some(ev) = Self::newest_event_by_author(events.iter(), target_pubkey) else {
+            if !events.is_empty() {
+                // A relay returning another author's event is not evidence
+                // that this peer withdrew its advert. Keep the last-good
+                // cache entry and do not let the foreign timestamp compete.
+                return NostrRefetchOutcome::Skipped;
             }
-        }
-
-        let Some((relay_created_at, ev)) = newest else {
             // Absent on relays. Evict any stale cache entry.
             self.advert_cache.write().await.remove(&peer_key);
             self.failure_state.reset_streak_after_refresh(peer_key);
             return NostrRefetchOutcome::Evicted;
         };
+        let relay_created_at = Self::effective_created_at_secs(ev.created_at.as_secs(), now_ms());
 
         match cached_created_at {
             Some(cached) if relay_created_at <= cached => NostrRefetchOutcome::SameAdvert,
@@ -539,15 +537,16 @@ impl NostrDiscovery {
             else {
                 continue;
             };
+            let created_at = Self::effective_created_at_secs(event.created_at.as_secs(), now_ms());
             let replace = best
                 .as_ref()
-                .map(|current| event.created_at.as_secs() >= current.created_at)
+                .map(|current| created_at >= current.created_at)
                 .unwrap_or(true);
             if replace {
                 best = Some(CachedOverlayAdvert {
                     author_npub: peer_npub.to_string(),
                     advert,
-                    created_at: event.created_at.as_secs(),
+                    created_at,
                     valid_until_ms,
                 });
             }
@@ -677,6 +676,29 @@ impl NostrDiscovery {
         Self::compute_advert_valid_until_ms(event, self.advert_max_age_ms(), now_ms())
     }
 
+    /// Select only events actually signed by the requested peer before the
+    /// newest-timestamp contest. Relay pools verify signatures but are not a
+    /// substitute for checking the query's author predicate.
+    pub(in crate::discovery::nostr) fn newest_event_by_author<'a>(
+        events: impl Iterator<Item = &'a Event>,
+        author: PublicKey,
+    ) -> Option<&'a Event> {
+        events
+            .filter(|event| event.pubkey == author)
+            .max_by_key(|event| event.created_at.as_secs())
+    }
+
+    /// Clamp future publication times to the traversal protocol's accepted
+    /// clock-skew window. This keeps a future advert from gaining an
+    /// unbounded cache lifetime or permanently outranking honest updates.
+    pub(in crate::discovery::nostr) fn effective_created_at_secs(
+        created_at_secs: u64,
+        now_ms: u64,
+    ) -> u64 {
+        let ceiling_secs = now_ms.saturating_add(FRESHNESS_SKEW_TOLERANCE_MS) / 1000;
+        created_at_secs.min(ceiling_secs)
+    }
+
     pub(in crate::discovery::nostr) fn compute_advert_valid_until_ms(
         event: &Event,
         advert_max_age_ms: u64,
@@ -686,7 +708,8 @@ impl NostrDiscovery {
             return None;
         }
 
-        let created_ms = event.created_at.as_secs().saturating_mul(1000);
+        let created_ms = Self::effective_created_at_secs(event.created_at.as_secs(), now_ms)
+            .saturating_mul(1000);
         let created_window_until = created_ms.saturating_add(advert_max_age_ms);
         if created_window_until <= now_ms {
             return None;

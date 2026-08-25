@@ -104,9 +104,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.100"
+version = "1.0.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
+checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "arc-swap"
@@ -1180,11 +1180,10 @@ dependencies = [
 
 [[package]]
 name = "event-listener"
-version = "5.4.1"
+version = "5.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e13b66accf52311f30a0db42147dadea9850cb48cd070028831ae5f5d4b856ab"
+checksum = "5a23add41df1562121a9393cb065eab5146a1242410f23a644851e90cfd669d2"
 dependencies = [
- "concurrent-queue",
  "parking",
  "pin-project-lite",
 ]
@@ -1313,6 +1312,7 @@ dependencies = [
  "webrtc",
  "windows-sys 0.61.2",
  "wintun",
+ "zeroize",
 ]
 
 [[package]]
@@ -1332,6 +1332,7 @@ dependencies = [
  "secp256k1 0.30.0",
  "sha2",
  "thiserror 2.0.18",
+ "zeroize",
 ]
 
 [[package]]
@@ -2617,7 +2618,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c80231409c20246a13fddb31776fb942c38553c51e871f8cbd687a4cfb5843d"
 dependencies = [
  "phf_shared",
- "rand 0.8.5",
+ "rand 0.8.6",
 ]
 
 [[package]]
@@ -2862,9 +2863,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.8.5"
+version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34af8d1a0e25924bc5b7c43c079c942339d8f0a8b57c39049bef581b46327404"
+checksum = "5ca0ecfa931c29007047d1bc58e623ab12e5590e8c7cc53200d5202b69266d8a"
 dependencies = [
  "libc",
  "rand_chacha 0.3.1",
@@ -3363,7 +3364,7 @@ version = "0.29.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9465315bc9d4566e1724f0fffcbcc446268cb522e60f9a27bcded6b19c108113"
 dependencies = [
- "rand 0.8.5",
+ "rand 0.8.6",
  "secp256k1-sys",
  "serde",
 ]
@@ -3375,7 +3376,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b50c5943d326858130af85e049f2661ba3c78b26589b8ab98e65e80ae44a1252"
 dependencies = [
  "bitcoin_hashes",
- "rand 0.8.5",
+ "rand 0.8.6",
  "secp256k1-sys",
 ]
 
@@ -5140,18 +5141,18 @@ dependencies = [
 
 [[package]]
 name = "zeroize"
-version = "1.8.2"
+version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b97154e67e32c85465826e8bcc1c59429aaaf107c1e4a9e53c8d8ccd5eff88d0"
+checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
 dependencies = [
  "zeroize_derive",
 ]
 
 [[package]]
 name = "zeroize_derive"
-version = "1.4.3"
+version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85a5b4158499876c763cb03bc4e49185d3cccbabb15b33c627f7884f43db852e"
+checksum = "3c50655cbb0fe3fc43170059e702f1ce5e19b84cec58dc87b037a09935c2f328"
 dependencies = [
  "proc-macro2",
  "quote",

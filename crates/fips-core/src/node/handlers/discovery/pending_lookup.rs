@@ -1,6 +1,10 @@
 use crate::NodeAddr;
 use std::collections::HashMap;
 
+/// Maximum request IDs retained for one outstanding lookup. Retry ladders
+/// longer than this evict the oldest ID so the newest attempt remains usable.
+const MAX_ORIGIN_REQUEST_IDS: usize = 8;
+
 /// Tracks a pending discovery lookup with retry state.
 #[derive(Clone, Debug)]
 pub struct PendingLookup {
@@ -24,6 +28,12 @@ impl PendingLookup {
     }
 
     fn record_origin_request(&mut self, request_id: u64) {
+        if self.origin_request_ids.contains(&request_id) {
+            return;
+        }
+        if self.origin_request_ids.len() >= MAX_ORIGIN_REQUEST_IDS {
+            self.origin_request_ids.remove(0);
+        }
         self.origin_request_ids.push(request_id);
     }
 
@@ -115,10 +125,16 @@ impl PendingDiscoveryLookups {
         self.entries.contains_key(dest)
     }
 
-    pub(crate) fn record_origin_request(&mut self, dest: &NodeAddr, request_id: u64) {
-        if let Some(entry) = self.entries.get_mut(dest) {
-            entry.record_origin_request(request_id);
-        }
+    pub(crate) fn ensure_and_record_origin_request(
+        &mut self,
+        dest: NodeAddr,
+        now_ms: u64,
+        request_id: u64,
+    ) {
+        self.entries
+            .entry(dest)
+            .or_insert_with(|| PendingLookup::new(now_ms))
+            .record_origin_request(request_id);
     }
 
     pub(crate) fn matches_origin_request(&self, dest: &NodeAddr, request_id: u64) -> bool {
@@ -149,5 +165,21 @@ impl PendingDiscoveryLookups {
 
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn origin_request_ids_are_bounded_and_keep_the_newest_attempts() {
+        let mut pending = PendingLookup::new(0);
+        for id in 0..12 {
+            pending.record_origin_request(id);
+        }
+        assert!(!pending.matches_origin_request(0));
+        assert!(pending.matches_origin_request(11));
+        assert_eq!(pending.origin_request_ids.len(), MAX_ORIGIN_REQUEST_IDS);
     }
 }

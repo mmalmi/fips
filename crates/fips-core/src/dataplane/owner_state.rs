@@ -291,6 +291,7 @@ impl OwnerState {
             && self.pending_fsp_replay_window.is_some()
     }
 
+    #[cfg(test)]
     pub(crate) fn clear_fsp_pending_receive_epoch(&mut self) -> bool {
         if self.owner.protocol() != PacketProtocol::Fsp {
             return false;

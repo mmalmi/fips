@@ -14,20 +14,14 @@ const DECRYPT_FAILURE_RECOVERY_QUIET_MS: u64 = 5_000;
 /// Removing only the end-to-end session lets the next valid setup establish a
 /// clean epoch without discarding an otherwise healthy carrier peer.
 const DECRYPT_FAILURE_EVICTION_THRESHOLD: u32 = 64;
-fn pending_rekey_wins_tiebreak(
-    our_addr: &NodeAddr,
-    peer_addr: &NodeAddr,
-    existing: &SessionEntry,
-) -> bool {
-    existing.pending_new_session().is_some()
-        && existing.is_rekey_initiator()
-        && our_addr < peer_addr
+fn pending_rekey_outranks_setup(existing: &SessionEntry, now_ms: u64, stale_ms: u64) -> bool {
+    existing.pending_new_session().is_some() && !existing.pending_stale(now_ms, stale_ms)
 }
 
 fn duplicate_rekey_responder_ack(existing: &SessionEntry) -> Option<Vec<u8>> {
     if existing.is_established()
         && existing.has_rekey_in_progress()
-        && !existing.is_rekey_initiator()
+        && !existing.is_rekey_handshake_initiator()
     {
         return existing.handshake_payload().map(<[u8]>::to_vec);
     }
@@ -74,11 +68,20 @@ impl crate::node::SessionRegistry {
         true
     }
 
+    #[cfg(test)]
     fn abandon_rekey(&mut self, source_addr: &NodeAddr) -> bool {
         let Some(entry) = self.get_mut(source_addr) else {
             return false;
         };
         entry.abandon_rekey();
+        true
+    }
+
+    fn abandon_rekey_handshake(&mut self, source_addr: &NodeAddr) -> bool {
+        let Some(entry) = self.get_mut(source_addr) else {
+            return false;
+        };
+        entry.abandon_handshake();
         true
     }
 

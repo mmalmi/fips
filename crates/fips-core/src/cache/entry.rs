@@ -2,6 +2,22 @@
 
 use crate::tree::TreeCoordinate;
 
+/// How long a proof-verified coordinate outranks unauthenticated hints.
+///
+/// This is intentionally independent from the entry TTL. Forwarding activity
+/// may keep an entry alive, but must not make one old verification authoritative
+/// forever after a destination moves.
+pub const VERIFIED_TTL_MS: u64 = 300_000;
+
+/// Provenance of the coordinates currently stored in a cache entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CoordSource {
+    /// Established by a lookup response whose target proof was verified here.
+    Verified,
+    /// Copied from a session header or another unauthenticated routing hint.
+    Hint,
+}
+
 /// A cached coordinate entry.
 #[derive(Clone, Debug)]
 pub struct CacheEntry {
@@ -19,6 +35,11 @@ pub struct CacheEntry {
     /// response is cached. `None` when populated from SessionSetup or
     /// other sources that don't carry path MTU information.
     path_mtu: Option<u16>,
+    /// Provenance of the current coordinate value.
+    source: CoordSource,
+    /// End of the independent interval during which a verified value refuses
+    /// unauthenticated replacement.
+    verified_until: u64,
 }
 
 impl CacheEntry {
@@ -30,7 +51,37 @@ impl CacheEntry {
             last_used: current_time_ms,
             expires_at: current_time_ms.saturating_add(ttl_ms),
             path_mtu: None,
+            source: CoordSource::Hint,
+            verified_until: 0,
         }
+    }
+
+    /// Create a cache entry established by a verified lookup response.
+    pub fn new_verified(coords: TreeCoordinate, current_time_ms: u64, ttl_ms: u64) -> Self {
+        let mut entry = Self::new(coords, current_time_ms, ttl_ms);
+        entry.mark_verified(current_time_ms);
+        entry
+    }
+
+    /// Provenance of the current coordinate value.
+    pub fn source(&self) -> CoordSource {
+        self.source
+    }
+
+    /// Whether the coordinate is still inside its independent verification
+    /// window and therefore outranks unauthenticated hints.
+    pub fn is_verified(&self, current_time_ms: u64) -> bool {
+        self.source == CoordSource::Verified && current_time_ms <= self.verified_until
+    }
+
+    fn mark_verified(&mut self, current_time_ms: u64) {
+        self.source = CoordSource::Verified;
+        self.verified_until = current_time_ms.saturating_add(VERIFIED_TTL_MS);
+    }
+
+    fn mark_hint(&mut self) {
+        self.source = CoordSource::Hint;
+        self.verified_until = 0;
     }
 
     /// Get the cached coordinates.
@@ -79,11 +130,20 @@ impl CacheEntry {
         self.last_used = current_time_ms;
     }
 
-    /// Update the coordinates and refresh timestamps.
+    /// Update the coordinates and refresh timestamps from an unauthenticated
+    /// hint. New coordinates have new provenance, so this demotes any expired
+    /// verification rather than inheriting it.
     pub fn update(&mut self, coords: TreeCoordinate, current_time_ms: u64, ttl_ms: u64) {
         self.coords = coords;
         self.last_used = current_time_ms;
         self.expires_at = current_time_ms.saturating_add(ttl_ms);
+        self.mark_hint();
+    }
+
+    /// Update the coordinates from a proof-verified lookup response.
+    pub fn update_verified(&mut self, coords: TreeCoordinate, current_time_ms: u64, ttl_ms: u64) {
+        self.update(coords, current_time_ms, ttl_ms);
+        self.mark_verified(current_time_ms);
     }
 
     /// Time since last use (for LRU eviction).

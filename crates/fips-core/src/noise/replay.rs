@@ -6,7 +6,8 @@ use std::fmt;
 pub enum ReplayRejection {
     /// Counter is inside the replay window but its bit was already observed.
     Duplicate,
-    /// Counter is behind the retained replay window.
+    /// Counter is behind the retained replay window, or is the reserved
+    /// `u64::MAX` nonce-exhaustion sentinel outside the usable counter range.
     TooOld,
 }
 
@@ -45,6 +46,13 @@ impl ReplayWindow {
 
     /// Classify why a counter would be rejected, without updating the window.
     pub fn rejection_reason(&self, counter: u64) -> Option<ReplayRejection> {
+        // Both send paths reserve the ceiling counter as the nonce-exhaustion
+        // sentinel. Reuse the existing out-of-window classification to avoid a
+        // source-breaking public enum variant.
+        if counter == u64::MAX {
+            return Some(ReplayRejection::TooOld);
+        }
+
         if counter > self.highest {
             // New highest - always acceptable
             return None;
@@ -72,6 +80,12 @@ impl ReplayWindow {
     /// Call this only after successful decryption to prevent
     /// DoS attacks that exhaust the window.
     pub fn accept(&mut self, counter: u64) {
+        // Defend callers of the split check/decrypt/accept API as well as the
+        // inline decrypt path. The reserved ceiling must never pin `highest`.
+        if counter == u64::MAX {
+            return;
+        }
+
         if counter > self.highest {
             // Shift the window
             let shift = counter - self.highest;

@@ -21,6 +21,79 @@ mod platform;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use platform::PacketSocket;
 
+/// Outcome of `send_frame`.
+#[cfg(unix)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) enum SendOutcome {
+    Sent,
+    Stop,
+}
+
+/// Retry iterations spent yielding before the send loop starts sleeping.
+///
+/// A transiently full channel drains in microseconds, so yielding keeps the
+/// saturated-path handoff rate uncapped, which is the whole reason this
+/// module has a dedicated reader thread. Raising it burns more CPU against a
+/// genuinely stuck consumer; lowering it puts a sleep in the common case.
+#[cfg(unix)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const SEND_YIELD_SPINS: u32 = 64;
+
+/// Longest the send loop sleeps between attempts on a full channel.
+#[cfg(unix)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const SEND_RETRY_MAX: std::time::Duration = std::time::Duration::from_millis(1);
+
+/// Send one item, waiting out a full channel but waking on `shutdown_fd`.
+///
+/// Unlike `blocking_send`, this cannot park past a shutdown request, so the
+/// reader thread can always be joined during transport shutdown.
+#[cfg(unix)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn send_frame<T>(
+    tx: &tokio::sync::mpsc::Sender<T>,
+    item: T,
+    shutdown_fd: std::os::unix::io::RawFd,
+) -> SendOutcome {
+    use tokio::sync::mpsc::error::TrySendError;
+
+    let mut item = item;
+    let mut spins = 0u32;
+    let mut backoff = std::time::Duration::from_micros(50);
+    loop {
+        match tx.try_send(item) {
+            Ok(()) => return SendOutcome::Sent,
+            Err(TrySendError::Closed(_)) => return SendOutcome::Stop,
+            Err(TrySendError::Full(returned)) => {
+                if fd_is_readable(shutdown_fd) {
+                    return SendOutcome::Stop;
+                }
+                item = returned;
+                if spins < SEND_YIELD_SPINS {
+                    spins += 1;
+                    std::thread::yield_now();
+                } else {
+                    std::thread::sleep(backoff);
+                    backoff = (backoff * 2).min(SEND_RETRY_MAX);
+                }
+            }
+        }
+    }
+}
+
+/// True if `fd` has data ready, tested without blocking.
+#[cfg(unix)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn fd_is_readable(fd: std::os::unix::io::RawFd) -> bool {
+    let mut pfd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let ret = unsafe { libc::poll(&mut pfd, 1, 0) };
+    ret > 0 && (pfd.revents & libc::POLLIN) != 0
+}
+
 // =============================================================================
 // Linux: AsyncFd-based async wrapper
 // =============================================================================
@@ -111,7 +184,9 @@ mod async_impl {
 
     pub struct AsyncPacketSocket {
         inner: Arc<PacketSocket>,
-        rx: tokio::sync::Mutex<tokio::sync::mpsc::Receiver<Frame>>,
+        /// `None` once shutdown has taken the receiver, which makes a reader
+        /// thread waiting on a full channel return immediately.
+        rx: tokio::sync::Mutex<Option<tokio::sync::mpsc::Receiver<Frame>>>,
         reader_thread: Option<std::thread::JoinHandle<()>>,
     }
 
@@ -146,7 +221,10 @@ mod async_impl {
                             match result {
                                 Ok((n, mac)) => {
                                     let data = read_buf[..n].to_vec();
-                                    if tx.blocking_send((data, mac)).is_err() {
+                                    if matches!(
+                                        super::send_frame(&tx, (data, mac), shutdown_fd),
+                                        super::SendOutcome::Stop
+                                    ) {
                                         return;
                                     }
                                 }
@@ -207,7 +285,7 @@ mod async_impl {
 
             Ok(Self {
                 inner,
-                rx: tokio::sync::Mutex::new(rx),
+                rx: tokio::sync::Mutex::new(Some(rx)),
                 reader_thread: Some(reader_thread),
             })
         }
@@ -230,7 +308,10 @@ mod async_impl {
         }
 
         pub async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, [u8; 6]), TransportError> {
-            let mut rx = self.rx.lock().await;
+            let mut guard = self.rx.lock().await;
+            let Some(rx) = guard.as_mut() else {
+                return Err(TransportError::RecvFailed("reader thread stopped".into()));
+            };
             match rx.recv().await {
                 Some((data, mac)) => {
                     let n = data.len().min(buf.len());
@@ -247,15 +328,21 @@ mod async_impl {
 
         /// Signal the reader thread to stop.
         ///
-        /// Sets the shutdown flag; the reader thread checks it after
-        /// each BPF read timeout (~250ms) and exits.
+        /// Drops the receiver where possible, then wakes the reader through
+        /// the shutdown pipe. The pipe also covers a receiver lock currently
+        /// held by `recv_from`.
         pub fn shutdown(&self) {
+            if let Ok(mut guard) = self.rx.try_lock() {
+                guard.take();
+            }
             self.inner.request_shutdown();
         }
     }
 
     impl Drop for AsyncPacketSocket {
         fn drop(&mut self) {
+            // Release a send waiting for room before joining its thread.
+            self.rx.get_mut().take();
             self.inner.request_shutdown();
             if let Some(handle) = self.reader_thread.take() {
                 let _ = handle.join();
@@ -284,3 +371,103 @@ pub struct PacketSocket;
 
 #[cfg(windows)]
 pub struct AsyncPacketSocket;
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::{SendOutcome, fd_is_readable, send_frame};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    /// A pipe used as the shutdown signal, returned as (read fd, write fd).
+    fn shutdown_pipe() -> (std::os::unix::io::RawFd, std::os::unix::io::RawFd) {
+        let mut fds = [0i32; 2];
+        let ret = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        assert_eq!(ret, 0, "pipe() failed");
+        (fds[0], fds[1])
+    }
+
+    fn signal(write_fd: std::os::unix::io::RawFd) {
+        let byte = [1u8];
+        let ret = unsafe { libc::write(write_fd, byte.as_ptr() as *const libc::c_void, 1) };
+        assert_eq!(ret, 1, "write() to shutdown pipe failed");
+    }
+
+    #[test]
+    fn fd_is_readable_changes_after_shutdown_signal() {
+        let (read_fd, write_fd) = shutdown_pipe();
+        assert!(!fd_is_readable(read_fd));
+        signal(write_fd);
+        assert!(fd_is_readable(read_fd));
+    }
+
+    #[test]
+    fn send_frame_delivers_when_channel_has_room() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+        let (read_fd, _write_fd) = shutdown_pipe();
+
+        assert!(matches!(
+            send_frame(&tx, vec![1u8, 2, 3], read_fd),
+            SendOutcome::Sent
+        ));
+        assert_eq!(rx.try_recv().unwrap(), vec![1u8, 2, 3]);
+    }
+
+    #[test]
+    fn send_frame_stops_when_receiver_is_gone() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+        let (read_fd, _write_fd) = shutdown_pipe();
+        drop(rx);
+
+        assert!(matches!(
+            send_frame(&tx, vec![0u8], read_fd),
+            SendOutcome::Stop
+        ));
+    }
+
+    #[test]
+    fn full_channel_send_stops_when_receiver_is_dropped() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+        let (read_fd, _write_fd) = shutdown_pipe();
+        tx.try_send(vec![0u8]).unwrap();
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let sender = std::thread::spawn(move || {
+            let outcome = send_frame(&tx, vec![1u8], read_fd);
+            done_tx.send(matches!(outcome, SendOutcome::Stop)).unwrap();
+        });
+        assert!(done_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        drop(rx);
+
+        assert!(
+            done_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("send_frame did not return after receiver drop")
+        );
+        sender.join().unwrap();
+    }
+
+    #[test]
+    fn full_channel_send_stops_on_shutdown_signal() {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+        let (read_fd, write_fd) = shutdown_pipe();
+        tx.try_send(vec![0u8]).unwrap();
+        signal(write_fd);
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let sender = std::thread::spawn(move || {
+            let outcome = send_frame(&tx, vec![1u8], read_fd);
+            done_tx.send(matches!(outcome, SendOutcome::Stop)).unwrap();
+        });
+
+        assert!(
+            done_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("send_frame parked past a shutdown request")
+        );
+        sender.join().unwrap();
+    }
+}

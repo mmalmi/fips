@@ -15,6 +15,7 @@ use crate::node::{
     AuthenticatedFmpReceiveFacts, AuthenticatedLinkMessage, AuthenticatedSessionDatagram, FLAG_CE,
     LocalSessionPayload, Node, NodeError,
 };
+use crate::proto::rate_limit::LimitVerdict;
 use crate::protocol::{
     CoordsRequired, LinkMessageType, MtuExceeded, PathBroken, SessionAck, SessionDatagram,
     SessionDatagramRef, SessionSetup,
@@ -30,6 +31,7 @@ use tracing::{debug, warn};
 const FORWARDING_IN_FLIGHT_TRANSPORT_BATCHES: usize = 4;
 
 struct PreparedSessionForward {
+    ingress_peer: NodeAddr,
     next_hop_addr: NodeAddr,
     src_addr: NodeAddr,
     dest_addr: NodeAddr,
@@ -43,6 +45,7 @@ include!("forwarding_deferred.rs");
 include!("forwarding_terminal.rs");
 
 struct PreparedSessionForwardRoute {
+    ingress_peer: NodeAddr,
     next_hop_addr: NodeAddr,
     src_addr: NodeAddr,
     dest_addr: NodeAddr,
@@ -55,6 +58,7 @@ struct PreparedSessionForwardRoute {
 enum PreparedSessionDatagram {
     Forward(PreparedSessionForwardRoute),
     NoRoute {
+        ingress_peer: NodeAddr,
         datagram: SessionDatagram,
         received_len: usize,
         loop_failure: Option<NodeAddr>,
@@ -98,12 +102,18 @@ impl Node {
                     .await;
             }
             PreparedSessionDatagram::NoRoute {
+                ingress_peer,
                 datagram,
                 received_len,
                 loop_failure,
             } => {
-                self.finish_session_datagram_no_route(datagram, received_len, loop_failure)
-                    .await;
+                self.finish_session_datagram_no_route(
+                    ingress_peer,
+                    datagram,
+                    received_len,
+                    loop_failure,
+                )
+                .await;
             }
             PreparedSessionDatagram::Done => {}
         }
@@ -160,6 +170,7 @@ impl Node {
                             }
                         }
                         PreparedSessionDatagram::NoRoute {
+                            ingress_peer,
                             datagram,
                             received_len,
                             loop_failure,
@@ -167,6 +178,7 @@ impl Node {
                             self.flush_prepared_session_forwards(&mut forwards).await;
                             self.drain_deferred_session_forwards().await;
                             self.finish_session_datagram_no_route(
+                                ingress_peer,
                                 datagram,
                                 received_len,
                                 loop_failure,
@@ -382,6 +394,7 @@ impl Node {
                     _ => None,
                 };
                 return PreparedSessionDatagram::NoRoute {
+                    ingress_peer: previous_hop,
                     datagram: owned_session_datagram_from_ref(
                         &datagram_ref,
                         new_ttl,
@@ -445,6 +458,7 @@ impl Node {
         }
 
         PreparedSessionDatagram::Forward(PreparedSessionForwardRoute {
+            ingress_peer: previous_hop,
             next_hop_addr,
             src_addr: datagram_ref.src_addr,
             dest_addr: datagram_ref.dest_addr,
@@ -457,6 +471,7 @@ impl Node {
 
     async fn finish_session_datagram_no_route(
         &mut self,
+        ingress_peer: NodeAddr,
         datagram: SessionDatagram,
         received_len: usize,
         loop_failure: Option<NodeAddr>,
@@ -473,7 +488,7 @@ impl Node {
             bytes = received_len,
             "Dropping transit SessionDatagram: no route to destination"
         );
-        self.send_routing_error(&datagram).await;
+        self.send_routing_error(&ingress_peer, &datagram).await;
     }
 
     async fn finish_prepared_session_forward(
@@ -483,6 +498,7 @@ impl Node {
         record_route_failure: bool,
     ) {
         let PreparedSessionForward {
+            ingress_peer,
             next_hop_addr,
             src_addr,
             dest_addr,
@@ -501,7 +517,8 @@ impl Node {
                         .forwarding
                         .record_drop_mtu_exceeded(received_len);
                     let datagram = SessionDatagram::new(src_addr, dest_addr, Vec::new());
-                    self.send_mtu_exceeded_error(&datagram, mtu).await;
+                    self.send_mtu_exceeded_error(&ingress_peer, &datagram, mtu)
+                        .await;
                 }
                 _ => {
                     self.stats_mut()
@@ -620,6 +637,28 @@ impl Node {
         }
     }
 
+    /// Bound an induced routing error by authenticated ingress peer first,
+    /// then by destination. The peer token is spent only if both gates admit.
+    fn admit_error_emission(&mut self, from: &NodeAddr, dest: &NodeAddr) -> bool {
+        let now = crate::time::instant_now();
+        if !self.peer_error_budget.has_token(from, now) {
+            self.stats_mut().errors.emit_over_peer_budget += 1;
+            return false;
+        }
+        match self.routing_error_rate_limiter.check(dest, now) {
+            LimitVerdict::Suppress => {
+                self.stats_mut().errors.emit_over_dest_interval += 1;
+                return false;
+            }
+            LimitVerdict::AdmitAtCapacity => {
+                self.stats_mut().errors.emit_limiter_at_capacity += 1;
+            }
+            LimitVerdict::Admit => {}
+        }
+        self.peer_error_budget.commit(from, now);
+        true
+    }
+
     /// Generate and send a routing error signal back to the datagram's source.
     ///
     /// If we have cached coords for the destination, send PathBroken (we know
@@ -628,12 +667,8 @@ impl Node {
     ///
     /// If we can't route the error back to the source either, drop silently.
     /// No cascading errors.
-    async fn send_routing_error(&mut self, original: &SessionDatagram) {
-        // Rate limit: one error signal per destination per 100ms
-        if !self
-            .routing_error_rate_limiter
-            .should_send(&original.dest_addr)
-        {
+    async fn send_routing_error(&mut self, from: &NodeAddr, original: &SessionDatagram) {
+        if !self.admit_error_emission(from, &original.dest_addr) {
             return;
         }
 
@@ -641,15 +676,19 @@ impl Node {
 
         let now_ms = Self::now_ms();
 
-        let error_payload =
-            if let Some(coords) = self.coord_cache().get(&original.dest_addr, now_ms) {
-                let coords = coords.clone();
-                PathBroken::new(original.dest_addr, my_addr)
-                    .with_last_coords(coords)
-                    .encode()
-            } else {
-                CoordsRequired::new(original.dest_addr, my_addr).encode()
-            };
+        let error_payload = if self
+            .coord_cache()
+            .get(&original.dest_addr, now_ms)
+            .is_some()
+        {
+            // The receiver does not consume this optional coordinate and it
+            // discloses cached topology to every source that can induce an
+            // error. Keep decoding compatibility but emit only the binding
+            // fields the receiver uses.
+            PathBroken::new(original.dest_addr, my_addr).encode()
+        } else {
+            CoordsRequired::new(original.dest_addr, my_addr).encode()
+        };
 
         let error_dg = SessionDatagram::new(my_addr, original.src_addr, error_payload)
             .with_ttl(self.config.node.session.default_ttl);
@@ -690,12 +729,13 @@ impl Node {
     /// Called when dataplane FMP-link output fails with
     /// `NodeError::MtuExceeded` during forwarding. The signal tells the
     /// source the bottleneck MTU so it can immediately reduce its path MTU.
-    async fn send_mtu_exceeded_error(&mut self, original: &SessionDatagram, bottleneck_mtu: u16) {
-        // Rate limit: reuse routing_error_rate_limiter keyed on dest_addr
-        if !self
-            .routing_error_rate_limiter
-            .should_send(&original.dest_addr)
-        {
+    async fn send_mtu_exceeded_error(
+        &mut self,
+        from: &NodeAddr,
+        original: &SessionDatagram,
+        bottleneck_mtu: u16,
+    ) {
+        if !self.admit_error_emission(from, &original.dest_addr) {
             return;
         }
 
@@ -830,6 +870,7 @@ impl PreparedSessionForwardRoute {
     fn with_plaintext(self, plaintext: PacketBuffer) -> PreparedSessionForward {
         let encoded_len = plaintext.len();
         PreparedSessionForward {
+            ingress_peer: self.ingress_peer,
             next_hop_addr: self.next_hop_addr,
             src_addr: self.src_addr,
             dest_addr: self.dest_addr,

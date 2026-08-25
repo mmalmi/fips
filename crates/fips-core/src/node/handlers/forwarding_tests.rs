@@ -171,6 +171,7 @@ mod forwarding_fast_path_tests {
         let datagram = AuthenticatedSessionDatagram::new(previous_hop, &encoded[1..], false);
 
         let PreparedSessionDatagram::NoRoute {
+            ingress_peer,
             datagram,
             received_len,
             loop_failure,
@@ -178,11 +179,39 @@ mod forwarding_fast_path_tests {
         else {
             panic!("unknown destination should produce deferred no-route action");
         };
+        assert_eq!(ingress_peer, source);
         assert_eq!(node.stats().forwarding.received_packets, 1);
         assert_eq!(node.stats().forwarding.drop_no_route_packets, 0);
 
-        node.finish_session_datagram_no_route(datagram, received_len, loop_failure)
-            .await;
+        node.finish_session_datagram_no_route(
+            ingress_peer,
+            datagram,
+            received_len,
+            loop_failure,
+        )
+        .await;
         assert_eq!(node.stats().forwarding.drop_no_route_packets, 1);
+    }
+
+    #[test]
+    fn minted_destinations_cannot_escape_authenticated_peer_error_budget() {
+        use crate::node::peer_error_budget::PEER_ERROR_BURST;
+
+        let mut node = Node::new(crate::Config::new()).expect("test node");
+        let peer = NodeAddr::from_bytes([0xAA; 16]);
+        let overshoot = 10;
+        for value in 0..PEER_ERROR_BURST + overshoot {
+            let mut bytes = [0; 16];
+            bytes[..4].copy_from_slice(&value.to_le_bytes());
+            bytes[15] = 0xfe;
+            let admitted = node.admit_error_emission(&peer, &NodeAddr::from_bytes(bytes));
+            assert_eq!(
+                admitted,
+                value < PEER_ERROR_BURST,
+                "unexpected verdict for induced error {value}"
+            );
+        }
+        assert_eq!(node.stats().errors.emit_over_peer_budget, u64::from(overshoot));
+        assert_eq!(node.stats().errors.emit_over_dest_interval, 0);
     }
 }

@@ -358,6 +358,111 @@ fn test_acl_reloader_detects_allow_file_removal() {
 }
 
 #[test]
+fn test_acl_reload_holds_last_good_snapshot_when_deny_file_is_unreadable() {
+    let dir = tempfile::tempdir().unwrap();
+    let allow = dir.path().join("peers.allow");
+    let deny = dir.path().join("peers.deny");
+    let denied = test_npub();
+
+    write_file(&deny, &format!("{denied}\n"));
+    let mut reloader = PeerAclReloader::with_paths(allow, deny.clone());
+    assert_eq!(
+        reloader.acl().check(&test_peer(&denied)),
+        PeerAclDecision::DenyList
+    );
+
+    std::fs::remove_file(&deny).unwrap();
+    std::fs::create_dir(&deny).unwrap();
+
+    assert!(!reloader.check_reload());
+    assert_eq!(
+        reloader.acl().check(&test_peer(&denied)),
+        PeerAclDecision::DenyList
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_acl_reload_holds_last_good_snapshot_for_dangling_symlink() {
+    let dir = tempfile::tempdir().unwrap();
+    let allow = dir.path().join("peers.allow");
+    let deny = dir.path().join("peers.deny");
+    let missing_target = dir.path().join("missing-deny-target");
+    let denied = test_npub();
+
+    write_file(&deny, &format!("{denied}\n"));
+    let mut reloader = PeerAclReloader::with_paths(allow, deny.clone());
+    assert_eq!(
+        reloader.acl().check(&test_peer(&denied)),
+        PeerAclDecision::DenyList
+    );
+
+    std::fs::remove_file(&deny).unwrap();
+    std::os::unix::fs::symlink(&missing_target, &deny).unwrap();
+
+    assert!(
+        PeerAcl::try_load_files_with_hosts(&dir.path().join("peers.allow"), &deny, &HostMap::new())
+            .is_err()
+    );
+    assert!(!reloader.check_reload());
+    assert!(reloader.status().stale);
+    assert_eq!(
+        reloader.acl().check(&test_peer(&denied)),
+        PeerAclDecision::DenyList,
+        "a dangling ACL symlink must retain the last-known-good policy"
+    );
+}
+
+#[test]
+fn test_acl_reload_holds_last_good_snapshot_when_hosts_file_is_unreadable() {
+    let dir = tempfile::tempdir().unwrap();
+    let allow = dir.path().join("peers.allow");
+    let deny = dir.path().join("peers.deny");
+    let hosts = dir.path().join("hosts");
+    let allowed = test_npub();
+
+    write_file(&allow, "node-a\n");
+    write_file(&hosts, &format!("node-a {allowed}\n"));
+    let mut reloader =
+        PeerAclReloader::with_alias_sources(allow, deny, HostMap::new(), hosts.clone());
+    assert_eq!(
+        reloader.acl().check(&test_peer(&allowed)),
+        PeerAclDecision::AllowList
+    );
+
+    std::fs::remove_file(&hosts).unwrap();
+    std::fs::create_dir(&hosts).unwrap();
+
+    assert!(!reloader.check_reload());
+    assert_eq!(
+        reloader.acl().check(&test_peer(&allowed)),
+        PeerAclDecision::AllowList
+    );
+}
+
+#[test]
+fn test_acl_reload_holds_a_newly_empty_policy_for_one_tick() {
+    let dir = tempfile::tempdir().unwrap();
+    let allow = dir.path().join("peers.allow");
+    let deny = dir.path().join("peers.deny");
+    let allowed = test_npub();
+
+    write_file(&allow, &format!("{allowed}\n"));
+    let mut reloader = PeerAclReloader::with_paths(allow.clone(), deny);
+
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    write_file(&allow, "");
+
+    assert!(!reloader.check_reload());
+    assert_eq!(
+        reloader.acl().check(&test_peer(&allowed)),
+        PeerAclDecision::AllowList
+    );
+    assert!(reloader.check_reload());
+    assert!(reloader.acl().is_empty());
+}
+
+#[test]
 fn test_acl_status_reports_effective_state_and_entries() {
     let dir = tempfile::tempdir().unwrap();
     let allow = dir.path().join("peers.allow");

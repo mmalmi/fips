@@ -112,18 +112,41 @@ async fn test_node_rx_loop_takes_channel() {
 
 #[test]
 fn test_rate_limiter_initialized() {
+    use crate::node::rate_limit::Msg1Class;
+
     let mut node = make_node();
 
     // Rate limiter should allow handshakes initially
-    assert!(node.msg1_rate_limiter.can_start_handshake());
+    assert!(
+        node.msg1_rate_limiter
+            .can_start_handshake(Msg1Class::Stranger)
+    );
 
     // Start a handshake
-    assert!(node.msg1_rate_limiter.start_handshake());
+    let slot = node
+        .msg1_rate_limiter
+        .start_handshake(Msg1Class::Stranger)
+        .unwrap();
     assert_eq!(node.msg1_rate_limiter.pending_count(), 1);
 
-    // Complete it
-    node.msg1_rate_limiter.complete_handshake();
+    // Dropping the guard completes it.
+    drop(slot);
     assert_eq!(node.msg1_rate_limiter.pending_count(), 0);
+}
+
+#[test]
+fn established_msg1_bucket_is_derived_and_can_be_overridden() {
+    let node = make_node();
+    assert_eq!(
+        node.msg1_rate_limiter.established_bucket().capacity(),
+        node.config.node.limits.max_peers as u32
+    );
+
+    let mut config = Config::new();
+    config.node.rate_limit.established_handshake_burst = Some(7);
+    config.node.rate_limit.established_handshake_rate = Some(0.5);
+    let node = Node::new(config).unwrap();
+    assert_eq!(node.msg1_rate_limiter.established_bucket().capacity(), 7);
 }
 
 // === Promotion / Retry Tests ===

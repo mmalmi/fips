@@ -1,4 +1,5 @@
 use super::*;
+use crate::ReceivedPacket;
 
 /// Test that duplicate msg2 is silently dropped when pending_outbound is already cleared.
 #[tokio::test]
@@ -213,4 +214,237 @@ async fn test_should_admit_msg1_admits_rekey_when_addr_form_differs() {
         !node.should_admit_msg1(transport_id, &stranger_addr),
         "fresh msg1 from unknown source must still be rejected"
     );
+}
+
+async fn node_refusing_inbound(
+    transport_id: TransportId,
+    config: Config,
+) -> (
+    Node,
+    TransportAddr,
+    crate::transport::PacketRx,
+    crate::transport::udp::UdpTransport,
+) {
+    use crate::config::UdpConfig;
+    use crate::transport::udp::UdpTransport;
+
+    let mut node = Node::new(config).unwrap();
+    let (node_tx, _node_rx) = packet_channel(64);
+    let mut node_transport = UdpTransport::new(
+        transport_id,
+        None,
+        UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            accept_connections: Some(false),
+            ..Default::default()
+        },
+        node_tx,
+    );
+    node_transport.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(node_transport));
+
+    let (far_tx, far_rx) = packet_channel(64);
+    let mut far_end = UdpTransport::new(
+        TransportId::new(200),
+        None,
+        UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        far_tx,
+    );
+    far_end.start_async().await.unwrap();
+    let far_addr = TransportAddr::from_string(&far_end.local_addr().unwrap().to_string());
+
+    (node, far_addr, far_rx, far_end)
+}
+
+fn genuine_msg1(
+    initiator: &Node,
+    responder: &Node,
+    sender_index: u32,
+) -> crate::transport::PacketBuffer {
+    use crate::node::wire::build_msg1;
+
+    let mut handshake = crate::noise::HandshakeState::new_initiator(
+        initiator.identity.keypair(),
+        responder.identity.pubkey_full(),
+    );
+    handshake.set_local_epoch(initiator.startup_epoch);
+    crate::transport::PacketBuffer::new(build_msg1(
+        SessionIndex::new(sender_index),
+        &handshake.write_message_1().unwrap(),
+    ))
+}
+
+async fn assert_no_packet(rx: &mut crate::transport::PacketRx, reason: &str) {
+    assert!(
+        tokio::time::timeout(Duration::from_millis(250), rx.recv())
+            .await
+            .is_err(),
+        "{reason}"
+    );
+}
+
+#[tokio::test]
+async fn msg1_waiver_rejects_an_authenticated_identity_mismatch() {
+    use crate::peer::ActivePeer;
+
+    let transport_id = TransportId::new(1);
+    let (mut node, source_addr, mut far_rx, _far_end) =
+        node_refusing_inbound(transport_id, Config::new()).await;
+
+    let victim = make_node();
+    let victim_identity = PeerIdentity::from_pubkey_full(victim.identity.pubkey_full());
+    let victim_addr = *victim_identity.node_addr();
+    let victim_link = node.allocate_link_id();
+    let mut victim_peer = ActivePeer::new(victim_identity, victim_link, 1_000);
+    victim_peer.set_current_addr(transport_id, &source_addr);
+    node.peers.insert(victim_addr, victim_peer);
+    node.links.insert(
+        victim_link,
+        Link::connectionless(
+            victim_link,
+            transport_id,
+            source_addr.clone(),
+            LinkDirection::Inbound,
+            Duration::from_millis(1),
+        ),
+    );
+
+    let attacker = make_node();
+    let attacker_addr = *attacker.node_addr();
+    node.handle_msg1(ReceivedPacket::with_timestamp(
+        transport_id,
+        source_addr,
+        genuine_msg1(&attacker, &node, 71),
+        2_000,
+    ))
+    .await;
+
+    assert!(node.get_peer(&attacker_addr).is_none());
+    assert_eq!(node.get_peer(&victim_addr).unwrap().link_id(), victim_link);
+    assert_eq!(node.peer_count(), 1);
+    assert_eq!(node.connection_count(), 0);
+    assert_eq!(node.link_count(), 1);
+    assert_no_packet(
+        &mut far_rx,
+        "an identity that does not own the waived address must receive no msg2",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn msg1_waiver_rejects_an_unattributed_address_entry() {
+    let transport_id = TransportId::new(1);
+    let (mut node, source_addr, mut far_rx, _far_end) =
+        node_refusing_inbound(transport_id, Config::new()).await;
+
+    let bare_link = node.allocate_link_id();
+    node.links
+        .insert_addr((transport_id, source_addr.clone()), bare_link);
+
+    let initiator = make_node();
+    let initiator_addr = *initiator.node_addr();
+    node.handle_msg1(ReceivedPacket::with_timestamp(
+        transport_id,
+        source_addr,
+        genuine_msg1(&initiator, &node, 72),
+        2_000,
+    ))
+    .await;
+
+    assert!(node.get_peer(&initiator_addr).is_none());
+    assert_eq!(node.peer_count(), 0);
+    assert_eq!(node.connection_count(), 0);
+    assert_eq!(node.link_count(), 0);
+    assert_no_packet(
+        &mut far_rx,
+        "an address entry with no attributable identity must receive no msg2",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn established_identity_uses_reserved_msg1_capacity_after_stranger_exhaustion() {
+    use crate::node::rate_limit::Msg1Class;
+    use crate::node::wire::Msg2Header;
+
+    let mut config = Config::new();
+    config.node.rate_limit.handshake_burst = 1;
+    config.node.rate_limit.handshake_rate = 0.0;
+    let transport_id = TransportId::new(1);
+    let (mut node, source_addr, mut far_rx, _far_end) =
+        node_refusing_inbound(transport_id, config).await;
+
+    drop(
+        node.msg1_rate_limiter
+            .start_handshake(Msg1Class::Stranger)
+            .unwrap(),
+    );
+    assert!(
+        node.msg1_rate_limiter
+            .start_handshake(Msg1Class::Stranger)
+            .is_err(),
+        "fixture must exhaust stranger capacity"
+    );
+
+    let peer = make_node();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer.identity.pubkey_full());
+    let peer_addr = *peer_identity.node_addr();
+    let expected_link = node.allocate_link_id();
+    node.peers.insert_connection(
+        expected_link,
+        PeerConnection::outbound(expected_link, peer_identity, 1_000),
+    );
+    node.links
+        .insert_addr((transport_id, source_addr.clone()), expected_link);
+
+    node.handle_msg1(ReceivedPacket::with_timestamp(
+        transport_id,
+        source_addr,
+        genuine_msg1(&peer, &node, 73),
+        2_000,
+    ))
+    .await;
+
+    let answer = tokio::time::timeout(Duration::from_secs(1), far_rx.recv())
+        .await
+        .expect("reserved established-link capacity must produce msg2")
+        .expect("far-end packet channel must remain open");
+    assert!(
+        Msg2Header::parse(answer.data.as_slice()).is_some(),
+        "the response must be a msg2"
+    );
+    assert!(node.get_peer(&peer_addr).is_some());
+    assert_eq!(node.msg1_rate_limiter.pending_count(), 0);
+}
+
+#[tokio::test]
+async fn msg1_reject_path_does_not_release_another_pending_guard() {
+    use crate::node::rate_limit::Msg1Class;
+
+    let mut node = make_node();
+    let held = node
+        .msg1_rate_limiter
+        .start_handshake(Msg1Class::Stranger)
+        .unwrap();
+    assert_eq!(node.msg1_rate_limiter.pending_count(), 1);
+
+    node.handle_msg1(ReceivedPacket::with_timestamp(
+        TransportId::new(99),
+        TransportAddr::from_string("127.0.0.1:9"),
+        crate::transport::PacketBuffer::new(vec![0u8; 4]),
+        1_000,
+    ))
+    .await;
+
+    assert_eq!(
+        node.msg1_rate_limiter.pending_count(),
+        1,
+        "the rejected msg1 guard must release only its own slot"
+    );
+    drop(held);
+    assert_eq!(node.msg1_rate_limiter.pending_count(), 0);
 }

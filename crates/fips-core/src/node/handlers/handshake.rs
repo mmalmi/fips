@@ -1,6 +1,7 @@
 //! Handshake handlers and connection promotion.
 
 use crate::node::acl::PeerAclContext;
+use crate::node::rate_limit::Msg1Class;
 use crate::node::wire::{Msg1Header, Msg2Header, build_msg2};
 use crate::node::{Node, NodeError};
 use crate::peer::{
@@ -8,8 +9,26 @@ use crate::peer::{
 };
 use crate::transport::{Link, LinkDirection, LinkId, ReceivedPacket};
 use crate::{NodeAddr, PeerIdentity};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
+
+/// Refuse an epoch change while the peering it would destroy has carried
+/// authenticated traffic recently, and dampen repeated accepted changes for
+/// the same identity. A msg1 epoch is authenticated but remains replayable.
+/// Fifteen seconds fits the normal 1/3/7/15-second handshake resend ladder
+/// while staying below the default dead-link timeout.
+const EPOCH_RESTART_MIN_INTERVAL_SECS: u64 = 15;
+
+/// Why a msg1 passed a refusing transport's address-based waiver.
+///
+/// `Unattributed` is distinct from `NotNeeded`: the former must fail closed
+/// once Noise reveals the initiator's authenticated static identity.
+#[derive(Debug, PartialEq, Eq)]
+enum Msg1Waiver {
+    NotNeeded,
+    Expect(NodeAddr),
+    Unattributed,
+}
 
 impl Node {
     /// Whether a newly authenticated candidate is the opposite half of an
@@ -33,13 +52,10 @@ impl Node {
                 .is_some_and(|transport| transport.transport_type().connection_oriented)
     }
 
-    /// Returns true if an inbound msg1 should be admitted past the
-    /// `accept_connections` gate.
+    /// Whether a msg1 source matches an existing link or active peer path.
     ///
-    /// Rekey/restart msg1 from an established peer is always admitted (the
-    /// gate is meant to filter fresh handshakes from strangers, not
-    /// maintenance traffic on established sessions). Two predicates cover
-    /// "established peer at this transport+addr":
+    /// This predicate is shared by the accept-connections waiver and msg1
+    /// rate classification so those decisions cannot drift apart.
     ///
     /// 1. The link registry has an address-index entry for
     ///    `(transport_id, remote_addr)`. This is the fast path and matches
@@ -58,9 +74,7 @@ impl Node {
     ///    `udp.accept_connections: false` or `udp.outbound_only: true` (the
     ///    production trigger for the 2026-04-30 bug).
     ///
-    /// Otherwise the transport's `accept_connections` config decides;
-    /// absence of a registered transport admits (no gate to apply).
-    pub(in crate::node) fn should_admit_msg1(
+    pub(in crate::node) fn is_established_link_msg1(
         &self,
         transport_id: crate::transport::TransportId,
         remote_addr: &crate::transport::TransportAddr,
@@ -76,9 +90,67 @@ impl Node {
         }) {
             return true;
         }
+        false
+    }
+
+    /// Returns true if an inbound msg1 should pass the transport's
+    /// `accept_connections` gate.
+    pub(in crate::node) fn should_admit_msg1(
+        &self,
+        transport_id: crate::transport::TransportId,
+        remote_addr: &crate::transport::TransportAddr,
+    ) -> bool {
+        if self.is_established_link_msg1(transport_id, remote_addr) {
+            return true;
+        }
         self.transports
             .get(&transport_id)
             .is_none_or(|t| t.accept_connections())
+    }
+
+    /// Snapshot which authenticated identity owns an address waiver.
+    ///
+    /// A stale reverse-address entry must not hide a live peer found through
+    /// its current address, so an unattributed index lookup deliberately falls
+    /// through to the peer scan.
+    fn msg1_waiver(
+        &self,
+        established: bool,
+        transport_id: crate::transport::TransportId,
+        remote_addr: &crate::transport::TransportAddr,
+    ) -> Msg1Waiver {
+        if self
+            .transports
+            .get(&transport_id)
+            .is_none_or(|transport| transport.accept_connections())
+        {
+            return Msg1Waiver::NotNeeded;
+        }
+        if !established {
+            return Msg1Waiver::Unattributed;
+        }
+
+        if let Some(link_id) = self.links.lookup_addr(transport_id, remote_addr) {
+            if let Some(peer) = self.peers.values().find(|peer| peer.link_id() == link_id) {
+                return Msg1Waiver::Expect(*peer.node_addr());
+            }
+            if let Some(identity) = self
+                .peers
+                .get_connection(&link_id)
+                .and_then(|connection| connection.expected_identity())
+            {
+                return Msg1Waiver::Expect(*identity.node_addr());
+            }
+        }
+
+        self.peers
+            .values()
+            .find(|peer| {
+                peer.transport_id() == Some(transport_id)
+                    && peer.current_addr() == Some(remote_addr)
+            })
+            .map(|peer| Msg1Waiver::Expect(*peer.node_addr()))
+            .unwrap_or(Msg1Waiver::Unattributed)
     }
 
     /// Handle handshake message 1 (phase 0x1).
@@ -101,22 +173,32 @@ impl Node {
             bytes = packet.data.len(),
             "Received msg1"
         );
-        // === RATE LIMITING (before any processing) ===
-        if !self.msg1_rate_limiter.start_handshake() {
-            debug!(
-                transport_id = %packet.transport_id,
-                remote_addr = %packet.remote_addr,
-                "Msg1 rate limited"
-            );
-            return;
-        }
+        // Classify before crypto so established-link maintenance does not
+        // compete with stranger traffic for rate capacity.
+        let established = self.is_established_link_msg1(packet.transport_id, &packet.remote_addr);
+        let class = if established {
+            Msg1Class::EstablishedLink
+        } else {
+            Msg1Class::Stranger
+        };
+        let _pending_slot = match self.msg1_rate_limiter.start_handshake(class) {
+            Ok(slot) => slot,
+            Err(reason) => {
+                debug!(
+                    transport_id = %packet.transport_id,
+                    remote_addr = %packet.remote_addr,
+                    refused_by = %reason,
+                    "Msg1 rate limited"
+                );
+                return;
+            }
+        };
 
         // accept_connections gate. Rekey/restart msg1 on an existing link
         // is always admitted; the gate only filters truly-fresh connections
         // from strangers. Without this carve-out, the dual-init tie-breaker
         // deadlocks when the larger-NodeAddr side has accept_connections=false.
-        if !self.should_admit_msg1(packet.transport_id, &packet.remote_addr) {
-            self.msg1_rate_limiter.complete_handshake();
+        if !established && !self.should_admit_msg1(packet.transport_id, &packet.remote_addr) {
             debug!(
                 transport_id = %packet.transport_id,
                 remote_addr = %packet.remote_addr,
@@ -125,11 +207,15 @@ impl Node {
             return;
         }
 
+        // Record why this source passed a refusing transport before any await
+        // or registry mutation. After DH, the learned static identity must
+        // confirm this address attribution.
+        let waiver = self.msg1_waiver(established, packet.transport_id, &packet.remote_addr);
+
         // Parse header
         let header = match Msg1Header::parse(packet.data.as_slice()) {
             Some(h) => h,
             None => {
-                self.msg1_rate_limiter.complete_handshake();
                 debug!("Invalid msg1 header");
                 return;
             }
@@ -183,7 +269,6 @@ impl Node {
                             "Duplicate msg1 but no stored msg2 to resend"
                         );
                     }
-                    self.msg1_rate_limiter.complete_handshake();
                     return;
                 }
             } else {
@@ -224,7 +309,6 @@ impl Node {
         ) {
             Ok(m) => m,
             Err(e) => {
-                self.msg1_rate_limiter.complete_handshake();
                 debug!(
                     error = %e,
                     "Failed to process msg1"
@@ -237,13 +321,38 @@ impl Node {
         let peer_identity = match conn.expected_identity() {
             Some(id) => *id,
             None => {
-                self.msg1_rate_limiter.complete_handshake();
                 warn!("Identity not learned from msg1");
                 return;
             }
         };
 
         let peer_node_addr = *peer_identity.node_addr();
+
+        // A refusing transport admitted this msg1 only because its source
+        // matched an existing address entry. Now that Noise authenticated the
+        // initiator static, require it to be the identity that owned that
+        // waiver; bare or stale unattributed entries fail closed.
+        match waiver {
+            Msg1Waiver::NotNeeded => {}
+            Msg1Waiver::Expect(expected) if expected == peer_node_addr => {}
+            Msg1Waiver::Expect(expected) => {
+                warn!(
+                    expected = %self.peer_display_name(&expected),
+                    actual = %self.peer_display_name(&peer_node_addr),
+                    transport_id = %packet.transport_id,
+                    "Msg1 address waiver identity mismatch, dropping"
+                );
+                return;
+            }
+            Msg1Waiver::Unattributed => {
+                warn!(
+                    actual = %self.peer_display_name(&peer_node_addr),
+                    transport_id = %packet.transport_id,
+                    "Msg1 address waiver has no attributable identity, dropping"
+                );
+                return;
+            }
+        }
 
         // Identity-based restart/rekey detection: if the peer is already
         // active but address-index dispatch didn't match (different source
@@ -266,7 +375,6 @@ impl Node {
                     max = self.max_peers,
                     "Silent-dropping Msg1 at max_peers cap (early gate; no Msg2 sent)"
                 );
-                self.msg1_rate_limiter.complete_handshake();
                 return;
             }
         }
@@ -281,6 +389,8 @@ impl Node {
         if possible_restart && let Some(existing_peer) = self.peers.get(&peer_node_addr) {
             let new_epoch = conn.remote_epoch();
             let existing_epoch = existing_peer.remote_epoch();
+            let now_ms = Self::now_ms();
+            let peering_idle_ms = existing_peer.idle_time(now_ms);
             let established_same_path_rekey = self.same_path_msg1_is_established_rekey(
                 &peer_node_addr,
                 packet.transport_id,
@@ -297,14 +407,42 @@ impl Node {
 
             match (existing_epoch, new_epoch) {
                 (Some(existing), Some(new)) if existing != new => {
-                    // Epoch mismatch — peer restarted. Tear down stale session.
+                    // The sealed epoch proves who authored msg1, but an old
+                    // captured msg1 stays valid indefinitely. It must not be
+                    // allowed to destroy a peering that is still receiving
+                    // authenticated traffic, nor repeatedly churn one peer.
+                    let dampened =
+                        self.restart_dampener
+                            .get(&peer_node_addr)
+                            .is_some_and(|accepted_at| {
+                                accepted_at.elapsed().as_secs() < EPOCH_RESTART_MIN_INTERVAL_SECS
+                            });
+                    let peering_is_live = peering_idle_ms < EPOCH_RESTART_MIN_INTERVAL_SECS * 1000;
+                    if peering_is_live || dampened {
+                        debug!(
+                            peer = %self.peer_display_name(&peer_node_addr),
+                            idle_ms = peering_idle_ms,
+                            dampened,
+                            "Epoch mismatch dampened, dropping msg1"
+                        );
+                        self.peers.remove_connection(&link_id);
+                        self.links.remove(&link_id);
+                        return;
+                    }
+
+                    // Epoch mismatch against a silent peer: accept a genuine
+                    // restart. Schedule before removal so the fork retains
+                    // its authenticated UDP recovery address.
                     info!(
                         peer = %self.peer_display_name(&peer_node_addr),
                         "Peer restart detected (epoch mismatch), removing stale session"
                     );
-                    let now_ms = Self::now_ms();
                     self.schedule_reconnect(peer_node_addr, now_ms);
                     self.remove_active_peer(&peer_node_addr);
+                    let cutoff = Duration::from_secs(EPOCH_RESTART_MIN_INTERVAL_SECS);
+                    self.restart_dampener
+                        .retain(|_, accepted_at| accepted_at.elapsed() < cutoff);
+                    self.restart_dampener.insert(peer_node_addr, Instant::now());
                     // Fall through to process as new connection
                 }
                 _ => {
@@ -341,7 +479,6 @@ impl Node {
                         }
                         self.peers.remove_connection(&link_id);
                         self.links.remove(&link_id);
-                        self.msg1_rate_limiter.complete_handshake();
                         return;
                     }
 
@@ -386,7 +523,6 @@ impl Node {
                                 );
                                 self.peers.remove_connection(&link_id);
                                 self.links.remove(&link_id);
-                                self.msg1_rate_limiter.complete_handshake();
                                 return;
                             }
 
@@ -430,7 +566,6 @@ impl Node {
                                     );
                                     self.peers.remove_connection(&link_id);
                                     self.links.remove(&link_id);
-                                    self.msg1_rate_limiter.complete_handshake();
                                     return;
                                 }
                                 // We lose — abandon our rekey, become responder below.
@@ -456,7 +591,6 @@ impl Node {
                                 Ok(idx) => idx,
                                 Err(e) => {
                                     warn!(error = %e, "Failed to allocate index for rekey");
-                                    self.msg1_rate_limiter.complete_handshake();
                                     return;
                                 }
                             };
@@ -466,7 +600,6 @@ impl Node {
                                 None => {
                                     warn!("Rekey msg1: no session from handshake");
                                     let _ = self.index_allocator.free(our_new_index);
-                                    self.msg1_rate_limiter.complete_handshake();
                                     return;
                                 }
                             };
@@ -493,7 +626,6 @@ impl Node {
                                 let _ = self.index_allocator.free(our_new_index);
                                 self.peers.remove_connection(&link_id);
                                 self.links.remove(&link_id);
-                                self.msg1_rate_limiter.complete_handshake();
                                 return;
                             };
                             if let Some(peer) = self.peers.get_mut(&peer_node_addr) {
@@ -526,7 +658,6 @@ impl Node {
                                 );
                                 self.peers.remove_connection(&link_id);
                                 self.links.remove(&link_id);
-                                self.msg1_rate_limiter.complete_handshake();
                                 return;
                             }
 
@@ -556,7 +687,6 @@ impl Node {
                                     );
                                     self.peers.remove_connection(&link_id);
                                     self.links.remove(&link_id);
-                                    self.msg1_rate_limiter.complete_handshake();
                                     return;
                                 }
                             }
@@ -567,7 +697,6 @@ impl Node {
                             self.peers.remove_connection(&link_id);
                             self.links.remove(&link_id);
 
-                            self.msg1_rate_limiter.complete_handshake();
                             return;
                         }
 
@@ -617,7 +746,6 @@ impl Node {
                             if sent {
                                 Box::pin(self.complete_owned_msg2_bootstrap(&peer_node_addr)).await;
                             }
-                            self.msg1_rate_limiter.complete_handshake();
                             return;
                         }
                         debug!(
@@ -645,7 +773,6 @@ impl Node {
             if let Some(transport) = self.transports.get(&packet.transport_id) {
                 transport.close_connection(&packet.remote_addr).await;
             }
-            self.msg1_rate_limiter.complete_handshake();
             return;
         }
 
@@ -656,7 +783,6 @@ impl Node {
         let our_index = match self.index_allocator.allocate() {
             Ok(idx) => idx,
             Err(e) => {
-                self.msg1_rate_limiter.complete_handshake();
                 warn!(error = %e, "Failed to allocate session index for inbound");
                 return;
             }
@@ -711,7 +837,6 @@ impl Node {
                         winner_link_id = %winner_link_id,
                         "Inbound cross-connection lost without advertising its receiver index"
                     );
-                    self.msg1_rate_limiter.complete_handshake();
                     return;
                 }
                 Err(e) => {
@@ -725,7 +850,6 @@ impl Node {
                         self.cleanup_bootstrap_transport_if_unused(link.transport_id());
                     }
                     let _ = self.index_allocator.free(our_index);
-                    self.msg1_rate_limiter.complete_handshake();
                     return;
                 }
             };
@@ -803,7 +927,6 @@ impl Node {
 
         self.retry_degraded_session_routes_after_peer_authenticated(node_addr, packet.timestamp_ms)
             .await;
-        self.msg1_rate_limiter.complete_handshake();
     }
 
     pub(in crate::node) fn same_epoch_msg1_is_direct_path_recovery(

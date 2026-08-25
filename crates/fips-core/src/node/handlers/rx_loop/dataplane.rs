@@ -96,8 +96,10 @@ impl Node {
             self.handle_dataplane_fmp_link_ingress_batch(turn.take_fmp_link_ingress())
                 .await,
         );
+        let current_root = *self.tree_state().my_coords().root_id();
         for warmup in turn.take_fsp_coord_warmups() {
-            warmup.apply_to(self.coord_cache_mut(), Self::now_ms());
+            let now_ms = Self::now_ms();
+            warmup.apply_to(self.coord_cache_mut(), &current_root, now_ms);
             processed += 1;
         }
         let fsp_crypto_failures: Vec<_> = turn

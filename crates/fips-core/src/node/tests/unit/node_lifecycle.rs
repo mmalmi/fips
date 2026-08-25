@@ -50,6 +50,37 @@ fn test_node_leaf_only() {
     assert!(node.bloom_state().is_leaf_only());
 }
 
+/// The DNS mesh filter must follow the live device name recorded after TUN
+/// creation, not the configured request. BSD kernels assign their own tunN or
+/// utunN name, which can differ from the requested name.
+#[cfg(unix)]
+#[test]
+fn mesh_filter_resolves_the_live_tun_device_rather_than_the_configured_name() {
+    let loopback = if cfg!(any(
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    )) {
+        "lo0"
+    } else {
+        "lo"
+    };
+    let c_name = std::ffi::CString::new(loopback).unwrap();
+    let expected = unsafe { libc::if_nametoindex(c_name.as_ptr()) };
+    assert_ne!(expected, 0, "test requires the host loopback interface");
+
+    let mut config = Config::new();
+    config.tun.name = Some("fips-absent-dev".to_string());
+    let mut node = Node::new(config).unwrap();
+
+    assert_eq!(node.mesh_ifindex(), None);
+
+    node.tun_name = Some(loopback.to_string());
+    assert_eq!(node.mesh_ifindex(), Some(expected));
+}
+
 #[tokio::test]
 async fn test_nat_bootstrap_failure_falls_back_to_direct_udp_address() {
     let peer_identity = Identity::generate();

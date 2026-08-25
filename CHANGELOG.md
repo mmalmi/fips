@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve healthy FMP and FSP sessions when replayable or malformed
+  handshake traffic announces a conflicting epoch, and dampen repeated peer
+  restart churn without changing same-epoch roaming recovery.
+- Make rekey state transitions transactional, retain live and pending key
+  epochs across failed side handshakes, and continue responding to
+  peer-initiated FSP rekeys when local rekey initiation is disabled.
+- Bound and correlate session setup, discovery, and induced routing work so
+  forged source addresses, reflected request identifiers, stale signals, and
+  attacker-minted destinations cannot consume unbounded state or redirect a
+  locally requested response.
+- Validate STUN, DNS, traversal, coordinate, path-MTU, and routing-signal
+  provenance before those inputs affect routes or cached state; expire
+  path-specific hints so roaming transports can recover their usable MTU.
+- Harden identity-key and control-socket file handling, preserve last-known-good
+  ACL and host data across reload failures, clear application-retained private
+  and symmetric key copies, invalidate cached cipher handles, and prevent
+  saturated macOS Ethernet receive queues from blocking shutdown.
+- Reject the reserved ceiling packet counter across every replay-window API,
+  cap Ethernet discovery buffering, and preserve IPv6 scope identifiers.
+- Refresh compatible transitive dependencies past the `anyhow`,
+  `event-listener`, and `rand` unsoundness advisories.
+- FMP, FSP, discovery, routing, and physical transport wire formats are
+  unchanged; newly added configuration fields retain compatible defaults.
+
 ## [0.4.64] - 2026-08-25
 
 ### Fixed

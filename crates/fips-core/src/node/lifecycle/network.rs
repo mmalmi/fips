@@ -310,7 +310,7 @@ impl Node {
                 .copied()
                 .collect::<Vec<_>>();
             for (link_id, expected_identity) in &stale_connections {
-                self.cleanup_stale_connection(*link_id, now_ms);
+                self.cleanup_stale_connection(*link_id, now_ms).await;
                 if let Some(identity) = expected_identity {
                     rebind_reprobe_peers.push(*identity.node_addr());
                 }

@@ -2,6 +2,7 @@
 
 use secp256k1::{Keypair, PublicKey, SecretKey, XOnlyPublicKey};
 use std::fmt;
+use zeroize::Zeroizing;
 
 use super::auth::{AuthResponse, auth_challenge_digest};
 use super::encoding::{decode_secret, encode_npub};
@@ -11,6 +12,10 @@ use super::{FipsAddress, IdentityError, NodeAddr, sha256};
 ///
 /// The identity holds the secp256k1 keypair and provides methods for signing
 /// and verifying protocol messages.
+/// Its owned keypair is erased when the identity is dropped. Constructors also
+/// erase the intermediate private-key copies they create; as with
+/// `secp256k1::Keypair::non_secure_erase`, this can only clear copies the crate
+/// can still name.
 pub struct Identity {
     keypair: Keypair,
     node_addr: NodeAddr,
@@ -20,41 +25,52 @@ pub struct Identity {
 impl Identity {
     /// Create a new random identity.
     pub fn generate() -> Self {
-        let mut secret_bytes = [0u8; 32];
-        rand::Rng::fill_bytes(&mut rand::rng(), &mut secret_bytes);
-        let secret_key =
-            SecretKey::from_slice(&secret_bytes).expect("32 random bytes is a valid secret key");
-        Self::from_secret_key(secret_key)
+        let mut secret_bytes = Zeroizing::new([0u8; 32]);
+        rand::Rng::fill_bytes(&mut rand::rng(), secret_bytes.as_mut());
+        let mut secret_key = SecretKey::from_slice(secret_bytes.as_ref())
+            .expect("32 random bytes is a valid secret key");
+        let identity = Self::from_secret_key(secret_key);
+        secret_key.non_secure_erase();
+        identity
     }
 
     /// Create an identity from an existing keypair.
-    pub fn from_keypair(keypair: Keypair) -> Self {
+    pub fn from_keypair(mut keypair: Keypair) -> Self {
         let (pubkey, _parity) = keypair.x_only_public_key();
         let node_addr = NodeAddr::from_pubkey(&pubkey);
         let address = FipsAddress::from_node_addr(&node_addr);
-        Self {
+        let identity = Self {
             keypair,
             node_addr,
             address,
-        }
+        };
+        keypair.non_secure_erase();
+        identity
     }
 
     /// Create an identity from a secret key.
-    pub fn from_secret_key(secret_key: SecretKey) -> Self {
-        let keypair = Keypair::from_secret_key(&super::SECP, &secret_key);
-        Self::from_keypair(keypair)
+    pub fn from_secret_key(mut secret_key: SecretKey) -> Self {
+        let mut keypair = Keypair::from_secret_key(&super::SECP, &secret_key);
+        let identity = Self::from_keypair(keypair);
+        keypair.non_secure_erase();
+        secret_key.non_secure_erase();
+        identity
     }
 
     /// Create an identity from secret key bytes.
     pub fn from_secret_bytes(bytes: &[u8; 32]) -> Result<Self, IdentityError> {
-        let secret_key = SecretKey::from_slice(bytes)?;
-        Ok(Self::from_secret_key(secret_key))
+        let mut secret_key = SecretKey::from_slice(bytes)?;
+        let identity = Self::from_secret_key(secret_key);
+        secret_key.non_secure_erase();
+        Ok(identity)
     }
 
     /// Create an identity from an nsec string (bech32) or hex-encoded secret.
     pub fn from_secret_str(s: &str) -> Result<Self, IdentityError> {
-        let secret_key = decode_secret(s)?;
-        Ok(Self::from_secret_key(secret_key))
+        let mut secret_key = decode_secret(s)?;
+        let identity = Self::from_secret_key(secret_key);
+        secret_key.non_secure_erase();
+        Ok(identity)
     }
 
     /// Return the underlying keypair.
@@ -106,6 +122,12 @@ impl Identity {
             timestamp,
             signature,
         }
+    }
+}
+
+impl Drop for Identity {
+    fn drop(&mut self) {
+        self.keypair.non_secure_erase();
     }
 }
 

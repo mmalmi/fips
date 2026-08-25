@@ -25,3 +25,8 @@ mod reply_learned_origin;
 mod reply_learned_policy;
 mod request;
 mod response;
+
+fn seed_pending_lookup(node: &mut Node, target: NodeAddr, request_id: u64) {
+    node.pending_lookups
+        .ensure_and_record_origin_request(target, Node::now_ms(), request_id);
+}

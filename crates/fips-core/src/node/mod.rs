@@ -20,6 +20,8 @@ mod io_impl;
 mod lifecycle;
 mod link_registry;
 mod local_rendezvous;
+mod path_mtu;
+mod peer_error_budget;
 mod peer_lifecycle;
 mod peer_runtime;
 mod rate_limit;
@@ -45,7 +47,9 @@ pub use error::NodeError;
 pub use identity_cache::NodeDeliveredPacket;
 pub use state::NodeState;
 
-pub(crate) use crate::proto::lookup_state::{RecentDiscoveryRequests, RecentResponseForward};
+pub(crate) use crate::proto::lookup_state::{
+    RecentDiscoveryRequestLimits, RecentDiscoveryRequests, RecentResponseForward,
+};
 pub(crate) use endpoint_channels::{
     ENDPOINT_STALE_DATA_DROP_MS, EndpointDataBatchRx, EndpointDataBatchTx, EndpointDataPayload,
     NodeEndpointControlCommand, NodeEndpointDataBatch, endpoint_data_batch_channel,
@@ -69,6 +73,7 @@ pub(crate) use endpoint_service::{
 pub(crate) use endpoint_traffic::{PendingEndpointData, PendingSessionTrafficQueues};
 pub(in crate::node) use identity_cache::IdentityCache;
 pub(in crate::node) use link_registry::{LinkRegistry, PendingConnect, TransportDropTracker};
+pub(in crate::node) use path_mtu::PathMtuUpdate;
 pub(in crate::node) use peer_lifecycle::*;
 pub(in crate::node) use peer_runtime::*;
 pub(in crate::node) use session_registry::*;
@@ -76,7 +81,9 @@ pub(in crate::node) use support_state::{
     BootstrapTransports, DiscoveryFallbackTransit, LocalSendFailures, SessionDirectDegradation,
 };
 
-use self::rate_limit::HandshakeRateLimiter;
+use self::path_mtu::PathMtuProvenance;
+use self::peer_error_budget::PeerErrorBudget;
+use self::rate_limit::{HandshakeRateLimiter, SessionSetupRateLimiter};
 use self::wire::{FLAG_CE, FLAG_KEY_EPOCH};
 use crate::bloom::{BloomFilter, BloomState};
 use crate::cache::CoordCache;
@@ -88,7 +95,9 @@ use crate::dataplane::{
 use crate::node::session::SessionEntry;
 use crate::node::session_wire::{FSP_PHASE_ESTABLISHED, FspCommonPrefix};
 use crate::peer::{ActivePeer, PeerConnection};
-use crate::proto::lookup_limits::{DiscoveryBackoff, DiscoveryForwardRateLimiter};
+use crate::proto::lookup_limits::{
+    DiscoveryBackoff, DiscoveryForwardRateLimiter, LookupSignRateLimiter,
+};
 use crate::proto::rate_limit::RoutingErrorRateLimiter;
 use crate::proto::routing::{LearnedRouteTable, LearnedRouteTableSnapshot};
 #[cfg(feature = "host-ble-transport")]
@@ -202,7 +211,10 @@ pub struct Node {
     /// the TUN reader/writer threads at TCP MSS clamp time so the
     /// SYN/SYN-ACK clamp can use the smaller of the local-egress floor
     /// and the learned per-destination path MTU.
-    path_mtu_lookup: Arc<std::sync::RwLock<HashMap<crate::FipsAddress, u16>>>,
+    path_mtu_lookup: crate::upper::tun::PathMtuLookup,
+    /// Expiry and direct-transport provenance kept private so the public TUN
+    /// lookup retains its original `FipsAddress -> u16` value type.
+    path_mtu_provenance: HashMap<FipsAddress, PathMtuProvenance>,
 
     // === Transports & Links ===
     /// Active transports (owned by Node).
@@ -328,20 +340,33 @@ pub struct Node {
     /// Pending outbound handshakes by our sender_idx.
     /// Tracks which LinkId corresponds to which session index.
     pending_outbound: PendingOutboundHandshakes,
+    /// Last accepted epoch change for each authenticated peer identity.
+    ///
+    /// This lives outside `ActivePeer` because accepting a restart removes
+    /// that peer entry. It bounds how often an authentic but replayable old
+    /// msg1 can tear a peering down.
+    restart_dampener: HashMap<NodeAddr, std::time::Instant>,
 
     // === Rate Limiting ===
     /// Rate limiter for msg1 processing (DoS protection).
     msg1_rate_limiter: HandshakeRateLimiter,
+    /// Per-link-peer limiter for routed end-to-end SessionSetup messages.
+    setup_rate_limiter: SessionSetupRateLimiter,
     /// Rate limiter for ICMP Packet Too Big messages.
     icmp_rate_limiter: IcmpRateLimiter,
     /// Rate limiter for routing error signals (CoordsRequired / PathBroken).
     routing_error_rate_limiter: RoutingErrorRateLimiter,
+    /// Flood/reflection budget keyed on the authenticated link peer that
+    /// induced each routing error.
+    peer_error_budget: PeerErrorBudget,
     /// Rate limiter for source-side CoordsRequired/PathBroken responses.
     coords_response_rate_limiter: RoutingErrorRateLimiter,
     /// Backoff for failed discovery lookups (originator-side).
     discovery_backoff: DiscoveryBackoff,
     /// Rate limiter for forwarded discovery requests (transit-side).
     discovery_forward_limiter: DiscoveryForwardRateLimiter,
+    /// Per-link-peer budget for fresh lookup-response signatures.
+    discovery_sign_limiter: LookupSignRateLimiter,
 
     // === Pending Transport Connects ===
     /// Links waiting for transport-level connection establishment before

@@ -1,5 +1,6 @@
 fn pending_test_forward(owner: u8, source: u8, dest: u8) -> PreparedSessionForward {
     PreparedSessionForward {
+        ingress_peer: NodeAddr::from_bytes([source; 16]),
         next_hop_addr: NodeAddr::from_bytes([owner; 16]),
         src_addr: NodeAddr::from_bytes([source; 16]),
         dest_addr: NodeAddr::from_bytes([dest; 16]),

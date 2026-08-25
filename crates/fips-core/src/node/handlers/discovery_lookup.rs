@@ -62,8 +62,11 @@ impl Node {
             return 0;
         }
 
-        self.pending_lookups
-            .record_origin_request(target, request.request_id);
+        self.pending_lookups.ensure_and_record_origin_request(
+            *target,
+            Self::now_ms(),
+            request.request_id,
+        );
         let encoded = request.encode();
 
         for peer_addr in peer_addrs {
@@ -92,8 +95,7 @@ impl Node {
         // selection. Let that lookup leave over any established physical
         // adjacency, including an Open-discovery adjacency that is otherwise
         // excluded from ambient fallback transit.
-        if self.config.node.discovery.nostr.policy
-            == crate::config::NostrDiscoveryPolicy::Open
+        if self.config.node.discovery.nostr.policy == crate::config::NostrDiscoveryPolicy::Open
             && self.is_explicit_target_identity(target)
         {
             return self.configured_discovery_fallback_transit(peer_addr) == Some(true);
@@ -265,19 +267,14 @@ impl Node {
             .any(|addr| self.is_sendable_fallback_lookup_peer(addr, dest))
     }
 
-    fn is_sendable_fallback_lookup_peer(
-        &self,
-        peer_addr: &NodeAddr,
-        dest: &NodeAddr,
-    ) -> bool {
+    fn is_sendable_fallback_lookup_peer(&self, peer_addr: &NodeAddr, dest: &NodeAddr) -> bool {
         *peer_addr != *dest
             && self.peers.get(peer_addr).is_some_and(|peer| {
                 peer.is_healthy()
                     && peer.can_send()
                     && (self.config.node.routing.mode != RoutingMode::ReplyLearned
-                        || self.should_use_reply_learned_lookup_fallback_peer(
-                            peer_addr, peer, dest,
-                        ))
+                        || self
+                            .should_use_reply_learned_lookup_fallback_peer(peer_addr, peer, dest))
             })
     }
 
@@ -349,8 +346,7 @@ impl Node {
 
         for dest in recovery_candidates {
             if !self.pending_lookups.contains_key(&dest) {
-                self.maybe_initiate_direct_path_fallback_lookup(&dest)
-                    .await;
+                self.maybe_initiate_direct_path_fallback_lookup(&dest).await;
                 continue;
             }
             let ttl = self.config.node.discovery.ttl;
@@ -586,7 +582,7 @@ impl Node {
     /// `per_flow_max_mss` to fall back to the global ceiling and the
     /// SYN-time TCP MSS clamp to over-estimate the effective path.
     pub(in crate::node) fn seed_path_mtu_for_link_peer(
-        &self,
+        &mut self,
         peer_addr: &NodeAddr,
         transport_id: TransportId,
         addr: &TransportAddr,
@@ -601,35 +597,32 @@ impl Node {
         };
         let link_mtu = transport.link_mtu(addr);
         let fips_addr = crate::FipsAddress::from_node_addr(peer_addr);
-        let Ok(mut map) = self.path_mtu_lookup.write() else {
-            warn!(
+        match self.record_seeded_path_mtu(fips_addr, link_mtu, transport_id) {
+            PathMtuUpdate::Kept { current } => debug!(
                 peer = %self.peer_display_name(peer_addr),
-                "seed_path_mtu_for_link_peer: path_mtu_lookup write lock poisoned"
-            );
-            return;
-        };
-        match map.get(&fips_addr).copied() {
-            Some(existing) if existing <= link_mtu => {
-                // Keep the tighter learned value; never loosen the clamp.
-                debug!(
-                    peer = %self.peer_display_name(peer_addr),
-                    fips_addr = %fips_addr,
-                    link_mtu = link_mtu,
-                    existing = existing,
-                    "seed_path_mtu_for_link_peer: keeping tighter existing value"
-                );
-            }
-            other => {
-                map.insert(fips_addr, link_mtu);
-                debug!(
-                    peer = %self.peer_display_name(peer_addr),
-                    fips_addr = %fips_addr,
-                    link_mtu = link_mtu,
-                    prior = ?other,
-                    map_len = map.len(),
-                    "seed_path_mtu_for_link_peer: wrote link MTU"
-                );
-            }
+                fips_addr = %fips_addr,
+                link_mtu,
+                existing = current.mtu,
+                transport_id = %transport_id,
+                "seed_path_mtu_for_link_peer: keeping tighter existing value"
+            ),
+            PathMtuUpdate::Updated {
+                prior, relinked, ..
+            } => debug!(
+                peer = %self.peer_display_name(peer_addr),
+                fips_addr = %fips_addr,
+                link_mtu,
+                prior = ?prior,
+                prior_transport = ?prior.and_then(|entry| entry.seeded_by()),
+                transport_id = %transport_id,
+                relinked,
+                "seed_path_mtu_for_link_peer: wrote link MTU"
+            ),
+            PathMtuUpdate::Unavailable => warn!(
+                peer = %self.peer_display_name(peer_addr),
+                fips_addr = %fips_addr,
+                "seed_path_mtu_for_link_peer: path_mtu_lookup unavailable"
+            ),
         }
     }
 }

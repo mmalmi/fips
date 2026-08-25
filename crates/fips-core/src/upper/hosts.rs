@@ -127,16 +127,25 @@ impl HostMap {
     /// If the file does not exist, returns an empty map (not an error).
     /// Parse errors on individual lines are logged as warnings and skipped.
     pub fn load_hosts_file(path: &Path) -> Self {
+        match Self::try_load_hosts_file(path) {
+            Ok(map) => map,
+            Err(error) => {
+                warn!(path = %path.display(), %error, "Failed to read hosts file");
+                Self::new()
+            }
+        }
+    }
+
+    /// Load a host map while preserving the distinction between an absent
+    /// operator policy and a policy that exists but cannot be read.
+    pub fn try_load_hosts_file(path: &Path) -> Result<Self, std::io::Error> {
         let contents = match std::fs::read_to_string(path) {
             Ok(c) => c,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && file_is_truly_absent(path) => {
                 debug!(path = %path.display(), "No hosts file found, skipping");
-                return Self::new();
+                return Ok(Self::new());
             }
-            Err(e) => {
-                warn!(path = %path.display(), error = %e, "Failed to read hosts file");
-                return Self::new();
-            }
+            Err(e) => return Err(e),
         };
 
         let mut map = Self::new();
@@ -175,7 +184,7 @@ impl HostMap {
         if !map.is_empty() {
             info!(path = %path.display(), count = map.len(), "Loaded hosts file");
         }
-        map
+        Ok(map)
     }
 
     /// Merge another host map into this one. The other map wins on conflicts.
@@ -187,6 +196,19 @@ impl HostMap {
             self.by_addr.insert(addr, name);
         }
     }
+}
+
+/// Return true only when no directory entry exists at `path`.
+///
+/// `metadata` follows symlinks, so it reports `NotFound` for both an absent
+/// file and a dangling symlink. Operator policy reloads must treat the latter
+/// as a read failure and retain their last-known-good state. `symlink_metadata`
+/// inspects the directory entry itself and preserves that distinction.
+pub(crate) fn file_is_truly_absent(path: &Path) -> bool {
+    matches!(
+        std::fs::symlink_metadata(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    )
 }
 
 /// Return the modification time of a file, or `None` if it doesn't exist or
@@ -218,8 +240,13 @@ impl HostMapReloader {
     ///
     /// Performs the initial load of the hosts file and merges with the base map.
     pub fn new(base: HostMap, path: std::path::PathBuf) -> Self {
-        let last_mtime = file_mtime(&path);
-        let hosts_file = HostMap::load_hosts_file(&path);
+        let (last_mtime, hosts_file) = match HostMap::try_load_hosts_file(&path) {
+            Ok(map) => (file_mtime(&path), map),
+            Err(error) => {
+                warn!(path = %path.display(), %error, "Failed to read hosts file");
+                (None, HostMap::new())
+            }
+        };
         let mut effective = base.clone();
         effective.merge(hosts_file);
 
@@ -251,23 +278,45 @@ impl HostMapReloader {
         &self.effective
     }
 
+    /// Path of the operator-managed hosts file.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// Check if the hosts file has been modified and reload if so.
     ///
     /// Returns `true` if the map was reloaded.
     pub fn check_reload(&mut self) -> bool {
+        match self.try_check_reload() {
+            Ok(changed) => changed,
+            Err(error) => {
+                warn!(path = %self.path.display(), %error, "Failed to reload hosts file; retaining last loaded map");
+                false
+            }
+        }
+    }
+
+    /// Reload the hosts file, reporting read failures without changing the
+    /// last-good map or its recorded modification time.
+    pub fn try_check_reload(&mut self) -> Result<bool, std::io::Error> {
         if !self.file_backed {
-            return false;
+            return Ok(false);
         }
 
         let current_mtime = file_mtime(&self.path);
 
         if current_mtime == self.last_mtime {
-            return false;
+            return Ok(false);
         }
 
         // File appeared, disappeared, or was modified
+        let hosts_file = HostMap::try_load_hosts_file(&self.path)?;
         self.last_mtime = current_mtime;
-        let hosts_file = HostMap::load_hosts_file(&self.path);
+        self.apply(hosts_file);
+        Ok(true)
+    }
+
+    fn apply(&mut self, hosts_file: HostMap) {
         let mut new_effective = self.base.clone();
         new_effective.merge(hosts_file);
 
@@ -279,7 +328,6 @@ impl HostMapReloader {
             entries = count,
             "Reloaded hosts file"
         );
-        true
     }
 }
 
@@ -660,6 +708,33 @@ mod tests {
 
         assert!(reloader.check_reload());
         assert!(reloader.hosts().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_reloader_retains_last_good_map_for_dangling_hosts_symlink() {
+        let id = Identity::generate();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hosts");
+        let missing_target = dir.path().join("missing-hosts-target");
+        std::fs::write(&path, format!("gateway   {}\n", id.npub())).unwrap();
+
+        let mut reloader = HostMapReloader::new(HostMap::new(), path.clone());
+        assert_eq!(
+            reloader.hosts().lookup_npub("gateway"),
+            Some(id.npub().as_str())
+        );
+
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&missing_target, &path).unwrap();
+
+        assert!(HostMap::try_load_hosts_file(&path).is_err());
+        assert!(!reloader.check_reload());
+        assert_eq!(
+            reloader.hosts().lookup_npub("gateway"),
+            Some(id.npub().as_str()),
+            "a dangling hosts symlink must retain the last-known-good map"
+        );
     }
 
     #[test]

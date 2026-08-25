@@ -12,7 +12,10 @@
 
 use crate::transport::{DiscoveredPeer, TransportAddr, TransportId};
 use secp256k1::XOnlyPublicKey;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::sync::Mutex;
+use tracing::warn;
 
 /// Discovery protocol version.
 pub const DISCOVERY_VERSION: u8 = 0x01;
@@ -28,6 +31,9 @@ pub const BEACON_SIZE: usize = 34;
 
 /// Largest scope that fits in the current one-byte scope length field.
 const MAX_SCOPE_LEN: usize = u8::MAX as usize;
+
+/// Maximum distinct unauthenticated source MACs retained between drains.
+const MAX_BUFFERED_PEERS: usize = 1024;
 
 /// Parsed Ethernet discovery beacon.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,7 +104,15 @@ pub fn parse_beacon_record(data: &[u8]) -> Option<Beacon> {
 pub struct DiscoveryBuffer {
     transport_id: TransportId,
     scope_filter: Option<String>,
-    peers: Mutex<Vec<DiscoveredPeer>>,
+    peers: Mutex<BufferedPeers>,
+}
+
+#[derive(Default)]
+struct BufferedPeers {
+    by_mac: HashMap<[u8; 6], (u64, DiscoveredPeer)>,
+    sequence: u64,
+    dropped: u64,
+    warn_at: u64,
 }
 
 impl DiscoveryBuffer {
@@ -107,31 +121,80 @@ impl DiscoveryBuffer {
         Self {
             transport_id,
             scope_filter: scope_filter.filter(|s| !s.is_empty()),
-            peers: Mutex::new(Vec::new()),
+            peers: Mutex::new(BufferedPeers::default()),
         }
     }
 
     /// Add a discovered peer from a received beacon.
-    pub fn add_peer(&self, src_mac: [u8; 6], beacon: Beacon) {
+    ///
+    /// Returns false only when a new MAC was refused because the bounded
+    /// buffer was full. An existing neighbor is always refreshed.
+    pub fn add_peer(&self, src_mac: [u8; 6], beacon: Beacon) -> bool {
         if let Some(scope_filter) = self.scope_filter.as_deref()
             && beacon.scope.as_deref() != Some(scope_filter)
         {
-            return;
+            return true;
         }
 
         let addr = TransportAddr::from_bytes(&src_mac);
         let peer = DiscoveredPeer::with_hint(self.transport_id, addr, beacon.pubkey);
         let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
-        // Deduplicate by MAC address — keep the latest
-        peers.retain(|p| p.addr.as_bytes() != src_mac);
-        peers.push(peer);
+        peers.sequence = peers.sequence.saturating_add(1);
+        let sequence = peers.sequence;
+        let full = peers.by_mac.len() >= MAX_BUFFERED_PEERS;
+        let stored = match peers.by_mac.entry(src_mac) {
+            Entry::Occupied(mut entry) => {
+                entry.insert((sequence, peer));
+                true
+            }
+            Entry::Vacant(entry) if !full => {
+                entry.insert((sequence, peer));
+                true
+            }
+            Entry::Vacant(_) => false,
+        };
+        if !stored {
+            peers.dropped = peers.dropped.saturating_add(1);
+        }
+        stored
     }
 
-    /// Drain all discovered peers since the last call.
+    /// Drain discovered peers in last-seen order.
     pub fn take(&self) -> Vec<DiscoveredPeer> {
         let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
-        std::mem::take(&mut *peers)
+        let mut ordered = peers
+            .by_mac
+            .drain()
+            .map(|(_, peer)| peer)
+            .collect::<Vec<_>>();
+        ordered.sort_unstable_by_key(|(sequence, _)| *sequence);
+        if peers.dropped >= peers.warn_at.max(1) {
+            warn!(
+                transport_id = %self.transport_id,
+                dropped = peers.dropped,
+                cap = MAX_BUFFERED_PEERS,
+                "Ethernet discovery buffer full; unseen beacons refused"
+            );
+            peers.warn_at = next_decade(peers.dropped);
+        }
+        ordered.into_iter().map(|(_, peer)| peer).collect()
     }
+
+    #[cfg(test)]
+    fn dropped(&self) -> u64 {
+        self.peers.lock().unwrap_or_else(|e| e.into_inner()).dropped
+    }
+}
+
+fn next_decade(n: u64) -> u64 {
+    let mut threshold = 1u64;
+    while threshold <= n {
+        match threshold.checked_mul(10) {
+            Some(next) => threshold = next,
+            None => return u64::MAX,
+        }
+    }
+    threshold
 }
 
 // ============================================================================
@@ -277,5 +340,36 @@ mod tests {
         let peers = buffer.take();
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].addr.as_bytes(), &mac_b);
+    }
+
+    fn nth_mac(n: usize) -> [u8; 6] {
+        let bytes = (n as u64).to_be_bytes();
+        [0x02, bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]]
+    }
+
+    #[test]
+    fn discovery_buffer_is_bounded_and_refreshes_known_neighbors() {
+        let buffer = DiscoveryBuffer::new(TransportId::new(1), None);
+        let beacon = Beacon {
+            pubkey: test_pubkey(),
+            scope: None,
+        };
+        for n in 0..MAX_BUFFERED_PEERS + 7 {
+            buffer.add_peer(nth_mac(n), beacon.clone());
+        }
+        assert_eq!(buffer.dropped(), 7);
+        assert!(buffer.add_peer(nth_mac(0), beacon));
+
+        let peers = buffer.take();
+        assert_eq!(peers.len(), MAX_BUFFERED_PEERS);
+        assert_eq!(peers.last().unwrap().addr.as_bytes(), &nth_mac(0));
+    }
+
+    #[test]
+    fn warning_threshold_advances_by_decades() {
+        assert_eq!(next_decade(0), 1);
+        assert_eq!(next_decade(1), 10);
+        assert_eq!(next_decade(10), 100);
+        assert_eq!(next_decade(u64::MAX), u64::MAX);
     }
 }

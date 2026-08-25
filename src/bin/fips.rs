@@ -131,7 +131,7 @@ async fn run_daemon(
 
     // Create node with resolved identity.
     let mut config = config;
-    config.node.identity.nsec = Some(resolved.nsec);
+    config.node.identity.replace_nsec(Some(resolved.nsec));
     debug!("Creating node");
     let mut node = match Node::new(config) {
         Ok(node) => node,

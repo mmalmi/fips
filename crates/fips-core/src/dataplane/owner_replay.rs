@@ -27,6 +27,9 @@ impl ReplayWindow {
     }
 
     fn accept(&mut self, counter: u64) -> bool {
+        if counter == u64::MAX {
+            return false;
+        }
         let Some(highest) = self.highest else {
             self.highest = Some(counter);
             return self.set_counter_bit(counter);
@@ -47,6 +50,9 @@ impl ReplayWindow {
     }
 
     fn can_accept(&self, counter: u64) -> bool {
+        if counter == u64::MAX {
+            return false;
+        }
         let Some(highest) = self.highest else {
             return true;
         };
@@ -120,5 +126,15 @@ mod replay_window_tests {
         assert!(window.accept(REPLAY_BLOCK_BITS * REPLAY_RING_BLOCKS_U64));
         assert!(!window.accept(0));
         assert!(window.accept(REPLAY_BLOCK_BITS * REPLAY_RING_BLOCKS_U64 + 1));
+    }
+
+    #[test]
+    fn replay_window_refuses_the_nonce_ceiling_without_wedging() {
+        let mut window = ReplayWindow::default();
+        assert!(window.accept(100));
+        assert!(!window.can_accept(u64::MAX));
+        assert!(!window.accept(u64::MAX));
+        assert!(window.can_accept(101));
+        assert!(window.accept(101));
     }
 }

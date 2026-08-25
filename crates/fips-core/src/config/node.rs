@@ -89,6 +89,26 @@ pub struct RateLimitConfig {
     /// Max handshake resends per attempt (`node.rate_limit.handshake_max_resends`).
     #[serde(default = "RateLimitConfig::default_handshake_max_resends")]
     pub handshake_max_resends: u32,
+    /// Burst capacity reserved for msg1 from an established link
+    /// (`node.rate_limit.established_handshake_burst`).
+    ///
+    /// When omitted, this is derived from `node.limits.max_peers`.
+    #[serde(default)]
+    pub established_handshake_burst: Option<u32>,
+    /// Tokens/sec reserved for msg1 from an established link
+    /// (`node.rate_limit.established_handshake_rate`).
+    ///
+    /// When omitted, this is derived from the peer limit, rekey interval,
+    /// and handshake resend budget.
+    #[serde(default)]
+    pub established_handshake_rate: Option<f64>,
+    /// Per-authenticated-link-peer burst for inbound FSP SessionSetup
+    /// messages that would open a new half-open session.
+    #[serde(default = "RateLimitConfig::default_session_setup_burst")]
+    pub session_setup_burst: u32,
+    /// Per-authenticated-link-peer sustained SessionSetup rate.
+    #[serde(default = "RateLimitConfig::default_session_setup_rate")]
+    pub session_setup_rate: f64,
 }
 
 impl Default for RateLimitConfig {
@@ -100,6 +120,10 @@ impl Default for RateLimitConfig {
             handshake_resend_interval_ms: 1000,
             handshake_resend_backoff: 2.0,
             handshake_max_resends: 5,
+            established_handshake_burst: None,
+            established_handshake_rate: None,
+            session_setup_burst: 64,
+            session_setup_rate: 16.0,
         }
     }
 }
@@ -122,6 +146,12 @@ impl RateLimitConfig {
     }
     fn default_handshake_max_resends() -> u32 {
         5
+    }
+    fn default_session_setup_burst() -> u32 {
+        64
+    }
+    fn default_session_setup_rate() -> f64 {
+        16.0
     }
 }
 

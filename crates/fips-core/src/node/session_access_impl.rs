@@ -31,12 +31,19 @@ impl Node {
             .and_then(|map| map.get(fips_addr).copied())
     }
 
+    /// Read the full path-MTU entry, including expiry and transport provenance.
+    #[cfg(test)]
+    pub(in crate::node) fn path_mtu_lookup_entry(
+        &self,
+        fips_addr: &crate::FipsAddress,
+    ) -> Option<super::path_mtu::PathMtuEntry> {
+        self.path_mtu_entry(fips_addr)
+    }
+
     /// Write a path_mtu_lookup entry directly (for tests that pre-seed the map).
     #[cfg(test)]
-    pub(crate) fn path_mtu_lookup_insert(&self, fips_addr: crate::FipsAddress, mtu: u16) {
-        if let Ok(mut map) = self.path_mtu_lookup.write() {
-            map.insert(fips_addr, mtu);
-        }
+    pub(crate) fn path_mtu_lookup_insert(&mut self, fips_addr: crate::FipsAddress, mtu: u16) {
+        let _ = self.record_held_path_mtu(fips_addr, mtu);
     }
 
     /// Number of end-to-end sessions.

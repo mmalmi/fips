@@ -558,20 +558,6 @@ impl Node {
                 consecutive_failures = consecutive,
                 "Session AEAD failures exceeded threshold; starting recovery rekey"
             );
-            let abandoned_stalled_pending = self.sessions.get_mut(&src_addr).is_some_and(|entry| {
-                if entry.pending_new_session().is_none() {
-                    return false;
-                }
-                entry.abandon_rekey();
-                true
-            });
-            if abandoned_stalled_pending {
-                let _ = self.clear_dataplane_fsp_pending_receive_epoch(&src_addr);
-                debug!(
-                    peer = %self.peer_display_name(&src_addr),
-                    "Discarded stalled pending FSP epoch before recovery rekey"
-                );
-            }
             if !self.initiate_session_rekey(&src_addr).await {
                 debug!(
                     peer = %self.peer_display_name(&src_addr),

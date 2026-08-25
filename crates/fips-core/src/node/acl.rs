@@ -12,20 +12,30 @@
 use crate::config::NostrDiscoveryPolicy;
 use crate::node::{Node, NodeError};
 use crate::transport::{TransportAddr, TransportId, TransportType};
-use crate::upper::hosts::{HostMap, HostMapReloader, file_mtime};
+use crate::upper::hosts::{HostMap, HostMapReloader, file_is_truly_absent, file_mtime};
 use crate::{NodeAddr, PeerIdentity};
 use serde::Serialize;
 use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Default path for the peer allow list.
 pub const DEFAULT_PEERS_ALLOW_PATH: &str = "/etc/fips/peers.allow";
 
 /// Default path for the peer deny list.
 pub const DEFAULT_PEERS_DENY_PATH: &str = "/etc/fips/peers.deny";
+
+const EMPTY_ACL_HOLD_LIMIT: u32 = 1;
+
+#[derive(Debug, thiserror::Error)]
+#[error("failed to read {}: {source}", path.display())]
+pub struct AclLoadError {
+    pub path: PathBuf,
+    #[source]
+    pub source: std::io::Error,
+}
 
 /// Result of evaluating a peer against the ACL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +87,7 @@ pub struct PeerAclStatus {
     pub deny_file_entries: Vec<String>,
     pub allow_entries: Vec<String>,
     pub deny_entries: Vec<String>,
+    pub stale: bool,
 }
 
 impl fmt::Display for PeerAclContext {
@@ -116,10 +127,27 @@ impl PeerAcl {
     }
 
     /// Load the allow/deny files into a new ACL using alias resolution.
+    #[cfg(test)]
     pub fn load_files_with_hosts(allow_path: &Path, deny_path: &Path, hosts: &HostMap) -> Self {
+        match Self::try_load_files_with_hosts(allow_path, deny_path, hosts) {
+            Ok(acl) => acl,
+            Err(error) => {
+                warn!(path = %error.path.display(), source = %error.source, "Failed to read peer ACL file");
+                Self::new()
+            }
+        }
+    }
+
+    /// Load both ACL inputs, returning a read fault so reloaders can retain
+    /// the policy already in force rather than publishing an empty snapshot.
+    pub fn try_load_files_with_hosts(
+        allow_path: &Path,
+        deny_path: &Path,
+        hosts: &HostMap,
+    ) -> Result<Self, AclLoadError> {
         let mut acl = Self::new();
-        acl.load_file(allow_path, true, hosts);
-        acl.load_file(deny_path, false, hosts);
+        acl.load_file(allow_path, true, hosts)?;
+        acl.load_file(deny_path, false, hosts)?;
 
         if !acl.is_empty() {
             debug!(
@@ -131,7 +159,7 @@ impl PeerAcl {
             );
         }
 
-        acl
+        Ok(acl)
     }
 
     /// Evaluate whether a peer is allowed.
@@ -202,16 +230,23 @@ impl PeerAcl {
         self.deny_file_entries.iter().cloned().collect()
     }
 
-    fn load_file(&mut self, path: &Path, is_allow: bool, hosts: &HostMap) {
+    fn load_file(
+        &mut self,
+        path: &Path,
+        is_allow: bool,
+        hosts: &HostMap,
+    ) -> Result<(), AclLoadError> {
         let contents = match std::fs::read_to_string(path) {
             Ok(c) => c,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && file_is_truly_absent(path) => {
                 debug!(path = %path.display(), "No ACL file found, skipping");
-                return;
+                return Ok(());
             }
             Err(e) => {
-                warn!(path = %path.display(), error = %e, "Failed to read ACL file");
-                return;
+                return Err(AclLoadError {
+                    path: path.to_path_buf(),
+                    source: e,
+                });
             }
         };
 
@@ -267,6 +302,7 @@ impl PeerAcl {
                 self.deny_npubs.insert(resolved_npub);
             }
         }
+        Ok(())
     }
 
     fn resolve_entry(entry: &str, hosts: &HostMap) -> Result<(PeerIdentity, String), String> {
@@ -292,6 +328,8 @@ pub struct PeerAclReloader {
     deny_path: PathBuf,
     last_allow_mtime: Option<SystemTime>,
     last_deny_mtime: Option<SystemTime>,
+    retry_pending: bool,
+    empty_holds: u32,
 }
 
 impl PeerAclReloader {
@@ -316,7 +354,18 @@ impl PeerAclReloader {
         let last_allow_mtime = file_mtime(&allow_path);
         let last_deny_mtime = file_mtime(&deny_path);
         let hosts = HostMapReloader::new(base_hosts, hosts_path);
-        let acl = PeerAcl::load_files_with_hosts(&allow_path, &deny_path, hosts.hosts());
+        let (acl, retry_pending) =
+            match PeerAcl::try_load_files_with_hosts(&allow_path, &deny_path, hosts.hosts()) {
+                Ok(acl) => (acl, false),
+                Err(load_error) => {
+                    error!(
+                        path = %load_error.path.display(),
+                        source = %load_error.source,
+                        "Peer ACL file is unreadable; starting with no ACL entries and retrying"
+                    );
+                    (PeerAcl::new(), true)
+                }
+            };
 
         Self {
             acl,
@@ -326,6 +375,8 @@ impl PeerAclReloader {
             deny_path,
             last_allow_mtime,
             last_deny_mtime,
+            retry_pending,
+            empty_holds: 0,
         }
     }
 
@@ -342,6 +393,8 @@ impl PeerAclReloader {
             deny_path: PathBuf::new(),
             last_allow_mtime: None,
             last_deny_mtime: None,
+            retry_pending: false,
+            empty_holds: 0,
         }
     }
 
@@ -364,6 +417,7 @@ impl PeerAclReloader {
             deny_file_entries: self.acl.deny_file_entries(),
             allow_entries: self.acl.allow_entries(),
             deny_entries: self.acl.deny_entries(),
+            stale: self.retry_pending,
         }
     }
 
@@ -375,19 +429,71 @@ impl PeerAclReloader {
 
         let allow_mtime = file_mtime(&self.allow_path);
         let deny_mtime = file_mtime(&self.deny_path);
-        let hosts_changed = self.hosts.check_reload();
+        let hosts_changed = match self.hosts.try_check_reload() {
+            Ok(changed) => changed,
+            Err(hosts_error) => {
+                if !self.retry_pending {
+                    error!(
+                        path = %self.hosts.path().display(),
+                        error = %hosts_error,
+                        "Peer ACL hosts input is unreadable; retaining the last loaded ACL"
+                    );
+                }
+                self.retry_pending = true;
+                return false;
+            }
+        };
 
         if allow_mtime == self.last_allow_mtime
             && deny_mtime == self.last_deny_mtime
             && !hosts_changed
+            && !self.retry_pending
         {
             return false;
         }
 
+        let new_acl = match PeerAcl::try_load_files_with_hosts(
+            &self.allow_path,
+            &self.deny_path,
+            self.hosts.hosts(),
+        ) {
+            Ok(acl) => acl,
+            Err(load_error) => {
+                if !self.retry_pending {
+                    error!(
+                        path = %load_error.path.display(),
+                        source = %load_error.source,
+                        "Peer ACL input is unreadable; retaining the last loaded ACL"
+                    );
+                }
+                self.retry_pending = true;
+                return false;
+            }
+        };
+
+        let acl_files_changed =
+            allow_mtime != self.last_allow_mtime || deny_mtime != self.last_deny_mtime;
+        if new_acl.is_empty()
+            && !self.acl.is_empty()
+            && acl_files_changed
+            && (allow_mtime.is_some() || deny_mtime.is_some())
+            && self.empty_holds < EMPTY_ACL_HOLD_LIMIT
+        {
+            self.empty_holds = self.empty_holds.saturating_add(1);
+            self.retry_pending = true;
+            warn!(
+                allow_file = %self.allow_path.display(),
+                deny_file = %self.deny_path.display(),
+                "Peer ACL reload emptied an enforcing policy; retaining it for one retry"
+            );
+            return false;
+        }
+
+        self.retry_pending = false;
+        self.empty_holds = 0;
         self.last_allow_mtime = allow_mtime;
         self.last_deny_mtime = deny_mtime;
-        self.acl =
-            PeerAcl::load_files_with_hosts(&self.allow_path, &self.deny_path, self.hosts.hosts());
+        self.acl = new_acl;
 
         info!(
             allow_file = %self.allow_path.display(),

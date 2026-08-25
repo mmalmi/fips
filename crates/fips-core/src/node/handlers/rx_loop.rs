@@ -756,7 +756,7 @@ impl Node {
     }
 
     async fn run_rx_loop_fast_maintenance_tick(&mut self) {
-        self.check_timeouts();
+        self.check_timeouts().await;
         let now_ms = Self::now_ms();
         // Link/session liveness must run before slower retry/discovery work:
         // under bulk send pressure a late heartbeat or MMP report is
@@ -769,6 +769,7 @@ impl Node {
         self.resend_pending_session_msg3(now_ms).await;
         self.retry_pending_session_traffic().await;
         self.purge_idle_sessions(now_ms);
+        self.purge_expired_path_mtu(now_ms);
         self.purge_learned_routes(now_ms);
         self.check_mmp_reports().await;
         self.check_session_mmp_reports().await;

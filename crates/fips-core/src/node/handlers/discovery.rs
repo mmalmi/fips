@@ -6,14 +6,15 @@
 //! safety bounds.
 
 use crate::config::RoutingMode;
-use crate::node::{Node, RecentResponseForward};
+use crate::node::{Node, PathMtuUpdate, RecentResponseForward};
 use crate::proto::lookup::{LookupPeerCandidate, plan_forward_peers, plan_initiate_peers};
 use crate::protocol::{LookupRequest, LookupResponse};
 use crate::transport::{TransportAddr, TransportId};
 use crate::{NodeAddr, NodeError, PeerIdentity};
 use tracing::{debug, info, trace, warn};
 
-const MAX_RECENT_DISCOVERY_REQUESTS: usize = 4096;
+pub(in crate::node) const MAX_RECENT_DISCOVERY_REQUESTS: usize = 4096;
+pub(in crate::node) const MIN_RECENT_DISCOVERY_REQUESTS_PER_PEER: usize = 64;
 const MAX_REPLY_LEARNED_EXTRA_LOOKUP_PEERS: usize = 16;
 
 enum LookupForwardOutcome {
@@ -58,8 +59,13 @@ impl Node {
         let admission = self.recent_requests.record_request(
             request.request_id,
             *from,
+            request.target,
             now_ms,
-            MAX_RECENT_DISCOVERY_REQUESTS,
+            crate::node::RecentDiscoveryRequestLimits::new(
+                MAX_RECENT_DISCOVERY_REQUESTS,
+                self.peers.len(),
+                MIN_RECENT_DISCOVERY_REQUESTS_PER_PEER,
+            ),
         );
         if admission.deduplicated() {
             self.stats_mut().discovery.req_duplicate += 1;
@@ -71,15 +77,15 @@ impl Node {
             return;
         }
 
-        if admission.cache_full() {
+        if admission.evicted() {
+            self.stats_mut().discovery.req_dedup_evicted += 1;
             debug!(
                 request_id = request.request_id,
                 from = %self.peer_display_name(from),
                 recent_requests = self.recent_requests.len(),
                 max_recent_requests = MAX_RECENT_DISCOVERY_REQUESTS,
-                "Discovery request dedup cache full, dropping LookupRequest"
+                "Evicted an older discovery reverse path to admit LookupRequest"
             );
-            return;
         }
         if !admission.accepted() {
             return;
@@ -87,6 +93,15 @@ impl Node {
 
         // Are we the target?
         if request.target == *self.node_addr() {
+            if !self.discovery_sign_limiter.should_sign(from) {
+                self.stats_mut().discovery.req_sign_rate_limited += 1;
+                debug!(
+                    request_id = request.request_id,
+                    from = %self.peer_display_name(from),
+                    "Lookup response signing budget exhausted for ingress peer"
+                );
+                return;
+            }
             self.stats_mut().discovery.req_target_is_us += 1;
             debug!(
                 request_id = request.request_id,
@@ -122,7 +137,8 @@ impl Node {
     ///
     /// Processing steps:
     /// 1. Decode and validate
-    /// 2. Check recent_requests to determine if we originated or are forwarding
+    /// 2. Prefer a matching locally originated request, then check whether we
+    ///    are forwarding it
     /// 3. If originator: verify proof signature, then cache target_coords and path_mtu in coord_cache
     /// 4. If transit: apply path_mtu min(outgoing_link_mtu), reverse-path forward to from_peer
     pub(in crate::node) async fn handle_lookup_response(
@@ -143,11 +159,24 @@ impl Node {
 
         let now_ms = Self::now_ms();
 
-        // Check if we forwarded this request (transit node) or originated it
-        match self
-            .recent_requests
-            .claim_response_forward(response.request_id)
-        {
+        // A peer that sees our request also knows its random ID and can reflect
+        // it back as a LookupRequest. Local origin correlation must win that
+        // collision or the real signed response would be misclassified as
+        // transit traffic and forwarded back to the reflecting peer.
+        let originated_here = self
+            .pending_lookups
+            .matches_origin_request(&response.target, response.request_id);
+        let reverse_path = if originated_here {
+            // Discard both the reflected entry and its per-peer admission index;
+            // a later duplicate response must not revive the poisoned path.
+            self.recent_requests.remove(response.request_id);
+            RecentResponseForward::Missing
+        } else {
+            self.recent_requests
+                .claim_response_forward(response.request_id, response.target)
+        };
+
+        match reverse_path {
             RecentResponseForward::Forward { from_peer } => {
                 // Transit node: reverse-path forward
                 self.stats_mut().discovery.resp_forwarded += 1;
@@ -212,23 +241,27 @@ impl Node {
                 // We originated this request — verify proof before caching
                 let target = response.target;
                 let path_mtu = response.path_mtu;
-                let session_established = self
-                    .sessions
-                    .get(&target)
-                    .is_some_and(|entry| entry.is_established());
-                if session_established
-                    && !self
-                        .pending_lookups
-                        .matches_origin_request(&target, response.request_id)
+                // A valid proof is replayable. Require both the target and a
+                // fresh request ID that this node actually issued before any
+                // identity lookup, signature work, cache refresh, backoff
+                // reset, route pin, or queued-traffic flush.
+                if !self
+                    .pending_lookups
+                    .matches_origin_request(&target, response.request_id)
                 {
+                    self.stats_mut().discovery.resp_unsolicited += 1;
                     debug!(
                         request_id = response.request_id,
                         target = %self.peer_display_name(&target),
                         next_hop = %self.peer_display_name(from),
-                        "Ignoring uncorrelated lookup response for established session"
+                        "Ignoring lookup response that does not match an outstanding request"
                     );
                     return;
                 }
+                let session_established = self
+                    .sessions
+                    .get(&target)
+                    .is_some_and(|entry| entry.is_established());
 
                 // Look up the target's public key from identity_cache
                 let mut prefix = [0u8; 15];
@@ -278,12 +311,29 @@ impl Node {
                     "Discovery succeeded, proof verified, route cached"
                 );
 
-                self.coord_cache.insert_with_path_mtu(
-                    target,
-                    response.target_coords,
-                    now_ms,
-                    path_mtu,
-                );
+                // `path_mtu` is a hop annotation outside the signed proof.
+                // A forwarder may lower it, so values below the minimum that
+                // can describe a usable path are treated as absent. The
+                // signed coordinates remain useful and must still be cached.
+                let path_mtu_actionable = path_mtu >= crate::mmp::MIN_ACTIONABLE_PATH_MTU;
+                if path_mtu_actionable {
+                    self.coord_cache.insert_verified_with_path_mtu(
+                        target,
+                        response.target_coords,
+                        now_ms,
+                        path_mtu,
+                    );
+                } else {
+                    self.stats_mut().errors.lookup_resp_mtu_below_floor += 1;
+                    warn!(
+                        target = %self.peer_display_name(&target),
+                        path_mtu,
+                        floor = crate::mmp::MIN_ACTIONABLE_PATH_MTU,
+                        "LookupResponse path MTU is below the actionable floor; caching coordinates only"
+                    );
+                    self.coord_cache
+                        .insert_verified(target, response.target_coords, now_ms);
+                }
                 let response_hop_quarantined = session_established
                     && self
                         .learned_routes
@@ -306,37 +356,28 @@ impl Node {
                 // Mirror path_mtu into the FipsAddress-keyed read-only lookup
                 // map used by the TUN reader/writer at TCP MSS clamp time.
                 let fips_addr = crate::FipsAddress::from_node_addr(&target);
-                match self.path_mtu_lookup.write() {
-                    Ok(mut map) => match map.get(&fips_addr).copied() {
-                        Some(existing) if existing <= path_mtu => {
-                            debug!(
-                                target = %self.peer_display_name(&target),
-                                fips_addr = %fips_addr,
-                                path_mtu = path_mtu,
-                                existing = existing,
-                                "LookupResponse: keeping tighter existing path_mtu_lookup value"
-                            );
-                        }
-                        prior => {
-                            map.insert(fips_addr, path_mtu);
-                            debug!(
-                                target = %self.peer_display_name(&target),
-                                fips_addr = %fips_addr,
-                                path_mtu = path_mtu,
-                                prior = ?prior,
-                                map_len = map.len(),
-                                "Wrote path_mtu_lookup from discovery LookupResponse"
-                            );
-                        }
-                    },
-                    Err(e) => {
-                        warn!(
+                if path_mtu_actionable {
+                    match self.record_discovery_path_mtu(fips_addr, path_mtu, now_ms) {
+                        PathMtuUpdate::Kept { current } => debug!(
                             target = %self.peer_display_name(&target),
                             fips_addr = %fips_addr,
-                            path_mtu = path_mtu,
-                            error = %e,
-                            "path_mtu_lookup write lock poisoned; clamp will not see this update"
-                        );
+                            path_mtu,
+                            existing = current.mtu,
+                            "LookupResponse: keeping tighter existing path_mtu_lookup value"
+                        ),
+                        PathMtuUpdate::Updated { prior, .. } => debug!(
+                            target = %self.peer_display_name(&target),
+                            fips_addr = %fips_addr,
+                            path_mtu,
+                            prior = ?prior,
+                            "Wrote path_mtu_lookup from discovery LookupResponse"
+                        ),
+                        PathMtuUpdate::Unavailable => warn!(
+                            target = %self.peer_display_name(&target),
+                            fips_addr = %fips_addr,
+                            path_mtu,
+                            "path_mtu_lookup unavailable; clamp will not see this update"
+                        ),
                     }
                 }
 
@@ -512,7 +553,7 @@ impl Node {
                 peer.can_send() && (peer.is_healthy() || stale_direct_probe_allowed)
             });
         if direct_target_sendable {
-            if !self.should_forward_lookup_for_target(&request) {
+            if !self.should_forward_lookup_for_target(from, &request) {
                 return LookupForwardOutcome::RateLimited;
             }
             forward_limiter_checked = true;
@@ -549,7 +590,7 @@ impl Node {
             return LookupForwardOutcome::NoPeer;
         }
 
-        if !forward_limiter_checked && !self.should_forward_lookup_for_target(&request) {
+        if !forward_limiter_checked && !self.should_forward_lookup_for_target(from, &request) {
             return LookupForwardOutcome::RateLimited;
         }
 
@@ -590,10 +631,14 @@ impl Node {
         LookupForwardOutcome::Forwarded
     }
 
-    fn should_forward_lookup_for_target(&mut self, request: &LookupRequest) -> bool {
+    fn should_forward_lookup_for_target(
+        &mut self,
+        from: &NodeAddr,
+        request: &LookupRequest,
+    ) -> bool {
         if self
             .discovery_forward_limiter
-            .should_forward(&request.target)
+            .should_forward(from, &request.target)
         {
             return true;
         }

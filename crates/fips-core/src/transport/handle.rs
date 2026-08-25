@@ -546,6 +546,7 @@ impl TransportHandle {
                     "recv_errors": snap.recv_errors,
                     "beacons_sent": snap.beacons_sent,
                     "beacons_recv": snap.beacons_recv,
+                    "beacons_dropped": snap.beacons_dropped,
                     "frames_too_short": snap.frames_too_short,
                     "frames_too_long": snap.frames_too_long,
                 })

@@ -48,6 +48,7 @@ async fn test_response_originator_caches_route() {
 
     // Register target identity in cache so verification can find it
     node.register_identity(target, target_identity.pubkey_full());
+    seed_pending_lookup(&mut node, target, 555);
 
     // Create a valid response with a real proof signature (includes coords)
     let proof_data = LookupResponse::proof_bytes(555, &target, &coords);
@@ -71,6 +72,50 @@ async fn test_response_originator_caches_route() {
 }
 
 #[tokio::test]
+async fn local_pending_lookup_wins_over_reflected_transit_request_id() {
+    let mut node = make_node();
+    let honest_response_hop = make_node_addr(0xAA);
+    let reflecting_peer = make_node_addr(0xDD);
+    let target_identity = Identity::generate();
+    let target = *target_identity.node_addr();
+    let root = *node.tree_state().my_coords().root_id();
+    let coords = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
+    let request_id = 0xfeed_1234;
+
+    node.register_identity(target, target_identity.pubkey_full());
+    seed_pending_lookup(&mut node, target, request_id);
+    node.recent_requests.insert(
+        request_id,
+        RecentRequest::new(reflecting_peer, target, Node::now_ms()),
+    );
+
+    let proof_data = LookupResponse::proof_bytes(request_id, &target, &coords);
+    let response = LookupResponse::new(
+        request_id,
+        target,
+        coords,
+        target_identity.sign(&proof_data),
+    );
+    node.handle_lookup_response(&honest_response_hop, &response.encode()[1..])
+        .await;
+
+    assert_eq!(node.stats().discovery.resp_accepted, 1);
+    assert_eq!(node.stats().discovery.resp_forwarded, 0);
+    assert!(
+        !node.pending_lookups.contains_key(&target),
+        "the locally originated lookup must complete"
+    );
+    assert!(
+        !node.recent_requests.contains_key(&request_id),
+        "the reflected reverse-path collision must not survive local completion"
+    );
+    assert_eq!(
+        node.recent_requests.indexed_len(),
+        node.recent_requests.len()
+    );
+}
+
+#[tokio::test]
 async fn established_session_lookup_does_not_revive_failed_payload_hop() {
     let mut config = Config::new();
     config.node.routing.mode = RoutingMode::ReplyLearned;
@@ -82,6 +127,7 @@ async fn established_session_lookup_does_not_revive_failed_payload_hop() {
     let coords = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
 
     node.register_identity(target, target_identity.pubkey_full());
+    seed_pending_lookup(&mut node, target, 556);
     node.learn_reverse_route(target, from);
     node.learned_routes.quarantine_failed_next_hop(
         target,
@@ -270,8 +316,10 @@ async fn test_response_transit_learns_target_route() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64;
-    node.recent_requests
-        .insert(444, RecentRequest::new(make_node_addr(0xDD), now_ms));
+    node.recent_requests.insert(
+        444,
+        RecentRequest::new(make_node_addr(0xDD), target, now_ms),
+    );
 
     // Handle response — should try to reverse-path forward to 0xDD
     // (will fail silently since 0xDD is not an actual peer)
@@ -325,7 +373,7 @@ async fn test_response_transit_keeps_foreign_root_out_of_strict_routing() {
     let response = LookupResponse::new(445, target, foreign_coords, proof);
     let now_ms = Node::now_ms();
     node.recent_requests
-        .insert(445, RecentRequest::new(origin_side, now_ms));
+        .insert(445, RecentRequest::new(origin_side, target, now_ms));
 
     node.handle_lookup_response(&target_side, &response.encode()[1..])
         .await;
@@ -360,6 +408,7 @@ async fn test_response_proof_verification_success() {
 
     // Register target in identity_cache
     node.register_identity(target, target_identity.pubkey_full());
+    seed_pending_lookup(&mut node, target, 700);
 
     // Sign with correct proof_bytes (including coords)
     let proof_data = LookupResponse::proof_bytes(700, &target, &coords);
@@ -396,6 +445,7 @@ async fn test_response_proof_verification_failure() {
     node.register_identity(target, target_identity.pubkey_full());
 
     // Sign with a DIFFERENT identity (wrong key)
+    seed_pending_lookup(&mut node, target, 701);
     let wrong_identity = Identity::generate();
     let proof_data = LookupResponse::proof_bytes(701, &target, &coords);
     let proof = wrong_identity.sign(&proof_data);
@@ -428,6 +478,7 @@ async fn test_response_identity_cache_miss() {
     let coords = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
 
     // Do NOT register target in identity_cache
+    seed_pending_lookup(&mut node, target, 702);
 
     let proof_data = LookupResponse::proof_bytes(702, &target, &coords);
     let proof = target_identity.sign(&proof_data);
@@ -464,6 +515,7 @@ async fn test_response_coord_substitution_detected() {
     node.register_identity(target, target_identity.pubkey_full());
 
     // Sign proof with real coords
+    seed_pending_lookup(&mut node, target, 703);
     let proof_data = LookupResponse::proof_bytes(703, &target, &real_coords);
     let proof = target_identity.sign(&proof_data);
 
@@ -481,6 +533,25 @@ async fn test_response_coord_substitution_detected() {
         !node.coord_cache().contains(&target, now_ms),
         "Substituted coords should be detected and response discarded"
     );
+}
+
+#[tokio::test]
+async fn unsolicited_signed_lookup_response_is_dropped_before_verification() {
+    let mut node = make_node();
+    let from = make_node_addr(0xAA);
+    let target_identity = Identity::generate();
+    let target = *target_identity.node_addr();
+    let coords = TreeCoordinate::from_addrs(vec![target, make_node_addr(0xF0)]).unwrap();
+    node.register_identity(target, target_identity.pubkey_full());
+    let proof_data = LookupResponse::proof_bytes(704, &target, &coords);
+    let response = LookupResponse::new(704, target, coords, target_identity.sign(&proof_data));
+
+    node.handle_lookup_response(&from, &response.encode()[1..])
+        .await;
+
+    assert!(node.coord_cache().is_empty());
+    assert_eq!(node.stats().discovery.resp_unsolicited, 1);
+    assert_eq!(node.stats().discovery.resp_proof_failed, 0);
 }
 
 // ============================================================================

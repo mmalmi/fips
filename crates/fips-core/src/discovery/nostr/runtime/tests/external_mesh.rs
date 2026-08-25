@@ -527,3 +527,68 @@ async fn duplicate_mesh_offer_replays_cached_answer() {
         MeshTraversalSignal::Offer { .. } => panic!("expected cached answer"),
     }
 }
+
+#[tokio::test]
+async fn sender_mismatch_does_not_poison_mesh_replay_cache() {
+    let discovery = Arc::new(NostrDiscovery::new_for_test());
+    let actual_sender = nostr::Keys::generate()
+        .public_key()
+        .to_bech32()
+        .expect("actual sender npub");
+    let claimed_sender = nostr::Keys::generate()
+        .public_key()
+        .to_bech32()
+        .expect("claimed sender npub");
+    let now = now_ms();
+    let offer = TraversalOffer {
+        message_type: "offer".to_string(),
+        session_id: "sender-mismatch-session".to_string(),
+        issued_at: now,
+        expires_at: now + 60_000,
+        nonce: "sender-mismatch-nonce".to_string(),
+        sender_npub: claimed_sender,
+        recipient_npub: discovery.npub.clone(),
+        reflexive_address: None,
+        local_addresses: Vec::new(),
+        stun_server: None,
+    };
+
+    discovery
+        .receive_mesh_traversal_offer(offer, actual_sender)
+        .await;
+
+    assert!(
+        discovery.seen_sessions.lock().await.is_empty(),
+        "an offer whose authenticated sender disagrees with its payload must not consume its session id"
+    );
+}
+
+#[tokio::test]
+async fn stale_offer_does_not_poison_mesh_replay_cache() {
+    let discovery = Arc::new(NostrDiscovery::new_for_test());
+    let sender_npub = nostr::Keys::generate()
+        .public_key()
+        .to_bech32()
+        .expect("sender npub");
+    let offer = TraversalOffer {
+        message_type: "offer".to_string(),
+        session_id: "stale-session".to_string(),
+        issued_at: 0,
+        expires_at: 1,
+        nonce: "stale-nonce".to_string(),
+        sender_npub: sender_npub.clone(),
+        recipient_npub: discovery.npub.clone(),
+        reflexive_address: None,
+        local_addresses: Vec::new(),
+        stun_server: None,
+    };
+
+    discovery
+        .receive_mesh_traversal_offer(offer, sender_npub)
+        .await;
+
+    assert!(
+        discovery.seen_sessions.lock().await.is_empty(),
+        "a stale offer must not consume its session id"
+    );
+}

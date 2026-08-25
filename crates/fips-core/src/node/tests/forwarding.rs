@@ -313,6 +313,27 @@ fn test_current_root_coord_cache_rejects_claimed_node_mismatch() {
     );
 }
 
+#[test]
+fn test_same_root_hint_cannot_replace_verified_coords() {
+    let mut node = make_node();
+    let target = make_node_addr(0x01);
+    let intermediary = make_node_addr(0x02);
+    let root = *node.tree_state().my_coords().root_id();
+    let verified = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
+    let forged = TreeCoordinate::from_addrs(vec![target, intermediary, root]).unwrap();
+    let now_ms = Node::now_ms();
+
+    node.coord_cache_mut()
+        .insert_verified(target, verified.clone(), now_ms);
+
+    assert!(!node.cache_current_root_coords(target, forged, now_ms + 1));
+    assert_eq!(
+        node.coord_cache().get(&target, now_ms + 1),
+        Some(&verified),
+        "a same-root plaintext hint must not displace proof-verified coordinates"
+    );
+}
+
 #[tokio::test]
 async fn test_coord_cache_warming_encrypted_msg_with_coords() {
     let mut node = make_node();
@@ -580,7 +601,22 @@ async fn test_stale_path_broken_does_not_invalidate_pinned_handshake_route() {
     node.promote_connection(stale_link, stale_identity, 2_000)
         .unwrap();
 
-    let target = make_node_addr(0xE1);
+    let target_identity = Identity::generate();
+    let target = *target_identity.node_addr();
+    let target_handshake = crate::noise::HandshakeState::new_initiator(
+        node.identity().keypair(),
+        target_identity.pubkey_full(),
+    );
+    node.sessions.insert(
+        target,
+        crate::node::session::SessionEntry::new(
+            target,
+            target_identity.pubkey_full(),
+            crate::node::session::EndToEndState::Initiating(target_handshake),
+            1_000,
+            true,
+        ),
+    );
     let target_coords = TreeCoordinate::root(target);
     let now_ms = Node::now_ms();
     node.coord_cache_mut()

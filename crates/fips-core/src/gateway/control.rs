@@ -57,7 +57,7 @@ impl GatewayControlSocket {
         if let Some(parent) = socket_path.parent()
             && !parent.exists()
         {
-            std::fs::create_dir_all(parent)?;
+            crate::utils::sockperm::make_parent(parent)?;
             debug!(path = %parent.display(), "Created gateway control socket directory");
         }
 
@@ -66,7 +66,7 @@ impl GatewayControlSocket {
             Self::remove_stale_socket(&socket_path)?;
         }
 
-        let listener = UnixListener::bind(&socket_path)?;
+        let listener = crate::utils::sockperm::bind(&socket_path)?;
 
         // Set permissions to 0770 and chown to fips group
         use std::os::unix::fs::PermissionsExt;

@@ -255,13 +255,18 @@ impl Node {
                                 crate::upper::hosts::HostMapReloader::memory_only(base_hosts)
                             };
                             // Resolve the TUN ifindex so the responder can
-                            // drop queries arriving on the mesh interface
-                            // (fips0). Without this, the `::` bind exposes
-                            // /etc/fips/hosts alias probing to any mesh peer.
-                            // When TUN isn't enabled or the name can't be
-                            // resolved, `None` disables the filter (there
-                            // is no mesh surface to defend anyway).
-                            let mesh_ifindex = Self::lookup_mesh_ifindex(self.config.tun.name());
+                            // drop queries arriving on the mesh interface.
+                            // Use the name of the device actually created:
+                            // macOS and FreeBSD assign utunN/tunN names of
+                            // their own choosing, so the configured name may
+                            // not identify the live interface there.
+                            let mesh_ifindex = self.mesh_ifindex();
+                            if self.tun_name.is_some() && mesh_ifindex.is_none() {
+                                warn!(
+                                    device = ?self.tun_name,
+                                    "Mesh interface index unresolved; DNS mesh filter disabled"
+                                );
+                            }
                             info!(
                                 bind = %bind,
                                 hosts = reloader.hosts().len(),
@@ -353,12 +358,18 @@ impl Node {
         Ok(())
     }
 
-    /// Resolve the mesh TUN interface index by name.
+    /// Resolve the index of the mesh TUN device this node actually created.
     ///
-    /// Returns `None` if the interface does not exist (e.g. TUN disabled
-    /// or not yet created). A `None` result disables the DNS responder's
-    /// mesh-interface filter — safe, because if there is no fips0 there
-    /// is no mesh exposure to defend against.
+    /// The recorded name is the kernel-assigned live device name, rather than
+    /// the configured request. No TUN (including app-owned TUN mode) leaves
+    /// the name unset and disables the DNS mesh-interface filter.
+    pub(in crate::node) fn mesh_ifindex(&self) -> Option<u32> {
+        self.tun_name.as_deref().and_then(Self::lookup_mesh_ifindex)
+    }
+
+    /// Resolve an interface index by name.
+    ///
+    /// Returns `None` if the interface does not exist.
     pub(super) fn lookup_mesh_ifindex(name: &str) -> Option<u32> {
         #[cfg(unix)]
         {

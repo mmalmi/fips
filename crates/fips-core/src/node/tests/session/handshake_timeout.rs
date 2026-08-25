@@ -53,7 +53,13 @@ fn test_session_entry_rejects_authenticated_remote_key_for_different_node_addr()
         *claimed_identity.node_addr(),
         authenticated_identity.pubkey_full(),
     ));
-    assert!(entry.remote_identity().is_none());
+    assert_eq!(
+        entry.remote_identity(),
+        Some(PeerIdentity::from_pubkey_full(
+            claimed_identity.pubkey_full()
+        )),
+        "failed re-authentication must preserve the identity already bound to the session"
+    );
 }
 
 /// Test that resend_count and next_resend_at_ms track correctly on SessionEntry.

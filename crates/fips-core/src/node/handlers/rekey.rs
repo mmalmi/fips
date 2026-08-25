@@ -72,6 +72,7 @@ struct SessionRekeyTickPlan {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SessionRekeyTickConfig {
+    initiate_enabled: bool,
     now_ms: u64,
     rekey_after_secs: u64,
     rekey_after_messages: u64,
@@ -309,10 +310,7 @@ impl crate::node::SessionRegistry {
         if !entry.is_established() {
             return Err(SessionRekeyInitiationSkip::NotEstablished);
         }
-        if entry.has_rekey_in_progress()
-            || entry.pending_new_session().is_some()
-            || entry.is_draining()
-        {
+        if entry.has_rekey_in_progress() || entry.is_draining() {
             return Err(SessionRekeyInitiationSkip::RekeyInProgress);
         }
         Ok(SessionRekeyInitiation {
@@ -359,7 +357,7 @@ impl crate::node::SessionRegistry {
 
             if entry.pending_new_session().is_some()
                 && !entry.has_rekey_in_progress()
-                && entry.is_rekey_initiator()
+                && entry.pending_rekey_initiator()
                 && entry.rekey_probe_due(tick.now_ms, tick.probe_delay_ms, tick.probe_interval_ms)
             {
                 plan.probe.push(*node_addr);
@@ -378,8 +376,9 @@ impl crate::node::SessionRegistry {
             let effective_after_secs = tick
                 .rekey_after_secs
                 .saturating_add_signed(entry.rekey_jitter_secs());
-            if elapsed_secs >= effective_after_secs
-                || send_counter_for(node_addr) >= tick.rekey_after_messages
+            if tick.initiate_enabled
+                && (elapsed_secs >= effective_after_secs
+                    || send_counter_for(node_addr) >= tick.rekey_after_messages)
             {
                 plan.initiate.push(*node_addr);
             }
@@ -400,7 +399,7 @@ impl crate::node::SessionRegistry {
         };
         if entry.pending_new_session().is_none()
             || entry.has_rekey_in_progress()
-            || !entry.is_rekey_initiator()
+            || !entry.pending_rekey_initiator()
             || !entry.rekey_probe_due(now_ms, probe_delay_ms, probe_interval_ms)
         {
             return false;
@@ -766,7 +765,7 @@ impl Node {
 
     /// Retransmit FSP rekey msg3 until the responder is confirmed on the new epoch.
     pub(in crate::node) async fn resend_pending_session_msg3(&mut self, now_ms: u64) {
-        if !self.config.node.rekey.enabled || self.sessions.is_empty() {
+        if self.sessions.is_empty() {
             return;
         }
 
@@ -826,11 +825,8 @@ impl Node {
     /// - If the drain window has expired, clear stale-epoch metadata
     /// - If the rekey timer/counter fires, initiate a new XK handshake
     pub(in crate::node) async fn check_session_rekey(&mut self) {
-        if !self.config.node.rekey.enabled {
-            return;
-        }
-
         let tick = SessionRekeyTickConfig {
+            initiate_enabled: self.config.node.rekey.enabled,
             now_ms: Self::now_ms(),
             rekey_after_secs: self.config.node.rekey.after_secs,
             rekey_after_messages: self.config.node.rekey.after_messages,
@@ -911,6 +907,10 @@ impl Node {
     /// Creates a new XK handshake as initiator, sends SessionSetup msg1
     /// through the mesh, and stores the handshake state on the existing entry.
     pub(in crate::node) async fn initiate_session_rekey(&mut self, dest_addr: &NodeAddr) -> bool {
+        if !self.config.node.rekey.enabled {
+            return false;
+        }
+
         // Check route availability before paying crypto cost
         if self.find_next_hop(dest_addr).is_none() {
             trace!(

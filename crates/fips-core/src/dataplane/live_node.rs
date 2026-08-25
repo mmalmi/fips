@@ -404,14 +404,6 @@ impl DataplaneLiveNode {
             .clear_owner_fmp_pending_receive_epoch(OwnerId::fmp_node(*node_addr))
     }
 
-    pub(crate) fn clear_fsp_owner_pending_receive_epoch(
-        &mut self,
-        node_addr: &NodeAddr,
-    ) -> bool {
-        self.driver
-            .clear_owner_fsp_pending_receive_epoch(OwnerId::fsp_node(*node_addr))
-    }
-
     pub(crate) fn fsp_mmp_snapshot(
         &self,
         node_addr: &NodeAddr,

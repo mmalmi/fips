@@ -113,6 +113,37 @@ fn test_replay_window_reset() {
 }
 
 #[test]
+fn test_replay_window_max_counter_does_not_wedge_the_window() {
+    let mut window = ReplayWindow::new();
+
+    window.accept(100);
+    window.accept(u64::MAX);
+
+    assert_eq!(window.highest(), 100, "reserved ceiling must be ignored");
+    assert!(window.check(101), "ceiling frame wedged the replay window");
+}
+
+#[test]
+fn test_replay_window_rejects_max_counter() {
+    let window = ReplayWindow::new();
+    assert_eq!(
+        window.rejection_reason(u64::MAX),
+        Some(ReplayRejection::TooOld),
+        "the existing out-of-window classification covers the reserved ceiling"
+    );
+    assert!(!window.check(u64::MAX));
+}
+
+#[test]
+fn test_replay_window_accepts_highest_sendable_counter() {
+    let mut window = ReplayWindow::new();
+    assert!(window.check(u64::MAX - 1));
+
+    window.accept(u64::MAX - 1);
+    assert!(!window.check(u64::MAX - 1));
+}
+
+#[test]
 fn test_session_replay_protection() {
     let keypair1 = generate_keypair();
     let keypair2 = generate_keypair();

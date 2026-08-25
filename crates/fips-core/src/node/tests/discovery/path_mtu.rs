@@ -178,6 +178,7 @@ async fn test_originator_stores_path_mtu_in_cache() {
     let coords = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
 
     node.register_identity(target, target_identity.pubkey_full());
+    seed_pending_lookup(&mut node, target, 800);
 
     let proof_data = LookupResponse::proof_bytes(800, &target, &coords);
     let proof = target_identity.sign(&proof_data);
@@ -206,6 +207,44 @@ async fn test_originator_stores_path_mtu_in_cache() {
 }
 
 #[tokio::test]
+async fn test_originator_path_mtu_expires_at_coordinate_ttl() {
+    let mut node = make_node();
+    let from = make_node_addr(0xAA);
+    let target_identity = Identity::generate();
+    let target = *target_identity.node_addr();
+    let target_fips = crate::FipsAddress::from_node_addr(&target);
+    let coords = TreeCoordinate::from_addrs(vec![target, make_node_addr(0xF0)]).unwrap();
+
+    node.register_identity(target, target_identity.pubkey_full());
+    seed_pending_lookup(&mut node, target, 803);
+    let proof_data = LookupResponse::proof_bytes(803, &target, &coords);
+    let mut response = LookupResponse::new(803, target, coords, target_identity.sign(&proof_data));
+    response.path_mtu = 1280;
+
+    node.handle_lookup_response(&from, &response.encode()[1..])
+        .await;
+
+    let entry = node
+        .path_mtu_lookup_entry(&target_fips)
+        .expect("verified lookup should populate the TUN path-MTU cache");
+    let learned_ms = entry
+        .learned_ms
+        .expect("the discovery carrier must stamp an expiry origin");
+    let ttl_ms = node.config().node.cache.coord_ttl_secs * 1000;
+    assert!(ttl_ms > 0);
+
+    node.purge_expired_path_mtu(learned_ms + ttl_ms - 1);
+    assert_eq!(node.path_mtu_lookup_get(&target_fips), Some(1280));
+
+    node.purge_expired_path_mtu(learned_ms + ttl_ms);
+    assert_eq!(
+        node.path_mtu_lookup_get(&target_fips),
+        None,
+        "a discovery-only clamp must not survive its coordinate route"
+    );
+}
+
+#[tokio::test]
 async fn test_originator_lookup_response_keeps_tighter_path_mtu() {
     let mut node = make_node();
     let from = make_node_addr(0xAA);
@@ -217,8 +256,13 @@ async fn test_originator_lookup_response_keeps_tighter_path_mtu() {
     let target_fips = crate::FipsAddress::from_node_addr(&target);
 
     node.register_identity(target, target_identity.pubkey_full());
-    node.coord_cache_mut()
-        .insert_with_path_mtu(target, coords.clone(), Node::now_ms(), 1280);
+    seed_pending_lookup(&mut node, target, 801);
+    node.coord_cache_mut().insert_verified_with_path_mtu(
+        target,
+        coords.clone(),
+        Node::now_ms(),
+        1280,
+    );
     node.path_mtu_lookup_insert(target_fips, 1280);
 
     let proof_data = LookupResponse::proof_bytes(801, &target, &coords);
@@ -239,4 +283,42 @@ async fn test_originator_lookup_response_keeps_tighter_path_mtu() {
         Some(1280),
         "LookupResponse must not loosen the coordinate cache path MTU"
     );
+}
+
+#[tokio::test]
+async fn sub_floor_lookup_mtu_is_ignored_while_signed_coordinates_are_kept() {
+    let mut node = make_node();
+    let from = make_node_addr(0xAA);
+    let target_identity = Identity::generate();
+    let target = *target_identity.node_addr();
+    let coords = TreeCoordinate::from_addrs(vec![target, make_node_addr(0xF0)]).unwrap();
+    let target_fips = crate::FipsAddress::from_node_addr(&target);
+    node.register_identity(target, target_identity.pubkey_full());
+    seed_pending_lookup(&mut node, target, 802);
+    let proof_data = LookupResponse::proof_bytes(802, &target, &coords);
+    let mut response = LookupResponse::new(
+        802,
+        target,
+        coords.clone(),
+        target_identity.sign(&proof_data),
+    );
+    response.path_mtu = 0;
+
+    node.handle_lookup_response(&from, &response.encode()[1..])
+        .await;
+
+    assert_eq!(
+        node.coord_cache().get(&target, Node::now_ms()),
+        Some(&coords)
+    );
+    assert_eq!(
+        node.coord_cache().get_entry(&target).unwrap().path_mtu(),
+        None
+    );
+    assert_eq!(
+        node.coord_cache().get_entry(&target).unwrap().source(),
+        crate::cache::CoordSource::Verified
+    );
+    assert_eq!(node.path_mtu_lookup_get(&target_fips), None);
+    assert_eq!(node.stats().errors.lookup_resp_mtu_below_floor, 1);
 }

@@ -308,12 +308,17 @@ impl DataplaneFspCoordWarmup {
         self.source.is_none() && self.local.is_none()
     }
 
-    pub(crate) fn apply_to(self, coord_cache: &mut crate::cache::CoordCache, now_ms: u64) {
+    pub(crate) fn apply_to(
+        self,
+        coord_cache: &mut crate::cache::CoordCache,
+        current_root: &NodeAddr,
+        now_ms: u64,
+    ) {
         if let Some((addr, coords)) = self.source {
-            coord_cache.insert(addr, coords, now_ms);
+            let _ = coord_cache.insert_current_root_hint(addr, coords, current_root, now_ms);
         }
         if let Some((addr, coords)) = self.local {
-            coord_cache.insert(addr, coords, now_ms);
+            let _ = coord_cache.insert_current_root_hint(addr, coords, current_root, now_ms);
         }
     }
 }

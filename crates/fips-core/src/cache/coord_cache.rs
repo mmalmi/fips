@@ -17,6 +17,20 @@ pub const DEFAULT_COORD_CACHE_SIZE: usize = 50_000;
 /// Default TTL for coordinate cache entries (5 minutes in milliseconds).
 pub const DEFAULT_COORD_CACHE_TTL_MS: u64 = 300_000;
 
+/// Result of attempting to write an unauthenticated coordinate hint.
+///
+/// Callers must observe this because a live verified entry can refuse the
+/// write, and treating that refusal as a successful warm would make routing
+/// state and observability disagree.
+#[must_use]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HintOutcome {
+    Inserted,
+    Changed,
+    Unchanged,
+    Rejected,
+}
+
 /// Coordinate cache for routing decisions.
 ///
 /// Maps node addresses to their tree coordinates, enabling data packets
@@ -62,24 +76,61 @@ impl CoordCache {
         self.default_ttl_ms = ttl_ms;
     }
 
-    /// Insert or update a cache entry.
+    /// Insert or update a cache entry from an unauthenticated hint.
+    ///
+    /// This compatibility entry point retains the original `()` return type.
+    /// Internal callers that must distinguish an accepted hint from a rejected
+    /// overwrite use [`Self::insert_checked`].
     pub fn insert(&mut self, addr: NodeAddr, coords: TreeCoordinate, current_time_ms: u64) {
-        // Update existing entry if present
-        if let Some(entry) = self.entries.get_mut(&addr) {
-            entry.update(coords, current_time_ms, self.default_ttl_ms);
-            return;
-        }
-
-        // Evict if at capacity
-        if self.entries.len() >= self.max_entries {
-            self.evict_one(current_time_ms);
-        }
-
-        let entry = CacheEntry::new(coords, current_time_ms, self.default_ttl_ms);
-        self.entries.insert(addr, entry);
+        let _ = self.insert_checked(addr, coords, current_time_ms);
     }
 
-    /// Insert or update a cache entry with path MTU information.
+    /// Insert or update an unauthenticated hint and report the outcome.
+    pub fn insert_checked(
+        &mut self,
+        addr: NodeAddr,
+        coords: TreeCoordinate,
+        current_time_ms: u64,
+    ) -> HintOutcome {
+        self.insert_hint_with_ttl(addr, coords, current_time_ms, self.default_ttl_ms)
+    }
+
+    fn insert_hint_with_ttl(
+        &mut self,
+        addr: NodeAddr,
+        coords: TreeCoordinate,
+        current_time_ms: u64,
+        ttl_ms: u64,
+    ) -> HintOutcome {
+        if let Some(entry) = self.entries.get_mut(&addr) {
+            if entry.is_verified(current_time_ms) {
+                return HintOutcome::Rejected;
+            }
+            let changed = entry.coords() != &coords;
+            entry.update(coords, current_time_ms, ttl_ms);
+            return if changed {
+                HintOutcome::Changed
+            } else {
+                HintOutcome::Unchanged
+            };
+        }
+
+        if self.entries.len() >= self.max_entries {
+            self.evict_hint_victim(current_time_ms);
+        }
+        if self.entries.len() >= self.max_entries {
+            return HintOutcome::Rejected;
+        }
+
+        let entry = CacheEntry::new(coords, current_time_ms, ttl_ms);
+        self.entries.insert(addr, entry);
+        HintOutcome::Inserted
+    }
+
+    /// Insert or update an unauthenticated hint with path MTU information.
+    ///
+    /// This compatibility entry point retains the original `()` return type.
+    /// Use [`Self::insert_with_path_mtu_checked`] when rejection matters.
     ///
     /// Used by discovery response handling to store the discovered path MTU
     /// alongside the target's coordinates. Updates keep the tighter MTU so a
@@ -91,25 +142,126 @@ impl CoordCache {
         current_time_ms: u64,
         path_mtu: u16,
     ) {
+        let _ = self.insert_with_path_mtu_checked(addr, coords, current_time_ms, path_mtu);
+    }
+
+    /// Insert a hint with path-MTU information and report the outcome.
+    pub fn insert_with_path_mtu_checked(
+        &mut self,
+        addr: NodeAddr,
+        coords: TreeCoordinate,
+        current_time_ms: u64,
+        path_mtu: u16,
+    ) -> HintOutcome {
         if let Some(entry) = self.entries.get_mut(&addr) {
+            if entry.is_verified(current_time_ms) {
+                return HintOutcome::Rejected;
+            }
+            let changed = entry.coords() != &coords;
             entry.update(coords, current_time_ms, self.default_ttl_ms);
             let path_mtu = entry
                 .path_mtu()
                 .map_or(path_mtu, |existing| existing.min(path_mtu));
             entry.set_path_mtu(path_mtu);
-            return;
+            return if changed {
+                HintOutcome::Changed
+            } else {
+                HintOutcome::Unchanged
+            };
         }
 
         if self.entries.len() >= self.max_entries {
-            self.evict_one(current_time_ms);
+            self.evict_hint_victim(current_time_ms);
+        }
+        if self.entries.len() >= self.max_entries {
+            return HintOutcome::Rejected;
         }
 
         let mut entry = CacheEntry::new(coords, current_time_ms, self.default_ttl_ms);
         entry.set_path_mtu(path_mtu);
         self.entries.insert(addr, entry);
+        HintOutcome::Inserted
+    }
+
+    /// Insert a hint only when its key and root agree with the local routing
+    /// context. This is the write-site guard used by plaintext session headers,
+    /// including the optimized pre-decryption coordinate-warm path.
+    pub fn insert_current_root_hint(
+        &mut self,
+        addr: NodeAddr,
+        coords: TreeCoordinate,
+        current_root: &NodeAddr,
+        current_time_ms: u64,
+    ) -> Option<HintOutcome> {
+        if coords.node_addr() != &addr || coords.root_id() != current_root {
+            return None;
+        }
+        Some(self.insert_checked(addr, coords, current_time_ms))
+    }
+
+    /// Insert or update coordinates established by a proof-verified lookup.
+    pub fn insert_verified(
+        &mut self,
+        addr: NodeAddr,
+        coords: TreeCoordinate,
+        current_time_ms: u64,
+    ) {
+        if let Some(entry) = self.entries.get_mut(&addr) {
+            entry.update_verified(coords, current_time_ms, self.default_ttl_ms);
+            return;
+        }
+
+        if self.entries.len() >= self.max_entries {
+            self.evict_verified_victim(current_time_ms);
+        }
+        if self.entries.len() >= self.max_entries {
+            return;
+        }
+
+        let entry = CacheEntry::new_verified(coords, current_time_ms, self.default_ttl_ms);
+        self.entries.insert(addr, entry);
+    }
+
+    /// Insert or update proof-verified coordinates with their discovered MTU.
+    ///
+    /// A verified response replaces MTU state that arrived with a hint. For two
+    /// still-verified responses, retain the fork's existing never-loosen rule.
+    pub fn insert_verified_with_path_mtu(
+        &mut self,
+        addr: NodeAddr,
+        coords: TreeCoordinate,
+        current_time_ms: u64,
+        path_mtu: u16,
+    ) {
+        if let Some(entry) = self.entries.get_mut(&addr) {
+            let keep_tighter = entry.is_verified(current_time_ms);
+            let previous_path_mtu = entry.path_mtu();
+            entry.update_verified(coords, current_time_ms, self.default_ttl_ms);
+            let path_mtu = if keep_tighter {
+                previous_path_mtu.map_or(path_mtu, |existing| existing.min(path_mtu))
+            } else {
+                path_mtu
+            };
+            entry.set_path_mtu(path_mtu);
+            return;
+        }
+
+        if self.entries.len() >= self.max_entries {
+            self.evict_verified_victim(current_time_ms);
+        }
+        if self.entries.len() >= self.max_entries {
+            return;
+        }
+
+        let mut entry = CacheEntry::new_verified(coords, current_time_ms, self.default_ttl_ms);
+        entry.set_path_mtu(path_mtu);
+        self.entries.insert(addr, entry);
     }
 
     /// Insert with a custom TTL.
+    ///
+    /// This compatibility entry point retains the original `()` return type.
+    /// Use [`Self::insert_with_ttl_checked`] when rejection matters.
     pub fn insert_with_ttl(
         &mut self,
         addr: NodeAddr,
@@ -117,17 +269,18 @@ impl CoordCache {
         current_time_ms: u64,
         ttl_ms: u64,
     ) {
-        if let Some(entry) = self.entries.get_mut(&addr) {
-            entry.update(coords, current_time_ms, ttl_ms);
-            return;
-        }
+        let _ = self.insert_with_ttl_checked(addr, coords, current_time_ms, ttl_ms);
+    }
 
-        if self.entries.len() >= self.max_entries {
-            self.evict_one(current_time_ms);
-        }
-
-        let entry = CacheEntry::new(coords, current_time_ms, ttl_ms);
-        self.entries.insert(addr, entry);
+    /// Insert a hint with a custom TTL and report the outcome.
+    pub fn insert_with_ttl_checked(
+        &mut self,
+        addr: NodeAddr,
+        coords: TreeCoordinate,
+        current_time_ms: u64,
+        ttl_ms: u64,
+    ) -> HintOutcome {
+        self.insert_hint_with_ttl(addr, coords, current_time_ms, ttl_ms)
     }
 
     /// Look up coordinates for an address (without touching).
@@ -233,9 +386,7 @@ impl CoordCache {
         len_before - self.entries.len()
     }
 
-    /// Evict one entry (expired first, then LRU).
-    fn evict_one(&mut self, current_time_ms: u64) {
-        // First try to evict an expired entry
+    fn evict_expired(&mut self, current_time_ms: u64) -> bool {
         let expired_key = self
             .entries
             .iter()
@@ -244,16 +395,40 @@ impl CoordCache {
 
         if let Some(key) = expired_key {
             self.entries.remove(&key);
+            return true;
+        }
+        false
+    }
+
+    /// Make room for a hint without evicting a live verified entry.
+    fn evict_hint_victim(&mut self, current_time_ms: u64) {
+        if self.evict_expired(current_time_ms) {
             return;
         }
 
-        // Otherwise evict LRU (oldest last_used)
         let lru_key = self
             .entries
             .iter()
+            .filter(|(_, entry)| !entry.is_verified(current_time_ms))
             .max_by_key(|(_, e)| e.idle_time(current_time_ms))
             .map(|(k, _)| *k);
 
+        if let Some(key) = lru_key {
+            self.entries.remove(&key);
+        }
+    }
+
+    /// A verified insertion may replace the least-recent verified entry when
+    /// necessary; unlike hints, it cannot be used to grow past the hard cap.
+    fn evict_verified_victim(&mut self, current_time_ms: u64) {
+        if self.evict_expired(current_time_ms) {
+            return;
+        }
+        let lru_key = self
+            .entries
+            .iter()
+            .max_by_key(|(_, entry)| entry.idle_time(current_time_ms))
+            .map(|(key, _)| *key);
         if let Some(key) = lru_key {
             self.entries.remove(&key);
         }
@@ -293,6 +468,7 @@ impl Default for CoordCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::{CoordSource, VERIFIED_TTL_MS};
 
     fn make_node_addr(val: u8) -> NodeAddr {
         let mut bytes = [0u8; 16];
@@ -564,5 +740,123 @@ mod tests {
         assert_eq!(stats.max_entries, 100);
         assert_eq!(stats.expired, 0);
         assert_eq!(stats.avg_age_ms, 0);
+    }
+
+    #[test]
+    fn hint_does_not_displace_live_verified_entry() {
+        let mut cache = CoordCache::new(100, 1000);
+        let addr = make_node_addr(1);
+        let verified = make_coords(&[1, 0]);
+        let forged = make_coords(&[1, 2, 0]);
+
+        cache.insert_verified(addr, verified.clone(), 0);
+        assert_eq!(
+            cache.insert_checked(addr, forged, 10),
+            HintOutcome::Rejected
+        );
+        assert_eq!(cache.get(&addr, 10), Some(&verified));
+        assert_eq!(
+            cache.get_entry(&addr).unwrap().source(),
+            CoordSource::Verified
+        );
+    }
+
+    #[test]
+    fn legacy_unit_returning_insert_preserves_verified_hint_guard() {
+        let mut cache = CoordCache::new(100, 1000);
+        let addr = make_node_addr(1);
+        let verified = make_coords(&[1, 0]);
+        let forged = make_coords(&[1, 2, 0]);
+        cache.insert_verified(addr, verified.clone(), 0);
+
+        let result: () = cache.insert(addr, forged, 10);
+
+        assert_eq!(result, ());
+        assert_eq!(cache.get(&addr, 10), Some(&verified));
+    }
+
+    #[test]
+    fn legacy_insert_method_signatures_remain_unit_returning() {
+        let _: fn(&mut CoordCache, NodeAddr, TreeCoordinate, u64) = CoordCache::insert;
+        let _: fn(&mut CoordCache, NodeAddr, TreeCoordinate, u64, u16) =
+            CoordCache::insert_with_path_mtu;
+        let _: fn(&mut CoordCache, NodeAddr, TreeCoordinate, u64, u64) =
+            CoordCache::insert_with_ttl;
+    }
+
+    #[test]
+    fn verified_write_displaces_hint_and_its_path_mtu() {
+        let mut cache = CoordCache::new(100, 1000);
+        let addr = make_node_addr(1);
+        let hint = make_coords(&[1, 2, 0]);
+        let verified = make_coords(&[1, 0]);
+
+        assert_eq!(
+            cache.insert_with_path_mtu_checked(addr, hint, 0, 256),
+            HintOutcome::Inserted
+        );
+        cache.insert_verified_with_path_mtu(addr, verified.clone(), 10, 1280);
+
+        let entry = cache.get_entry(&addr).unwrap();
+        assert_eq!(entry.coords(), &verified);
+        assert_eq!(entry.path_mtu(), Some(1280));
+        assert_eq!(entry.source(), CoordSource::Verified);
+    }
+
+    #[test]
+    fn verification_ages_out_independently_of_entry_activity() {
+        let mut cache = CoordCache::new(100, VERIFIED_TTL_MS * 2);
+        let addr = make_node_addr(1);
+        let original = make_coords(&[1, 0]);
+        let moved = make_coords(&[1, 3, 0]);
+
+        cache.insert_verified(addr, original, 0);
+        for now_ms in [100, 1_000, 100_000, VERIFIED_TTL_MS] {
+            let _ = cache.get_and_touch(&addr, now_ms);
+        }
+
+        assert_eq!(
+            cache.insert_checked(addr, moved.clone(), VERIFIED_TTL_MS + 1),
+            HintOutcome::Changed
+        );
+        assert_eq!(cache.get(&addr, VERIFIED_TTL_MS + 1), Some(&moved));
+        assert_eq!(cache.get_entry(&addr).unwrap().source(), CoordSource::Hint);
+    }
+
+    #[test]
+    fn hint_eviction_preserves_live_verified_entries() {
+        let mut cache = CoordCache::new(2, 1_000_000);
+        let verified = make_node_addr(1);
+        let hint = make_node_addr(2);
+        let newcomer = make_node_addr(3);
+
+        cache.insert_verified(verified, make_coords(&[1, 0]), 0);
+        assert_eq!(
+            cache.insert_checked(hint, make_coords(&[2, 0]), 100),
+            HintOutcome::Inserted
+        );
+        assert_eq!(
+            cache.insert_checked(newcomer, make_coords(&[3, 0]), 200),
+            HintOutcome::Inserted
+        );
+
+        assert!(cache.contains(&verified, 200));
+        assert!(!cache.contains(&hint, 200));
+        assert!(cache.contains(&newcomer, 200));
+    }
+
+    #[test]
+    fn full_verified_cache_refuses_hint() {
+        let mut cache = CoordCache::new(2, 1_000_000);
+        cache.insert_verified(make_node_addr(1), make_coords(&[1, 0]), 0);
+        cache.insert_verified(make_node_addr(2), make_coords(&[2, 0]), 0);
+
+        assert_eq!(
+            cache.insert_checked(make_node_addr(3), make_coords(&[3, 0]), 10),
+            HintOutcome::Rejected
+        );
+        assert_eq!(cache.len(), 2);
+        assert!(cache.contains(&make_node_addr(1), 10));
+        assert!(cache.contains(&make_node_addr(2), 10));
     }
 }

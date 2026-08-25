@@ -1,5 +1,5 @@
 use crate::NodeAddr;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 /// Recent request tracking for dedup and reverse-path forwarding.
 ///
@@ -11,6 +11,8 @@ use std::collections::HashMap;
 pub(crate) struct RecentRequest {
     /// The peer who sent this request to us.
     pub(crate) from_peer: NodeAddr,
+    /// Target named by the authenticated request carrying this ID.
+    pub(crate) target: NodeAddr,
     /// When we received this request (Unix milliseconds).
     pub(crate) timestamp_ms: u64,
     /// Whether we've already forwarded a response for this request.
@@ -20,9 +22,10 @@ pub(crate) struct RecentRequest {
 }
 
 impl RecentRequest {
-    pub(crate) fn new(from_peer: NodeAddr, timestamp_ms: u64) -> Self {
+    pub(crate) fn new(from_peer: NodeAddr, target: NodeAddr, timestamp_ms: u64) -> Self {
         Self {
             from_peer,
+            target,
             timestamp_ms,
             response_forwarded: false,
         }
@@ -39,7 +42,25 @@ impl RecentRequest {
 pub(crate) struct RecentDiscoveryRequestAdmission {
     accepted: bool,
     deduplicated: bool,
-    cache_full: bool,
+    evicted: bool,
+}
+
+/// Resource bounds used when admitting one reverse-path lookup record.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RecentDiscoveryRequestLimits {
+    pub(crate) max_entries: usize,
+    pub(crate) peer_count: usize,
+    pub(crate) min_per_peer: usize,
+}
+
+impl RecentDiscoveryRequestLimits {
+    pub(crate) const fn new(max_entries: usize, peer_count: usize, min_per_peer: usize) -> Self {
+        Self {
+            max_entries,
+            peer_count,
+            min_per_peer,
+        }
+    }
 }
 
 impl RecentDiscoveryRequestAdmission {
@@ -51,8 +72,8 @@ impl RecentDiscoveryRequestAdmission {
         self.deduplicated
     }
 
-    pub(crate) fn cache_full(&self) -> bool {
-        self.cache_full
+    pub(crate) fn evicted(&self) -> bool {
+        self.evicted
     }
 }
 
@@ -68,6 +89,10 @@ pub(crate) enum RecentResponseForward {
 #[derive(Debug, Default)]
 pub(crate) struct RecentDiscoveryRequests {
     entries: HashMap<u64, RecentRequest>,
+    /// Arrival order partitioned by authenticated ingress peer. This lets a
+    /// heavy peer pay for its own admission instead of evicting a light
+    /// peer's response path.
+    by_peer: HashMap<NodeAddr, VecDeque<u64>>,
 }
 
 impl RecentDiscoveryRequests {
@@ -75,38 +100,84 @@ impl RecentDiscoveryRequests {
         &mut self,
         request_id: u64,
         from_peer: NodeAddr,
+        target: NodeAddr,
         now_ms: u64,
-        max_entries: usize,
+        limits: RecentDiscoveryRequestLimits,
     ) -> RecentDiscoveryRequestAdmission {
         if self.entries.contains_key(&request_id) {
             return RecentDiscoveryRequestAdmission {
                 accepted: false,
                 deduplicated: true,
-                cache_full: false,
+                evicted: false,
             };
         }
 
-        if self.entries.len() >= max_entries {
+        if limits.max_entries == 0 {
             return RecentDiscoveryRequestAdmission {
                 accepted: false,
                 deduplicated: false,
-                cache_full: true,
+                evicted: false,
             };
         }
 
+        let share = (limits.max_entries / limits.peer_count.max(1)).max(limits.min_per_peer);
+        let over_share = self
+            .by_peer
+            .get(&from_peer)
+            .is_some_and(|ids| ids.len() >= share);
+        let victim = if over_share {
+            Some(from_peer)
+        } else if self.entries.len() >= limits.max_entries {
+            self.by_peer
+                .iter()
+                .max_by_key(|(_, ids)| ids.len())
+                .map(|(peer, _)| *peer)
+        } else {
+            None
+        };
+        let evicted = victim.is_some_and(|peer| self.evict_oldest(peer));
+
         self.entries
-            .insert(request_id, RecentRequest::new(from_peer, now_ms));
+            .insert(request_id, RecentRequest::new(from_peer, target, now_ms));
+        self.by_peer
+            .entry(from_peer)
+            .or_default()
+            .push_back(request_id);
         RecentDiscoveryRequestAdmission {
             accepted: true,
             deduplicated: false,
-            cache_full: false,
+            evicted,
         }
     }
 
-    pub(crate) fn claim_response_forward(&mut self, request_id: u64) -> RecentResponseForward {
+    fn evict_oldest(&mut self, peer: NodeAddr) -> bool {
+        let (request_id, remove_queue) = {
+            let Some(ids) = self.by_peer.get_mut(&peer) else {
+                return false;
+            };
+            let Some(request_id) = ids.pop_front() else {
+                return false;
+            };
+            (request_id, ids.is_empty())
+        };
+        if remove_queue {
+            self.by_peer.remove(&peer);
+        }
+        self.entries.remove(&request_id).is_some()
+    }
+
+    pub(crate) fn claim_response_forward(
+        &mut self,
+        request_id: u64,
+        target: NodeAddr,
+    ) -> RecentResponseForward {
         let Some(recent) = self.entries.get_mut(&request_id) else {
             return RecentResponseForward::Missing;
         };
+
+        if recent.target != target {
+            return RecentResponseForward::Missing;
+        }
 
         if recent.response_forwarded {
             return RecentResponseForward::AlreadyForwarded;
@@ -118,9 +189,28 @@ impl RecentDiscoveryRequests {
         }
     }
 
+    /// Remove a reverse-path entry and its per-peer admission index.
+    pub(crate) fn remove(&mut self, request_id: u64) -> Option<RecentRequest> {
+        let removed = self.entries.remove(&request_id)?;
+        let from_peer = removed.from_peer;
+        let remove_peer_index = self.by_peer.get_mut(&from_peer).is_some_and(|ids| {
+            ids.retain(|candidate| *candidate != request_id);
+            ids.is_empty()
+        });
+        if remove_peer_index {
+            self.by_peer.remove(&from_peer);
+        }
+        Some(removed)
+    }
+
     pub(crate) fn purge_expired(&mut self, current_time_ms: u64, expiry_ms: u64) {
         self.entries
             .retain(|_, entry| !entry.is_expired(current_time_ms, expiry_ms));
+        let entries = &self.entries;
+        self.by_peer.retain(|_, ids| {
+            ids.retain(|request_id| entries.contains_key(request_id));
+            !ids.is_empty()
+        });
     }
 
     #[cfg(test)]
@@ -129,7 +219,15 @@ impl RecentDiscoveryRequests {
         request_id: u64,
         request: RecentRequest,
     ) -> Option<RecentRequest> {
-        self.entries.insert(request_id, request)
+        let from_peer = request.from_peer;
+        let previous = self.entries.insert(request_id, request);
+        if previous.is_none() {
+            self.by_peer
+                .entry(from_peer)
+                .or_default()
+                .push_back(request_id);
+        }
+        previous
     }
 
     #[cfg(test)]
@@ -153,5 +251,10 @@ impl RecentDiscoveryRequests {
 
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn indexed_len(&self) -> usize {
+        self.by_peer.values().map(VecDeque::len).sum()
     }
 }

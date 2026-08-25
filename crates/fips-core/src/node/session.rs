@@ -95,8 +95,13 @@ pub(crate) struct SessionEntry {
     rekey_state: Option<HandshakeState>,
     /// Pending completed session awaiting K-bit cutover.
     pending_new_session: Option<NoiseSession>,
-    /// Whether we initiated the current rekey.
-    rekey_initiator: bool,
+    /// Whether we initiated the currently armed rekey handshake.
+    rekey_handshake_initiator: bool,
+    /// Whether we initiated the completed session awaiting K-bit cutover.
+    ///
+    /// A responder handshake may be armed beside a completed pending epoch,
+    /// so this role cannot share storage with `rekey_handshake_initiator`.
+    pending_rekey_initiator: bool,
     /// Dampening: last time peer sent us a rekey msg1 (Unix ms).
     last_peer_rekey_ms: u64,
     /// When the FSP rekey handshake completed (initiator sent msg3, Unix ms).
@@ -141,7 +146,8 @@ impl SessionEntry {
             drain_started_ms: 0,
             rekey_state: None,
             pending_new_session: None,
-            rekey_initiator: false,
+            rekey_handshake_initiator: false,
+            pending_rekey_initiator: false,
             last_peer_rekey_ms: 0,
             rekey_completed_ms: 0,
             rekey_probe_last_ms: 0,
@@ -167,11 +173,13 @@ impl SessionEntry {
         remote_addr: NodeAddr,
         remote_pubkey: PublicKey,
     ) -> bool {
-        self.remote_pubkey = remote_pubkey;
         let remote_identity = PeerIdentity::from_pubkey_full(remote_pubkey);
-        let authenticated = *remote_identity.node_addr() == remote_addr;
-        self.remote_identity = authenticated.then_some(remote_identity);
-        authenticated
+        if *remote_identity.node_addr() != remote_addr {
+            return false;
+        }
+        self.remote_pubkey = remote_pubkey;
+        self.remote_identity = Some(remote_identity);
+        true
     }
 
     /// Replace the session state.
@@ -224,7 +232,8 @@ impl SessionEntry {
         self.drain_started_ms = 0;
         self.rekey_state = None;
         self.pending_new_session = None;
-        self.rekey_initiator = false;
+        self.rekey_handshake_initiator = false;
+        self.pending_rekey_initiator = false;
         self.last_peer_rekey_ms = 0;
         self.rekey_completed_ms = 0;
         self.rekey_probe_last_ms = 0;
@@ -344,9 +353,26 @@ impl SessionEntry {
         Some((session.recv_cipher_clone()?, session.send_cipher_clone()?))
     }
 
-    /// Whether we initiated the current rekey.
+    /// Whether we initiated the active rekey artefact.
+    ///
+    /// During a handshake this reports the handshake role; after completion
+    /// it reports the pending epoch role. Prefer the explicit role accessors
+    /// when both can coexist.
+    #[cfg(test)]
     pub(crate) fn is_rekey_initiator(&self) -> bool {
-        self.rekey_initiator
+        if self.rekey_state.is_some() {
+            self.rekey_handshake_initiator
+        } else {
+            self.pending_rekey_initiator
+        }
+    }
+
+    pub(crate) fn is_rekey_handshake_initiator(&self) -> bool {
+        self.rekey_handshake_initiator
+    }
+
+    pub(crate) fn pending_rekey_initiator(&self) -> bool {
+        self.pending_rekey_initiator
     }
 
     /// Check if rekey initiation is dampened.
@@ -472,13 +498,16 @@ impl SessionEntry {
     /// Store a completed rekey session.
     pub(crate) fn set_pending_session(&mut self, session: NoiseSession) {
         self.pending_new_session = Some(session);
+        self.pending_rekey_initiator = self.rekey_handshake_initiator;
         self.rekey_state = None;
+        self.rekey_handshake_initiator = false;
+        self.clear_rekey_msg3_payload();
     }
 
     /// Set the rekey handshake state (in-progress XK handshake).
     pub(crate) fn set_rekey_state(&mut self, state: HandshakeState, is_initiator: bool) {
         self.rekey_state = Some(state);
-        self.rekey_initiator = is_initiator;
+        self.rekey_handshake_initiator = is_initiator;
     }
 
     /// Take the rekey state for processing.
@@ -499,7 +528,9 @@ impl SessionEntry {
         self.current_k_bit = !self.current_k_bit;
         self.session_start_ms = now_ms;
         self.rekey_state = None;
-        self.rekey_initiator = false;
+        self.rekey_handshake_initiator = false;
+        self.pending_rekey_initiator = false;
+        self.clear_handshake_payload();
         self.rekey_completed_ms = 0;
         self.rekey_probe_last_ms = 0;
         self.rekey_jitter_secs = draw_rekey_jitter();
@@ -518,10 +549,7 @@ impl SessionEntry {
         now_ms: u64,
         received_k_bit: bool,
     ) -> bool {
-        if self.pending_new_session.is_none()
-            || self.has_rekey_in_progress()
-            || received_k_bit == self.current_k_bit
-        {
+        if self.pending_new_session.is_none() || received_k_bit == self.current_k_bit {
             return false;
         }
         let promoted = self.promote_pending(now_ms);
@@ -549,12 +577,33 @@ impl SessionEntry {
         self.drain_started_ms = 0;
     }
 
+    /// Whether a completed pending session has waited longer than `stale_ms`
+    /// for authenticated cutover traffic.
+    ///
+    /// Staleness only stops the pending epoch vetoing a new handshake. It is
+    /// never permission to discard keys the peer may already be using.
+    pub(crate) fn pending_stale(&self, now_ms: u64, stale_ms: u64) -> bool {
+        self.pending_new_session.is_some()
+            && self.rekey_completed_ms != 0
+            && now_ms.saturating_sub(self.rekey_completed_ms) > stale_ms
+    }
+
+    /// Abandon only an armed rekey handshake, preserving live and completed
+    /// pending epochs.
+    pub(crate) fn abandon_handshake(&mut self) {
+        self.clear_handshake_payload();
+        self.rekey_state = None;
+        self.rekey_handshake_initiator = false;
+    }
+
     /// Abandon an in-progress rekey.
+    #[cfg(test)]
     pub(crate) fn abandon_rekey(&mut self) {
         self.clear_handshake_payload();
         self.rekey_state = None;
         self.pending_new_session = None;
-        self.rekey_initiator = false;
+        self.rekey_handshake_initiator = false;
+        self.pending_rekey_initiator = false;
         self.rekey_completed_ms = 0;
         self.rekey_probe_last_ms = 0;
         self.clear_rekey_msg3_payload();

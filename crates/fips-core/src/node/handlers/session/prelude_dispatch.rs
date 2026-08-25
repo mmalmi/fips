@@ -1,6 +1,7 @@
 use crate::discovery::nostr::{TraversalAnswer, TraversalOffer};
-use crate::mmp::report::ReceiverReport;
 use crate::mmp::MmpMode;
+use crate::mmp::report::ReceiverReport;
+use crate::node::rate_limit::Msg1Class;
 use crate::node::session::{EndToEndState, SessionEntry};
 use crate::node::session_wire::{
     FSP_COMMON_PREFIX_SIZE, FSP_INNER_HEADER_SIZE, FSP_PHASE_ESTABLISHED, FSP_PHASE_MSG1,
@@ -10,9 +11,9 @@ use crate::node::wire::{FLAG_CE, FLAG_SP};
 use crate::node::{
     EndpointDataDelivery, EndpointDataPayload, EndpointServiceDatagramDelivery,
     LocalSessionPayload, Node, NodeEndpointControlCommand, NodeEndpointDataBatch, NodeEndpointPeer,
-    NodeEndpointRelayStatus, NodeError, lifecycle::NetworkRebindRequest,
-    SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD, SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
-    SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
+    NodeEndpointRelayStatus, NodeError, PathMtuUpdate, SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD,
+    SESSION_DIRECT_DEGRADED_MIN_SAMPLE, SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
+    lifecycle::NetworkRebindRequest,
 };
 use crate::noise::{
     HandshakeState, NoiseSession, XK_HANDSHAKE_MSG1_SIZE, XK_HANDSHAKE_MSG2_SIZE,
@@ -128,8 +129,7 @@ impl AuthenticatedSessionMessage {
     }
 
     fn proves_reply_path(&self) -> bool {
-        self.is_application_data()
-            || self.msg_type == SessionMessageType::TraversalOffer.to_byte()
+        self.is_application_data() || self.msg_type == SessionMessageType::TraversalOffer.to_byte()
     }
 
     pub(in crate::node) fn into_endpoint_data_deliveries(mut self) -> Vec<EndpointDataDelivery> {
@@ -378,9 +378,7 @@ impl AuthenticatedSessionDispatch {
             return false;
         }
         #[cfg(feature = "webrtc-transport")]
-        if destination_port
-            == crate::transport::link_negotiation::LINK_NEGOTIATION_SERVICE_PORT
-        {
+        if destination_port == crate::transport::link_negotiation::LINK_NEGOTIATION_SERVICE_PORT {
             return false;
         }
         true
@@ -478,15 +476,16 @@ impl AuthenticatedSessionDispatch {
                                     node.stats_mut().congestion.record_ce_received();
                                 }
                                 if node.external_packet_tx.is_some() {
-                                    node.deliver_external_ipv6_packet(&source_addr, packet.into_vec());
+                                    node.deliver_external_ipv6_packet(
+                                        &source_addr,
+                                        packet.into_vec(),
+                                    );
                                 } else if let Some(tun_tx) = &node.tun_tx {
                                     let _t = crate::perf_profile::Timer::start(
                                         crate::perf_profile::Stage::TunWrite,
                                     );
                                     if tun_tx.send_batch(std::iter::once(packet)) != 0 {
-                                        debug!(
-                                            "Failed to deliver decompressed IPv6 packet to TUN"
-                                        );
+                                        debug!("Failed to deliver decompressed IPv6 packet to TUN");
                                     }
                                 } else {
                                     trace!(

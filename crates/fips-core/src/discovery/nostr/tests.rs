@@ -61,14 +61,21 @@ fn node_addr(first_byte: u8) -> NodeAddr {
 }
 
 fn signed_overlay_advert_event(created_at_secs: u64, expiration_secs: Option<u64>) -> nostr::Event {
-    let keys = nostr::Keys::generate();
+    signed_overlay_advert_event_from(&nostr::Keys::generate(), created_at_secs, expiration_secs)
+}
+
+fn signed_overlay_advert_event_from(
+    keys: &nostr::Keys,
+    created_at_secs: u64,
+    expiration_secs: Option<u64>,
+) -> nostr::Event {
     let content = r#"{"identifier":"fips-overlay-v1","version":1,"endpoints":[{"transport":"tcp","addr":"8.8.8.8:443"}]}"#;
     let mut builder = EventBuilder::new(Kind::Custom(ADVERT_KIND), content)
         .custom_created_at(Timestamp::from(created_at_secs));
     if let Some(expiration_secs) = expiration_secs {
         builder = builder.tags([Tag::expiration(Timestamp::from(expiration_secs))]);
     }
-    builder.sign_with_keys(&keys).unwrap()
+    builder.sign_with_keys(keys).unwrap()
 }
 
 fn signed_overlay_advert_event_for_app(app: &str) -> nostr::Event {
@@ -319,6 +326,31 @@ fn advert_freshness_rejects_stale_created_at_without_expiration() {
     let valid_until =
         NostrDiscovery::compute_advert_valid_until_ms(&event, 600_000, now_secs * 1000);
     assert!(valid_until.is_none());
+}
+
+#[test]
+fn advert_selection_ignores_foreign_authors_before_timestamp_ordering() {
+    let now_secs = Timestamp::now().as_secs();
+    let peer = nostr::Keys::generate();
+    let foreign = nostr::Keys::generate();
+    let events = [
+        signed_overlay_advert_event_from(&foreign, now_secs + 3_600, None),
+        signed_overlay_advert_event_from(&peer, now_secs.saturating_sub(10), None),
+    ];
+
+    let selected =
+        NostrDiscovery::newest_event_by_author(events.iter(), peer.public_key()).unwrap();
+    assert_eq!(selected.pubkey, peer.public_key());
+}
+
+#[test]
+fn advert_freshness_clamps_far_future_created_at() {
+    let now_secs = Timestamp::now().as_secs();
+    let event = signed_overlay_advert_event(now_secs + 3_600, None);
+    let valid_until =
+        NostrDiscovery::compute_advert_valid_until_ms(&event, 600_000, now_secs * 1000)
+            .expect("future advert is clamped rather than rejected");
+    assert_eq!(valid_until, (now_secs + 60) * 1000 + 600_000);
 }
 
 #[test]

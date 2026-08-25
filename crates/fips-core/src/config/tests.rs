@@ -55,6 +55,33 @@ node:
 }
 
 #[test]
+fn identity_config_take_nsec_transfers_without_clone() {
+    let mut identity = IdentityConfig {
+        nsec: Some("private-key-material".to_string()),
+        persistent: true,
+    };
+
+    assert_eq!(
+        identity.take_nsec().as_deref(),
+        Some("private-key-material")
+    );
+    assert!(identity.nsec.is_none());
+}
+
+#[test]
+fn identity_config_into_nsec_transfers_without_clone() {
+    let identity = IdentityConfig {
+        nsec: Some("private-key-material".to_string()),
+        persistent: false,
+    };
+
+    assert_eq!(
+        identity.into_nsec().as_deref(),
+        Some("private-key-material")
+    );
+}
+
+#[test]
 fn test_merge_configs() {
     let mut base = Config::new();
     base.node.identity.nsec = Some("base_nsec".to_string());
@@ -75,6 +102,25 @@ fn test_merge_preserves_base_when_override_empty() {
 
     base.merge(override_config);
     assert_eq!(base.node.identity.nsec, Some("base_nsec".to_string()));
+}
+
+#[test]
+fn test_zeroize_yaml_value_clears_nested_strings() {
+    let mut value: serde_yaml::Value = serde_yaml::from_str(
+        r#"
+node:
+  identity:
+    nsec: private-key-material
+peers:
+  - addr: private-transport-token
+"#,
+    )
+    .unwrap();
+
+    zeroize_yaml_value(&mut value);
+
+    assert_eq!(value["node"]["identity"]["nsec"].as_str(), Some(""));
+    assert_eq!(value["peers"][0]["addr"].as_str(), Some(""));
 }
 
 #[test]
@@ -306,6 +352,34 @@ fn test_pub_file_permissions() {
 
     let metadata = fs::metadata(&pub_path).unwrap();
     assert_eq!(metadata.mode() & 0o777, 0o644);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_write_key_file_refuses_symlink() {
+    let temp_dir = TempDir::new().unwrap();
+    let victim = temp_dir.path().join("victim");
+    let key_path = temp_dir.path().join("fips.key");
+    fs::write(&victim, "victim contents\n").unwrap();
+    std::os::unix::fs::symlink(&victim, &key_path).unwrap();
+
+    let error = write_key_file(&key_path, "nsec1secret").unwrap_err();
+    assert!(matches!(error, ConfigError::KeyPathIsSymlink { .. }));
+    assert_eq!(fs::read_to_string(&victim).unwrap(), "victim contents\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_write_pub_file_refuses_symlink() {
+    let temp_dir = TempDir::new().unwrap();
+    let victim = temp_dir.path().join("victim");
+    let pub_path = temp_dir.path().join("fips.pub");
+    fs::write(&victim, "victim contents\n").unwrap();
+    std::os::unix::fs::symlink(&victim, &pub_path).unwrap();
+
+    let error = write_pub_file(&pub_path, "npub1public").unwrap_err();
+    assert!(matches!(error, ConfigError::KeyPathIsSymlink { .. }));
+    assert_eq!(fs::read_to_string(&victim).unwrap(), "victim contents\n");
 }
 
 #[test]
@@ -832,4 +906,87 @@ fn deprecated_dm_and_webrtc_signal_relay_fields_are_rejected() {
         serde_yaml::from_str::<WebRtcConfig>("signal_relays: [wss://relay.example]\n")
             .expect_err("WebRTC signal_relays should no longer be configurable");
     assert!(signal_error.to_string().contains("signal_relays"));
+}
+
+#[test]
+fn established_handshake_bucket_rejects_zero_or_non_finite_overrides() {
+    let mut zero_burst = Config::default();
+    zero_burst.node.rate_limit.established_handshake_burst = Some(0);
+    assert!(
+        zero_burst
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("established_handshake_burst")
+    );
+
+    for bad_rate in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        let mut config = Config::default();
+        config.node.rate_limit.established_handshake_rate = Some(bad_rate);
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("established_handshake_rate"),
+            "bad rate {bad_rate} must be rejected"
+        );
+    }
+}
+
+#[test]
+fn established_handshake_bucket_accepts_derived_and_positive_settings() {
+    Config::default()
+        .validate()
+        .expect("omitted settings derive from existing limits");
+
+    let mut config = Config::default();
+    config.node.rate_limit.established_handshake_burst = Some(7);
+    config.node.rate_limit.established_handshake_rate = Some(0.5);
+    config
+        .validate()
+        .expect("positive explicit settings must validate");
+}
+
+#[test]
+fn traversal_freshness_window_must_be_strictly_inside_replay_window() {
+    let mut boundary = Config::default();
+    boundary.node.discovery.nostr.signal_ttl_secs = 180;
+    let err = boundary
+        .validate()
+        .expect_err("180 + 2 * 60 must not fit in the 300s replay window");
+    assert!(err.to_string().contains("signal_ttl_secs"));
+    assert!(err.to_string().contains("replay_window_secs"));
+
+    let mut inside = Config::default();
+    inside.node.discovery.nostr.signal_ttl_secs = 179;
+    inside
+        .validate()
+        .expect("179 + 2 * 60 remains strictly inside the 300s replay window");
+}
+
+#[test]
+fn traversal_per_sender_offer_limit_must_fit_a_semaphore() {
+    let mut zero = Config::default();
+    zero.node.discovery.nostr.max_concurrent_offers_per_npub = 0;
+    assert!(
+        zero.validate()
+            .unwrap_err()
+            .to_string()
+            .contains("max_concurrent_offers_per_npub")
+    );
+
+    let mut oversized = Config::default();
+    oversized
+        .node
+        .discovery
+        .nostr
+        .max_concurrent_offers_per_npub = tokio::sync::Semaphore::MAX_PERMITS.saturating_add(1);
+    assert!(
+        oversized
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("max_concurrent_offers_per_npub")
+    );
 }

@@ -7,7 +7,9 @@ use super::types::{
 /// past ~minutes erodes the freshness guarantee that backstops session-id
 /// replay protection. Tightening it below the size of a typical un-NTP'd
 /// drift defeats the purpose. 60s sits comfortably between those.
-pub(super) const FRESHNESS_SKEW_TOLERANCE_MS: u64 = 60_000;
+/// `pub(crate)` so configuration validation derives its replay-safety bound
+/// from the same value used by the wire-message freshness checks.
+pub(crate) const FRESHNESS_SKEW_TOLERANCE_MS: u64 = 60_000;
 
 pub(super) struct SignalEnvelope<T> {
     pub(super) payload: T,

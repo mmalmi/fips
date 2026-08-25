@@ -65,3 +65,39 @@ fn zero_session_limit_preserves_unlimited_behavior() {
     assert_eq!(node.stats().sessions.table_full, 0);
     assert_eq!(node.stats().sessions.half_open_full, 0);
 }
+
+fn setup_body_for(initiator: &Identity, responder: &Node) -> Vec<u8> {
+    let mut handshake = crate::noise::HandshakeState::new_xk_initiator(
+        initiator.keypair(),
+        responder.identity().pubkey_full(),
+    );
+    handshake.set_local_epoch([0x44; 8]);
+    let msg1 = handshake.write_xk_message_1().expect("msg1");
+    let encoded = SessionSetup::new(
+        TreeCoordinate::root(*initiator.node_addr()),
+        responder.tree_state().my_coords().clone(),
+    )
+    .with_handshake(msg1)
+    .encode();
+    encoded[FSP_COMMON_PREFIX_SIZE..].to_vec()
+}
+
+#[tokio::test]
+async fn routed_setup_budget_is_keyed_on_authenticated_previous_hop() {
+    let mut config = Config::new();
+    config.node.rate_limit.session_setup_burst = 1;
+    config.node.rate_limit.session_setup_rate = 0.001;
+    let mut node = Node::new(config).expect("node");
+    let first = Identity::generate();
+    let second = Identity::generate();
+    let previous_hop = make_node_addr(0xEE);
+    let first_body = setup_body_for(&first, &node);
+    let second_body = setup_body_for(&second, &node);
+
+    node.handle_session_setup(first.node_addr(), &previous_hop, &first_body)
+        .await;
+    node.handle_session_setup(second.node_addr(), &previous_hop, &second_body)
+        .await;
+
+    assert_eq!(node.stats().sessions.setup_rate_limited, 1);
+}

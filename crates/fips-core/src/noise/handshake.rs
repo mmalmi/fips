@@ -9,17 +9,19 @@ use rand::Rng;
 use secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey, ecdh::shared_secret_point};
 use sha2::{Digest, Sha256};
 use std::fmt;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Symmetric state during handshake.
 ///
 /// Maintains the chaining key (ck), handshake hash (h), and current cipher.
-#[derive(Clone)]
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
 struct SymmetricState {
     /// Chaining key for key derivation.
     ck: [u8; 32],
     /// Handshake hash for transcript binding.
     h: [u8; 32],
     /// Current cipher state for encrypting handshake payloads.
+    #[zeroize(skip)]
     cipher: CipherState,
 }
 
@@ -54,7 +56,7 @@ impl SymmetricState {
     }
 
     /// Mix key material into the chaining key.
-    fn mix_key(&mut self, input_key_material: &[u8]) {
+    fn mix_key(&mut self, input_key_material: &mut [u8]) {
         let hk = Hkdf::<Sha256>::new(Some(&self.ck), input_key_material);
         let mut output = [0u8; 64];
         hk.expand(&[], &mut output)
@@ -66,6 +68,9 @@ impl SymmetricState {
         let mut key = [0u8; 32];
         key.copy_from_slice(&output[32..64]);
         self.cipher.initialize_key(key);
+        key.zeroize();
+        output.zeroize();
+        input_key_material.zeroize();
     }
 
     /// Encrypt and mix into hash.
@@ -94,7 +99,11 @@ impl SymmetricState {
         k1.copy_from_slice(&output[..32]);
         k2.copy_from_slice(&output[32..64]);
 
-        (CipherState::new(k1), CipherState::new(k2))
+        let ciphers = (CipherState::new(k1), CipherState::new(k2));
+        output.zeroize();
+        k1.zeroize();
+        k2.zeroize();
+        ciphers
     }
 
     /// Get the handshake hash (for channel binding).
@@ -154,7 +163,7 @@ impl HandshakeState {
     ///
     /// The initiator knows the responder's static key and will send first.
     /// Used by FMP (link layer).
-    pub fn new_initiator(static_keypair: Keypair, remote_static: PublicKey) -> Self {
+    pub fn new_initiator(mut static_keypair: Keypair, remote_static: PublicKey) -> Self {
         let secp = Secp256k1::new();
         let mut state = Self {
             pattern: NoisePattern::Ik,
@@ -176,6 +185,10 @@ impl HandshakeState {
         let normalized = Self::normalize_for_premessage(&remote_static);
         state.symmetric.mix_hash(&normalized);
 
+        // Assignment copied this Copy keypair into the state; clear the
+        // constructor frame's duplicate.
+        static_keypair.non_secure_erase();
+
         state
     }
 
@@ -183,7 +196,7 @@ impl HandshakeState {
     ///
     /// The responder does NOT know the initiator's static key - it will be
     /// learned from message 1. Used by FMP (link layer).
-    pub fn new_responder(static_keypair: Keypair) -> Self {
+    pub fn new_responder(mut static_keypair: Keypair) -> Self {
         let secp = Secp256k1::new();
         let mut state = Self {
             pattern: NoisePattern::Ik,
@@ -204,6 +217,8 @@ impl HandshakeState {
         let normalized = Self::normalize_for_premessage(&state.static_keypair.public_key());
         state.symmetric.mix_hash(&normalized);
 
+        static_keypair.non_secure_erase();
+
         state
     }
 
@@ -211,7 +226,7 @@ impl HandshakeState {
     ///
     /// The initiator knows the responder's static key. XK defers the
     /// initiator's static key reveal to msg3. Used by FSP (session layer).
-    pub fn new_xk_initiator(static_keypair: Keypair, remote_static: PublicKey) -> Self {
+    pub fn new_xk_initiator(mut static_keypair: Keypair, remote_static: PublicKey) -> Self {
         let secp = Secp256k1::new();
         let mut state = Self {
             pattern: NoisePattern::Xk,
@@ -231,6 +246,8 @@ impl HandshakeState {
         let normalized = Self::normalize_for_premessage(&remote_static);
         state.symmetric.mix_hash(&normalized);
 
+        static_keypair.non_secure_erase();
+
         state
     }
 
@@ -238,7 +255,7 @@ impl HandshakeState {
     ///
     /// The responder does NOT know the initiator's static key - it will be
     /// learned from message 3. Used by FSP (session layer).
-    pub fn new_xk_responder(static_keypair: Keypair) -> Self {
+    pub fn new_xk_responder(mut static_keypair: Keypair) -> Self {
         let secp = Secp256k1::new();
         let mut state = Self {
             pattern: NoisePattern::Xk,
@@ -257,6 +274,8 @@ impl HandshakeState {
         // Mix in pre-message: <- s (our static, since we're responder)
         let normalized = Self::normalize_for_premessage(&state.static_keypair.public_key());
         state.symmetric.mix_hash(&normalized);
+
+        static_keypair.non_secure_erase();
 
         state
     }
@@ -297,9 +316,11 @@ impl HandshakeState {
         let mut secret_bytes = [0u8; 32];
         rng.fill_bytes(&mut secret_bytes);
 
-        let secret_key =
+        let mut secret_key =
             SecretKey::from_slice(&secret_bytes).expect("32 random bytes is valid secret key");
         self.ephemeral_keypair = Some(Keypair::from_secret_key(&self.secp, &secret_key));
+        secret_key.non_secure_erase();
+        secret_bytes.zeroize();
     }
 
     /// Perform ECDH between our secret and their public key.
@@ -310,15 +331,18 @@ impl HandshakeState {
     /// may have the wrong parity for the responder's static key. Since P and
     /// -P produce ECDH result points with the same x-coordinate, hashing
     /// only x ensures both sides derive the same shared secret.
-    fn ecdh(&self, our_secret: &SecretKey, their_public: &PublicKey) -> [u8; 32] {
+    fn ecdh(&self, mut our_secret: SecretKey, their_public: &PublicKey) -> [u8; 32] {
         // Get raw (x, y) coordinates (64 bytes) without any hashing
-        let point = shared_secret_point(their_public, our_secret);
+        let mut point = shared_secret_point(their_public, &our_secret);
         // Hash only the x-coordinate (first 32 bytes), ignoring y/parity
         let mut hasher = Sha256::new();
         hasher.update(&point[..32]);
-        let hash = hasher.finalize();
+        let mut hash = hasher.finalize();
         let mut result = [0u8; 32];
         result.copy_from_slice(&hash);
+        hash.as_mut_slice().zeroize();
+        point.zeroize();
+        our_secret.non_secure_erase();
         result
     }
 
@@ -363,8 +387,8 @@ impl HandshakeState {
         self.symmetric.mix_hash(&e_pub);
 
         // -> es: DH(e, rs), mix into key
-        let es = self.ecdh(&ephemeral.secret_key(), &remote_static);
-        self.symmetric.mix_key(&es);
+        let mut es = self.ecdh(ephemeral.secret_key(), &remote_static);
+        self.symmetric.mix_key(&mut es);
 
         // -> s: encrypt our static and send
         let our_static = self.static_keypair.public_key().serialize();
@@ -372,8 +396,8 @@ impl HandshakeState {
         message.extend_from_slice(&encrypted_static);
 
         // -> ss: DH(s, rs), mix into key
-        let ss = self.ecdh(&self.static_keypair.secret_key(), &remote_static);
-        self.symmetric.mix_key(&ss);
+        let mut ss = self.ecdh(self.static_keypair.secret_key(), &remote_static);
+        self.symmetric.mix_key(&mut ss);
 
         // -> epoch: encrypt startup epoch for restart detection
         let encrypted_epoch = self.symmetric.encrypt_and_hash(&epoch)?;
@@ -416,8 +440,8 @@ impl HandshakeState {
 
         // -> es: DH(s, re), mix into key
         // (responder uses their static with initiator's ephemeral)
-        let es = self.ecdh(&self.static_keypair.secret_key(), &re);
-        self.symmetric.mix_key(&es);
+        let mut es = self.ecdh(self.static_keypair.secret_key(), &re);
+        self.symmetric.mix_key(&mut es);
 
         // -> s: decrypt initiator's static
         let encrypted_static_end = PUBKEY_SIZE + PUBKEY_SIZE + super::TAG_SIZE;
@@ -428,8 +452,8 @@ impl HandshakeState {
         self.remote_static = Some(rs);
 
         // -> ss: DH(s, rs), mix into key
-        let ss = self.ecdh(&self.static_keypair.secret_key(), &rs);
-        self.symmetric.mix_key(&ss);
+        let mut ss = self.ecdh(self.static_keypair.secret_key(), &rs);
+        self.symmetric.mix_key(&mut ss);
 
         // -> epoch: decrypt initiator's startup epoch
         let encrypted_epoch = &message[encrypted_static_end..];
@@ -483,12 +507,12 @@ impl HandshakeState {
         self.symmetric.mix_hash(&e_pub);
 
         // <- ee: DH(e, re), mix into key
-        let ee = self.ecdh(&ephemeral.secret_key(), &re);
-        self.symmetric.mix_key(&ee);
+        let mut ee = self.ecdh(ephemeral.secret_key(), &re);
+        self.symmetric.mix_key(&mut ee);
 
         // <- se: DH(s, re), mix into key
-        let se = self.ecdh(&self.static_keypair.secret_key(), &re);
-        self.symmetric.mix_key(&se);
+        let mut se = self.ecdh(self.static_keypair.secret_key(), &re);
+        self.symmetric.mix_key(&mut se);
 
         // <- epoch: encrypt startup epoch for restart detection
         let encrypted_epoch = self.symmetric.encrypt_and_hash(&epoch)?;
@@ -531,14 +555,14 @@ impl HandshakeState {
 
         // <- ee: DH(e, re), mix into key
         let ephemeral = self.ephemeral_keypair.as_ref().unwrap();
-        let ee = self.ecdh(&ephemeral.secret_key(), &re);
-        self.symmetric.mix_key(&ee);
+        let mut ee = self.ecdh(ephemeral.secret_key(), &re);
+        self.symmetric.mix_key(&mut ee);
 
         // <- se: DH(e, rs), mix into key
         // (initiator uses their ephemeral with responder's static)
         let rs = self.remote_static.expect("initiator has remote static");
-        let se = self.ecdh(&ephemeral.secret_key(), &rs);
-        self.symmetric.mix_key(&se);
+        let mut se = self.ecdh(ephemeral.secret_key(), &rs);
+        self.symmetric.mix_key(&mut se);
 
         // <- epoch: decrypt responder's startup epoch
         let encrypted_epoch = &message[PUBKEY_SIZE..];
@@ -595,8 +619,8 @@ impl HandshakeState {
         self.symmetric.mix_hash(&e_pub);
 
         // -> es: DH(e, rs), mix into key
-        let es = self.ecdh(&ephemeral.secret_key(), &remote_static);
-        self.symmetric.mix_key(&es);
+        let mut es = self.ecdh(ephemeral.secret_key(), &remote_static);
+        self.symmetric.mix_key(&mut es);
 
         self.progress = HandshakeProgress::Message1Done;
 
@@ -635,8 +659,8 @@ impl HandshakeState {
 
         // -> es: DH(s, re), mix into key
         // (responder uses their static with initiator's ephemeral)
-        let es = self.ecdh(&self.static_keypair.secret_key(), &re);
-        self.symmetric.mix_key(&es);
+        let mut es = self.ecdh(self.static_keypair.secret_key(), &re);
+        self.symmetric.mix_key(&mut es);
 
         self.progress = HandshakeProgress::Message1Done;
 
@@ -682,8 +706,8 @@ impl HandshakeState {
         self.symmetric.mix_hash(&e_pub);
 
         // <- ee: DH(e, re), mix into key
-        let ee = self.ecdh(&ephemeral.secret_key(), &re);
-        self.symmetric.mix_key(&ee);
+        let mut ee = self.ecdh(ephemeral.secret_key(), &re);
+        self.symmetric.mix_key(&mut ee);
 
         // <- epoch: encrypt startup epoch for restart detection
         let encrypted_epoch = self.symmetric.encrypt_and_hash(&epoch)?;
@@ -727,8 +751,8 @@ impl HandshakeState {
 
         // <- ee: DH(e, re), mix into key
         let ephemeral = self.ephemeral_keypair.as_ref().unwrap();
-        let ee = self.ecdh(&ephemeral.secret_key(), &re);
-        self.symmetric.mix_key(&ee);
+        let mut ee = self.ecdh(ephemeral.secret_key(), &re);
+        self.symmetric.mix_key(&mut ee);
 
         // <- epoch: decrypt responder's startup epoch
         let encrypted_epoch = &message[PUBKEY_SIZE..];
@@ -742,6 +766,31 @@ impl HandshakeState {
         self.progress = HandshakeProgress::Message2Done;
 
         Ok(())
+    }
+
+    /// Read XK message 2 without consuming the handshake when authentication fails.
+    ///
+    /// `read_xk_message_2` mixes the sender's ephemeral key before opening the
+    /// encrypted epoch. A forged message can therefore fail after mutating the
+    /// handshake. Callers which retain an in-flight initiation must use this
+    /// transactional wrapper so a genuine retransmission remains usable.
+    ///
+    /// This snapshot deliberately mirrors every field `read_xk_message_2`
+    /// mutates. Keep the two in sync when extending that reader.
+    pub fn try_read_xk_message_2(&mut self, message: &[u8]) -> Result<(), NoiseError> {
+        let previous_symmetric = self.symmetric.clone();
+        let previous_remote_ephemeral = self.remote_ephemeral;
+        let previous_remote_epoch = self.remote_epoch;
+        let previous_progress = self.progress;
+
+        let result = self.read_xk_message_2(message);
+        if result.is_err() {
+            self.symmetric = previous_symmetric;
+            self.remote_ephemeral = previous_remote_ephemeral;
+            self.remote_epoch = previous_remote_epoch;
+            self.progress = previous_progress;
+        }
+        result
     }
 
     /// Write XK message 3 (initiator only).
@@ -781,8 +830,8 @@ impl HandshakeState {
         message.extend_from_slice(&encrypted_static);
 
         // -> se: DH(s, re), mix into key
-        let se = self.ecdh(&self.static_keypair.secret_key(), &re);
-        self.symmetric.mix_key(&se);
+        let mut se = self.ecdh(self.static_keypair.secret_key(), &re);
+        self.symmetric.mix_key(&mut se);
 
         // -> epoch: encrypt startup epoch for restart detection
         let encrypted_epoch = self.symmetric.encrypt_and_hash(&epoch)?;
@@ -847,8 +896,8 @@ impl HandshakeState {
             .ephemeral_keypair
             .as_ref()
             .expect("should have ephemeral after msg2");
-        let se = self.ecdh(&ephemeral.secret_key(), &rs);
-        self.symmetric.mix_key(&se);
+        let mut se = self.ecdh(ephemeral.secret_key(), &rs);
+        self.symmetric.mix_key(&mut se);
 
         // -> epoch: decrypt initiator's startup epoch
         let encrypted_epoch = &message[encrypted_static_end..];
@@ -901,6 +950,15 @@ impl HandshakeState {
     /// Get the handshake hash (for channel binding, available after complete).
     pub fn handshake_hash(&self) -> [u8; 32] {
         self.symmetric.handshake_hash()
+    }
+}
+
+impl Drop for HandshakeState {
+    fn drop(&mut self) {
+        self.static_keypair.non_secure_erase();
+        if let Some(ephemeral) = self.ephemeral_keypair.as_mut() {
+            ephemeral.non_secure_erase();
+        }
     }
 }
 

@@ -9,6 +9,8 @@ mod types;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use signal::FRESHNESS_SKEW_TOLERANCE_MS;
+
 pub use runtime::NostrDiscovery;
 pub use types::{
     ADVERT_IDENTIFIER, ADVERT_KIND, ADVERT_VERSION, BootstrapError, BootstrapEvent,

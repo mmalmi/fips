@@ -25,11 +25,13 @@ mod peer;
 mod transport;
 mod webrtc_budget;
 
+use crate::discovery::nostr::FRESHNESS_SKEW_TOLERANCE_MS;
 use crate::upper::config::{DnsConfig, TunConfig};
 use crate::{Identity, IdentityError};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+use zeroize::{Zeroize, Zeroizing};
 
 pub use crate::discovery::local::LocalInstanceDiscoveryConfig;
 #[cfg(target_os = "linux")]
@@ -165,6 +167,7 @@ pub fn read_key_file(path: &Path) -> Result<String, ConfigError> {
         path: path.to_path_buf(),
         source: e,
     })?;
+    let contents = Zeroizing::new(contents);
     let nsec = contents.trim().to_string();
     if nsec.is_empty() {
         return Err(ConfigError::EmptyKeyFile {
@@ -174,6 +177,72 @@ pub fn read_key_file(path: &Path) -> Result<String, ConfigError> {
     Ok(nsec)
 }
 
+fn open_key_output(path: &Path, mode: u32, enforce_mode: bool) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(mode).custom_flags(libc::O_NOFOLLOW);
+    }
+
+    let file = options.open(path)?;
+
+    #[cfg(unix)]
+    if enforce_mode {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(mode))?;
+    }
+
+    #[cfg(not(unix))]
+    let _ = (mode, enforce_mode);
+
+    Ok(file)
+}
+
+fn classify_key_open_error(path: &Path, source: std::io::Error) -> ConfigError {
+    if path
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        ConfigError::KeyPathIsSymlink {
+            path: path.to_path_buf(),
+        }
+    } else {
+        ConfigError::WriteKeyFile {
+            path: path.to_path_buf(),
+            source,
+        }
+    }
+}
+
+fn warn_unmanaged_key_file(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let Ok(metadata) = path.symlink_metadata() else {
+            return;
+        };
+        if metadata.file_type().is_symlink() {
+            tracing::warn!(
+                path = %path.display(),
+                "Identity key file is a symlink; its target permissions are operator-managed"
+            );
+        } else if metadata.is_file() && metadata.permissions().mode() & 0o077 != 0 {
+            tracing::warn!(
+                path = %path.display(),
+                mode = format!("{:04o}", metadata.permissions().mode() & 0o7777),
+                "Identity key file is accessible beyond its owner; expected mode 0600"
+            );
+        }
+    }
+
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
 /// Write a bare bech32 nsec to a key file with restricted permissions.
 ///
 /// On Unix, the file is created with mode 0600 (owner read/write only).
@@ -181,29 +250,8 @@ pub fn read_key_file(path: &Path) -> Result<String, ConfigError> {
 pub fn write_key_file(path: &Path, nsec: &str) -> Result<(), ConfigError> {
     use std::io::Write;
 
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-
-    let mut file = opts.open(path).map_err(|e| ConfigError::WriteKeyFile {
-        path: path.to_path_buf(),
-        source: e,
-    })?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| ConfigError::WriteKeyFile {
-                path: path.to_path_buf(),
-                source: e,
-            })?;
-    }
+    let mut file =
+        open_key_output(path, 0o600, true).map_err(|error| classify_key_open_error(path, error))?;
 
     file.write_all(nsec.as_bytes())
         .map_err(|e| ConfigError::WriteKeyFile {
@@ -225,19 +273,8 @@ pub fn write_key_file(path: &Path, nsec: &str) -> Result<(), ConfigError> {
 pub fn write_pub_file(path: &Path, npub: &str) -> Result<(), ConfigError> {
     use std::io::Write;
 
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o644);
-    }
-
-    let mut file = opts.open(path).map_err(|e| ConfigError::WriteKeyFile {
-        path: path.to_path_buf(),
-        source: e,
-    })?;
+    let mut file = open_key_output(path, 0o644, false)
+        .map_err(|error| classify_key_open_error(path, error))?;
 
     file.write_all(npub.as_bytes())
         .map_err(|e| ConfigError::WriteKeyFile {
@@ -296,19 +333,26 @@ pub fn resolve_identity(
 
     if config.node.identity.persistent {
         // Persistent mode: load existing key file or generate-and-persist
-        if key_path.exists() {
-            let nsec = read_key_file(&key_path)?;
+        if key_path.symlink_metadata().is_ok() {
+            let nsec = Zeroizing::new(read_key_file(&key_path)?);
             let identity = Identity::from_secret_str(&nsec)?;
-            let _ = write_pub_file(&pub_path, &identity.npub());
+            warn_unmanaged_key_file(&key_path);
+            if let Err(error) = write_pub_file(&pub_path, &identity.npub()) {
+                tracing::warn!(path = %pub_path.display(), %error, "Failed to write public identity file");
+            }
             return Ok(ResolvedIdentity {
-                nsec,
+                nsec: nsec.to_string(),
                 source: IdentitySource::KeyFile(key_path),
             });
         }
 
         // No key file yet — generate and persist
         let identity = Identity::generate();
-        let nsec = encode_nsec(&identity.keypair().secret_key());
+        let mut our_keypair = identity.keypair();
+        let mut secret_key = our_keypair.secret_key();
+        let nsec = Zeroizing::new(encode_nsec(&secret_key));
+        secret_key.non_secure_erase();
+        our_keypair.non_secure_erase();
         let npub = identity.npub();
 
         if let Some(parent) = key_path.parent() {
@@ -317,39 +361,67 @@ pub fn resolve_identity(
 
         match write_key_file(&key_path, &nsec) {
             Ok(()) => {
-                let _ = write_pub_file(&pub_path, &npub);
+                if let Err(error) = write_pub_file(&pub_path, &npub) {
+                    tracing::warn!(path = %pub_path.display(), %error, "Failed to write public identity file");
+                }
                 Ok(ResolvedIdentity {
-                    nsec,
+                    nsec: nsec.to_string(),
                     source: IdentitySource::Generated(key_path),
                 })
             }
-            Err(_) => Ok(ResolvedIdentity {
-                nsec,
-                source: IdentitySource::Ephemeral,
-            }),
+            Err(error) => {
+                tracing::warn!(
+                    path = %key_path.display(),
+                    %error,
+                    "Failed to persist generated identity; the npub will change on restart"
+                );
+                Ok(ResolvedIdentity {
+                    nsec: nsec.to_string(),
+                    source: IdentitySource::Ephemeral,
+                })
+            }
         }
     } else {
         // Ephemeral mode (default): fresh keypair every start, write key files
         // for operator visibility
         let identity = Identity::generate();
-        let nsec = encode_nsec(&identity.keypair().secret_key());
+        let mut our_keypair = identity.keypair();
+        let mut secret_key = our_keypair.secret_key();
+        let nsec = Zeroizing::new(encode_nsec(&secret_key));
+        secret_key.non_secure_erase();
+        our_keypair.non_secure_erase();
         let npub = identity.npub();
 
         if let Some(parent) = key_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
 
-        let _ = write_key_file(&key_path, &nsec);
-        let _ = write_pub_file(&pub_path, &npub);
+        if key_path.symlink_metadata().is_ok() {
+            tracing::warn!(
+                path = %key_path.display(),
+                config_key = "node.identity.persistent",
+                "Existing identity key path is being replaced by an ephemeral identity"
+            );
+        }
+        if let Err(error) = write_key_file(&key_path, &nsec) {
+            tracing::warn!(path = %key_path.display(), %error, "Failed to write ephemeral identity key file");
+        }
+        if let Err(error) = write_pub_file(&pub_path, &npub) {
+            tracing::warn!(path = %pub_path.display(), %error, "Failed to write public identity file");
+        }
 
         Ok(ResolvedIdentity {
-            nsec,
+            nsec: nsec.to_string(),
             source: IdentitySource::Ephemeral,
         })
     }
 }
 
 /// Result of identity resolution.
+///
+/// The returned `nsec` is caller-owned secret material. Callers should move it
+/// into the long-lived identity configuration promptly and clear it before
+/// replacing or discarding it.
 pub struct ResolvedIdentity {
     /// The nsec string (bech32 or hex) for creating an Identity.
     pub nsec: String,
@@ -393,6 +465,9 @@ pub enum ConfigError {
         source: std::io::Error,
     },
 
+    #[error("refusing to write key file through a symlink: {path}")]
+    KeyPathIsSymlink { path: PathBuf },
+
     #[error("identity error: {0}")]
     Identity(#[from] IdentityError),
 
@@ -413,6 +488,34 @@ pub struct IdentityConfig {
     /// When true, the key file is reused across restarts.
     #[serde(default)]
     pub persistent: bool,
+}
+
+impl IdentityConfig {
+    /// Replace the configured private key after clearing the previous value.
+    pub fn replace_nsec(&mut self, nsec: Option<String>) {
+        self.nsec.zeroize();
+        self.nsec = nsec;
+    }
+
+    /// Transfer the configured private key out without cloning it.
+    ///
+    /// `IdentityConfig` clears an nsec that remains in the struct when it is
+    /// dropped. Taking the option leaves `None` behind, so callers can retain
+    /// the pre-zeroization ability to move the secret into another owner.
+    pub fn take_nsec(&mut self) -> Option<String> {
+        self.nsec.take()
+    }
+
+    /// Consume this configuration and transfer its private key without cloning.
+    pub fn into_nsec(mut self) -> Option<String> {
+        self.take_nsec()
+    }
+}
+
+impl Drop for IdentityConfig {
+    fn drop(&mut self) {
+        self.nsec.zeroize();
+    }
 }
 
 /// Root configuration structure.
@@ -468,16 +571,17 @@ impl Config {
     ///
     /// Paths are processed in order, with later paths overriding earlier ones.
     pub fn load_from_paths(paths: &[PathBuf]) -> Result<(Self, Vec<PathBuf>), ConfigError> {
-        let mut merged = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let mut merged = ZeroizingYamlValue(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
         let mut loaded_paths = Vec::new();
 
         for path in paths {
             if path.exists() {
-                let contents =
-                    std::fs::read_to_string(path).map_err(|e| ConfigError::ReadFile {
+                let contents = Zeroizing::new(std::fs::read_to_string(path).map_err(|e| {
+                    ConfigError::ReadFile {
                         path: path.to_path_buf(),
                         source: e,
-                    })?;
+                    }
+                })?);
                 let mut file_config: serde_yaml::Value =
                     serde_yaml::from_str(&contents).map_err(|e| ConfigError::ParseYaml {
                         path: path.to_path_buf(),
@@ -486,12 +590,14 @@ impl Config {
                 if file_config.is_null() {
                     file_config = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
                 }
-                merge_yaml_value(&mut merged, file_config);
+                merge_yaml_value(&mut merged.0, file_config);
                 loaded_paths.push(path.clone());
             }
         }
 
-        let config = serde_yaml::from_value(merged).map_err(|e| ConfigError::ParseYaml {
+        // Deserialize by reference so `merged` remains reachable and its
+        // strings can be cleared on both the success and error paths.
+        let config = Config::deserialize(&merged.0).map_err(|e| ConfigError::ParseYaml {
             path: loaded_paths
                 .last()
                 .cloned()
@@ -504,10 +610,13 @@ impl Config {
 
     /// Load configuration from a single file.
     pub fn load_file(path: &Path) -> Result<Self, ConfigError> {
-        let contents = std::fs::read_to_string(path).map_err(|e| ConfigError::ReadFile {
-            path: path.to_path_buf(),
-            source: e,
-        })?;
+        let contents =
+            Zeroizing::new(
+                std::fs::read_to_string(path).map_err(|e| ConfigError::ReadFile {
+                    path: path.to_path_buf(),
+                    source: e,
+                })?,
+            );
 
         serde_yaml::from_str(&contents).map_err(|e| ConfigError::ParseYaml {
             path: path.to_path_buf(),
@@ -541,10 +650,12 @@ impl Config {
     /// Merge another configuration into this one.
     ///
     /// Values from `other` override values in `self` when present.
-    pub fn merge(&mut self, other: Config) {
+    pub fn merge(&mut self, mut other: Config) {
         // Merge node.identity section
         if other.node.identity.nsec.is_some() {
-            self.node.identity.nsec = other.node.identity.nsec;
+            self.node
+                .identity
+                .replace_nsec(other.node.identity.nsec.take());
         }
         if other.node.identity.persistent {
             self.node.identity.persistent = true;
@@ -749,12 +860,92 @@ impl Config {
             })?;
         }
 
+        let rate_limit = &self.node.rate_limit;
+        if rate_limit.established_handshake_burst == Some(0) {
+            return Err(ConfigError::Validation(
+                "`node.rate_limit.established_handshake_burst` must be positive; zero would refuse every rekey and restart msg1 from an established peer"
+                    .to_string(),
+            ));
+        }
+        if let Some(rate) = rate_limit.established_handshake_rate
+            && !(rate.is_finite() && rate > 0.0)
+        {
+            return Err(ConfigError::Validation(format!(
+                "`node.rate_limit.established_handshake_rate` is {rate}, but must be a finite value greater than zero"
+            )));
+        }
+        if rate_limit.session_setup_burst == 0 {
+            return Err(ConfigError::Validation(
+                "`node.rate_limit.session_setup_burst` must be positive; zero would refuse every inbound end-to-end session setup"
+                    .to_string(),
+            ));
+        }
+        if !(rate_limit.session_setup_rate.is_finite() && rate_limit.session_setup_rate > 0.0) {
+            return Err(ConfigError::Validation(format!(
+                "`node.rate_limit.session_setup_rate` is {}, but must be a finite value greater than zero",
+                rate_limit.session_setup_rate
+            )));
+        }
+
+        // An offer evicted from the replay cache must already be too old to
+        // pass the freshness check, or it can be accepted a second time. The
+        // skew allowance applies at each end of the accepted window.
+        let skew_secs = FRESHNESS_SKEW_TOLERANCE_MS / 1000;
+        let freshness_window_secs = nostr.signal_ttl_secs.saturating_add(2 * skew_secs);
+        if freshness_window_secs >= nostr.replay_window_secs {
+            return Err(ConfigError::Validation(format!(
+                "`node.discovery.nostr.signal_ttl_secs` is {}, which with {skew_secs}s of clock-skew grace on each side makes a traversal signal acceptable over a {freshness_window_secs}s window, \
+                 but `node.discovery.nostr.replay_window_secs` is {}. The freshness window must be strictly narrower than the replay window.",
+                nostr.signal_ttl_secs, nostr.replay_window_secs
+            )));
+        }
+
+        if nostr.max_concurrent_offers_per_npub == 0 {
+            return Err(ConfigError::Validation(
+                "`node.discovery.nostr.max_concurrent_offers_per_npub` must be positive; zero would refuse every inbound traversal offer"
+                    .to_string(),
+            ));
+        }
+        if nostr.max_concurrent_offers_per_npub > tokio::sync::Semaphore::MAX_PERMITS {
+            return Err(ConfigError::Validation(format!(
+                "`node.discovery.nostr.max_concurrent_offers_per_npub` is {}, which exceeds the semaphore maximum of {}",
+                nostr.max_concurrent_offers_per_npub,
+                tokio::sync::Semaphore::MAX_PERMITS
+            )));
+        }
+
         Ok(())
     }
 
     /// Serialize this configuration to YAML.
     pub fn to_yaml(&self) -> Result<String, serde_yaml::Error> {
         serde_yaml::to_string(self)
+    }
+}
+
+struct ZeroizingYamlValue(serde_yaml::Value);
+
+impl Drop for ZeroizingYamlValue {
+    fn drop(&mut self) {
+        zeroize_yaml_value(&mut self.0);
+    }
+}
+
+fn zeroize_yaml_value(value: &mut serde_yaml::Value) {
+    match value {
+        serde_yaml::Value::String(string) => string.zeroize(),
+        serde_yaml::Value::Sequence(sequence) => {
+            for value in sequence {
+                zeroize_yaml_value(value);
+            }
+        }
+        serde_yaml::Value::Mapping(mapping) => {
+            for value in mapping.values_mut() {
+                zeroize_yaml_value(value);
+            }
+        }
+        serde_yaml::Value::Tagged(tagged) => zeroize_yaml_value(&mut tagged.value),
+        serde_yaml::Value::Null | serde_yaml::Value::Bool(_) | serde_yaml::Value::Number(_) => {}
     }
 }
 
@@ -770,7 +961,10 @@ fn merge_yaml_value(base: &mut serde_yaml::Value, overlay: serde_yaml::Value) {
                 }
             }
         }
-        (base_slot, overlay) => *base_slot = overlay,
+        (base_slot, overlay) => {
+            zeroize_yaml_value(base_slot);
+            *base_slot = overlay;
+        }
     }
 }
 

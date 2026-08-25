@@ -287,14 +287,6 @@ impl Node {
             .is_ok()
     }
 
-    pub(in crate::node) fn clear_dataplane_fsp_pending_receive_epoch(
-        &mut self,
-        node_addr: &NodeAddr,
-    ) -> bool {
-        self.dataplane
-            .clear_fsp_owner_pending_receive_epoch(node_addr)
-    }
-
     pub(in crate::node) fn install_dataplane_fmp_pending_receive_epoch(
         &mut self,
         node_addr: &NodeAddr,

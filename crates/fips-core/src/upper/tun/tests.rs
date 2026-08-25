@@ -53,6 +53,15 @@ fn empty_lookup() -> PathMtuLookup {
 }
 
 #[test]
+fn path_mtu_lookup_retains_legacy_u16_value_type() {
+    let lookup: Arc<RwLock<HashMap<FipsAddress, u16>>> = empty_lookup();
+    let addr = fips_addr_with_node_byte(0x41);
+    lookup.write().unwrap().insert(addr, 1280);
+
+    assert_eq!(lookup.read().unwrap().get(&addr).copied(), Some(1280));
+}
+
+#[test]
 fn per_flow_empty_lookup_returns_conservative_ceiling() {
     // Cold-flow first-SYN race-window guard: when no per-destination
     // path_mtu has been learned yet, fall back to the IPv6-minimum-

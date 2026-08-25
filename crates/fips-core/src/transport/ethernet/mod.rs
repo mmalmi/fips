@@ -456,7 +456,9 @@ async fn ethernet_receive_loop(ctx: EthernetReceiveContext) {
 
                         if discovery_enabled && let Some(beacon) = parse_beacon_record(&buf[..len])
                         {
-                            discovery_buffer.add_peer(src_mac, beacon);
+                            if !discovery_buffer.add_peer(src_mac, beacon) {
+                                stats.record_beacon_dropped();
+                            }
                             trace!(
                                 transport_id = %transport_id,
                                 remote_mac = %format_mac(&src_mac),

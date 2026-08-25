@@ -15,7 +15,7 @@ struct SessionHandshakeResend {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ExhaustedEstablishedSessionHandshake {
     dest_addr: crate::NodeAddr,
-    abandoned_rekey: bool,
+    abandoned_rekey_handshake: bool,
 }
 
 impl crate::node::SessionRegistry {
@@ -47,15 +47,15 @@ impl crate::node::SessionRegistry {
             .into_iter()
             .filter_map(|dest_addr| {
                 let entry = self.get_mut(&dest_addr)?;
-                let abandoned_rekey = entry.has_rekey_in_progress();
-                if abandoned_rekey {
-                    entry.abandon_rekey();
+                let abandoned_rekey_handshake = entry.has_rekey_in_progress();
+                if abandoned_rekey_handshake {
+                    entry.abandon_handshake();
                 } else {
                     entry.stop_handshake_retransmit();
                 }
                 Some(ExhaustedEstablishedSessionHandshake {
                     dest_addr,
-                    abandoned_rekey,
+                    abandoned_rekey_handshake,
                 })
             })
             .collect()
@@ -134,7 +134,7 @@ impl Node {
     ///
     /// Called periodically by the RX event loop. Removes connections that have
     /// been idle longer than the configured handshake timeout or are in Failed state.
-    pub(in crate::node) fn check_timeouts(&mut self) {
+    pub(in crate::node) async fn check_timeouts(&mut self) {
         if self.peers.connection_is_empty() {
             return;
         }
@@ -189,16 +189,20 @@ impl Node {
                     }
                 }
             }
-            self.cleanup_stale_connection(link_id, now_ms);
+            self.cleanup_stale_connection(link_id, now_ms).await;
         }
     }
 
     /// Remove a handshake connection and all associated state.
     ///
-    /// Frees the session index, removes pending_outbound entry, and cleans up
-    /// the link and address mapping. Does not log — callers provide context-appropriate
-    /// log messages.
-    pub(in crate::node) fn cleanup_stale_connection(&mut self, link_id: LinkId, _now_ms: u64) {
+    /// Frees the session index, removes pending_outbound entry, closes the
+    /// underlying transport path, and cleans up the link and address mapping.
+    /// Does not log — callers provide context-appropriate log messages.
+    pub(in crate::node) async fn cleanup_stale_connection(
+        &mut self,
+        link_id: LinkId,
+        _now_ms: u64,
+    ) {
         let conn = match self.peers.remove_connection(&link_id) {
             Some(c) => c,
             None => return,
@@ -211,6 +215,18 @@ impl Node {
                 self.pending_outbound.remove(&(tid, idx.as_u32()));
             }
             let _ = self.index_allocator.free(idx);
+        }
+
+        // A connection-oriented transport otherwise retains its socket, pool
+        // entry and inbound-slot accounting after node-side handshake state
+        // has been reaped. Connectionless transports make this a no-op, and
+        // connection-oriented close implementations tolerate repeat closes.
+        if let Some(link) = self.links.get(&link_id) {
+            let transport_id = link.transport_id();
+            let remote_addr = link.remote_addr().clone();
+            if let Some(transport) = self.transports.get(&transport_id) {
+                transport.close_connection(&remote_addr).await;
+            }
         }
 
         // Remove link and its reverse address dispatch entry.
@@ -373,11 +389,11 @@ impl Node {
 
         // Established sessions can temporarily retain a session-layer
         // handshake payload: the initial final msg3, an FSP rekey msg1, or a
-        // responder ack. Once a rekey resend budget is exhausted, abandon that
-        // local rekey so the peer's next msg1 can converge instead of being
-        // tiebreak-dropped forever. Retain an initial final msg3 after its
-        // proactive budget ends: a late duplicate SessionAck explicitly proves
-        // that the responder still needs it.
+        // responder ack. Once a rekey resend budget is exhausted, abandon only
+        // that handshake so the peer's next msg1 can converge; a completed
+        // pending epoch may already be in use and must survive. Retain an
+        // initial final msg3 after its proactive budget ends: a late duplicate
+        // SessionAck explicitly proves that the responder still needs it.
         for exhausted in self
             .sessions
             .exhaust_established_handshake_resend_budgets(max_resends)
@@ -385,7 +401,7 @@ impl Node {
             let name = self.peer_display_name(&exhausted.dest_addr);
             debug!(
                 dest = %name,
-                rekey = exhausted.abandoned_rekey,
+                rekey = exhausted.abandoned_rekey_handshake,
                 "Session handshake resend budget exhausted"
             );
         }
@@ -478,6 +494,42 @@ impl Node {
                 "Idle session removed"
             );
         }
+    }
+
+    /// Expire discovery-carried path-MTU clamps with the coordinate route that
+    /// supplied them. Session-held and locally seeded entries have event-based
+    /// lifetimes and carry no timestamp.
+    pub(in crate::node) fn purge_expired_path_mtu(&mut self, now_ms: u64) {
+        let ttl_ms = self.config.node.cache.coord_ttl_secs.saturating_mul(1000);
+        if ttl_ms == 0 {
+            return;
+        }
+        let removed = self.remove_expired_discovery_path_mtus(now_ms, ttl_ms);
+        if removed.is_empty() {
+            return;
+        }
+
+        // A remote discovery estimate can sit on top of a locally measured
+        // direct-link seed. Restore the currently active link after expiry so
+        // roaming peers return to that path's ceiling instead of the generic
+        // conservative fallback.
+        let removed: std::collections::HashSet<_> = removed.into_iter().collect();
+        let direct_seeds: Vec<_> = self
+            .peers
+            .iter()
+            .filter(|(addr, _)| removed.contains(&crate::FipsAddress::from_node_addr(addr)))
+            .filter_map(|(addr, peer)| {
+                Some((*addr, peer.transport_id()?, peer.current_addr()?.clone()))
+            })
+            .collect();
+        for (addr, transport_id, transport_addr) in direct_seeds {
+            self.seed_path_mtu_for_link_peer(&addr, transport_id, &transport_addr);
+        }
+
+        debug!(
+            expired = removed.len(),
+            "Expired discovery-carried path-MTU entries"
+        );
     }
 }
 
@@ -620,6 +672,13 @@ mod tests {
             NoiseHandshakeState::new_xk_initiator(local.keypair(), rekey_peer.pubkey_full()),
             true,
         );
+        let (pending_session, _) = make_xk_session_pair(&local, &rekey_peer);
+        rekey.set_pending_session(pending_session);
+        rekey.set_rekey_completed_ms(1_250);
+        rekey.set_rekey_state(
+            NoiseHandshakeState::new_xk_responder(local.keypair()),
+            false,
+        );
 
         let mut under_budget = established_entry(&local, &under_budget_peer, 1_000);
         under_budget.set_handshake_payload(vec![0x03], 1_500);
@@ -634,11 +693,11 @@ mod tests {
         let mut expected = vec![
             ExhaustedEstablishedSessionHandshake {
                 dest_addr: *plain_peer.node_addr(),
-                abandoned_rekey: false,
+                abandoned_rekey_handshake: false,
             },
             ExhaustedEstablishedSessionHandshake {
                 dest_addr: *rekey_peer.node_addr(),
-                abandoned_rekey: true,
+                abandoned_rekey_handshake: true,
             },
         ];
         expected.sort_by_key(|item| item.dest_addr);
@@ -656,6 +715,15 @@ mod tests {
             .expect("rekey session should remain");
         assert!(rekey.handshake_payload().is_none());
         assert!(!rekey.has_rekey_in_progress());
+        assert!(
+            rekey.pending_new_session().is_some(),
+            "resend exhaustion may abandon only the handshake"
+        );
+        assert!(
+            rekey.pending_rekey_initiator(),
+            "the completed pending epoch must retain its initiator role"
+        );
+        assert_eq!(rekey.rekey_completed_ms(), 1_250);
         assert_eq!(rekey.resend_count(), 1);
 
         let under_budget = sessions

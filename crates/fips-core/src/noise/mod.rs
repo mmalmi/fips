@@ -42,6 +42,7 @@ mod session;
 use ring::aead::{Aad, CHACHA20_POLY1305, LessSafeKey, Nonce, UnboundKey};
 use std::fmt;
 use thiserror::Error;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 pub use handshake::HandshakeState;
 pub use replay::{ReplayRejection, ReplayWindow};
@@ -201,6 +202,27 @@ pub struct CipherState {
     has_key: bool,
 }
 
+impl Zeroize for CipherState {
+    fn zeroize(&mut self) {
+        // `ring` does not expose the backend key bytes for explicit erasure,
+        // but dropping the cached handle makes the old key unreachable and,
+        // crucially, prevents this state from continuing to use it after the
+        // application-owned key copy has been cleared.
+        self.cipher = None;
+        self.key.zeroize();
+        self.nonce.zeroize();
+        self.has_key = false;
+    }
+}
+
+impl Drop for CipherState {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for CipherState {}
+
 impl Clone for CipherState {
     fn clone(&self) -> Self {
         let cipher = if self.has_key {
@@ -219,14 +241,16 @@ impl Clone for CipherState {
 
 impl CipherState {
     /// Create a new cipher state with the given key.
-    pub(crate) fn new(key: [u8; 32]) -> Self {
+    pub(crate) fn new(mut key: [u8; 32]) -> Self {
         let cipher = Self::build_cipher(&key);
-        Self {
+        let state = Self {
             key,
             cipher,
             nonce: 0,
             has_key: true,
-        }
+        };
+        key.zeroize();
+        state
     }
 
     /// Create an empty cipher state (no key yet).
@@ -240,11 +264,12 @@ impl CipherState {
     }
 
     /// Initialize with a key.
-    pub(super) fn initialize_key(&mut self, key: [u8; 32]) {
+    pub(super) fn initialize_key(&mut self, mut key: [u8; 32]) {
         self.key = key;
         self.cipher = Self::build_cipher(&key);
         self.nonce = 0;
         self.has_key = true;
+        key.zeroize();
     }
 
     /// Build a ring `LessSafeKey` from raw key bytes. Centralized so the
@@ -413,6 +438,16 @@ impl CipherState {
         } else {
             None
         }
+    }
+
+    #[cfg(test)]
+    fn retained_key_bytes(&self) -> [u8; 32] {
+        self.key
+    }
+
+    #[cfg(test)]
+    fn has_cached_cipher(&self) -> bool {
+        self.cipher.is_some()
     }
 
     /// Decrypt with an explicit counter and AAD (for transport phase).

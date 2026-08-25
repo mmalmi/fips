@@ -117,11 +117,13 @@ pub struct DiscoveryStats {
     pub req_ttl_exhausted: u64,
     pub req_initiated: u64,
     pub req_deduplicated: u64,
+    pub req_dedup_evicted: u64,
     pub req_backoff_suppressed: u64,
     pub req_forward_rate_limited: u64,
     pub req_bloom_miss: u64,
     pub req_no_tree_peer: u64,
     pub req_fallback_forwarded: u64,
+    pub req_sign_rate_limited: u64,
     // Response counters
     pub resp_received: u64,
     pub resp_decode_error: u64,
@@ -130,6 +132,7 @@ pub struct DiscoveryStats {
     pub resp_proof_failed: u64,
     pub resp_accepted: u64,
     pub resp_timed_out: u64,
+    pub resp_unsolicited: u64,
 }
 
 impl DiscoveryStats {
@@ -143,11 +146,13 @@ impl DiscoveryStats {
             req_ttl_exhausted: self.req_ttl_exhausted,
             req_initiated: self.req_initiated,
             req_deduplicated: self.req_deduplicated,
+            req_dedup_evicted: self.req_dedup_evicted,
             req_backoff_suppressed: self.req_backoff_suppressed,
             req_forward_rate_limited: self.req_forward_rate_limited,
             req_bloom_miss: self.req_bloom_miss,
             req_no_tree_peer: self.req_no_tree_peer,
             req_fallback_forwarded: self.req_fallback_forwarded,
+            req_sign_rate_limited: self.req_sign_rate_limited,
             resp_received: self.resp_received,
             resp_decode_error: self.resp_decode_error,
             resp_forwarded: self.resp_forwarded,
@@ -155,6 +160,7 @@ impl DiscoveryStats {
             resp_proof_failed: self.resp_proof_failed,
             resp_accepted: self.resp_accepted,
             resp_timed_out: self.resp_timed_out,
+            resp_unsolicited: self.resp_unsolicited,
         }
     }
 }
@@ -244,13 +250,20 @@ impl BloomStats {
 #[derive(Default)]
 pub struct ErrorSignalStats {
     pub coords_required: u64,
+    pub coords_required_unbound: u64,
     pub path_broken: u64,
+    pub path_broken_unbound: u64,
     pub mtu_exceeded: u64,
     pub mtu_exceeded_unbound: u64,
+    pub routing_signal_forged: u64,
+    pub emit_over_peer_budget: u64,
+    pub emit_over_dest_interval: u64,
+    pub emit_limiter_at_capacity: u64,
     pub mtu_exceeded_stale_path: u64,
     pub mtu_exceeded_below_floor: u64,
     pub mtu_exceeded_uncorroborated: u64,
     pub path_mtu_notification_below_floor: u64,
+    pub lookup_resp_mtu_below_floor: u64,
 }
 
 /// End-to-end session admission statistics.
@@ -260,6 +273,8 @@ pub struct SessionStats {
     pub table_full: u64,
     /// A new session was refused because half-open responders held their share.
     pub half_open_full: u64,
+    /// Inbound FSP setup refused by the authenticated-hop token bucket.
+    pub setup_rate_limited: u64,
 }
 
 impl SessionStats {
@@ -267,6 +282,7 @@ impl SessionStats {
         SessionStatsSnapshot {
             table_full: self.table_full,
             half_open_full: self.half_open_full,
+            setup_rate_limited: self.setup_rate_limited,
         }
     }
 }
@@ -275,13 +291,20 @@ impl ErrorSignalStats {
     pub fn snapshot(&self) -> ErrorSignalStatsSnapshot {
         ErrorSignalStatsSnapshot {
             coords_required: self.coords_required,
+            coords_required_unbound: self.coords_required_unbound,
             path_broken: self.path_broken,
+            path_broken_unbound: self.path_broken_unbound,
             mtu_exceeded: self.mtu_exceeded,
             mtu_exceeded_unbound: self.mtu_exceeded_unbound,
+            routing_signal_forged: self.routing_signal_forged,
+            emit_over_peer_budget: self.emit_over_peer_budget,
+            emit_over_dest_interval: self.emit_over_dest_interval,
+            emit_limiter_at_capacity: self.emit_limiter_at_capacity,
             mtu_exceeded_stale_path: self.mtu_exceeded_stale_path,
             mtu_exceeded_below_floor: self.mtu_exceeded_below_floor,
             mtu_exceeded_uncorroborated: self.mtu_exceeded_uncorroborated,
             path_mtu_notification_below_floor: self.path_mtu_notification_below_floor,
+            lookup_resp_mtu_below_floor: self.lookup_resp_mtu_below_floor,
         }
     }
 }
@@ -390,11 +413,13 @@ pub struct DiscoveryStatsSnapshot {
     pub req_ttl_exhausted: u64,
     pub req_initiated: u64,
     pub req_deduplicated: u64,
+    pub req_dedup_evicted: u64,
     pub req_backoff_suppressed: u64,
     pub req_forward_rate_limited: u64,
     pub req_bloom_miss: u64,
     pub req_no_tree_peer: u64,
     pub req_fallback_forwarded: u64,
+    pub req_sign_rate_limited: u64,
     pub resp_received: u64,
     pub resp_decode_error: u64,
     pub resp_forwarded: u64,
@@ -402,6 +427,7 @@ pub struct DiscoveryStatsSnapshot {
     pub resp_proof_failed: u64,
     pub resp_accepted: u64,
     pub resp_timed_out: u64,
+    pub resp_unsolicited: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -441,19 +467,27 @@ pub struct BloomStatsSnapshot {
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct ErrorSignalStatsSnapshot {
     pub coords_required: u64,
+    pub coords_required_unbound: u64,
     pub path_broken: u64,
+    pub path_broken_unbound: u64,
     pub mtu_exceeded: u64,
     pub mtu_exceeded_unbound: u64,
+    pub routing_signal_forged: u64,
+    pub emit_over_peer_budget: u64,
+    pub emit_over_dest_interval: u64,
+    pub emit_limiter_at_capacity: u64,
     pub mtu_exceeded_stale_path: u64,
     pub mtu_exceeded_below_floor: u64,
     pub mtu_exceeded_uncorroborated: u64,
     pub path_mtu_notification_below_floor: u64,
+    pub lookup_resp_mtu_below_floor: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct SessionStatsSnapshot {
     pub table_full: u64,
     pub half_open_full: u64,
+    pub setup_rate_limited: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]

@@ -181,7 +181,7 @@ mod unix_impl {
             if let Some(parent) = socket_path.parent()
                 && !parent.exists()
             {
-                std::fs::create_dir_all(parent)?;
+                crate::utils::sockperm::make_parent(parent)?;
                 debug!(path = %parent.display(), "Created control socket directory");
             }
 
@@ -190,7 +190,7 @@ mod unix_impl {
                 Self::remove_stale_socket(&socket_path)?;
             }
 
-            let listener = UnixListener::bind(&socket_path)?;
+            let listener = crate::utils::sockperm::bind(&socket_path)?;
 
             // Make the socket and its parent directory group-accessible so
             // 'fips' group members can use fipsctl/fipstop without root.

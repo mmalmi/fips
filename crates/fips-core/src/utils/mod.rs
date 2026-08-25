@@ -4,3 +4,5 @@
 //! session index allocation and other cross-cutting concerns.
 
 pub mod index;
+#[cfg(unix)]
+pub mod sockperm;

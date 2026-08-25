@@ -1,6 +1,91 @@
 use super::*;
 
 #[test]
+fn test_rekey_disabled_peer_still_responds_without_replacing_live_session() {
+    run_large_stack_async_test("fips-disabled-rekey-responder", || async {
+        rekey_disabled_peer_still_responds_without_replacing_live_session().await;
+    });
+}
+
+async fn rekey_disabled_peer_still_responds_without_replacing_live_session() {
+    let mut nodes = run_tree_test(2, &[(0, 1)], false).await;
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+
+    let initiator_addr = *nodes[0].node.node_addr();
+    let responder_addr = *nodes[1].node.node_addr();
+    let responder_pubkey = nodes[1].node.identity().pubkey_full();
+    nodes[0]
+        .node
+        .initiate_session(responder_addr, responder_pubkey)
+        .await
+        .expect("initial session should start");
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &responder_addr,
+        Duration::from_secs(10),
+        "disabled-rekey fixture initiator",
+    )
+    .await;
+    wait_for_session_established(
+        &mut nodes,
+        1,
+        &initiator_addr,
+        Duration::from_secs(10),
+        "disabled-rekey fixture responder",
+    )
+    .await;
+    drain_to_quiescence(&mut nodes).await;
+    settle_session_handshake_retransmits(&mut nodes, 0, &responder_addr, 1, &initiator_addr);
+
+    nodes[1].node.config.node.rekey.enabled = false;
+    assert!(
+        nodes[0].node.initiate_session_rekey(&responder_addr).await,
+        "enabled peer should initiate the rekey"
+    );
+
+    wait_for_session_state_for_node(
+        &mut nodes,
+        1,
+        &initiator_addr,
+        "disabled peer responder handshake",
+        |entry| {
+            entry.is_established()
+                && entry.has_rekey_in_progress()
+                && !entry.is_rekey_handshake_initiator()
+        },
+    )
+    .await;
+    wait_for_session_state_for_node(
+        &mut nodes,
+        0,
+        &responder_addr,
+        "enabled peer completed initiator epoch",
+        |entry| entry.is_established() && entry.pending_new_session().is_some(),
+    )
+    .await;
+    wait_for_session_state_for_node(
+        &mut nodes,
+        1,
+        &initiator_addr,
+        "disabled peer completed responder epoch",
+        |entry| entry.is_established() && entry.pending_new_session().is_some(),
+    )
+    .await;
+
+    let responder = nodes[1]
+        .node
+        .get_session(&initiator_addr)
+        .expect("responder live session retained");
+    assert!(responder.is_established());
+    assert!(responder.pending_new_session().is_some());
+    assert!(!responder.pending_rekey_initiator());
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[test]
 fn test_established_initiator_resends_final_msg3_until_responder_establishes() {
     run_large_stack_async_test("fips-established-msg3-resend", || async {
         established_initiator_resends_final_msg3_until_responder_establishes().await;

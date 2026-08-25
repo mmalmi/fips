@@ -226,12 +226,75 @@
                     unsafe { &*(storage as *const _ as *const libc::sockaddr_in6) };
                 let ip = std::net::Ipv6Addr::from(addr.sin6_addr.s6_addr);
                 let port = u16::from_be(addr.sin6_port);
-                Ok(SocketAddr::from((ip, port)))
+                Ok(SocketAddr::V6(std::net::SocketAddrV6::new(
+                    ip,
+                    port,
+                    0,
+                    addr.sin6_scope_id,
+                )))
             }
             family => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("unsupported address family: {}", family),
             )),
+        }
+    }
+
+    #[cfg(test)]
+    mod sockaddr_tests {
+        use super::sockaddr_to_socket_addr;
+        use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+
+        fn sockaddr_v6(ip: Ipv6Addr, port: u16, scope_id: u32) -> libc::sockaddr_storage {
+            let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+            let addr = unsafe { &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in6) };
+            addr.sin6_family = libc::AF_INET6 as libc::sa_family_t;
+            addr.sin6_port = port.to_be();
+            addr.sin6_addr = libc::in6_addr {
+                s6_addr: ip.octets(),
+            };
+            addr.sin6_scope_id = scope_id;
+            storage
+        }
+
+        fn sockaddr_v4(ip: Ipv4Addr, port: u16) -> libc::sockaddr_storage {
+            let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+            let addr = unsafe { &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in) };
+            addr.sin_family = libc::AF_INET as libc::sa_family_t;
+            addr.sin_port = port.to_be();
+            addr.sin_addr = libc::in_addr {
+                s_addr: u32::from(ip).to_be(),
+            };
+            storage
+        }
+
+        #[test]
+        fn link_local_source_keeps_scope_id() {
+            let ip: Ipv6Addr = "fe80::1".parse().unwrap();
+            let addr = sockaddr_to_socket_addr(&sockaddr_v6(ip, 4871, 42)).unwrap();
+            assert_eq!(addr, SocketAddr::V6(std::net::SocketAddrV6::new(ip, 4871, 0, 42)));
+        }
+
+        #[test]
+        fn scoped_and_unscoped_addresses_are_distinct() {
+            let ip: Ipv6Addr = "fe80::1".parse().unwrap();
+            let scoped = sockaddr_to_socket_addr(&sockaddr_v6(ip, 4871, 42)).unwrap();
+            let unscoped = sockaddr_to_socket_addr(&sockaddr_v6(ip, 4871, 0)).unwrap();
+            assert_ne!(scoped, unscoped);
+        }
+
+        #[test]
+        fn global_v6_and_v4_sources_are_unchanged() {
+            let v6: Ipv6Addr = "2001:db8::1".parse().unwrap();
+            assert_eq!(
+                sockaddr_to_socket_addr(&sockaddr_v6(v6, 4871, 0)).unwrap(),
+                SocketAddr::from((v6, 4871))
+            );
+            let v4 = Ipv4Addr::new(192, 168, 8, 238);
+            assert_eq!(
+                sockaddr_to_socket_addr(&sockaddr_v4(v4, 2121)).unwrap(),
+                SocketAddr::from((v4, 2121))
+            );
         }
     }
 

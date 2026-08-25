@@ -113,7 +113,7 @@ pub(super) async fn perform_stun_any(
             let txn_id = random_txn_id();
             let request = create_stun_binding_request(txn_id);
             match udp.send_to(&request, addr).await {
-                Ok(_) => requests.push((stun_server.clone(), txn_id)),
+                Ok(_) => requests.push((stun_server.clone(), addr, txn_id)),
                 Err(err) => {
                     last_error = Some(BootstrapError::Stun(format!(
                         "send to {} ({}) failed: {}",
@@ -131,16 +131,34 @@ pub(super) async fn perform_stun_any(
 
     let mut buf = [0u8; 2048];
     let deadline = tokio::time::Instant::now() + response_timeout;
+    let mut unexpected_sources = 0u64;
+    let mut last_unexpected_source = None;
     loop {
         let result = tokio::time::timeout_at(deadline, udp.recv_from(&mut buf)).await;
-        let Ok(Ok((len, _remote))) = result else {
+        let Ok(Ok((len, remote))) = result else {
             break;
         };
-        for (stun_server, txn_id) in &requests {
+        let mut source_matched = false;
+        for (stun_server, expected_remote, txn_id) in &requests {
+            if remote != *expected_remote {
+                continue;
+            }
+            source_matched = true;
             if let Some(mapped) = parse_stun_binding_success(&buf[..len], txn_id) {
                 return Ok((Some(mapped), stun_server.clone()));
             }
         }
+        if !source_matched {
+            unexpected_sources = unexpected_sources.saturating_add(1);
+            last_unexpected_source = Some(remote);
+        }
+    }
+    if unexpected_sources > 0 {
+        debug!(
+            unexpected_sources,
+            last_unexpected_source = ?last_unexpected_source,
+            "discarded STUN datagrams from sources that were not contacted"
+        );
     }
 
     Err(BootstrapError::Stun(format!(
@@ -459,6 +477,30 @@ mod tests {
         packet
     }
 
+    fn build_binding_success(mapped: std::net::SocketAddrV4, txn_id: &[u8; 12]) -> Vec<u8> {
+        let mut packet = build_success_header(0, txn_id);
+        let cookie = STUN_MAGIC_COOKIE.to_be_bytes();
+        let octets = mapped.ip().octets();
+        let xport = mapped.port() ^ ((STUN_MAGIC_COOKIE >> 16) as u16);
+        packet.extend_from_slice(&0x0020u16.to_be_bytes());
+        packet.extend_from_slice(&8u16.to_be_bytes());
+        packet.push(0);
+        packet.push(1);
+        packet.extend_from_slice(&xport.to_be_bytes());
+        for (index, octet) in octets.iter().enumerate() {
+            packet.push(octet ^ cookie[index]);
+        }
+        let body_len = (packet.len() - 20) as u16;
+        packet[2..4].copy_from_slice(&body_len.to_be_bytes());
+        packet
+    }
+
+    fn bind_stun_caller() -> std::net::UdpSocket {
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket.set_nonblocking(true).unwrap();
+        socket
+    }
+
     #[test]
     fn parse_stun_binding_success_rejects_truncated_header() {
         // Anything shorter than the 20-byte header must be rejected.
@@ -561,6 +603,63 @@ mod tests {
         packet.extend_from_slice(&[0u8; 6]);
 
         assert!(parse_stun_binding_success(&packet, &TEST_TXN_ID).is_none());
+    }
+
+    #[tokio::test]
+    async fn stun_binding_response_from_an_unexpected_source_is_refused() {
+        let caller = bind_stun_caller();
+        let server = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let attacker = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let server_addr = server.local_addr().unwrap();
+
+        let forger = std::thread::spawn(move || {
+            let mut buf = [0u8; 2048];
+            let (len, from) = server.recv_from(&mut buf).unwrap();
+            assert!(len >= 20);
+            let mut txn_id = [0u8; 12];
+            txn_id.copy_from_slice(&buf[8..20]);
+            let forged = build_binding_success("203.0.113.7:1".parse().unwrap(), &txn_id);
+            attacker.send_to(&forged, from).unwrap();
+        });
+
+        let result = super::perform_stun_any(
+            &caller,
+            &[server_addr.to_string()],
+            std::time::Duration::from_millis(300),
+        )
+        .await;
+        forger.join().unwrap();
+        assert!(
+            result.is_err(),
+            "a binding success from a host other than the contacted server must be refused: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stun_binding_response_from_the_contacted_server_is_accepted() {
+        let caller = bind_stun_caller();
+        let server = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let server_addr = server.local_addr().unwrap();
+
+        let responder = std::thread::spawn(move || {
+            let mut buf = [0u8; 2048];
+            let (_len, from) = server.recv_from(&mut buf).unwrap();
+            let mut txn_id = [0u8; 12];
+            txn_id.copy_from_slice(&buf[8..20]);
+            let reply = build_binding_success("198.51.100.9:4242".parse().unwrap(), &txn_id);
+            server.send_to(&reply, from).unwrap();
+        });
+
+        let (mapped, selected_server) = super::perform_stun_any(
+            &caller,
+            &[server_addr.to_string()],
+            std::time::Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        responder.join().unwrap();
+        assert_eq!(mapped.unwrap().to_string(), "198.51.100.9:4242");
+        assert_eq!(selected_server, server_addr.to_string());
     }
 
     #[test]

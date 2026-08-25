@@ -8,6 +8,50 @@ impl Node {
         ))
     }
 
+    fn build_msg1_rate_limiter(config: &Config) -> HandshakeRateLimiter {
+        let rate_limit_config = &config.node.rate_limit;
+        let (derived_burst, derived_rate) = rate_limit::derive_established_bucket(
+            config.node.limits.max_peers,
+            config.node.rekey.after_secs,
+            rate_limit_config.handshake_max_resends,
+            rate_limit_config.handshake_burst,
+            rate_limit_config.handshake_rate,
+        );
+        HandshakeRateLimiter::with_params(
+            rate_limit::TokenBucket::with_params(
+                rate_limit_config.handshake_burst,
+                rate_limit_config.handshake_rate,
+            ),
+            rate_limit::TokenBucket::with_params(
+                rate_limit_config
+                    .established_handshake_burst
+                    .unwrap_or(derived_burst),
+                rate_limit_config
+                    .established_handshake_rate
+                    .unwrap_or(derived_rate),
+            ),
+            config.node.limits.max_pending_inbound,
+        )
+    }
+
+    fn build_setup_rate_limiter(config: &Config) -> SessionSetupRateLimiter {
+        let rate_limit = &config.node.rate_limit;
+        let established = rate_limit::derive_established_bucket(
+            config.node.limits.max_sessions,
+            config.node.rekey.after_secs,
+            rate_limit.handshake_max_resends,
+            rate_limit.session_setup_burst,
+            rate_limit.session_setup_rate,
+        );
+        SessionSetupRateLimiter::with_params(
+            (
+                rate_limit.session_setup_burst,
+                rate_limit.session_setup_rate,
+            ),
+            established,
+        )
+    }
+
     /// Create a new node from configuration.
     pub fn new(config: Config) -> Result<Self, NodeError> {
         config.validate()?;
@@ -48,11 +92,8 @@ impl Node {
             config.node.cache.coord_size,
             config.node.cache.coord_ttl_secs * 1000,
         );
-        let rl = &config.node.rate_limit;
-        let msg1_rate_limiter = HandshakeRateLimiter::with_params(
-            rate_limit::TokenBucket::with_params(rl.handshake_burst, rl.handshake_rate),
-            config.node.limits.max_pending_inbound,
-        );
+        let msg1_rate_limiter = Self::build_msg1_rate_limiter(&config);
+        let setup_rate_limiter = Self::build_setup_rate_limiter(&config);
 
         let max_connections = config.node.limits.max_connections;
         let max_peers = config.node.limits.max_peers;
@@ -126,9 +167,12 @@ impl Node {
             dns_task: None,
             index_allocator: IndexAllocator::new(),
             pending_outbound: PendingOutboundHandshakes::default(),
+            restart_dampener: HashMap::new(),
             msg1_rate_limiter,
+            setup_rate_limiter,
             icmp_rate_limiter: IcmpRateLimiter::new(),
             routing_error_rate_limiter: RoutingErrorRateLimiter::new(),
+            peer_error_budget: PeerErrorBudget::new(),
             coords_response_rate_limiter: RoutingErrorRateLimiter::with_interval(
                 std::time::Duration::from_millis(coords_response_interval_ms),
             ),
@@ -136,6 +180,7 @@ impl Node {
             discovery_forward_limiter: DiscoveryForwardRateLimiter::with_interval(
                 std::time::Duration::from_secs(forward_min_interval_secs),
             ),
+            discovery_sign_limiter: LookupSignRateLimiter::new(),
             pending_connects: Vec::new(),
             retry_pending: retry::PendingRouteRetries::default(),
             nostr_discovery: None,
@@ -158,6 +203,7 @@ impl Node {
             peer_acl,
             host_map,
             path_mtu_lookup: Arc::new(std::sync::RwLock::new(HashMap::new())),
+            path_mtu_provenance: HashMap::new(),
         })
     }
 
@@ -198,11 +244,8 @@ impl Node {
             config.node.cache.coord_size,
             config.node.cache.coord_ttl_secs * 1000,
         );
-        let rl = &config.node.rate_limit;
-        let msg1_rate_limiter = HandshakeRateLimiter::with_params(
-            rate_limit::TokenBucket::with_params(rl.handshake_burst, rl.handshake_rate),
-            config.node.limits.max_pending_inbound,
-        );
+        let msg1_rate_limiter = Self::build_msg1_rate_limiter(&config);
+        let setup_rate_limiter = Self::build_setup_rate_limiter(&config);
 
         let max_connections = config.node.limits.max_connections;
         let max_peers = config.node.limits.max_peers;
@@ -273,14 +316,18 @@ impl Node {
             dns_task: None,
             index_allocator: IndexAllocator::new(),
             pending_outbound: PendingOutboundHandshakes::default(),
+            restart_dampener: HashMap::new(),
             msg1_rate_limiter,
+            setup_rate_limiter,
             icmp_rate_limiter: IcmpRateLimiter::new(),
             routing_error_rate_limiter: RoutingErrorRateLimiter::new(),
+            peer_error_budget: PeerErrorBudget::new(),
             coords_response_rate_limiter: RoutingErrorRateLimiter::with_interval(
                 std::time::Duration::from_millis(coords_response_interval_ms),
             ),
             discovery_backoff: DiscoveryBackoff::new(),
             discovery_forward_limiter: DiscoveryForwardRateLimiter::new(),
+            discovery_sign_limiter: LookupSignRateLimiter::new(),
             pending_connects: Vec::new(),
             retry_pending: retry::PendingRouteRetries::default(),
             nostr_discovery: None,
@@ -303,6 +350,7 @@ impl Node {
             peer_acl,
             host_map,
             path_mtu_lookup: Arc::new(std::sync::RwLock::new(HashMap::new())),
+            path_mtu_provenance: HashMap::new(),
         })
     }
 
@@ -700,4 +748,32 @@ fn wildcard_udp_binding(
         .ok()?;
     (addr.ip().is_unspecified() && addr.is_ipv6() == ipv6 && addr.port() != 0)
         .then(|| (addr.port(), config.bind_interface.clone()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::node::rate_limit::Msg1Class;
+
+    #[test]
+    fn fsp_setup_maintenance_capacity_tracks_sessions_not_link_peers() {
+        let mut config = Config::new();
+        config.node.limits.max_peers = 1;
+        config.node.limits.max_sessions = 3;
+        config.node.rate_limit.session_setup_burst = 1;
+        config.node.rate_limit.session_setup_rate = 0.001;
+
+        let mut limiter = Node::build_setup_rate_limiter(&config);
+        let link_peer = NodeAddr::from_bytes([0x42; 16]);
+        for attempt in 1..=config.node.limits.max_sessions {
+            assert!(
+                limiter.try_admit(&link_peer, Msg1Class::EstablishedLink),
+                "established FSP setup {attempt} must fit the configured session population"
+            );
+        }
+        assert!(
+            !limiter.try_admit(&link_peer, Msg1Class::EstablishedLink),
+            "derived burst must remain bounded by max_sessions"
+        );
+    }
 }
