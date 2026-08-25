@@ -386,6 +386,10 @@ impl Node {
                 }
                 match self.initiate_session(dest_addr, dest_pubkey).await {
                     Ok(()) => {}
+                    Err(NodeError::MaxSessionsExceeded { .. }) => {
+                        self.send_icmpv6_dest_unreachable(&ipv6_packet);
+                        return;
+                    }
                     Err(NodeError::SendFailed { node_addr, reason })
                         if node_addr == dest_addr && reason == "no route to destination" =>
                     {

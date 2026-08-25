@@ -25,6 +25,12 @@ pub(super) enum FreshnessOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FreshnessReject {
+    Stale,
+    FutureDated,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct TraversalSignalTiming {
     issued_at: u64,
     ttl_ms: u64,
@@ -51,8 +57,13 @@ pub(super) fn validate_offer_freshness(
         return Err(BootstrapError::Protocol("invalid-offer".to_string()));
     }
     let outcome = match check_freshness(offer.issued_at, offer.expires_at, now, signal_ttl_ms) {
-        Some(o) => o,
-        None => return Err(BootstrapError::Protocol("expired-offer".to_string())),
+        Ok(outcome) => outcome,
+        Err(FreshnessReject::Stale) => {
+            return Err(BootstrapError::Protocol("expired-offer".to_string()));
+        }
+        Err(FreshnessReject::FutureDated) => {
+            return Err(BootstrapError::Protocol("future-dated-offer".to_string()));
+        }
     };
     if offer.sender_npub != actual_sender_npub || offer.recipient_npub != local_npub {
         return Err(BootstrapError::Protocol("identity-mismatch".to_string()));
@@ -134,13 +145,27 @@ pub(super) fn validate_traversal_answer_for_offer(
     }
     let offer_outcome = match check_freshness(offer.issued_at, offer.expires_at, now, signal_ttl_ms)
     {
-        Some(o) => o,
-        None => return Err(BootstrapError::Protocol("expired-answer".to_string())),
+        Ok(outcome) => outcome,
+        Err(FreshnessReject::Stale) => {
+            return Err(BootstrapError::Protocol(
+                "expired-offer-in-answer".to_string(),
+            ));
+        }
+        Err(FreshnessReject::FutureDated) => {
+            return Err(BootstrapError::Protocol(
+                "future-dated-offer-in-answer".to_string(),
+            ));
+        }
     };
     let answer_outcome =
         match check_freshness(answer.issued_at, answer.expires_at, now, signal_ttl_ms) {
-            Some(o) => o,
-            None => return Err(BootstrapError::Protocol("expired-answer".to_string())),
+            Ok(outcome) => outcome,
+            Err(FreshnessReject::Stale) => {
+                return Err(BootstrapError::Protocol("expired-answer".to_string()));
+            }
+            Err(FreshnessReject::FutureDated) => {
+                return Err(BootstrapError::Protocol("future-dated-answer".to_string()));
+            }
         };
     if offer.session_id != answer.session_id || answer.in_reply_to != offer.nonce {
         return Err(BootstrapError::Protocol("session-mismatch".to_string()));
@@ -202,16 +227,25 @@ fn check_freshness(
     expires_at: u64,
     now: u64,
     signal_ttl_ms: u64,
-) -> Option<FreshnessOutcome> {
-    let strict_ok = expires_at > now && now.saturating_sub(issued_at) <= signal_ttl_ms;
+) -> Result<FreshnessOutcome, FreshnessReject> {
+    // The sender may shorten its own expiry, but cannot widen our TTL by
+    // declaring an expiry unrelated to its issue time.
+    let effective_expiry = expires_at.min(issued_at.saturating_add(signal_ttl_ms));
+    let ahead = issued_at.saturating_sub(now);
+    let age = now.saturating_sub(issued_at);
+
+    let strict_ok = ahead == 0 && effective_expiry > now && age <= signal_ttl_ms;
     if strict_ok {
-        return Some(FreshnessOutcome::Fresh);
+        return Ok(FreshnessOutcome::Fresh);
     }
-    let tolerated_ok = expires_at.saturating_add(FRESHNESS_SKEW_TOLERANCE_MS) > now
-        && now.saturating_sub(issued_at) <= signal_ttl_ms + FRESHNESS_SKEW_TOLERANCE_MS;
+    if ahead > FRESHNESS_SKEW_TOLERANCE_MS {
+        return Err(FreshnessReject::FutureDated);
+    }
+    let tolerated_ok = effective_expiry.saturating_add(FRESHNESS_SKEW_TOLERANCE_MS) > now
+        && age <= signal_ttl_ms.saturating_add(FRESHNESS_SKEW_TOLERANCE_MS);
     if tolerated_ok {
-        Some(FreshnessOutcome::FreshWithinSkewTolerance)
+        Ok(FreshnessOutcome::FreshWithinSkewTolerance)
     } else {
-        None
+        Err(FreshnessReject::Stale)
     }
 }

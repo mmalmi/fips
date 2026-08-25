@@ -32,7 +32,12 @@
     "error_signals": {
       "coords_required": 0,
       "mtu_exceeded": 0,
-      "path_broken": 0
+      "mtu_exceeded_below_floor": 0,
+      "mtu_exceeded_stale_path": 0,
+      "mtu_exceeded_unbound": 0,
+      "mtu_exceeded_uncorroborated": 0,
+      "path_broken": 0,
+      "path_mtu_notification_below_floor": 0
     },
     "forwarding": {
       "decode_error_bytes": 0,

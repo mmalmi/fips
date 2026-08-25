@@ -27,6 +27,11 @@ impl Node {
             );
             return;
         }
+        // Bound remotely-grown session state before doing handshake work.
+        // Existing entries remain admissible for duplicate setup and rekey.
+        if !self.admit_new_session(src_addr) {
+            return;
+        }
         self.cache_current_root_coords(*src_addr, setup.src_coords.clone(), Self::now_ms());
 
         // K is one bit, so a pending epoch cannot coexist with both current and

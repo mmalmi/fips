@@ -7,6 +7,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 COMPOSE=(docker compose -f "$SCRIPT_DIR/docker-compose.yml")
+if [ -n "${FIPS_TUN_COMPOSE_OVERRIDE:-}" ]; then
+    COMPOSE+=(-f "$FIPS_TUN_COMPOSE_OVERRIDE")
+fi
 
 DURATION="${FIPS_TUN_DURATION:-10}"
 TCP_STREAMS="${FIPS_TUN_TCP_STREAMS:-1 4 8}"
@@ -210,10 +213,12 @@ for streams in $TCP_STREAMS; do
     run_case "tcp-$streams" tcp "$streams"
 done
 for rate in $UDP_RATES; do
+    [ "$rate" = "none" ] && continue
     name_rate=$(printf '%s' "$rate" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-')
     run_case "udp-${name_rate%-}" udp "$rate"
 done
 for rate in $UDP_GSO_RATES; do
+    [ "$rate" = "none" ] && continue
     name_rate=$(printf '%s' "$rate" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-')
     run_udp_gso_case "udp-gso-${name_rate%-}" "$rate"
 done

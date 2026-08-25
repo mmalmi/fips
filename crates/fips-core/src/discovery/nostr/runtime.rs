@@ -10,11 +10,12 @@ use nostr::prelude::{
     SubscriptionId, Tag, TagKind, Timestamp,
 };
 use nostr_sdk::{Client, ClientOptions, prelude::RelayPoolNotification};
-use tokio::sync::{Mutex, Notify, RwLock, Semaphore, broadcast, mpsc, oneshot};
+use tokio::sync::{Mutex, Notify, RwLock, broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, trace, warn};
 
 use super::failure_state::{FailureDecision, FailureState, NostrPeerKey};
+use super::offer_admission::OfferAdmission;
 use super::signal::{
     FreshnessOutcome, SignalEnvelope, TraversalSignalTiming, create_traversal_answer,
     create_traversal_offer, estimate_clock_skew, validate_offer_freshness,
@@ -87,11 +88,7 @@ fn short_npub(npub: &str) -> String {
 }
 
 fn short_id(id: &str) -> String {
-    if id.len() > 8 {
-        id[..8].to_string()
-    } else {
-        id.to_string()
-    }
+    id.chars().take(8).collect()
 }
 
 #[derive(Clone, Copy)]
@@ -293,7 +290,7 @@ pub struct NostrDiscovery {
     seen_sessions: Mutex<HashMap<String, u64>>,
     #[cfg(test)]
     received_mesh_offer_count: std::sync::atomic::AtomicUsize,
-    offer_slots: Arc<Semaphore>,
+    offer_admission: OfferAdmission,
     event_tx: mpsc::Sender<BootstrapEvent>,
     event_rx: Mutex<mpsc::Receiver<BootstrapEvent>>,
     mesh_signal_tx: mpsc::Sender<MeshTraversalSignal>,
@@ -380,7 +377,10 @@ impl NostrDiscovery {
         let npub = crate::encode_npub(&identity.pubkey());
         let (event_tx, event_rx) = mpsc::channel(event_channel_capacity(&config));
         let (mesh_signal_tx, mesh_signal_rx) = mpsc::channel(event_channel_capacity(&config));
-        let offer_slots = Arc::new(Semaphore::new(config.max_concurrent_incoming_offers));
+        let offer_admission = OfferAdmission::new(
+            config.max_concurrent_incoming_offers,
+            config.max_concurrent_offers_per_npub,
+        );
 
         let failure_state = FailureState::new(
             config.failure_streak_threshold,
@@ -410,7 +410,7 @@ impl NostrDiscovery {
             seen_sessions: Mutex::new(HashMap::new()),
             #[cfg(test)]
             received_mesh_offer_count: std::sync::atomic::AtomicUsize::new(0),
-            offer_slots,
+            offer_admission,
             event_tx,
             event_rx: Mutex::new(event_rx),
             mesh_signal_tx,

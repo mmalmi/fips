@@ -47,8 +47,9 @@ fn test_multihop_learned_path_mtu_generates_ptb_heterogeneous_mtu() {
             );
 
             let bottleneck_mtu = mtus[1];
+            note_sent_wire_len(&mut nodes[0].node, node2_addr, mtus[0] as usize);
             let inner = build_mtu_exceeded_inner(&node2_addr, &node1_addr, bottleneck_mtu);
-            nodes[0].node.handle_mtu_exceeded(&inner).await;
+            nodes[0].node.handle_mtu_exceeded(&node1_addr, &inner).await;
 
             let path_mtu = nodes[0]
                 .node

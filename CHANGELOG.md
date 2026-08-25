@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Bound end-to-end session growth with `node.limits.max_sessions` (default
+  `1024`, `0` restores the prior unlimited behavior) and reserve half the
+  table from unauthenticated half-open handshakes.
+- Limit concurrent Nostr traversal offers per sender with
+  `node.discovery.nostr.max_concurrent_offers_per_npub` (default `4`).
+
+### Changed
+
+- Align the default `node.rekey.after_messages` policy with upstream at
+  `65536`. This is a local initiation threshold, not a wire-format value;
+  explicitly configured thresholds retain their previous behavior.
+
+### Fixed
+
+- Bound the UDP DNS cache and Nostr punch-target work, validate punch target
+  addresses and sources, and make traversal freshness survive host suspend.
+- Reject malformed frame-length declarations and unactionable or
+  uncorroborated path-MTU routing signals before they affect session state.
+- FMP, FSP, discovery, routing, and physical transport wire formats remain
+  unchanged.
+
 ## [0.4.62] - 2026-08-20
 
 ### Fixed

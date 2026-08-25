@@ -28,6 +28,13 @@ pub struct LimitsConfig {
     /// Max pending inbound handshakes (`node.limits.max_pending_inbound`).
     #[serde(default = "LimitsConfig::default_max_pending_inbound")]
     pub max_pending_inbound: usize,
+    /// Max end-to-end sessions (`node.limits.max_sessions`), `0` = unlimited.
+    ///
+    /// Existing configuration files omit this additive field and receive the
+    /// bounded default. Set it to zero to restore the previous unlimited
+    /// behavior on nodes that intentionally serve more sessions.
+    #[serde(default = "LimitsConfig::default_max_sessions")]
+    pub max_sessions: usize,
 }
 
 impl Default for LimitsConfig {
@@ -37,6 +44,7 @@ impl Default for LimitsConfig {
             max_peers: 128,
             max_links: 256,
             max_pending_inbound: 1000,
+            max_sessions: 1024,
         }
     }
 }
@@ -53,6 +61,9 @@ impl LimitsConfig {
     }
     fn default_max_pending_inbound() -> usize {
         1000
+    }
+    fn default_max_sessions() -> usize {
+        1024
     }
 }
 
@@ -567,13 +578,10 @@ impl BuffersConfig {
 /// (session layer) Noise sessions. Rekeying provides true forward secrecy
 /// with fresh DH randomness, nonce reset, and session index rotation.
 ///
-/// Keep the packet-count default high for packet-tunnel workloads. A low value
-/// such as 65k packets can force multi-hundred-Mbit tunnels to rekey every few
-/// seconds, which creates avoidable cutover churn and can dominate throughput.
-/// Operators can still lower `node.rekey.after_messages` for CI stress tests or
-/// very conservative deployments; the time-based `after_secs` default remains
-/// the normal production rekey cadence.
-const DEFAULT_REKEY_AFTER_MESSAGES: u64 = 1 << 48;
+/// Match the upstream packet-count rekey cadence. Rekey thresholds are local
+/// policy rather than wire negotiation, so peers may use different values;
+/// an explicit configured value continues to override this default.
+const DEFAULT_REKEY_AFTER_MESSAGES: u64 = 1 << 16;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RekeyConfig {

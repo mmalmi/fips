@@ -207,6 +207,9 @@ pub struct NostrDiscoveryConfig {
     /// Acts as a rate limit against offer spam from relays.
     #[serde(default = "NostrDiscoveryConfig::default_max_concurrent_incoming_offers")]
     pub max_concurrent_incoming_offers: usize,
+    /// Max concurrent inbound traversal offers from one sender npub.
+    #[serde(default = "NostrDiscoveryConfig::default_max_concurrent_offers_per_npub")]
+    pub max_concurrent_offers_per_npub: usize,
     /// Max cached overlay adverts retained from relay traffic.
     /// Bounds memory under ambient advert volume.
     #[serde(default = "NostrDiscoveryConfig::default_advert_cache_max_entries")]
@@ -307,6 +310,7 @@ impl Default for NostrDiscoveryConfig {
             open_discovery_trusted_rating_authors: Vec::new(),
             open_discovery_rating_event_files: Vec::new(),
             max_concurrent_incoming_offers: Self::default_max_concurrent_incoming_offers(),
+            max_concurrent_offers_per_npub: Self::default_max_concurrent_offers_per_npub(),
             advert_cache_max_entries: Self::default_advert_cache_max_entries(),
             seen_sessions_max_entries: Self::default_seen_sessions_max_entries(),
             attempt_timeout_secs: Self::default_attempt_timeout_secs(),
@@ -381,6 +385,10 @@ impl NostrDiscoveryConfig {
 
     fn default_max_concurrent_incoming_offers() -> usize {
         16
+    }
+
+    fn default_max_concurrent_offers_per_npub() -> usize {
+        4
     }
 
     fn default_advert_cache_max_entries() -> usize {

@@ -48,6 +48,19 @@ pub const MSG1_WIRE_SIZE: usize = COMMON_PREFIX_SIZE + 4 + HANDSHAKE_MSG1_SIZE; 
 /// Size of Noise IK message 2 wire packet: prefix + sender_idx + receiver_idx + noise_msg2.
 pub const MSG2_WIRE_SIZE: usize = COMMON_PREFIX_SIZE + 4 + 4 + HANDSHAKE_MSG2_SIZE; // 69 bytes
 
+/// Expected value of the common-prefix payload length for a complete frame.
+/// Unknown phases intentionally return `None` so extensions are not guessed.
+pub fn expected_payload_len(phase: u8, frame_len: usize) -> Option<u16> {
+    let payload_len = match phase {
+        PHASE_ESTABLISHED => {
+            frame_len.checked_sub(ESTABLISHED_HEADER_SIZE + crate::noise::TAG_SIZE)?
+        }
+        PHASE_MSG1 | PHASE_MSG2 => frame_len.checked_sub(COMMON_PREFIX_SIZE)?,
+        _ => return None,
+    };
+    u16::try_from(payload_len).ok()
+}
+
 // Flag bit constants (byte 1 of common prefix, meaningful only for phase 0x0).
 // Reserved for upcoming rekeying, congestion signaling, and RTT measurement.
 /// Key epoch flag — selects active key during rekeying.
@@ -148,6 +161,10 @@ impl Msg1Header {
         if data[1] != 0 {
             return None;
         }
+        let declared = u16::from_le_bytes([data[2], data[3]]);
+        if Some(declared) != expected_payload_len(phase, data.len()) {
+            return None;
+        }
 
         let sender_idx = SessionIndex::from_le_bytes([data[4], data[5], data[6], data[7]]);
 
@@ -202,6 +219,10 @@ impl Msg2Header {
 
         // flags must be zero during handshake
         if data[1] != 0 {
+            return None;
+        }
+        let declared = u16::from_le_bytes([data[2], data[3]]);
+        if Some(declared) != expected_payload_len(phase, data.len()) {
             return None;
         }
 
@@ -328,6 +349,13 @@ mod tests {
     }
 
     #[test]
+    fn test_msg1_header_rejects_mismatched_payload_length() {
+        let mut packet = build_msg1(SessionIndex::new(1), &[0u8; HANDSHAKE_MSG1_SIZE]);
+        packet[2..4].copy_from_slice(&1u16.to_le_bytes());
+        assert!(Msg1Header::parse(&packet).is_none());
+    }
+
+    #[test]
     fn test_msg2_header_parse() {
         let sender_idx = SessionIndex::new(0x11223344);
         let receiver_idx = SessionIndex::new(0x55667788);
@@ -358,6 +386,17 @@ mod tests {
     fn test_msg2_header_wrong_phase() {
         let mut packet = vec![0x00; MSG2_WIRE_SIZE];
         packet[0] = 0x00; // phase 0, not phase 2
+        assert!(Msg2Header::parse(&packet).is_none());
+    }
+
+    #[test]
+    fn test_msg2_header_rejects_mismatched_payload_length() {
+        let mut packet = build_msg2(
+            SessionIndex::new(1),
+            SessionIndex::new(2),
+            &[0u8; HANDSHAKE_MSG2_SIZE],
+        );
+        packet[2..4].copy_from_slice(&1u16.to_le_bytes());
         assert!(Msg2Header::parse(&packet).is_none());
     }
 

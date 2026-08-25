@@ -24,7 +24,7 @@ fn test_rekey_config_defaults() {
     let c = RekeyConfig::default();
     assert!(c.enabled);
     assert_eq!(c.after_secs, 120);
-    assert_eq!(c.after_messages, 1 << 48);
+    assert_eq!(c.after_messages, 1 << 16);
 }
 
 #[test]
@@ -33,7 +33,22 @@ fn test_rekey_config_partial_yaml_uses_defaults() {
     let c: RekeyConfig = serde_yaml::from_str(yaml).unwrap();
     assert!(c.enabled);
     assert_eq!(c.after_secs, 30);
-    assert_eq!(c.after_messages, 1 << 48);
+    assert_eq!(c.after_messages, 1 << 16);
+}
+
+#[test]
+fn test_limits_config_additive_session_default() {
+    let direct = LimitsConfig::default();
+    let deserialized: LimitsConfig = serde_yaml::from_str("{}").unwrap();
+
+    assert_eq!(direct.max_sessions, 1024);
+    assert_eq!(deserialized.max_sessions, direct.max_sessions);
+}
+
+#[test]
+fn test_limits_config_zero_sessions_preserves_unlimited_behavior() {
+    let limits: LimitsConfig = serde_yaml::from_str("max_sessions: 0\n").unwrap();
+    assert_eq!(limits.max_sessions, 0);
 }
 
 #[test]
@@ -83,6 +98,7 @@ fn test_nostr_discovery_startup_sweep_defaults() {
     assert_eq!(c.open_discovery_newcomer_probe_slots, 1);
     assert_eq!(c.open_discovery_rating_scope, "fips.peer");
     assert_eq!(c.open_discovery_rating_lookback_secs, 604_800);
+    assert_eq!(c.max_concurrent_offers_per_npub, 4);
     assert!(c.open_discovery_trusted_rating_authors.is_empty());
 }
 

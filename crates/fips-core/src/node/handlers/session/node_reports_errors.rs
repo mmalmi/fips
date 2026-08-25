@@ -160,6 +160,19 @@ impl Node {
             }
         };
 
+        if notif.path_mtu < crate::mmp::MIN_ACTIONABLE_PATH_MTU {
+            self.stats_mut()
+                .errors
+                .path_mtu_notification_below_floor += 1;
+            warn!(
+                src = %self.peer_display_name(src_addr),
+                reported_mtu = notif.path_mtu,
+                floor = crate::mmp::MIN_ACTIONABLE_PATH_MTU,
+                "Ignoring PathMtuNotification below the actionable floor"
+            );
+            return;
+        }
+
         let peer_name = self.peer_display_name(src_addr);
         let change = match self.apply_dataplane_fsp_path_mtu_signal(
             src_addr,
@@ -330,6 +343,9 @@ impl Node {
         // when the reporting router is farther downstream. Release the
         // handshake pin and demote only that learned next hop; coordinates and
         // unrelated routes remain intact.
+        // Sent-size evidence described this failed path and must not vouch for
+        // a later MTU decrease on its replacement.
+        self.dataplane.clear_fsp_sent_wire_len(&msg.dest_addr);
         self.record_active_route_failure(msg.dest_addr, *previous_hop);
 
         // Send standalone CoordsWarmup immediately (rate-limited)
@@ -384,7 +400,11 @@ impl Node {
     /// A transit router couldn't forward our packet because it exceeded the
     /// next-hop transport MTU. Apply the reported bottleneck MTU to our
     /// PathMtuState for the affected session, causing an immediate decrease.
-    pub(in crate::node) async fn handle_mtu_exceeded(&mut self, inner: &[u8]) {
+    pub(in crate::node) async fn handle_mtu_exceeded(
+        &mut self,
+        previous_hop: &NodeAddr,
+        inner: &[u8],
+    ) {
         self.stats_mut().errors.mtu_exceeded += 1;
 
         let msg = match MtuExceeded::decode(inner) {
@@ -402,6 +422,64 @@ impl Node {
             bottleneck_mtu = msg.mtu,
             "MtuExceeded: transit router reports oversized packet"
         );
+
+        // The plaintext routing-error carrier is not end-to-end
+        // authenticated. Only let it affect a destination for which this node
+        // owns live session state, and only from the branch that carried our
+        // most recent outbound traffic.
+        let bound = self.sessions.get(&msg.dest_addr).is_some_and(|entry| {
+            entry.is_established() || entry.is_initiator()
+        });
+        if !bound {
+            self.stats_mut().errors.mtu_exceeded_unbound += 1;
+            debug!(
+                dest = %peer_name,
+                reporter = %msg.reporter,
+                "Ignoring MtuExceeded for an unbound destination"
+            );
+            return;
+        }
+        if !self.routing_error_matches_active_path(&msg.dest_addr, previous_hop) {
+            self.stats_mut().errors.mtu_exceeded_stale_path += 1;
+            debug!(
+                dest = %peer_name,
+                reporter = %msg.reporter,
+                previous_hop = %previous_hop,
+                "Ignoring MtuExceeded from a stale route branch"
+            );
+            return;
+        }
+        if msg.mtu < crate::mmp::MIN_ACTIONABLE_PATH_MTU {
+            self.stats_mut().errors.mtu_exceeded_below_floor += 1;
+            warn!(
+                dest = %peer_name,
+                reporter = %msg.reporter,
+                bottleneck_mtu = msg.mtu,
+                floor = crate::mmp::MIN_ACTIONABLE_PATH_MTU,
+                "Ignoring MtuExceeded below the actionable path MTU floor"
+            );
+            return;
+        }
+
+        // An honest report exists only after one of our frames exceeded the
+        // named bottleneck. Require fresh local size evidence, and spend it on
+        // the accepted decrease so an old large send cannot vouch forever.
+        let max_sent_wire_len = self
+            .dataplane
+            .fsp_owner_activity(&msg.dest_addr)
+            .map_or(0, |activity| activity.max_sent_wire_len());
+        if msg.mtu >= max_sent_wire_len {
+            self.stats_mut().errors.mtu_exceeded_uncorroborated += 1;
+            debug!(
+                dest = %peer_name,
+                reporter = %msg.reporter,
+                bottleneck_mtu = msg.mtu,
+                max_sent_wire_len,
+                "Ignoring MtuExceeded without fresh sent-size evidence"
+            );
+            return;
+        }
+        self.dataplane.clear_fsp_sent_wire_len(&msg.dest_addr);
 
         // Apply to PathMtuState: immediate decrease via apply_notification()
         match self.apply_dataplane_fsp_path_mtu_signal(

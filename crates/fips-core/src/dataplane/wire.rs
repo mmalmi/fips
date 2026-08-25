@@ -5,6 +5,7 @@ pub(crate) enum WirePreflightError {
     WrongPhase,
     PlaintextFsp,
     BadFspCoords,
+    LengthMismatch,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -44,6 +45,20 @@ impl FmpWireHeader {
         })
     }
 
+    /// Parse a complete encrypted wire frame and validate its declared
+    /// plaintext length. The ordinary parser is also used after AEAD opening,
+    /// when the tag has already been removed, so the full-frame check belongs
+    /// specifically at raw ingress.
+    pub(crate) fn parse_encrypted(data: &[u8]) -> Result<Self, WirePreflightError> {
+        let header = Self::parse(data)?;
+        let phase = data[0] & 0x0f;
+        let declared = u16::from_le_bytes([data[2], data[3]]);
+        if Some(declared) != crate::node::wire::expected_payload_len(phase, data.len()) {
+            return Err(WirePreflightError::LengthMismatch);
+        }
+        Ok(header)
+    }
+
     pub(crate) fn receiver_idx(&self) -> u32 {
         self.receiver_idx
     }
@@ -58,6 +73,25 @@ impl FmpWireHeader {
 
     pub(crate) fn ciphertext_offset(self) -> u16 {
         FMP_ESTABLISHED_HEADER_SIZE as u16
+    }
+}
+
+#[cfg(test)]
+mod wire_length_tests {
+    use super::*;
+
+    #[test]
+    fn fmp_established_header_rejects_declared_length_mismatch() {
+        let header = build_fmp_established_header(7, 9, 0, 4);
+        let mut frame = header.to_vec();
+        frame.extend_from_slice(&[0; 4 + AEAD_TAG_SIZE]);
+        assert!(FmpWireHeader::parse_encrypted(&frame).is_ok());
+
+        frame[2..4].copy_from_slice(&3u16.to_le_bytes());
+        assert_eq!(
+            FmpWireHeader::parse_encrypted(&frame),
+            Err(WirePreflightError::LengthMismatch)
+        );
     }
 }
 

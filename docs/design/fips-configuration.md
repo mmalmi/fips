@@ -120,6 +120,7 @@ Controls capacity for connections, peers, and links.
 | `node.limits.max_peers` | usize | `128` | Max authenticated peers |
 | `node.limits.max_links` | usize | `256` | Max active links |
 | `node.limits.max_pending_inbound` | usize | `1000` | Max pending inbound handshakes |
+| `node.limits.max_sessions` | usize | `1024` | Max end-to-end sessions; `0` restores unlimited behavior |
 
 ### Rate Limiting (`node.rate_limit.*`)
 
@@ -198,6 +199,7 @@ without that feature ignore `udp:nat` bootstrap configuration.
 | `node.discovery.nostr.policy` | string | `"configured_only"` | Advert discovery policy: `disabled`, `configured_only`, `open` |
 | `node.discovery.nostr.open_discovery_max_pending` | usize | `64` | Max open-discovery peers queued in outbound retry/connection state at once |
 | `node.discovery.nostr.max_concurrent_incoming_offers` | usize | `16` | Max concurrent inbound traversal offers processed at once (rate limit against offer spam) |
+| `node.discovery.nostr.max_concurrent_offers_per_npub` | usize | `4` | Max concurrent inbound traversal offers processed for one sender npub |
 | `node.discovery.nostr.advert_cache_max_entries` | usize | `2048` | Max cached overlay adverts retained from the selected peerfinding source |
 | `node.discovery.nostr.seen_sessions_max_entries` | usize | `2048` | Max seen-session IDs retained for replay detection |
 | `node.discovery.nostr.advertise` | bool | `true` | Publish local endpoint adverts |
@@ -289,14 +291,13 @@ cutover.
 |-----------|------|---------|-------------|
 | `node.rekey.enabled` | bool | `true` | Enable periodic Noise rekey on all links and sessions |
 | `node.rekey.after_secs` | u64 | `120` | Initiate rekey after this many seconds on a session |
-| `node.rekey.after_messages` | u64 | `281474976710656` (`2^48`) | Initiate rekey after this many messages sent on a session |
+| `node.rekey.after_messages` | u64 | `65536` (`2^16`) | Initiate rekey after this many messages sent on a session |
 
-The packet-count threshold is intentionally high for packet-tunnel workloads:
-at LAN or Wi-Fi VPN rates, a low threshold such as `65536` packets can trigger a
-full FMP/FSP rekey every few seconds and make cutover churn dominate data-plane
-throughput. Use a lower `after_messages` only for rekey stress tests or unusually
-conservative deployments; the `after_secs` timer remains the normal production
-rekey cadence.
+The packet-count threshold matches upstream. It is a local initiation policy,
+not a negotiated wire value, so peers can use different thresholds during a
+rolling update. High-throughput packet tunnels that prefer the fork's former
+`2^48` threshold can retain it explicitly; `after_secs` independently keeps the
+time-based forward-secrecy cadence.
 
 ### Session / Data Plane (`node.session.*`)
 
@@ -769,6 +770,7 @@ node:
     max_peers: 128
     max_links: 256
     max_pending_inbound: 1000
+    max_sessions: 1024             # 0 = unlimited (legacy behavior)
   rate_limit:
     handshake_burst: 100
     handshake_rate: 10.0
@@ -829,7 +831,7 @@ node:
   rekey:
     enabled: true                    # periodic Noise rekey for forward secrecy
     after_secs: 120                  # rekey interval (seconds)
-    after_messages: 281474976710656  # rekey after N messages sent (2^48)
+    after_messages: 65536             # rekey after N messages sent (2^16)
   control:
     enabled: true
     socket_path: null                # null = auto ($XDG_RUNTIME_DIR → /run/fips → /tmp fallback)

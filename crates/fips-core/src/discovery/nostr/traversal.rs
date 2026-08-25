@@ -1,8 +1,8 @@
 use std::net::{IpAddr, SocketAddr};
-use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tokio::net::UdpSocket;
+use tracing::debug;
 
 use super::types::{
     BootstrapError, PUNCH_ACK_MAGIC, PUNCH_MAGIC, PunchHint, PunchPacket, PunchPacketKind,
@@ -16,23 +16,92 @@ use super::types::{
 /// candidate cannot succeed when we are not on the same LAN, and trying it
 /// stalls traversal and risks latching the slow overlay-relay path as
 /// `runtime_endpoint`.
-fn is_private_candidate_ip(ip: &str) -> bool {
-    match ip.parse::<IpAddr>() {
-        Ok(IpAddr::V4(v4)) => {
-            v4.is_private()
-                || v4.is_loopback()
+const MAX_PUNCH_TARGETS: usize = 8;
+const MAX_OFFERED_CANDIDATES: usize = 32;
+const PUNCH_SETTLE_MS: u64 = 250;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum SourceRank {
+    Unplanned,
+    RemappedPort,
+    Planned,
+}
+
+pub(super) fn rank_punch_source(remote: SocketAddr, targets: &[SocketAddr]) -> SourceRank {
+    let remote = canonical_socket_addr(remote);
+    if targets
+        .iter()
+        .copied()
+        .map(canonical_socket_addr)
+        .any(|target| target == remote)
+    {
+        SourceRank::Planned
+    } else if targets
+        .iter()
+        .copied()
+        .map(canonical_socket_addr)
+        .any(|target| target.ip() == remote.ip())
+    {
+        SourceRank::RemappedPort
+    } else {
+        SourceRank::Unplanned
+    }
+}
+
+fn canonical_socket_addr(addr: SocketAddr) -> SocketAddr {
+    match addr {
+        SocketAddr::V6(v6) => v6
+            .ip()
+            .to_ipv4_mapped()
+            .map(|ip| SocketAddr::new(IpAddr::V4(ip), v6.port()))
+            .unwrap_or(SocketAddr::V6(v6)),
+        addr => addr,
+    }
+}
+
+fn canonical_ip(ip: &str) -> Option<IpAddr> {
+    match ip.parse::<IpAddr>().ok()? {
+        IpAddr::V6(v6) => Some(v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4)),
+        ip => Some(ip),
+    }
+}
+
+fn is_private_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_private(),
+        IpAddr::V6(v6) => v6.is_unique_local(),
+    }
+}
+
+fn is_never_punchable_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback()
                 || v4.is_link_local()
-                // 100.64.0.0/10 — RFC 6598 CGNAT.
+                || v4.is_unspecified()
+                || v4.is_multicast()
+                || v4.is_broadcast()
                 || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64)
         }
-        Ok(IpAddr::V6(v6)) => {
+        IpAddr::V6(v6) => {
             v6.is_loopback()
-                || v6.is_unique_local()
-                // IPv6 link-local: fe80::/10
+                || v6.is_unspecified()
+                || v6.is_multicast()
                 || (v6.segments()[0] & 0xffc0) == 0xfe80
         }
-        Err(_) => false,
     }
+}
+
+fn canonical_candidate(candidate: &TraversalAddress) -> Option<TraversalAddress> {
+    let ip = canonical_ip(&candidate.ip)?;
+    if candidate.port == 0 || is_never_punchable_ip(ip) {
+        return None;
+    }
+    Some(TraversalAddress {
+        protocol: candidate.protocol.clone(),
+        ip: ip.to_string(),
+        port: candidate.port,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,9 +133,29 @@ pub(super) struct PlannedRemoteEndpoints {
 }
 
 fn same_subnet_24(left: &TraversalAddress, right: &TraversalAddress) -> bool {
-    let left_parts = left.ip.split('.').collect::<Vec<_>>();
-    let right_parts = right.ip.split('.').collect::<Vec<_>>();
-    left_parts.len() == 4 && right_parts.len() == 4 && left_parts[..3] == right_parts[..3]
+    let (Some(IpAddr::V4(left)), Some(IpAddr::V4(right))) =
+        (canonical_ip(&left.ip), canonical_ip(&right.ip))
+    else {
+        return false;
+    };
+    left.octets()[..3] == right.octets()[..3]
+}
+
+fn admit_private_candidate(
+    candidate: TraversalAddress,
+    local_addresses: &[TraversalAddress],
+    apply_private_gate: bool,
+) -> Option<TraversalAddress> {
+    let ip = canonical_ip(&candidate.ip)?;
+    if apply_private_gate
+        && is_private_ip(ip)
+        && !local_addresses
+            .iter()
+            .any(|local| same_subnet_24(local, &candidate))
+    {
+        return None;
+    }
+    Some(candidate)
 }
 
 pub(super) fn plan_punch_targets(
@@ -78,17 +167,42 @@ pub(super) fn plan_punch_targets(
 ) -> Vec<PlannedPunchTarget> {
     let mut planned = Vec::new();
 
+    let mut lan_refs = local_addresses.to_vec();
+    let local_reflexive_on_lan = local_reflexive_address
+        .and_then(|candidate| canonical_ip(&candidate.ip))
+        .map(is_private_ip)
+        .unwrap_or(true);
+    if let Some(candidate) = local_reflexive_address
+        .and_then(canonical_candidate)
+        .filter(|candidate| canonical_ip(&candidate.ip).is_some_and(is_private_ip))
+    {
+        lan_refs.push(candidate);
+    }
+
+    let remote_reflexive = remote_reflexive_address
+        .and_then(canonical_candidate)
+        .and_then(|candidate| {
+            admit_private_candidate(candidate, &lan_refs, !local_reflexive_on_lan)
+        });
+    let remote_candidates = remote_addresses
+        .iter()
+        .take(MAX_OFFERED_CANDIDATES)
+        .filter_map(canonical_candidate)
+        .filter_map(|candidate| admit_private_candidate(candidate, &lan_refs, true))
+        .collect::<Vec<_>>();
+
     let mut push_unique = |target: PlannedPunchTarget| {
-        if !planned.iter().any(|existing| existing == &target) {
+        if planned.len() < MAX_PUNCH_TARGETS && !planned.iter().any(|existing| existing == &target)
+        {
             planned.push(target);
         }
     };
 
     if prefer_same_lan {
-        push_same_lan_targets(local_addresses, remote_addresses, &mut push_unique);
+        push_same_lan_targets(local_addresses, &remote_candidates, &mut push_unique);
         push_reflexive_target(
             local_reflexive_address,
-            remote_reflexive_address,
+            remote_reflexive.as_ref(),
             &mut push_unique,
         );
     } else {
@@ -98,20 +212,20 @@ pub(super) fn plan_punch_targets(
         // private host candidate that we can reach one-way via a routed VPN).
         push_reflexive_target(
             local_reflexive_address,
-            remote_reflexive_address,
+            remote_reflexive.as_ref(),
             &mut push_unique,
         );
         // Same-LAN paths (matching /24 between local and remote host candidates).
         // Only fires when both sides exposed local candidates AND they share a
         // /24 prefix.
-        push_same_lan_targets(local_addresses, remote_addresses, &mut push_unique);
+        push_same_lan_targets(local_addresses, &remote_candidates, &mut push_unique);
     }
 
     push_mixed_targets(
         local_addresses,
         local_reflexive_address,
-        remote_addresses,
-        remote_reflexive_address,
+        &remote_candidates,
+        remote_reflexive.as_ref(),
         &mut push_unique,
     );
 
@@ -175,24 +289,6 @@ fn push_mixed_targets(
 
     if let Some(local) = local_reflexive_address {
         for remote in remote_addresses {
-            // Cross-LAN private targets are unrouteable from our public
-            // reflexive: e.g. our_reflexive=89.27.103.157 ↔
-            // remote_local=192.168.178.91. Either the residential router
-            // hairpins (rare) or the packet dead-letters and traversal
-            // either fails outright or "succeeds" via overlay-relay,
-            // latching `runtime_endpoint` to an unrouteable address at
-            // multi-hundred-millisecond RTT. Only keep this pairing when
-            // we share a /24 with the remote — same-LAN cases are already
-            // covered by `push_same_lan_targets`, but a wildcard-bound
-            // local socket may not appear in `local_addresses`, so this
-            // is the safety net.
-            if is_private_candidate_ip(&remote.ip)
-                && !local_addresses
-                    .iter()
-                    .any(|local_host| same_subnet_24(local_host, remote))
-            {
-                continue;
-            }
             push_unique(PlannedPunchTarget {
                 strategy: PunchStrategy::Mixed,
                 local_source: AddressSource::Reflexive,
@@ -318,11 +414,24 @@ async fn run_punch_attempt_once(
     let expected_hash = session_hash(session_id);
     let receive = async {
         let mut buf = [0u8; 2048];
+        let mut candidate = None;
+        let mut settle_at: Option<tokio::time::Instant> = None;
+        let mut unplanned = 0usize;
         loop {
-            let recv = tokio::time::timeout_at(finish_at, udp.recv_from(&mut buf)).await;
+            let deadline = settle_at.map_or(finish_at, |settle| settle.min(finish_at));
+            let recv = tokio::time::timeout_at(deadline, udp.recv_from(&mut buf)).await;
             let Ok(Ok((len, remote))) = recv else {
-                break Err(BootstrapError::PunchTimeout(session_id.to_string()));
+                if unplanned > 0 {
+                    debug!(session = %session_id, unplanned, "traversal: refused punch packets from unplanned sources");
+                }
+                break candidate
+                    .ok_or_else(|| BootstrapError::PunchTimeout(session_id.to_string()));
             };
+            let rank = rank_punch_source(remote, targets);
+            if rank == SourceRank::Unplanned {
+                unplanned += 1;
+                continue;
+            }
             let Ok(packet) = parse_punch_packet(&buf[..len]) else {
                 continue;
             };
@@ -333,7 +442,13 @@ async fn run_punch_attempt_once(
                 let ack = build_punch_packet(PunchPacketKind::Ack, packet.sequence, session_id);
                 let _ = udp.send_to(&ack, remote).await;
             }
-            break Ok(remote);
+            if rank == SourceRank::Planned {
+                break Ok(remote);
+            }
+            candidate = Some(remote);
+            settle_at.get_or_insert_with(|| {
+                tokio::time::Instant::now() + Duration::from_millis(PUNCH_SETTLE_MS)
+            });
         }
     };
 
@@ -349,24 +464,10 @@ pub(super) fn nonce() -> String {
 }
 
 pub(super) fn now_ms() -> u64 {
-    struct ClockAnchor {
-        started_at: Instant,
-        started_unix_ms: u64,
-    }
-
-    static ANCHOR: OnceLock<ClockAnchor> = OnceLock::new();
-
-    let anchor = ANCHOR.get_or_init(|| ClockAnchor {
-        started_at: Instant::now(),
-        started_unix_ms: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_millis() as u64)
-            .unwrap_or(0),
-    });
-
-    anchor
-        .started_unix_ms
-        .saturating_add(anchor.started_at.elapsed().as_millis() as u64)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 pub(super) fn session_hash(session_id: &str) -> [u8; 16] {

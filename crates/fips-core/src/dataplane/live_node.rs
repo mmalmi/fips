@@ -428,6 +428,23 @@ impl DataplaneLiveNode {
             .owner_fsp_send_context(OwnerId::fsp_node(*node_addr))
     }
 
+    pub(crate) fn clear_fsp_sent_wire_len(&mut self, dest_addr: &NodeAddr) -> bool {
+        self.driver
+            .owner_mut(OwnerId::fsp_node(*dest_addr))
+            .is_some_and(OwnerState::clear_fsp_sent_wire_len)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_fsp_sent_wire_len_for_test(
+        &mut self,
+        dest_addr: NodeAddr,
+        wire_len: usize,
+    ) -> bool {
+        self.driver
+            .owner_mut(OwnerId::fsp_node(dest_addr))
+            .is_some_and(|owner| owner.record_fsp_sent_wire_len_for_test(wire_len))
+    }
+
     pub(crate) fn fsp_owner_next_hop(&self, node_addr: &NodeAddr) -> Option<NodeAddr> {
         self.driver
             .owner_fsp_next_hop(OwnerId::fsp_node(*node_addr))

@@ -6,9 +6,12 @@ async fn test_handle_mtu_exceeded_writes_path_mtu_lookup_when_empty() {
 
     let mut tn = make_test_node().await;
 
-    let dest = NodeAddr::from_bytes([0xCC; 16]);
+    let remote = Identity::generate();
+    let dest = *remote.node_addr();
     let reporter = NodeAddr::from_bytes([0xBB; 16]);
     let dest_fips = crate::FipsAddress::from_node_addr(&dest);
+    install_established_session_with_mmp(&mut tn.node, &remote);
+    note_sent_wire_len(&mut tn.node, dest, 1400);
 
     assert!(
         tn.node.path_mtu_lookup_get(&dest_fips).is_none(),
@@ -16,7 +19,7 @@ async fn test_handle_mtu_exceeded_writes_path_mtu_lookup_when_empty() {
     );
 
     let inner = build_mtu_exceeded_inner(&dest, &reporter, 1280);
-    tn.node.handle_mtu_exceeded(&inner).await;
+    tn.node.handle_mtu_exceeded(&reporter, &inner).await;
 
     assert_eq!(
         tn.node.path_mtu_lookup_get(&dest_fips),
@@ -31,16 +34,19 @@ async fn test_handle_mtu_exceeded_tightens_existing_path_mtu_lookup() {
 
     let mut tn = make_test_node().await;
 
-    let dest = NodeAddr::from_bytes([0xCC; 16]);
+    let remote = Identity::generate();
+    let dest = *remote.node_addr();
     let reporter = NodeAddr::from_bytes([0xBB; 16]);
     let dest_fips = crate::FipsAddress::from_node_addr(&dest);
+    install_established_session_with_mmp(&mut tn.node, &remote);
+    note_sent_wire_len(&mut tn.node, dest, 1400);
 
     // Pre-seed with a generous value (e.g., from a discovery reverse-path
     // response that didn't reflect the forward-path bottleneck).
     tn.node.path_mtu_lookup_insert(dest_fips, 1500);
 
     let inner = build_mtu_exceeded_inner(&dest, &reporter, 1280);
-    tn.node.handle_mtu_exceeded(&inner).await;
+    tn.node.handle_mtu_exceeded(&reporter, &inner).await;
 
     assert_eq!(
         tn.node.path_mtu_lookup_get(&dest_fips),
@@ -55,9 +61,12 @@ async fn test_handle_mtu_exceeded_keeps_tighter_existing_path_mtu_lookup() {
 
     let mut tn = make_test_node().await;
 
-    let dest = NodeAddr::from_bytes([0xCC; 16]);
+    let remote = Identity::generate();
+    let dest = *remote.node_addr();
     let reporter = NodeAddr::from_bytes([0xBB; 16]);
     let dest_fips = crate::FipsAddress::from_node_addr(&dest);
+    install_established_session_with_mmp(&mut tn.node, &remote);
+    note_sent_wire_len(&mut tn.node, dest, 1600);
 
     // Pre-seed with a tighter value than the incoming signal (e.g., from
     // a prior reactive event on a narrower hop). The clamp must never
@@ -65,13 +74,72 @@ async fn test_handle_mtu_exceeded_keeps_tighter_existing_path_mtu_lookup() {
     tn.node.path_mtu_lookup_insert(dest_fips, 1280);
 
     let inner = build_mtu_exceeded_inner(&dest, &reporter, 1500);
-    tn.node.handle_mtu_exceeded(&inner).await;
+    tn.node.handle_mtu_exceeded(&reporter, &inner).await;
 
     assert_eq!(
         tn.node.path_mtu_lookup_get(&dest_fips),
         Some(1280),
         "MtuExceeded with looser bottleneck must not loosen a tighter existing value"
     );
+}
+
+#[tokio::test]
+async fn test_handle_mtu_exceeded_ignores_unbound_destination() {
+    use crate::node::tests::spanning_tree::make_test_node;
+
+    let mut tn = make_test_node().await;
+    let dest = NodeAddr::from_bytes([0xCC; 16]);
+    let reporter = NodeAddr::from_bytes([0xBB; 16]);
+    let dest_fips = crate::FipsAddress::from_node_addr(&dest);
+
+    let inner = build_mtu_exceeded_inner(&dest, &reporter, 1280);
+    tn.node.handle_mtu_exceeded(&reporter, &inner).await;
+
+    assert_eq!(tn.node.path_mtu_lookup_get(&dest_fips), None);
+    assert_eq!(tn.node.stats().errors.mtu_exceeded_unbound, 1);
+}
+
+#[tokio::test]
+async fn test_handle_mtu_exceeded_ignores_sub_floor_value() {
+    use crate::node::tests::spanning_tree::make_test_node;
+
+    let mut tn = make_test_node().await;
+    let remote = Identity::generate();
+    let dest = *remote.node_addr();
+    let reporter = NodeAddr::from_bytes([0xBB; 16]);
+    let dest_fips = crate::FipsAddress::from_node_addr(&dest);
+    install_established_session_with_mmp(&mut tn.node, &remote);
+    note_sent_wire_len(&mut tn.node, dest, 1400);
+
+    let inner = build_mtu_exceeded_inner(&dest, &reporter, 128);
+    tn.node.handle_mtu_exceeded(&reporter, &inner).await;
+
+    assert_eq!(tn.node.path_mtu_lookup_get(&dest_fips), None);
+    assert_eq!(tn.node.stats().errors.mtu_exceeded_below_floor, 1);
+}
+
+#[tokio::test]
+async fn test_handle_mtu_exceeded_requires_fresh_sent_size_evidence() {
+    use crate::node::tests::spanning_tree::make_test_node;
+
+    let mut tn = make_test_node().await;
+    let remote = Identity::generate();
+    let dest = *remote.node_addr();
+    let reporter = NodeAddr::from_bytes([0xBB; 16]);
+    let dest_fips = crate::FipsAddress::from_node_addr(&dest);
+    install_established_session_with_mmp(&mut tn.node, &remote);
+    let inner = build_mtu_exceeded_inner(&dest, &reporter, 1280);
+
+    tn.node.handle_mtu_exceeded(&reporter, &inner).await;
+    assert_eq!(tn.node.path_mtu_lookup_get(&dest_fips), None);
+    assert_eq!(tn.node.stats().errors.mtu_exceeded_uncorroborated, 1);
+
+    note_sent_wire_len(&mut tn.node, dest, 1400);
+    tn.node.handle_mtu_exceeded(&reporter, &inner).await;
+    assert_eq!(tn.node.path_mtu_lookup_get(&dest_fips), Some(1280));
+
+    tn.node.handle_mtu_exceeded(&reporter, &inner).await;
+    assert_eq!(tn.node.stats().errors.mtu_exceeded_uncorroborated, 2);
 }
 
 // ============================================================================

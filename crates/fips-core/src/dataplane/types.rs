@@ -424,6 +424,29 @@ impl OutboundPacket {
         }
     }
 
+    /// Full outer FMP wire length for an FSP packet carried through the mesh.
+    fn fsp_wrapped_wire_len(&self) -> Option<usize> {
+        if self.owner.protocol() != PacketProtocol::Fsp
+            || !matches!(self.post_seal, OutboundPostSeal::FmpWrap(_))
+        {
+            return None;
+        }
+        let inner_prefix_len = match self.payload_transform {
+            OutboundPayloadTransform::FspInnerHeader { .. } => FSP_INNER_HEADER_SIZE,
+            OutboundPayloadTransform::None => 0,
+        };
+        Some(
+            FMP_ESTABLISHED_HEADER_SIZE
+                .saturating_add(std::mem::size_of::<u32>())
+                .saturating_add(crate::protocol::SESSION_DATAGRAM_HEADER_SIZE)
+                .saturating_add(FSP_HEADER_SIZE)
+                .saturating_add(self.fsp_cleartext_prefix.len())
+                .saturating_add(inner_prefix_len)
+                .saturating_add(self.payload.len())
+                .saturating_add(AEAD_TAG_SIZE * 2),
+        )
+    }
+
     fn lane(&self) -> Lane {
         self.class.lane()
     }

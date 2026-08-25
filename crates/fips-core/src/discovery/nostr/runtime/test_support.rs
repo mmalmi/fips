@@ -59,7 +59,10 @@ impl NostrDiscovery {
             .signer(keys.clone())
             .opts(ClientOptions::new().autoconnect(false))
             .build();
-        let offer_slots = Arc::new(Semaphore::new(config.max_concurrent_incoming_offers));
+        let offer_admission = OfferAdmission::new(
+            config.max_concurrent_incoming_offers,
+            config.max_concurrent_offers_per_npub,
+        );
         let (event_tx, event_rx) = mpsc::channel(event_channel_capacity(&config));
         let (mesh_signal_tx, mesh_signal_rx) = mpsc::channel(event_channel_capacity(&config));
         let failure_state = FailureState::new(
@@ -87,7 +90,7 @@ impl NostrDiscovery {
             seen_sessions: Mutex::new(HashMap::new()),
             #[cfg(test)]
             received_mesh_offer_count: std::sync::atomic::AtomicUsize::new(0),
-            offer_slots,
+            offer_admission,
             event_tx,
             event_rx: Mutex::new(event_rx),
             mesh_signal_tx,

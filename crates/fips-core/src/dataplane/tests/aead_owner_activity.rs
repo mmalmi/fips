@@ -82,6 +82,11 @@ fn fsp_owner_tracks_data_return_without_registry_side_channel() {
         activity.last_outbound_next_hop(),
         Some(next_hop.node_addr())
     );
+    assert_eq!(
+        activity.max_sent_wire_len(),
+        113,
+        "wrapped FSP evidence must include both AEAD envelopes and wire headers"
+    );
     assert!(activity.has_recent_outbound_activity(105, 10));
     assert!(activity.has_recent_outbound_without_inbound(105, 10));
     assert_eq!(mover.record_fsp_decrypt_failure(owner), Some(1));
@@ -248,6 +253,14 @@ fn fsp_owner_records_direct_transport_as_the_destination_next_hop() {
             .last_outbound_next_hop(),
         Some(owner.node_addr()),
         "direct FSP transport must replace any previously recorded fallback next hop"
+    );
+    assert_eq!(
+        mover
+            .owner_fsp_activity(owner)
+            .unwrap()
+            .max_sent_wire_len(),
+        0,
+        "direct transport errors are local and must not corroborate plaintext routing signals"
     );
 }
 

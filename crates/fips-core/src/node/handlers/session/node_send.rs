@@ -1,5 +1,51 @@
+/// Share of the bounded table available to unauthenticated responder state.
+const HALF_OPEN_SHARE_DIVISOR: usize = 2;
+
 impl Node {
     // === Session Initiation (Send Path) ===
+
+    /// Decide whether creating a session for `addr` may grow the table.
+    ///
+    /// Existing entries are always admitted so duplicate handshakes, live
+    /// sessions, and rekeys continue to make progress at the limit.
+    pub(in crate::node) fn admit_new_session(&mut self, addr: &NodeAddr) -> bool {
+        let max_sessions = self.config.node.limits.max_sessions;
+        if max_sessions == 0 || self.sessions.contains_key(addr) {
+            return true;
+        }
+
+        if self.sessions.len() >= max_sessions {
+            debug!(
+                peer = %self.peer_display_name(addr),
+                sessions = self.sessions.len(),
+                max_sessions,
+                "Session table full, refusing new session"
+            );
+            self.stats_mut().sessions.table_full += 1;
+            return false;
+        }
+
+        let half_open_share = (max_sessions / HALF_OPEN_SHARE_DIVISOR).max(1);
+        if self.sessions.len() >= half_open_share {
+            let half_open = self
+                .sessions
+                .values()
+                .filter(|entry| entry.is_awaiting_msg3())
+                .count();
+            if half_open >= half_open_share {
+                debug!(
+                    peer = %self.peer_display_name(addr),
+                    half_open,
+                    half_open_share,
+                    "Half-open session share exhausted, refusing new session"
+                );
+                self.stats_mut().sessions.half_open_full += 1;
+                return false;
+            }
+        }
+
+        true
+    }
 
     /// Initiate an end-to-end session with a remote node.
     ///
@@ -13,6 +59,11 @@ impl Node {
     ) -> Result<(), NodeError> {
         if self.sessions.should_skip_session_initiation(&dest_addr) {
             return Ok(());
+        }
+        if !self.admit_new_session(&dest_addr) {
+            return Err(NodeError::MaxSessionsExceeded {
+                max: self.config.node.limits.max_sessions,
+            });
         }
 
         // Create Noise XK initiator handshake

@@ -243,7 +243,7 @@ impl DataplaneTurnDriver {
         R: DataplaneIngressRouter,
     {
         let header = match packet.protocol {
-            PacketProtocol::Fmp => match FmpWireHeader::parse(packet.payload.as_slice()) {
+            PacketProtocol::Fmp => match FmpWireHeader::parse_encrypted(packet.payload.as_slice()) {
                 Ok(header) => DataplaneIngressHeader::Fmp(header),
                 Err(error) => {
                     summary.raw_ingress_dropped += 1;

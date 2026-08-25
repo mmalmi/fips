@@ -474,7 +474,7 @@ impl DataplaneEstablishedFastIngressSink {
         routes: &HashMap<FmpIngressRouteKey, DataplaneIngressRoute>,
         packet: ReceivedPacket,
     ) -> Result<SocketPacket, ReceivedPacket> {
-        let Ok(header) = FmpWireHeader::parse(packet.data.as_slice()) else {
+        let Ok(header) = FmpWireHeader::parse_encrypted(packet.data.as_slice()) else {
             return Err(packet);
         };
         let Some(route) = DataplaneEstablishedFastIngressSnapshot::lookup_fmp_in(

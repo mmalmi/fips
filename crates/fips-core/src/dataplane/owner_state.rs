@@ -60,6 +60,7 @@ impl OwnerState {
             last_tx_data_activity: None,
             last_outbound_next_hop: None,
             fsp_mmp_path_changed_since_report: false,
+            max_sent_wire_len: 0,
             data_packets_sent: 0,
             data_packets_recv: 0,
             data_bytes_sent: 0,
@@ -123,6 +124,7 @@ impl OwnerState {
         self.last_tx_data_activity = None;
         self.last_outbound_next_hop = None;
         self.fsp_mmp_path_changed_since_report = false;
+        self.max_sent_wire_len = 0;
         self.data_packets_sent = 0;
         self.data_packets_recv = 0;
         self.data_bytes_sent = 0;
@@ -669,6 +671,7 @@ impl OwnerState {
                 .fsp_mmp
                 .as_ref()
                 .map(|mmp| mmp.path_mtu.current_mtu()),
+            max_sent_wire_len: self.max_sent_wire_len,
             data_packets_sent: self.data_packets_sent,
             data_packets_recv: self.data_packets_recv,
             data_bytes_sent: self.data_bytes_sent,

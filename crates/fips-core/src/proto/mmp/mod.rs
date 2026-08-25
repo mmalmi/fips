@@ -49,6 +49,9 @@ pub const SENDER_REPORT_WIRE_SIZE: usize = 52;
 /// ReceiverReport total wire size including inner header: 5 + 67 = 72.
 pub const RECEIVER_REPORT_WIRE_SIZE: usize = 72;
 
+/// Smallest remotely supplied path MTU that can describe a usable FIPS path.
+pub const MIN_ACTIONABLE_PATH_MTU: u16 = 256;
+
 // --- EWMA parameters (as shift amounts for integer arithmetic) ---
 
 /// Jitter EWMA: α = 1/16 (RFC 3550 §6.4.1).
@@ -436,6 +439,9 @@ impl PathMtuState {
     ///
     /// Returns `true` if the effective MTU changed.
     pub fn apply_notification(&mut self, reported_mtu: u16, now: Instant) -> bool {
+        if reported_mtu < MIN_ACTIONABLE_PATH_MTU {
+            return false;
+        }
         if reported_mtu < self.current_mtu {
             // Decrease: immediate
             self.current_mtu = reported_mtu;

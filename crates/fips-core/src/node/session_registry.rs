@@ -35,6 +35,10 @@ impl SessionRegistry {
         self.sessions.len()
     }
 
+    pub(in crate::node) fn contains_key(&self, node_addr: &NodeAddr) -> bool {
+        self.sessions.contains_key(node_addr)
+    }
+
     pub(in crate::node) fn iter(&self) -> impl Iterator<Item = (&NodeAddr, &SessionEntry)> {
         self.sessions.iter()
     }

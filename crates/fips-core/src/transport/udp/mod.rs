@@ -35,6 +35,9 @@ pub(crate) use rebind::UdpNetworkRebindProbe;
 /// DNS cache TTL for hostname resolution (60 seconds).
 const DNS_CACHE_TTL: Duration = Duration::from_secs(60);
 
+/// Upper bound for remotely supplied hostname keys retained per transport.
+const DNS_CACHE_MAX_ENTRIES: usize = 256;
+
 /// Minimum interval between configured UDP socket rebuilds after the kernel
 /// reports that the local route/source address is no longer usable.
 const LOCAL_ROUTE_SOCKET_RECOVERY_COOLDOWN: Duration = Duration::from_secs(5);
@@ -494,9 +497,7 @@ impl UdpTransport {
         }
 
         let cache = self.dns_cache.lock().unwrap_or_else(|e| e.into_inner());
-        cache.get(addr).and_then(|(resolved, cached_at)| {
-            (cached_at.elapsed() < DNS_CACHE_TTL).then_some(*resolved)
-        })
+        cache_lookup(&cache, addr, Instant::now())
     }
 
     pub(crate) fn send_snapshot(&self) -> Result<UdpSendSnapshot, TransportError> {
@@ -533,10 +534,8 @@ impl UdpTransport {
         // Check cache
         {
             let cache = self.dns_cache.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some((resolved, cached_at)) = cache.get(addr)
-                && cached_at.elapsed() < DNS_CACHE_TTL
-            {
-                return Ok(*resolved);
+            if let Some(resolved) = cache_lookup(&cache, addr, Instant::now()) {
+                return Ok(resolved);
             }
         }
 
@@ -546,7 +545,13 @@ impl UdpTransport {
         // Store in cache
         {
             let mut cache = self.dns_cache.lock().unwrap_or_else(|e| e.into_inner());
-            cache.insert(addr.clone(), (resolved, Instant::now()));
+            cache_store(
+                &mut cache,
+                addr.clone(),
+                resolved,
+                Instant::now(),
+                DNS_CACHE_MAX_ENTRIES,
+            );
         }
 
         Ok(resolved)
@@ -961,6 +966,46 @@ impl UdpTransport {
             }
         }
     }
+}
+
+fn cache_lookup(
+    cache: &HashMap<TransportAddr, (SocketAddr, Instant)>,
+    key: &TransportAddr,
+    now: Instant,
+) -> Option<SocketAddr> {
+    cache
+        .get(key)
+        .filter(|(_, cached_at)| now.duration_since(*cached_at) < DNS_CACHE_TTL)
+        .map(|(resolved, _)| *resolved)
+}
+
+fn cache_store(
+    cache: &mut HashMap<TransportAddr, (SocketAddr, Instant)>,
+    key: TransportAddr,
+    resolved: SocketAddr,
+    now: Instant,
+    cap: usize,
+) {
+    if cap == 0 {
+        return;
+    }
+    if let Some(entry) = cache.get_mut(&key) {
+        *entry = (resolved, now);
+        return;
+    }
+
+    cache.retain(|_, (_, cached_at)| now.duration_since(*cached_at) < DNS_CACHE_TTL);
+    while cache.len() >= cap {
+        let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, (_, cached_at))| *cached_at)
+            .map(|(key, _)| key.clone())
+        else {
+            break;
+        };
+        cache.remove(&oldest);
+    }
+    cache.insert(key, (resolved, now));
 }
 
 include!("transport_impl.rs");

@@ -570,6 +570,7 @@ pub(crate) struct DataplaneFspOwnerActivity {
     current_epoch_confirmed: bool,
     send_counter: u64,
     current_path_mtu: Option<u16>,
+    max_sent_wire_len: u16,
     data_packets_sent: u64,
     data_packets_recv: u64,
     data_bytes_sent: u64,
@@ -579,6 +580,10 @@ pub(crate) struct DataplaneFspOwnerActivity {
 impl DataplaneFspOwnerActivity {
     pub(crate) fn last_outbound_next_hop(self) -> Option<NodeAddr> {
         self.last_outbound_next_hop
+    }
+
+    pub(crate) fn max_sent_wire_len(self) -> u16 {
+        self.max_sent_wire_len
     }
 
     pub(crate) fn last_rx_age_ms(self, now_ms: u64) -> Option<u64> {
@@ -790,6 +795,8 @@ pub(crate) struct OwnerState {
     last_tx_data_activity: Option<ActivityTick>,
     last_outbound_next_hop: Option<NodeAddr>,
     fsp_mmp_path_changed_since_report: bool,
+    /// Largest wrapped FSP frame attempted since the last accepted decrease.
+    max_sent_wire_len: u16,
     data_packets_sent: u64,
     data_packets_recv: u64,
     data_bytes_sent: u64,

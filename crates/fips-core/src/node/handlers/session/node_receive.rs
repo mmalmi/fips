@@ -59,7 +59,8 @@ impl Node {
                             .await;
                     }
                     Some(SessionMessageType::MtuExceeded) => {
-                        self.handle_mtu_exceeded(error_body).await;
+                        self.handle_mtu_exceeded(&previous_hop_addr, error_body)
+                            .await;
                     }
                     _ => {
                         debug!(error_type, "Unknown plaintext error signal type");

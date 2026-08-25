@@ -398,13 +398,24 @@ impl NostrDiscovery {
             return;
         }
 
-        let Ok(permit) = self.offer_slots.clone().try_acquire_owned() else {
-            debug!(
-                sender_npub = %sender_npub,
-                limit = self.config.max_concurrent_incoming_offers,
-                "rate-limited inbound mesh traversal offer (max_concurrent_incoming_offers reached); offer dropped"
-            );
-            return;
+        let permit = match self.offer_admission.try_admit(&sender_npub) {
+            Ok(permit) => permit,
+            Err(super::super::offer_admission::OfferAdmissionReject::SenderFull) => {
+                debug!(
+                    sender_npub = %sender_npub,
+                    limit = self.config.max_concurrent_offers_per_npub,
+                    "rate-limited inbound mesh traversal offer from one sender"
+                );
+                return;
+            }
+            Err(super::super::offer_admission::OfferAdmissionReject::GlobalFull) => {
+                debug!(
+                    sender_npub = %sender_npub,
+                    limit = self.config.max_concurrent_incoming_offers,
+                    "rate-limited inbound mesh traversal offer at global limit"
+                );
+                return;
+            }
         };
         let offer_received_at = now_ms();
         match self

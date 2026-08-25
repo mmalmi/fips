@@ -246,6 +246,29 @@ pub struct ErrorSignalStats {
     pub coords_required: u64,
     pub path_broken: u64,
     pub mtu_exceeded: u64,
+    pub mtu_exceeded_unbound: u64,
+    pub mtu_exceeded_stale_path: u64,
+    pub mtu_exceeded_below_floor: u64,
+    pub mtu_exceeded_uncorroborated: u64,
+    pub path_mtu_notification_below_floor: u64,
+}
+
+/// End-to-end session admission statistics.
+#[derive(Default)]
+pub struct SessionStats {
+    /// A new session was refused because the whole table was full.
+    pub table_full: u64,
+    /// A new session was refused because half-open responders held their share.
+    pub half_open_full: u64,
+}
+
+impl SessionStats {
+    pub fn snapshot(&self) -> SessionStatsSnapshot {
+        SessionStatsSnapshot {
+            table_full: self.table_full,
+            half_open_full: self.half_open_full,
+        }
+    }
 }
 
 impl ErrorSignalStats {
@@ -254,6 +277,11 @@ impl ErrorSignalStats {
             coords_required: self.coords_required,
             path_broken: self.path_broken,
             mtu_exceeded: self.mtu_exceeded,
+            mtu_exceeded_unbound: self.mtu_exceeded_unbound,
+            mtu_exceeded_stale_path: self.mtu_exceeded_stale_path,
+            mtu_exceeded_below_floor: self.mtu_exceeded_below_floor,
+            mtu_exceeded_uncorroborated: self.mtu_exceeded_uncorroborated,
+            path_mtu_notification_below_floor: self.path_mtu_notification_below_floor,
         }
     }
 }
@@ -306,6 +334,7 @@ pub struct NodeStats {
     pub tree: TreeStats,
     pub bloom: BloomStats,
     pub errors: ErrorSignalStats,
+    pub sessions: SessionStats,
     pub congestion: CongestionStats,
 }
 
@@ -321,6 +350,7 @@ impl NodeStats {
             tree: self.tree.snapshot(),
             bloom: self.bloom.snapshot(),
             errors: self.errors.snapshot(),
+            sessions: self.sessions.snapshot(),
             congestion: self.congestion.snapshot(),
         }
     }
@@ -413,6 +443,17 @@ pub struct ErrorSignalStatsSnapshot {
     pub coords_required: u64,
     pub path_broken: u64,
     pub mtu_exceeded: u64,
+    pub mtu_exceeded_unbound: u64,
+    pub mtu_exceeded_stale_path: u64,
+    pub mtu_exceeded_below_floor: u64,
+    pub mtu_exceeded_uncorroborated: u64,
+    pub path_mtu_notification_below_floor: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct SessionStatsSnapshot {
+    pub table_full: u64,
+    pub half_open_full: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -430,5 +471,6 @@ pub struct NodeStatsSnapshot {
     pub tree: TreeStatsSnapshot,
     pub bloom: BloomStatsSnapshot,
     pub errors: ErrorSignalStatsSnapshot,
+    pub sessions: SessionStatsSnapshot,
     pub congestion: CongestionStatsSnapshot,
 }

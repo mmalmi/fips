@@ -2,15 +2,16 @@ use nostr::prelude::{EventBuilder, Kind, Tag, TagKind, Timestamp};
 
 use super::runtime::{NostrDiscovery, VerifiedEvent, suppress_responder_for_own_initiator};
 use super::signal::{
-    FreshnessOutcome, TraversalSignalTiming, create_traversal_answer, create_traversal_offer,
-    estimate_clock_skew, validate_offer_freshness, validate_traversal_answer_for_offer,
+    FRESHNESS_SKEW_TOLERANCE_MS, FreshnessOutcome, TraversalSignalTiming, create_traversal_answer,
+    create_traversal_offer, estimate_clock_skew, validate_offer_freshness,
+    validate_traversal_answer_for_offer,
 };
 use super::stun::{
     compatible_stun_targets, parse_stun_binding_success, parse_stun_url, perform_stun_any,
 };
 use super::traversal::{
-    PunchStrategy, build_punch_packet, now_ms, parse_punch_packet, plan_punch_targets,
-    planned_remote_endpoints, run_punch_attempt, session_hash,
+    PunchStrategy, SourceRank, build_punch_packet, now_ms, parse_punch_packet, plan_punch_targets,
+    planned_remote_endpoints, rank_punch_source, run_punch_attempt, session_hash,
 };
 use super::types::TraversalAddressObservation;
 use super::{
@@ -460,6 +461,68 @@ fn builds_and_parses_probe_packets() {
     assert_eq!(parsed.session_hash, session_hash("sess-1"));
 }
 
+#[test]
+fn punch_sources_are_limited_to_planned_addresses_or_remapped_ports() {
+    let planned: std::net::SocketAddr = "198.51.100.20:63000".parse().unwrap();
+    let remapped: std::net::SocketAddr = "198.51.100.20:41000".parse().unwrap();
+    let unplanned: std::net::SocketAddr = "203.0.113.9:63000".parse().unwrap();
+
+    assert_eq!(rank_punch_source(planned, &[planned]), SourceRank::Planned);
+    assert_eq!(
+        rank_punch_source(remapped, &[planned]),
+        SourceRank::RemappedPort
+    );
+    assert_eq!(
+        rank_punch_source(unplanned, &[planned]),
+        SourceRank::Unplanned
+    );
+    assert_eq!(
+        rank_punch_source("[::ffff:198.51.100.20]:63000".parse().unwrap(), &[planned]),
+        SourceRank::Planned
+    );
+}
+
+// This test needs distinct loopback source IPs; only Linux treats all of
+// 127/8 as bindable without adding aliases.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn unplanned_punch_source_is_neither_adopted_nor_acked() {
+    let victim = std::net::UdpSocket::bind("127.0.0.3:0").expect("bind victim");
+    victim.set_nonblocking(true).unwrap();
+    let peer = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind planned peer");
+    peer.set_nonblocking(true).unwrap();
+    let spoofer = std::net::UdpSocket::bind("127.0.0.2:0").expect("bind spoofer");
+    spoofer.set_nonblocking(true).unwrap();
+    let session = "unplanned-source";
+
+    spoofer
+        .send_to(
+            &build_punch_packet(PunchPacketKind::Probe, 1, session),
+            victim.local_addr().unwrap(),
+        )
+        .expect("send spoofed probe");
+    let result = run_punch_attempt(
+        &victim,
+        session,
+        &[peer.local_addr().unwrap()],
+        PunchHint {
+            start_at_ms: 0,
+            interval_ms: 20,
+            duration_ms: 100,
+        },
+        std::time::Duration::from_millis(200),
+        0,
+    )
+    .await;
+
+    assert!(matches!(
+        result,
+        Err(super::BootstrapError::PunchTimeout(_))
+    ));
+    let mut buf = [0u8; 24];
+    assert!(spoofer.recv_from(&mut buf).is_err(), "spoofer was acked");
+}
+
 #[tokio::test]
 async fn successful_punch_stops_delayed_probe_sender() {
     let local = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind local socket");
@@ -803,6 +866,86 @@ fn planned_remote_endpoints_keep_same_lan_private_remote() {
     );
 }
 
+#[test]
+fn planned_remote_endpoints_reject_never_routable_and_zero_port_targets() {
+    let endpoints = planned_remote_endpoints(
+        &[addr("192.168.1.10", 62000)],
+        Some(&addr("203.0.113.10", 62000)),
+        &[
+            addr("127.0.0.1", 63000),
+            addr("169.254.1.2", 63000),
+            addr("0.0.0.0", 63000),
+            addr("224.0.0.1", 63000),
+            addr("198.51.100.30", 0),
+        ],
+        Some(&addr("198.51.100.20", 63000)),
+        false,
+    )
+    .expect("invalid candidates should be discarded, not fail the offer");
+
+    assert_eq!(
+        endpoints.remotes,
+        vec!["198.51.100.20:63000".parse().unwrap()]
+    );
+}
+
+#[test]
+fn planned_remote_endpoints_reject_ipv4_mapped_private_bypass() {
+    let endpoints = planned_remote_endpoints(
+        &[addr("192.168.1.10", 62000)],
+        Some(&addr("203.0.113.10", 62000)),
+        &[addr("::ffff:10.0.0.5", 63000)],
+        Some(&addr("::ffff:127.0.0.1", 63000)),
+        false,
+    )
+    .expect("invalid mapped candidates should be discarded");
+
+    assert!(endpoints.remotes.is_empty());
+}
+
+#[test]
+fn planned_remote_endpoints_cap_peer_supplied_targets() {
+    let candidates = (1..=40)
+        .map(|last| addr(&format!("198.51.100.{last}"), 63000))
+        .collect::<Vec<_>>();
+    let endpoints = planned_remote_endpoints(
+        &[],
+        Some(&addr("203.0.113.10", 62000)),
+        &candidates,
+        None,
+        false,
+    )
+    .expect("oversized candidate lists should be bounded");
+
+    assert_eq!(endpoints.remotes.len(), 8);
+}
+
+#[test]
+fn private_reflexive_target_requires_a_lan_vantage_point() {
+    let public_vantage = planned_remote_endpoints(
+        &[addr("192.168.1.10", 62000)],
+        Some(&addr("203.0.113.10", 62000)),
+        &[],
+        Some(&addr("10.0.0.5", 63000)),
+        false,
+    )
+    .expect("off-LAN reflexive address should be discarded");
+    assert!(public_vantage.remotes.is_empty());
+
+    let lan_vantage = planned_remote_endpoints(
+        &[addr("192.168.1.10", 62000)],
+        Some(&addr("192.168.1.11", 62000)),
+        &[],
+        Some(&addr("192.168.1.20", 63000)),
+        false,
+    )
+    .expect("same-LAN reflexive address should remain usable");
+    assert_eq!(
+        lan_vantage.remotes,
+        vec!["192.168.1.20:63000".parse().unwrap()]
+    );
+}
+
 /// B4: strict-fresh path returns Fresh; the offer is well within TTL and
 /// not expired.
 #[test]
@@ -888,6 +1031,54 @@ fn freshness_responder_clock_far_ahead_is_rejected() {
     )
     .expect_err("offer past tolerated expiry should be rejected");
     assert!(err.to_string().contains("expired-offer"), "{}", err);
+}
+
+#[test]
+fn freshness_future_dated_offer_is_bounded_by_skew_tolerance() {
+    let now = 1_700_000_000_000;
+    let within = create_traversal_offer(
+        "within".to_string(),
+        TraversalSignalTiming::new(now + FRESHNESS_SKEW_TOLERANCE_MS, 60_000),
+        "nonce".to_string(),
+        "npub1client".to_string(),
+        "npub1server".to_string(),
+        observed(None, vec![addr("192.168.1.10", 62000)], None),
+    );
+    assert_eq!(
+        validate_offer_freshness(&within, now, 60_000, "npub1client", "npub1server").unwrap(),
+        FreshnessOutcome::FreshWithinSkewTolerance
+    );
+
+    let mut beyond = within;
+    beyond.issued_at = now + FRESHNESS_SKEW_TOLERANCE_MS + 1;
+    beyond.expires_at = beyond.issued_at + 60_000;
+    let error =
+        validate_offer_freshness(&beyond, now, 60_000, "npub1client", "npub1server").unwrap_err();
+    assert!(error.to_string().contains("future-dated-offer"));
+}
+
+#[test]
+fn freshness_sender_cannot_extend_declared_expiry_past_ttl() {
+    let issued_at = 1_700_000_000_000;
+    let mut offer = create_traversal_offer(
+        "extended".to_string(),
+        TraversalSignalTiming::new(issued_at, 60_000),
+        "nonce".to_string(),
+        "npub1client".to_string(),
+        "npub1server".to_string(),
+        observed(None, vec![addr("192.168.1.10", 62000)], None),
+    );
+    offer.expires_at = u64::MAX;
+
+    let error = validate_offer_freshness(
+        &offer,
+        issued_at + 120_001,
+        60_000,
+        "npub1client",
+        "npub1server",
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("expired-offer"));
 }
 
 /// B5a: the NTP-style skew estimator returns the responder's apparent

@@ -87,3 +87,22 @@ fn test_handle_path_mtu_notification_no_session_no_op() {
         "PathMtuNotification with no session must not touch path_mtu_lookup"
     );
 }
+
+#[test]
+fn test_handle_path_mtu_notification_rejects_sub_floor_value() {
+    let mut node = make_node();
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+    let remote_fips = crate::FipsAddress::from_node_addr(&remote_addr);
+    install_established_session_with_mmp(&mut node, &remote);
+
+    let body = build_path_mtu_notification_body(128);
+    node.handle_session_path_mtu_notification(&remote_addr, &body);
+
+    assert_eq!(node.path_mtu_lookup_get(&remote_fips), None);
+    assert_eq!(node.stats().errors.path_mtu_notification_below_floor, 1);
+    assert_eq!(
+        node.session_mmp_snapshot(&remote_addr).unwrap().send_mtu,
+        u16::MAX
+    );
+}

@@ -13,6 +13,7 @@ use crate::protocol::{
 };
 use crate::tree::{ParentDeclaration, TreeCoordinate};
 
+mod admission;
 mod direct_endpoint;
 mod discovery_tun;
 mod entry_basics;
@@ -668,6 +669,11 @@ fn install_established_session_with_mmp(node: &mut Node, remote: &Identity) {
     entry.set_remote_supports_direct_fsp_transport(true);
     node.sessions.insert(remote_addr, entry);
     ensure_dataplane_fsp_owner_for_test(node, remote_addr);
+}
+
+fn note_sent_wire_len(node: &mut Node, dest_addr: NodeAddr, wire_len: usize) {
+    node.dataplane
+        .record_fsp_sent_wire_len_for_test(dest_addr, wire_len);
 }
 
 fn session_timestamp_echo_for(rtt_ms: u32) -> u32 {

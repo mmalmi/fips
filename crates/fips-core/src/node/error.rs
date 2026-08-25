@@ -51,6 +51,9 @@ pub enum NodeError {
     #[error("max links exceeded: {max}")]
     MaxLinksExceeded { max: usize },
 
+    #[error("max end-to-end sessions exceeded: {max}")]
+    MaxSessionsExceeded { max: usize },
+
     #[error("handshake incomplete for link {0}")]
     HandshakeIncomplete(LinkId),
 

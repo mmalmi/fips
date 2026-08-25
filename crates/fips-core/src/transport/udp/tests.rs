@@ -3,6 +3,62 @@ use super::*;
 use crate::transport::packet_channel;
 use tokio::time::{Duration, timeout};
 
+fn dns_key(n: usize) -> TransportAddr {
+    TransportAddr::from(format!("host{n}.example:2121"))
+}
+
+fn dns_value() -> SocketAddr {
+    "198.51.100.1:2121".parse().unwrap()
+}
+
+#[test]
+fn dns_cache_store_never_exceeds_its_cap() {
+    const CAP: usize = 8;
+    let now = Instant::now();
+    let mut cache = HashMap::new();
+
+    for n in 0..CAP + 5 {
+        cache_store(&mut cache, dns_key(n), dns_value(), now, CAP);
+        assert!(cache.len() <= CAP);
+    }
+}
+
+#[test]
+fn dns_cache_store_evicts_expired_entries_then_oldest_fresh_entry() {
+    const CAP: usize = 2;
+    let now = Instant::now();
+    let expired_at = now.checked_sub(DNS_CACHE_TTL * 2).unwrap();
+    let oldest_fresh_at = now.checked_sub(Duration::from_secs(2)).unwrap();
+    let newer_fresh_at = now.checked_sub(Duration::from_secs(1)).unwrap();
+    let mut cache = HashMap::new();
+    cache.insert(dns_key(0), (dns_value(), expired_at));
+    cache.insert(dns_key(1), (dns_value(), oldest_fresh_at));
+
+    cache_store(&mut cache, dns_key(2), dns_value(), newer_fresh_at, CAP);
+    assert!(!cache.contains_key(&dns_key(0)));
+    assert!(cache.contains_key(&dns_key(1)));
+    assert!(cache.contains_key(&dns_key(2)));
+
+    cache_store(&mut cache, dns_key(3), dns_value(), now, CAP);
+    assert!(!cache.contains_key(&dns_key(1)));
+    assert!(cache.contains_key(&dns_key(2)));
+    assert!(cache.contains_key(&dns_key(3)));
+}
+
+#[test]
+fn dns_cache_refresh_does_not_evict_another_entry() {
+    const CAP: usize = 2;
+    let now = Instant::now();
+    let mut cache = HashMap::new();
+    cache.insert(dns_key(0), (dns_value(), now));
+    cache.insert(dns_key(1), (dns_value(), now));
+
+    cache_store(&mut cache, dns_key(0), dns_value(), now, CAP);
+    assert_eq!(cache.len(), CAP);
+    assert!(cache.contains_key(&dns_key(0)));
+    assert!(cache.contains_key(&dns_key(1)));
+}
+
 fn make_config(port: u16) -> UdpConfig {
     UdpConfig {
         bind_addr: Some(format!("127.0.0.1:{}", port)),

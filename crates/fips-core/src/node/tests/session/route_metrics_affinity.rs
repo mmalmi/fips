@@ -60,6 +60,7 @@ async fn test_only_explicit_path_broken_replaces_healthy_learned_fallback() {
     assert!(node.routing_error_matches_active_path(&remote_addr, &first_fallback));
     assert!(!node.routing_error_matches_active_path(&remote_addr, &second_fallback));
 
+    note_sent_wire_len(&mut node, remote_addr, 1400);
     let downstream_reporter = make_node_addr(180);
     let path_broken = PathBroken::new(remote_addr, downstream_reporter).encode();
     node.handle_session_payload(LocalSessionPayload::new(
@@ -77,6 +78,14 @@ async fn test_only_explicit_path_broken_replaces_healthy_learned_fallback() {
     assert!(
         !node.routing_error_matches_active_path(&remote_addr, &first_fallback),
         "delayed errors from the failed branch must not poison its replacement"
+    );
+    assert!(
+        node.dataplane
+            .fsp_owner_activity(&remote_addr)
+            .unwrap()
+            .max_sent_wire_len()
+            < crate::mmp::MIN_ACTIONABLE_PATH_MTU,
+        "only the replacement path's small warmup may remain as sent-size evidence"
     );
 }
 

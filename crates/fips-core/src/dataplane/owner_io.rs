@@ -124,6 +124,10 @@ impl OwnerState {
         self.apply_fsp_wrap_route(&mut packet);
         self.apply_fsp_direct_transport_flag(&mut packet);
         self.reserve_fsp_coords_warmup(&mut packet);
+        if let Some(wire_len) = packet.fsp_wrapped_wire_len() {
+            let wire_len = u16::try_from(wire_len).unwrap_or(u16::MAX);
+            self.max_sent_wire_len = self.max_sent_wire_len.max(wire_len);
+        }
         let fsp_next_hop = packet.fsp_next_hop();
         let fsp_application_data_len = packet.fsp_application_data_len();
         if let Some(tick) = packet.activity_tick {
@@ -347,6 +351,24 @@ impl OwnerState {
         self.last_delivery_report_activity = None;
         self.last_delivery_report_next_hop = None;
         self.last_delivery_report_cumulative_packets_recv = None;
+        true
+    }
+
+    pub(crate) fn clear_fsp_sent_wire_len(&mut self) -> bool {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return false;
+        }
+        self.max_sent_wire_len = 0;
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_fsp_sent_wire_len_for_test(&mut self, wire_len: usize) -> bool {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return false;
+        }
+        let wire_len = u16::try_from(wire_len).unwrap_or(u16::MAX);
+        self.max_sent_wire_len = self.max_sent_wire_len.max(wire_len);
         true
     }
 
