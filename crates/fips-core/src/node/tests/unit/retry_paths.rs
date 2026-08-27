@@ -553,6 +553,97 @@ async fn direct_refresh_expedites_existing_rekey_without_changing_sender_index()
 }
 
 #[tokio::test]
+async fn direct_refresh_rearms_exhausted_inflight_candidate_without_changing_sender_index() {
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+    let active_link_id = LinkId::new(1);
+    let (conn, identity) =
+        make_completed_connection(&mut node, active_link_id, transport_id, 1_000);
+    let node_addr = *identity.node_addr();
+    let remote_addr = TransportAddr::from_string("127.0.0.1:5000");
+    let peer_config =
+        crate::config::PeerConfig::new(identity.npub(), "udp", remote_addr.to_string());
+
+    node.config.peers = vec![peer_config.clone()];
+    node.add_connection(conn).unwrap();
+    node.promote_connection(active_link_id, identity, 2_000)
+        .unwrap();
+    node.mark_session_direct_path_degraded(node_addr, Node::now_ms());
+    node.get_peer_mut(&node_addr).unwrap().mark_stale();
+
+    let (packet_tx, _packet_rx) = packet_channel(8);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("direct-retry".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    node.initiate_connection(
+        transport_id,
+        remote_addr,
+        PeerIdentity::from_npub(&peer_config.npub).unwrap(),
+    )
+    .await
+    .unwrap();
+    let pending_link_id = node
+        .peers
+        .connection_keys()
+        .next()
+        .copied()
+        .expect("in-flight direct candidate");
+    let sender_index = node
+        .peers
+        .get_connection(&pending_link_id)
+        .and_then(PeerConnection::our_index)
+        .expect("candidate sender index");
+    let max_resends = node.config.node.rate_limit.handshake_max_resends;
+    let pending = node
+        .peers
+        .get_connection_mut(&pending_link_id)
+        .expect("in-flight direct candidate");
+    for _ in 0..max_resends {
+        pending.record_resend(u64::MAX);
+    }
+    assert_eq!(pending.resend_count(), max_resends);
+    assert_eq!(pending.next_resend_at_ms(), u64::MAX);
+
+    let refresh_started_at_ms = Node::now_ms();
+    assert!(
+        node.initiate_active_peer_direct_refresh_connection(&peer_config)
+            .await
+            .unwrap(),
+        "a pending candidate must count as an active direct refresh attempt"
+    );
+
+    let pending = node
+        .peers
+        .get_connection(&pending_link_id)
+        .expect("direct refresh must retain the existing Noise sender index");
+    assert_eq!(pending.our_index(), Some(sender_index));
+    assert_eq!(
+        pending.resend_count(),
+        0,
+        "an explicit recovery retry must re-arm a candidate whose ordinary resend budget was exhausted during the outage"
+    );
+    assert!(
+        pending.next_resend_at_ms() >= refresh_started_at_ms
+            && pending.next_resend_at_ms() <= Node::now_ms(),
+        "the re-armed candidate must be eligible on the next maintenance tick"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
 async fn direct_refresh_waits_for_fmp_drain_before_starting_another_rekey() {
     let mut node = make_node();
     let peer_full = Identity::generate();

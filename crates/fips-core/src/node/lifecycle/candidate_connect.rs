@@ -64,6 +64,33 @@ impl Node {
         })
     }
 
+    pub(super) fn rearm_pending_outbound_handshake_on_path(
+        &mut self,
+        peer_node_addr: &NodeAddr,
+        transport_id: TransportId,
+        remote_addr: &TransportAddr,
+        now_ms: u64,
+    ) -> bool {
+        let pending_link_id = self
+            .peers
+            .connection_iter()
+            .find(|(_, connection)| {
+                connection.is_outbound()
+                    && connection.transport_id() == Some(transport_id)
+                    && connection.source_addr() == Some(remote_addr)
+                    && connection
+                        .expected_identity()
+                        .is_some_and(|identity| identity.node_addr() == peer_node_addr)
+            })
+            .map(|(link_id, _)| *link_id);
+        let Some(pending_link_id) = pending_link_id else {
+            return false;
+        };
+        self.peers
+            .get_connection_mut(&pending_link_id)
+            .is_some_and(|connection| connection.rearm_handshake_msg1_resends(now_ms))
+    }
+
     pub(in crate::node) fn should_warm_auto_connect_session(
         &self,
         peer_node_addr: &NodeAddr,

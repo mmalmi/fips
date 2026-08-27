@@ -410,6 +410,24 @@ impl PeerConnection {
         self.next_resend_at_ms = next_resend_at_ms;
     }
 
+    /// Re-arm an outbound Msg1 after stronger path-recovery evidence.
+    ///
+    /// The ordinary resend budget may be exhausted while an underlay is down.
+    /// A later explicit direct-path refresh must keep the same sender index the
+    /// responder may already own, while making that existing handshake
+    /// eligible again instead of waiting for the full connection timeout.
+    pub(crate) fn rearm_handshake_msg1_resends(&mut self, next_resend_at_ms: u64) -> bool {
+        if !self.is_outbound()
+            || self.handshake_state != HandshakeState::SentMsg1
+            || self.handshake_msg1.is_none()
+        {
+            return false;
+        }
+        self.resend_count = 0;
+        self.next_resend_at_ms = next_resend_at_ms;
+        true
+    }
+
     // === Noise Handshake Operations ===
 
     /// Start the handshake as initiator and generate message 1.

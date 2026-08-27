@@ -342,12 +342,30 @@ impl Node {
 
             if self.is_connecting_to_peer_on_path(&peer_node_addr, transport_id, &remote_addr) {
                 attempted = true;
-                debug!(
-                    npub = %peer_config.npub,
-                    transport_id = %transport_id,
-                    remote_addr = %remote_addr,
-                    "Skipping duplicate in-flight candidate path"
-                );
+                let rearmed = self
+                    .session_direct_degradation
+                    .has_pending_validation(&peer_node_addr)
+                    && self.rearm_pending_outbound_handshake_on_path(
+                        &peer_node_addr,
+                        transport_id,
+                        &remote_addr,
+                        Self::now_ms(),
+                    );
+                if rearmed {
+                    debug!(
+                        npub = %peer_config.npub,
+                        transport_id = %transport_id,
+                        remote_addr = %remote_addr,
+                        "Re-armed in-flight candidate for direct-path recovery"
+                    );
+                } else {
+                    debug!(
+                        npub = %peer_config.npub,
+                        transport_id = %transport_id,
+                        remote_addr = %remote_addr,
+                        "Skipping duplicate in-flight candidate path"
+                    );
+                }
                 continue;
             }
 
