@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.66] - 2026-08-28
+
+### Fixed
+
+- Re-arm an authenticated direct-path handshake after its ordinary resend
+  budget is exhausted, so repeated outages and live source-address changes
+  recover without waiting for the full handshake timeout.
+- Release `nvpn-fips-core` and `nvpn-fips-endpoint` 0.4.66 together. FMP,
+  FSP, discovery, routing, and physical transport wire formats are unchanged.
+
 ## [0.4.65] - 2026-08-25
 
 ### Changed
