@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.68] - 2026-08-28
+
+### Fixed
+
+- Recover authenticated automatic and fallback routes promptly across repeated
+  carrier loss, address changes, and live network rebinds, including while
+  session rekey traffic is in flight.
+- Preserve established FSP path activity, MMP accounting continuity, pending
+  key epochs, and cross-connection recovery state during rebind and rekey.
+- Release `nvpn-fips-core` and `nvpn-fips-endpoint` 0.4.68 together. FMP,
+  FSP, discovery, routing, and physical transport wire formats are unchanged.
+
 ## [0.4.67] - 2026-08-28
 
 ### Fixed

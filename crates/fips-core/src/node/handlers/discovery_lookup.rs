@@ -167,11 +167,22 @@ impl Node {
     /// [`Self::check_pending_lookups`] when each attempt's per-attempt timeout
     /// expires, using the sequence in `node.discovery.attempt_timeouts_secs`.
     pub(in crate::node) async fn maybe_initiate_lookup(&mut self, dest: &NodeAddr) {
+        self.maybe_initiate_lookup_with_purpose(dest, false).await;
+    }
+
+    async fn maybe_initiate_lookup_with_purpose(
+        &mut self,
+        dest: &NodeAddr,
+        path_recovery: bool,
+    ) {
         let now_ms = Self::now_ms();
 
         let max_pending = self.config.node.session.pending_max_destinations;
         let admission = self.pending_lookups.admission_for(dest, max_pending);
         if admission.deduplicated() {
+            if path_recovery {
+                self.pending_lookups.mark_path_recovery(dest);
+            }
             self.stats_mut().discovery.req_deduplicated += 1;
             debug!(
                 target_node = %self.peer_display_name(dest),
@@ -220,6 +231,9 @@ impl Node {
         }
 
         self.pending_lookups.insert_new(*dest, now_ms);
+        if path_recovery {
+            self.pending_lookups.mark_path_recovery(dest);
+        }
         let ttl = self.config.node.discovery.ttl;
         let sent = self.initiate_lookup(dest, ttl).await;
 
@@ -257,7 +271,7 @@ impl Node {
         if self.retry_pending.contains_key(dest) {
             self.maybe_initiate_direct_path_fallback_lookup(dest).await;
         } else {
-            self.maybe_initiate_lookup(dest).await;
+            self.maybe_initiate_lookup_with_purpose(dest, true).await;
         }
     }
 
@@ -429,7 +443,7 @@ impl Node {
             }
         }
 
-        self.maybe_initiate_lookup(dest).await;
+        self.maybe_initiate_lookup_with_purpose(dest, true).await;
     }
 
     /// Check pending lookups for next-attempt or final timeout.

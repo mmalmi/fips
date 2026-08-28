@@ -518,7 +518,7 @@ fn test_historical_outbound_session_counter_does_not_deprioritize_direct() {
 }
 
 #[tokio::test]
-async fn test_stale_direct_session_trust_does_not_reprobe_healthy_link() {
+async fn test_automatic_fallback_keeps_direct_payload_reprobe_active() {
     let mut node = make_reply_learned_node_with_tree_peer();
     let fallback_next_hop = *node.peer_ids().next().expect("fallback peer");
     let remote = Identity::generate();
@@ -544,12 +544,12 @@ async fn test_stale_direct_session_trust_does_not_reprobe_healthy_link() {
     node.check_link_heartbeats().await;
 
     assert!(
-        !node.retry_pending.contains_key(&remote_addr),
-        "session trust aging alone must not restart a healthy direct link"
+        node.retry_pending.contains_key(&remote_addr),
+        "automatic fallback must keep probing until direct endpoint payload is authenticated"
     );
     assert!(
         !node.pending_lookups.contains_key(&remote_addr),
-        "session trust aging alone must not start link-dead fallback discovery"
+        "a working learned fallback does not need duplicate discovery"
     );
     assert_eq!(
         node.find_next_hop(&remote_addr)

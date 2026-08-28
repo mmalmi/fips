@@ -334,17 +334,15 @@ mod tests {
             dataplane_fmp_link_pending_policy(&established).continuation_turns,
             DATAPLANE_PENDING_OUTBOUND_FAST_CONTINUATION_TURNS
         );
-        assert_eq!(
-            dataplane_fmp_link_pending_policy(&[
-                LinkMessageType::LookupRequest.to_byte()
-            ])
-            .crypto_limit,
-            DATAPLANE_PENDING_OUTBOUND_CONTROL_CRYPTO_LIMIT
-        );
-        assert_eq!(
-            dataplane_fmp_link_pending_policy(&[LinkMessageType::Heartbeat.to_byte()]).crypto_limit,
-            DATAPLANE_PENDING_OUTBOUND_FAST_POLICY.crypto_limit
-        );
+    }
+
+    #[test]
+    fn pending_receipt_crypto_budget_covers_configured_owner_window() {
+        let mut config = Config::new();
+        config.node.limits.max_pending_inbound = 1_237;
+        let node = Node::new(config).unwrap();
+
+        assert_eq!(node.dataplane_pending_outbound_crypto_limit(), 1_237);
     }
 
     #[tokio::test]

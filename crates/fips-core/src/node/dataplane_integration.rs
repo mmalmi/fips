@@ -13,7 +13,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 const DATAPLANE_PENDING_OUTBOUND_FAST_CONTINUATION_TURNS: usize = 2;
 const DATAPLANE_PENDING_OUTBOUND_CONTROL_CONTINUATION_TURNS: usize = 8;
-const DATAPLANE_PENDING_OUTBOUND_CONTROL_CRYPTO_LIMIT: usize = 64;
 const DATAPLANE_PENDING_OUTBOUND_COMPLETION_TIMEOUT: std::time::Duration =
     std::time::Duration::from_millis(100);
 const DATAPLANE_DEFERRED_CONTROL_TURN_DRAIN_LIMIT: usize = 64;
@@ -85,7 +84,6 @@ enum DataplanePendingOutboundFailure {
 #[derive(Clone, Copy)]
 struct DataplanePendingOutboundPolicy {
     continuation_turns: usize,
-    crypto_limit: usize,
 }
 
 struct DataplanePendingSendTokenReceipts {
@@ -122,12 +120,10 @@ impl DataplanePendingSendTokenReceipts {
 const DATAPLANE_PENDING_OUTBOUND_FAST_POLICY: DataplanePendingOutboundPolicy =
     DataplanePendingOutboundPolicy {
         continuation_turns: DATAPLANE_PENDING_OUTBOUND_FAST_CONTINUATION_TURNS,
-        crypto_limit: 1,
     };
 const DATAPLANE_PENDING_OUTBOUND_PATIENT_CONTROL_POLICY: DataplanePendingOutboundPolicy =
     DataplanePendingOutboundPolicy {
         continuation_turns: DATAPLANE_PENDING_OUTBOUND_CONTROL_CONTINUATION_TURNS,
-        crypto_limit: DATAPLANE_PENDING_OUTBOUND_CONTROL_CRYPTO_LIMIT,
     };
 
 impl Node {
@@ -190,7 +186,7 @@ impl Node {
                 send_token,
                 1,
                 pending_policy.continuation_turns,
-                pending_policy.crypto_limit,
+                self.dataplane_pending_outbound_crypto_limit(),
             )
             .await
         {
@@ -392,7 +388,7 @@ impl Node {
                 send_token,
                 payload_count,
                 DATAPLANE_PENDING_OUTBOUND_PATIENT_CONTROL_POLICY.continuation_turns,
-                DATAPLANE_PENDING_OUTBOUND_PATIENT_CONTROL_POLICY.crypto_limit,
+                self.dataplane_pending_outbound_crypto_limit(),
             )
             .await;
         self.process_dataplane_pending_outbound_bookkeeping().await;
@@ -593,7 +589,7 @@ impl Node {
                 send_token,
                 1,
                 DATAPLANE_PENDING_OUTBOUND_PATIENT_CONTROL_POLICY.continuation_turns,
-                DATAPLANE_PENDING_OUTBOUND_PATIENT_CONTROL_POLICY.crypto_limit,
+                self.dataplane_pending_outbound_crypto_limit(),
             )
             .await;
         self.process_dataplane_pending_outbound_bookkeeping().await;
@@ -643,6 +639,14 @@ impl Node {
                 reason: Self::dataplane_pending_outbound_failure_from_stop(label, &failure),
             }),
         }
+    }
+
+    fn dataplane_pending_outbound_crypto_limit(&self) -> usize {
+        // A priority packet can be dispatched behind a full owner window and
+        // cannot retire before every lower counter. Drain that same configured
+        // window while awaiting its exact terminal receipt; a smaller fixed
+        // budget abandons live heartbeats/MMP in the queue under bulk load.
+        self.config.node.limits.max_pending_inbound.max(1)
     }
 
     async fn drive_dataplane_pending_outbound_turn(

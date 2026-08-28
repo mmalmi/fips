@@ -189,7 +189,7 @@ async fn network_transport_rebind_replaces_udp_upgrade_for_configured_websocket_
 }
 
 #[tokio::test]
-async fn network_transport_rebind_retires_previous_carrier_rekey_drain() {
+async fn network_transport_rebind_preserves_live_rekey_drain() {
     let remote = Identity::generate();
     let remote_addr = *remote.node_addr();
     let mut config = Config::new();
@@ -221,8 +221,8 @@ async fn network_transport_rebind_retires_previous_carrier_rekey_drain() {
 
     assert_eq!(node.apply_prepared_network_rebind(None).await.unwrap(), 1);
     assert!(
-        !node.get_peer(&remote_addr).unwrap().is_draining(),
-        "carrier replacement must retire the previous carrier epoch instead of blocking the next recovery rekey until the ordinary drain timeout"
+        node.get_peer(&remote_addr).unwrap().is_draining(),
+        "replacing only the local UDP socket must preserve the previous authenticated epoch while the remote peer may still be sending it"
     );
 
     for transport in node.transports.values_mut() {

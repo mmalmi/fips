@@ -375,6 +375,45 @@
     }
 
     #[test]
+    fn fast_ingress_reserves_priority_for_encrypted_discovery_control() {
+        let peer = NodeAddr::from_bytes([0x50; 16]);
+        let owner = OwnerId::fmp_node(peer);
+        let transport_id = TransportId::new(50);
+        let remote_addr = TransportAddr::from_string("198.51.100.50:9000");
+        let receiver_idx = 5050;
+        let route = DataplaneIngressRoute::new(owner, 13, OutputTarget::Transport)
+            .with_class(PacketClass::Bulk);
+        let mut routes = DataplaneLiveRouteTable::default();
+        routes.register_fmp(transport_id, receiver_idx, route);
+
+        let plaintext_len = 46 + 16;
+        let mut wire = vec![0u8; FMP_ESTABLISHED_HEADER_SIZE + plaintext_len + AEAD_TAG_SIZE];
+        wire[0] = (FMP_VERSION << 4) | FMP_PHASE_ESTABLISHED;
+        wire[2..4].copy_from_slice(&(plaintext_len as u16).to_le_bytes());
+        wire[4..8].copy_from_slice(&receiver_idx.to_le_bytes());
+        wire[8..16].copy_from_slice(&5000u64.to_le_bytes());
+
+        let (sink, mut fast_rx) = DataplaneEstablishedFastIngressSink::channel(
+            routes.established_fast_ingress_snapshot(),
+            4,
+        );
+        let mut packets = vec![ReceivedPacket::with_timestamp(
+            transport_id,
+            remote_addr,
+            PacketBuffer::new(wire),
+            50_000,
+        )];
+
+        assert_eq!(sink.try_ingest_batch(&mut packets), 1);
+        let batch = fast_rx.try_recv().expect("discovery fast batch");
+        let mut runs = batch.into_runs();
+        let (_, lane, mut packets) = runs.pop().expect("discovery fast run").into_parts();
+        let packet = packets.pop().expect("discovery socket packet");
+        assert_eq!(lane, Lane::Priority);
+        assert_eq!(packet.class, PacketClass::Control);
+    }
+
+    #[test]
     fn direct_fsp_transport_segments_reassemble_before_classification() {
         let source = NodeAddr::from_bytes([0x45; 16]);
         let owner = OwnerId::fsp_node(source);

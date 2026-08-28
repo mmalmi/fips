@@ -488,12 +488,13 @@ impl DataplaneEstablishedFastIngressSink {
 
         let source_path = TransportPath::live(packet.transport_id, packet.remote_addr.clone());
         let activity_tick = ActivityTick::new(packet.timestamp_ms);
+        let class = header.visible_priority_class().unwrap_or(route.class);
         let mut socket_packet = SocketPacket::new(
             route.owner,
             route.generation,
             header.counter(),
             header.ciphertext_offset(),
-            route.class,
+            class,
             route.output,
             packet.data,
         )

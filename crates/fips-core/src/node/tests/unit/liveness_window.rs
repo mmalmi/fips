@@ -429,8 +429,12 @@ async fn active_endpoint_traffic_on_quiet_traversal_path_warms_fallback() {
         "active outbound traffic without authenticated return should warm fallback before full link-dead"
     );
     assert!(
-        !node.session_direct_path_is_degraded(&peer_addr, Node::now_ms()),
-        "quiet active-traffic evidence should de-prioritize exclusive direct trust without declaring the path dead"
+        node.pending_lookups.is_path_recovery(&peer_addr),
+        "the lookup must remember that it was triggered by failed direct payload return"
+    );
+    assert!(
+        node.session_direct_path_is_degraded(&peer_addr, Node::now_ms()),
+        "quiet active-traffic evidence should de-prioritize the direct payload path without declaring the peer link dead"
     );
     let fallback = node.find_next_hop(&peer_addr).expect("fallback route");
     assert_eq!(

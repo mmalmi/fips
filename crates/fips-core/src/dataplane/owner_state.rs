@@ -135,6 +135,50 @@ impl OwnerState {
         self.previous_fsp_replay_window = None;
     }
 
+    fn rekey_preserving_fsp_path_activity(&mut self, generation: u64) {
+        let last_rx_activity = self.last_rx_activity;
+        let last_authenticated_rx_activity = self.last_authenticated_rx_activity;
+        let last_rx_previous_hop = self.last_rx_previous_hop;
+        let last_rx_data_activity = self.last_rx_data_activity;
+        let last_rx_data_previous_hop = self.last_rx_data_previous_hop;
+        let last_data_return_activity = self.last_data_return_activity;
+        let last_data_return_next_hop = self.last_data_return_next_hop;
+        let last_delivery_report_activity = self.last_delivery_report_activity;
+        let last_delivery_report_next_hop = self.last_delivery_report_next_hop;
+        let last_delivery_report_cumulative_packets_recv =
+            self.last_delivery_report_cumulative_packets_recv;
+        let last_tx_data_activity = self.last_tx_data_activity;
+        let last_outbound_next_hop = self.last_outbound_next_hop;
+        let fsp_mmp_path_changed_since_report = self.fsp_mmp_path_changed_since_report;
+        let max_sent_wire_len = self.max_sent_wire_len;
+        let data_packets_sent = self.data_packets_sent;
+        let data_packets_recv = self.data_packets_recv;
+        let data_bytes_sent = self.data_bytes_sent;
+        let data_bytes_recv = self.data_bytes_recv;
+
+        self.rekey(generation);
+
+        self.last_rx_activity = last_rx_activity;
+        self.last_authenticated_rx_activity = last_authenticated_rx_activity;
+        self.last_rx_previous_hop = last_rx_previous_hop;
+        self.last_rx_data_activity = last_rx_data_activity;
+        self.last_rx_data_previous_hop = last_rx_data_previous_hop;
+        self.last_data_return_activity = last_data_return_activity;
+        self.last_data_return_next_hop = last_data_return_next_hop;
+        self.last_delivery_report_activity = last_delivery_report_activity;
+        self.last_delivery_report_next_hop = last_delivery_report_next_hop;
+        self.last_delivery_report_cumulative_packets_recv =
+            last_delivery_report_cumulative_packets_recv;
+        self.last_tx_data_activity = last_tx_data_activity;
+        self.last_outbound_next_hop = last_outbound_next_hop;
+        self.fsp_mmp_path_changed_since_report = fsp_mmp_path_changed_since_report;
+        self.max_sent_wire_len = max_sent_wire_len;
+        self.data_packets_sent = data_packets_sent;
+        self.data_packets_recv = data_packets_recv;
+        self.data_bytes_sent = data_bytes_sent;
+        self.data_bytes_recv = data_bytes_recv;
+    }
+
     #[cfg(test)]
     pub(crate) fn set_crypto_keys(&mut self, keys: OwnerCryptoKeys) {
         self.crypto_keys = Some(keys);
@@ -379,7 +423,15 @@ impl OwnerState {
 
     pub(crate) fn apply_live_config(&mut self, config: OwnerConfig) {
         if config.generation != self.generation {
-            self.rekey(config.generation);
+            let staged_fsp_cutover = self.owner.protocol() == PacketProtocol::Fsp
+                && config
+                    .fsp_current_k_bit
+                    .is_some_and(|current_k_bit| self.pending_fsp_k_bit == Some(current_k_bit));
+            if staged_fsp_cutover {
+                self.rekey_preserving_fsp_path_activity(config.generation);
+            } else {
+                self.rekey(config.generation);
+            }
         }
         if let Some(authority) = config.send_counter_authority {
             self.set_send_counter_authority(authority);

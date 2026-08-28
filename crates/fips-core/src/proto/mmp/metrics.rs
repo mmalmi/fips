@@ -57,6 +57,7 @@ pub struct MmpMetrics {
     /// route-quality sample was emitted.
     forward_loss_window_span: u64,
     forward_loss_window_lost: u64,
+    forward_loss_window_samples: u8,
 
     // --- State for reverse delivery ratio delta computation ---
     /// Previous reverse-side cumulative packets received (our receiver state).
@@ -86,6 +87,7 @@ impl MmpMetrics {
         self.last_forward_loss_rate = None;
         self.forward_loss_window_span = 0;
         self.forward_loss_window_lost = 0;
+        self.forward_loss_window_samples = 0;
     }
 
     /// Reset state derived from ReceiverReport counters for rekey cutover.
@@ -126,6 +128,7 @@ impl MmpMetrics {
             last_forward_loss_rate: None,
             forward_loss_window_span: 0,
             forward_loss_window_lost: 0,
+            forward_loss_window_samples: 0,
             prev_reverse_packets: 0,
             prev_reverse_highest: 0,
             has_prev_reverse: false,
@@ -227,9 +230,16 @@ impl MmpMetrics {
                 self.last_forward_loss_rate = Some(loss_rate);
                 self.forward_loss_window_span =
                     self.forward_loss_window_span.saturating_add(counter_span);
+                // Parallel decrypt/output completion can make a report's
+                // highest counter jump ahead of packets that arrive before
+                // the following report. Carry the apparent gap forward, then
+                // let excess packets in that next interval compensate it.
                 self.forward_loss_window_lost = self
                     .forward_loss_window_lost
-                    .saturating_add(counter_span.saturating_sub(packets_delta));
+                    .saturating_add(counter_span.saturating_sub(packets_delta))
+                    .saturating_sub(packets_delta.saturating_sub(counter_span));
+                self.forward_loss_window_samples =
+                    self.forward_loss_window_samples.saturating_add(1);
                 self.loss_trend.update(loss_rate);
                 self.etx = compute_etx(self.delivery_ratio_forward, self.delivery_ratio_reverse);
                 self.etx_trend.update(self.etx);
@@ -342,19 +352,12 @@ impl MmpMetrics {
             return self.last_forward_loss_sample();
         }
 
-        if self.last_forward_counter_span >= min_span
-            && let Some(loss) = self.last_forward_loss_rate
-        {
-            self.forward_loss_window_span = 0;
-            self.forward_loss_window_lost = 0;
-            return Some((self.last_forward_counter_span, loss));
-        }
-
-        if self.forward_loss_window_span >= min_span {
+        if self.forward_loss_window_span >= min_span && self.forward_loss_window_samples >= 2 {
             let span = self.forward_loss_window_span;
             let loss = (self.forward_loss_window_lost as f64 / span as f64).clamp(0.0, 1.0);
             self.forward_loss_window_span = 0;
             self.forward_loss_window_lost = 0;
+            self.forward_loss_window_samples = 0;
             return Some((span, loss));
         }
 
@@ -498,6 +501,33 @@ mod tests {
         let loss = m.loss_rate();
         assert!((loss - 0.05).abs() < 0.01, "loss={loss}, expected ~0.05");
         assert_eq!(m.last_forward_loss_sample(), Some((200, loss)));
+    }
+
+    #[test]
+    fn route_loss_evidence_waits_for_reordered_completion_to_settle() {
+        let mut m = MmpMetrics::new();
+        let t0 = Instant::now();
+
+        m.process_receiver_report(&make_rr(100, 100, 50_000, 0, 0, 0), 0, t0);
+        m.process_receiver_report(
+            &make_rr(200, 180, 90_000, 0, 0, 0),
+            0,
+            t0 + Duration::from_secs(1),
+        );
+        assert_eq!(
+            m.take_forward_loss_evidence(16),
+            None,
+            "one high-rate report must not demote a path before late parallel completions can arrive"
+        );
+
+        let mut settled = make_rr(300, 300, 150_000, 0, 0, 0);
+        settled.cumulative_reorder_count = 20;
+        m.process_receiver_report(&settled, 0, t0 + Duration::from_secs(2));
+        let (span, loss) = m
+            .take_forward_loss_evidence(16)
+            .expect("two reports provide settled route-loss evidence");
+        assert_eq!(span, 200);
+        assert_eq!(loss, 0.0, "late packets must compensate the apparent gap");
     }
 
     #[test]

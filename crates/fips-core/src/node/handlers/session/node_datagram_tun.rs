@@ -166,6 +166,17 @@ impl Node {
         datagram: &mut SessionDatagram,
     ) -> Result<SessionDatagramRuntimeRoute, NodeError> {
         let dest_addr = datagram.dest_addr;
+        let now_ms = Self::now_ms();
+        let direct_payload_blocked =
+            self.session_direct_path_blocks_direct_payload(&dest_addr, now_ms);
+        if direct_payload_blocked
+            && let Some(next_hop_addr) = self
+                .find_next_hop(&dest_addr)
+                .map(|peer| *peer.node_addr())
+                .filter(|next_hop_addr| next_hop_addr != &dest_addr)
+        {
+            return Ok(self.prepare_session_datagram_runtime_route(datagram, next_hop_addr));
+        }
         if self
             .peers
             .get(&dest_addr)

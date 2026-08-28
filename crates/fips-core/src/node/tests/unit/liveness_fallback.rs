@@ -71,12 +71,21 @@ async fn authenticated_control_return_does_not_keep_direct_payload_route_trusted
     node.sessions.insert(peer_addr, session);
     seed_dataplane_fsp_data_sent_for_test(&mut node, peer_addr, peer_addr, now_ms);
     seed_dataplane_fsp_control_rx_for_test(&mut node, peer_addr, peer_addr, now_ms);
+    // Model the production race where route selection notices expired direct
+    // trust and sends through a known relay just before the heartbeat pass.
+    // The latest outbound hop is then indirect, so the direct-only predicate
+    // must not lose the decision to keep probing the configured carrier.
+    seed_dataplane_fsp_data_sent_for_test(&mut node, peer_addr, transit_addr, now_ms + 1);
 
     node.check_link_heartbeats().await;
 
     assert!(
-        !node.retry_pending.contains_key(&peer_addr),
-        "fresh authenticated control/session return can stop direct-probe churn"
+        node.retry_pending.contains_key(&peer_addr),
+        "automatic fallback must keep probing the direct path while payload return is missing"
+    );
+    assert!(
+        node.session_direct_path_degradation_active(&peer_addr, Node::now_ms()),
+        "automatic fallback must retain the degraded-direct decision until direct payload validates recovery"
     );
     assert!(
         !node.pending_lookups.contains_key(&peer_addr),

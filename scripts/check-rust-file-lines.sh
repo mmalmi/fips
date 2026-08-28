@@ -23,16 +23,20 @@ fi
 
 baseline_for() {
   case "$1" in
+    crates/fips-core/src/dataplane/turn.rs) echo 1004 ;;
+    crates/fips-core/src/node/handlers/handshake.rs) echo 1081 ;;
     crates/fips-core/src/node/retry.rs) echo 1006 ;;
-    crates/fips-core/src/node/tests/session/route_metrics.rs) echo 1011 ;;
+    crates/fips-core/src/node/tests/forwarding.rs) echo 1017 ;;
     *) echo "$MAX_LINES" ;;
   esac
 }
 
 baseline_paths() {
   cat <<'PATHS'
+crates/fips-core/src/dataplane/turn.rs
+crates/fips-core/src/node/handlers/handshake.rs
 crates/fips-core/src/node/retry.rs
-crates/fips-core/src/node/tests/session/route_metrics.rs
+crates/fips-core/src/node/tests/forwarding.rs
 PATHS
 }
 

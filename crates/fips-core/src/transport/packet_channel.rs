@@ -295,19 +295,24 @@ impl Eq for PacketBuffer {}
 /// FMP packet shape that is visible before dataplane authenticates established data.
 ///
 /// Bulk app data is opaque phase-0 data here, so the transport channel only
-/// promotes exact control-sized frames that can be identified from public wire
-/// length: handshakes, link heartbeats, and fixed-size link MMP reports.
+/// promotes control-shaped frames that can be identified from public wire
+/// length: handshakes, link heartbeats, link MMP reports, and discovery.
 const FMP_VERSION: u8 = crate::node::wire::FMP_VERSION;
 const FMP_PHASE_ESTABLISHED: u8 = crate::node::wire::PHASE_ESTABLISHED;
 const FMP_PHASE_MSG1: u8 = crate::node::wire::PHASE_MSG1;
 const FMP_PHASE_MSG2: u8 = crate::node::wire::PHASE_MSG2;
 const FMP_COMMON_PREFIX_SIZE: usize = crate::node::wire::COMMON_PREFIX_SIZE;
-const FMP_ESTABLISHED_HEADER_SIZE: usize = crate::node::wire::ESTABLISHED_HEADER_SIZE;
 const FMP_MSG1_WIRE_SIZE: usize = crate::node::wire::MSG1_WIRE_SIZE;
 const FMP_MSG2_WIRE_SIZE: usize = crate::node::wire::MSG2_WIRE_SIZE;
+#[cfg(test)]
+const FMP_ESTABLISHED_HEADER_SIZE: usize = crate::node::wire::ESTABLISHED_HEADER_SIZE;
+#[cfg(test)]
 const AEAD_TAG_SIZE: usize = crate::noise::TAG_SIZE;
+#[cfg(test)]
 const FMP_HEARTBEAT_PLAINTEXT_SIZE: usize = 4 + 1;
+#[cfg(test)]
 const FMP_MMP_SENDER_REPORT_PLAINTEXT_SIZE: usize = crate::mmp::SENDER_REPORT_WIRE_SIZE;
+#[cfg(test)]
 const FMP_MMP_RECEIVER_REPORT_PLAINTEXT_SIZE: usize = crate::mmp::RECEIVER_REPORT_WIRE_SIZE;
 
 fn is_transport_priority_packet(data: &[u8]) -> bool {
@@ -330,24 +335,10 @@ fn is_transport_priority_packet(data: &[u8]) -> bool {
 }
 
 fn is_fmp_established_priority_packet(data: &[u8]) -> bool {
-    if data.len() < FMP_ESTABLISHED_HEADER_SIZE.saturating_add(AEAD_TAG_SIZE) {
-        return false;
-    }
-
-    let payload_len = usize::from(u16::from_le_bytes([data[2], data[3]]));
-    let expected_len = FMP_ESTABLISHED_HEADER_SIZE
-        .saturating_add(payload_len)
-        .saturating_add(AEAD_TAG_SIZE);
-    if data.len() != expected_len {
-        return false;
-    }
-
-    matches!(
-        payload_len,
-        FMP_HEARTBEAT_PLAINTEXT_SIZE
-            | FMP_MMP_SENDER_REPORT_PLAINTEXT_SIZE
-            | FMP_MMP_RECEIVER_REPORT_PLAINTEXT_SIZE
-    )
+    crate::dataplane::FmpWireHeader::parse_encrypted(data)
+        .ok()
+        .and_then(|header| header.visible_priority_class())
+        .is_some()
 }
 
 /// Number of receive-batch Vec containers retained for reuse.

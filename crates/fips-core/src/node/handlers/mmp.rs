@@ -722,17 +722,38 @@ impl Node {
                 {
                     return None;
                 }
-                self.session_direct_path_exclusive_trust_expired(node_addr, now_ms)
+                let automatic_fallback_without_direct_probe = self
+                    .dataplane
+                    .fsp_owner_activity(node_addr)
+                    .and_then(|activity| activity.last_outbound_next_hop())
+                    .is_some_and(|next_hop| next_hop != *node_addr)
+                    && !self.retry_pending.contains_key(node_addr);
+                (self.session_direct_path_exclusive_trust_expired(node_addr, now_ms)
+                    || automatic_fallback_without_direct_probe)
                     .then_some(*node_addr)
             })
             .collect();
 
         for node_addr in unreturned_direct_payload_peers {
-            let selected_next_hop = self.find_next_hop(&node_addr).map(|peer| *peer.node_addr());
-            if selected_next_hop.is_some_and(|next_hop| next_hop != node_addr) {
+            if !self.has_sendable_fallback_lookup_peer(&node_addr) {
                 continue;
             }
-            if !self.has_sendable_fallback_lookup_peer(&node_addr) {
+
+            let selected_next_hop = self.find_next_hop(&node_addr).map(|peer| *peer.node_addr());
+            let fallback_already_selected =
+                selected_next_hop.is_some_and(|next_hop| next_hop != node_addr);
+            let newly_degraded = self.mark_session_direct_path_degraded(node_addr, now_ms);
+            if newly_degraded || !self.retry_pending.contains_key(&node_addr) {
+                self.schedule_link_dead_reprobe(node_addr, now_ms);
+            }
+            if fallback_already_selected {
+                debug!(
+                    peer = %self.peer_display_name(&node_addr),
+                    next_hop = ?selected_next_hop
+                        .map(|next_hop| self.peer_display_name(&next_hop)),
+                    newly_degraded,
+                    "Keeping automatic fallback active while probing direct payload recovery"
+                );
                 continue;
             }
 

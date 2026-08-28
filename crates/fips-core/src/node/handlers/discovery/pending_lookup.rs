@@ -14,6 +14,9 @@ pub struct PendingLookup {
     pub last_sent_ms: u64,
     /// Current attempt number (1 = initial, 2 = first retry, ...).
     pub attempt: u8,
+    /// This lookup was initiated because an established direct payload path
+    /// stopped returning authenticated traffic.
+    path_recovery: bool,
     origin_request_ids: Vec<u64>,
 }
 
@@ -23,6 +26,7 @@ impl PendingLookup {
             initiated_ms: now_ms,
             last_sent_ms: now_ms,
             attempt: 1,
+            path_recovery: false,
             origin_request_ids: Vec::new(),
         }
     }
@@ -141,6 +145,21 @@ impl PendingDiscoveryLookups {
         self.entries
             .get(dest)
             .is_some_and(|entry| entry.matches_origin_request(request_id))
+    }
+
+    pub(crate) fn mark_path_recovery(&mut self, dest: &NodeAddr) -> bool {
+        let Some(entry) = self.entries.get_mut(dest) else {
+            return false;
+        };
+        let changed = !entry.path_recovery;
+        entry.path_recovery = true;
+        changed
+    }
+
+    pub(crate) fn is_path_recovery(&self, dest: &NodeAddr) -> bool {
+        self.entries
+            .get(dest)
+            .is_some_and(|entry| entry.path_recovery)
     }
 
     #[cfg(test)]

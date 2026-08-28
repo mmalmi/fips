@@ -242,6 +242,91 @@ async fn degraded_session_defers_lookup_and_adopts_a_recovered_response_hop() {
 }
 
 #[tokio::test]
+async fn recovery_lookup_adopts_indirect_hop_despite_fresh_direct_payload_feedback() {
+    let target_identity = Identity::generate();
+    let target = *target_identity.node_addr();
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    config.peers.push(crate::config::PeerConfig {
+        npub: target_identity.npub(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::new("udp", "203.0.113.9:2121")],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: false,
+    });
+    let mut node = Node::new(config).unwrap();
+
+    let direct_link = LinkId::new(8);
+    let (direct_connection, direct_identity) = make_completed_connection_for_identity(
+        &mut node,
+        direct_link,
+        TransportId::new(8),
+        1_000,
+        &target_identity,
+    );
+    node.add_connection(direct_connection).unwrap();
+    node.promote_connection(direct_link, direct_identity, 2_000)
+        .unwrap();
+    assert!(node.sync_dataplane_fmp_owner(&target));
+
+    let transit_link = LinkId::new(9);
+    let (transit_connection, transit_identity) =
+        make_completed_connection(&mut node, transit_link, TransportId::new(9), 1_000);
+    let transit = *transit_identity.node_addr();
+    node.add_connection(transit_connection).unwrap();
+    node.promote_connection(transit_link, transit_identity, 2_000)
+        .unwrap();
+    assert!(node.sync_dataplane_fmp_owner(&transit));
+
+    assert!(node.register_endpoint_identity(target, target_identity.pubkey_full()));
+    insert_established_session(&mut node, &target_identity);
+    assert!(node.sync_dataplane_fsp_owner_from_current_session(&target, 0));
+
+    let now_ms = Node::now_ms();
+    seed_dataplane_fsp_data_sent_for_test(&mut node, target, target, now_ms);
+    seed_dataplane_fsp_data_rx_for_test(&mut node, target, target, now_ms);
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&target),
+        Some(target),
+        "fixture must begin on the loaded direct path"
+    );
+    assert!(
+        node.session_direct_path_has_recent_data_return(&target, now_ms),
+        "fixture must retain fresh direct-path feedback from the loaded flow"
+    );
+
+    let request_id = 0xfeed_7001;
+    seed_pending_lookup(&mut node, target, request_id);
+    assert!(node.pending_lookups.mark_path_recovery(&target));
+    let root = *node.tree_state().my_coords().root_id();
+    let coords = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
+    let proof_data = LookupResponse::proof_bytes(request_id, &target, &coords);
+    let response = LookupResponse::new(
+        request_id,
+        target,
+        coords,
+        target_identity.sign(&proof_data),
+    );
+    node.handle_lookup_response(&transit, &response.encode()[1..])
+        .await;
+
+    assert!(
+        node.session_direct_path_degradation_active(&target, Node::now_ms()),
+        "a target-signed indirect response during an active direct recovery must degrade the unvalidated direct route"
+    );
+    assert!(
+        node.retry_pending.contains_key(&target),
+        "fallback adoption must keep probing the configured direct path"
+    );
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&target),
+        Some(transit),
+        "the established FSP owner must immediately adopt the authenticated recovery hop"
+    );
+}
+
+#[tokio::test]
 async fn stale_signed_response_does_not_repin_an_established_degraded_session() {
     let mut config = Config::new();
     config.node.routing.mode = RoutingMode::ReplyLearned;

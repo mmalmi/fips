@@ -114,6 +114,17 @@ impl SenderState {
         Some(report)
     }
 
+    /// Discard the partial report interval when the AEAD counter epoch changes.
+    /// Cumulative traffic and report cadence remain session-scoped.
+    pub fn reset_for_rekey(&mut self) {
+        self.interval_start_counter = 0;
+        self.interval_start_timestamp = 0;
+        self.interval_bytes_sent = 0;
+        self.last_counter = 0;
+        self.last_timestamp = 0;
+        self.interval_has_data = false;
+    }
+
     /// Check if it's time to send a report.
     ///
     /// When consecutive send failures have occurred, the effective interval
@@ -274,6 +285,22 @@ mod tests {
         assert_eq!(report.interval_start_counter, 2);
         assert_eq!(report.interval_bytes_sent, 300);
         // Cumulative continues
+        assert_eq!(report.cumulative_packets_sent, 2);
+        assert_eq!(report.cumulative_bytes_sent, 800);
+    }
+
+    #[test]
+    fn reset_for_rekey_starts_a_fresh_counter_epoch_interval() {
+        let mut s = SenderState::new();
+        s.record_sent(8_000, 100, 500);
+
+        s.reset_for_rekey();
+        s.record_sent(0, 200, 300);
+
+        let report = s.build_report(Instant::now()).unwrap();
+        assert_eq!(report.interval_start_counter, 0);
+        assert_eq!(report.interval_end_counter, 0);
+        assert_eq!(report.interval_bytes_sent, 300);
         assert_eq!(report.cumulative_packets_sent, 2);
         assert_eq!(report.cumulative_bytes_sent, 800);
     }

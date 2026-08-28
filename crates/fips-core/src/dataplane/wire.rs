@@ -20,6 +20,7 @@ pub(crate) struct FmpWireHeader {
     receiver_idx: u32,
     counter: u64,
     flags: u8,
+    payload_len: u16,
 }
 
 impl FmpWireHeader {
@@ -42,6 +43,7 @@ impl FmpWireHeader {
                 data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15],
             ]),
             flags: data[1],
+            payload_len: u16::from_le_bytes([data[2], data[3]]),
         })
     }
 
@@ -71,9 +73,49 @@ impl FmpWireHeader {
         self.flags
     }
 
+    /// Priority class that can be inferred from the authenticated frame's
+    /// public ciphertext length before AEAD opening.
+    ///
+    /// Discovery coordinates make lookup messages variable-sized, but both
+    /// encodings have a distinct fixed prefix followed by one or more 16-byte
+    /// node addresses. This mirrors the existing heartbeat/MMP treatment and
+    /// preserves a bounded control path when bulk ingress is saturated. The
+    /// message is still authenticated before any plaintext is acted upon.
+    pub(crate) fn visible_priority_class(&self) -> Option<PacketClass> {
+        let payload_len = usize::from(self.payload_len);
+        if payload_len == 4 + 1 {
+            return Some(PacketClass::Liveness);
+        }
+        if matches!(
+            payload_len,
+            crate::mmp::SENDER_REPORT_WIRE_SIZE | crate::mmp::RECEIVER_REPORT_WIRE_SIZE
+        ) {
+            return Some(PacketClass::Mmp);
+        }
+        if fmp_discovery_control_payload_shape(payload_len) {
+            return Some(PacketClass::Control);
+        }
+        None
+    }
+
     pub(crate) fn ciphertext_offset(self) -> u16 {
         FMP_ESTABLISHED_HEADER_SIZE as u16
     }
+}
+
+fn fmp_discovery_control_payload_shape(payload_len: usize) -> bool {
+    const COORD_ADDR_SIZE: usize = 16;
+    // Includes message type and the coordinate-count field, but no entries.
+    const LOOKUP_REQUEST_FIXED_SIZE: usize = 46;
+    const LOOKUP_RESPONSE_FIXED_SIZE: usize = 93;
+
+    [LOOKUP_REQUEST_FIXED_SIZE, LOOKUP_RESPONSE_FIXED_SIZE]
+        .into_iter()
+        .any(|fixed| {
+            payload_len
+                .checked_sub(fixed)
+                .is_some_and(|coords| coords >= COORD_ADDR_SIZE && coords % COORD_ADDR_SIZE == 0)
+        })
 }
 
 #[cfg(test)]

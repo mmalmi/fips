@@ -214,22 +214,14 @@ impl Node {
             let mut preserved_udp_peers = Vec::new();
             for (peer_addr, can_preserve_udp_session) in rebound_peers {
                 self.pending_lookups.remove(&peer_addr);
-                // Packets queued on the previous carrier incarnation are
-                // rejected by transport_rebind_packet_cutoffs_ms above. Its
-                // previous FMP epoch can therefore no longer drain useful
-                // traffic; retaining it blocks the next recovery rekey when
-                // two network changes happen inside the ordinary drain window.
-                self.retire_fmp_rekey_drain_for_dead_path(&peer_addr, "network carrier rebind");
                 if can_preserve_udp_session {
-                    let has_pending_rekey = self.peers.get(&peer_addr).is_some_and(|peer| {
-                        peer.rekey_in_progress() || peer.pending_new_session().is_some()
-                    });
-                    if has_pending_rekey {
-                        self.abandon_fmp_rekey_for_peer(
-                            &peer_addr,
-                            "carrier rebind invalidated pending key epoch",
-                        );
-                    }
+                    // Replacing a local UDP socket does not invalidate Noise
+                    // keys. The remote peer can already be sending either a
+                    // pending epoch it adopted just before the rebind or the
+                    // previous epoch during an ordinary drain. Preserve both
+                    // until their authenticated key transition completes;
+                    // discarding either side here creates an asymmetric epoch
+                    // that only link-dead recovery can repair.
                     if self.sync_dataplane_fmp_owner(&peer_addr) {
                         self.restart_session_direct_path_validation(peer_addr, now_ms);
                         preserved_udp_peers.push(peer_addr);
@@ -268,6 +260,9 @@ impl Node {
                 }
             }
             for peer_addr in &invalidated_peers {
+                // A peer whose authenticated session cannot survive this
+                // carrier replacement has no useful old-carrier drain left.
+                self.retire_fmp_rekey_drain_for_dead_path(peer_addr, "network carrier rebind");
                 let has_pending_rekey = self.peers.get(peer_addr).is_some_and(|peer| {
                     peer.rekey_in_progress() || peer.pending_new_session().is_some()
                 });

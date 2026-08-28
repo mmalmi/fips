@@ -2,6 +2,7 @@ use super::*;
 use crate::node::ActivePeerCurrentSessionReplacement;
 
 const AUTHENTICATED_UDP_ROAM_QUIET_MS: u64 = 1_000;
+const SIMULTANEOUS_CROSS_CONNECTION_GRACE_MS: u32 = 1_000;
 
 impl Node {
     /// Promote a connection to active peer after successful authentication.
@@ -70,11 +71,27 @@ impl Node {
         // Check for cross-connection
         if let Some(existing_peer) = self.peers.get(&peer_node_addr) {
             let existing_link_id = existing_peer.link_id();
-            let existing_path_unusable = !existing_peer.is_healthy() || !existing_peer.can_send();
+            let existing_carrier_unusable =
+                !existing_peer.is_healthy() || !existing_peer.can_send();
             let opposite_direction_cross_connection =
                 existing_peer.fmp_mmp_is_initiator() != is_outbound;
             let connection_oriented_cross_connection = self
                 .is_connection_oriented_cross_connection(existing_peer, transport_id, is_outbound);
+            let same_carrier_cross_connection = opposite_direction_cross_connection
+                && existing_peer.transport_id() == Some(transport_id)
+                && (connection_oriented_cross_connection
+                    || existing_peer.current_addr() == Some(&current_addr));
+            // Under startup load, one half of a simultaneous static dial can
+            // finish just before the opposite Msg1 is dispatched. Endpoint
+            // traffic on that new session may immediately expire exclusive
+            // payload trust because no receiver report can have returned yet.
+            // That soft signal must not override the deterministic NodeAddr
+            // decision and leave both endpoints owning unrelated responder
+            // sessions. Limit the exception to a newly established owner on
+            // the exact same carrier; hard carrier failure and later recovery
+            // handshakes still replace it normally.
+            let fresh_same_carrier_cross_connection = same_carrier_cross_connection
+                && existing_peer.session_elapsed_ms() < SIMULTANEOUS_CROSS_CONNECTION_GRACE_MS;
             let outbound_alternate_path = is_outbound
                 && !connection_oriented_cross_connection
                 && (existing_peer.transport_id() != Some(transport_id)
@@ -105,10 +122,12 @@ impl Node {
                 );
 
             let remote_epoch_changed = matches!((existing_peer.remote_epoch(), remote_epoch), (Some(old), Some(new)) if old != new);
-            let existing_path_unusable = existing_path_unusable
-                || self.session_direct_path_blocks_direct_payload(&peer_node_addr, current_time_ms)
+            let existing_payload_path_unusable = self
+                .session_direct_path_blocks_direct_payload(&peer_node_addr, current_time_ms)
                 || self
                     .session_direct_path_exclusive_trust_expired(&peer_node_addr, current_time_ms);
+            let existing_path_unusable = existing_carrier_unusable
+                || (existing_payload_path_unusable && !fresh_same_carrier_cross_connection);
             let outbound_alternate_path_wins = outbound_alternate_path
                 && self.alternate_path_priority_allows_replace(
                     &peer_node_addr,

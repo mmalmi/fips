@@ -339,6 +339,11 @@ impl Node {
                         .learned_routes
                         .failed_next_hops(&target, now_ms)
                         .contains(from);
+                let path_recovery_lookup = self.pending_lookups.is_path_recovery(&target);
+                let indirect_recovery_hop_proven = session_established
+                    && !response_hop_quarantined
+                    && *from != target
+                    && (path_recovery_lookup || self.retry_pending.contains_key(&target));
                 if response_hop_quarantined {
                     debug!(
                         target = %self.peer_display_name(&target),
@@ -351,6 +356,26 @@ impl Node {
                     // established FSP session on that proven branch while
                     // retaining any separately quarantined failed branch.
                     self.pin_handshake_reverse_route(target, *from);
+                }
+                if indirect_recovery_hop_proven {
+                    // A path-recovery lookup (or still-pending direct retry)
+                    // means direct payload stopped authenticating its return
+                    // traffic. The target-signed response and authenticated
+                    // FMP ingress prove this indirect branch now. Remembering
+                    // the lookup purpose is important because a delayed
+                    // receiver report from the previous loaded flow can make
+                    // direct delivery evidence look fresh again while this
+                    // response is in flight.
+                    let newly_degraded = self.mark_session_direct_path_degraded(target, now_ms);
+                    if newly_degraded || !self.retry_pending.contains_key(&target) {
+                        self.schedule_link_dead_reprobe(target, now_ms);
+                    }
+                    debug!(
+                        target = %self.peer_display_name(&target),
+                        next_hop = %self.peer_display_name(from),
+                        newly_degraded,
+                        "Adopting authenticated indirect recovery hop for established payload"
+                    );
                 }
 
                 // Mirror path_mtu into the FipsAddress-keyed read-only lookup

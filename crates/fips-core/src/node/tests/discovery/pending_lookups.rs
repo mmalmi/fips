@@ -13,6 +13,10 @@ fn pending_discovery_lookup_queue_owns_dedup_and_capacity() {
         lookups.get(&first).map(|lookup| lookup.initiated_ms),
         Some(123)
     );
+    assert!(!lookups.is_path_recovery(&first));
+    assert!(lookups.mark_path_recovery(&first));
+    assert!(lookups.is_path_recovery(&first));
+    assert!(!lookups.mark_path_recovery(&first));
 
     assert!(lookups.admission_for(&first, 1).deduplicated());
     assert!(lookups.admission_for(&second, 1).queue_full());

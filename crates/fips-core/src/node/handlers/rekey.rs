@@ -16,6 +16,8 @@ use tracing::{debug, trace, warn};
 
 mod policy;
 pub(in crate::node) use policy::*;
+mod tick;
+use tick::{SessionRekeyTickConfig, SessionRekeyTickPlan};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SessionRekeyMsg3Resend {
@@ -61,25 +63,6 @@ enum FmpRekeyInitiationSkip {
     Peer,
     Transport,
     Address,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-struct SessionRekeyTickPlan {
-    probe: Vec<NodeAddr>,
-    drain: Vec<NodeAddr>,
-    initiate: Vec<NodeAddr>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SessionRekeyTickConfig {
-    initiate_enabled: bool,
-    now_ms: u64,
-    rekey_after_secs: u64,
-    rekey_after_messages: u64,
-    drain_ms: u64,
-    dampening_ms: u64,
-    probe_delay_ms: u64,
-    probe_interval_ms: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -333,13 +316,15 @@ impl crate::node::SessionRegistry {
         true
     }
 
-    fn plan_session_rekey_tick<F>(
+    fn plan_session_rekey_tick<F, G>(
         &self,
         tick: SessionRekeyTickConfig,
         mut send_counter_for: F,
+        mut path_ready_for_initiation: G,
     ) -> SessionRekeyTickPlan
     where
         F: FnMut(&NodeAddr) -> u64,
+        G: FnMut(&NodeAddr) -> bool,
     {
         let mut plan = SessionRekeyTickPlan::default();
 
@@ -377,6 +362,7 @@ impl crate::node::SessionRegistry {
                 .rekey_after_secs
                 .saturating_add_signed(entry.rekey_jitter_secs());
             if tick.initiate_enabled
+                && path_ready_for_initiation(node_addr)
                 && (elapsed_secs >= effective_after_secs
                     || send_counter_for(node_addr) >= tick.rekey_after_messages)
             {
@@ -837,11 +823,22 @@ impl Node {
         };
 
         let dataplane = &self.dataplane;
-        let plan = self.sessions.plan_session_rekey_tick(tick, |addr| {
-            dataplane
-                .fsp_owner_activity(addr)
-                .map_or(0, |activity| activity.send_counter())
-        });
+        let direct_degradation = &self.session_direct_degradation;
+        let plan = self.sessions.plan_session_rekey_tick(
+            tick,
+            |addr| {
+                dataplane
+                    .fsp_owner_activity(addr)
+                    .map_or(0, |activity| activity.send_counter())
+            },
+            |addr| {
+                // Keep routine end-to-end key rotation off the one bounded
+                // direct-payload validation used to leave an authenticated
+                // fallback. The current epoch remains valid while recovery
+                // proves the carrier, after which the next tick can rotate it.
+                !direct_degradation.has_pending_validation(addr)
+            },
+        );
 
         // Probe the pending epoch without moving application traffic off the
         // proven current epoch. The responder promotes only after successful

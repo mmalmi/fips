@@ -4,6 +4,8 @@ use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use tokio::sync::mpsc::error::TryRecvError;
 
 const BULK_PACKET_LEN: usize = FMP_MSG1_WIRE_SIZE + 1;
+const LOOKUP_REQUEST_ROOT_PLAINTEXT_SIZE: usize = 46 + 16;
+const LOOKUP_RESPONSE_ROOT_PLAINTEXT_SIZE: usize = 93 + 16;
 
 fn priority_msg1(marker: u8) -> PacketBuffer {
     let mut packet = vec![0u8; FMP_MSG1_WIRE_SIZE];
@@ -141,7 +143,7 @@ fn bulk_queued_packets(tx: &PacketTx) -> usize {
 }
 
 #[test]
-fn transport_priority_is_visible_fmp_handshake_liveness_and_mmp_only() {
+fn transport_priority_includes_control_shaped_discovery_frames() {
     let addr = TransportAddr::from_string("test");
     let priority_msg1 = received_packet(TransportId::new(1), addr.clone(), priority_msg1(0x11));
     let priority_msg2 = received_packet(TransportId::new(1), addr.clone(), priority_msg2(0x22));
@@ -159,6 +161,16 @@ fn transport_priority_is_visible_fmp_handshake_liveness_and_mmp_only() {
         TransportId::new(1),
         addr.clone(),
         established_fmp_packet(FMP_MMP_RECEIVER_REPORT_PLAINTEXT_SIZE, 0x55),
+    );
+    let lookup_request = received_packet(
+        TransportId::new(1),
+        addr.clone(),
+        established_fmp_packet(LOOKUP_REQUEST_ROOT_PLAINTEXT_SIZE, 0x56),
+    );
+    let lookup_response = received_packet(
+        TransportId::new(1),
+        addr.clone(),
+        established_fmp_packet(LOOKUP_RESPONSE_ROOT_PLAINTEXT_SIZE, 0x57),
     );
     let small_app = received_packet(TransportId::new(1), addr.clone(), small_app_packet(0x33));
     let malformed_msg1 =
@@ -193,12 +205,36 @@ fn transport_priority_is_visible_fmp_handshake_liveness_and_mmp_only() {
     assert!(heartbeat.is_transport_priority());
     assert!(sender_report.is_transport_priority());
     assert!(receiver_report.is_transport_priority());
+    assert!(lookup_request.is_transport_priority());
+    assert!(lookup_response.is_transport_priority());
     assert!(!small_app.is_transport_priority());
     assert!(!malformed_msg1.is_transport_priority());
     assert!(!malformed_established.is_transport_priority());
     assert!(!large_established.is_transport_priority());
     assert!(!direct_fsp.is_transport_priority());
     assert!(!wrong_version.is_transport_priority());
+}
+
+#[tokio::test]
+async fn discovery_control_survives_saturated_transport_bulk_lane() {
+    let (tx, mut rx) = packet_channel(1);
+    let addr = TransportAddr::from_string("test");
+
+    tx.send(received_packet(
+        TransportId::new(1),
+        addr.clone(),
+        bulk_packet(0xaa),
+    ))
+    .unwrap();
+    tx.send(received_packet(
+        TransportId::new(1),
+        addr,
+        established_fmp_packet(LOOKUP_REQUEST_ROOT_PLAINTEXT_SIZE, 0x30),
+    ))
+    .unwrap();
+
+    assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0x30);
+    assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0xaa);
 }
 
 #[test]

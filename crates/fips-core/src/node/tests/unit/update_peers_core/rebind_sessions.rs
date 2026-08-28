@@ -274,7 +274,7 @@ async fn network_transport_rebind_schedules_fresh_handshake_for_active_udp_peer(
 }
 
 #[tokio::test]
-async fn network_transport_rebind_discards_pending_rekey_but_keeps_current_session() {
+async fn network_transport_rebind_preserves_pending_rekey_and_current_session() {
     let mut node = make_node();
     let transport_id = TransportId::new(1);
     node.transports
@@ -307,8 +307,8 @@ async fn network_transport_rebind_discards_pending_rekey_but_keeps_current_sessi
     assert_eq!(node.apply_prepared_network_rebind(None).await.unwrap(), 1);
     let rebound_peer = node.get_peer(remote.node_addr()).unwrap();
     assert!(
-        rebound_peer.pending_new_session().is_none(),
-        "a carrier change must discard a pending key epoch tied to the old path"
+        rebound_peer.pending_new_session().is_some(),
+        "replacing only the local UDP socket must preserve a pending authenticated epoch that the remote peer may already have adopted"
     );
     assert!(
         rebound_peer.is_healthy() && rebound_peer.can_send(),
@@ -318,7 +318,7 @@ async fn network_transport_rebind_discards_pending_rekey_but_keeps_current_sessi
 
     assert!(
         !rebound_peer.rekey_in_progress(),
-        "discarding the pending epoch must not immediately rotate the preserved current epoch"
+        "the responder-side pending epoch must remain staged without becoming a local initiator rekey"
     );
 
     for transport in node.transports.values_mut() {

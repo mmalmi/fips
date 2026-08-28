@@ -490,6 +490,56 @@ fn test_session_ack_origin_uses_progress_route_instead_of_learned_leaf() {
 }
 
 #[test]
+fn test_session_rekey_resend_uses_fallback_when_direct_path_is_degraded() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let transport_id = TransportId::new(1);
+
+    let direct_link = LinkId::new(1);
+    let (direct_conn, direct_id) =
+        make_completed_connection(&mut node, direct_link, transport_id, 1_000);
+    let dest_addr = *direct_id.node_addr();
+    node.add_connection(direct_conn).unwrap();
+    node.promote_connection(direct_link, direct_id, 2_000)
+        .unwrap();
+
+    let fallback_link = LinkId::new(2);
+    let (fallback_conn, fallback_id) =
+        make_completed_connection(&mut node, fallback_link, transport_id, 1_000);
+    let fallback_addr = *fallback_id.node_addr();
+    node.add_connection(fallback_conn).unwrap();
+    node.promote_connection(fallback_link, fallback_id, 2_000)
+        .unwrap();
+    node.learn_reverse_route(dest_addr, fallback_addr);
+
+    node.mark_session_direct_path_degraded(dest_addr, Node::now_ms());
+    assert_eq!(
+        node.find_next_hop(&dest_addr).map(|peer| *peer.node_addr()),
+        Some(fallback_addr),
+        "fixture must already route established payload over fallback"
+    );
+
+    let setup = SessionSetup::new(
+        node.tree_state().my_coords().clone(),
+        node.tree_state().my_coords().clone(),
+    )
+    .encode();
+    let mut rekey_resend = SessionDatagram::new(*node.node_addr(), dest_addr, setup);
+    assert!(
+        node.session_direct_path_blocks_direct_payload(&dest_addr, Node::now_ms()),
+        "fixture direct path must remain blocked while resolving the resend"
+    );
+    let route = node
+        .resolve_session_datagram_runtime_route(&mut rekey_resend)
+        .expect("degraded direct session still has a fallback handshake route");
+    assert_eq!(
+        route.next_hop_addr, fallback_addr,
+        "an established-session rekey resend must follow the live fallback instead of a known-degraded direct carrier"
+    );
+}
+
+#[test]
 fn test_session_ack_uses_current_cache_when_carried_root_is_stale() {
     let (mut node, my_addr, _learned_leaf, progress_hop, dest, _dest_coords) =
         learned_leaf_handshake_fixture();
