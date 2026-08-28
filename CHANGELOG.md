@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.67] - 2026-08-28
+
+### Fixed
+
+- Preserve a staged direct-path payload validation when authenticated traffic
+  already in flight on the previous fallback arrives during a live network
+  rebind. Continuous traffic can now return promptly to the recovered direct
+  route, while the fallback still resumes after the bounded validation window
+  if direct payload does not authenticate.
+- Release `nvpn-fips-core` and `nvpn-fips-endpoint` 0.4.67 together. FMP,
+  FSP, discovery, routing, and physical transport wire formats are unchanged.
+
 ## [0.4.66] - 2026-08-28
 
 ### Fixed
