@@ -703,6 +703,62 @@
             Some(source_addr),
             "fresh authenticated direct control must keep the bounded FSP validation staged"
         );
+        assert!(node.dataplane.invalidate_fsp_carrier_activity(
+            source_addr,
+            &[source_addr, fallback_addr],
+        ));
+
+        let mut commit = SessionReceiveBatchCommit::default();
+        commit.push_receive_completion(SessionReceiveCompletion {
+            source_addr,
+            previous_hop_addr: fallback_addr,
+            direct_path: false,
+        });
+        let pending_flush = commit.finish(&mut node);
+
+        assert!(pending_flush.is_empty());
+        assert_eq!(
+            node.dataplane.fsp_owner_next_hop(&source_addr),
+            Some(source_addr),
+            "in-flight traffic from the preserved fallback must not cancel an authenticated direct payload validation before it is tried"
+        );
+        assert!(
+            node.session_direct_degradation
+                .has_pending_validation(&source_addr),
+            "the direct payload validation must remain armed until direct payload returns or its bounded trust window expires"
+        );
+        let validation_sent_ms = Node::now_ms();
+        crate::node::tests::seed_dataplane_fsp_data_sent_for_test(
+            &mut node,
+            source_addr,
+            source_addr,
+            validation_sent_ms,
+        );
+        let validation_expired_ms = validation_sent_ms
+            .saturating_add(node.session_direct_path_exclusive_trust_timeout_ms())
+            .saturating_add(1);
+        assert!(node.follow_authenticated_fallback_ingress_for_session_reply(
+            source_addr,
+            fallback_addr,
+            validation_expired_ms,
+        ));
+        assert_eq!(
+            node.dataplane.fsp_owner_next_hop(&source_addr),
+            Some(fallback_addr),
+            "the proven fallback must take over once the bounded direct payload validation expires without authenticated return"
+        );
+        node.make_direct_payload_eligible_for_validation_after_fmp_recovery(&source_addr);
+        assert_eq!(
+            node.dataplane.fsp_owner_next_hop(&source_addr),
+            Some(source_addr),
+            "fresh authenticated direct control must be able to stage a later validation attempt"
+        );
+        crate::node::tests::seed_dataplane_fsp_data_sent_for_test(
+            &mut node,
+            source_addr,
+            fallback_addr,
+            Node::now_ms(),
+        );
 
         let replacement_fallback = Identity::generate();
         let replacement_fallback_addr = *replacement_fallback.node_addr();

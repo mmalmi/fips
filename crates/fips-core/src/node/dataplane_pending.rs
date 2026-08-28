@@ -130,6 +130,43 @@ impl Node {
             return false;
         }
 
+        let direct_validation_is_staged = current_next_hop == Some(source_addr)
+            && self
+                .session_direct_degradation
+                .has_pending_validation(&source_addr);
+        let validation_timeout_ms = self.session_direct_path_exclusive_trust_timeout_ms();
+        let fallback_matches_validation_inflight = self
+            .dataplane
+            .fsp_owner_activity(&source_addr)
+            .is_none_or(|activity| {
+                activity
+                    .last_outbound_next_hop()
+                    .is_none_or(|next_hop| {
+                        next_hop == previous_hop_addr
+                            || (next_hop == source_addr
+                                && activity.has_recent_outbound_activity(
+                                    now_ms,
+                                    validation_timeout_ms,
+                                ))
+                    })
+            });
+        if direct_validation_is_staged && fallback_matches_validation_inflight {
+            // A carrier recovery deliberately stages one bounded direct FSP
+            // payload before returning to the proven fallback. Application
+            // packets already in flight on that fallback can arrive after the
+            // route changes; letting the first one reclaim the owner means the
+            // direct payload is never tried under continuous traffic. Preserve
+            // the staged route until direct payload authenticates or its trust
+            // window expires. A genuinely different fallback may still take
+            // over immediately.
+            debug!(
+                src = %self.peer_display_name(&source_addr),
+                previous_hop = %self.peer_display_name(&previous_hop_addr),
+                "Keeping staged direct payload validation across in-flight fallback ingress"
+            );
+            return false;
+        }
+
         if current_next_hop == Some(previous_hop_addr) {
             // Authenticated application return on the selected fallback is
             // continuing path proof. Renew the suppression window without
