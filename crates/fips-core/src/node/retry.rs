@@ -326,13 +326,8 @@ impl Node {
             .get(&node_addr)
             .map(|state| state.peer_config.clone())
             .or_else(|| {
-                self.config
-                    .auto_connect_peers()
-                    .find(|pc| {
-                        PeerIdentity::from_npub(&pc.npub)
-                            .map(|id| *id.node_addr() == node_addr)
-                            .unwrap_or(false)
-                    })
+                self.configured_peer(&node_addr)
+                    .filter(|peer| peer.is_auto_connect())
                     .cloned()
             });
 
@@ -433,15 +428,9 @@ impl Node {
     pub(super) fn schedule_reconnect(&mut self, node_addr: NodeAddr, now_ms: u64) {
         let authenticated_address = self.active_peer_current_udp_candidate(&node_addr);
 
-        // Find peer in auto-connect config
         let peer_config = self
-            .config
-            .auto_connect_peers()
-            .find(|pc| {
-                PeerIdentity::from_npub(&pc.npub)
-                    .map(|id| *id.node_addr() == node_addr)
-                    .unwrap_or(false)
-            })
+            .configured_peer(&node_addr)
+            .filter(|peer| peer.is_auto_connect())
             .cloned()
             .map(|mut peer_config| {
                 if let Some(address) = authenticated_address.clone()
@@ -564,13 +553,8 @@ impl Node {
             .get(&node_addr)
             .map(|state| state.peer_config.clone())
             .or_else(|| {
-                self.config
-                    .auto_connect_peers()
-                    .find(|pc| {
-                        PeerIdentity::from_npub(&pc.npub)
-                            .map(|id| *id.node_addr() == node_addr)
-                            .unwrap_or(false)
-                    })
+                self.configured_peer(&node_addr)
+                    .filter(|peer| peer.is_auto_connect())
                     .cloned()
             })
             .map(|mut peer_config| {

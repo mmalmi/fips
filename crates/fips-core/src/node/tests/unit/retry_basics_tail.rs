@@ -169,3 +169,25 @@ fn test_schedule_link_dead_reprobe_resets_backoff() {
         state.retry_after_ms
     );
 }
+
+#[test]
+fn test_schedule_link_dead_reprobe_ignores_on_demand_peer() {
+    let peer_identity = Identity::generate();
+    let peer_node_addr = *peer_identity.node_addr();
+    let mut peer_config = crate::config::PeerConfig::new(
+        peer_identity.npub(),
+        "udp",
+        "10.0.0.2:2121",
+    );
+    peer_config.connect_policy = crate::config::ConnectPolicy::OnDemand;
+
+    let mut config = Config::new();
+    config.peers.push(peer_config);
+    let mut node = Node::new(config).unwrap();
+
+    assert!(!node.schedule_link_dead_reprobe(peer_node_addr, 1_000));
+    assert!(
+        node.retry_pending.is_empty(),
+        "link-dead retries must keep the configured peer's on-demand policy"
+    );
+}
