@@ -250,14 +250,9 @@ impl Node {
     }
 
     fn promoted_path_matches_configured_static_peer(&self, peer_node_addr: &NodeAddr) -> bool {
-        self.config
-            .auto_connect_peers()
-            .filter(|peer_config| {
-                PeerIdentity::from_npub(&peer_config.npub)
-                    .ok()
-                    .is_some_and(|identity| identity.node_addr() == peer_node_addr)
-            })
-            .any(|peer_config| {
+        self.configured_peer(peer_node_addr)
+            .filter(|peer_config| peer_config.is_auto_connect())
+            .is_some_and(|peer_config| {
                 self.static_peer_addresses(peer_config)
                     .iter()
                     .any(|candidate| self.active_peer_matches_candidate(peer_node_addr, candidate))
