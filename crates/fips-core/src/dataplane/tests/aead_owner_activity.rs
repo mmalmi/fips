@@ -842,6 +842,69 @@ fn fsp_owner_owns_session_receiver_reports_and_path_mtu_signals() {
 }
 
 #[test]
+fn authenticated_direct_validation_waits_one_report_window_before_delivery_is_stale() {
+    let owner = fsp_owner(82);
+    let mut mover = mover();
+    mover.register_owner(
+        owner,
+        OwnerConfig::new(1, 8)
+            .with_fsp_session_start_ms(1_000)
+            .with_fsp_send_headers(0, 0)
+            .with_fsp_mmp(crate::config::SessionMmpConfig::default(), true),
+    );
+
+    assert!(mover.owner_mut(owner).unwrap().record_fsp_data_sent(
+        owner.node_addr(),
+        1200,
+        ActivityTick::new(1_050),
+    ));
+    assert!(
+        mover
+            .owner_fsp_activity(owner)
+            .unwrap()
+            .has_recent_outbound_without_delivery_feedback_from(
+                &owner.node_addr(),
+                1_100,
+                2_500,
+            ),
+        "an unvalidated path must still fail fast when delivery feedback is absent"
+    );
+    assert!(
+        mover
+            .owner_mut(owner)
+            .unwrap()
+            .confirm_fsp_direct_path_validation(ActivityTick::new(1_100))
+    );
+    assert!(
+        !mover
+            .owner_fsp_activity(owner)
+            .unwrap()
+            .has_recent_outbound_without_delivery_feedback_from(
+                &owner.node_addr(),
+                1_200,
+                2_500,
+            ),
+        "sustained authenticated direct payload must get one report window before missing feedback degrades it"
+    );
+    assert!(mover.owner_mut(owner).unwrap().record_fsp_data_sent(
+        owner.node_addr(),
+        1200,
+        ActivityTick::new(3_700),
+    ));
+    assert!(
+        mover
+            .owner_fsp_activity(owner)
+            .unwrap()
+            .has_recent_outbound_without_delivery_feedback_from(
+                &owner.node_addr(),
+                3_700,
+                2_500,
+            ),
+        "continuous sends without a receiver report must still expose a one-way failure"
+    );
+}
+
+#[test]
 fn runtime_turn_driver_runs_classified_inbound_and_outbound_once() {
     let owner = fmp_owner(78);
     let open_key = 31;

@@ -565,6 +565,7 @@ pub(crate) struct DataplaneFspOwnerActivity {
     receiver_reports_enabled: bool,
     last_tx_data_activity: Option<ActivityTick>,
     last_outbound_next_hop: Option<NodeAddr>,
+    last_direct_path_validation_activity: Option<ActivityTick>,
     current_k_bit: bool,
     previous_draining_k_bit: Option<bool>,
     current_epoch_confirmed: bool,
@@ -701,16 +702,23 @@ impl DataplaneFspOwnerActivity {
         now_ms: u64,
         timeout_ms: u64,
     ) -> bool {
-        // Receiver reports are directional proof: unlike arbitrary inbound
-        // application data, they confirm that the remote endpoint received
-        // packets from our selected outbound next hop. This distinction is
-        // what exposes a one-way NAT blackhole while reverse traffic survives.
+        // Receiver reports are the durable directional proof that the remote
+        // endpoint received packets from our selected outbound next hop. A
+        // completed multi-packet direct-path validation is provisional proof
+        // for one report window so its stale pre-recovery baseline cannot
+        // immediately undo recovery. Frozen report counters still expose a
+        // one-way NAT blackhole after that bounded window.
         let has_recent_delivery_feedback = if self.receiver_reports_enabled {
-            self.last_delivery_report_next_hop == Some(*next_hop)
+            (self.last_delivery_report_next_hop == Some(*next_hop)
                 && self
                     .last_delivery_report_activity
                     .map(|tick| tick.age_ms(now_ms))
-                    .is_some_and(|age_ms| age_ms <= timeout_ms)
+                    .is_some_and(|age_ms| age_ms <= timeout_ms))
+                || (self.last_outbound_next_hop == Some(*next_hop)
+                    && self
+                        .last_direct_path_validation_activity
+                        .map(|tick| tick.age_ms(now_ms))
+                        .is_some_and(|age_ms| age_ms <= timeout_ms))
         } else {
             self.has_recent_data_return_from(next_hop, now_ms, timeout_ms)
         };
@@ -794,6 +802,7 @@ pub(crate) struct OwnerState {
     last_tx_activity: Option<ActivityTick>,
     last_tx_data_activity: Option<ActivityTick>,
     last_outbound_next_hop: Option<NodeAddr>,
+    last_direct_path_validation_activity: Option<ActivityTick>,
     fsp_mmp_path_changed_since_report: bool,
     /// Largest wrapped FSP frame attempted since the last accepted decrease.
     max_sent_wire_len: u16,

@@ -618,6 +618,18 @@ impl DataplaneLiveNode {
             .is_some_and(|owner| owner.forget_fsp_data_route(next_hop))
     }
 
+    pub(crate) fn confirm_fsp_direct_path_validation(
+        &mut self,
+        dest_addr: NodeAddr,
+        now_ms: u64,
+    ) -> bool {
+        self.driver
+            .owner_mut(OwnerId::fsp_node(dest_addr))
+            .is_some_and(|owner| {
+                owner.confirm_fsp_direct_path_validation(ActivityTick::new(now_ms))
+            })
+    }
+
     pub(crate) fn invalidate_fsp_carrier_activity(
         &mut self,
         dest_addr: NodeAddr,

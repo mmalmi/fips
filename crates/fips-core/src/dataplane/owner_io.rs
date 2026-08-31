@@ -144,6 +144,7 @@ impl OwnerState {
                         self.last_delivery_report_activity = None;
                         self.last_delivery_report_next_hop = None;
                         self.last_delivery_report_cumulative_packets_recv = None;
+                        self.last_direct_path_validation_activity = None;
                     }
                     self.last_outbound_next_hop = Some(next_hop);
                 }
@@ -332,6 +333,7 @@ impl OwnerState {
             self.last_delivery_report_activity = None;
             self.last_delivery_report_next_hop = None;
             self.last_delivery_report_cumulative_packets_recv = None;
+            self.last_direct_path_validation_activity = None;
         }
         self.last_outbound_next_hop = Some(next_hop);
         note_activity(&mut self.last_tx_activity, tick);
@@ -351,7 +353,17 @@ impl OwnerState {
         self.last_delivery_report_activity = None;
         self.last_delivery_report_next_hop = None;
         self.last_delivery_report_cumulative_packets_recv = None;
+        self.last_direct_path_validation_activity = None;
         true
+    }
+
+    pub(crate) fn confirm_fsp_direct_path_validation(&mut self, tick: ActivityTick) -> bool {
+        if self.owner.protocol() != PacketProtocol::Fsp
+            || self.last_outbound_next_hop != Some(self.owner.node_addr())
+        {
+            return false;
+        }
+        note_activity(&mut self.last_direct_path_validation_activity, tick)
     }
 
     pub(crate) fn clear_fsp_sent_wire_len(&mut self) -> bool {

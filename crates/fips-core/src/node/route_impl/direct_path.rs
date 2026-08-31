@@ -119,10 +119,16 @@ impl Node {
         dest: &NodeAddr,
         now_ms: u64,
     ) -> bool {
-        self.session_direct_path_has_recent_data_return(dest, now_ms)
+        let validated = self.session_direct_path_has_recent_data_return(dest, now_ms)
             && self
                 .session_direct_degradation
-                .record_authenticated_payload_progress(dest, now_ms)
+                .record_authenticated_payload_progress(dest, now_ms);
+        if validated {
+            let _ = self
+                .dataplane
+                .confirm_fsp_direct_path_validation(*dest, now_ms);
+        }
+        validated
     }
 
     pub(in crate::node) fn clear_session_direct_path_degraded(&mut self, dest: &NodeAddr) -> bool {

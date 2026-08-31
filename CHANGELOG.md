@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.69] - 2026-08-31
+
+### Fixed
+
+- Keep repeated direct-path recovery active while an earlier FMP epoch is
+  draining or rekey initiation is dampened, without starting another epoch
+  rotation.
+- Give sustained authenticated direct payload one receiver-report window to
+  replace the stale outage baseline, preventing recovered routes from being
+  marked degraded again while preserving one-way failure detection.
+- Release `nvpn-fips-core` and `nvpn-fips-endpoint` 0.4.69 together. FMP,
+  FSP, discovery, routing, and physical transport wire formats are unchanged.
+
 ## [0.4.68] - 2026-08-28
 
 ### Fixed

@@ -59,6 +59,7 @@ impl OwnerState {
             last_tx_activity: None,
             last_tx_data_activity: None,
             last_outbound_next_hop: None,
+            last_direct_path_validation_activity: None,
             fsp_mmp_path_changed_since_report: false,
             max_sent_wire_len: 0,
             data_packets_sent: 0,
@@ -123,6 +124,7 @@ impl OwnerState {
         self.last_delivery_report_cumulative_packets_recv = None;
         self.last_tx_data_activity = None;
         self.last_outbound_next_hop = None;
+        self.last_direct_path_validation_activity = None;
         self.fsp_mmp_path_changed_since_report = false;
         self.max_sent_wire_len = 0;
         self.data_packets_sent = 0;
@@ -149,6 +151,7 @@ impl OwnerState {
             self.last_delivery_report_cumulative_packets_recv;
         let last_tx_data_activity = self.last_tx_data_activity;
         let last_outbound_next_hop = self.last_outbound_next_hop;
+        let last_direct_path_validation_activity = self.last_direct_path_validation_activity;
         let fsp_mmp_path_changed_since_report = self.fsp_mmp_path_changed_since_report;
         let max_sent_wire_len = self.max_sent_wire_len;
         let data_packets_sent = self.data_packets_sent;
@@ -171,6 +174,7 @@ impl OwnerState {
             last_delivery_report_cumulative_packets_recv;
         self.last_tx_data_activity = last_tx_data_activity;
         self.last_outbound_next_hop = last_outbound_next_hop;
+        self.last_direct_path_validation_activity = last_direct_path_validation_activity;
         self.fsp_mmp_path_changed_since_report = fsp_mmp_path_changed_since_report;
         self.max_sent_wire_len = max_sent_wire_len;
         self.data_packets_sent = data_packets_sent;
@@ -716,6 +720,7 @@ impl OwnerState {
                 .is_some_and(|mmp| mmp.mode() != crate::mmp::MmpMode::Minimal),
             last_tx_data_activity: self.last_tx_data_activity,
             last_outbound_next_hop: self.last_outbound_next_hop,
+            last_direct_path_validation_activity: self.last_direct_path_validation_activity,
             current_k_bit: self.fsp_current_k_bit,
             previous_draining_k_bit: self.fsp_previous_draining_k_bit,
             current_epoch_confirmed: self.fsp_lifecycle_confirmed,

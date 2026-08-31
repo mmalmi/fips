@@ -644,7 +644,7 @@ async fn direct_refresh_rearms_exhausted_inflight_candidate_without_changing_sen
 }
 
 #[tokio::test]
-async fn direct_refresh_waits_for_fmp_drain_before_starting_another_rekey() {
+async fn direct_refresh_waits_for_fmp_drain_but_probes_same_path() {
     let mut node = make_node();
     let peer_full = Identity::generate();
     let transport_id = TransportId::new(1);
@@ -696,6 +696,11 @@ async fn direct_refresh_waits_for_fmp_drain_before_starting_another_rekey() {
         !peer.rekey_in_progress(),
         "direct refresh must not overwrite the single previous FMP epoch while it is still draining"
     );
+    assert_eq!(
+        node.connection_count(),
+        1,
+        "an FMP drain must not suppress the concrete same-path handshake needed after another path change"
+    );
 
     for transport in node.transports.values_mut() {
         transport.stop().await.ok();
@@ -703,7 +708,7 @@ async fn direct_refresh_waits_for_fmp_drain_before_starting_another_rekey() {
 }
 
 #[tokio::test]
-async fn direct_refresh_dampens_rekey_after_fmp_drain() {
+async fn direct_refresh_dampens_rekey_but_probes_same_path_after_fmp_drain() {
     let mut node = make_node();
     let peer_full = Identity::generate();
     let transport_id = TransportId::new(1);
@@ -752,6 +757,11 @@ async fn direct_refresh_dampens_rekey_after_fmp_drain() {
     assert!(
         !node.get_peer(&node_addr).unwrap().rekey_in_progress(),
         "a recovery retry must not start another rekey immediately after the prior drain"
+    );
+    assert_eq!(
+        node.connection_count(),
+        1,
+        "rekey dampening must not suppress the concrete same-path handshake needed to recover from a consecutive outage"
     );
 
     for transport in node.transports.values_mut() {

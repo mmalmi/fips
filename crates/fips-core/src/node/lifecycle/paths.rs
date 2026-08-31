@@ -87,7 +87,7 @@ impl Node {
                     })
             });
         if direct_validation_rekey {
-            if let Some(peer) = self.peers.get_mut(&peer_node_addr) {
+            let rekey_blocked = if let Some(peer) = self.peers.get_mut(&peer_node_addr) {
                 if peer.rekey_in_progress() {
                     // A route or interface refresh is stronger evidence than
                     // the ordinary exponential resend timer. Keep the sender
@@ -98,24 +98,21 @@ impl Node {
                     peer.set_msg1_next_resend(Self::now_ms());
                     return Ok(true);
                 }
-                if peer.pending_new_session().is_some() {
-                    return Ok(true);
-                }
-                if peer.is_draining() {
-                    return Ok(true);
-                }
                 let dampening_secs = crate::node::handlers::REKEY_DAMPENING_SECS;
-                if peer.is_rekey_dampened(dampening_secs) {
-                    // The retry remains live, but a stale validation marker
-                    // must not rotate FMP epochs again as soon as the previous
-                    // drain ends. Periodic rekey uses the same dampening
-                    // window; recovery must not bypass it.
-                    return Ok(true);
-                }
-            }
-            if self.initiate_rekey(&peer_node_addr).await {
+                peer.pending_new_session().is_some()
+                    || peer.is_draining()
+                    || peer.is_rekey_dampened(dampening_secs)
+            } else {
+                false
+            };
+            if !rekey_blocked && self.initiate_rekey(&peer_node_addr).await {
                 return Ok(true);
             }
+            // An in-flight epoch cutover, drain, or dampening window must
+            // prevent only another immediate FMP epoch rotation. A
+            // consecutive outage still needs the concrete same-path
+            // handshake below; returning here would leave recovery idle
+            // until that longer rekey state expires.
         }
         let same_path_refresh_needed = allow_same_path_refresh
             && self.peers.get(&peer_node_addr).is_some_and(|peer| {
