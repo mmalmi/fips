@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.72] - 2026-08-31
+
+### Fixed
+
+- Keep recovery and routing regression fixtures synchronized with the
+  validated configured-peer cache so the full release suite exercises the
+  cached production path without masked failures.
+- Release `nvpn-fips-core` and `nvpn-fips-endpoint` 0.4.72 together. Runtime
+  behavior, retry timing, and all wire formats are unchanged from 0.4.71.
+
 ## [0.4.71] - 2026-08-31
 
 ### Fixed
