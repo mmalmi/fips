@@ -76,6 +76,7 @@ async fn network_transport_rebind_defers_udp_reauthentication_until_tuple_is_qui
         remote.npub(),
         current_addr.as_str().expect("socket address"),
     )];
+    refresh_configured_peer_cache_for_test(&mut node);
 
     let mut session = SessionEntry::new(
         remote_addr,

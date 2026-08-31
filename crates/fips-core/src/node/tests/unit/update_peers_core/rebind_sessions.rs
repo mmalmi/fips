@@ -245,6 +245,7 @@ async fn network_transport_rebind_schedules_fresh_handshake_for_active_udp_peer(
         remote.npub(),
         remote_addr.as_str().unwrap(),
     )];
+    refresh_configured_peer_cache_for_test(&mut node);
 
     assert_eq!(node.apply_prepared_network_rebind(None).await.unwrap(), 1);
 

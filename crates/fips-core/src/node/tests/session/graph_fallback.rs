@@ -61,6 +61,8 @@ async fn test_link_dead_fallback_warms_session_over_existing_graph() {
         auto_reconnect: true,
         discovery_fallback_transit: true,
     });
+    nodes[0].node.configured_peers =
+        crate::node::ConfiguredPeerLookup::from_config(&nodes[0].node.config);
 
     assert!(
         nodes[0].node.find_next_hop(&dest_addr).is_some(),

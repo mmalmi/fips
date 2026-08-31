@@ -237,6 +237,7 @@ async fn test_session_receiver_loss_degrades_direct_and_uses_fallback() {
         auto_reconnect: true,
         discovery_fallback_transit: true,
     });
+    node.configured_peers = crate::node::ConfiguredPeerLookup::from_config(&node.config);
     add_direct_peer_for_identity(&mut node, &remote);
     install_established_session_with_mmp(&mut node, &remote);
     node.learn_reverse_route(remote_addr, fallback_next_hop);
@@ -597,6 +598,7 @@ fn test_fmp_recovery_stages_prompt_direct_payload_validation_without_discarding_
         "udp",
         "127.0.0.1:5000",
     ));
+    node.configured_peers = crate::node::ConfiguredPeerLookup::from_config(&node.config);
     node.add_connection(direct_conn).unwrap();
     node.promote_connection(direct_link, direct_identity, 2_000)
         .unwrap();
