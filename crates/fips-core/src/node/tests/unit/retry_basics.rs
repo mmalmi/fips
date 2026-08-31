@@ -454,7 +454,7 @@ async fn established_fallback_session_direct_refresh_stays_out_of_peer_backoff()
         "a live fallback FIPS session should keep direct refresh out of peer-level exponential backoff"
     );
     assert!(
-        (3_000..=5_000).contains(&retry.retry_after_ms),
+        (2_000..=3_000).contains(&retry.retry_after_ms),
         "fallback direct refresh should be paced after an attempt, got {}",
         retry.retry_after_ms
     );
@@ -669,7 +669,7 @@ fn test_schedule_retry_active_fallback_paces_direct_reprobe() {
         "active fallback direct refresh must not inherit peer-level exponential backoff"
     );
     assert!(
-        (5_000..=7_000).contains(&state.retry_after_ms),
+        (4_000..=5_000).contains(&state.retry_after_ms),
         "active fallback direct refresh should use a paced jittered reprobe, got {}",
         state.retry_after_ms
     );

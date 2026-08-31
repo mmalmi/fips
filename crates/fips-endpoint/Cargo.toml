@@ -1,6 +1,6 @@
 [package]
 name = "nvpn-fips-endpoint"
-version = "0.4.69"
+version = "0.4.70"
 edition = "2024"
 description = "Nostr VPN's app-facing FIPS EndpointData API"
 license = "MIT"
@@ -12,4 +12,4 @@ readme = "README.md"
 name = "fips_endpoint"
 
 [dependencies]
-fips-core = { package = "nvpn-fips-core", version = "=0.4.69", path = "../fips-core" }
+fips-core = { package = "nvpn-fips-core", version = "=0.4.70", path = "../fips-core" }

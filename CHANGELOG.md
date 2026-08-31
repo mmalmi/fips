@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.70] - 2026-08-31
+
+### Fixed
+
+- Retry an active direct path every 1–2 seconds while authenticated fallback
+  remains available, keeping repeated outage recovery inside its bounded
+  deadline without increasing the per-tick peer budget.
+- Release `nvpn-fips-core` and `nvpn-fips-endpoint` 0.4.70 together. FMP,
+  FSP, discovery, routing, and physical transport wire formats are unchanged.
+
 ## [0.4.69] - 2026-08-31
 
 ### Fixed

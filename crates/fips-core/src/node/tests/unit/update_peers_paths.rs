@@ -113,7 +113,7 @@ async fn process_pending_retries_races_primary_path_for_active_bootstrap_peer() 
     assert!(
         node.retry_pending
             .get(&peer_node_addr)
-            .is_some_and(|state| (3_000..=5_000).contains(&state.retry_after_ms)),
+            .is_some_and(|state| (2_000..=3_000).contains(&state.retry_after_ms)),
         "active fallback direct refresh should be paced after an attempt, got {:?}",
         node.retry_pending
             .get(&peer_node_addr)
