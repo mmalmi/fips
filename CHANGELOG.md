@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.71] - 2026-08-31
+
+### Fixed
+
+- Reuse the validated configured-peer lookup during link recovery and direct
+  path validation instead of repeatedly decoding npubs on fast liveness and
+  control-packet paths, reducing mobile CPU without changing retry timing.
+- Release `nvpn-fips-core` and `nvpn-fips-endpoint` 0.4.71 together. FMP,
+  FSP, discovery, routing, and physical transport wire formats are unchanged.
+
 ## [0.4.70] - 2026-08-31
 
 ### Fixed
