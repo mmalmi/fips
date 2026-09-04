@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.73] - 2026-09-04
+
 ### Added
 
 - Add `fipsctl address` to derive a node's mesh IPv6 address from an npub,
@@ -20,12 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release every transport-address alias and link-seeded path-MTU record when
   a peer link is removed, so reconnections cannot inherit stale routing state.
 - Keep configured peers retryable when an ACL reload rejects their outbound
-  handshake response, and guard the inbound-handshake concurrency slot from
-  accidental early release.
+  handshake response.
 - Identify BLE connections by authenticated node identity across rotating link
   addresses, add fair bounded probe retries with exponential backoff, stop
   host radio scanning explicitly, and expose connection, identity-exchange,
   and duplicate-node failure counters.
+- Release `nvpn-fips-core` and `nvpn-fips-endpoint` 0.4.73 together. FMP,
+  FSP, discovery, routing, and physical transport wire formats are unchanged.
 
 ## [0.4.72] - 2026-08-31
 

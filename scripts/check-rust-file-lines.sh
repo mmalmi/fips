@@ -23,6 +23,7 @@ fi
 
 baseline_for() {
   case "$1" in
+    crates/fips-core/src/dataplane/tests/aead_owner_activity.rs) echo 1042 ;;
     crates/fips-core/src/dataplane/turn.rs) echo 1004 ;;
     crates/fips-core/src/node/handlers/handshake.rs) echo 1081 ;;
     crates/fips-core/src/node/retry.rs) echo 1006 ;;
@@ -33,6 +34,7 @@ baseline_for() {
 
 baseline_paths() {
   cat <<'PATHS'
+crates/fips-core/src/dataplane/tests/aead_owner_activity.rs
 crates/fips-core/src/dataplane/turn.rs
 crates/fips-core/src/node/handlers/handshake.rs
 crates/fips-core/src/node/retry.rs

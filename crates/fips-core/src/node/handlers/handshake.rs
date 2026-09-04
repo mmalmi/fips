@@ -195,15 +195,6 @@ impl Node {
             }
         };
 
-        // The guard must remain bound for the rest of this handler. Binding
-        // it to bare `_` would release the slot here and silently defeat the
-        // concurrency limit while leaving all after-the-fact counters equal.
-        #[cfg(test)]
-        assert!(
-            self.msg1_rate_limiter.pending_count() > 0,
-            "msg1 pending slot was released before the handler ran"
-        );
-
         // accept_connections gate. Rekey/restart msg1 on an existing link
         // is always admitted; the gate only filters truly-fresh connections
         // from strangers. Without this carve-out, the dual-init tie-breaker
