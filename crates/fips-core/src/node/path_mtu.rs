@@ -66,6 +66,22 @@ pub(in crate::node) enum PathMtuUpdate {
 }
 
 impl Node {
+    /// Release the public clamp and the private provenance describing it.
+    ///
+    /// The two stores are one logical record. Keeping either half after the
+    /// peer leaves leaks state and can pin a later link on the same transport
+    /// to an obsolete narrow MTU for the life of the process.
+    pub(in crate::node) fn release_path_mtu(&mut self, addr: FipsAddress) -> bool {
+        let Ok(mut lookup) = self.path_mtu_lookup.write() else {
+            warn!(%addr, "path-MTU lookup write lock poisoned; release skipped");
+            return false;
+        };
+        let removed = lookup.remove(&addr).is_some();
+        drop(lookup);
+        self.path_mtu_provenance.remove(&addr);
+        removed
+    }
+
     #[cfg(test)]
     fn path_mtu_entry_with_value(&self, addr: &FipsAddress, mtu: u16) -> PathMtuEntry {
         let provenance = self

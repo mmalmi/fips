@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add `fipsctl address` to derive a node's mesh IPv6 address from an npub,
+  hostname, or local nsec/npub file without requiring a running daemon.
+
+### Fixed
+
+- Drop looped-back lookup requests we originated before they can corrupt
+  reverse-path state, and expose a counter for diagnosing these bloom-filter
+  false-positive loops.
+- Release every transport-address alias and link-seeded path-MTU record when
+  a peer link is removed, so reconnections cannot inherit stale routing state.
+- Keep configured peers retryable when an ACL reload rejects their outbound
+  handshake response, and guard the inbound-handshake concurrency slot from
+  accidental early release.
+- Identify BLE connections by authenticated node identity across rotating link
+  addresses, add fair bounded probe retries with exponential backoff, stop
+  host radio scanning explicitly, and expose connection, identity-exchange,
+  and duplicate-node failure counters.
+
 ## [0.4.72] - 2026-08-31
 
 ### Fixed

@@ -34,6 +34,27 @@ async fn test_request_dedup() {
 }
 
 #[tokio::test]
+async fn own_lookup_request_loopback_is_dropped_without_poisoning_the_reverse_path() {
+    let mut node = make_node();
+    let from = make_node_addr(0xAA);
+    let target = make_node_addr(0xBB);
+    let request_id = 999;
+    let coords = TreeCoordinate::from_addrs(vec![*node.node_addr(), make_node_addr(0)]).unwrap();
+    seed_pending_lookup(&mut node, target, request_id);
+
+    let request = LookupRequest::new(request_id, target, *node.node_addr(), coords, 5, 0);
+    node.handle_lookup_request(&from, &request.encode()[1..])
+        .await;
+
+    assert!(
+        !node.recent_requests.contains_key(&request_id),
+        "our own request ID must not be recorded as a transit reverse path"
+    );
+    assert_eq!(node.stats().discovery.req_own_loopback, 1);
+    assert_eq!(node.stats().discovery.req_duplicate, 0);
+}
+
+#[tokio::test]
 async fn test_request_target_is_self() {
     let mut node = make_node();
     let from = make_node_addr(0xAA);

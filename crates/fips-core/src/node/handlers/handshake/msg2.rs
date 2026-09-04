@@ -268,6 +268,11 @@ impl Node {
             )
             .is_err()
         {
+            // This arm removes the pending machine immediately, so the normal
+            // stale-handshake sweep cannot observe the failure and schedule
+            // another configured dial. Re-arm it here so relaxing a reloaded
+            // ACL does not leave the peer permanently disconnected.
+            self.schedule_retry_after_handshake_timeout(peer_identity, packet.timestamp_ms);
             self.pending_outbound.remove(&key);
             if let Some(link) = self.links.get(&link_id) {
                 let tid = link.transport_id();

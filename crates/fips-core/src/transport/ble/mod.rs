@@ -272,6 +272,11 @@ impl<I: BleIo> BleTransport<I> {
         // Stop advertising
         let _ = self.io.stop_advertising().await;
 
+        // Aborting our scan task only stops result consumption. Tell the
+        // platform backend as well so a host-owned radio does not continue
+        // scanning after this transport is down.
+        let _ = self.io.stop_scanning().await;
+
         // Abort accept loop
         if let Some(task) = self.accept_task.take() {
             task.abort();
@@ -411,14 +416,32 @@ impl<I: BleIo> BleTransport<I> {
                 match result {
                     Ok(Ok(stream)) => {
                         let stream = FramedBleStream::new(stream, max_packet);
+                        let mut peer_node_addr = None;
                         // Pre-handshake pubkey exchange (temporary, pre-XX)
                         if let Some(ref our_pubkey) = local_pubkey {
                             match pubkey_exchange(&stream, our_pubkey).await {
                                 Ok(peer_pubkey) => {
                                     debug!(addr = %addr_clone, "BLE outbound pubkey exchange complete");
+                                    let node_addr = NodeAddr::from_pubkey(&peer_pubkey);
+                                    peer_node_addr = Some(node_addr);
+                                    if let Some(existing) =
+                                        pool.lock().await.live_addr_of_node(&node_addr)
+                                    {
+                                        discovery_buffer
+                                            .add_peer_with_pubkey(&existing, peer_pubkey);
+                                        stats.record_duplicate_node_decline();
+                                        debug!(
+                                            addr = %addr_clone,
+                                            existing = %existing,
+                                            node_addr = %node_addr,
+                                            "BLE outbound resolved a rotating alias of a connected peer"
+                                        );
+                                        return;
+                                    }
                                     discovery_buffer.add_peer_with_pubkey(&ble_addr, peer_pubkey);
                                 }
                                 Err(e) => {
+                                    stats.record_pubkey_exchange_failure();
                                     warn!(
                                         addr = %addr_clone, error = %e,
                                         "BLE outbound pubkey exchange failed"
@@ -439,6 +462,7 @@ impl<I: BleIo> BleTransport<I> {
                             established_at: tokio::time::Instant::now(),
                             is_static: false,
                             addr: ble_addr,
+                            node_addr: peer_node_addr,
                         };
 
                         match pool.lock().await.insert(addr_clone.clone(), conn) {
@@ -471,6 +495,7 @@ impl<I: BleIo> BleTransport<I> {
                         stats.record_connection_established();
                     }
                     Ok(Err(e)) => {
+                        stats.record_connect_error();
                         debug!(addr = %addr_clone, error = %e, "BLE connect failed");
                     }
                     Err(_) => {

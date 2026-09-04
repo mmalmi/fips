@@ -7,15 +7,16 @@
 //! On Windows, uses a TCP connection to localhost.
 
 use clap::{Parser, Subcommand, ValueEnum};
-use fips::config::{write_key_file, write_pub_file};
+use fips::config::{read_key_file, write_key_file, write_pub_file};
 use fips::upper::hosts::HostMap;
 use fips::version;
-use fips::{Identity, encode_nsec};
+use fips::{ConfigError, Identity, PeerIdentity, encode_nsec};
 use nostr_sdk::prelude::{Client, Event, Keys};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv6Addr, SocketAddrV6};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use zeroize::Zeroizing;
 
 /// FIPS control client
 #[derive(Parser, Debug)]
@@ -57,6 +58,14 @@ enum Commands {
         /// Print nsec and npub to stdout instead of writing files
         #[arg(short = 's', long = "stdout")]
         stdout: bool,
+    },
+    /// Print a node's mesh address without contacting the daemon
+    Address {
+        /// npub or hostname from the hosts file. Defaults to this node's identity.
+        identity: Option<String>,
+        /// Derive from this nsec or npub key file
+        #[arg(short = 'k', long = "key", conflicts_with = "identity")]
+        key: Option<PathBuf>,
     },
     /// Connect to a peer
     Connect {
@@ -529,7 +538,11 @@ fn control_response_data<'a>(
 
 /// Default directory for keygen output.
 fn default_key_dir() -> PathBuf {
-    #[cfg(unix)]
+    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+    {
+        PathBuf::from("/usr/local/etc/fips")
+    }
+    #[cfg(all(unix, not(any(target_os = "macos", target_os = "freebsd"))))]
     {
         PathBuf::from("/etc/fips")
     }
@@ -608,6 +621,46 @@ fn resolve_peer(peer: &str) -> String {
     }
 }
 
+/// Derive a mesh address from an explicit peer, key file, or the local key directory.
+fn mesh_address(identity: Option<&str>, key: Option<&Path>) -> Result<Ipv6Addr, String> {
+    match (identity, key) {
+        (Some(peer), _) => address_from_npub(&resolve_peer(peer)),
+        (None, Some(path)) => address_from_file(path),
+        (None, None) => address_from_key_dir(&default_key_dir()),
+    }
+}
+
+fn address_from_npub(npub: &str) -> Result<Ipv6Addr, String> {
+    let peer = PeerIdentity::from_npub(npub).map_err(|e| format!("invalid npub: {e}"))?;
+    Ok(peer.address().to_ipv6())
+}
+
+/// Read either an nsec or npub file and derive its mesh address.
+fn address_from_file(path: &Path) -> Result<Ipv6Addr, String> {
+    let contents = Zeroizing::new(read_key_file(path).map_err(|e| match e {
+        ConfigError::ReadFile { source, .. } => {
+            format!("cannot read {}: {source}", path.display())
+        }
+        other => other.to_string(),
+    })?);
+
+    if contents.starts_with("npub1") {
+        return address_from_npub(contents.as_str());
+    }
+
+    let identity = Identity::from_secret_str(contents.as_str())
+        .map_err(|e| format!("{} does not hold a usable key: {e}", path.display()))?;
+    Ok(identity.address().to_ipv6())
+}
+
+fn address_from_key_dir(dir: &Path) -> Result<Ipv6Addr, String> {
+    match address_from_file(&dir.join("fips.key")) {
+        Ok(address) => Ok(address),
+        Err(key_error) => address_from_file(&dir.join("fips.pub"))
+            .map_err(|pub_error| format!("{key_error}\n{pub_error}")),
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -652,6 +705,17 @@ fn main() {
         eprintln!();
         eprintln!("NOTE: Set 'node.identity.persistent: true' in fips.yaml");
         eprintln!("      or these keys will be overwritten on next daemon start.");
+        return;
+    }
+
+    if let Commands::Address { identity, key } = &cli.command {
+        match mesh_address(identity.as_deref(), key.as_deref()) {
+            Ok(address) => println!("{address}"),
+            Err(error) => {
+                eprintln!("error: {error}");
+                std::process::exit(1);
+            }
+        }
         return;
     }
 
@@ -735,7 +799,9 @@ fn main() {
                 build_command("show_stats_history", params)
             }
         },
-        Commands::Keygen { .. } | Commands::Ratings { .. } => unreachable!(),
+        Commands::Keygen { .. } | Commands::Address { .. } | Commands::Ratings { .. } => {
+            unreachable!()
+        }
     };
 
     let value = match send_request(&socket_path, &request) {

@@ -283,6 +283,18 @@ async fn test_outbound_msg2_denied_after_acl_reload() {
     let transport_id = TransportId::new(1);
     let remote_addr = TransportAddr::from_string("127.0.0.1:5001");
     let peer_b_identity = PeerIdentity::from_pubkey_full(node_b.identity.pubkey_full());
+    let peer_b_addr = *peer_b_identity.node_addr();
+    node_a.config.peers.push(PeerConfig {
+        npub: node_b.npub(),
+        addresses: vec![crate::config::PeerAddress::new(
+            "udp",
+            remote_addr.to_string(),
+        )],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        ..PeerConfig::default()
+    });
+    node_a.configured_peers = ConfiguredPeerLookup::from_config(&node_a.config);
 
     let link_id_a = node_a.allocate_link_id();
     let mut conn_a = PeerConnection::outbound(link_id_a, peer_b_identity, 1000);
@@ -338,6 +350,10 @@ async fn test_outbound_msg2_denied_after_acl_reload() {
     assert_eq!(node_a.connection_count(), 0);
     assert_eq!(node_a.link_count(), 0);
     assert!(node_a.pending_outbound.is_empty());
+    assert!(
+        node_a.retry_pending.contains_key(&peer_b_addr),
+        "an ACL-rejected configured dial must remain retryable after the ACL changes"
+    );
 }
 
 #[tokio::test]

@@ -28,6 +28,10 @@ impl LinkAddressIndex {
         }
     }
 
+    pub(in crate::node) fn remove_all_pointing_to(&mut self, link_id: &LinkId) {
+        self.entries.retain(|_, mapped| mapped != link_id);
+    }
+
     pub(in crate::node) fn lookup(
         &self,
         transport_id: TransportId,
@@ -82,8 +86,11 @@ impl LinkRegistry {
 
     pub(in crate::node) fn remove(&mut self, link_id: &LinkId) -> Option<Link> {
         let link = self.links.remove(link_id)?;
-        let key = (link.transport_id(), link.remote_addr().clone());
-        self.by_addr.remove_if_points_to(&key, link_id);
+        // Cross-connection resolution can index the surviving link under the
+        // packet's source address as well as the address stored on the link.
+        // Remove every alias still owned by this link; aliases subsequently
+        // claimed by a newer link have a different value and remain intact.
+        self.by_addr.remove_all_pointing_to(link_id);
         Some(link)
     }
 

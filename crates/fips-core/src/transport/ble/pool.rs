@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use tokio::task::JoinHandle;
 
+use crate::NodeAddr;
 use crate::transport::{TransportAddr, TransportError};
 
 use super::addr::BleAddr;
@@ -28,6 +29,8 @@ pub struct BleConnection<S> {
     pub is_static: bool,
     /// Parsed remote address.
     pub addr: BleAddr,
+    /// Stable peer identity learned during the pre-handshake exchange.
+    pub node_addr: Option<NodeAddr>,
 }
 
 impl<S> BleConnection<S> {
@@ -93,6 +96,21 @@ impl<S> ConnectionPool<S> {
     /// Check if a connection exists for the given address.
     pub fn contains(&self, addr: &TransportAddr) -> bool {
         self.connections.contains_key(addr)
+    }
+
+    /// Find a live connection by stable node identity rather than the BLE
+    /// link address, which may rotate as part of normal privacy behavior.
+    pub fn find_by_node(&self, node_addr: &NodeAddr) -> Option<&TransportAddr> {
+        self.connections.iter().find_map(|(addr, connection)| {
+            (connection.node_addr.as_ref() == Some(node_addr)).then_some(addr)
+        })
+    }
+
+    pub fn live_addr_of_node(&self, node_addr: &NodeAddr) -> Option<BleAddr> {
+        self.connections
+            .values()
+            .find(|connection| connection.node_addr.as_ref() == Some(node_addr))
+            .map(|connection| connection.addr.clone())
     }
 
     /// Try to insert a connection, evicting if necessary.
@@ -192,7 +210,27 @@ mod tests {
             established_at: tokio::time::Instant::now(),
             is_static,
             addr: test_ble_addr(n),
+            node_addr: None,
         }
+    }
+
+    #[test]
+    fn rotating_link_addresses_resolve_to_one_stable_node() {
+        let mut pool = ConnectionPool::new(7);
+        let node_addr = NodeAddr::from_bytes([7; 16]);
+        let mut first = test_conn(1, false);
+        first.node_addr = Some(node_addr);
+        pool.insert(test_addr(1), first).unwrap();
+
+        assert_eq!(pool.find_by_node(&node_addr), Some(&test_addr(1)));
+        assert_eq!(pool.live_addr_of_node(&node_addr), Some(test_ble_addr(1)));
+        for rotated in 2..12 {
+            assert!(
+                pool.find_by_node(&node_addr).is_some(),
+                "a rotated link address must not make the peer look new: {rotated}"
+            );
+        }
+        assert_eq!(pool.len(), 1);
     }
 
     #[test]

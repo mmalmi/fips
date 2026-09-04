@@ -234,6 +234,11 @@ impl Node {
             self.pending_session_traffic.remove_destination(node_addr);
         }
 
+        // Promotion seeded this peer's direct-link MTU. The path is gone, so
+        // release both the public clamp and its provenance before a future
+        // link (possibly wider but on the same transport instance) returns.
+        self.release_path_mtu(crate::FipsAddress::from_node_addr(node_addr));
+
         let link_id = peer.link_id();
         let transport_id = peer.transport_id();
 

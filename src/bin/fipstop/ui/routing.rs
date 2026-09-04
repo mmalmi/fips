@@ -131,6 +131,10 @@ fn draw_routing_stats(frame: &mut Frame, data: &serde_json::Value, area: Rect) {
             &helpers::nested_u64(data, "discovery", "req_duplicate"),
         ),
         helpers::kv_line(
+            "Own Loopback",
+            &helpers::nested_u64(data, "discovery", "req_own_loopback"),
+        ),
+        helpers::kv_line(
             "Bloom Miss",
             &helpers::nested_u64(data, "discovery", "req_bloom_miss"),
         ),

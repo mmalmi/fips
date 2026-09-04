@@ -288,6 +288,54 @@ async fn test_seed_path_mtu_keeps_tighter_value_on_same_transport() {
 }
 
 #[tokio::test]
+async fn removing_a_peer_releases_its_link_seeded_path_mtu_state() {
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx);
+    node.packet_rx = Some(packet_rx);
+    let transport_id = TransportId::new(1);
+    node.transports
+        .insert(transport_id, make_udp_transport_with_mtu(1, 1280).await);
+
+    let peer_identity = Identity::generate();
+    let peer_addr = *peer_identity.node_addr();
+    let fips_addr = crate::FipsAddress::from_node_addr(&peer_addr);
+    let link_id = LinkId::new(1);
+    let transport_addr = TransportAddr::from_string("10.0.0.8:2121");
+    let active = make_active_test_peer(
+        &node,
+        &peer_identity,
+        transport_id,
+        link_id,
+        transport_addr.clone(),
+        SessionIndex::new(1),
+        SessionIndex::new(2),
+    );
+    node.links.insert(
+        link_id,
+        Link::connectionless(
+            link_id,
+            transport_id,
+            transport_addr.clone(),
+            LinkDirection::Outbound,
+            Duration::from_millis(100),
+        ),
+    );
+    node.peers.insert(peer_addr, active);
+    node.seed_path_mtu_for_link_peer(&peer_addr, transport_id, &transport_addr);
+    assert!(node.path_mtu_lookup_entry(&fips_addr).is_some());
+
+    node.remove_active_peer(&peer_addr);
+
+    assert_eq!(node.path_mtu_lookup_get(&fips_addr), None);
+    assert_eq!(node.path_mtu_entry(&fips_addr), None);
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
 async fn test_expired_discovery_mtu_reseeds_current_direct_transport() {
     let mut node = make_node();
     let (packet_tx, packet_rx) = packet_channel(64);

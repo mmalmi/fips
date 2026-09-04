@@ -2,6 +2,62 @@ mod tests {
     use super::*;
 
     #[test]
+    fn address_command_parses_peer_and_key_inputs() {
+        let peer = Cli::try_parse_from(["fipsctl", "address", "npub1example"]).unwrap();
+        assert!(matches!(
+            peer.command,
+            Commands::Address {
+                identity: Some(_),
+                key: None
+            }
+        ));
+
+        let key = Cli::try_parse_from(["fipsctl", "address", "--key", "node.pub"]).unwrap();
+        assert!(matches!(
+            key.command,
+            Commands::Address {
+                identity: None,
+                key: Some(_)
+            }
+        ));
+    }
+
+    #[test]
+    fn address_derived_from_npub_matches_its_owner() {
+        let identity = Identity::generate();
+        assert_eq!(
+            address_from_npub(&identity.npub()).unwrap(),
+            identity.address().to_ipv6()
+        );
+    }
+
+    #[test]
+    fn public_key_file_is_enough_to_derive_an_address() {
+        let dir = tempfile::tempdir().unwrap();
+        let identity = Identity::generate();
+        write_pub_file(&dir.path().join("fips.pub"), &identity.npub()).unwrap();
+
+        assert_eq!(
+            address_from_key_dir(dir.path()).unwrap(),
+            identity.address().to_ipv6()
+        );
+    }
+
+    #[test]
+    fn missing_local_identity_reports_both_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = address_from_key_dir(dir.path()).unwrap_err();
+        assert!(error.contains("fips.key"), "{error}");
+        assert!(error.contains("fips.pub"), "{error}");
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+    #[test]
+    fn default_key_directory_matches_packaging() {
+        assert_eq!(default_key_dir(), PathBuf::from("/usr/local/etc/fips"));
+    }
+
+    #[test]
     fn test_acl_show_command_name() {
         assert_eq!(AclCommands::Show.command_name(), "show_acl");
     }

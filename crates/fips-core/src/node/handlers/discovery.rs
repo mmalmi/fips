@@ -53,6 +53,25 @@ impl Node {
         let now_ms = Self::now_ms();
         self.purge_expired_requests(now_ms);
 
+        // A flooded request can return through a bloom false-positive path.
+        // Its unsigned `origin` field is not safe to trust, but the random ID
+        // and target pair are locally recorded for every outstanding attempt.
+        // Do not file our own ID as transit state: doing so wastes another
+        // flood and can poison reverse-path bookkeeping.
+        if self
+            .pending_lookups
+            .matches_origin_request(&request.target, request.request_id)
+        {
+            self.stats_mut().discovery.req_own_loopback += 1;
+            debug!(
+                request_id = request.request_id,
+                from = %self.peer_display_name(from),
+                target = %self.peer_display_name(&request.target),
+                "LookupRequest we originated looped back, dropping"
+            );
+            return;
+        }
+
         // Dedup: drop if we've already seen this request_id.
         // Also serves as loop protection — tree routing is loop-free,
         // but request_id dedup catches edge cases during tree restructuring.

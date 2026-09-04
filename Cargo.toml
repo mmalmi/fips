@@ -32,6 +32,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["rt", "macros", "signal", "sync", "net", "time", "process", "io-util"] }
 uuid = { version = "1", features = ["v4"] }
+zeroize = "1.9"
+
+[dev-dependencies]
+tempfile = "3.15"
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.7"

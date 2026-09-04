@@ -1264,11 +1264,13 @@ dependencies = [
  "nvpn-fips-core",
  "ratatui",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "uuid",
  "windows-service",
+ "zeroize",
 ]
 
 [[package]]

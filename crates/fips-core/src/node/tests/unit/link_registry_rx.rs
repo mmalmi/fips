@@ -84,6 +84,38 @@ fn link_registry_owns_storage_address_index_and_stale_safe_cleanup() {
     assert!(registry.is_empty());
 }
 
+#[test]
+fn link_registry_removal_clears_every_address_alias_owned_by_the_link() {
+    let transport_id = TransportId::new(1);
+    let numeric_addr = TransportAddr::from_string("127.0.0.1:7000");
+    let hostname_addr = TransportAddr::from_string("peer.example:7000");
+    let unrelated_addr = TransportAddr::from_string("127.0.0.2:7000");
+    let removed_link_id = LinkId::new(10);
+    let surviving_link_id = LinkId::new(11);
+    let link = Link::connectionless(
+        removed_link_id,
+        transport_id,
+        numeric_addr.clone(),
+        LinkDirection::Outbound,
+        Duration::from_millis(100),
+    );
+
+    let mut registry = LinkRegistry::default();
+    registry.insert(removed_link_id, link);
+    registry.insert_addr((transport_id, hostname_addr.clone()), removed_link_id);
+    registry.insert_addr((transport_id, unrelated_addr.clone()), surviving_link_id);
+
+    registry.remove(&removed_link_id).expect("remove link");
+
+    assert_eq!(registry.lookup_addr(transport_id, &numeric_addr), None);
+    assert_eq!(registry.lookup_addr(transport_id, &hostname_addr), None);
+    assert_eq!(
+        registry.lookup_addr(transport_id, &unrelated_addr),
+        Some(surviving_link_id),
+        "removal must leave aliases owned by another link intact"
+    );
+}
+
 #[tokio::test]
 async fn test_node_rx_loop_requires_start() {
     let mut node = make_node();

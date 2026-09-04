@@ -625,6 +625,14 @@ impl BleIo for HostBleIo {
         })
     }
 
+    async fn stop_scanning(&self) -> Result<(), TransportError> {
+        self.shared
+            .command_tx
+            .send(HostBleCommand::StopScanning)
+            .await
+            .map_err(|_| TransportError::ShutdownFailed("host BLE command channel closed".into()))
+    }
+
     fn local_addr(&self) -> Result<BleAddr, TransportError> {
         Ok(self.local_addr.clone())
     }

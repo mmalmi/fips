@@ -21,6 +21,9 @@ pub struct BleStats {
     pub connections_accepted: AtomicU64,
     pub connections_rejected: AtomicU64,
     pub connect_timeouts: AtomicU64,
+    pub connect_errors: AtomicU64,
+    pub pubkey_exchange_failures: AtomicU64,
+    pub duplicate_node_declines: AtomicU64,
     pub pool_evictions: AtomicU64,
     pub advertisements_sent: AtomicU64,
     pub scan_results: AtomicU64,
@@ -79,6 +82,19 @@ impl BleStats {
         self.connect_timeouts.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn record_connect_error(&self) {
+        self.connect_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_pubkey_exchange_failure(&self) {
+        self.pubkey_exchange_failures
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_duplicate_node_decline(&self) {
+        self.duplicate_node_declines.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Record a pool eviction (non-static peer displaced).
     pub fn record_pool_eviction(&self) {
         self.pool_evictions.fetch_add(1, Ordering::Relaxed);
@@ -108,6 +124,9 @@ impl BleStats {
             connections_accepted: self.connections_accepted.load(Ordering::Relaxed),
             connections_rejected: self.connections_rejected.load(Ordering::Relaxed),
             connect_timeouts: self.connect_timeouts.load(Ordering::Relaxed),
+            connect_errors: self.connect_errors.load(Ordering::Relaxed),
+            pubkey_exchange_failures: self.pubkey_exchange_failures.load(Ordering::Relaxed),
+            duplicate_node_declines: self.duplicate_node_declines.load(Ordering::Relaxed),
             pool_evictions: self.pool_evictions.load(Ordering::Relaxed),
             advertisements_sent: self.advertisements_sent.load(Ordering::Relaxed),
             scan_results: self.scan_results.load(Ordering::Relaxed),
@@ -129,6 +148,9 @@ pub struct BleStatsSnapshot {
     pub connections_accepted: u64,
     pub connections_rejected: u64,
     pub connect_timeouts: u64,
+    pub connect_errors: u64,
+    pub pubkey_exchange_failures: u64,
+    pub duplicate_node_declines: u64,
     pub pool_evictions: u64,
     pub advertisements_sent: u64,
     pub scan_results: u64,

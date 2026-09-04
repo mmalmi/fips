@@ -13,6 +13,34 @@ fn make_transport(io: MockBleIo) -> (BleTransport<MockBleIo>, crate::transport::
     (transport, rx)
 }
 
+fn pubkeys_ordered_by_node_addr() -> ([u8; 32], [u8; 32]) {
+    let a = crate::Identity::from_secret_bytes(&[1; 32])
+        .unwrap()
+        .pubkey()
+        .serialize();
+    let b = crate::Identity::from_secret_bytes(&[2; 32])
+        .unwrap()
+        .pubkey()
+        .serialize();
+    let addr_a = NodeAddr::from_pubkey(&secp256k1::XOnlyPublicKey::from_slice(&a).unwrap());
+    let addr_b = NodeAddr::from_pubkey(&secp256k1::XOnlyPublicKey::from_slice(&b).unwrap());
+    if addr_a < addr_b { (a, b) } else { (b, a) }
+}
+
+async fn wait_for(what: &str, mut condition: impl FnMut() -> bool) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        if condition() {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
 #[test]
 fn test_transport_type() {
     let io = MockBleIo::new("hci0", test_addr(1));
@@ -45,6 +73,7 @@ async fn test_transport_start_stop() {
 
     transport.stop_async().await.unwrap();
     assert_eq!(transport.state(), TransportState::Down);
+    assert_eq!(transport.io().stop_scan_calls(), 1);
 }
 
 #[tokio::test]
@@ -112,6 +141,63 @@ async fn stalled_inbound_pubkey_exchange_does_not_block_healthy_peer() {
 }
 
 #[tokio::test]
+async fn rotated_inbound_address_keeps_one_stable_node_connection() {
+    let (peer_pubkey, local_pubkey) = pubkeys_ordered_by_node_addr();
+    let local_addr = test_addr(1);
+    let io = MockBleIo::new("hci0", local_addr.clone());
+    let (tx, _rx) = crate::transport::packet_channel(64);
+    let config = BleConfig {
+        advertise: Some(false),
+        scan: Some(false),
+        ..BleConfig::default()
+    };
+    let mut transport = BleTransport::new(TransportId::new(1), None, config, io, tx);
+    // The larger identity admits inbound in the cross-probe tie-breaker.
+    transport.set_local_pubkey(local_pubkey);
+    transport.start_async().await.unwrap();
+
+    let first_addr = test_addr(2);
+    let (first_inbound, first_peer) =
+        io::MockBleStream::pair(local_addr.clone(), first_addr.clone(), 2048);
+    transport.io().inject_inbound(first_inbound).await;
+    let first_peer = FramedBleStream::new(first_peer, 2048);
+    tasks::pubkey_exchange(&first_peer, &peer_pubkey)
+        .await
+        .unwrap();
+    wait_for("first BLE connection", || {
+        transport.connection_state_sync(&first_addr.to_transport_addr())
+            == ConnectionState::Connected
+    })
+    .await;
+
+    let rotated_addr = test_addr(3);
+    let (rotated_inbound, rotated_peer) =
+        io::MockBleStream::pair(local_addr, rotated_addr.clone(), 2048);
+    transport.io().inject_inbound(rotated_inbound).await;
+    let rotated_peer = FramedBleStream::new(rotated_peer, 2048);
+    tasks::pubkey_exchange(&rotated_peer, &peer_pubkey)
+        .await
+        .unwrap();
+    wait_for("rotated BLE address rejection", || {
+        transport.stats.snapshot().duplicate_node_declines == 1
+    })
+    .await;
+
+    let pool = transport.pool.lock().await;
+    assert_eq!(pool.len(), 1);
+    assert!(pool.contains(&first_addr.to_transport_addr()));
+    assert!(!pool.contains(&rotated_addr.to_transport_addr()));
+    drop(pool);
+
+    let peers = transport.discovery_buffer.take();
+    assert_eq!(peers.len(), 1);
+    assert_eq!(peers[0].addr, first_addr.to_transport_addr());
+
+    transport.stop_async().await.unwrap();
+    drop((first_peer, rotated_peer));
+}
+
+#[tokio::test]
 async fn retired_receive_loop_does_not_remove_replacement_connection() {
     use std::sync::Arc;
 
@@ -137,6 +223,7 @@ async fn retired_receive_loop_does_not_remove_replacement_connection() {
                 established_at: tokio::time::Instant::now(),
                 is_static: false,
                 addr: remote_addr.clone(),
+                node_addr: None,
             },
         )
         .unwrap();
@@ -165,6 +252,7 @@ async fn retired_receive_loop_does_not_remove_replacement_connection() {
                 established_at: tokio::time::Instant::now(),
                 is_static: false,
                 addr: remote_addr,
+                node_addr: None,
             },
         )
         .unwrap();

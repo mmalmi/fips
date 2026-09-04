@@ -5,6 +5,7 @@
 //! adapters; `MockBleIo` provides an in-memory test double.
 
 use crate::transport::TransportError;
+use portable_atomic::{AtomicU64, Ordering};
 
 use super::{DEFAULT_PSM, addr::BleAddr, bootstrap::BleBootstrap};
 
@@ -108,6 +109,15 @@ pub trait BleIo: Send + Sync + 'static {
     fn start_scanning(
         &self,
     ) -> impl std::future::Future<Output = Result<Self::Scanner, TransportError>> + Send;
+
+    /// Stop scanning at the radio/backend, not only in the task consuming
+    /// scan results. Platform-owned radios can otherwise keep scanning after
+    /// the transport is disabled.
+    fn stop_scanning(
+        &self,
+    ) -> impl std::future::Future<Output = Result<(), TransportError>> + Send {
+        async { Ok(()) }
+    }
 
     /// Get the adapter's BLE address.
     fn local_addr(&self) -> Result<BleAddr, TransportError>;
@@ -596,6 +606,12 @@ mod bluer_impl {
             })
         }
 
+        async fn stop_scanning(&self) -> Result<(), TransportError> {
+            // BlueZ discovery is tied to the stream returned by
+            // `discover_devices`; dropping the scanner stops it.
+            Ok(())
+        }
+
         fn local_addr(&self) -> Result<BleAddr, TransportError> {
             // Use futures::executor::block_on since this is a sync method
             // but needs an async call. The adapter address is cached so
@@ -739,6 +755,7 @@ pub struct MockBleIo {
     connect_handler: std::sync::Mutex<Option<ConnectHandler>>,
     assigned_psm: u16,
     advertised_bootstrap: std::sync::Mutex<Option<BleBootstrap>>,
+    stop_scan_calls: AtomicU64,
 }
 
 impl MockBleIo {
@@ -756,6 +773,7 @@ impl MockBleIo {
             connect_handler: std::sync::Mutex::new(None),
             assigned_psm: DEFAULT_PSM,
             advertised_bootstrap: std::sync::Mutex::new(None),
+            stop_scan_calls: AtomicU64::new(0),
         }
     }
 
@@ -793,6 +811,10 @@ impl MockBleIo {
             .advertised_bootstrap
             .lock()
             .unwrap_or_else(|error| error.into_inner())
+    }
+
+    pub fn stop_scan_calls(&self) -> u64 {
+        self.stop_scan_calls.load(Ordering::Relaxed)
     }
 
     /// Set a handler for outbound connect calls.
@@ -856,6 +878,11 @@ impl BleIo for MockBleIo {
             .take()
             .ok_or_else(|| TransportError::NotSupported("scanner already taken".into()))?;
         Ok(MockBleScanner { rx })
+    }
+
+    async fn stop_scanning(&self) -> Result<(), TransportError> {
+        self.stop_scan_calls.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 
     fn local_addr(&self) -> Result<BleAddr, TransportError> {
