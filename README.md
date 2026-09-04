@@ -14,6 +14,14 @@ published under the `nvpn-fips-*` crate namespace. The
 [original FIPS project](https://github.com/jmcorgan/fips) is maintained by
 Johnathan Corgan.
 
+This fork preserves the FIPS protocol surface while substantially redesigning
+the data plane for high packet rates. In comparable direct-path benchmarks it
+delivers roughly three times the original implementation's throughput. Most of
+the gain comes from an owner-affine, end-to-end batched pipeline that keeps
+packet buffers and session state resident, batches I/O and cryptography, reuses
+packet storage, and avoids packet-by-packet queue hops, allocations, copies,
+and repeated lookups.
+
 > FIPS is under active development. The protocol and APIs are not yet stable.
 > See [Status & Roadmap](#status--roadmap) below.
 
