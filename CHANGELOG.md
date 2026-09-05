@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Wait for the existing delivery-feedback window before recovering a newly
+  active path, avoiding needless fallback and rekeying during healthy bursts.
 - Update direct reply paths only from authenticated direct traffic, preventing
   relayed or invalid packets from redirecting replies to the wrong carrier.
 - Ignore expired replay counters after another authenticated packet advances
