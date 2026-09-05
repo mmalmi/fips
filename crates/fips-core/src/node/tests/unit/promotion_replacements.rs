@@ -1,5 +1,43 @@
 use super::*;
 
+pub(super) async fn confirm_inbound_candidate_for_test(
+    node: &mut Node,
+    transport_id: TransportId,
+    source: &TransportAddr,
+    mut remote_handshake: crate::noise::HandshakeState,
+) {
+    let link_id = node.find_link_by_addr(transport_id, source).unwrap();
+    let pending = node.get_connection(&link_id).unwrap();
+    let msg2 = pending.handshake_msg2().unwrap();
+    let header = crate::node::wire::Msg2Header::parse(msg2).unwrap();
+    assert_eq!(pending.our_index(), Some(header.sender_idx));
+    assert!(node.index_allocator.is_allocated(header.sender_idx));
+    remote_handshake
+        .read_message_2(header.noise_msg2(msg2))
+        .unwrap();
+    let mut session = remote_handshake.into_session().unwrap();
+    let mut heartbeat = 0u32.to_le_bytes().to_vec();
+    heartbeat.push(crate::protocol::LinkMessageType::Heartbeat.to_byte());
+    let aad = crate::dataplane::build_fmp_established_header(
+        header.sender_idx.as_u32(),
+        session.current_send_counter(),
+        0,
+        heartbeat.len() as u16,
+    );
+    let mut wire = aad.to_vec();
+    wire.extend(session.encrypt_with_aad(&heartbeat, &aad).unwrap());
+    assert!(
+        node.confirm_inbound_handshake(ReceivedPacket::with_timestamp(
+            transport_id,
+            source.clone(),
+            crate::transport::PacketBuffer::new(wire),
+            Node::now_ms(),
+        ))
+        .await
+    );
+    assert!(node.get_connection(&link_id).is_none());
+}
+
 #[tokio::test]
 async fn inbound_path_replacement_drops_superseded_bootstrap_transport() {
     use crate::config::WebSocketConfig;
@@ -97,6 +135,19 @@ async fn inbound_path_replacement_drops_superseded_bootstrap_transport() {
     ))
     .await;
 
+    let retained = node.get_peer(&peer_node_addr).unwrap();
+    assert_eq!(retained.link_id(), old_link_id);
+    assert_eq!(retained.transport_id(), Some(bootstrap_transport_id));
+    assert!(node.transports.contains_key(&bootstrap_transport_id));
+    assert!(node.bootstrap_transports.contains(&bootstrap_transport_id));
+    confirm_inbound_candidate_for_test(
+        &mut node,
+        direct_transport_id,
+        &direct_addr,
+        remote_handshake,
+    )
+    .await;
+
     let active = node
         .get_peer(&peer_node_addr)
         .expect("authenticated direct path should remain active");
@@ -105,7 +156,7 @@ async fn inbound_path_replacement_drops_superseded_bootstrap_transport() {
     assert!(node.get_link(&old_link_id).is_none());
     assert!(
         !node.transports.contains_key(&bootstrap_transport_id),
-        "the production Msg1 replacement path must drop the superseded adopted carrier"
+        "the confirmed replacement must drop the superseded adopted carrier"
     );
     assert!(
         !node.bootstrap_transports.contains(&bootstrap_transport_id),

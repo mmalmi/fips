@@ -452,14 +452,12 @@ async fn handle_msg1_treats_same_epoch_stale_peer_as_recovery() {
         ),
     );
 
-    let mut conn = PeerConnection::outbound(
-        LinkId::new(99),
-        PeerIdentity::from_pubkey_full(node.identity.pubkey_full()),
-        2_000,
+    let mut remote_handshake = crate::noise::HandshakeState::new_initiator(
+        peer_identity_full.keypair(),
+        node.identity.pubkey_full(),
     );
-    let noise_msg1 = conn
-        .start_handshake(peer_identity_full.keypair(), remote_epoch, 2_000)
-        .expect("msg1");
+    remote_handshake.set_local_epoch(remote_epoch);
+    let noise_msg1 = remote_handshake.write_message_1().expect("msg1");
     let wire_msg1 =
         crate::node::wire::build_msg1(crate::utils::index::SessionIndex::new(0x5151), &noise_msg1);
     let packet = ReceivedPacket::with_timestamp(
@@ -470,6 +468,17 @@ async fn handle_msg1_treats_same_epoch_stale_peer_as_recovery() {
     );
 
     node.handle_msg1(packet).await;
+
+    let retained = node.get_peer(&peer_node_addr).expect("retained stale peer");
+    assert_eq!(retained.link_id(), old_link_id);
+    assert!(!retained.is_healthy());
+    super::promotion_replacements::confirm_inbound_candidate_for_test(
+        &mut node,
+        transport_id,
+        &new_addr,
+        remote_handshake,
+    )
+    .await;
 
     let active = node.get_peer(&peer_node_addr).expect("peer");
     assert!(active.is_healthy());

@@ -849,10 +849,10 @@ impl Node {
                 conn.set_handshake_msg1(packet.data.as_slice().to_vec(), 0);
                 conn.touch(Self::now_ms());
             }
-            if let Some(transport) = self.transports.get(&packet.transport_id) {
-                if let Err(error) = transport.send(&packet.remote_addr, &wire_msg2).await {
-                    debug!(%link_id, %error, "Candidate Msg2 send failed; retaining for retry");
-                }
+            if let Some(transport) = self.transports.get(&packet.transport_id)
+                && let Err(error) = transport.send(&packet.remote_addr, &wire_msg2).await
+            {
+                debug!(%link_id, %error, "Candidate Msg2 send failed; retaining for retry");
             }
             return;
         }
