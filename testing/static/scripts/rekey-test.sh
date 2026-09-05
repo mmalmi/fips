@@ -366,6 +366,7 @@ start_continuous_probes() {
     for i in 0 1 2 3 4; do
         local from
         from="$(lower_label "${LABELS[$i]}")"
+        docker cp "$SCRIPT_DIR/rekey_probe.py" "fips-node-$from:/tmp/fips-rekey-probe.py" >/dev/null
         for j in 0 1 2 3 4; do
             [ "$i" -eq "$j" ] && continue
             local to
@@ -378,7 +379,7 @@ start_continuous_probes() {
             stagger_overlap_probe_start "$from" "$to"
             interval="$(continuous_probe_interval_for_pair "$from" "$to")"
             docker exec "fips-node-$from" sh -c \
-                'echo "$$" > "$1"; exec ping6 -n -D -O -i "$2" "$3"' \
+                'echo "$$" > "$1"; exec python3 /tmp/fips-rekey-probe.py "$3" --interval "$2"' \
                 rekey-probe "$pid_file" "$interval" "$target" \
                 >"$PROBE_DIR/${from}-to-${to}.log" 2>&1 &
             echo "$!" >>"$PROBE_HOST_PIDS"
