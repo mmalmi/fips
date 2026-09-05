@@ -770,6 +770,7 @@ impl OwnerState {
         let metrics = &mmp.metrics;
         Some(DataplaneFmpLinkMetrics {
             node_addr: self.owner.node_addr(),
+            current_epoch_authenticated: self.replay_window.highest.is_some(),
             mode: mmp.mode(),
             spin_bit_initiator: mmp.spin_bit.is_initiator(),
             srtt_ms: metrics.srtt_ms(),

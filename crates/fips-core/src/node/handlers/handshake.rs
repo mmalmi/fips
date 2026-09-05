@@ -509,13 +509,10 @@ impl Node {
                             "Same-epoch msg1 received while direct payload is stale; processing as direct-path recovery"
                         );
                     } else {
-                        // If the peer has an active session and rekey is enabled,
-                        // this is a rekey msg1 (not a duplicate initial msg1).
-                        // Guard: the session must be at least 30s old to avoid
-                        // misidentifying a cross-connection msg1 as a rekey.
-                        // During simultaneous connection, both sides promote
-                        // within the same tick and the peer's msg1 arrives
-                        // immediately — a genuine rekey can't fire that fast.
+                        // Authenticated current-epoch traffic can prove an
+                        // early rekey. Retain the age fallback for sessions
+                        // without that evidence so initial crossed Msg1s still
+                        // follow the deterministic connection-owner rule.
                         let session_age_secs =
                             existing_peer.session_established_at().elapsed().as_secs();
                         if established_same_path_rekey
@@ -943,62 +940,6 @@ impl Node {
             .await;
     }
 
-    pub(in crate::node) fn same_epoch_msg1_is_direct_path_recovery(
-        &mut self,
-        peer_node_addr: &NodeAddr,
-        now_ms: u64,
-    ) -> bool {
-        let Some(peer_unhealthy) = self
-            .peers
-            .get(peer_node_addr)
-            .map(|peer| !peer.is_healthy())
-        else {
-            return false;
-        };
-        peer_unhealthy
-            || self.session_direct_path_blocks_direct_payload(peer_node_addr, now_ms)
-            || self.session_direct_path_exclusive_trust_expired(peer_node_addr, now_ms)
-    }
-
-    pub(in crate::node) fn same_path_msg1_is_established_rekey(
-        &self,
-        peer_node_addr: &NodeAddr,
-        transport_id: crate::transport::TransportId,
-        remote_addr: &crate::transport::TransportAddr,
-    ) -> bool {
-        // A pending outbound PeerConnection on this exact tuple means both
-        // endpoints are performing a full carrier refresh. Resolve those two
-        // Noise handshakes with the normal deterministic cross-connection
-        // rule. FMP rekeys live on ActivePeer instead, so treating this Msg1
-        // as a rekey would make both sides install unrelated responder
-        // indexes while their outbound halves are still in flight.
-        let simultaneous_same_path_connection = self.peers.connection_values().any(|connection| {
-            connection.is_outbound()
-                && connection.transport_id() == Some(transport_id)
-                && connection.source_addr() == Some(remote_addr)
-                && connection
-                    .expected_identity()
-                    .is_some_and(|identity| identity.node_addr() == peer_node_addr)
-        });
-        if simultaneous_same_path_connection {
-            return false;
-        }
-
-        let direct_payload_validation_pending = self
-            .session_direct_degradation
-            .has_pending_validation(peer_node_addr);
-        self.config.node.rekey.enabled
-            && self.peers.get(peer_node_addr).is_some_and(|peer| {
-                peer.has_session()
-                    && peer.can_send()
-                    && (direct_payload_validation_pending
-                        || peer.is_draining()
-                        || peer.session_established_at().elapsed().as_secs() >= 30)
-                    && peer.transport_id() == Some(transport_id)
-                    && peer.current_addr() == Some(remote_addr)
-            })
-    }
-
     fn ensure_owned_msg2_receiver_route(&mut self, node_addr: &NodeAddr) -> bool {
         if !self.ensure_current_session_index_registered(node_addr, "owned Msg2 advertisement") {
             return false;
@@ -1079,3 +1020,4 @@ impl Node {
 
 mod msg2;
 mod promotion;
+mod recovery;

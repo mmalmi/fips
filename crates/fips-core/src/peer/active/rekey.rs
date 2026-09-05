@@ -91,6 +91,19 @@ impl ActivePeer {
         self.pending_rekey_initiator
     }
 
+    pub(crate) fn unconfirmed_rekey_expired(&self, now: Instant, timeout: Duration) -> bool {
+        !self.pending_rekey_initiator
+            && self.pending_new_session.is_some()
+            && self
+                .pending_rekey_completed_at
+                .is_some_and(|completed| now.saturating_duration_since(completed) >= timeout)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_rekey_completed_at_for_test(&self) -> Option<Instant> {
+        self.pending_rekey_completed_at
+    }
+
     /// Whether the locally initiated pending FMP rekey has waited long enough
     /// to cut over. Responders cut over only after observing the peer's K-bit.
     pub fn pending_rekey_cutover_due(&self, delay: Duration) -> bool {

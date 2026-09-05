@@ -255,6 +255,69 @@ fn peer_lifecycle_registry_owns_fmp_rekey_tick_selection() {
 }
 
 #[test]
+fn routine_fmp_rekey_preserves_pending_and_draining_epochs() {
+    let local = Identity::generate();
+    let remote = Identity::generate();
+    for phase in 0..3 {
+        let mut peer = active_fmp_peer(&local, &remote, 1);
+        arm_completed_fmp_rekey(&mut peer, &local, &remote, 1, phase != 0);
+        if phase == 2 {
+            peer.cutover_to_new_session().unwrap();
+        }
+        peer.set_rekey_jitter_secs_for_test(0);
+        let mut peers = crate::node::PeerLifecycleRegistry::default();
+        peers.insert(*remote.node_addr(), peer);
+        // Even an immediately due timer/counter cannot overwrite responder
+        // pending state, an initiator awaiting cutover, or an unexpired drain.
+        let plan = peers.plan_fmp_rekey_tick(0, 0, Duration::from_secs(60), 60, 0);
+        assert_eq!(plan, FmpRekeyTickPlan::default(), "epoch phase {phase}");
+    }
+}
+
+#[test]
+fn unconfirmed_fmp_rekey_expiry_keeps_current_and_previous_receiver_indexes() {
+    let local = Identity::generate();
+    let remote = Identity::generate();
+    let mut node = Node::with_identity(local, crate::Config::new()).unwrap();
+    let mut peer = active_fmp_peer(node.identity(), &remote, 1);
+    arm_completed_fmp_rekey(&mut peer, node.identity(), &remote, 1, true);
+    peer.cutover_to_new_session().unwrap();
+    let current_index = peer.our_index().unwrap();
+    let previous_index = peer.previous_our_index().unwrap();
+    arm_completed_fmp_rekey(&mut peer, node.identity(), &remote, 2, false);
+    let pending_index = peer.pending_our_index().unwrap();
+    let timeout = Duration::from_secs(node.config.node.rate_limit.handshake_timeout_secs);
+    let expires_at = peer.pending_rekey_completed_at_for_test().unwrap() + timeout;
+    let transport_id = peer.transport_id().unwrap();
+    node.peers
+        .insert_with_current_session_index(*remote.node_addr(), peer);
+    for index in [previous_index, pending_index] {
+        node.peers
+            .insert_session_index((transport_id, index.as_u32()), *remote.node_addr());
+    }
+    assert!(node.sync_dataplane_fmp_owner(remote.node_addr()));
+
+    node.expire_unconfirmed_fmp_rekeys(expires_at);
+    let peer = node.get_peer(remote.node_addr()).unwrap();
+    assert_eq!(peer.our_index(), Some(current_index));
+    assert_eq!(peer.previous_our_index(), Some(previous_index));
+    assert!(peer.is_draining());
+    assert!(peer.previous_session().is_some());
+    assert!(peer.pending_new_session().is_none());
+    for index in [previous_index, current_index] {
+        assert!(
+            node.peers
+                .contains_session_index(&(transport_id, index.as_u32()))
+        );
+    }
+    assert!(
+        !node
+            .peers
+            .contains_session_index(&(transport_id, pending_index.as_u32()))
+    );
+}
+
+#[test]
 fn peer_lifecycle_registry_owns_fmp_rekey_tick_cutover_and_drain_mutation() {
     let local = Identity::generate();
     let cutover_peer = Identity::generate();

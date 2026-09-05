@@ -15,6 +15,7 @@ use std::time::Duration;
 use tracing::{debug, trace, warn};
 
 mod policy;
+mod recovery;
 pub(in crate::node) use policy::*;
 mod tick;
 use tick::{SessionRekeyTickConfig, SessionRekeyTickPlan};
@@ -232,7 +233,11 @@ impl crate::node::PeerLifecycleRegistry {
                 continue;
             }
 
-            if peer.rekey_in_progress() || peer.is_rekey_dampened(dampening_secs) {
+            if peer.rekey_in_progress()
+                || peer.pending_new_session().is_some()
+                || peer.is_draining()
+                || peer.is_rekey_dampened(dampening_secs)
+            {
                 continue;
             }
 
@@ -500,37 +505,6 @@ impl Node {
         true
     }
 
-    pub(in crate::node) fn abandon_fmp_rekey_for_peer(
-        &mut self,
-        node_addr: &NodeAddr,
-        reason: &'static str,
-    ) -> bool {
-        let peer_name = self.peer_display_name(node_addr);
-        let cleanup = self.peers.get_mut(node_addr).and_then(|peer| {
-            let transport_id = peer.transport_id();
-            peer.clear_handshake_msg2();
-            peer.abandon_rekey().map(|idx| (transport_id, idx))
-        });
-
-        let Some((transport_id, idx)) = cleanup else {
-            return false;
-        };
-
-        if let Some(tid) = transport_id {
-            self.pending_outbound.remove(&(tid, idx.as_u32()));
-            self.deregister_session_index((tid, idx.as_u32()));
-        }
-        let _ = self.index_allocator.free(idx);
-        let _ = self.clear_dataplane_fmp_pending_receive_epoch(node_addr);
-        let _ = self.sync_dataplane_fmp_owner(node_addr);
-        debug!(
-            peer = %peer_name,
-            reason,
-            "Abandoned FMP rekey state"
-        );
-        true
-    }
-
     /// Periodic rekey check. Called from the tick loop.
     ///
     /// For each active peer with a session:
@@ -541,6 +515,8 @@ impl Node {
         if !self.config.node.rekey.enabled {
             return;
         }
+
+        self.expire_unconfirmed_fmp_rekeys(std::time::Instant::now());
 
         let rekey_after_secs = self.config.node.rekey.after_secs;
         let rekey_after_messages = self.config.node.rekey.after_messages;

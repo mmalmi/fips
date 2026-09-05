@@ -79,6 +79,7 @@ pub(crate) struct DataplaneFmpReceiverReportResult {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct DataplaneFmpLinkMetrics {
     pub(crate) node_addr: NodeAddr,
+    pub(crate) current_epoch_authenticated: bool,
     pub(crate) mode: crate::mmp::MmpMode,
     pub(crate) spin_bit_initiator: bool,
     pub(crate) srtt_ms: Option<f64>,
