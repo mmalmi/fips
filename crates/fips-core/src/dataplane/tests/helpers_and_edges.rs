@@ -291,12 +291,19 @@
     fn drain_worker_pool_into_driver(
         driver: &mut DataplaneTurnDriver,
         mut summary: DataplaneRuntimeSummary,
-        pool: &mut DataplaneAeadWorkerPool,
+        _pool: &mut DataplaneAeadWorkerPool,
         expected: usize,
         compact_endpoint_data: bool,
     ) -> DataplaneRuntimeSummary {
-        wait_for_owner_readiness(pool, &driver.mover);
-        let drained = driver.retire_ready_aead_outputs(expected, compact_endpoint_data);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut drained = 0;
+        while drained < expected {
+            drained += driver.retire_ready_aead_outputs(expected - drained, compact_endpoint_data);
+            if drained < expected {
+                assert!(std::time::Instant::now() < deadline, "crypto completion deadline");
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
         assert_eq!(drained, expected);
         summary.completions = summary.completions.saturating_add(drained);
         driver.admit_retired_outbound_packets(summary)
