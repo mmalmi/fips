@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.74] - 2026-09-05
+
+### Fixed
+
+- Ignore expired replay counters after another authenticated packet advances
+  the window, preventing a panic through the split check/decrypt/accept API.
+- Keep replay-window bounds correct across the full counter range on 32-bit
+  targets, including browser-hosted Linux guests.
+- Allow authenticated WebSocket bootstrap connections to upgrade to direct
+  paths even when Nostr discovery is disabled.
+
+### Changed
+
+- Replace per-packet replay bitmap shifts with bounded counter-indexed words,
+  preserving the exact 8,192-counter window and all wire formats.
+- Consolidate overlapping rate-limit tests and use injected timestamps instead
+  of real sleeps while checking exact timing boundaries.
+- Release `nvpn-fips-core` and `nvpn-fips-endpoint` 0.4.74 together.
+
 ## [0.4.73] - 2026-09-04
 
 ### Added

@@ -2341,7 +2341,7 @@ dependencies = [
 
 [[package]]
 name = "nvpn-fips-core"
-version = "0.4.73"
+version = "0.4.74"
 dependencies = [
  "base64",
  "bluer",
@@ -2385,7 +2385,7 @@ dependencies = [
 
 [[package]]
 name = "nvpn-fips-endpoint"
-version = "0.4.73"
+version = "0.4.74"
 dependencies = [
  "nvpn-fips-core",
 ]
