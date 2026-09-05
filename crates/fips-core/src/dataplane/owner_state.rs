@@ -58,6 +58,7 @@ impl OwnerState {
             last_delivery_report_cumulative_packets_recv: None,
             last_tx_activity: None,
             last_tx_data_activity: None,
+            first_unreported_tx_data_activity: None,
             last_outbound_next_hop: None,
             last_direct_path_validation_activity: None,
             fsp_mmp_path_changed_since_report: false,
@@ -123,6 +124,7 @@ impl OwnerState {
         self.last_delivery_report_next_hop = None;
         self.last_delivery_report_cumulative_packets_recv = None;
         self.last_tx_data_activity = None;
+        self.first_unreported_tx_data_activity = None;
         self.last_outbound_next_hop = None;
         self.last_direct_path_validation_activity = None;
         self.fsp_mmp_path_changed_since_report = false;
@@ -150,6 +152,7 @@ impl OwnerState {
         let last_delivery_report_cumulative_packets_recv =
             self.last_delivery_report_cumulative_packets_recv;
         let last_tx_data_activity = self.last_tx_data_activity;
+        let first_unreported_tx_data_activity = self.first_unreported_tx_data_activity;
         let last_outbound_next_hop = self.last_outbound_next_hop;
         let last_direct_path_validation_activity = self.last_direct_path_validation_activity;
         let fsp_mmp_path_changed_since_report = self.fsp_mmp_path_changed_since_report;
@@ -173,6 +176,7 @@ impl OwnerState {
         self.last_delivery_report_cumulative_packets_recv =
             last_delivery_report_cumulative_packets_recv;
         self.last_tx_data_activity = last_tx_data_activity;
+        self.first_unreported_tx_data_activity = first_unreported_tx_data_activity;
         self.last_outbound_next_hop = last_outbound_next_hop;
         self.last_direct_path_validation_activity = last_direct_path_validation_activity;
         self.fsp_mmp_path_changed_since_report = fsp_mmp_path_changed_since_report;
@@ -719,6 +723,7 @@ impl OwnerState {
                 .as_ref()
                 .is_some_and(|mmp| mmp.mode() != crate::mmp::MmpMode::Minimal),
             last_tx_data_activity: self.last_tx_data_activity,
+            first_unreported_tx_data_activity: self.first_unreported_tx_data_activity,
             last_outbound_next_hop: self.last_outbound_next_hop,
             last_direct_path_validation_activity: self.last_direct_path_validation_activity,
             current_k_bit: self.fsp_current_k_bit,

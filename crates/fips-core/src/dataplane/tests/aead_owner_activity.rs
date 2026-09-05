@@ -859,7 +859,7 @@ fn authenticated_direct_validation_waits_one_report_window_before_delivery_is_st
         ActivityTick::new(1_050),
     ));
     assert!(
-        mover
+        !mover
             .owner_fsp_activity(owner)
             .unwrap()
             .has_recent_outbound_without_delivery_feedback_from(
@@ -867,7 +867,7 @@ fn authenticated_direct_validation_waits_one_report_window_before_delivery_is_st
                 1_100,
                 2_500,
             ),
-        "an unvalidated path must still fail fast when delivery feedback is absent"
+        "initial data must allow a report window before delivery feedback is declared absent"
     );
     assert!(
         mover

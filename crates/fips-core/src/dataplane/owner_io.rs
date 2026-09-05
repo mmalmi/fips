@@ -142,8 +142,12 @@ impl OwnerState {
                         self.last_delivery_report_next_hop = None;
                         self.last_delivery_report_cumulative_packets_recv = None;
                         self.last_direct_path_validation_activity = None;
+                        self.first_unreported_tx_data_activity = None;
                     }
                     self.last_outbound_next_hop = Some(next_hop);
+                }
+                if self.first_unreported_tx_data_activity.is_none() {
+                    self.first_unreported_tx_data_activity = packet.activity_tick;
                 }
                 self.data_packets_sent = self.data_packets_sent.saturating_add(1);
                 self.data_bytes_sent = self.data_bytes_sent.saturating_add(bytes as u64);
@@ -331,10 +335,12 @@ impl OwnerState {
             self.last_delivery_report_next_hop = None;
             self.last_delivery_report_cumulative_packets_recv = None;
             self.last_direct_path_validation_activity = None;
+            self.first_unreported_tx_data_activity = None;
         }
         self.last_outbound_next_hop = Some(next_hop);
         note_activity(&mut self.last_tx_activity, tick);
         note_activity(&mut self.last_tx_data_activity, tick);
+        self.first_unreported_tx_data_activity.get_or_insert(tick);
         self.data_packets_sent = self.data_packets_sent.saturating_add(1);
         self.data_bytes_sent = self.data_bytes_sent.saturating_add(bytes as u64);
         true
@@ -346,6 +352,7 @@ impl OwnerState {
         {
             return false;
         }
+        self.first_unreported_tx_data_activity = None;
         self.last_outbound_next_hop = None;
         self.last_delivery_report_activity = None;
         self.last_delivery_report_next_hop = None;
@@ -393,6 +400,7 @@ impl OwnerState {
         {
             self.last_tx_activity = None;
             self.last_tx_data_activity = None;
+            self.first_unreported_tx_data_activity = None;
             self.last_outbound_next_hop = None;
             invalidated = true;
         }
@@ -652,6 +660,7 @@ impl OwnerState {
                     .last_delivery_report_cumulative_packets_recv
                     .is_none_or(|previous| rr.cumulative_packets_recv > previous);
             if report_advanced {
+                self.first_unreported_tx_data_activity = None;
                 self.last_delivery_report_activity = Some(ActivityTick::new(now_ms));
                 self.last_delivery_report_next_hop = Some(next_hop);
                 self.last_delivery_report_cumulative_packets_recv =

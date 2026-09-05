@@ -6,6 +6,7 @@ include!("authenticated_paths.rs");
 include!("outbound_fairness.rs");
 include!("aead_owner_inbound.rs");
 include!("aead_owner_activity.rs");
+include!("path_feedback.rs");
 include!("aead_completion.rs");
 include!("aead_completion_tail.rs");
 include!("live_routes_and_outputs.rs");
