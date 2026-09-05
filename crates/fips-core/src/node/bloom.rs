@@ -252,6 +252,7 @@ impl Node {
         let peer_filters = self.peer_inbound_filters();
         self.bloom_state
             .mark_changed_peers(from, &peer_addrs, &peer_filters);
+        self.resume_first_contact_after_filter(from).await;
     }
 
     /// Check bloom filter state on tick (called from event loop).

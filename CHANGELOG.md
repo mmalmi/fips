@@ -22,8 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keep endpoint control responsive after a maintenance timeout, and prepare
   UDP hostnames outside liveness work so slow DNS cannot repeatedly cancel
   handshake retries or stall otherwise usable carriers.
-- Retry queued first-contact traffic while route discovery becomes ready,
-  retaining bounded lookup attempts and normal offline cleanup.
+- Start queued first-contact discovery as soon as reachability arrives,
+  retaining bounded lookup attempts, retry deadlines, and normal offline cleanup.
 - Start the queued IPv6 stale-send budget when an initial session becomes
   usable, so route discovery cannot consume it before the first send.
 - Honor early FMP key-rotation thresholds while preserving current and draining
@@ -52,7 +52,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replace per-packet replay bitmap shifts with bounded counter-indexed words,
   preserving the exact 8,192-counter window and all wire formats.
 - Consolidate overlapping rate-limit tests and use injected timestamps instead
-  of real sleeps while checking exact timing boundaries.
+  of real sleeps while checking exact timing boundaries. Complete simultaneous
+  dial tests when their sessions are ready instead of waiting for idle retries.
 - Run Linux and macOS unit tests alongside platform builds and network tests
   as soon as build artifacts are ready, so failures do not hide other results.
 - Repair NAT replay-window defaults and isolate discovery in topology and

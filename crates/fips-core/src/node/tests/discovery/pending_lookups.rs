@@ -425,3 +425,93 @@ async fn established_session_keeps_path_recovery_lookup_and_endpoint_data() {
         "an established authenticated session is not an unreachable destination"
     );
 }
+
+#[test]
+fn first_contact_starts_when_reachability_arrives_before_retry_deadline() {
+    super::super::session::run_large_stack_async_test("first-contact-ready", || async {
+        use super::super::spanning_tree::{initiate_handshake, make_test_node};
+        let mut nodes = vec![make_test_node().await, make_test_node().await];
+        initiate_handshake(&mut nodes, 0, 1).await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while nodes.iter().any(|n| n.node.peer_count() != 1) {
+                process_available_packets(&mut nodes).await;
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let source = *nodes[0].node.node_addr();
+        let transit = *nodes[1].node.node_addr();
+        let target = make_node_addr(0x91);
+        let declaration = crate::tree::ParentDeclaration::new(transit, source, 1, 0);
+        let coords = TreeCoordinate::from_addrs(vec![source, transit]).unwrap();
+        nodes[0].node.tree_state_mut().remove_peer(&transit);
+        assert!(
+            nodes[0]
+                .node
+                .tree_state_mut()
+                .update_peer(declaration, coords)
+        );
+        assert!(nodes[0].node.is_tree_peer(&transit));
+        nodes[0]
+            .node
+            .peers
+            .get_mut(&transit)
+            .unwrap()
+            .update_filter(crate::bloom::BloomFilter::new(), 0, Node::now_ms());
+        nodes[0]
+            .node
+            .pending_session_traffic
+            .push_tun_packet(target, vec![1], 4, 4, None);
+        nodes[0].node.maybe_initiate_lookup(&target).await;
+        let now = Node::now_ms();
+        let pending = nodes[0].node.pending_lookups.get_mut(&target).unwrap();
+        pending.attempt = 3;
+        pending.last_sent_ms = now;
+        assert!(
+            nodes[0]
+                .node
+                .pending_lookups
+                .last_origin_request_id(&target)
+                .is_none()
+        );
+        let mut filter = crate::bloom::BloomFilter::new();
+        filter.insert(&target);
+        let baseline = nodes[0].node.stats().discovery.req_initiated;
+        for sequence in [1, 2] {
+            let announce = crate::protocol::FilterAnnounce::new(filter.clone(), sequence);
+            nodes[0]
+                .node
+                .handle_filter_announce(&transit, &announce.encode().unwrap()[1..])
+                .await;
+            assert!(
+                nodes[0]
+                    .node
+                    .pending_lookups
+                    .last_origin_request_id(&target)
+                    .is_some(),
+                "new reachability must release the first lookup immediately"
+            );
+            assert_eq!(
+                nodes[0].node.stats().discovery.req_initiated,
+                baseline + 1,
+                "later filter updates must preserve the normal retry cadence"
+            );
+            let pending = nodes[0].node.pending_lookups.get(&target).unwrap();
+            assert_eq!(pending.attempt, 3);
+            assert_eq!(
+                pending.last_sent_ms, now,
+                "readiness must not extend the lookup deadline"
+            );
+        }
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while nodes[1].node.stats().discovery.req_received == 0 {
+                process_available_packets(&mut nodes).await;
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first lookup must cross the actual encrypted carrier");
+        cleanup_nodes(&mut nodes).await;
+    });
+}

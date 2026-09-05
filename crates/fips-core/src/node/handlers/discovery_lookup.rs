@@ -1,4 +1,4 @@
-const MAX_DEGRADED_ROUTE_RECOVERIES_PER_PASS: usize = 16;
+const MAX_ROUTE_LOOKUPS_PER_PASS: usize = 16;
 
 impl Node {
     /// Initiate a discovery lookup for a target node.
@@ -341,7 +341,7 @@ impl Node {
             .active_destinations(now_ms)
             .filter(|node_addr| !self.pending_lookups.contains_key(node_addr))
             .filter(|node_addr| !self.has_healthy_fallback_fsp_owner(node_addr, now_ms))
-            .take(MAX_DEGRADED_ROUTE_RECOVERIES_PER_PASS)
+            .take(MAX_ROUTE_LOOKUPS_PER_PASS)
             .collect();
 
         for node_addr in recovery_candidates {
@@ -364,7 +364,7 @@ impl Node {
             .session_direct_degradation
             .active_destinations(now_ms)
             .filter(|dest| self.is_sendable_fallback_lookup_peer(&peer_addr, dest))
-            .take(MAX_DEGRADED_ROUTE_RECOVERIES_PER_PASS)
+            .take(MAX_ROUTE_LOOKUPS_PER_PASS)
             .collect();
 
         for dest in recovery_candidates {
@@ -545,6 +545,29 @@ impl Node {
                     self.send_icmpv6_dest_unreachable(&pkt);
                 }
             }
+        }
+    }
+
+    /// Release first contact when a tree peer gains reachability. Requests
+    /// already sent keep their normal retry cadence and timeout ownership.
+    pub(in crate::node) async fn resume_first_contact_after_filter(&mut self, from: &NodeAddr) {
+        let Some(peer) = self.peers.get(from).filter(|peer| {
+            self.is_tree_peer(from) && peer.can_send() && peer.is_healthy()
+        }) else {
+            return;
+        };
+        let now_ms = Self::now_ms();
+        let targets: Vec<_> = self.pending_lookups.iter().filter_map(|(target, entry)| {
+            let timeout_ms = self.config.node.discovery.attempt_timeouts_secs
+                .get(usize::from(entry.attempt.saturating_sub(1))).copied().unwrap_or(0) * 1000;
+            (entry.awaiting_first_request()
+                && now_ms.saturating_sub(entry.last_sent_ms) < timeout_ms
+                && self.sessions.get(target).is_none()
+                && self.pending_session_traffic.has_traffic_for(target)
+                && peer.may_reach(target)).then_some(*target)
+        }).take(MAX_ROUTE_LOOKUPS_PER_PASS).collect();
+        for target in targets {
+            self.initiate_lookup(&target, self.config.node.discovery.ttl).await;
         }
     }
 

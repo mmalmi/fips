@@ -724,7 +724,7 @@ async fn test_late_static_outbound_resend_completes_after_opposite_direction_pro
 #[tokio::test]
 async fn duplicate_same_tuple_outbound_dials_preserve_fmp_owner_and_session_ack() {
     use crate::node::tests::spanning_tree::{
-        cleanup_nodes, drain_all_packets, initiate_handshake, make_test_node,
+        cleanup_nodes, initiate_handshake, make_test_node, process_available_packets,
     };
     use crate::node::wire::{Msg1Header, Msg2Header};
     use tokio::time::{Duration, timeout};
@@ -802,7 +802,16 @@ async fn duplicate_same_tuple_outbound_dials_preserve_fmp_owner_and_session_ack(
     .expect("initiator should receive the canonical Msg2 reply");
     nodes[0].node.handle_msg2(msg2).await;
 
-    drain_all_packets(&mut nodes, false).await;
+    {
+        let (a, b) = nodes.split_at_mut(1);
+        confirm_cross_connection_packets(
+            &mut a[0].node,
+            &mut a[0].packet_rx,
+            &mut b[0].node,
+            &mut b[0].packet_rx,
+        )
+        .await;
+    }
     populate_all_coord_caches(&mut nodes);
 
     // Exercise the actual encrypted production path. With split FMP owners,
@@ -812,7 +821,22 @@ async fn duplicate_same_tuple_outbound_dials_preserve_fmp_owner_and_session_ack(
         .initiate_session(responder_addr, responder_pubkey)
         .await
         .expect("direct FSP session initiation should start");
-    drain_all_packets(&mut nodes, false).await;
+    timeout(Duration::from_secs(1), async {
+        while !nodes[0]
+            .node
+            .get_session(&responder_addr)
+            .is_some_and(|s| s.is_established())
+            || !nodes[1]
+                .node
+                .get_session(&initiator_addr)
+                .is_some_and(|s| s.is_established())
+        {
+            process_available_packets(&mut nodes).await;
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("matching FMP owners must complete the direct FSP handshake");
 
     let initiator_peer = nodes[0]
         .node

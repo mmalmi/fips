@@ -21,6 +21,10 @@ pub struct PendingLookup {
 }
 
 impl PendingLookup {
+    pub(crate) fn awaiting_first_request(&self) -> bool {
+        self.origin_request_ids.is_empty()
+    }
+
     pub fn new(now_ms: u64) -> Self {
         Self {
             initiated_ms: now_ms,
