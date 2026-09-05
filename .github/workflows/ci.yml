@@ -24,7 +24,7 @@ jobs:
       - name: Prepare exact 73236cc2 binaries and diagnostic logging
         run: |
           chmod +x _bin/*
-          cp _bin/fips _bin/fipsctl testing/docker/
+          cp _bin/fips _bin/fipsctl _bin/fipstop _bin/fips-gateway testing/docker/
           docker build -t fips-test:latest testing/docker
           sed -i 's/fips_core::node::handlers::handshake=debug/fips_core::node::handlers::handshake=debug,fips_core::dataplane=debug/g' testing/static/docker-compose.yml
           bash testing/static/scripts/generate-configs.sh "$REKEY_TOPOLOGY"
