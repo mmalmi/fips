@@ -643,7 +643,7 @@ impl Node {
                                 return;
                             };
                             if let Some(peer) = self.peers.get_mut(&peer_node_addr) {
-                                peer.set_handshake_msg2(wire_msg2.clone(), packet.timestamp_ms);
+                                peer.set_handshake_msg2(wire_msg2.clone(), Self::now_ms());
                             }
                             self.log_registered_peer_session_index_result(
                                 &peer_node_addr,
@@ -868,11 +868,11 @@ impl Node {
                 }
             };
 
-        // Retain Msg2 on the owned active peer before sending. If this send
-        // fails, duplicate Msg1 can safely retry without allocating or
-        // advertising another receiver index.
+        // Retain Msg2 before sending so duplicate Msg1 can safely retry.
+        // Timestamp generation, not queued arrival: an outbound dial may have
+        // started while Msg1 waited for processing.
         if let Some(peer) = self.peers.get_mut(&node_addr) {
-            peer.set_handshake_msg2(wire_msg2.clone(), packet.timestamp_ms);
+            peer.set_handshake_msg2(wire_msg2.clone(), Self::now_ms());
         }
 
         let receiver_route_owned = self.ensure_owned_msg2_receiver_route(&node_addr);

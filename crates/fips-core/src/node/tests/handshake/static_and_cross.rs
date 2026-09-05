@@ -125,6 +125,12 @@ async fn static_address_handshake_without_nostr_discovery() {
 /// allows inbound msg1 when an outbound link to the same address already exists.
 #[tokio::test]
 async fn test_cross_connection_both_initiate() {
+    for queued_before_outbound in [false, true] {
+        cross_connection_both_initiate(queued_before_outbound).await;
+    }
+}
+
+async fn cross_connection_both_initiate(queued_before_outbound: bool) {
     use crate::config::UdpConfig;
     use crate::node::wire::{Msg1Header, Msg2Header, build_msg1};
     use crate::transport::udp::UdpTransport;
@@ -173,13 +179,15 @@ async fn test_cross_connection_both_initiate() {
 
     // === Phase 1: Both nodes initiate handshakes (simulate auto_connect) ===
 
+    let outbound_started_at = Node::now_ms();
+
     // Node A initiates to Node B
     let link_id_a_out = node_a.allocate_link_id();
-    let mut conn_a = PeerConnection::outbound(link_id_a_out, peer_b_identity, 1000);
+    let mut conn_a = PeerConnection::outbound(link_id_a_out, peer_b_identity, outbound_started_at);
     let our_index_a = node_a.index_allocator.allocate().unwrap();
     let our_keypair_a = node_a.identity.keypair();
     let noise_msg1_a = conn_a
-        .start_handshake(our_keypair_a, node_a.startup_epoch, 1000)
+        .start_handshake(our_keypair_a, node_a.startup_epoch, outbound_started_at)
         .unwrap();
     conn_a.set_our_index(our_index_a);
     conn_a.set_transport_id(transport_id_a);
@@ -205,11 +213,11 @@ async fn test_cross_connection_both_initiate() {
 
     // Node B initiates to Node A
     let link_id_b_out = node_b.allocate_link_id();
-    let mut conn_b = PeerConnection::outbound(link_id_b_out, peer_a_identity, 1000);
+    let mut conn_b = PeerConnection::outbound(link_id_b_out, peer_a_identity, outbound_started_at);
     let our_index_b = node_b.index_allocator.allocate().unwrap();
     let our_keypair_b = node_b.identity.keypair();
     let noise_msg1_b = conn_b
-        .start_handshake(our_keypair_b, node_b.startup_epoch, 1000)
+        .start_handshake(our_keypair_b, node_b.startup_epoch, outbound_started_at)
         .unwrap();
     conn_b.set_our_index(our_index_b);
     conn_b.set_transport_id(transport_id_b);
@@ -251,10 +259,15 @@ async fn test_cross_connection_both_initiate() {
     // outbound links already exist for these addresses.
 
     // B receives A's msg1
-    let packet_at_b = timeout(Duration::from_secs(1), packet_rx_b.recv())
+    let mut packet_at_b = timeout(Duration::from_secs(1), packet_rx_b.recv())
         .await
         .expect("Timeout")
         .expect("Channel closed");
+    // The transport can queue Msg1 before a control command starts our
+    // outbound dial. Its reply is generated only when this handler runs.
+    if queued_before_outbound {
+        packet_at_b.timestamp_ms = outbound_started_at.saturating_sub(1);
+    }
     node_b.handle_msg1(packet_at_b).await;
 
     // B should have promoted the inbound connection
@@ -269,10 +282,13 @@ async fn test_cross_connection_both_initiate() {
     );
 
     // A receives B's msg1
-    let packet_at_a = timeout(Duration::from_secs(1), packet_rx_a.recv())
+    let mut packet_at_a = timeout(Duration::from_secs(1), packet_rx_a.recv())
         .await
         .expect("Timeout")
         .expect("Channel closed");
+    if queued_before_outbound {
+        packet_at_a.timestamp_ms = outbound_started_at.saturating_sub(1);
+    }
     node_a.handle_msg1(packet_at_a).await;
 
     // A should have promoted the inbound connection
@@ -290,8 +306,10 @@ async fn test_cross_connection_both_initiate() {
     // still marked degraded. That retained payload state must not make both
     // sides bypass deterministic cross-connection resolution for the freshly
     // authenticated inbound/outbound FMP handshake pair.
-    node_a.mark_session_direct_path_degraded(peer_b_node_addr, Node::now_ms());
-    node_b.mark_session_direct_path_degraded(peer_a_node_addr, Node::now_ms());
+    if !queued_before_outbound {
+        node_a.mark_session_direct_path_degraded(peer_b_node_addr, Node::now_ms());
+        node_b.mark_session_direct_path_degraded(peer_a_node_addr, Node::now_ms());
+    }
     assert!(
         node_a
             .get_peer(&peer_b_node_addr)

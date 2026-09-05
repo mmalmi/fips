@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Preserve matching session ownership when a queued inbound handshake is
+  processed after a simultaneous outbound dial starts.
 - Wait for the existing delivery-feedback window before recovering a newly
   active path, avoiding needless fallback and rekeying during healthy bursts.
 - Keep proven fallback routes active while direct-path probes await delivery
