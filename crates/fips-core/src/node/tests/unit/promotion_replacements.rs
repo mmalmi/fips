@@ -328,6 +328,15 @@ async fn handle_msg2_keeps_healthy_peer_over_equal_priority_outbound_alternate_p
 
 #[tokio::test]
 async fn handle_msg2_keeps_recently_authenticated_path_over_late_preferred_alternate() {
+    run_recently_authenticated_alternate(false).await;
+}
+
+#[tokio::test]
+async fn handle_msg2_upgrades_authenticated_websocket_to_preferred_direct_path() {
+    run_recently_authenticated_alternate(true).await;
+}
+
+async fn run_recently_authenticated_alternate(websocket_bootstrap: bool) {
     let mut node = make_node();
     let (packet_tx, packet_rx) = packet_channel(64);
     node.packet_tx = Some(packet_tx.clone());
@@ -351,13 +360,40 @@ async fn handle_msg2_keeps_recently_authenticated_path_over_late_preferred_alter
     let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
     let peer_node_addr = *peer_identity.node_addr();
 
-    let static_addr = TransportAddr::from_string("127.0.0.1:8000");
+    let old_transport_id = if websocket_bootstrap {
+        let id = TransportId::new(2);
+        let bootstrap = crate::transport::websocket::WebSocketTransport::new(
+            id,
+            None,
+            crate::config::WebSocketConfig::default(),
+            node.packet_tx.clone().unwrap(),
+            &node.identity,
+        );
+        node.transports
+            .insert(id, TransportHandle::WebSocket(Box::new(bootstrap)));
+        id
+    } else {
+        transport_id
+    };
+    let static_addr = TransportAddr::from_string(if websocket_bootstrap {
+        "wss://seed.example/fips"
+    } else {
+        "127.0.0.1:8000"
+    });
     let lower_priority_addr = TransportAddr::from_string("127.0.0.1:9000");
     node.config.peers = vec![crate::config::PeerConfig {
         npub: peer_full.npub(),
         alias: None,
         addresses: vec![
-            crate::config::PeerAddress::with_priority("udp", "127.0.0.1:8000", 100),
+            crate::config::PeerAddress::with_priority(
+                if websocket_bootstrap {
+                    "websocket"
+                } else {
+                    "udp"
+                },
+                &static_addr.to_string(),
+                100,
+            ),
             crate::config::PeerAddress::with_priority("udp", "127.0.0.1:9000", 10),
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
@@ -379,7 +415,7 @@ async fn handle_msg2_keeps_recently_authenticated_path_over_late_preferred_alter
             session: old_session,
             our_index: old_our_index,
             their_index: old_their_index,
-            transport_id,
+            transport_id: old_transport_id,
             current_addr: static_addr.clone(),
             link_stats: crate::transport::LinkStats::new(),
             is_initiator: true,
@@ -390,19 +426,21 @@ async fn handle_msg2_keeps_recently_authenticated_path_over_late_preferred_alter
     old_peer.touch(Node::now_ms());
     node.peers.insert(peer_node_addr, old_peer);
     node.peers
-        .insert_session_index((transport_id, old_our_index.as_u32()), peer_node_addr);
+        .insert_session_index((old_transport_id, old_our_index.as_u32()), peer_node_addr);
     node.links.insert(
         old_link_id,
         Link::connectionless(
             old_link_id,
-            transport_id,
+            old_transport_id,
             static_addr.clone(),
             LinkDirection::Outbound,
             Duration::from_millis(100),
         ),
     );
     node.links
-        .insert_addr((transport_id, static_addr.clone()), old_link_id);
+        .insert_addr((old_transport_id, static_addr.clone()), old_link_id);
+    seed_dataplane_fsp_data_rx_for_test(&mut node, peer_node_addr, peer_node_addr, Node::now_ms());
+    assert!(node.active_peer_has_fresh_carrier_liveness(&peer_node_addr));
 
     let new_link_id = LinkId::new(11);
     let mut new_conn = PeerConnection::outbound(new_link_id, peer_identity, 2_000);
@@ -446,6 +484,16 @@ async fn handle_msg2_keeps_recently_authenticated_path_over_late_preferred_alter
 
     assert_eq!(node.connection_count(), 0);
     assert!(node.pending_outbound.is_empty());
+    if websocket_bootstrap {
+        let active = node.get_peer(&peer_node_addr).unwrap();
+        assert_eq!(active.transport_id(), Some(transport_id));
+        assert_eq!(active.link_id(), new_link_id);
+        assert_eq!(active.current_addr(), Some(&lower_priority_addr));
+        for transport in node.transports.values_mut() {
+            transport.stop().await.ok();
+        }
+        return;
+    }
     assert!(
         node.links.contains_key(&old_link_id),
         "healthy preferred static link should remain active"

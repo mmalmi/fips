@@ -432,11 +432,22 @@ impl Node {
             let reply_transport_handoff = packet.transport_id != outbound_transport_id;
             let authenticated_live_carrier =
                 self.active_peer_has_fresh_carrier_liveness(&peer_node_addr);
+            // Link negotiation itself carries authenticated FSP traffic over
+            // WSS. That activity must not pin the bootstrap over its direct
+            // upgrade; the normal priority check still rejects worse paths.
+            let websocket_direct_upgrade = self.active_peer_uses_websocket(&peer_node_addr)
+                && self
+                    .transports
+                    .get(&outbound_transport_id)
+                    .is_some_and(|transport| {
+                        !matches!(transport, crate::transport::TransportHandle::WebSocket(_))
+                    });
             let preserve_authenticated_live_carrier = !remote_epoch_changed
                 && !simultaneous_inbound_session
                 && !active_peer_unusable
                 && !existing_path_unusable
                 && !reply_transport_handoff
+                && !websocket_direct_upgrade
                 && authenticated_live_carrier;
             let late_duplicate_carrier = !simultaneous_inbound_session
                 && (!outbound_path_differs || connection_oriented_cross_connection);
