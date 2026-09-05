@@ -20,7 +20,9 @@ async fn endpoint_control_and_shutdown_progress_under_payload_and_ready_nostr_ev
         .expect("reserved server UDP address")
         .port();
     let discovery = Arc::new(NostrDiscovery::new_for_test());
+    // Keep the explicit UDP and injected Nostr topology isolated from mDNS.
     let mut server_config = Config::new();
+    server_config.node.discovery.lan.enabled = false;
     server_config.node.identity.nsec =
         Some(crate::encode_nsec(&server_identity.keypair().secret_key()));
     server_config.node.routing.mode = RoutingMode::ReplyLearned;
@@ -40,6 +42,7 @@ async fn endpoint_control_and_shutdown_progress_under_payload_and_ready_nostr_ev
 
     let client_identity = Identity::generate();
     let mut client_config = Config::new();
+    client_config.node.discovery.lan.enabled = false;
     client_config.node.identity.nsec =
         Some(crate::encode_nsec(&client_identity.keypair().secret_key()));
     client_config.node.routing.mode = RoutingMode::ReplyLearned;
@@ -93,6 +96,7 @@ async fn endpoint_control_and_shutdown_progress_under_payload_and_ready_nostr_ev
         .expect("traversal peer address")
         .port();
     let mut traversal_peer_config = Config::new();
+    traversal_peer_config.node.discovery.lan.enabled = false;
     traversal_peer_config.node.routing.mode = RoutingMode::ReplyLearned;
     traversal_peer_config.transports.udp = TransportInstances::Single(UdpConfig {
         bind_addr: Some(format!("127.0.0.1:{traversal_peer_port}")),
