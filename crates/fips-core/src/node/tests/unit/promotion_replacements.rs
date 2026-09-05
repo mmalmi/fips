@@ -391,7 +391,7 @@ async fn run_recently_authenticated_alternate(websocket_bootstrap: bool) {
                 } else {
                     "udp"
                 },
-                &static_addr.to_string(),
+                static_addr.to_string(),
                 100,
             ),
             crate::config::PeerAddress::with_priority("udp", "127.0.0.1:9000", 10),
