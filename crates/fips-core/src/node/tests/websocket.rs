@@ -362,6 +362,14 @@ async fn explicit_network_rebind_bypasses_ordinary_seed_backoff_and_preserves_pa
             .is_some_and(|session| session.is_established()),
         "the end-to-end session must be established before carrier replacement"
     );
+    // Replacing a mature physical connection must refresh its FMP owner too.
+    // An age-based rekey classification would retain the closed carrier.
+    nodes[0]
+        .node
+        .peers
+        .get_mut(&client_addr)
+        .unwrap()
+        .set_session_established_at_for_test(std::time::Instant::now() - Duration::from_secs(31));
 
     assert_eq!(
         nodes[1]

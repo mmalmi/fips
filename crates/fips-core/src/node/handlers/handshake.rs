@@ -397,15 +397,6 @@ impl Node {
                 packet.transport_id,
                 &packet.remote_addr,
             );
-            let changed_udp_path =
-                self.transports
-                    .get(&packet.transport_id)
-                    .is_some_and(|transport| {
-                        transport.transport_type() == &crate::transport::TransportType::UDP
-                    })
-                    && (existing_peer.transport_id() != Some(packet.transport_id)
-                        || existing_peer.current_addr() != Some(&packet.remote_addr));
-
             match (existing_epoch, new_epoch) {
                 (Some(existing), Some(new)) if existing != new => {
                     // The sealed epoch proves who authored msg1, but an old
@@ -509,19 +500,9 @@ impl Node {
                             "Same-epoch msg1 received while direct payload is stale; processing as direct-path recovery"
                         );
                     } else {
-                        // Authenticated current-epoch traffic can prove an
-                        // early rekey. Retain the age fallback for sessions
-                        // without that evidence so initial crossed Msg1s still
-                        // follow the deterministic connection-owner rule.
-                        let session_age_secs =
-                            existing_peer.session_established_at().elapsed().as_secs();
-                        if established_same_path_rekey
-                            || (self.config.node.rekey.enabled
-                                && existing_peer.has_session()
-                                && existing_peer.is_healthy()
-                                && !changed_udp_path
-                                && session_age_secs >= 30)
-                        {
+                        // Rekeys retain their carrier. A fresh connection must
+                        // go through promotion even when the old epoch is mature.
+                        if established_same_path_rekey {
                             // A locally initiated pending session is about to
                             // cut over and still owns the current exchange, so
                             // do not overwrite it with a peer Msg1.
