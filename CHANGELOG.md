@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   handshake retries or stall otherwise usable carriers.
 - Retry queued first-contact traffic while route discovery becomes ready,
   retaining bounded lookup attempts and normal offline cleanup.
+- Start the queued IPv6 stale-send budget when an initial session becomes
+  usable, so route discovery cannot consume it before the first send.
+- Honor early FMP key-rotation thresholds while preserving current and draining
+  epochs, and retire unconfirmed responder exchanges at the handshake timeout.
+- Refresh replaced WebSocket carriers even after a long-lived session, using
+  the same carrier checks as other key-rotation decisions.
 - Preserve matching session ownership when a queued inbound handshake is
   processed after a simultaneous outbound dial starts.
 - Wait for the existing delivery-feedback window before recovering a newly
