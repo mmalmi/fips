@@ -483,8 +483,19 @@ impl Node {
             .forwarding
             .record_drop_no_route(received_len);
         debug!(
-            src = %self.peer_display_name(&datagram.src_addr),
-            dest = %self.peer_display_name(&datagram.dest_addr),
+            src = %datagram.src_addr,
+            dest = %datagram.dest_addr,
+            previous_hop = %ingress_peer,
+            ?loop_failure,
+            routing_mode = ?self.config.node.routing.mode,
+            local_coords = ?self.tree_state.my_coords(),
+            cached_dest_coords = ?self.coord_cache.get(&datagram.dest_addr, Self::now_ms()),
+            peers = ?self.peers.iter().map(|(addr, peer)| (
+                *addr,
+                peer.is_healthy(),
+                peer.can_send(),
+                self.tree_state.peer_coords(addr).cloned(),
+            )).collect::<Vec<_>>(),
             bytes = received_len,
             "Dropping transit SessionDatagram: no route to destination"
         );
@@ -567,6 +578,14 @@ impl Node {
         match prefix.phase {
             FSP_PHASE_MSG1 => match SessionSetup::decode(inner) {
                 Ok(setup) => {
+                    debug!(
+                        src = %datagram.src_addr,
+                        dest = %datagram.dest_addr,
+                        advertised_src_coords = ?setup.src_coords,
+                        advertised_dest_coords = ?setup.dest_coords,
+                        local_coords = ?self.tree_state.my_coords(),
+                        "Transit SessionSetup coordinate hints"
+                    );
                     let cached_src =
                         self.cache_current_root_coords(datagram.src_addr, setup.src_coords, now_ms);
                     let cached_dest = self.cache_current_root_coords(
@@ -588,6 +607,14 @@ impl Node {
             },
             FSP_PHASE_MSG2 => match SessionAck::decode(inner) {
                 Ok(ack) => {
+                    debug!(
+                        src = %datagram.src_addr,
+                        dest = %datagram.dest_addr,
+                        advertised_src_coords = ?ack.src_coords,
+                        advertised_dest_coords = ?ack.dest_coords,
+                        local_coords = ?self.tree_state.my_coords(),
+                        "Transit SessionAck coordinate hints"
+                    );
                     let cached_src =
                         self.cache_current_root_coords(datagram.src_addr, ack.src_coords, now_ms);
                     let cached_dest =

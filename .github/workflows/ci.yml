@@ -310,6 +310,10 @@ jobs:
     needs: [build]
     if: ${{ !inputs.skip_integration }}
 
+    # Temporary diagnostic branch: only the three failing suites enable routing traces.
+    env:
+      FIPS_CI_ROUTE_LOG: ${{ (matrix.suite == 'static-mesh' || matrix.suite == 'rekey' || matrix.suite == 'rekey-accept-off') && 'info,fips_core::node::handlers::forwarding=debug,fips_core::node::handlers::session=debug,fips_core::node::handlers::discovery=debug,fips_core::node::handlers::handshake=debug,fips_core::node::handlers::rekey=debug' || '' }}
+
     strategy:
       fail-fast: false
       matrix:
@@ -502,6 +506,27 @@ jobs:
         run: |
           docker compose -f testing/static/docker-compose.yml \
             --profile ${{ matrix.topology }} logs --no-color
+
+      - name: Collect complete static mesh routing diagnostics
+        if: matrix.suite == 'static-mesh' && always()
+        run: |
+          artifact_dir=testing/static/artifacts/transit-static-mesh
+          mkdir -p "$artifact_dir/logs" "$artifact_dir/peer-snapshots"
+          for node in a b c d e; do
+            docker logs --timestamps "fips-node-$node" \
+              >"$artifact_dir/logs/node-$node.log" 2>&1 || true
+            docker exec "fips-node-$node" fipsctl show peers \
+              >"$artifact_dir/peer-snapshots/node-$node.txt" 2>&1 || true
+          done
+
+      - name: Upload complete static mesh routing diagnostics
+        if: matrix.suite == 'static-mesh' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: transit-static-mesh-${{ github.run_attempt }}
+          path: testing/static/artifacts/transit-static-mesh
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Stop containers (static)
         if: (matrix.type == 'static' || matrix.type == 'static-perf') && always()
