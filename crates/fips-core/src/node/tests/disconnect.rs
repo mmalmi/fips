@@ -8,6 +8,20 @@ use super::spanning_tree::*;
 use super::*;
 use crate::protocol::{Disconnect, DisconnectReason};
 
+async fn drain_until_peers_removed(nodes: &mut [TestNode], removals: &[(usize, NodeAddr)]) {
+    // A completed transport send does not guarantee that the receiving node's
+    // packet and crypto completion queues have been drained in a single pass.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while removals
+        .iter()
+        .any(|(index, peer)| nodes[*index].node.get_peer(peer).is_some())
+        && tokio::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        process_available_packets(nodes).await;
+    }
+}
+
 /// 3-node chain: middle node disconnects one peer.
 ///
 /// Chain: 0 -- 1 -- 2. Node 1 sends Disconnect to node 0.
@@ -40,8 +54,7 @@ async fn test_disconnect_chain_peer_removal() {
         .expect("Failed to send disconnect");
 
     // Process the disconnect at node 0
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    process_available_packets(&mut nodes).await;
+    drain_until_peers_removed(&mut nodes, &[(0, node1_addr)]).await;
 
     // Node 0 should have removed node 1
     assert_eq!(
@@ -96,8 +109,7 @@ async fn test_disconnect_star_hub_departs() {
     }
 
     // Process disconnects at all nodes
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    process_available_packets(&mut nodes).await;
+    drain_until_peers_removed(&mut nodes, &[(1, hub_addr), (2, hub_addr), (3, hub_addr)]).await;
 
     // All spokes should have removed the hub
     for (spoke_idx, spoke) in nodes[1..4].iter().enumerate() {
@@ -304,8 +316,7 @@ async fn test_disconnect_clears_session() {
         .await
         .expect("Failed to send disconnect");
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    process_available_packets(&mut nodes).await;
+    drain_until_peers_removed(&mut nodes, &[(1, node0_addr)]).await;
 
     // Peer must be gone.
     assert_eq!(
@@ -358,8 +369,7 @@ async fn test_api_disconnect_notifies_peer() {
         "Node 0 should have removed node 1 after api_disconnect"
     );
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    process_available_packets(&mut nodes).await;
+    drain_until_peers_removed(&mut nodes, &[(1, node0_addr)]).await;
 
     assert!(
         nodes[1].node.get_peer(&node0_addr).is_none(),
