@@ -525,7 +525,7 @@ async fn degraded_late_msg1_keeps_complementary_cross_connection_owner() {
     );
 
     let degraded_at_ms = Node::now_ms();
-    crate::node::tests::seed_dataplane_fsp_data_sent_for_test(
+    crate::node::tests::seed_dataplane_fsp_unreturned_data_for_test(
         &mut nodes[0].node,
         larger_addr,
         larger_addr,

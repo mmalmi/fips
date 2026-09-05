@@ -164,7 +164,7 @@ async fn fresh_control_with_unreturned_endpoint_data_warms_fallback_lookup() {
         true,
     );
     node.sessions.insert(peer_addr, session);
-    seed_dataplane_fsp_data_sent_for_test(&mut node, peer_addr, peer_addr, now_ms);
+    seed_dataplane_fsp_unreturned_data_for_test(&mut node, peer_addr, peer_addr, now_ms);
     seed_dataplane_fsp_control_rx_for_test(&mut node, peer_addr, peer_addr, now_ms);
 
     let mut retry = super::super::retry::RetryState::new(peer_config);

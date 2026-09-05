@@ -697,21 +697,15 @@ impl DataplaneFspOwnerActivity {
             && inbound_data_stale
     }
 
-    pub(crate) fn has_recent_outbound_without_delivery_feedback_from(
+    pub(crate) fn has_recent_delivery_feedback_from(
         self,
         next_hop: &NodeAddr,
         now_ms: u64,
         timeout_ms: u64,
     ) -> bool {
-        // Receiver reports are the durable directional proof that the remote
-        // endpoint received packets from our selected outbound next hop. A
-        // completed multi-packet direct-path validation is provisional proof
-        // for one report window so its stale pre-recovery baseline cannot
-        // immediately undo recovery. Frozen report counters still expose a
-        // one-way NAT blackhole after that bounded window.
-        // A new unreported burst gets one window for feedback to arrive;
-        // further sends and frozen reports cannot extend that deadline.
-        let has_recent_delivery_feedback = if self.receiver_reports_enabled {
+        // Advancing reports prove forward delivery. Completed direct payload
+        // validation is provisional proof for one report window.
+        if self.receiver_reports_enabled {
             (self.last_delivery_report_next_hop == Some(*next_hop)
                 && self
                     .last_delivery_report_activity
@@ -724,11 +718,21 @@ impl DataplaneFspOwnerActivity {
                         .is_some_and(|age_ms| age_ms <= timeout_ms))
         } else {
             self.has_recent_data_return_from(next_hop, now_ms, timeout_ms)
-        };
+        }
+    }
+
+    pub(crate) fn has_recent_outbound_without_delivery_feedback_from(
+        self,
+        next_hop: &NodeAddr,
+        now_ms: u64,
+        timeout_ms: u64,
+    ) -> bool {
+        // Each unreported burst gets one feedback window. Further sends and
+        // frozen reports cannot extend a blackhole's deadline.
         self.data_packets_sent > 0
             && self.last_outbound_next_hop == Some(*next_hop)
             && self.has_recent_outbound_activity(now_ms, timeout_ms)
-            && !has_recent_delivery_feedback
+            && !self.has_recent_delivery_feedback_from(next_hop, now_ms, timeout_ms)
             && (!self.receiver_reports_enabled
                 || self.first_unreported_tx_data_activity
                     .is_some_and(|tick| tick.age_ms(now_ms) > timeout_ms))

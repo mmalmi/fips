@@ -539,7 +539,7 @@ async fn test_automatic_fallback_keeps_direct_payload_reprobe_active() {
     node.learn_reverse_route(remote_addr, fallback_next_hop);
 
     let now_ms = Node::now_ms();
-    seed_dataplane_fsp_data_sent_for_test(&mut node, remote_addr, remote_addr, now_ms);
+    seed_dataplane_fsp_unreturned_data_for_test(&mut node, remote_addr, remote_addr, now_ms);
 
     node.check_link_heartbeats().await;
 

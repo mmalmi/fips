@@ -212,9 +212,9 @@ impl Node {
         // the degradation marker and retry loop until authenticated direct FSP
         // receive activity clears them, but stage one direct FSP route now.
         // The previous fallback activity and learned route remain intact until
-        // the staged direct payload is actually sent, so ordinary direct-path
-        // trust expiry can immediately return traffic to the fallback if that
-        // bounded validation gets no authenticated response.
+        // the staged direct payload is actually sent. Pending validation keeps
+        // subsequent traffic on fallback until authenticated delivery feedback
+        // or direct payload confirms the recovered path.
         let authenticated_direct_udp = (self.active_peer_current_udp_candidate(dest).is_some()
             || self.promoted_path_matches_configured_static_peer(dest))
             && !self.active_peer_uses_bootstrap_transport(dest)

@@ -139,6 +139,19 @@ pub(super) fn seed_dataplane_fsp_data_sent_for_test(
     ));
 }
 
+/// Model a still-active burst that has already exhausted its feedback window.
+pub(super) fn seed_dataplane_fsp_unreturned_data_for_test(
+    node: &mut Node,
+    dest_addr: NodeAddr,
+    next_hop: NodeAddr,
+    now_ms: u64,
+) {
+    let first_sent_ms =
+        now_ms.saturating_sub(node.session_direct_path_exclusive_trust_timeout_ms() + 1);
+    seed_dataplane_fsp_data_sent_for_test(node, dest_addr, next_hop, first_sent_ms);
+    seed_dataplane_fsp_data_sent_for_test(node, dest_addr, next_hop, now_ms);
+}
+
 pub(super) fn seed_dataplane_fsp_data_rx_for_test(
     node: &mut Node,
     source_addr: NodeAddr,

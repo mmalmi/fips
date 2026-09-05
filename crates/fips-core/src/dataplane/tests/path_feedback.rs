@@ -16,6 +16,12 @@ fn delivery_feedback_waits_one_report_window_before_degrading_a_new_burst() {
             ActivityTick::new(now),
         ));
     };
+    let feedback = |mover: &Dataplane, now| {
+        mover
+            .owner_fsp_activity(owner)
+            .unwrap()
+            .has_recent_delivery_feedback_from(&owner.node_addr(), now, 2_500)
+    };
     let expired = |mover: &Dataplane, now| {
         mover
             .owner_fsp_activity(owner)
@@ -77,6 +83,10 @@ fn delivery_feedback_waits_one_report_window_before_degrading_a_new_burst() {
         expired(&mover, 7_501),
         "new sends and frozen reports must not extend a blackhole's grace"
     );
+    assert!(
+        !feedback(&mover, 7_501),
+        "frozen reports must not validate a recovery probe"
+    );
     report.cumulative_packets_recv += 1;
     mover
         .process_fsp_mmp_receiver_report(
@@ -91,5 +101,15 @@ fn delivery_feedback_waits_one_report_window_before_degrading_a_new_burst() {
     assert!(
         !expired(&mover, 7_520),
         "advancing authenticated feedback must restore trust"
+    );
+    assert!(feedback(&mover, 7_520));
+    assert!(mover.owner_mut(owner).unwrap().record_fsp_data_sent(
+        fmp_owner(96).node_addr(),
+        100,
+        ActivityTick::new(7_530),
+    ));
+    assert!(
+        !feedback(&mover, 7_540),
+        "path changes must discard old direct proof"
     );
 }

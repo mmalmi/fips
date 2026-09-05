@@ -412,7 +412,7 @@ async fn active_endpoint_traffic_on_quiet_traversal_path_warms_fallback() {
         true,
     );
     node.sessions.insert(peer_addr, session);
-    seed_dataplane_fsp_data_sent_for_test(&mut node, peer_addr, peer_addr, Node::now_ms());
+    seed_dataplane_fsp_unreturned_data_for_test(&mut node, peer_addr, peer_addr, Node::now_ms());
 
     node.check_link_heartbeats().await;
 

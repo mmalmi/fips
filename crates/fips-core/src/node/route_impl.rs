@@ -81,8 +81,24 @@ impl Node {
         let fallback_peer_available = self.has_sendable_fallback_lookup_peer(dest_node_addr);
         let direct_session_degraded =
             fallback_peer_available && (direct_path_hard_degraded || direct_path_soft_degraded);
+        // A staged recovery probe cannot displace proven fallback traffic
+        // until it receives directional feedback, even during its health grace.
+        let direct_probe_unvalidated = self
+            .session_direct_degradation
+            .has_pending_validation(dest_node_addr)
+            && self
+                .dataplane
+                .fsp_owner_activity(dest_node_addr)
+                .is_some_and(|activity| {
+                    !activity.has_recent_delivery_feedback_from(
+                        dest_node_addr,
+                        now_ms,
+                        self.session_direct_path_exclusive_trust_timeout_ms(),
+                    )
+                });
         let direct_session_untrusted = !direct_session_degraded
-            && self.session_direct_path_exclusive_trust_expired(dest_node_addr, now_ms);
+            && (direct_probe_unvalidated
+                || self.session_direct_path_exclusive_trust_expired(dest_node_addr, now_ms));
         let stale_traversal_direct_route = self
             .peers
             .get(dest_node_addr)
