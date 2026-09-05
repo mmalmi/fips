@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Retry queued first-contact traffic while route discovery becomes ready,
+  retaining bounded lookup attempts and normal offline cleanup.
 - Preserve matching session ownership when a queued inbound handshake is
   processed after a simultaneous outbound dial starts.
 - Wait for the existing delivery-feedback window before recovering a newly

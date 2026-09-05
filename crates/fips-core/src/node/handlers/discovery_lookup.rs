@@ -161,7 +161,7 @@ impl Node {
 
     /// Initiate a discovery lookup if one is not already pending for this target.
     ///
-    /// Checks: pending dedup, post-failure backoff (off by default), bloom
+    /// Checks: pending dedup, post-failure backoff, bloom
     /// filter pre-check. If all pass, sends the first attempt's LookupRequest.
     /// Subsequent attempts (with fresh request_ids) are scheduled by
     /// [`Self::check_pending_lookups`] when each attempt's per-attempt timeout
@@ -216,16 +216,26 @@ impl Node {
             return;
         }
 
+        // Keep first-contact traffic owned while startup reachability arrives.
+        // The existing lookup ladder bounds retries and eventually drains it.
+        let queued_first_contact = self.pending_session_traffic.has_traffic_for(dest)
+            && self.sessions.get(dest).is_none();
+
         // Bloom filter pre-check: original routing skips if no peer's filter
         // contains the target. Reply-learned mode intentionally allows a
         // first-contact tree flood when bloom reachability is missing.
         let reachable = self.peers.values().any(|peer| peer.may_reach(dest));
         if !reachable && self.config.node.routing.mode != RoutingMode::ReplyLearned {
             self.stats_mut().discovery.req_bloom_miss += 1;
-            self.discovery_backoff.record_failure(dest);
+            if queued_first_contact {
+                self.pending_lookups.insert_new(*dest, now_ms);
+            } else {
+                self.discovery_backoff.record_failure(dest);
+            }
             debug!(
                 target_node = %self.peer_display_name(dest),
-                "Discovery skipped, target not in any peer bloom filter"
+                queued_first_contact,
+                "Discovery has no target in any peer bloom filter"
             );
             return;
         }
@@ -237,14 +247,13 @@ impl Node {
         let ttl = self.config.node.discovery.ttl;
         let sent = self.initiate_lookup(dest, ttl).await;
 
-        // If no peer was eligible, no LookupRequest left this node. Fresh
-        // startup may race endpoint data ahead of transit handshakes, so leave
-        // that destination immediately retryable. An established session whose
-        // route is already degraded instead retains one deferred entry: repeated
-        // payload deduplicates behind it, and peer authentication retries it
-        // immediately through the recovered transit.
+        // No request left without an eligible peer. Keep bounded retries for
+        // queued first contact or degraded-route recovery; other callers stay
+        // immediately retryable without creating an orphaned lookup.
         if sent == 0 {
-            if !self.session_direct_path_degradation_active(dest, now_ms) {
+            if !queued_first_contact
+                && !self.session_direct_path_degradation_active(dest, now_ms)
+            {
                 self.pending_lookups.remove(dest);
             }
             debug!(

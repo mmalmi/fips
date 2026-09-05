@@ -4,6 +4,15 @@ use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sparse_tree_mesh_keeps_idle_then_active_sessions_delivering() {
+    sparse_tree_mesh_delivers(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sparse_tree_mesh_routes_ipv6_through_discovered_paths() {
+    sparse_tree_mesh_delivers(true).await;
+}
+
+async fn sparse_tree_mesh_delivers(ipv6: bool) {
     let keys = [
         "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
         "b102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1fb0",
@@ -18,6 +27,7 @@ async fn sparse_tree_mesh_keeps_idle_then_active_sessions_delivering() {
     for key in keys {
         let mut config = Config::new();
         config.node.identity.nsec = Some(key.into());
+        config.node.control.enabled = false;
         config.node.discovery.lan.enabled = false;
         config.node.discovery.local.enabled = false;
         config.node.discovery.nostr.enabled = false;
@@ -64,33 +74,71 @@ async fn sparse_tree_mesh_keeps_idle_then_active_sessions_delivering() {
     })
     .await
     .expect("mesh adjacencies");
-    // Let the tree settle, then leave each data burst idle until the next report
-    // period. Recovery must not mistake new sends for an already stalled path.
+    // Let the tree settle, then leave each burst idle until the next report.
+    // Both IPv6 and service payloads must retain their own feedback window.
     let mut failed = Vec::new();
     for round in 0..3 {
         tokio::time::sleep(Duration::from_secs(2)).await;
         for (i, source) in nodes.iter().enumerate() {
             for (j, destination) in nodes.iter().enumerate().filter(|(j, _)| *j != i) {
                 let payload = vec![round, i as u8, j as u8];
-                source
-                    .send_datagram(
-                        PeerIdentity::from_npub(destination.npub()).unwrap(),
-                        44_001,
-                        44_000,
-                        payload.clone(),
-                    )
-                    .await
-                    .unwrap();
-                let result = tokio::time::timeout(Duration::from_secs(5), async {
-                    loop {
-                        let mut batch = Vec::new();
-                        receivers[j].recv_batch_into(&mut batch, 32).await.unwrap();
-                        if batch.iter().any(|m| m.data.as_slice() == payload) {
-                            break;
+                let result = if ipv6 {
+                    // Mirror DNS resolution without configuring an adjacency
+                    // or supplying a route to the remote destination.
+                    source
+                        .register_peer_identity(
+                            PeerIdentity::from_npub(destination.npub()).unwrap(),
+                        )
+                        .await
+                        .unwrap();
+                    let mut packet = vec![0; 40];
+                    packet[0] = 0x60;
+                    packet[4..6].copy_from_slice(&(payload.len() as u16).to_be_bytes());
+                    packet[6] = 59;
+                    packet[7] = 64;
+                    packet[8..24].copy_from_slice(source.address().as_bytes());
+                    packet[24..40].copy_from_slice(destination.address().as_bytes());
+                    packet.extend_from_slice(&payload);
+                    source.send_ip_packet(packet.clone()).await.unwrap();
+                    tokio::time::timeout(Duration::from_secs(5), async {
+                        loop {
+                            let received = destination.recv_ip_packet().await.unwrap();
+                            if received.packet == packet {
+                                let mut reply = packet.clone();
+                                reply[8..24].copy_from_slice(destination.address().as_bytes());
+                                reply[24..40].copy_from_slice(source.address().as_bytes());
+                                destination.send_ip_packet(reply.clone()).await.unwrap();
+                                loop {
+                                    if source.recv_ip_packet().await.unwrap().packet == reply {
+                                        break;
+                                    }
+                                }
+                                break;
+                            }
                         }
-                    }
-                })
-                .await;
+                    })
+                    .await
+                } else {
+                    source
+                        .send_datagram(
+                            PeerIdentity::from_npub(destination.npub()).unwrap(),
+                            44_001,
+                            44_000,
+                            payload.clone(),
+                        )
+                        .await
+                        .unwrap();
+                    tokio::time::timeout(Duration::from_secs(5), async {
+                        loop {
+                            let mut batch = Vec::new();
+                            receivers[j].recv_batch_into(&mut batch, 32).await.unwrap();
+                            if batch.iter().any(|m| m.data.as_slice() == payload) {
+                                break;
+                            }
+                        }
+                    })
+                    .await
+                };
                 if result.is_err() {
                     failed.push((round, i, j));
                 }
