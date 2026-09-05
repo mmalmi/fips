@@ -271,8 +271,8 @@ fn queue_active_fallback_direct_retries_seeds_configured_relayed_peer() {
     assert!(state.reconnect);
 }
 
-#[test]
-fn healthy_configured_websocket_peer_keeps_direct_upgrade_retry() {
+#[tokio::test]
+async fn healthy_configured_websocket_peer_keeps_direct_upgrade_retry() {
     use crate::config::WebSocketConfig;
     use crate::transport::websocket::WebSocketTransport;
 
@@ -295,7 +295,7 @@ fn healthy_configured_websocket_peer_keeps_direct_upgrade_retry() {
     };
 
     let mut config = Config::new();
-    config.node.discovery.nostr.enabled = true;
+    config.node.discovery.nostr.enabled = false;
     config.peers.push(peer_config.clone());
     let mut node = Node::with_identity(local_identity, config).expect("node");
     let bootstrap_transport_id = TransportId::new(1);
@@ -347,7 +347,10 @@ fn healthy_configured_websocket_peer_keeps_direct_upgrade_retry() {
         "authenticated application traffic must pin its live WebSocket carrier"
     );
 
-    node.queue_active_fallback_direct_retries();
+    // WSS-only clients (including the health probe) do not run Nostr
+    // discovery. The regular maintenance path must still start upgrades.
+    assert!(node.nostr_discovery.is_none());
+    node.poll_nostr_discovery().await;
 
     let state = node
         .retry_pending

@@ -165,6 +165,9 @@ impl Node {
         if deadline.is_none() {
             #[cfg(feature = "webrtc-transport")]
             self.drain_webrtc_session_signals().await;
+            // Configured direct upgrades use FIPS session signaling even
+            // when the endpoint has no Nostr discovery runtime.
+            self.queue_active_fallback_direct_retries();
         }
         self.flush_pending_mesh_signals(Self::NOSTR_NODE_EVENT_DRAIN_BUDGET)
             .await;
@@ -373,7 +376,6 @@ impl Node {
         self.maybe_run_startup_open_discovery_sweep(&bootstrap)
             .await;
         self.queue_open_discovery_retries(&bootstrap).await;
-        self.queue_active_fallback_direct_retries();
 
         // Advert refresh can touch STUN/public-endpoint discovery on some
         // configs. Drain traversal events and queue direct retries first so a
