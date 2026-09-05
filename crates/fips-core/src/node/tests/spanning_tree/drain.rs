@@ -6,27 +6,36 @@ use super::*;
 pub(in crate::node::tests) async fn process_available_packets(nodes: &mut [TestNode]) -> usize {
     let mut count = 0;
     for node in nodes.iter_mut() {
-        while let Ok(packet) = node.packet_rx.try_recv() {
-            count += process_dataplane_packet(node, packet).await;
-        }
-        count += process_dataplane_side_queues(node).await;
+        count += process_node_packets(&mut node.node, &mut node.packet_rx).await;
     }
     count
 }
 
-async fn process_dataplane_packet(node: &mut TestNode, packet: ReceivedPacket) -> usize {
+pub(in crate::node::tests) async fn process_node_packets(
+    node: &mut Node,
+    packet_rx: &mut PacketRx,
+) -> usize {
+    let mut count = 0;
+    while let Ok(packet) = packet_rx.try_recv() {
+        count += Box::pin(process_dataplane_turn(node, Some(packet), 64)).await;
+    }
+    // A control turn may promote a handshake and defer its original frame.
+    // Use the ordinary ingress budget to drain that node-owned queue too.
+    count + Box::pin(process_dataplane_turn(node, None, 64)).await
+}
+
+pub(in crate::node::tests) async fn process_dataplane_packet(
+    node: &mut TestNode,
+    packet: ReceivedPacket,
+) -> usize {
     // Keep the synthetic topology harness from embedding the complete live
     // dataplane future in every caller. In unoptimized test builds that
     // future's nested poll frames can exhaust libtest's 2 MiB thread stack.
-    Box::pin(process_dataplane_turn(node, Some(packet), 64)).await
-}
-
-async fn process_dataplane_side_queues(node: &mut TestNode) -> usize {
-    Box::pin(process_dataplane_turn(node, None, 0)).await
+    Box::pin(process_dataplane_turn(&mut node.node, Some(packet), 64)).await
 }
 
 async fn process_dataplane_turn(
-    node: &mut TestNode,
+    node: &mut Node,
     first_packet: Option<ReceivedPacket>,
     packet_limit: usize,
 ) -> usize {
@@ -36,8 +45,8 @@ async fn process_dataplane_turn(
     let (_fast_tx, mut dummy_fast_ingress_rx) = tokio::sync::mpsc::channel(1);
     let (dummy_endpoint_tx, _dummy_endpoint_rx) = crate::node::EndpointEventSender::channel(1);
 
-    let mut endpoint_rx_slot = node.node.endpoint_data_rx.take();
-    let mut tun_outbound_rx_slot = node.node.tun_outbound_rx.take();
+    let mut endpoint_rx_slot = node.endpoint_data_rx.take();
+    let mut tun_outbound_rx_slot = node.tun_outbound_rx.take();
 
     let endpoint_rx = match endpoint_rx_slot.as_mut() {
         Some(rx) => rx,
@@ -47,11 +56,7 @@ async fn process_dataplane_turn(
         Some(rx) => rx,
         None => &mut dummy_tun_outbound_rx,
     };
-    let endpoint_tx = node
-        .node
-        .endpoint_events
-        .sender()
-        .unwrap_or(dummy_endpoint_tx);
+    let endpoint_tx = node.endpoint_events.sender().unwrap_or(dummy_endpoint_tx);
 
     let mut turn = {
         let mut dataplane_io = crate::node::handlers::rx_loop_dataplane_io(
@@ -61,21 +66,20 @@ async fn process_dataplane_turn(
             tun_outbound_rx,
             &endpoint_tx,
         );
-        node.node
-            .drain_dataplane_turn_with_firsts(
-                &mut dataplane_io,
-                crate::dataplane::DataplaneLiveTurnFirsts {
-                    raw_packet: first_packet,
-                    ..Default::default()
-                },
-                crate::node::handlers::RxLoopDataplaneTurnLimits::new(packet_limit, 64, 64, 64),
-            )
-            .await
+        node.drain_dataplane_turn_with_firsts(
+            &mut dataplane_io,
+            crate::dataplane::DataplaneLiveTurnFirsts {
+                raw_packet: first_packet,
+                ..Default::default()
+            },
+            crate::node::handlers::RxLoopDataplaneTurnLimits::new(packet_limit, 64, 64, 64),
+        )
+        .await
     };
     let mut active_turns = 0usize;
     let had_activity = turn.has_activity();
     let mut dispatched = turn.summary().dispatched();
-    let processed = finish_synthetic_dataplane_turn(&mut node.node, &mut turn).await;
+    let processed = finish_synthetic_dataplane_turn(node, &mut turn).await;
     if had_activity || processed > 0 {
         active_turns = active_turns.saturating_add(1);
     }
@@ -84,7 +88,7 @@ async fn process_dataplane_turn(
         if dispatched == 0 {
             break;
         }
-        let notify = node.node.dataplane.readiness_notify();
+        let notify = node.dataplane.readiness_notify();
         let _ = tokio::time::timeout(std::time::Duration::from_secs(1), notify.notified()).await;
 
         let mut completion_turn = {
@@ -95,18 +99,17 @@ async fn process_dataplane_turn(
                 tun_outbound_rx,
                 &endpoint_tx,
             );
-            node.node
-                .drain_dataplane_turn_with_firsts(
-                    &mut dataplane_io,
-                    crate::dataplane::DataplaneLiveTurnFirsts::default(),
-                    crate::node::handlers::RxLoopDataplaneTurnLimits::new(0, 64, 64, 64),
-                )
-                .await
+            node.drain_dataplane_turn_with_firsts(
+                &mut dataplane_io,
+                crate::dataplane::DataplaneLiveTurnFirsts::default(),
+                crate::node::handlers::RxLoopDataplaneTurnLimits::new(0, 64, 64, 64),
+            )
+            .await
         };
         let completion_had_activity = completion_turn.has_activity();
         dispatched = completion_turn.summary().dispatched();
         let completion_processed =
-            finish_synthetic_dataplane_turn(&mut node.node, &mut completion_turn).await;
+            finish_synthetic_dataplane_turn(node, &mut completion_turn).await;
         if completion_had_activity || completion_processed > 0 {
             active_turns = active_turns.saturating_add(1);
         } else {
@@ -114,8 +117,8 @@ async fn process_dataplane_turn(
         }
     }
 
-    node.node.endpoint_data_rx = endpoint_rx_slot.take();
-    node.node.tun_outbound_rx = tun_outbound_rx_slot.take();
+    node.endpoint_data_rx = endpoint_rx_slot.take();
+    node.tun_outbound_rx = tun_outbound_rx_slot.take();
 
     active_turns
 }

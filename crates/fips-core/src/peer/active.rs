@@ -189,6 +189,8 @@ pub struct ActivePeer {
     current_k_bit: bool,
     /// Previous session kept alive during drain window after cutover.
     previous_session: Option<NoiseSession>,
+    /// Actual previous epoch flag, also retained across same-flag cutovers.
+    previous_k_bit: Option<bool>,
     /// Previous session's our_index (for registry cleanup on drain expiry).
     previous_our_index: Option<SessionIndex>,
     /// Previous session's transport id (for registry cleanup on drain expiry).
@@ -262,6 +264,7 @@ impl ActivePeer {
             rekey_jitter_secs: draw_rekey_jitter(),
             current_k_bit: false,
             previous_session: None,
+            previous_k_bit: None,
             previous_our_index: None,
             previous_transport_id: None,
             drain_started: None,
@@ -340,6 +343,7 @@ impl ActivePeer {
             rekey_jitter_secs: draw_rekey_jitter(),
             current_k_bit: false,
             previous_session: None,
+            previous_k_bit: None,
             previous_our_index: None,
             previous_transport_id: None,
             drain_started: None,
@@ -461,11 +465,15 @@ impl ActivePeer {
         new_our_index: SessionIndex,
         new_their_index: SessionIndex,
     ) -> Option<SessionIndex> {
+        self.abandon_rekey();
+        self.clear_handshake_msg2();
         self.reset_replay_suppressed();
         let old_our_index = self.our_index;
-        self.previous_session = self.noise_session.take();
         self.previous_our_index = old_our_index.filter(|old| *old != new_our_index);
-        self.previous_transport_id = self.transport_id;
+        self.previous_session = self.previous_our_index.and(self.noise_session.take());
+        self.previous_k_bit = self.previous_our_index.map(|_| self.current_k_bit);
+        self.current_k_bit = false;
+        self.previous_transport_id = self.previous_our_index.and(self.transport_id);
         self.drain_started = self.previous_our_index.map(|_| Instant::now());
         self.noise_session = Some(new_session);
         self.our_index = Some(new_our_index);

@@ -2,6 +2,7 @@
 fn staged_fsp_rekey_preserves_established_path_delivery_activity() {
     let owner = fsp_owner(93);
     let mut mover = mover();
+    let pending_authority = crate::noise::SendCounterAuthority::for_test();
     mover.register_owner(
         owner,
         OwnerConfig::new(1, 8)
@@ -11,13 +12,11 @@ fn staged_fsp_rekey_preserves_established_path_delivery_activity() {
             .with_fsp_mmp(crate::config::SessionMmpConfig::default(), true),
     );
 
-    assert!(
-        mover.owner_mut(owner).unwrap().record_fsp_data_sent(
-            owner.node_addr(),
-            1_200,
-            ActivityTick::new(1_050),
-        )
-    );
+    assert!(mover.owner_mut(owner).unwrap().record_fsp_data_sent(
+        owner.node_addr(),
+        1_200,
+        ActivityTick::new(1_050),
+    ));
     let rr = crate::mmp::report::ReceiverReport {
         highest_counter: 100,
         cumulative_packets_recv: 100,
@@ -44,38 +43,35 @@ fn staged_fsp_rekey_preserves_established_path_delivery_activity() {
             128,
         )
         .expect("owner should process pre-rekey delivery feedback");
-    assert!(
-        mover.owner_mut(owner).unwrap().install_fsp_pending_receive_epoch(
-            true,
-            test_key(94),
-        )
-    );
-
-    assert!(mover.owner_mut(owner).unwrap().install_fsp_session(
-        OwnerConfig::new(2, 8)
-            .with_fsp_session_start_ms(1_000)
-            .with_fsp_send_headers(crate::node::session_wire::FSP_FLAG_K, 0)
-            .with_fsp_epoch(true, Some(false))
-            .with_fsp_mmp(crate::config::SessionMmpConfig::default(), true),
-        OwnerCryptoKeys::new(test_key(94), test_key(94)),
+    assert!(mover.owner_mut(owner).unwrap().install_fsp_pending_epoch(
+        true,
+        test_key(94),
+        test_key(94),
+        pending_authority.clone(),
     ));
+
     assert!(
-        mover.owner_mut(owner).unwrap().record_fsp_data_sent(
-            owner.node_addr(),
-            1_200,
-            ActivityTick::new(1_200),
+        mover.owner_mut(owner).unwrap().install_fsp_session(
+            OwnerConfig::new(2, 8)
+                .with_send_counter_authority(pending_authority)
+                .with_fsp_session_start_ms(1_000)
+                .with_fsp_send_headers(crate::node::session_wire::FSP_FLAG_K, 0)
+                .with_fsp_epoch(true, Some(false))
+                .with_fsp_mmp(crate::config::SessionMmpConfig::default(), true),
+            OwnerCryptoKeys::new(test_key(94), test_key(94)),
         )
     );
+    assert!(mover.owner_mut(owner).unwrap().record_fsp_data_sent(
+        owner.node_addr(),
+        1_200,
+        ActivityTick::new(1_200),
+    ));
 
     assert!(
         !mover
             .owner_fsp_activity(owner)
             .unwrap()
-            .has_recent_outbound_without_delivery_feedback_from(
-                &owner.node_addr(),
-                1_300,
-                2_500,
-            ),
+            .has_recent_outbound_without_delivery_feedback_from(&owner.node_addr(), 1_300, 2_500,),
         "a staged key cutover must retain recent delivery proof for the unchanged direct path"
     );
 }

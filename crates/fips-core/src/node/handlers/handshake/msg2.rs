@@ -2,6 +2,22 @@ use super::*;
 use crate::node::ActivePeerCurrentSessionReplacement;
 
 impl Node {
+    async fn complete_outbound_handshake_bootstrap(&mut self, node_addr: &NodeAddr) {
+        // TreeAnnounce may be paced after a reconnect. Confirm the new keys
+        // before queued direct FSP traffic can use the replacement carrier.
+        if let Err(error) = self
+            .send_dataplane_fmp_link_plaintext(
+                node_addr,
+                &[crate::protocol::LinkMessageType::Heartbeat.to_byte()],
+                false,
+            )
+            .await
+        {
+            debug!(peer = %self.peer_display_name(node_addr), %error, "Failed to send handshake confirmation");
+        }
+        self.complete_owned_msg2_bootstrap(node_addr).await;
+    }
+
     fn preserve_completed_static_send_addr(
         &mut self,
         peer_node_addr: &crate::NodeAddr,
@@ -552,7 +568,7 @@ impl Node {
                         return;
                     }
                 };
-                self.log_active_peer_session_replacement_result(
+                self.finish_active_peer_session_replacement(
                     &peer_node_addr,
                     &replacement,
                     "outbound_alternate_path_refresh",
@@ -609,11 +625,8 @@ impl Node {
                     "Promoted outbound alternate-path refresh"
                 );
 
-                if let Err(e) = self.send_tree_announce_to_peer(&peer_node_addr).await {
-                    debug!(peer = %display_name, error = %e, "Failed to send TreeAnnounce after outbound path refresh");
-                }
-                self.bloom_state.mark_update_needed(peer_node_addr);
-                self.reset_discovery_backoff();
+                self.complete_outbound_handshake_bootstrap(&peer_node_addr)
+                    .await;
                 self.retry_degraded_session_routes_after_peer_authenticated(
                     peer_node_addr,
                     packet.timestamp_ms,
@@ -666,7 +679,7 @@ impl Node {
                         return;
                     }
                 };
-                self.log_active_peer_session_replacement_result(
+                self.finish_active_peer_session_replacement(
                     &peer_node_addr,
                     &replacement,
                     "outbound_cross_connection_swap",
@@ -742,13 +755,8 @@ impl Node {
             }
 
             // Send TreeAnnounce now that sessions are aligned
-            if let Err(e) = self.send_tree_announce_to_peer(&peer_node_addr).await {
-                debug!(peer = %self.peer_display_name(&peer_node_addr), error = %e, "Failed to send TreeAnnounce after cross-connection resolution");
-            }
-            // Schedule filter announce (sent on next tick via debounce)
-            self.bloom_state.mark_update_needed(peer_node_addr);
-            self.reset_discovery_backoff();
-            self.schedule_local_rendezvous_after_peer_authenticated(&peer_node_addr);
+            self.complete_outbound_handshake_bootstrap(&peer_node_addr)
+                .await;
             return;
         }
 
@@ -765,13 +773,7 @@ impl Node {
                             "Peer promoted to active"
                         );
                         // Send initial tree announce to new peer
-                        if let Err(e) = self.send_tree_announce_to_peer(&node_addr).await {
-                            debug!(peer = %self.peer_display_name(&node_addr), error = %e, "Failed to send initial TreeAnnounce");
-                        }
-                        // Schedule filter announce (sent on next tick via debounce)
-                        self.bloom_state.mark_update_needed(node_addr);
-                        self.reset_discovery_backoff();
-                        self.schedule_local_rendezvous_after_peer_authenticated(&node_addr);
+                        self.complete_outbound_handshake_bootstrap(&node_addr).await;
                         Some(node_addr)
                     }
                     PromotionResult::CrossConnectionWon {
@@ -798,13 +800,7 @@ impl Node {
                             "Outbound cross-connection won, loser link cleaned up"
                         );
                         // Send initial tree announce to peer (new or reconnected)
-                        if let Err(e) = self.send_tree_announce_to_peer(&node_addr).await {
-                            debug!(peer = %self.peer_display_name(&node_addr), error = %e, "Failed to send initial TreeAnnounce");
-                        }
-                        // Schedule filter announce (sent on next tick via debounce)
-                        self.bloom_state.mark_update_needed(node_addr);
-                        self.reset_discovery_backoff();
-                        self.schedule_local_rendezvous_after_peer_authenticated(&node_addr);
+                        self.complete_outbound_handshake_bootstrap(&node_addr).await;
                         Some(node_addr)
                     }
                     PromotionResult::CrossConnectionLost { winner_link_id } => {

@@ -2,6 +2,8 @@
 //!
 //! Starts a Rust FIPS endpoint with a WebSocket seed listener and WebRTC
 //! transport, then echoes endpoint-data bytes back to the sender.
+//! Set `FIPS_FIXTURE_REKEY_AFTER_MESSAGES` to a positive message count to
+//! exercise FMP/FSP rotation during a short interop run.
 
 use clap::Parser;
 use fips::config::{TransportInstances, WebSocketConfig};
@@ -42,6 +44,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pubkey_hex = hex::encode(identity.pubkey_full().serialize());
 
     let mut config = Config::new();
+    if let Some(value) = std::env::var_os("FIPS_FIXTURE_REKEY_AFTER_MESSAGES") {
+        config.node.rekey.after_messages = value
+            .to_str()
+            .and_then(|value| value.parse::<std::num::NonZeroU64>().ok())
+            .ok_or("FIPS_FIXTURE_REKEY_AFTER_MESSAGES must be a positive integer")?
+            .get();
+    }
     config.node.identity = IdentityConfig {
         nsec: Some(args.secret.clone()),
         persistent: false,

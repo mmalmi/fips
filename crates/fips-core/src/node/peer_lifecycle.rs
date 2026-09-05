@@ -315,8 +315,15 @@ impl PeerLifecycleRegistry {
             key: (transport_id, our_index.as_u32()),
             index: our_index,
         };
-        let (old_link_id, old_session_index, replay_suppressed_count) = {
+        let (
+            old_link_id,
+            old_session_index,
+            replay_suppressed_count,
+            old_indices,
+            retained_indices,
+        ) = {
             let peer = self.active.get_mut(node_addr)?;
+            let old_indices = Self::active_peer_session_indices(peer);
             let previous_current_index = Self::active_peer_current_session_index(peer);
             let old_link_id = peer.link_id();
             let replay_suppressed_count = peer.replay_suppressed_count();
@@ -337,8 +344,31 @@ impl PeerLifecycleRegistry {
                 old_link_id,
                 previous_current_index.filter(|old| old.key != new_session_index.key),
                 replay_suppressed_count,
+                old_indices,
+                Self::active_peer_session_indices(peer),
             )
         };
+
+        let mut retired_session_indices: Vec<PeerSessionIndex> = Vec::new();
+        for old in old_indices {
+            if !retained_indices
+                .iter()
+                .any(|retained| retained.key == old.key)
+                && self.active.lookup_session_index(old.key) == Some(*node_addr)
+            {
+                self.active.remove_session_index_with_owner_state(&old.key);
+            }
+            // Dispatch is scoped by transport, but the allocator is global.
+            if !retained_indices
+                .iter()
+                .any(|retained| retained.index == old.index)
+                && !retired_session_indices
+                    .iter()
+                    .any(|retired| retired.index == old.index)
+            {
+                retired_session_indices.push(old);
+            }
+        }
 
         let previous_owner = self
             .active
@@ -346,6 +376,7 @@ impl PeerLifecycleRegistry {
         Some(ReplacedActivePeerCurrentSession {
             old_link_id,
             old_session_index,
+            retired_session_indices,
             new_session_index: RegisteredPeerSessionIndex {
                 session_index: new_session_index,
                 previous_owner,

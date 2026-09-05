@@ -65,6 +65,7 @@ include!("work.rs");
 include!("direct_transport.rs");
 include!("live_ingress.rs");
 include!("live_routes.rs");
+include!("live_handshake_candidates.rs");
 include!("tun_outbound.rs");
 include!("endpoint_data.rs");
 include!("session_handoff.rs");

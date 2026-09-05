@@ -165,6 +165,7 @@ impl DataplaneTurnDriver {
             .owner_has_fsp_pending_receive_epoch(owner, received_k_bit)
     }
 
+    #[cfg(all(test, feature = "sim-transport"))]
     pub(crate) fn owner_has_fmp_pending_receive_epoch(
         &self,
         owner: OwnerId,

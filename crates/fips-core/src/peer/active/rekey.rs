@@ -28,6 +28,10 @@ impl ActivePeer {
         self.current_k_bit
     }
 
+    pub(crate) fn previous_k_bit(&self) -> Option<bool> {
+        self.previous_k_bit
+    }
+
     /// Whether a rekey is currently in progress.
     pub fn rekey_in_progress(&self) -> bool {
         self.rekey_in_progress
@@ -145,36 +149,7 @@ impl ActivePeer {
     /// flips the K-bit. Returns the old our_index that should remain in dispatch
     /// during the drain window.
     pub fn cutover_to_new_session(&mut self) -> Option<SessionIndex> {
-        let new_session = self.pending_new_session.take()?;
-        let new_our_index = self.pending_our_index.take();
-        let new_their_index = self.pending_their_index.take();
-
-        // Demote current to previous
-        self.previous_session = self.noise_session.take();
-        self.previous_our_index = self.our_index;
-        self.previous_transport_id = self.transport_id;
-        self.drain_started = Some(Instant::now());
-
-        // Promote pending to current
-        self.noise_session = Some(new_session);
-        self.our_index = new_our_index;
-        self.their_index = new_their_index;
-        self.pending_rekey_initiator = false;
-        self.pending_rekey_completed_at = None;
-
-        // Flip K-bit and reset timing
-        self.current_k_bit = !self.current_k_bit;
-        self.session_established_at = Instant::now();
-        self.session_start = Instant::now();
-        self.session_generation = self.session_generation.wrapping_add(1).max(1);
-        self.rekey_in_progress = false;
-        self.rekey_msg1_resend_count = 0;
-        self.rekey_jitter_secs = draw_rekey_jitter();
-        self.last_rekey_dampening_at = Some(Instant::now());
-        self.last_heartbeat_sent = None;
-        self.reset_replay_suppressed();
-
-        self.previous_our_index
+        self.confirm_pending_session(!self.current_k_bit)
     }
 
     /// Handle receiving a K-bit flip from the peer (responder side).
@@ -182,12 +157,18 @@ impl ActivePeer {
     /// Promotes pending_new_session to current, demotes current to previous.
     /// Returns the old our_index for drain tracking.
     pub fn handle_peer_kbit_flip(&mut self) -> Option<SessionIndex> {
+        self.confirm_pending_session(!self.current_k_bit)
+    }
+
+    /// Confirm pending keys using the flag from an authenticated frame.
+    pub(crate) fn confirm_pending_session(&mut self, received_k_bit: bool) -> Option<SessionIndex> {
         let new_session = self.pending_new_session.take()?;
         let new_our_index = self.pending_our_index.take();
         let new_their_index = self.pending_their_index.take();
 
         // Demote current to previous
         self.previous_session = self.noise_session.take();
+        self.previous_k_bit = Some(self.current_k_bit);
         self.previous_our_index = self.our_index;
         self.previous_transport_id = self.transport_id;
         self.drain_started = Some(Instant::now());
@@ -200,7 +181,7 @@ impl ActivePeer {
         self.pending_rekey_completed_at = None;
 
         // Match peer's K-bit
-        self.current_k_bit = !self.current_k_bit;
+        self.current_k_bit = received_k_bit;
         self.session_established_at = Instant::now();
         self.session_start = Instant::now();
         self.session_generation = self.session_generation.wrapping_add(1).max(1);
@@ -233,6 +214,7 @@ impl ActivePeer {
     /// the registry and free it from the IndexAllocator.
     pub fn complete_drain(&mut self) -> Option<SessionIndex> {
         self.previous_session = None;
+        self.previous_k_bit = None;
         self.drain_started = None;
         self.previous_transport_id = None;
         self.previous_our_index.take()
@@ -249,14 +231,14 @@ impl ActivePeer {
         self.rekey_msg1_next_resend = 0;
         self.rekey_msg1_resend_count = 0;
         self.rekey_in_progress = false;
-        // Return whichever index needs freeing
-        self.rekey_our_index.take().or_else(|| {
-            self.pending_new_session = None;
-            self.pending_their_index = None;
-            self.pending_rekey_initiator = false;
-            self.pending_rekey_completed_at = None;
-            self.pending_our_index.take()
-        })
+        self.pending_new_session = None;
+        self.pending_their_index = None;
+        self.pending_rekey_initiator = false;
+        self.pending_rekey_completed_at = None;
+        // Return whichever index needs freeing; always discard pending state.
+        self.rekey_our_index
+            .take()
+            .or(self.pending_our_index.take())
     }
 
     // === Rekey Handshake State (Initiator) ===

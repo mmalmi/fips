@@ -45,13 +45,17 @@ impl OwnerState {
         } else {
             DataplaneReceiveEpoch::Current
         };
-        let receive_k_bit = match self.owner.protocol() {
-            PacketProtocol::Fmp => packet.wire_flags & crate::node::wire::FLAG_KEY_EPOCH != 0,
-            PacketProtocol::Fsp => packet.wire_flags & crate::node::session_wire::FSP_FLAG_K != 0,
-        };
+        let receive_epoch_identity = (
+            receive_epoch,
+            if receive_epoch == DataplaneReceiveEpoch::Pending {
+                self.pending_receive_epoch_instance
+            } else {
+                0
+            },
+        );
         if !self
             .pending_replay_counters
-            .insert((receive_k_bit, packet.counter))
+            .insert((receive_epoch_identity, packet.counter))
         {
             return Err(OwnerReserveError::Replay);
         }
@@ -76,7 +80,7 @@ impl OwnerState {
                 ce_flag: packet.ce_flag,
                 path_mtu: packet.path_mtu,
                 wire_flags: packet.wire_flags,
-                receive_k_bit: Some(receive_k_bit),
+                receive_epoch: Some(receive_epoch_identity),
                 source_peer: self.source_peer,
                 output_path: None,
                 activity_tick: packet.activity_tick,
@@ -176,7 +180,7 @@ impl OwnerState {
             ce_flag: false,
             path_mtu,
             wire_flags: 0,
-            receive_k_bit: None,
+            receive_epoch: None,
             source_peer: self.source_peer,
             output_path,
             activity_tick: packet.activity_tick,

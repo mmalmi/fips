@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Keep current, pending, and draining receive counters attached to their
+  authenticated session, including delayed simultaneous startup handshakes
+  whose session flag has not changed. Select FMP receive keys by the owned
+  receiver index, retaining TypeScript compatibility after key rotation.
+- Confirm replacement carriers with an encrypted frame before retiring a
+  usable connection, and bound unconfirmed candidates with the existing
+  handshake limits and timeout while preserving queued first-frame delivery
+  and simultaneous recovery on a shared carrier.
 - Keep endpoint control responsive after a maintenance timeout, and prepare
   UDP hostnames outside liveness work so slow DNS cannot repeatedly cancel
   handshake retries or stall otherwise usable carriers.

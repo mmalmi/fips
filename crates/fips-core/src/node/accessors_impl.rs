@@ -149,12 +149,16 @@ impl Node {
         }
     }
 
-    pub(in crate::node) fn log_active_peer_session_replacement_result(
-        &self,
+    pub(in crate::node) fn finish_active_peer_session_replacement(
+        &mut self,
         node_addr: &NodeAddr,
         replacement: &ReplacedActivePeerCurrentSession,
         context: &'static str,
     ) {
+        for retired in &replacement.retired_session_indices {
+            self.pending_outbound.remove(&retired.key);
+            let _ = self.index_allocator.free(retired.index);
+        }
         if replacement.replay_suppressed_count > 0 {
             debug!(
                 peer = %self.peer_display_name(node_addr),
@@ -658,6 +662,7 @@ impl Node {
     /// link. In cross-connection scenarios, a newer link may have replaced the
     /// entry for the same address.
     pub fn remove_link(&mut self, link_id: &LinkId) -> Option<Link> {
+        self.unregister_handshake_candidate(*link_id);
         self.links.remove(link_id)
     }
 

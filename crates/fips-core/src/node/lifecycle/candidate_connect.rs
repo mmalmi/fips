@@ -207,7 +207,7 @@ impl Node {
             .min(MAX_AUTO_CONNECT_GRAPH_WARMUPS_PER_TICK)
     }
 
-    pub(super) fn outbound_handshake_slots(&self) -> usize {
+    pub(in crate::node) fn outbound_handshake_slots(&self) -> usize {
         let used = self
             .peers
             .connection_len()
@@ -219,7 +219,7 @@ impl Node {
         }
     }
 
-    pub(super) fn outbound_link_slots(&self) -> usize {
+    pub(in crate::node) fn outbound_link_slots(&self) -> usize {
         if self.max_links == 0 {
             usize::MAX
         } else {
@@ -320,6 +320,7 @@ impl Node {
             return false;
         };
 
+        self.unregister_handshake_candidate(link_id);
         let Some(conn) = self.peers.remove_connection(&link_id) else {
             return false;
         };
@@ -330,6 +331,9 @@ impl Node {
             let _ = self.index_allocator.free(idx);
         }
         self.remove_link(&link_id);
+        if let Some(winner) = self.active_link_for_carrier(victim_transport_id, &victim_addr) {
+            self.restore_link_address(winner);
+        }
         self.cleanup_bootstrap_transport_if_unused(victim_transport_id);
 
         debug!(

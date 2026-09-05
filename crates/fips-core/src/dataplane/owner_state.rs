@@ -13,7 +13,9 @@ impl OwnerState {
             crypto_keys: None,
             previous_fmp_open: None,
             pending_fmp_open: None,
+            pending_fmp_send_counter_authority: None,
             pending_fmp_k_bit: None,
+            pending_fmp_authenticated_k_bit: None,
             pending_fmp_replay_window: None,
             previous_fsp_open: None,
             pending_fsp_open: None,
@@ -71,6 +73,7 @@ impl OwnerState {
             authenticated_counter_highest: 0,
             replay_window: ReplayWindow::default(),
             pending_replay_counters: std::collections::HashSet::new(),
+            pending_receive_epoch_instance: 0,
             previous_fmp_replay_window: None,
             previous_fsp_replay_window: None,
             pending: VecDeque::new(),
@@ -86,7 +89,9 @@ impl OwnerState {
         self.crypto_keys = None;
         self.previous_fmp_open = None;
         self.pending_fmp_open = None;
+        self.pending_fmp_send_counter_authority = None;
         self.pending_fmp_k_bit = None;
+        self.pending_fmp_authenticated_k_bit = None;
         self.pending_fmp_replay_window = None;
         self.previous_fsp_open = None;
         self.pending_fsp_open = None;
@@ -204,7 +209,7 @@ impl OwnerState {
         let generation_changed = config.generation != self.generation;
         let previous_epoch = generation_changed && config.fmp_previous_draining_k_bit.is_some();
         let promoted_pending_replay =
-            (generation_changed && config.fmp_current_k_bit == self.pending_fmp_k_bit)
+            (generation_changed && self.is_pending_session(config.send_counter_authority.as_ref()))
                 .then(|| self.pending_fmp_replay_window.take())
                 .flatten();
         let previous_open = previous_epoch
@@ -219,7 +224,9 @@ impl OwnerState {
         if let Some(replay) = promoted_pending_replay {
             self.replay_window = replay;
             self.pending_fmp_open = None;
+            self.pending_fmp_send_counter_authority = None;
             self.pending_fmp_k_bit = None;
+            self.pending_fmp_authenticated_k_bit = None;
             self.pending_fmp_replay_window = None;
         }
         if let (Some(open), Some(replay)) = (previous_open, previous_replay) {
@@ -244,7 +251,7 @@ impl OwnerState {
         let generation_changed = config.generation != self.generation;
         let previous_epoch = generation_changed && config.fsp_previous_draining_k_bit.is_some();
         let promoted_pending_replay =
-            (generation_changed && self.pending_fsp_k_bit == config.fsp_current_k_bit)
+            (generation_changed && self.is_pending_session(config.send_counter_authority.as_ref()))
                 .then(|| self.pending_fsp_replay_window.take())
                 .flatten();
         let previous_open = previous_epoch
@@ -278,13 +285,17 @@ impl OwnerState {
         &mut self,
         pending_k_bit: bool,
         open: AeadKey,
+        send_counter_authority: crate::noise::SendCounterAuthority,
     ) -> bool {
         if self.owner.protocol() != PacketProtocol::Fmp || pending_k_bit == self.fmp_current_k_bit
         {
             return false;
         }
+        self.advance_pending_receive_epoch();
         self.pending_fmp_open = Some(open);
+        self.pending_fmp_send_counter_authority = Some(send_counter_authority);
         self.pending_fmp_k_bit = Some(pending_k_bit);
+        self.pending_fmp_authenticated_k_bit = None;
         self.pending_fmp_replay_window = Some(ReplayWindow::default());
         true
     }
@@ -296,12 +307,26 @@ impl OwnerState {
             && self.pending_fmp_replay_window.is_some()
     }
 
+    pub(crate) fn confirm_fmp_pending_receive_epoch(&mut self, received_k_bit: bool) -> bool {
+        if self.pending_fmp_authenticated_k_bit != Some(received_k_bit) {
+            return false;
+        }
+        // A delayed initial handshake can finish as a full connection at the
+        // sender and as a pending rekey here. Its authenticated flag decides
+        // the cutover; the receiver index already selected its Noise keys.
+        self.pending_fmp_k_bit = Some(received_k_bit);
+        self.has_fmp_pending_receive_epoch(received_k_bit)
+    }
+
     pub(crate) fn clear_fmp_pending_receive_epoch(&mut self) -> bool {
         if self.owner.protocol() != PacketProtocol::Fmp {
             return false;
         }
+        self.advance_pending_receive_epoch();
         self.pending_fmp_open = None;
+        self.pending_fmp_send_counter_authority = None;
         self.pending_fmp_k_bit = None;
+        self.pending_fmp_authenticated_k_bit = None;
         self.pending_fmp_replay_window = None;
         true
     }
@@ -315,7 +340,10 @@ impl OwnerState {
         {
             return false;
         }
+        self.advance_pending_receive_epoch();
         self.pending_fsp_open = Some(open);
+        self.pending_fsp_seal = None;
+        self.pending_fsp_send_counter_authority = None;
         self.pending_fsp_k_bit = Some(pending_k_bit);
         self.pending_fsp_replay_window = Some(ReplayWindow::default());
         true
@@ -348,6 +376,7 @@ impl OwnerState {
         if self.owner.protocol() != PacketProtocol::Fsp {
             return false;
         }
+        self.advance_pending_receive_epoch();
         self.pending_fsp_open = None;
         self.pending_fsp_seal = None;
         self.pending_fsp_send_counter_authority = None;
@@ -371,9 +400,7 @@ impl OwnerState {
             self.previous_fmp_replay_window = None;
         }
         if self.pending_fmp_k_bit == Some(current_k_bit) {
-            self.pending_fmp_open = None;
-            self.pending_fmp_k_bit = None;
-            self.pending_fmp_replay_window = None;
+            self.clear_fmp_pending_receive_epoch();
         }
         true
     }
@@ -393,6 +420,7 @@ impl OwnerState {
             self.previous_fsp_replay_window = None;
         }
         if self.pending_fsp_k_bit == Some(current_k_bit) {
+            self.advance_pending_receive_epoch();
             self.pending_fsp_open = None;
             self.pending_fsp_seal = None;
             self.pending_fsp_send_counter_authority = None;
@@ -432,9 +460,7 @@ impl OwnerState {
     pub(crate) fn apply_live_config(&mut self, config: OwnerConfig) {
         if config.generation != self.generation {
             let staged_fsp_cutover = self.owner.protocol() == PacketProtocol::Fsp
-                && config
-                    .fsp_current_k_bit
-                    .is_some_and(|current_k_bit| self.pending_fsp_k_bit == Some(current_k_bit));
+                && self.is_pending_session(config.send_counter_authority.as_ref());
             if staged_fsp_cutover {
                 self.rekey_preserving_fsp_path_activity(config.generation);
             } else {
@@ -532,69 +558,82 @@ impl OwnerState {
         reservation: &OwnerReservation,
         authenticated: bool,
     ) -> bool {
-        let Some(receive_k_bit) = reservation.receive_k_bit else {
+        let Some((receive_epoch, instance)) = reservation.receive_epoch else {
             return true;
         };
         let was_pending = self
             .pending_replay_counters
-            .remove(&(receive_k_bit, reservation.counter));
+            .remove(&((receive_epoch, instance), reservation.counter));
         if !authenticated {
             return true;
         }
-        was_pending
+        if receive_epoch == DataplaneReceiveEpoch::Pending
+            && instance != self.pending_receive_epoch_instance
+        {
+            return false;
+        }
+        let accepted = was_pending
             && self
-                .replay_window_for_k_bit_mut(receive_k_bit)
-                .is_some_and(|window| window.accept(reservation.counter))
+                .replay_window_for_epoch_mut(receive_epoch)
+                .is_some_and(|window| window.accept(reservation.counter));
+        if accepted
+            && self.owner.protocol() == PacketProtocol::Fmp
+            && receive_epoch == DataplaneReceiveEpoch::Pending
+        {
+            self.pending_fmp_authenticated_k_bit.get_or_insert(
+                reservation.wire_flags & crate::node::wire::FLAG_KEY_EPOCH != 0,
+            );
+        }
+        accepted
     }
 
-    fn replay_window_for_k_bit_mut(&mut self, receive_k_bit: bool) -> Option<&mut ReplayWindow> {
-        match self.owner.protocol() {
-            PacketProtocol::Fmp if self.fmp_current_k_bit == receive_k_bit => {
-                Some(&mut self.replay_window)
-            }
-            PacketProtocol::Fmp if self.pending_fmp_k_bit == Some(receive_k_bit) => {
+    fn advance_pending_receive_epoch(&mut self) {
+        self.pending_receive_epoch_instance = self.pending_receive_epoch_instance.wrapping_add(1);
+        self.pending_replay_counters
+            .retain(|((epoch, _), _)| *epoch != DataplaneReceiveEpoch::Pending);
+    }
+
+    fn is_pending_session(&self, current: Option<&crate::noise::SendCounterAuthority>) -> bool {
+        let pending = match self.owner.protocol() {
+            PacketProtocol::Fmp => self.pending_fmp_send_counter_authority.as_ref(),
+            PacketProtocol::Fsp => self.pending_fsp_send_counter_authority.as_ref(),
+        };
+        current
+            .zip(pending)
+            .is_some_and(|(current, pending)| current.same_session(pending))
+    }
+
+    fn replay_window_for_epoch_mut(
+        &mut self,
+        epoch: DataplaneReceiveEpoch,
+    ) -> Option<&mut ReplayWindow> {
+        match (self.owner.protocol(), epoch) {
+            (_, DataplaneReceiveEpoch::Current) => Some(&mut self.replay_window),
+            (PacketProtocol::Fmp, DataplaneReceiveEpoch::Pending) => {
                 self.pending_fmp_replay_window.as_mut()
             }
-            PacketProtocol::Fmp if self.fmp_previous_draining_k_bit == Some(receive_k_bit) => {
+            (PacketProtocol::Fmp, DataplaneReceiveEpoch::Previous) => {
                 self.previous_fmp_replay_window.as_mut()
             }
-            PacketProtocol::Fsp if self.fsp_current_k_bit == receive_k_bit => {
-                Some(&mut self.replay_window)
-            }
-            PacketProtocol::Fsp if self.pending_fsp_k_bit == Some(receive_k_bit) => {
+            (PacketProtocol::Fsp, DataplaneReceiveEpoch::Pending) => {
                 self.pending_fsp_replay_window.as_mut()
             }
-            PacketProtocol::Fsp if self.fsp_previous_draining_k_bit == Some(receive_k_bit) => {
+            (PacketProtocol::Fsp, DataplaneReceiveEpoch::Previous) => {
                 self.previous_fsp_replay_window.as_mut()
             }
-            _ => None,
         }
     }
 
     fn uses_previous_fmp_receive_epoch(&self, packet: &SocketPacket) -> bool {
-        if self.owner.protocol() != PacketProtocol::Fmp {
-            return false;
-        }
-        if packet.receive_epoch == DataplaneReceiveEpoch::Previous {
-            return self.previous_fmp_open.is_some() && self.previous_fmp_replay_window.is_some();
-        }
-        let received_k_bit = packet.wire_flags & crate::node::wire::FLAG_KEY_EPOCH != 0;
-        self.fmp_previous_draining_k_bit == Some(received_k_bit)
-            && received_k_bit != self.fmp_current_k_bit
+        self.owner.protocol() == PacketProtocol::Fmp
+            && packet.receive_epoch == DataplaneReceiveEpoch::Previous
             && self.previous_fmp_open.is_some()
             && self.previous_fmp_replay_window.is_some()
     }
 
     fn uses_pending_fmp_receive_epoch(&self, packet: &SocketPacket) -> bool {
-        if self.owner.protocol() != PacketProtocol::Fmp {
-            return false;
-        }
-        if packet.receive_epoch == DataplaneReceiveEpoch::Pending {
-            return self.pending_fmp_open.is_some() && self.pending_fmp_replay_window.is_some();
-        }
-        let received_k_bit = packet.wire_flags & crate::node::wire::FLAG_KEY_EPOCH != 0;
-        self.pending_fmp_k_bit == Some(received_k_bit)
-            && received_k_bit != self.fmp_current_k_bit
+        self.owner.protocol() == PacketProtocol::Fmp
+            && packet.receive_epoch == DataplaneReceiveEpoch::Pending
             && self.pending_fmp_open.is_some()
             && self.pending_fmp_replay_window.is_some()
     }

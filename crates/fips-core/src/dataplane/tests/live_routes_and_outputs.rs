@@ -194,6 +194,7 @@
                 Some(first),
                 direct_sources,
                 None,
+                Arc::default(),
             );
         let mut packets = Vec::new();
         assert_eq!(
@@ -235,6 +236,7 @@
                 Some(first),
                 direct_sources,
                 None,
+                Arc::default(),
             );
         let mut packets = Vec::new();
         assert_eq!(
@@ -459,6 +461,7 @@
                     Some(received),
                     direct_sources.clone(),
                     Some(&mut reassembler),
+                    Arc::default(),
                 );
             assert_eq!(
                 source_rx.drain_raw_ingress(1, |packet| packets.push(packet)),

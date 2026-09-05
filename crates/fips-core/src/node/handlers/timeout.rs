@@ -203,6 +203,7 @@ impl Node {
         link_id: LinkId,
         _now_ms: u64,
     ) {
+        self.unregister_handshake_candidate(link_id);
         let conn = match self.peers.remove_connection(&link_id) {
             Some(c) => c,
             None => return,
@@ -217,20 +218,18 @@ impl Node {
             let _ = self.index_allocator.free(idx);
         }
 
-        // A connection-oriented transport otherwise retains its socket, pool
-        // entry and inbound-slot accounting after node-side handshake state
-        // has been reaped. Connectionless transports make this a no-op, and
-        // connection-oriented close implementations tolerate repeat closes.
-        if let Some(link) = self.links.get(&link_id) {
-            let transport_id = link.transport_id();
-            let remote_addr = link.remote_addr().clone();
-            if let Some(transport) = self.transports.get(&transport_id) {
-                transport.close_connection(&remote_addr).await;
-            }
-        }
-
-        // Remove link and its reverse address dispatch entry.
+        // A candidate can share the current carrier. Expiring its keys must
+        // neither close that carrier nor remove its active address dispatch.
+        let winner = conn
+            .transport_id()
+            .zip(conn.source_addr())
+            .and_then(|(tid, addr)| self.active_link_for_carrier(tid, addr));
+        self.close_cross_connection_loser_physical_path(link_id, winner)
+            .await;
         self.remove_link(&link_id);
+        if let Some(winner) = winner {
+            self.restore_link_address(winner);
+        }
         if let Some(transport_id) = transport_id {
             self.cleanup_bootstrap_transport_if_unused(transport_id);
         }

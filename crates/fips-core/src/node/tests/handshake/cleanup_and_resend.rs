@@ -475,8 +475,8 @@ async fn owned_msg2_send_failure_retries_without_index_leak_and_bootstraps() {
 
 #[cfg(feature = "sim-transport")]
 #[tokio::test]
-async fn losing_inbound_candidate_never_advertises_its_receiver_index() {
-    use crate::node::wire::build_msg1;
+async fn losing_inbound_candidate_never_advertises_an_unowned_receiver_index() {
+    use crate::node::wire::{Msg2Header, build_msg1};
     use crate::peer::{ActivePeer, ActivePeerSession, cross_connection_winner};
     use crate::transport::{LinkStats, TransportHandle};
     use crate::{ReceivedPacket, SimNetwork};
@@ -548,7 +548,7 @@ async fn losing_inbound_candidate_never_advertises_its_receiver_index() {
     let (mut initiator_transport, mut initiator_packet_rx) =
         sim_test_transport(&network_name, "initiator", transport_id, 8);
     initiator_transport.start_async().await.unwrap();
-    let (mut responder_transport, _responder_packet_rx) =
+    let (mut responder_transport, mut responder_packet_rx) =
         sim_test_transport(&network_name, "responder", transport_id, 8);
     responder_transport.start_async().await.unwrap();
     responder
@@ -565,17 +565,62 @@ async fn losing_inbound_candidate_never_advertises_its_receiver_index() {
     responder
         .handle_msg1(ReceivedPacket::with_timestamp(
             transport_id,
-            remote_addr,
+            remote_addr.clone(),
             crate::transport::PacketBuffer::new(build_msg1(candidate_index, &candidate_msg1)),
             1_001,
         ))
         .await;
 
+    let msg2 = tokio::time::timeout(Duration::from_millis(20), initiator_packet_rx.recv())
+        .await
+        .expect("a parked candidate can advertise its retained receiver index")
+        .unwrap();
+    let header = Msg2Header::parse(msg2.data.as_slice()).unwrap();
+    let pending_link = responder
+        .find_link_by_addr(transport_id, &remote_addr)
+        .unwrap();
+    let pending = responder.get_connection(&pending_link).unwrap();
+    assert_eq!(pending.our_index(), Some(header.sender_idx));
+    assert!(pending.has_session());
+    assert!(responder.index_allocator.is_allocated(header.sender_idx));
+    assert_eq!(
+        responder.get_peer(&initiator_addr).unwrap().our_index(),
+        Some(old_our_index)
+    );
+
+    candidate
+        .read_message_2(header.noise_msg2(msg2.data.as_slice()))
+        .unwrap();
+    let mut session = candidate.into_session().unwrap();
+    let heartbeat = [
+        0,
+        0,
+        0,
+        0,
+        crate::protocol::LinkMessageType::Heartbeat.to_byte(),
+    ];
+    let aad = crate::dataplane::build_fmp_established_header(
+        header.sender_idx.as_u32(),
+        session.current_send_counter(),
+        0,
+        heartbeat.len() as u16,
+    );
+    let mut confirmation = aad.to_vec();
+    confirmation.extend(session.encrypt_with_aad(&heartbeat, &aad).unwrap());
+    initiator_transport
+        .send_async(&TransportAddr::from_string("responder"), &confirmation)
+        .await
+        .unwrap();
+    let confirmation = tokio::time::timeout(Duration::from_millis(20), responder_packet_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!responder.confirm_inbound_handshake(confirmation).await);
+    assert!(responder.get_connection(&pending_link).is_none());
+    assert!(!responder.index_allocator.is_allocated(header.sender_idx));
     assert!(
-        tokio::time::timeout(Duration::from_millis(20), initiator_packet_rx.recv())
-            .await
-            .is_err(),
-        "a losing inbound candidate must not advertise an index promotion already freed"
+        initiator_packet_rx.try_recv().is_err(),
+        "no response may advertise the now-freed candidate index"
     );
     let retained = responder.get_peer(&initiator_addr).unwrap();
     assert_eq!(retained.our_index(), Some(old_our_index));

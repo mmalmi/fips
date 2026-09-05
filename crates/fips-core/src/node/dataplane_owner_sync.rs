@@ -191,7 +191,7 @@ impl Node {
         let session_start_ms = Self::now_ms().wrapping_sub(u64::from(peer.session_elapsed_ms()));
         let source_peer = *peer.identity();
         let current_k_bit = peer.current_k_bit();
-        let previous_draining_k_bit = peer.is_draining().then_some(!current_k_bit);
+        let previous_draining_k_bit = peer.previous_k_bit();
         let open = Arc::new(session.recv_cipher_clone()?);
         let seal = Arc::new(session.send_cipher_clone()?);
         let counter_authority = session.send_counter_authority();

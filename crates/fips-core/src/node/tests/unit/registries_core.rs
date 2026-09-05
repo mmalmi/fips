@@ -553,18 +553,30 @@ fn peer_lifecycle_registry_owns_current_session_replacement_and_index_handoff() 
     let new_their_index = SessionIndex::new(21);
     let old_key = (old_transport_id, old_our_index.as_u32());
     let new_key = (new_transport_id, new_our_index.as_u32());
+    let previous_index = SessionIndex::new(9);
+    let pending_index = SessionIndex::new(12);
 
     let mut registry = PeerLifecycleRegistry::default();
-    let active_peer = make_active_test_peer(
+    let mut active_peer = make_active_test_peer(
         &node,
         &peer_full,
         old_transport_id,
         old_link_id,
         old_addr,
-        old_our_index,
+        previous_index,
         old_their_index,
     );
+    active_peer.set_pending_session(
+        make_test_fmp_session(&node.identity, &peer_full, [1; 8], [2; 8]),
+        old_our_index,
+        old_their_index,
+        true,
+    );
+    active_peer.cutover_to_new_session().unwrap();
+    arm_test_fmp_rekey(&mut active_peer, pending_index);
     registry.insert_with_current_session_index(peer_addr, active_peer);
+    registry.insert_session_index((old_transport_id, previous_index.as_u32()), peer_addr);
+    registry.insert_session_index((old_transport_id, pending_index.as_u32()), peer_addr);
     assert_eq!(registry.lookup_session_index(old_key), Some(peer_addr));
     assert_eq!(
         registry.insert_session_index(new_key, stale_peer_addr),
@@ -602,7 +614,7 @@ fn peer_lifecycle_registry_owns_current_session_replacement_and_index_handoff() 
             key: old_key,
             index: old_our_index,
         }),
-        "replacement should return the old current index for Node-owned teardown"
+        "replacement should retain the old current index for draining"
     );
     assert_eq!(
         replaced.new_session_index,
@@ -618,15 +630,26 @@ fn peer_lifecycle_registry_owns_current_session_replacement_and_index_handoff() 
     );
     assert_eq!(registry.lookup_session_index(old_key), Some(peer_addr));
     assert_eq!(registry.lookup_session_index(new_key), Some(peer_addr));
-
-    let removed_old = registry
-        .remove_session_index_with_owner_state(&old_key)
-        .expect("old key should still be present until Node performs teardown");
-    assert_eq!(removed_old.owner, peer_addr);
-    assert!(
-        removed_old.owner_has_remaining_index,
-        "new current index must be visible before old-index teardown runs"
+    assert_eq!(
+        registry.lookup_session_index((old_transport_id, previous_index.as_u32())),
+        None,
+        "the older drain must be retired when current becomes the new drain"
     );
+    assert_eq!(
+        registry.lookup_session_index((old_transport_id, pending_index.as_u32())),
+        None,
+        "obsolete rekey dispatch must be retired with its session"
+    );
+
+    assert_eq!(replaced.retired_session_indices.len(), 2);
+    for index in [previous_index, pending_index] {
+        assert!(
+            replaced
+                .retired_session_indices
+                .iter()
+                .any(|retired| retired.index == index)
+        );
+    }
 
     let peer = registry
         .get(&peer_addr)
@@ -638,6 +661,40 @@ fn peer_lifecycle_registry_owns_current_session_replacement_and_index_handoff() 
     assert_eq!(peer.their_index(), Some(new_their_index));
     assert_eq!(peer.remote_epoch(), Some([0x04; 8]));
     assert_eq!(peer.last_seen(), 2_000);
+    assert_eq!(peer.rekey_our_index(), None);
+    assert!(peer.rekey_msg1().is_none());
+
+    // Moving a numeric receiver index to a new transport retires its old
+    // dispatch key, but must not return that still-owned value to the allocator.
+    let final_transport_id = TransportId::new(3);
+    let final_addr = TransportAddr::from_string("same-index-new-transport");
+    let final_key = (final_transport_id, new_our_index.as_u32());
+    let replacement = registry
+        .replace_current_session_and_path(
+            &peer_addr,
+            ActivePeerCurrentSessionReplacement {
+                session: make_test_fmp_session(&node.identity, &peer_full, [3; 8], [4; 8]),
+                our_index: new_our_index,
+                their_index: new_their_index,
+                link_id: LinkId::new(30),
+                transport_id: final_transport_id,
+                addr: &final_addr,
+                is_initiator: true,
+                remote_epoch_update: None,
+                connected_at_ms: 3_000,
+            },
+        )
+        .unwrap();
+    assert_eq!(registry.lookup_session_index(new_key), None);
+    assert_eq!(registry.lookup_session_index(old_key), None);
+    assert_eq!(registry.lookup_session_index(final_key), Some(peer_addr));
+    assert_eq!(replacement.retired_session_indices.len(), 1);
+    assert_eq!(replacement.retired_session_indices[0].index, old_our_index);
+    let peer = registry.get(&peer_addr).unwrap();
+    assert_eq!(peer.previous_our_index(), None);
+    assert_eq!(peer.previous_k_bit(), None);
+    assert!(peer.previous_session().is_none());
+    assert_eq!(peer.previous_transport_id(), None);
 }
 
 #[test]

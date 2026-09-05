@@ -1,5 +1,65 @@
 use super::*;
 
+#[test]
+fn full_fmp_replacement_after_odd_rekey_resets_flag_and_preserves_drain() {
+    let node = make_node();
+    let remote = Identity::generate();
+    let mut peer = make_active_test_peer(
+        &node,
+        &remote,
+        TransportId::new(1),
+        LinkId::new(1),
+        TransportAddr::from_string("127.0.0.1:7000"),
+        SessionIndex::new(1),
+        SessionIndex::new(2),
+    );
+    let (rotated, mut old_remote) =
+        make_test_fmp_session_pair(&node.identity, &remote, [1; 8], [2; 8]);
+    peer.set_pending_session(rotated, SessionIndex::new(3), SessionIndex::new(4), true);
+    assert!(peer.cutover_to_new_session().is_some());
+    assert!(peer.current_k_bit());
+    let pending = make_test_fmp_session(&node.identity, &remote, [1; 8], [2; 8]);
+    peer.set_pending_session(pending, SessionIndex::new(7), SessionIndex::new(8), true);
+    assert!(peer.pending_rekey_cutover_due(Duration::ZERO));
+    peer.set_handshake_msg2(vec![2], 1_000);
+
+    let (replacement, mut new_remote) =
+        make_test_fmp_session_pair(&node.identity, &remote, [1; 8], [2; 8]);
+    assert_eq!(
+        peer.replace_session(replacement, SessionIndex::new(5), SessionIndex::new(6)),
+        Some(SessionIndex::new(3))
+    );
+    assert!(
+        !peer.current_k_bit(),
+        "a full Noise handshake starts at the initial flag"
+    );
+    assert_eq!(peer.previous_k_bit(), Some(true));
+    assert_eq!(peer.previous_our_index(), Some(SessionIndex::new(3)));
+    assert!(peer.pending_new_session().is_none());
+    assert_eq!(peer.pending_our_index(), None);
+    assert!(!peer.pending_rekey_cutover_due(Duration::ZERO));
+    assert!(peer.handshake_msg2().is_none());
+    assert!(peer.handshake_msg2_generated_at().is_none());
+    let old_frame = old_remote.encrypt(b"draining").unwrap();
+    assert_eq!(
+        peer.previous_session_mut()
+            .unwrap()
+            .decrypt(&old_frame)
+            .unwrap(),
+        b"draining"
+    );
+    let new_frame = new_remote.encrypt(b"current").unwrap();
+    assert_eq!(
+        peer.noise_session_mut()
+            .unwrap()
+            .decrypt(&new_frame)
+            .unwrap(),
+        b"current"
+    );
+    peer.complete_drain();
+    assert_eq!(peer.previous_k_bit(), None);
+}
+
 #[tokio::test]
 async fn fmp_rekey_responder_pending_session_does_not_time_cutover() {
     let mut node = make_node();

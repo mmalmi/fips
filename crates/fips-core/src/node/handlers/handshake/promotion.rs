@@ -293,7 +293,7 @@ impl Node {
                             },
                         )
                         .ok_or(NodeError::PeerNotFound(peer_node_addr))?;
-                    self.log_active_peer_session_replacement_result(
+                    self.finish_active_peer_session_replacement(
                         &peer_node_addr,
                         &replacement,
                         "cross_connection_won",

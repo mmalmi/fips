@@ -250,6 +250,7 @@ pub(crate) struct DataplaneFmpPacketRxSource<'a> {
     first: Option<ReceivedPacket>,
     direct_fsp_sources: DataplaneDirectFspSources,
     direct_fsp_reassembler: Option<&'a mut DataplaneDirectFspReassembler>,
+    handshake_candidates: DataplaneFmpHandshakeCandidates,
     control_ingress: Vec<DataplaneFmpControlIngress>,
 }
 
@@ -259,12 +260,14 @@ impl<'a> DataplaneFmpPacketRxSource<'a> {
         first: Option<ReceivedPacket>,
         direct_fsp_sources: DataplaneDirectFspSources,
         direct_fsp_reassembler: Option<&'a mut DataplaneDirectFspReassembler>,
+        handshake_candidates: DataplaneFmpHandshakeCandidates,
     ) -> Self {
         Self {
             rx,
             first,
             direct_fsp_sources,
             direct_fsp_reassembler,
+            handshake_candidates,
             control_ingress: Vec::new(),
         }
     }
@@ -276,6 +279,7 @@ impl<'a> DataplaneFmpPacketRxSource<'a> {
     fn push_packet<F>(
         direct_fsp_sources: &DataplaneDirectFspSources,
         direct_fsp_reassembler: Option<&mut DataplaneDirectFspReassembler>,
+        handshake_candidates: &DataplaneFmpHandshakeCandidates,
         control_ingress: &mut Vec<DataplaneFmpControlIngress>,
         packet: ReceivedPacket,
         push: &mut F,
@@ -325,6 +329,12 @@ impl<'a> DataplaneFmpPacketRxSource<'a> {
             return true;
         }
         match classify_live_fmp_packet(&packet) {
+            LiveFmpPacketClass::Established
+                if is_fmp_handshake_candidate(handshake_candidates, &packet) =>
+            {
+                control_ingress.push(DataplaneFmpControlIngress::new(packet));
+                false
+            }
             LiveFmpPacketClass::Established => {
                 push(DataplaneRawIngress::from_live_received(
                     PacketProtocol::Fmp,
@@ -358,6 +368,7 @@ impl DataplaneRawIngressSource for DataplaneFmpPacketRxSource<'_> {
             first,
             direct_fsp_sources,
             direct_fsp_reassembler,
+            handshake_candidates,
             control_ingress,
         } = self;
 
@@ -369,6 +380,7 @@ impl DataplaneRawIngressSource for DataplaneFmpPacketRxSource<'_> {
                 direct_fsp_reassembler
                     .as_mut()
                     .map(|reassembler| &mut **reassembler),
+                handshake_candidates,
                 control_ingress,
                 packet,
                 &mut push,
@@ -384,6 +396,7 @@ impl DataplaneRawIngressSource for DataplaneFmpPacketRxSource<'_> {
                 direct_fsp_reassembler
                     .as_mut()
                     .map(|reassembler| &mut **reassembler),
+                handshake_candidates,
                 control_ingress,
                 packet,
                 &mut push,

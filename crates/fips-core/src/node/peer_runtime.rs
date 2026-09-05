@@ -54,10 +54,11 @@ pub(in crate::node) enum CurrentSessionIndexRegistration {
     Repaired(RegisteredPeerSessionIndex),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::node) struct ReplacedActivePeerCurrentSession {
     pub(in crate::node) old_link_id: LinkId,
     pub(in crate::node) old_session_index: Option<PeerSessionIndex>,
+    pub(in crate::node) retired_session_indices: Vec<PeerSessionIndex>,
     pub(in crate::node) new_session_index: RegisteredPeerSessionIndex,
     pub(in crate::node) replay_suppressed_count: u32,
 }

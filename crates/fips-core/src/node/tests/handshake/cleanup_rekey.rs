@@ -206,7 +206,7 @@ async fn responder_rekey_msg1_resends_duplicates_and_replaces_orphaned_pending_s
 #[tokio::test]
 async fn fresh_msg1_from_changed_udp_source_replaces_path_instead_of_starting_rekey() {
     use crate::ReceivedPacket;
-    use crate::node::wire::build_msg1;
+    use crate::node::wire::{Msg2Header, build_msg1};
     use crate::peer::{ActivePeer, ActivePeerSession};
     use crate::transport::{LinkStats, TransportHandle};
 
@@ -266,10 +266,10 @@ async fn fresh_msg1_from_changed_udp_source_replaces_path_instead_of_starting_re
     );
     responder
         .links
-        .insert_addr((transport_id, old_remote_addr), retained_link_id);
+        .insert_addr((transport_id, old_remote_addr.clone()), retained_link_id);
     assert!(responder.sync_dataplane_fmp_owner(&initiator_addr));
 
-    let (packet_tx, _packet_rx) = packet_channel(16);
+    let (packet_tx, mut packet_rx) = packet_channel(16);
     let mut responder_transport = UdpTransport::new(
         transport_id,
         Some("changed-source-responder".to_string()),
@@ -280,6 +280,7 @@ async fn fresh_msg1_from_changed_udp_source_replaces_path_instead_of_starting_re
         packet_tx,
     );
     responder_transport.start_async().await.unwrap();
+    let responder_addr = responder_transport.local_addr().unwrap();
     responder
         .transports
         .insert(transport_id, TransportHandle::Udp(responder_transport));
@@ -307,12 +308,56 @@ async fn fresh_msg1_from_changed_udp_source_replaces_path_instead_of_starting_re
         .await;
 
     let mut msg2 = [0u8; 512];
-    tokio::time::timeout(Duration::from_millis(100), roamed_socket.recv(&mut msg2))
+    let msg2_len = tokio::time::timeout(Duration::from_millis(100), roamed_socket.recv(&mut msg2))
         .await
         .expect("the changed UDP source must receive the replacement Msg2")
         .expect("replacement Msg2 receive");
+    let header = Msg2Header::parse(&msg2[..msg2_len]).unwrap();
+    let pending_link = responder
+        .find_link_by_addr(transport_id, &roamed_addr)
+        .unwrap();
+    assert_eq!(
+        responder.get_connection(&pending_link).unwrap().our_index(),
+        Some(header.sender_idx)
+    );
+    assert!(responder.index_allocator.is_allocated(header.sender_idx));
+    let retained = responder.get_peer(&initiator_addr).unwrap();
+    assert_eq!(retained.current_addr(), Some(&old_remote_addr));
+    assert_eq!(retained.our_index(), Some(current_our_index));
+    assert!(retained.pending_new_session().is_none());
+
+    replacement_initiator
+        .read_message_2(header.noise_msg2(&msg2[..msg2_len]))
+        .unwrap();
+    let mut session = replacement_initiator.into_session().unwrap();
+    let heartbeat = [
+        0,
+        0,
+        0,
+        0,
+        crate::protocol::LinkMessageType::Heartbeat.to_byte(),
+    ];
+    let aad = crate::dataplane::build_fmp_established_header(
+        header.sender_idx.as_u32(),
+        session.current_send_counter(),
+        0,
+        heartbeat.len() as u16,
+    );
+    let mut confirmation = aad.to_vec();
+    confirmation.extend(session.encrypt_with_aad(&heartbeat, &aad).unwrap());
+    roamed_socket
+        .send_to(&confirmation, responder_addr)
+        .await
+        .unwrap();
+    let confirmation = tokio::time::timeout(Duration::from_millis(100), packet_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(responder.confirm_inbound_handshake(confirmation).await);
+    assert!(responder.get_connection(&pending_link).is_none());
     let replaced = responder.get_peer(&initiator_addr).unwrap();
     assert_eq!(replaced.current_addr(), Some(&roamed_addr));
+    assert_eq!(replaced.our_index(), Some(header.sender_idx));
     assert_eq!(replaced.their_index(), Some(replacement_their_index));
     assert!(
         replaced.pending_new_session().is_none(),

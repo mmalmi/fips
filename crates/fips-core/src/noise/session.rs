@@ -28,6 +28,16 @@ impl SendCounterAuthority {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        Self::new(0)
+    }
+
+    /// Stable session identity even when worker-side cipher keys are rebuilt.
+    pub(crate) fn same_session(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.next, &other.next)
+    }
+
     pub(crate) fn current(&self) -> u64 {
         self.next.load(Ordering::Relaxed)
     }
@@ -148,6 +158,20 @@ impl NoiseSession {
         } else {
             Err(NoiseError::ReplayDetected(counter))
         }
+    }
+
+    /// Authenticate a candidate's first frame without consuming its counter.
+    /// Normal dataplane admission owns replay accounting after promotion.
+    pub(crate) fn authenticate_with_counter_and_aad(
+        &self,
+        ciphertext: &[u8],
+        counter: u64,
+        aad: &[u8],
+    ) -> Result<(), NoiseError> {
+        self.check_replay(counter)?;
+        self.recv_cipher
+            .decrypt_with_counter_and_aad(ciphertext, counter, aad)
+            .map(|_| ())
     }
 
     /// Decrypt with explicit counter and replay protection.

@@ -95,6 +95,7 @@ impl DataplaneOwnerShard {
             .is_some_and(|owner| owner.has_fsp_pending_receive_epoch(received_k_bit))
     }
 
+    #[cfg(all(test, feature = "sim-transport"))]
     fn owner_has_fmp_pending_receive_epoch(
         &self,
         owner: OwnerId,

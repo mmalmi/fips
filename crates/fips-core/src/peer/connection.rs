@@ -573,6 +573,10 @@ impl PeerConnection {
         self.handshake_state == HandshakeState::Complete && self.noise_session.is_some()
     }
 
+    pub(crate) fn session(&self) -> Option<&NoiseSession> {
+        self.noise_session.as_ref()
+    }
+
     // === State Transitions (for manual control if needed) ===
 
     /// Mark handshake as failed.

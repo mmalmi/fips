@@ -1,5 +1,31 @@
 use super::*;
 
+async fn confirm_cross_connection_packets(
+    a: &mut Node,
+    a_rx: &mut PacketRx,
+    b: &mut Node,
+    b_rx: &mut PacketRx,
+) {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            super::super::spanning_tree::process_node_packets(a, a_rx).await;
+            super::super::spanning_tree::process_node_packets(b, b_rx).await;
+            let a_peer = a.get_peer(b.node_addr()).unwrap();
+            let b_peer = b.get_peer(a.node_addr()).unwrap();
+            if a_peer.their_index() == b_peer.our_index()
+                && b_peer.their_index() == a_peer.our_index()
+                && a.pending_outbound.is_empty()
+                && b.pending_outbound.is_empty()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("ordinary confirmation must align the established pair");
+}
+
 /// End-to-end test for the "restart with cached endpoint, no relay reachable"
 /// flow that powers `RecentPeerEndpoints` in the nostr-vpn daemon.
 ///
@@ -447,6 +473,24 @@ async fn cross_connection_both_initiate(queued_before_outbound: bool) {
     .expect("B should receive A's recovery msg2");
     node_b.handle_msg2(recovery_msg2_at_b).await;
 
+    confirm_cross_connection_packets(&mut node_a, &mut packet_rx_a, &mut node_b, &mut packet_rx_b)
+        .await;
+    // The unused opposite inbound half has no confirming sender. Expire that
+    // candidate without sleeping, preserving the established winning pair.
+    for node in [&mut node_a, &mut node_b] {
+        let unused = node
+            .peers
+            .connection_iter()
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        for id in unused {
+            let conn = node.peers.get_connection_mut(&id).unwrap();
+            assert!(!conn.is_outbound() && conn.has_session());
+            conn.touch(1);
+        }
+        node.check_timeouts().await;
+    }
+
     let recovered_b_on_a = node_a
         .get_peer(&peer_b_node_addr)
         .expect("A should retain recovered B");
@@ -638,6 +682,9 @@ async fn test_late_static_outbound_resend_completes_after_opposite_direction_pro
     .await
     .expect("A should receive msg2 for the resent static msg1");
     node_a.handle_msg2(late_msg2_at_a).await;
+
+    confirm_cross_connection_packets(&mut node_a, &mut packet_rx_a, &mut node_b, &mut packet_rx_b)
+        .await;
 
     assert_eq!(node_a.peer_count(), 1);
     assert_eq!(node_b.peer_count(), 1);

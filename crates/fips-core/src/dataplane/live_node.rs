@@ -145,6 +145,7 @@ pub(crate) struct DataplaneLiveNode {
     driver: DataplaneTurnDriver,
     crypto_worker: DataplaneAeadWorkerPool,
     routes: DataplaneLiveRouteTable,
+    fmp_handshake_candidates: DataplaneFmpHandshakeCandidates,
     fast_ingress_capacity: usize,
     deferred_endpoint_data_batches: Vec<NodeEndpointDataBatch>,
     deferred_tun_packets: Vec<Vec<u8>>,
@@ -171,6 +172,7 @@ impl DataplaneLiveNode {
             driver: DataplaneTurnDriver::new(config),
             crypto_worker: DataplaneAeadWorkerPool::new(worker_capacity),
             routes: DataplaneLiveRouteTable::default(),
+            fmp_handshake_candidates: Arc::default(),
             fast_ingress_capacity: worker_capacity,
             deferred_endpoint_data_batches: Vec::new(),
             deferred_tun_packets: Vec::new(),
@@ -324,11 +326,16 @@ impl DataplaneLiveNode {
         owner: OwnerId,
         pending_k_bit: bool,
         open: AeadKey,
+        send_counter_authority: crate::noise::SendCounterAuthority,
     ) -> Result<(), DataplaneLiveOwnerError> {
         let Some(owner_state) = self.driver.owner_mut(owner) else {
             return Err(DataplaneLiveOwnerError::UnknownOwner);
         };
-        if !owner_state.install_fmp_pending_receive_epoch(pending_k_bit, open) {
+        if !owner_state.install_fmp_pending_receive_epoch(
+            pending_k_bit,
+            open,
+            send_counter_authority,
+        ) {
             return Err(DataplaneLiveOwnerError::OwnerMismatch);
         }
         Ok(())
@@ -385,6 +392,7 @@ impl DataplaneLiveNode {
         )
     }
 
+    #[cfg(all(test, feature = "sim-transport"))]
     pub(crate) fn fmp_owner_has_pending_receive_epoch(
         &self,
         node_addr: &NodeAddr,
@@ -394,6 +402,16 @@ impl DataplaneLiveNode {
             OwnerId::fmp_node(*node_addr),
             received_k_bit,
         )
+    }
+
+    pub(crate) fn confirm_fmp_owner_pending_receive_epoch(
+        &mut self,
+        node_addr: &NodeAddr,
+        received_k_bit: bool,
+    ) -> bool {
+        self.driver
+            .owner_mut(OwnerId::fmp_node(*node_addr))
+            .is_some_and(|owner| owner.confirm_fmp_pending_receive_epoch(received_k_bit))
     }
 
     pub(crate) fn clear_fmp_owner_pending_receive_epoch(
@@ -840,6 +858,7 @@ impl DataplaneLiveNode {
                 raw_packet,
                 direct_fsp_sources,
                 Some(&mut direct_fsp_reassembler),
+                self.fmp_handshake_candidates.clone(),
             );
         if raw_ingress_prefetch && packet_limit > 0 {
             let mut prefetched = std::mem::take(&mut self.empty_raw_ingress);

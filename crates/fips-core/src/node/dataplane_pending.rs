@@ -330,11 +330,20 @@ impl Node {
         pending_k_bit: bool,
         open: ring::aead::LessSafeKey,
     ) -> bool {
+        let Some(authority) = self
+            .peers
+            .get(node_addr)
+            .and_then(|peer| peer.pending_new_session())
+            .map(|session| session.send_counter_authority())
+        else {
+            return false;
+        };
         self.dataplane
             .install_owner_fmp_pending_receive_epoch(
                 OwnerId::fmp_node(*node_addr),
                 pending_k_bit,
                 std::sync::Arc::new(open),
+                authority,
             )
             .is_ok()
     }
@@ -352,20 +361,17 @@ impl Node {
         node_addr: &NodeAddr,
         received_k_bit: bool,
     ) -> bool {
-        if !self
-            .dataplane
-            .fmp_owner_has_pending_receive_epoch(node_addr, received_k_bit)
+        let Some(peer) = self.peers.get_mut(node_addr) else {
+            return false;
+        };
+        if peer.pending_new_session().is_none()
+            || !self
+                .dataplane
+                .confirm_fmp_owner_pending_receive_epoch(node_addr, received_k_bit)
+            || peer.confirm_pending_session(received_k_bit).is_none()
         {
             return false;
         }
-        let Some(previous_index) = self
-            .peers
-            .get_mut(node_addr)
-            .and_then(|peer| peer.handle_peer_kbit_flip())
-        else {
-            return false;
-        };
-        let _ = previous_index;
         self.ensure_current_session_index_registered(
             node_addr,
             "responder authenticated FMP rekey cutover",

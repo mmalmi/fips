@@ -7,6 +7,8 @@ use spanning_tree::{TestNode, cleanup_nodes, process_available_packets, run_synt
 use std::fs;
 use std::time::Duration;
 
+mod replay;
+
 async fn make_websocket_node(config: WebSocketConfig) -> TestNode {
     let mut node = make_node();
     node.config.node.rate_limit.handshake_resend_interval_ms = 50;
