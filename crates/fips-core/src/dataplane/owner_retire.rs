@@ -126,6 +126,7 @@ impl OwnerState {
             let CryptoResult::Opened(output) = completion.result else {
                 unreachable!("open FSP session payload slot contains only opened outputs");
             };
+            self.record_authenticated_path(&output);
             self.authenticated_counter_highest = self
                 .authenticated_counter_highest
                 .max(completion.reservation.counter);
@@ -182,6 +183,7 @@ impl OwnerState {
         }
         match completion.result {
             CryptoResult::Opened(output) => {
+                self.record_authenticated_path(&output);
                 self.authenticated_counter_highest = self
                     .authenticated_counter_highest
                     .max(completion.reservation.counter);
@@ -197,6 +199,18 @@ impl OwnerState {
                     self.authenticated_counter_highest,
                 ));
             }
+        }
+    }
+
+    fn record_authenticated_path(&mut self, output: &PacketOutput) {
+        // Routed FSP carries a transit peer's address, not this session peer's
+        // direct carrier. Only authenticated adjacent traffic can update it.
+        if (self.owner.protocol() == PacketProtocol::Fmp
+            || (output.previous_hop == Some(self.owner.node_addr())
+                && output.wire_flags & crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT != 0))
+            && let Some(path) = output.source_path.clone()
+        {
+            self.active_path = Some(path);
         }
     }
 

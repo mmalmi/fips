@@ -55,9 +55,6 @@ impl OwnerState {
         {
             return Err(OwnerReserveError::Replay);
         }
-        if let Some(path) = packet.source_path.clone() {
-            self.active_path = Some(path);
-        }
         if let Some(tick) = packet.activity_tick {
             note_activity(&mut self.last_rx_activity, tick);
         }

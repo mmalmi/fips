@@ -255,19 +255,27 @@
         );
         let worker_dispatched = capacity_before.saturating_sub(pool.available_capacity());
         if worker_dispatched > 0 {
-            wait_for_owner_readiness(&mut pool, mover);
-            assert_eq!(
-                mover.retire_ready_slots_into(
-                    limit,
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let mut retired_count = 0;
+            while retired_count < worker_dispatched {
+                retired_count += mover.retire_ready_slots_into(
+                    limit.saturating_sub(retired_count),
                     &mut DataplaneRetiredOutputSink::new(
                         &mut retired,
                         &mut outbound_packets,
                         &mut fsp_authenticated_ingress,
                     ),
                     false,
-                ),
-                worker_dispatched,
-            );
+                );
+                if retired_count < worker_dispatched {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "crypto completion deadline"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+            assert_eq!(retired_count, worker_dispatched);
         }
         drops.append(&mut mover.drain_drops());
         assert!(outbound_packets.is_empty());

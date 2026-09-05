@@ -912,6 +912,7 @@ fn runtime_turn_driver_runs_classified_inbound_and_outbound_once() {
     let path = live_path(7800);
     let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
     driver.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(300));
+    driver.owner_mut(owner).unwrap().set_active_path(path.clone());
     driver
         .owner_mut(owner)
         .unwrap()
