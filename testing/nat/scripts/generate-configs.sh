@@ -131,7 +131,6 @@ node:
       share_local_candidates: $share_local_candidates
       signal_ttl_secs: 30
       attempt_timeout_secs: 6
-      replay_window_secs: 60
       punch_start_delay_ms: 500
       punch_interval_ms: 100
       punch_duration_ms: 2500
