@@ -775,6 +775,8 @@ pub(crate) struct OwnerState {
     send_counter_authority: Option<crate::noise::SendCounterAuthority>,
     crypto_keys: Option<OwnerCryptoKeys>,
     previous_fmp_open: Option<AeadKey>,
+    // Prior owner generation and the pending-key instance promoted by its cutover.
+    draining_generation: Option<(u64, Option<u64>)>,
     pending_fmp_open: Option<AeadKey>,
     pending_fmp_send_counter_authority: Option<crate::noise::SendCounterAuthority>,
     pending_fmp_k_bit: Option<bool>,

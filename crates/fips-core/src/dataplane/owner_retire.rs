@@ -57,8 +57,9 @@ impl OwnerState {
             let mut slot = self.pending.pop_front().expect("owner retire head exists");
 
             let slot_limit = limit.saturating_sub(retired_count).min(slot.remaining());
-            let stale_generation = slot.generation() != self.generation;
-            let compact_fsp_run = !stale_generation
+            let stale_generation = slot.generation() != self.generation
+                && !self.retains_draining_generation(slot.generation());
+            let compact_fsp_run = slot.generation() == self.generation
                 && slot.is_open_fsp_session_payload_run();
             let drained = if stale_generation {
                 slot.drain_results(slot_limit, |completion| {
@@ -183,10 +184,15 @@ impl OwnerState {
         }
         match completion.result {
             CryptoResult::Opened(output) => {
-                self.record_authenticated_path(&output);
-                self.authenticated_counter_highest = self
-                    .authenticated_counter_highest
-                    .max(completion.reservation.counter);
+                let from_draining = completion.reservation.generation != self.generation
+                    && completion.reservation.receive_epoch
+                        .is_some_and(|(epoch, _)| epoch == DataplaneReceiveEpoch::Current);
+                if !from_draining {
+                    self.record_authenticated_path(&output);
+                    self.authenticated_counter_highest = self
+                        .authenticated_counter_highest
+                        .max(completion.reservation.counter);
+                }
                 self.retire_opened_output_into(output, retired, compact_endpoint_data);
             }
             CryptoResult::Sealed(output) => retired.push_output(output),

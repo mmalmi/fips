@@ -96,6 +96,10 @@ impl Node {
         {
             return false;
         }
+        let moved_to_transit = update.next_hop.is_some_and(|next_hop| {
+            next_hop != *node_addr
+                && Some(next_hop) != self.dataplane.fsp_owner_next_hop(node_addr)
+        });
         let direct_path_mtu = update.direct_path_mtu;
         let refreshed = self
             .dataplane
@@ -103,6 +107,11 @@ impl Node {
             .is_ok()
             && route_ready
             && next_hop_ready;
+        if refreshed && moved_to_transit {
+            let remaining = self.config.node.session.coords_warmup_packets;
+            let prefix = self.dataplane_fsp_coords_prefix(node_addr, remaining);
+            let _ = self.dataplane.set_owner_fsp_coords_warmup(owner, remaining, prefix);
+        }
         if refreshed && let Some(path_mtu) = direct_path_mtu {
             let _ = self.dataplane.seed_fsp_path_mtu(*node_addr, path_mtu);
         }

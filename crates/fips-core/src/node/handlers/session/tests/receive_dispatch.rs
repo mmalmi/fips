@@ -646,6 +646,17 @@
             "the reply owner must immediately follow the authenticated live ingress instead of waiting for direct-link liveness expiry"
         );
         assert_eq!(
+            node.dataplane.fsp_coords_warmup_remaining_for_test(&source_addr),
+            node.config.node.session.coords_warmup_packets,
+            "the first reply on a new transit path must carry coordinates before data is sent"
+        );
+        node.dataplane.set_owner_fsp_coords_warmup(
+            crate::dataplane::OwnerId::fsp_node(source_addr), 0, Vec::new(),
+        ).unwrap();
+        assert!(node.refresh_dataplane_fsp_owner_routes_via(&source_addr, Some(fallback_addr)));
+        assert_eq!(node.dataplane.fsp_coords_warmup_remaining_for_test(&source_addr), 0,
+            "refreshing the same transit route must not restart its completed warmup");
+        assert_eq!(
             node.learned_route_table_snapshot(Node::now_ms()).route_count,
             0,
             "directional application ingress must remain reply affinity, not enter learned route rotation"

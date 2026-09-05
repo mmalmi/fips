@@ -4,11 +4,19 @@ impl OwnerState {
         packet: &SocketPacket,
         ingress_seq: u64,
     ) -> Result<(OwnerReservation, DataplaneReceiveEpoch), OwnerReserveError> {
+        let mut receive_epoch = packet.receive_epoch;
         if packet.generation != self.generation {
-            return Err(OwnerReserveError::StaleGeneration);
+            if !self.retains_draining_generation(packet.generation) {
+                return Err(OwnerReserveError::StaleGeneration);
+            }
+            if self.owner.protocol() == PacketProtocol::Fmp {
+                let instance = self.draining_generation.and_then(|(_, promoted)| promoted).unwrap_or_default();
+                (receive_epoch, _) = self.remap_draining_receive_epoch((receive_epoch, instance))
+                    .ok_or(OwnerReserveError::StaleGeneration)?;
+            }
         }
-        let use_previous_fmp_epoch = self.uses_previous_fmp_receive_epoch(packet);
-        let use_pending_fmp_epoch = self.uses_pending_fmp_receive_epoch(packet);
+        let use_previous_fmp_epoch = self.uses_previous_fmp_receive_epoch(receive_epoch);
+        let use_pending_fmp_epoch = self.uses_pending_fmp_receive_epoch(receive_epoch);
         let use_previous_fsp_epoch = self.uses_previous_fsp_receive_epoch(packet);
         let use_pending_fsp_epoch = self.uses_pending_fsp_receive_epoch(packet);
         let lane = packet.lane();
@@ -99,7 +107,25 @@ impl OwnerState {
         ingress_seq: u64,
     ) -> Result<(OwnerReservation, OutboundPacket), OwnerReserveError> {
         if packet.generation != self.generation {
-            return Err(OwnerReserveError::StaleGeneration);
+            if !self.retains_draining_generation(packet.generation)
+                || (packet.send_epoch == OutboundSendEpoch::Pending
+                    && self.draining_generation.is_none_or(|(_, promoted)| promoted.is_none())) {
+                return Err(OwnerReserveError::StaleGeneration);
+            }
+            packet.generation = self.generation;
+            packet.send_epoch = OutboundSendEpoch::Current;
+            match &mut packet.wire {
+                OutboundWire::Fmp { receiver_idx, flags } => {
+                    let headers = self.fmp_send_headers.ok_or(OwnerReserveError::StaleGeneration)?;
+                    *receiver_idx = headers.receiver_idx;
+                    *flags = (*flags & !crate::node::wire::FLAG_KEY_EPOCH)
+                        | (headers.flags & crate::node::wire::FLAG_KEY_EPOCH);
+                }
+                OutboundWire::Fsp { flags } => {
+                    *flags &= !crate::node::session_wire::FSP_FLAG_K;
+                    if self.fsp_current_k_bit { *flags |= crate::node::session_wire::FSP_FLAG_K; }
+                }
+            }
         }
         let lane = packet.lane();
         if !self.can_reserve_class(packet.class) {

@@ -430,6 +430,12 @@ impl DataplaneLiveNode {
             .owner_fsp_mmp_snapshot(OwnerId::fsp_node(*node_addr))
     }
 
+    #[cfg(test)]
+    pub(crate) fn fsp_coords_warmup_remaining_for_test(&mut self, dest: &NodeAddr) -> u8 {
+        self.driver.owner_mut(OwnerId::fsp_node(*dest))
+            .expect("FSP owner exists").fsp_coords_warmup_remaining()
+    }
+
     pub(crate) fn fsp_owner_send_context(
         &self,
         node_addr: &NodeAddr,

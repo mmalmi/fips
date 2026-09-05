@@ -7,10 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.74] - 2026-09-05
+## [0.4.74] - 2026-09-06
 
 ### Fixed
 
+- Preserve queued and in-flight FMP/FSP payloads through a key cutover while
+  their authenticated session remains retained. Keep old and new receive
+  counters separate, and stop accepting the old generation when its drain ends.
+- Restart the bounded coordinate warmup when a reply moves to a new transit
+  path, so its first packet can reach a router without a cached destination.
 - Keep current, pending, and draining receive counters attached to their
   authenticated session, including delayed simultaneous startup handshakes
   whose session flag has not changed. Select FMP receive keys by the owned

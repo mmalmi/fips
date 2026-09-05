@@ -12,6 +12,7 @@ impl OwnerState {
             send_counter_authority: config.send_counter_authority,
             crypto_keys: None,
             previous_fmp_open: None,
+            draining_generation: None,
             pending_fmp_open: None,
             pending_fmp_send_counter_authority: None,
             pending_fmp_k_bit: None,
@@ -88,6 +89,7 @@ impl OwnerState {
         self.send_counter_authority = None;
         self.crypto_keys = None;
         self.previous_fmp_open = None;
+        self.draining_generation = None;
         self.pending_fmp_open = None;
         self.pending_fmp_send_counter_authority = None;
         self.pending_fmp_k_bit = None;
@@ -218,6 +220,12 @@ impl OwnerState {
         let previous_replay = previous_open
             .is_some()
             .then(|| std::mem::take(&mut self.replay_window));
+        let previous_generation = previous_open.as_ref().map(|_| (
+            self.generation,
+            promoted_pending_replay.as_ref().map(|_| self.pending_receive_epoch_instance),
+        ));
+        let previous_reservations = previous_generation
+            .map(|_| std::mem::take(&mut self.pending_replay_counters));
 
         self.apply_live_config(config);
         self.crypto_keys = Some(keys);
@@ -232,9 +240,16 @@ impl OwnerState {
         if let (Some(open), Some(replay)) = (previous_open, previous_replay) {
             self.previous_fmp_open = Some(open);
             self.previous_fmp_replay_window = Some(replay);
+            self.draining_generation = previous_generation;
+            for (epoch, counter) in previous_reservations.into_iter().flatten() {
+                if let Some(epoch) = self.remap_draining_receive_epoch(epoch) {
+                    self.pending_replay_counters.insert((epoch, counter));
+                }
+            }
         } else if self.fmp_previous_draining_k_bit.is_none() {
             self.previous_fmp_open = None;
             self.previous_fmp_replay_window = None;
+            self.draining_generation = None;
         }
         true
     }
@@ -260,6 +275,12 @@ impl OwnerState {
         let previous_replay = previous_open
             .is_some()
             .then(|| std::mem::take(&mut self.replay_window));
+        let previous_generation = previous_open.as_ref().map(|_| (
+            self.generation,
+            promoted_pending_replay.as_ref().map(|_| self.pending_receive_epoch_instance),
+        ));
+        let previous_reservations = previous_generation
+            .map(|_| std::mem::take(&mut self.pending_replay_counters));
 
         self.apply_live_config(config);
         self.crypto_keys = Some(keys);
@@ -274,9 +295,16 @@ impl OwnerState {
         if let (Some(open), Some(replay)) = (previous_open, previous_replay) {
             self.previous_fsp_open = Some(open);
             self.previous_fsp_replay_window = Some(replay);
+            self.draining_generation = previous_generation;
+            for (epoch, counter) in previous_reservations.into_iter().flatten() {
+                if let Some(epoch) = self.remap_draining_receive_epoch(epoch) {
+                    self.pending_replay_counters.insert((epoch, counter));
+                }
+            }
         } else if self.fsp_previous_draining_k_bit.is_none() {
             self.previous_fsp_open = None;
             self.previous_fsp_replay_window = None;
+            self.draining_generation = None;
         }
         true
     }
@@ -398,6 +426,7 @@ impl OwnerState {
         if previous_draining_k_bit.is_none() {
             self.previous_fmp_open = None;
             self.previous_fmp_replay_window = None;
+            self.draining_generation = None;
         }
         if self.pending_fmp_k_bit == Some(current_k_bit) {
             self.clear_fmp_pending_receive_epoch();
@@ -418,6 +447,7 @@ impl OwnerState {
         if previous_draining_k_bit.is_none() {
             self.previous_fsp_open = None;
             self.previous_fsp_replay_window = None;
+            self.draining_generation = None;
         }
         if self.pending_fsp_k_bit == Some(current_k_bit) {
             self.advance_pending_receive_epoch();
@@ -553,14 +583,45 @@ impl OwnerState {
         }
     }
 
+    fn retains_draining_generation(&self, generation: u64) -> bool {
+        self.draining_generation.is_some_and(|(previous, _)| previous == generation)
+            && match self.owner.protocol() {
+                PacketProtocol::Fmp => self.previous_fmp_open.is_some(),
+                PacketProtocol::Fsp => self.previous_fsp_open.is_some(),
+            }
+    }
+
+    // Work keeps its original key ownership while Current becomes Previous
+    // and the exact promoted Pending instance becomes Current.
+    fn remap_draining_receive_epoch(
+        &self,
+        (epoch, instance): (DataplaneReceiveEpoch, u64),
+    ) -> Option<(DataplaneReceiveEpoch, u64)> {
+        match epoch {
+            DataplaneReceiveEpoch::Current => Some((DataplaneReceiveEpoch::Previous, 0)),
+            DataplaneReceiveEpoch::Pending if self.draining_generation
+                .is_some_and(|(_, promoted)| promoted == Some(instance)) =>
+                    Some((DataplaneReceiveEpoch::Current, 0)),
+            _ => None,
+        }
+    }
+
     fn complete_replay_reservation(
         &mut self,
         reservation: &OwnerReservation,
         authenticated: bool,
     ) -> bool {
-        let Some((receive_epoch, instance)) = reservation.receive_epoch else {
+        let Some(mut epoch) = reservation.receive_epoch else {
             return true;
         };
+        if reservation.generation != self.generation {
+            let Some(previous_epoch) = self.retains_draining_generation(reservation.generation)
+                .then(|| self.remap_draining_receive_epoch(epoch)).flatten() else {
+                return false;
+            };
+            epoch = previous_epoch;
+        }
+        let (receive_epoch, instance) = epoch;
         let was_pending = self
             .pending_replay_counters
             .remove(&((receive_epoch, instance), reservation.counter));
@@ -624,16 +685,16 @@ impl OwnerState {
         }
     }
 
-    fn uses_previous_fmp_receive_epoch(&self, packet: &SocketPacket) -> bool {
+    fn uses_previous_fmp_receive_epoch(&self, epoch: DataplaneReceiveEpoch) -> bool {
         self.owner.protocol() == PacketProtocol::Fmp
-            && packet.receive_epoch == DataplaneReceiveEpoch::Previous
+            && epoch == DataplaneReceiveEpoch::Previous
             && self.previous_fmp_open.is_some()
             && self.previous_fmp_replay_window.is_some()
     }
 
-    fn uses_pending_fmp_receive_epoch(&self, packet: &SocketPacket) -> bool {
+    fn uses_pending_fmp_receive_epoch(&self, epoch: DataplaneReceiveEpoch) -> bool {
         self.owner.protocol() == PacketProtocol::Fmp
-            && packet.receive_epoch == DataplaneReceiveEpoch::Pending
+            && epoch == DataplaneReceiveEpoch::Pending
             && self.pending_fmp_open.is_some()
             && self.pending_fmp_replay_window.is_some()
     }
