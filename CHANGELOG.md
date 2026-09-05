@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Update direct reply paths only from authenticated direct traffic, preventing
+  relayed or invalid packets from redirecting replies to the wrong carrier.
 - Ignore expired replay counters after another authenticated packet advances
   the window, preventing a panic through the split check/decrypt/accept API.
 - Keep replay-window bounds correct across the full counter range on 32-bit
