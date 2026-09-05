@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   preserving the exact 8,192-counter window and all wire formats.
 - Consolidate overlapping rate-limit tests and use injected timestamps instead
   of real sleeps while checking exact timing boundaries.
+- Run Linux and macOS unit tests alongside platform builds, and repair NAT
+  replay-window defaults and static-topology discovery isolation in CI.
 - Release `nvpn-fips-core` and `nvpn-fips-endpoint` 0.4.74 together.
 
 ## [0.4.73] - 2026-09-04

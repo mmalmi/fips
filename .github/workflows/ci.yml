@@ -150,13 +150,12 @@ jobs:
 # ─────────────────────────────────────────────────────────────────────────────
 # Job 2 – Unit tests
 #
-# Runs `cargo test` on Linux.  Gated on the build matrix completing so we
-# don't waste runner time if compilation is broken.
+# Unit tests compile their own targets and run alongside the release builds
+# so a slow platform build does not delay feedback on every other platform.
 # ─────────────────────────────────────────────────────────────────────────────
   test:
     name: Unit tests
     runs-on: ubuntu-latest
-    needs: [build]
     steps:
       - uses: actions/checkout@v4
 
@@ -212,7 +211,6 @@ jobs:
   test-macos:
     name: Unit tests (macOS)
     runs-on: macos-latest
-    needs: [build]
     steps:
       - uses: actions/checkout@v4
 
