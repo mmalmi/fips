@@ -1,6 +1,10 @@
 use super::REPLAY_WINDOW_SIZE;
 use std::fmt;
 
+// One extra word retains a full window even when its oldest and newest
+// counters lie in partial words. Advancing within a word needs no clearing.
+const RING_WORDS: usize = REPLAY_WINDOW_SIZE / 64 + 1;
+
 /// Reason a counter is rejected by the replay window.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReplayRejection {
@@ -22,9 +26,8 @@ pub enum ReplayRejection {
 pub struct ReplayWindow {
     /// Highest counter value seen.
     highest: u64,
-    /// Bitmap tracking which counters in the window have been seen.
-    /// Bit i corresponds to counter (highest - i).
-    bitmap: [u64; REPLAY_WINDOW_SIZE / 64],
+    /// Counter-indexed words, reused only after their whole block expires.
+    bitmap: [u64; RING_WORDS],
 }
 
 impl ReplayWindow {
@@ -32,7 +35,7 @@ impl ReplayWindow {
     pub fn new() -> Self {
         Self {
             highest: 0,
-            bitmap: [0; REPLAY_WINDOW_SIZE / 64],
+            bitmap: [0; RING_WORDS],
         }
     }
 
@@ -60,15 +63,12 @@ impl ReplayWindow {
 
         // Counter is <= highest, check if it's within the window
         let diff = self.highest - counter;
-        if diff as usize >= REPLAY_WINDOW_SIZE {
+        if diff >= REPLAY_WINDOW_SIZE as u64 {
             // Too old (outside window)
             return Some(ReplayRejection::TooOld);
         }
 
-        // Check bitmap - bit is set if counter was already seen
-        let word_idx = (diff as usize) / 64;
-        let bit_idx = (diff as usize) % 64;
-        if (self.bitmap[word_idx] & (1u64 << bit_idx)) == 0 {
+        if (self.bitmap[word_index(counter)] & (1u64 << (counter % 64))) == 0 {
             None
         } else {
             Some(ReplayRejection::Duplicate)
@@ -78,7 +78,8 @@ impl ReplayWindow {
     /// Accept a counter into the window.
     ///
     /// Call this only after successful decryption to prevent
-    /// DoS attacks that exhaust the window.
+    /// DoS attacks that exhaust the window. Expired counters are ignored if
+    /// another packet advanced the window after the initial check.
     pub fn accept(&mut self, counter: u64) {
         // Defend callers of the split check/decrypt/accept API as well as the
         // inline decrypt path. The reserved ceiling must never pin `highest`.
@@ -87,59 +88,20 @@ impl ReplayWindow {
         }
 
         if counter > self.highest {
-            // Shift the window
-            let shift = counter - self.highest;
-            if shift as usize >= REPLAY_WINDOW_SIZE {
-                // Complete reset
-                self.bitmap = [0; REPLAY_WINDOW_SIZE / 64];
+            let current_word = self.highest / 64;
+            let next_word = counter / 64;
+            if next_word - current_word >= RING_WORDS as u64 {
+                self.bitmap.fill(0);
             } else {
-                // Shift bitmap
-                self.shift_bitmap(shift as usize);
+                for word in current_word + 1..=next_word {
+                    self.bitmap[(word % RING_WORDS as u64) as usize] = 0;
+                }
             }
             self.highest = counter;
-            // Mark counter 0 (which is now the highest) as seen
-            self.bitmap[0] |= 1;
-        } else {
-            // Mark the counter as seen
-            let diff = self.highest - counter;
-            let word_idx = (diff as usize) / 64;
-            let bit_idx = (diff as usize) % 64;
-            self.bitmap[word_idx] |= 1u64 << bit_idx;
-        }
-    }
-
-    /// Shift the bitmap by the given number of positions.
-    ///
-    /// This moves old counters to higher bit positions to make room for the
-    /// new highest counter at position 0.
-    fn shift_bitmap(&mut self, shift: usize) {
-        if shift >= REPLAY_WINDOW_SIZE {
-            self.bitmap = [0; REPLAY_WINDOW_SIZE / 64];
+        } else if self.highest - counter >= REPLAY_WINDOW_SIZE as u64 {
             return;
         }
-
-        let word_shift = shift / 64;
-        let bit_shift = shift % 64;
-
-        // Shift entire words first (from high to low to avoid overwriting)
-        if word_shift > 0 {
-            for i in (word_shift..self.bitmap.len()).rev() {
-                self.bitmap[i] = self.bitmap[i - word_shift];
-            }
-            for i in 0..word_shift {
-                self.bitmap[i] = 0;
-            }
-        }
-
-        // Shift bits within words (from low to high so carry propagates correctly)
-        if bit_shift > 0 {
-            let mut carry = 0u64;
-            for i in 0..self.bitmap.len() {
-                let new_carry = self.bitmap[i] >> (64 - bit_shift);
-                self.bitmap[i] = (self.bitmap[i] << bit_shift) | carry;
-                carry = new_carry;
-            }
-        }
+        self.bitmap[word_index(counter)] |= 1u64 << (counter % 64);
     }
 
     /// Get the highest counter seen.
@@ -149,9 +111,12 @@ impl ReplayWindow {
 
     /// Reset the window (use when rekeying).
     pub fn reset(&mut self) {
-        self.highest = 0;
-        self.bitmap = [0; REPLAY_WINDOW_SIZE / 64];
+        *self = Self::new();
     }
+}
+
+fn word_index(counter: u64) -> usize {
+    ((counter / 64) % RING_WORDS as u64) as usize
 }
 
 impl Default for ReplayWindow {

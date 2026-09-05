@@ -144,6 +144,65 @@ fn test_replay_window_accepts_highest_sendable_counter() {
 }
 
 #[test]
+fn test_replay_window_ignores_expired_counter_after_split_check() {
+    let mut window = ReplayWindow::new();
+    assert!(window.check(0));
+    window.accept(REPLAY_WINDOW_SIZE as u64);
+    // Another completion can advance the window after check/decrypt.
+    window.accept(0);
+    assert_eq!(window.highest(), REPLAY_WINDOW_SIZE as u64);
+    assert_eq!(window.rejection_reason(0), Some(ReplayRejection::TooOld));
+    assert_eq!(
+        window.rejection_reason(REPLAY_WINDOW_SIZE as u64),
+        Some(ReplayRejection::Duplicate)
+    );
+}
+
+#[test]
+fn test_replay_window_matches_counter_set_across_wraps_and_u64_range() {
+    let mut window = ReplayWindow::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut highest = 0u64;
+    let mut observe = |counter: u64| {
+        let expected = if counter == u64::MAX
+            || (counter <= highest && highest - counter >= REPLAY_WINDOW_SIZE as u64)
+        {
+            Some(ReplayRejection::TooOld)
+        } else if seen.contains(&counter) {
+            Some(ReplayRejection::Duplicate)
+        } else {
+            None
+        };
+        assert_eq!(
+            window.rejection_reason(counter),
+            expected,
+            "counter {counter}, highest {highest}"
+        );
+        if expected.is_none() {
+            seen.insert(counter);
+            highest = highest.max(counter);
+        }
+        window.accept(counter);
+        assert_eq!(window.highest(), highest);
+    };
+
+    for base in [0, 1u64 << 32, u64::MAX - 20_001] {
+        for offset in (0..20_000).step_by(3) {
+            let counter = base + offset;
+            observe(counter);
+            // Fill gaps out of order, revisit duplicates, and cross both
+            // exact window edges and word boundaries over multiple wraps.
+            for behind in [1, 63, 64, 8191, 8192, (offset * 37) % 9000] {
+                observe(counter.saturating_sub(behind));
+            }
+        }
+    }
+    observe(u64::MAX - 1);
+    observe(u64::MAX);
+    observe(u64::MAX - 1);
+}
+
+#[test]
 fn test_session_replay_protection() {
     let keypair1 = generate_keypair();
     let keypair2 = generate_keypair();

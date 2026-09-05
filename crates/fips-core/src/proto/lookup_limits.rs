@@ -437,7 +437,6 @@ impl Default for LookupSignRateLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::thread;
 
     fn addr(val: u8) -> NodeAddr {
         let mut bytes = [0u8; 16];
@@ -577,13 +576,23 @@ mod tests {
     }
 
     #[test]
-    fn test_forward_allowed_after_interval() {
-        let mut limiter = DiscoveryForwardRateLimiter::with_interval(Duration::from_millis(100));
-        assert!(limiter.should_forward(&addr(99), &addr(1)));
-
-        thread::sleep(Duration::from_millis(110));
-
-        assert!(limiter.should_forward(&addr(99), &addr(1)));
+    fn test_forward_allowed_at_interval_boundary() {
+        let interval = Duration::from_millis(100);
+        let mut limiter = DiscoveryForwardRateLimiter::with_interval(interval);
+        let now = instant_now();
+        for (elapsed, expected) in [
+            (Duration::ZERO, DiscoveryForwardDecision::Forward),
+            (
+                interval - Duration::from_nanos(1),
+                DiscoveryForwardDecision::TargetInterval,
+            ),
+            (interval, DiscoveryForwardDecision::Forward),
+        ] {
+            assert_eq!(
+                limiter.decision_at(&addr(99), &addr(1), now + elapsed),
+                expected
+            );
+        }
     }
 
     #[test]

@@ -44,14 +44,7 @@ impl RoutingErrorRateLimiter {
     ///
     /// Default: max 10 errors/sec per destination (100ms interval).
     pub fn new() -> Self {
-        Self {
-            last_sent: HashMap::new(),
-            min_interval: Duration::from_millis(100),
-            max_age: Duration::from_secs(10),
-            last_sweep: instant_now(),
-            #[cfg(test)]
-            sweeps: 0,
-        }
+        Self::with_interval(Duration::from_millis(100))
     }
 
     /// Create a rate limiter with a custom minimum interval.
@@ -133,7 +126,6 @@ impl Default for RoutingErrorRateLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::thread;
 
     fn addr(val: u8) -> NodeAddr {
         let mut bytes = [0u8; 16];
@@ -149,36 +141,28 @@ mod tests {
     }
 
     #[test]
-    fn test_first_send_allowed() {
-        let mut limiter = RoutingErrorRateLimiter::new();
-        assert!(limiter.should_send(&addr(1)));
-    }
-
-    #[test]
-    fn test_rapid_sends_rate_limited() {
-        let mut limiter = RoutingErrorRateLimiter::new();
-        assert!(limiter.should_send(&addr(1)));
-        assert!(!limiter.should_send(&addr(1)));
-        assert!(!limiter.should_send(&addr(1)));
-    }
-
-    #[test]
-    fn test_different_destinations_independent() {
-        let mut limiter = RoutingErrorRateLimiter::new();
-        assert!(limiter.should_send(&addr(1)));
-        assert!(limiter.should_send(&addr(2)));
-        assert!(!limiter.should_send(&addr(1)));
-        assert!(!limiter.should_send(&addr(2)));
-    }
-
-    #[test]
-    fn test_send_allowed_after_interval() {
-        let mut limiter = RoutingErrorRateLimiter::new();
-        assert!(limiter.should_send(&addr(1)));
-
-        thread::sleep(Duration::from_millis(110));
-
-        assert!(limiter.should_send(&addr(1)));
+    fn test_destination_intervals_and_independence() {
+        for (mut limiter, interval) in [
+            (RoutingErrorRateLimiter::new(), Duration::from_millis(100)),
+            (
+                RoutingErrorRateLimiter::with_interval(Duration::from_millis(500)),
+                Duration::from_millis(500),
+            ),
+        ] {
+            let now = instant_now();
+            for destination in [addr(1), addr(2)] {
+                assert_eq!(limiter.check(&destination, now), LimitVerdict::Admit);
+                assert_eq!(limiter.check(&destination, now), LimitVerdict::Suppress);
+                assert_eq!(
+                    limiter.check(&destination, now + interval - Duration::from_nanos(1)),
+                    LimitVerdict::Suppress
+                );
+                assert_eq!(
+                    limiter.check(&destination, now + interval),
+                    LimitVerdict::Admit
+                );
+            }
+        }
     }
 
     #[test]
@@ -204,55 +188,23 @@ mod tests {
     }
 
     #[test]
-    fn test_with_interval_custom_rate() {
-        let mut limiter = RoutingErrorRateLimiter::with_interval(Duration::from_millis(500));
-        assert!(limiter.should_send(&addr(1)));
-        assert!(!limiter.should_send(&addr(1)));
-
-        // Still rate-limited after 200ms (would pass with default 100ms)
-        thread::sleep(Duration::from_millis(200));
-        assert!(!limiter.should_send(&addr(1)));
-
-        // Allowed after 500ms total
-        thread::sleep(Duration::from_millis(350));
-        assert!(limiter.should_send(&addr(1)));
-    }
-
-    #[test]
-    fn attacker_minted_destination_map_stays_bounded() {
-        let mut limiter = RoutingErrorRateLimiter::new();
-        let now = instant_now();
-        for i in 0..100_000 {
-            let _ = limiter.check(&minted_addr(i), now);
-        }
-        assert!(limiter.len() <= MAX_ENTRIES);
-    }
-
-    #[test]
-    fn full_destination_map_fails_open_behind_peer_budget() {
+    fn destination_capacity_verdict_and_public_admission() {
         let mut limiter = RoutingErrorRateLimiter::new();
         let now = instant_now();
         for i in 0..MAX_ENTRIES as u32 {
             assert_eq!(limiter.check(&minted_addr(i), now), LimitVerdict::Admit);
         }
-        assert_eq!(
-            limiter.check(&minted_addr(MAX_ENTRIES as u32), now),
-            LimitVerdict::AdmitAtCapacity
-        );
-    }
-
-    #[test]
-    fn public_should_send_fails_closed_when_destination_map_is_full() {
-        let mut limiter = RoutingErrorRateLimiter::new();
-        let now = instant_now();
-        for i in 0..MAX_ENTRIES as u32 {
-            assert_eq!(limiter.check(&minted_addr(i), now), LimitVerdict::Admit);
+        for i in MAX_ENTRIES as u32..MAX_ENTRIES as u32 + 32 {
+            assert_eq!(
+                limiter.check(&minted_addr(i), now),
+                LimitVerdict::AdmitAtCapacity
+            );
+            assert!(
+                !limiter.should_send(&minted_addr(i)),
+                "callers without a separate peer budget must not fail open"
+            );
         }
-
-        assert!(
-            !limiter.should_send(&minted_addr(MAX_ENTRIES as u32)),
-            "callers without a separate peer budget must not fail open"
-        );
+        assert_eq!(limiter.len(), MAX_ENTRIES);
     }
 
     #[test]
