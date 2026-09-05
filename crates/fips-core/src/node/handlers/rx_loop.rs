@@ -228,7 +228,7 @@ impl Node {
                 // discovery/status work, so hot packet or endpoint/TUN queues
                 // cannot indefinitely postpone heartbeat, rekey, MMP, route
                 // aging, or path maintenance.
-                _ = tick.tick() => {
+                scheduled_at = tick.tick() => {
                     let drained = {
                         let mut dataplane_io = dataplane_runtime.io();
                         self.drain_rx_loop_data_queues(
@@ -278,6 +278,13 @@ impl Node {
                             drained_endpoint = post_drained.endpoint,
                             "Drained queued packets after rx-loop maintenance"
                         );
+                    }
+                    // Skip does not consume a tick that became due while this
+                    // branch was running. An over-budget transport await would
+                    // otherwise keep this first biased branch permanently ready
+                    // and starve endpoint control, DNS identities and completions.
+                    if scheduled_at.elapsed() >= tick.period() {
+                        tick.reset();
                     }
                 }
                 Some(message) = control_query_rx.recv() => {
