@@ -298,8 +298,8 @@ jobs:
 # ─────────────────────────────────────────────────────────────────────────────
 # Job 3 – Integration tests (static mesh + chaos simulation)
 #
-# Runs only when both build and test succeed.  Each topology / scenario is a
-# separate matrix entry so they run in parallel.
+# Starts when build artifacts are ready, independently of unit-test results.
+# Each topology / scenario is a separate matrix entry so they run in parallel.
 #
 # All harnesses share a single Docker image (fips-test:latest) built once
 # in the setup step from testing/docker/.
@@ -307,7 +307,7 @@ jobs:
   integration:
     name: Integration (${{ matrix.suite }})
     runs-on: ubuntu-latest
-    needs: [build, test]
+    needs: [build]
     if: ${{ !inputs.skip_integration }}
 
     strategy:
