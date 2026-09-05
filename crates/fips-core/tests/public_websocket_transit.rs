@@ -25,20 +25,85 @@ fn available_websocket_address() -> SocketAddr {
     address
 }
 
-async fn start_single_connection_proxy(
-    listen_address: SocketAddr,
-    target_address: SocketAddr,
-) -> JoinHandle<()> {
+async fn start_proxy(listen_address: SocketAddr, target_address: SocketAddr) -> JoinHandle<()> {
     let listener = tokio::net::TcpListener::bind(listen_address)
         .await
         .expect("bind WebSocket test proxy");
     tokio::spawn(async move {
-        let (mut incoming, _) = listener.accept().await.expect("accept proxied connection");
-        let mut outgoing = tokio::net::TcpStream::connect(target_address)
-            .await
-            .expect("connect proxy target");
-        let _ = tokio::io::copy_bidirectional(&mut incoming, &mut outgoing).await;
+        // Dropping the proxy task aborts every owned stream as well as its listener.
+        let mut connections = tokio::task::JoinSet::new();
+        loop {
+            tokio::select! {
+                accepted = listener.accept() => {
+                    let (mut incoming, _) = accepted.expect("accept proxied connection");
+                    connections.spawn(async move {
+                        let mut outgoing = tokio::net::TcpStream::connect(target_address)
+                            .await
+                            .expect("connect proxy target");
+                        let _ = tokio::io::copy_bidirectional(&mut incoming, &mut outgoing).await;
+                    });
+                }
+                Some(result) = connections.join_next(), if !connections.is_empty() => {
+                    result.expect("proxy connection task");
+                }
+            }
+        }
     })
+}
+
+#[tokio::test]
+async fn proxy_accepts_reconnections_and_aborts_open_streams() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target_address = target.local_addr().unwrap();
+    let echo = tokio::spawn(async move {
+        let mut connections = tokio::task::JoinSet::new();
+        loop {
+            let (mut stream, _) = target.accept().await.unwrap();
+            connections.spawn(async move {
+                let (mut reader, mut writer) = stream.split();
+                let _ = tokio::io::copy(&mut reader, &mut writer).await;
+            });
+        }
+    });
+    let proxy_address = available_websocket_address();
+    let proxy = start_proxy(proxy_address, target_address).await;
+    tokio::time::timeout(Duration::from_secs(1), async {
+        for _ in 0..2 {
+            let mut stream = tokio::net::TcpStream::connect(proxy_address).await.unwrap();
+            stream.write_all(b"a").await.unwrap();
+            let mut reply = [0];
+            stream.read_exact(&mut reply).await.unwrap();
+            assert_eq!(&reply, b"a");
+        }
+        let mut streams = Vec::new();
+        for _ in 0..2 {
+            let mut stream = tokio::net::TcpStream::connect(proxy_address).await.unwrap();
+            stream.write_all(b"b").await.unwrap();
+            let mut reply = [0];
+            stream.read_exact(&mut reply).await.unwrap();
+            assert_eq!(&reply, b"b");
+            streams.push(stream);
+        }
+        assert!(
+            !proxy.is_finished(),
+            "proxy must continue accepting connections"
+        );
+        proxy.abort();
+        assert!(proxy.await.unwrap_err().is_cancelled());
+        for mut stream in streams {
+            match stream.read(&mut [0]).await {
+                Ok(0) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+                result => panic!("proxy abort must close every stream: {result:?}"),
+            }
+        }
+    })
+    .await
+    .expect("proxy reconnect and stream cleanup deadline");
+    echo.abort();
+    assert!(echo.await.unwrap_err().is_cancelled());
 }
 
 fn websocket_url(address: SocketAddr) -> String {
@@ -322,7 +387,7 @@ async fn configured_websocket_seed_reauthenticates_after_proxy_outage() {
         .peers
         .push(configured_listener_peer(&seed_two_npub, &seed_two_url));
     let seed_one = bind_endpoint(seed_one_config).await;
-    let proxy = start_single_connection_proxy(proxy_address, seed_one_address).await;
+    let proxy = start_proxy(proxy_address, seed_one_address).await;
 
     let mut seed_two_config = with_identity(
         websocket_config(Some(&seed_two_url), Some((&seed_one_npub, &proxy_url))),
@@ -338,15 +403,20 @@ async fn configured_websocket_seed_reauthenticates_after_proxy_outage() {
     );
     wait_for_either_rekey_drain((&seed_one, &seed_two_npub), (&seed_two, &seed_one_npub)).await;
 
+    assert!(!proxy.is_finished(), "proxy ended before the forced outage");
     proxy.abort();
-    let _ = proxy.await;
+    assert!(proxy.await.expect_err("proxy abort").is_cancelled());
     // Let multiple physical reconnect attempts fail, then restore the proxy
     // before logical FIPS liveness declares the old authenticated link dead.
     // This is the production ordering that previously left a fresh WSS stream
     // underneath a permanently stale FIPS adjacency.
     tokio::time::sleep(Duration::from_millis(200)).await;
-    let replacement_proxy = start_single_connection_proxy(proxy_address, seed_one_address).await;
+    let replacement_proxy = start_proxy(proxy_address, seed_one_address).await;
     tokio::time::sleep(Duration::from_secs(4)).await;
+    assert!(
+        !replacement_proxy.is_finished(),
+        "replacement proxy stopped accepting reconnects"
+    );
     tokio::join!(
         wait_for_adjacency(&seed_one, &seed_two_npub),
         wait_for_adjacency(&seed_two, &seed_one_npub),
@@ -362,8 +432,17 @@ async fn configured_websocket_seed_reauthenticates_after_proxy_outage() {
 
     seed_two.shutdown().await.expect("second seed shutdown");
     seed_one.shutdown().await.expect("first seed shutdown");
+    assert!(
+        !replacement_proxy.is_finished(),
+        "replacement proxy exited during recovery"
+    );
     replacement_proxy.abort();
-    let _ = replacement_proxy.await;
+    assert!(
+        replacement_proxy
+            .await
+            .expect_err("replacement proxy abort")
+            .is_cancelled()
+    );
 }
 
 #[tokio::test]
