@@ -165,19 +165,53 @@ mod pending_queue_tests {
     #[test]
     fn pending_tun_packet_queue_owns_drop_oldest_policy() {
         let mut queue = crate::node::endpoint_traffic::PendingTunPacketQueue::default();
-        assert!(!queue.push_bounded(vec![1], 1_000, 2));
-        assert!(!queue.push_bounded(vec![2], 1_001, 2));
-        assert!(queue.push_bounded(vec![3], 1_002, 2));
+        assert!(!queue.push_bounded(vec![1], Some(1_000), 2));
+        assert!(!queue.push_bounded(vec![2], Some(1_001), 2));
+        assert!(queue.push_bounded(vec![3], Some(1_002), 2));
 
         let packets: Vec<Vec<u8>> = queue.into_packets().into_iter().collect();
         assert_eq!(packets, vec![vec![2], vec![3]]);
     }
 
     #[test]
+    fn pending_tun_initial_discovery_does_not_consume_ready_send_budget() {
+        let mut node = make_node();
+        let dest = make_node_addr(0x43);
+        node.queue_pending_tun_packet(dest, vec![1]);
+        let ready_at = Node::now_ms() + 4_000;
+        let (packets, stale) = node.pending_session_traffic
+            .take_tun_packets(&dest).unwrap()
+            .into_fresh_packets(ready_at, 2_000);
+        assert_eq!(stale, 0, "initial discovery must retain its first packet");
+        assert_eq!(packets.len(), 1);
+
+        // A send failure after readiness must not restart the stale budget.
+        node.pending_session_traffic.restore_tun_packets(dest, packets);
+        let (packets, stale) = node.pending_session_traffic
+            .take_tun_packets(&dest).unwrap()
+            .into_fresh_packets(ready_at + 2_000, 2_000);
+        assert_eq!(stale, 0);
+        node.pending_session_traffic.restore_tun_packets(dest, packets);
+        let (packets, stale) = node.pending_session_traffic
+            .take_tun_packets(&dest).unwrap()
+            .into_fresh_packets(ready_at + 2_001, 2_000);
+        assert_eq!(stale, 1);
+        assert!(packets.is_empty());
+
+        crate::node::tests::ensure_dataplane_fsp_owner_for_test(&mut node, dest);
+        node.queue_pending_tun_packet(dest, vec![2]);
+        let (packets, stale) = node.pending_session_traffic
+            .take_tun_packets(&dest).unwrap()
+            .into_fresh_packets(Node::now_ms() + 2_001, 2_000);
+        assert_eq!(stale, 1, "established traffic starts aging immediately");
+        assert!(packets.is_empty());
+    }
+
+    #[test]
     fn pending_tun_packet_queue_drops_stale_packets_on_fresh_drain() {
         let mut queue = crate::node::endpoint_traffic::PendingTunPacketQueue::default();
-        assert!(!queue.push_bounded(vec![1], 1_000, 8));
-        assert!(!queue.push_bounded(vec![2], 3_500, 8));
+        assert!(!queue.push_bounded(vec![1], Some(1_000), 8));
+        assert!(!queue.push_bounded(vec![2], Some(3_500), 8));
 
         let (packets, stale) = queue.into_fresh_packets(4_000, 2_000);
 
@@ -201,13 +235,13 @@ mod pending_queue_tests {
 
         assert!(
             !queues
-                .push_tun_packet(tun_dest, vec![1], 1, 2)
+                .push_tun_packet(tun_dest, vec![1], 1, 2, None)
                 .destination_dropped()
         );
         assert!(queues.has_traffic_for(&tun_dest));
         assert!(
             queues
-                .push_tun_packet(rejected_tun_dest, vec![2], 1, 2)
+                .push_tun_packet(rejected_tun_dest, vec![2], 1, 2, None)
                 .destination_dropped()
         );
         assert!(!queues.has_traffic_for(&rejected_tun_dest));
@@ -239,12 +273,12 @@ mod pending_queue_tests {
 
         assert!(
             !queues
-                .push_tun_packet(tun_dest, vec![5], 1, 2)
+                .push_tun_packet(tun_dest, vec![5], 1, 2, None)
                 .dropped_oldest()
         );
         assert!(
             queues
-                .push_tun_packet(tun_dest, vec![6], 1, 2)
+                .push_tun_packet(tun_dest, vec![6], 1, 2, None)
                 .dropped_oldest()
         );
 
@@ -269,7 +303,7 @@ mod pending_queue_tests {
 
         assert!(
             !queues
-                .push_tun_packet(dest, vec![1], 8, 2)
+                .push_tun_packet(dest, vec![1], 8, 2, None)
                 .destination_dropped()
         );
         assert!(
@@ -304,12 +338,12 @@ mod pending_queue_tests {
 
         assert!(
             !queues
-                .push_tun_packet(dest, vec![1], 8, 4)
+                .push_tun_packet(dest, vec![1], 8, 4, None)
                 .destination_dropped()
         );
         assert!(
             !queues
-                .push_tun_packet(dest, vec![2], 8, 4)
+                .push_tun_packet(dest, vec![2], 8, 4, None)
                 .destination_dropped()
         );
         let (mut packets, stale) = queues

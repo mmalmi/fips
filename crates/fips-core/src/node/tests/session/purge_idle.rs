@@ -108,6 +108,7 @@ fn test_purge_idle_sessions_cleans_pending_packets() {
         vec![1, 2, 3],
         usize::MAX,
         usize::MAX,
+        None,
     );
     assert!(
         node.pending_session_traffic

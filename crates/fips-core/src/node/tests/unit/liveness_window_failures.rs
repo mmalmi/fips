@@ -379,7 +379,7 @@ async fn link_dead_marks_direct_path_stale_and_preserves_queued_packets() {
         ),
     );
     node.pending_session_traffic
-        .push_tun_packet(peer_addr, vec![1, 2, 3], usize::MAX, usize::MAX);
+        .push_tun_packet(peer_addr, vec![1, 2, 3], usize::MAX, usize::MAX, None);
     node.pending_session_traffic
         .push_endpoint_data_batch_with_enqueued_at_ms(
             peer_addr,

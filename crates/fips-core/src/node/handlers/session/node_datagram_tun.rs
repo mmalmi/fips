@@ -482,11 +482,17 @@ impl Node {
 
     /// Queue a packet while waiting for session establishment.
     fn queue_pending_tun_packet(&mut self, dest_addr: NodeAddr, packet: Vec<u8>) {
+        let queued_at_ms = matches!(
+            self.dataplane_outbound_session_state(&dest_addr),
+            OutboundSessionState::Established
+        )
+        .then(Self::now_ms);
         let admission = self.pending_session_traffic.push_tun_packet(
             dest_addr,
             packet,
             self.config.node.session.pending_max_destinations,
             self.config.node.session.pending_packets_per_dest,
+            queued_at_ms,
         );
         if admission.destination_dropped() {
             crate::perf_profile::record_event(

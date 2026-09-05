@@ -175,7 +175,7 @@
         assert!(
             !node
                 .pending_session_traffic
-                .push_tun_packet(source_addr, vec![0xaa], 8, 8)
+                .push_tun_packet(source_addr, vec![0xaa], 8, 8, None)
                 .destination_dropped()
         );
 

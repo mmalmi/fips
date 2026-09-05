@@ -371,6 +371,7 @@ async fn test_discovery_flushes_queued_tun_for_established_session_with_fresh_ro
         ipv6_packet.clone(),
         usize::MAX,
         usize::MAX,
+        None,
     );
 
     nodes[0].node.maybe_initiate_lookup(&dest_addr).await;

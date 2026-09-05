@@ -199,6 +199,7 @@ async fn test_pending_tun_flush_restores_packet_that_failed_to_send() {
         invalid_ipv6_packet.clone(),
         usize::MAX,
         usize::MAX,
+        None,
     );
     nodes[0].node.flush_pending_packets(&node1_addr).await;
 

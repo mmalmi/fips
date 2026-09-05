@@ -192,8 +192,13 @@ async fn timed_out_session_preserves_payload_and_seeks_a_mesh_route() {
             true,
         ),
     );
-    node.pending_session_traffic
-        .push_tun_packet(dest_addr, vec![0x60; 40], usize::MAX, usize::MAX);
+    node.pending_session_traffic.push_tun_packet(
+        dest_addr,
+        vec![0x60; 40],
+        usize::MAX,
+        usize::MAX,
+        None,
+    );
 
     let timeout_at = 1_000 + node.config.node.rate_limit.handshake_timeout_secs * 1_000 + 1;
     node.resend_pending_session_handshakes(timeout_at).await;

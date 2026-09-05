@@ -135,19 +135,21 @@ impl PendingEndpointDataQueue {
 #[derive(Debug)]
 pub(crate) struct PendingTunPacket {
     packet: Vec<u8>,
-    queued_at_ms: u64,
+    // Initial discovery/session establishment owns the packet until its first
+    // ready flush. Once ready, failed sends retain the normal stale budget.
+    queued_at_ms: Option<u64>,
 }
 
 impl PendingTunPacket {
-    fn new(packet: Vec<u8>, queued_at_ms: u64) -> Self {
+    fn new(packet: Vec<u8>, queued_at_ms: Option<u64>) -> Self {
         Self {
             packet,
             queued_at_ms,
         }
     }
 
-    fn is_stale(&self, now_ms: u64, max_age_ms: u64) -> bool {
-        now_ms.saturating_sub(self.queued_at_ms) > max_age_ms
+    fn is_stale(&mut self, now_ms: u64, max_age_ms: u64) -> bool {
+        now_ms.saturating_sub(*self.queued_at_ms.get_or_insert(now_ms)) > max_age_ms
     }
 
     pub(crate) fn packet(&self) -> &[u8] {
@@ -165,7 +167,7 @@ impl PendingTunPacketQueue {
     pub(crate) fn push_bounded(
         &mut self,
         packet: Vec<u8>,
-        queued_at_ms: u64,
+        queued_at_ms: Option<u64>,
         capacity: usize,
     ) -> bool {
         let dropped_oldest = self.packets.len() >= capacity;
@@ -195,7 +197,7 @@ impl PendingTunPacketQueue {
     ) -> (VecDeque<PendingTunPacket>, usize) {
         let mut fresh = VecDeque::with_capacity(self.packets.len());
         let mut stale = 0usize;
-        for packet in self.packets {
+        for mut packet in self.packets {
             if packet.is_stale(now_ms, max_age_ms) {
                 stale = stale.saturating_add(1);
             } else {
@@ -263,6 +265,7 @@ impl PendingSessionTrafficQueues {
         packet: Vec<u8>,
         max_destinations: usize,
         packets_per_dest: usize,
+        queued_at_ms: Option<u64>,
     ) -> PendingSessionTrafficAdmission {
         if !self.tun_packets.contains_key(&dest_addr) && self.tun_packets.len() >= max_destinations
         {
@@ -274,7 +277,7 @@ impl PendingSessionTrafficQueues {
 
         let dropped_oldest = self.tun_packets.entry(dest_addr).or_default().push_bounded(
             packet,
-            crate::time::now_ms(),
+            queued_at_ms,
             packets_per_dest,
         );
         self.pending_destinations.insert(dest_addr);

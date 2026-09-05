@@ -74,11 +74,13 @@ async fn sparse_tree_mesh_delivers(ipv6: bool) {
     })
     .await
     .expect("mesh adjacencies");
-    // Let the tree settle, then leave each burst idle until the next report.
+    // Exercise first contact immediately, then leave later bursts idle until the next report.
     // Both IPv6 and service payloads must retain their own feedback window.
     let mut failed = Vec::new();
     for round in 0..3 {
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        if round > 0 || !ipv6 {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
         for (i, source) in nodes.iter().enumerate() {
             for (j, destination) in nodes.iter().enumerate().filter(|(j, _)| *j != i) {
                 let payload = vec![round, i as u8, j as u8];
