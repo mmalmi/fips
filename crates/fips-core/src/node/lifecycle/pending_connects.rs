@@ -1,4 +1,5 @@
 use super::*;
+use futures::FutureExt;
 
 impl Node {
     /// Poll pending transport connects and initiate handshakes for ready ones.
@@ -8,41 +9,58 @@ impl Node {
     /// marks the link as Connected and starts the Noise handshake.
     /// Failed connections are cleaned up and scheduled for retry.
     pub(in crate::node) async fn poll_pending_connects(&mut self) {
-        if self.pending_connects.is_empty() {
-            return;
-        }
-
-        let mut completed = Vec::new();
-
-        for (i, pending) in self.pending_connects.iter().enumerate() {
-            let state = if let Some(transport) = self.transports.get(&pending.transport_id) {
+        // Remove each completed preparation before awaiting its handshake.
+        // Cancellation must not leave an already-completed DNS future to poll
+        // again next tick. Reverse order keeps remaining indices stable.
+        let mut i = self.pending_connects.len();
+        while i > 0 {
+            i -= 1;
+            let pending = &mut self.pending_connects[i];
+            let state = if !self.transports.contains_key(&pending.transport_id) {
+                crate::transport::ConnectionState::Failed("transport removed".into())
+            } else if let Some(resolution) = pending.address_resolution.as_mut() {
+                match resolution.as_mut().now_or_never() {
+                    None => crate::transport::ConnectionState::Connecting,
+                    Some(Err(error)) => {
+                        crate::transport::ConnectionState::Failed(error.to_string())
+                    }
+                    Some(Ok(addr)) => {
+                        let hostname = std::mem::replace(&mut pending.remote_addr, addr);
+                        pending.address_resolution = None;
+                        self.links.insert(
+                            pending.link_id,
+                            Link::connectionless(
+                                pending.link_id,
+                                pending.transport_id,
+                                pending.remote_addr.clone(),
+                                LinkDirection::Outbound,
+                                Duration::from_millis(self.config.node.base_rtt_ms),
+                            ),
+                        );
+                        // Keep configured hostname matching until this link is
+                        // removed, while all Noise sends use its numeric path.
+                        self.links
+                            .insert_addr((pending.transport_id, hostname), pending.link_id);
+                        crate::transport::ConnectionState::Connected
+                    }
+                }
+            } else if let Some(transport) = self.transports.get(&pending.transport_id) {
                 transport.connection_state(&pending.remote_addr)
             } else {
                 crate::transport::ConnectionState::Failed("transport removed".into())
             };
 
-            match state {
-                crate::transport::ConnectionState::Connected => {
-                    completed.push((i, true, None));
-                }
-                crate::transport::ConnectionState::Failed(reason) => {
-                    completed.push((i, false, Some(reason)));
-                }
-                crate::transport::ConnectionState::Connecting => {
-                    // Still in progress, check on next tick
-                }
+            let reason = match state {
+                crate::transport::ConnectionState::Connected => None,
+                crate::transport::ConnectionState::Failed(reason) => Some(reason),
+                crate::transport::ConnectionState::Connecting => continue,
                 crate::transport::ConnectionState::None => {
-                    // Shouldn't happen — treat as failure
-                    completed.push((i, false, Some("no connection attempt found".into())));
+                    Some("no connection attempt found".into())
                 }
-            }
-        }
-
-        // Process completions in reverse order to preserve indices
-        for (i, success, reason) in completed.into_iter().rev() {
+            };
             let pending = self.pending_connects.remove(i);
 
-            if success {
+            if reason.is_none() {
                 // Mark link as Connected
                 if let Some(link) = self.links.get_mut(&pending.link_id) {
                     link.set_connected();
@@ -73,6 +91,11 @@ impl Node {
                     );
                     // Clean up link on handshake failure
                     self.remove_link(&pending.link_id);
+                    self.schedule_retry_after_error(
+                        *pending.peer_identity.node_addr(),
+                        Self::now_ms(),
+                        &e,
+                    );
                 }
             } else {
                 let reason = reason.unwrap_or_default();
@@ -87,7 +110,6 @@ impl Node {
 
                 // Clean up link and schedule retry
                 self.remove_link(&pending.link_id);
-                self.links.remove(&pending.link_id);
                 self.schedule_retry(*pending.peer_identity.node_addr(), Self::now_ms());
             }
         }

@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(test)]
+mod tests;
+
 impl Node {
     pub(super) fn canonical_transport_addr(
         &self,
@@ -51,12 +54,13 @@ impl Node {
         transport_id: TransportId,
         remote_addr: &TransportAddr,
     ) -> bool {
+        let alias_link = self.links.lookup_addr(transport_id, remote_addr);
         self.peers.connection_values().any(|conn| {
             conn.expected_identity()
                 .map(|id| id.node_addr() == peer_node_addr)
                 .unwrap_or(false)
                 && conn.transport_id() == Some(transport_id)
-                && conn.source_addr() == Some(remote_addr)
+                && (conn.source_addr() == Some(remote_addr) || alias_link == Some(conn.link_id()))
         }) || self.pending_connects.iter().any(|pending| {
             pending.peer_identity.node_addr() == peer_node_addr
                 && pending.transport_id == transport_id
@@ -71,13 +75,15 @@ impl Node {
         remote_addr: &TransportAddr,
         now_ms: u64,
     ) -> bool {
+        let alias_link = self.links.lookup_addr(transport_id, remote_addr);
         let pending_link_id = self
             .peers
             .connection_iter()
             .find(|(_, connection)| {
                 connection.is_outbound()
                     && connection.transport_id() == Some(transport_id)
-                    && connection.source_addr() == Some(remote_addr)
+                    && (connection.source_addr() == Some(remote_addr)
+                        || alias_link == Some(connection.link_id()))
                     && connection
                         .expected_identity()
                         .is_some_and(|identity| identity.node_addr() == peer_node_addr)
@@ -501,12 +507,20 @@ impl Node {
 
         let addr = TransportAddr::from_string(&candidate.addr);
         let addr = self.canonical_transport_addr(transport_id, addr).ok()?;
+        // Classify the configured hostname as its currently prepared path,
+        // without changing the original address used by a future fresh dial.
+        if candidate.transport == "udp"
+            && let Some(link_id) = self.links.lookup_addr(transport_id, &addr)
+            && let Some(link) = self.links.get(&link_id)
+        {
+            return Some((transport_id, link.remote_addr().clone()));
+        }
         Some((transport_id, addr))
     }
 
     /// Initiate a connection to a peer on a specific transport and address.
     ///
-    /// For connectionless transports (UDP, Ethernet): allocates a link, starts
+    /// For numeric UDP and Ethernet addresses: allocates a link, starts
     /// the Noise IK handshake, sends msg1, and registers the connection for
     /// msg2 dispatch.
     ///
@@ -514,6 +528,7 @@ impl Node {
     /// starts a non-blocking transport connect. The handshake is deferred
     /// until the transport connection is established — the tick handler
     /// polls `connection_state()` and initiates the handshake when ready.
+    /// UDP hostnames use the same pending lane for bounded DNS preparation.
     pub(in crate::node) async fn initiate_connection(
         &mut self,
         transport_id: TransportId,
@@ -569,6 +584,30 @@ impl Node {
             .map(|t| t.transport_type().connection_oriented)
             .unwrap_or(false);
 
+        // Resolve UDP hostnames before installing Noise state. Awaiting DNS
+        // from send() lets maintenance cancellation leave a pending Msg1 whose
+        // every resend then blocks liveness on the same unresolved hostname.
+        let address_resolution = if matches!(
+            self.transports.get(&transport_id),
+            Some(crate::transport::TransportHandle::Udp(_))
+        ) && remote_addr
+            .as_str()
+            .and_then(|addr| addr.parse::<SocketAddr>().ok())
+            .is_none()
+        {
+            let addr = remote_addr.clone();
+            let timeout = Duration::from_secs(self.config.node.rate_limit.handshake_timeout_secs);
+            Some(Box::pin(async move {
+                tokio::time::timeout(timeout, crate::transport::resolve_socket_addr(&addr))
+                    .await
+                    .map_err(|_| crate::transport::TransportError::Timeout)?
+                    .map(|addr| TransportAddr::from_string(&addr.to_string()))
+            })
+                as crate::node::link_registry::AddressResolution)
+        } else {
+            None
+        };
+
         // Allocate link ID and create link
         let link_id = self.allocate_link_id();
 
@@ -592,10 +631,15 @@ impl Node {
 
         self.links.insert(link_id, link);
 
-        if is_connection_oriented {
-            // Connection-oriented: start non-blocking connect, defer handshake
+        if is_connection_oriented || address_resolution.is_some() {
+            // Retain transport/DNS preparation independently of each node turn.
             if let Some(transport) = self.transports.get(&transport_id) {
-                match transport.connect(&remote_addr).await {
+                let connect_result = if address_resolution.is_some() {
+                    Ok(())
+                } else {
+                    transport.connect(&remote_addr).await
+                };
+                match connect_result {
                     Ok(()) => {
                         debug!(
                             peer = %self.peer_display_name(&peer_node_addr),
@@ -609,6 +653,7 @@ impl Node {
                             transport_id,
                             remote_addr,
                             peer_identity,
+                            address_resolution,
                         });
                     }
                     Err(e) => {

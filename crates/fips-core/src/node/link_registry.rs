@@ -206,11 +206,21 @@ impl TransportDropTracker {
     }
 }
 
+/// DNS work retained across maintenance turns.
+pub(in crate::node) type AddressResolution = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<TransportAddr, crate::transport::TransportError>>
+            + Send
+            + Sync,
+    >,
+>;
+
 /// State for a link waiting for transport-level connection establishment.
 ///
 /// For connection-oriented transports (TCP, Tor), the transport connect runs
 /// asynchronously. This struct holds the data needed to complete the handshake
-/// once the connection is ready.
+/// once the connection is ready. UDP hostnames retain their resolver here until
+/// a numeric carrier is available, before allocating any Noise state.
 pub(in crate::node) struct PendingConnect {
     /// The link that was created for this connection.
     pub(in crate::node) link_id: LinkId,
@@ -220,4 +230,6 @@ pub(in crate::node) struct PendingConnect {
     pub(in crate::node) remote_addr: TransportAddr,
     /// The peer identity (for handshake initiation).
     pub(in crate::node) peer_identity: PeerIdentity,
+    /// UDP hostname preparation is polled without blocking node maintenance.
+    pub(in crate::node) address_resolution: Option<AddressResolution>,
 }

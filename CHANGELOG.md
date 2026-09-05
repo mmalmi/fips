@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Keep endpoint control responsive after a maintenance timeout, and prepare
+  UDP hostnames outside liveness work so slow DNS cannot repeatedly cancel
+  handshake retries or stall otherwise usable carriers.
 - Retry queued first-contact traffic while route discovery becomes ready,
   retaining bounded lookup attempts and normal offline cleanup.
 - Preserve matching session ownership when a queued inbound handshake is
