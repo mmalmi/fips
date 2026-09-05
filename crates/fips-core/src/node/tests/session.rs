@@ -24,6 +24,7 @@ mod mtu_exceeded;
 mod mtu_notification;
 mod multihop_pmtud;
 mod purge_idle;
+mod rekey_routed;
 mod remote_restart;
 mod resend_rekey_large;
 mod retransmit_harness;

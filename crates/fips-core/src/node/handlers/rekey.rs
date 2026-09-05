@@ -832,11 +832,11 @@ impl Node {
                     .map_or(0, |activity| activity.send_counter())
             },
             |addr| {
-                // Keep routine end-to-end key rotation off the one bounded
-                // direct-payload validation used to leave an authenticated
-                // fallback. The current epoch remains valid while recovery
-                // proves the carrier, after which the next tick can rotate it.
+                // Preserve the epoch only while a direct probe is staged.
+                // Healthy routed traffic retains a fallback-affinity marker
+                // too, and must continue routine key rotation on that route.
                 !direct_degradation.has_pending_validation(addr)
+                    || dataplane.fsp_owner_next_hop(addr) != Some(*addr)
             },
         );
 
