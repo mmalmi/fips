@@ -917,7 +917,6 @@ fn runtime_turn_driver_runs_classified_inbound_and_outbound_once() {
         .owner_mut(owner)
         .unwrap()
         .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(seal_key)));
-
     let inbound = fmp_socket_packet(
         owner,
         1,

@@ -2,6 +2,7 @@ include!("helpers_and_edges.rs");
 include!("helpers_wire.rs");
 include!("aead_runtime_owner_fairness.rs");
 include!("aead_runtime_owner.rs");
+include!("authenticated_paths.rs");
 include!("outbound_fairness.rs");
 include!("aead_owner_inbound.rs");
 include!("aead_owner_activity.rs");
