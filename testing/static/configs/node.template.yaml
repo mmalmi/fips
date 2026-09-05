@@ -5,6 +5,9 @@
 node:
   identity:
     nsec: "{{NSEC}}"
+  discovery:
+    lan:
+      enabled: false
 
 tun:
   enabled: true
