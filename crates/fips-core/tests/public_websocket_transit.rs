@@ -424,7 +424,7 @@ async fn routed_sender_recovers_after_same_identity_recipient_restart() {
                         result.unwrap();
                         assert!(!received.is_empty());
                         for datagram in &received {
-                            assert_eq!(datagram.source_peer, sender_identity);
+                            assert_eq!(datagram.source_peer.npub(), sender.npub());
                             assert_eq!(datagram.source_port, SOURCE_PORT);
                             assert_eq!(datagram.destination_port, SERVICE_PORT);
                             assert_eq!(datagram.data.as_slice(), payload.as_slice());
