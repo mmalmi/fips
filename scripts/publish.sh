@@ -14,7 +14,6 @@ REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DRY_RUN=""
 PLAN_ONLY=0
 ALLOW_DIRTY="--allow-dirty"
-WAIT_TIME="${CARGO_PUBLISH_WAIT_SECS:-30}"
 FAILED_CRATES=()
 
 for arg in "$@"; do
@@ -108,29 +107,19 @@ publish_tier() {
         pids+=("$!")
     done
 
-    local published=0
-    local status=0
     local i
     for i in "${!pids[@]}"; do
         crate="${crates[$i]}"
         if ! wait "${pids[$i]}"; then
             FAILED_CRATES+=("$crate")
-            status=1
         fi
 
         cat "${log_dir}/${crate}.log"
-        if grep -q "published successfully" "${log_dir}/${crate}.log"; then
-            published=1
-        fi
     done
 
     rm -rf "$log_dir"
 
-    if [[ "$status" -eq 0 && "$published" -eq 1 && -z "$DRY_RUN" ]]; then
-        echo ""
-        echo "Waiting ${WAIT_TIME}s for crates.io to index this tier..."
-        sleep "$WAIT_TIME"
-    fi
+    # Cargo already waits for registry availability before returning success.
 }
 
 if [[ "$PLAN_ONLY" -eq 1 ]]; then
