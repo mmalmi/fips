@@ -300,10 +300,10 @@ fn main() {
                             app.select_prev();
                         }
                     }
-                    (KeyCode::Enter, _) => {
-                        if app.active_tab.has_table() && app.detail_view.is_none() {
-                            app.open_detail();
-                        }
+                    (KeyCode::Enter, _)
+                        if app.active_tab.has_table() && app.detail_view.is_none() =>
+                    {
+                        app.open_detail();
                     }
                     (KeyCode::Char(' '), _) | (KeyCode::Right, _) => {
                         if app.active_tab == Tab::Graphs && app.detail_view.is_none() {
@@ -349,10 +349,8 @@ fn main() {
                             app.expanded_transports.remove(&tid);
                         }
                     }
-                    (KeyCode::Esc, _) => {
-                        if app.detail_view.is_some() {
-                            app.close_detail();
-                        }
+                    (KeyCode::Esc, _) if app.detail_view.is_some() => {
+                        app.close_detail();
                     }
                     (KeyCode::Char('e'), KeyModifiers::NONE) => {
                         if app.active_tab == Tab::Transports
@@ -366,10 +364,10 @@ fn main() {
                             }
                         }
                     }
-                    (KeyCode::Char('c'), KeyModifiers::NONE) => {
-                        if app.active_tab == Tab::Transports {
-                            app.expanded_transports.clear();
-                        }
+                    (KeyCode::Char('c'), KeyModifiers::NONE)
+                        if app.active_tab == Tab::Transports =>
+                    {
+                        app.expanded_transports.clear();
                     }
                     (KeyCode::Char('g'), KeyModifiers::NONE) => {
                         app.close_detail();
