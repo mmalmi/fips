@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.75] - 2026-09-07
+
+### Fixed
+
+- Recover active routed sessions automatically when a recipient restarts with
+  the same identity and can no longer decrypt the sender's retained keys.
+  Reuse the existing authenticated recovery handshake and delivery-feedback
+  window while retaining the current keys until the replacement is confirmed.
+- Cover repeated recipient restarts with real service datagrams through a local
+  WebSocket relay, without private rekey calls or recipient-initiated traffic.
+  FIPS wire formats, routing semantics, and configuration are unchanged.
+
 ## [0.4.74] - 2026-09-06
 
 ### Fixed
