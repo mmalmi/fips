@@ -433,9 +433,15 @@
 
     async fn wait_for_live_worker_completion(live_node: &DataplaneLiveNode) {
         let notify = live_node.readiness_notify();
-        tokio::time::timeout(std::time::Duration::from_secs(1), notify.notified())
-            .await
-            .expect("live dataplane worker completion");
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            // Notifications may be retained from a previous turn. Wait for
+            // actual runnable work, as the live owner loop does.
+            while !live_node.has_runnable_work() {
+                notify.notified().await;
+            }
+        })
+        .await
+        .expect("live dataplane worker completion");
     }
 
     fn run_aead_classified_turn<I, O>(
