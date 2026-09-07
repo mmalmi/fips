@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.76] - 2026-09-08
+
+### Fixed
+
+- Prevent sustained CPU usage when a UDP socket repeatedly reports a receive
+  error. Yield between retries with a bounded delay, reset the delay after a
+  received packet, and retain immediate task cancellation during shutdown.
+  Wire formats, routing semantics, and configuration are unchanged.
+
 ## [0.4.75] - 2026-09-07
 
 ### Fixed
