@@ -365,6 +365,68 @@ async fn configured_websocket_seed_authenticates_after_tcp_reset() {
 }
 
 #[tokio::test]
+async fn routed_sender_recovers_after_same_identity_recipient_restart() {
+    let url = available_websocket_url();
+    let seed = bind_endpoint(websocket_config(Some(&url), None)).await;
+    let config = websocket_config(None, Some((seed.npub(), &url)));
+    let sender = bind_endpoint(config.clone()).await;
+    let recipient_identity = Identity::generate();
+    let recipient_config = with_identity(config, &recipient_identity);
+    let mut recipient = bind_endpoint(recipient_config.clone()).await;
+    wait_for_exact_seed(&sender, seed.npub()).await;
+    wait_for_exact_seed(&recipient, seed.npub()).await;
+    let sender_identity = PeerIdentity::from_npub(sender.npub()).unwrap();
+    let destination = PeerIdentity::from_npub(recipient.npub()).unwrap();
+    let sender_rx = sender.register_service_receiver(SERVICE_PORT).await.unwrap();
+    let mut recipient_rx = recipient.register_service_receiver(SERVICE_PORT).await.unwrap();
+    sender.send_datagram(destination, SOURCE_PORT, SERVICE_PORT, b"baseline".to_vec())
+        .await.unwrap();
+    receive_payload(&recipient_rx, sender.npub(), b"baseline").await;
+    recipient.send_datagram(sender_identity, SOURCE_PORT, SERVICE_PORT, b"baseline reply".to_vec())
+        .await.unwrap();
+    receive_payload(&sender_rx, recipient.npub(), b"baseline reply").await;
+
+    for round in 0..2 {
+        recipient.shutdown().await.unwrap();
+        recipient = bind_endpoint(recipient_config.clone()).await;
+        recipient_rx = recipient.register_service_receiver(SERVICE_PORT).await.unwrap();
+        wait_for_exact_seed(&recipient, seed.npub()).await;
+        let payload = format!("after restart {round}").into_bytes();
+        let started = std::time::Instant::now();
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let mut tick = tokio::time::interval(Duration::from_millis(100));
+            let mut received = Vec::new();
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => {
+                        sender.send_datagram(destination, SOURCE_PORT, SERVICE_PORT, payload.clone())
+                            .await.unwrap();
+                    }
+                    result = recipient_rx.recv_batch_into(&mut received, 8) => {
+                        result.unwrap();
+                        assert!(!received.is_empty());
+                        for datagram in &received {
+                            assert_eq!(datagram.source_peer, sender_identity);
+                            assert_eq!(datagram.source_port, SOURCE_PORT);
+                            assert_eq!(datagram.destination_port, SERVICE_PORT);
+                            assert_eq!(datagram.data.as_slice(), payload.as_slice());
+                        }
+                        break;
+                    }
+                }
+            }
+            recipient.send_datagram(sender_identity, SOURCE_PORT, SERVICE_PORT, payload.clone())
+                .await.unwrap();
+            receive_payload(&sender_rx, recipient.npub(), &payload).await;
+        }).await.expect("surviving sender must recover without private rekey calls or recipient traffic");
+        eprintln!("same-identity recipient restart {round} recovered in {} ms", started.elapsed().as_millis());
+    }
+    recipient.shutdown().await.unwrap();
+    sender.shutdown().await.unwrap();
+    seed.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn configured_websocket_seed_reauthenticates_after_proxy_outage() {
     let seed_one_address = available_websocket_address();
     let seed_one_url = websocket_url(seed_one_address);

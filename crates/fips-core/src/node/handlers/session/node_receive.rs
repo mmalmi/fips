@@ -474,6 +474,38 @@ impl Node {
         }
     }
 
+    pub(in crate::node) async fn recover_unresponsive_sessions(&mut self) {
+        let now_ms = Self::now_ms();
+        let stalled: Vec<_> = self
+            .sessions
+            .iter()
+            .filter_map(|(addr, entry)| {
+                if !session_can_recover_from_decrypt_failures(entry, now_ms) {
+                    return None;
+                }
+                let activity = self.dataplane.fsp_owner_activity(addr)?;
+                let next_hop = activity.last_outbound_next_hop()?;
+                (activity.has_recent_outbound_without_delivery_feedback_from(
+                    &next_hop,
+                    now_ms,
+                    DECRYPT_FAILURE_RECOVERY_QUIET_MS,
+                ) && activity
+                    .authenticated_inbound_or_session_age_ms(now_ms)
+                    .is_some_and(|age| age >= DECRYPT_FAILURE_RECOVERY_QUIET_MS))
+                .then_some(*addr)
+            })
+            .collect();
+        for addr in stalled {
+            // A restarted recipient has no key with which to answer old FSP
+            // data. Reuse the existing authenticated recovery handshake while
+            // retaining the current epoch, just as for decrypt failures.
+            if self.initiate_session_rekey(&addr).await {
+                warn!(peer = %self.peer_display_name(&addr),
+                    "Unacknowledged session traffic exceeded recovery window; starting recovery rekey");
+            }
+        }
+    }
+
     pub(in crate::node) async fn handle_dataplane_fsp_decrypt_failure(
         &mut self,
         source_addr: NodeAddr,

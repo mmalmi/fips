@@ -873,6 +873,7 @@ impl Node {
         for node_addr in plan.initiate {
             let _ = self.initiate_session_rekey(&node_addr).await;
         }
+        self.recover_unresponsive_sessions().await;
     }
 
     /// Initiate an FSP session rekey.
