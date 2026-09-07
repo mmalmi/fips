@@ -447,10 +447,10 @@ impl Drop for NativeExecutor {
             .as_ref()
             .is_some_and(|executor| std::ptr::eq(executor.as_ptr(), self)));
         self.worker_queue.close();
-        let worker_failed = self
-            .workers
-            .drain(..)
-            .fold(false, |failed, worker| worker.join().is_err() || failed);
+        let mut worker_failed = false;
+        for worker in self.workers.drain(..) {
+            worker_failed |= worker.join().is_err();
+        }
         *registered = None;
         released.notify_all();
         drop(registered);

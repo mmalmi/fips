@@ -556,7 +556,7 @@ pub fn maybe_spawn_reporter() {
                     prev_hist[idx] = current;
                 }
                 let stage = stage_from_index(i);
-                let avg_ns = if dc > 0 { dt / dc } else { 0 };
+                let avg_ns = dt.checked_div(dc).unwrap_or(0);
                 let rate_per_sec = fmt_rate_per_sec(dc, interval);
                 let p50 = percentile_ns(&hist_delta, dc, 50);
                 let p95 = percentile_ns(&hist_delta, dc, 95);
