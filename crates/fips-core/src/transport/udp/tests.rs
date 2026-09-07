@@ -3,6 +3,42 @@ use super::*;
 use crate::transport::packet_channel;
 use tokio::time::{Duration, timeout};
 
+#[tokio::test(start_paused = true)]
+async fn udp_receive_error_backoff_yields_caps_and_recovers() {
+    let mut retry = UdpReceiveErrorBackoff::default();
+    let started = tokio::time::Instant::now();
+    for expected_delay_ms in [100, 200, 400, 800, 1_000, 1_000] {
+        let attempt_started = tokio::time::Instant::now();
+        let wait = retry.wait_after_error();
+        tokio::pin!(wait);
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+        tokio::time::advance(Duration::from_millis(expected_delay_ms - 1)).await;
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+        tokio::time::advance(Duration::from_millis(1)).await;
+        wait.await;
+        assert_eq!(
+            attempt_started.elapsed(),
+            Duration::from_millis(expected_delay_ms)
+        );
+    }
+    assert_eq!(started.elapsed(), Duration::from_millis(3_500));
+
+    retry.received_packet();
+    let recovered = tokio::time::Instant::now();
+    retry.wait_after_error().await;
+    assert_eq!(recovered.elapsed(), Duration::from_millis(100));
+}
+
+#[tokio::test(start_paused = true)]
+async fn udp_receive_error_backoff_can_be_cancelled_during_shutdown() {
+    let task = tokio::spawn(async {
+        UdpReceiveErrorBackoff::default().wait_after_error().await;
+    });
+    tokio::task::yield_now().await;
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+}
+
 fn dns_key(n: usize) -> TransportAddr {
     TransportAddr::from(format!("host{n}.example:2121"))
 }
@@ -131,16 +167,16 @@ fn udp_namespace_drop_sampling_is_bounded_and_keeps_last_good_value() {
         }),
         0
     );
-    assert_eq!(reads, 0, "the one-second node tick must not read /proc/net/snmp");
+    assert_eq!(
+        reads, 0,
+        "the one-second node tick must not read /proc/net/snmp"
+    );
 
     assert_eq!(
-        snapshot.namespace_drops(
-            started_at + LINUX_UDP_RCVBUF_ERRORS_POLL_INTERVAL,
-            || {
-                reads += 1;
-                Some(15)
-            },
-        ),
+        snapshot.namespace_drops(started_at + LINUX_UDP_RCVBUF_ERRORS_POLL_INTERVAL, || {
+            reads += 1;
+            Some(15)
+        },),
         5
     );
     assert_eq!(reads, 1);

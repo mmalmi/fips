@@ -108,6 +108,29 @@ fn debug_udp_fmp_batch(
     }
 }
 
+/// A socket can remain readable while every read fails (for example after an
+/// iOS network restriction). Such errors do not clear AsyncFd readiness, so
+/// immediately retrying can occupy an executor thread indefinitely.
+#[derive(Default)]
+struct UdpReceiveErrorBackoff {
+    delay: std::time::Duration,
+}
+
+impl UdpReceiveErrorBackoff {
+    fn received_packet(&mut self) {
+        self.delay = std::time::Duration::ZERO;
+    }
+
+    async fn wait_after_error(&mut self) {
+        self.delay = if self.delay.is_zero() {
+            std::time::Duration::from_millis(100)
+        } else {
+            (self.delay * 2).min(std::time::Duration::from_secs(1))
+        };
+        tokio::time::sleep(self.delay).await;
+    }
+}
+
 /// UDP receive loop - runs as a spawned task.
 ///
 /// On Linux, drains the kernel UDP queue in `UDP_RECV_BATCH_SIZE` bursts via
@@ -123,6 +146,7 @@ async fn udp_receive_loop(
     stats: Arc<UdpStats>,
 ) {
     debug!(transport_id = %transport_id, "UDP receive loop starting");
+    let mut recv_error_backoff = UdpReceiveErrorBackoff::default();
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn cached_transport_addr(
@@ -183,6 +207,7 @@ async fn udp_receive_loop(
             };
             match recv_result {
                 Ok((count, kernel_drops)) => {
+                    recv_error_backoff.received_packet();
                     stats.set_kernel_drops(kernel_drops as u64);
                     let timestamp_ms = crate::time::now_ms();
                     let trace_enqueued_at = crate::perf_profile::stamp();
@@ -323,6 +348,7 @@ async fn udp_receive_loop(
                         error = %e,
                         "UDP receive error"
                     );
+                    recv_error_backoff.wait_after_error().await;
                 }
             }
         }
@@ -345,6 +371,7 @@ async fn udp_receive_loop(
                 .await
             {
                 Ok((count, kernel_drops)) => {
+                    recv_error_backoff.received_packet();
                     stats.set_kernel_drops(kernel_drops as u64);
                     let timestamp_ms = crate::time::now_ms();
                     let trace_enqueued_at = crate::perf_profile::stamp();
@@ -419,6 +446,7 @@ async fn udp_receive_loop(
                         error = %e,
                         "UDP receive error"
                     );
+                    recv_error_backoff.wait_after_error().await;
                 }
             }
         }
@@ -431,6 +459,7 @@ async fn udp_receive_loop(
         loop {
             match socket.recv_from(&mut buf).await {
                 Ok((len, remote_addr, kernel_drops, _gro_segment_size)) => {
+                    recv_error_backoff.received_packet();
                     stats.record_recv(len);
                     stats.set_kernel_drops(kernel_drops as u64);
 
@@ -481,6 +510,7 @@ async fn udp_receive_loop(
                         error = %e,
                         "UDP receive error"
                     );
+                    recv_error_backoff.wait_after_error().await;
                 }
             }
         }
