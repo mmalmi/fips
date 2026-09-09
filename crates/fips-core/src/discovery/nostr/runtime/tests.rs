@@ -6,6 +6,7 @@ use crate::discovery::nostr::{
 };
 
 mod external_mesh;
+mod rating_freshness;
 
 #[test]
 fn event_channel_capacity_tracks_open_and_inbound_limits() {

@@ -101,6 +101,8 @@ impl NostrDiscovery {
     pub(crate) async fn process_rating_fact_event(&self, event: &Event) -> bool {
         if !self.config.open_discovery_trust_ratings_enabled
             || event.kind != Kind::Custom(RATING_FACT_KIND)
+            || event.created_at.as_secs()
+                > now_ms().saturating_add(FRESHNESS_SKEW_TOLERANCE_MS) / 1000
         {
             return false;
         }
@@ -162,6 +164,11 @@ impl NostrDiscovery {
             .and_then(|created_at| created_at.parse::<u64>().ok())
             .or_else(|| value.get("created_at").and_then(serde_json::Value::as_u64))
             .unwrap_or_else(|| event.created_at.as_secs());
+        // A trusted crawler's observation time is independent of the signed
+        // envelope. Neither clock may pin this peer above future health updates.
+        if created_at > now_ms().saturating_add(FRESHNESS_SKEW_TOLERANCE_MS) / 1000 {
+            return None;
+        }
         Some(RatingFactRecord {
             subject,
             score,
