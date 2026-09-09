@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.78] - 2026-09-09
+
+### Fixed
+
+- Refresh retained service routes when a transit connection returns before routing
+  converges, so pending application retries resume on the existing session.
+- Skip advert publication when no relay targets are configured while preserving
+  signed local adverts, external event ingestion, and later relay updates.
+
 ## [0.4.77] - 2026-09-09
 
 ### Fixed

@@ -365,6 +365,12 @@ impl Node {
             });
         };
 
+        // A carrier can reconnect before discovery restores its routed
+        // destinations. The session survives that gap, but its dataplane route
+        // may still be empty when pending traffic retries. Refresh this slow
+        // path from current routing evidence without displacing a healthy hop.
+        self.refresh_dataplane_fsp_owner_routes_retaining_current(dest_addr);
+
         let payload_count = payloads.len();
         // Pending session traffic waited outside dataplane while first-contact or
         // route recovery completed. Start the dataplane endpoint queue age when the

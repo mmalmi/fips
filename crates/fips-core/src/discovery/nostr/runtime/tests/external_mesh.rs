@@ -95,6 +95,58 @@ async fn external_peerfinding_signs_local_advert_without_relay_selection() {
 }
 
 #[tokio::test]
+async fn empty_relay_selection_is_quiet_and_preserves_mesh_adverts() {
+    let discovery = Arc::new(NostrDiscovery::new_for_test_with_config(
+        NostrDiscoveryConfig {
+            advertise: true,
+            advert_relays: Vec::new(),
+            ..Default::default()
+        },
+    ));
+    let mut advert = OverlayAdvert {
+        identifier: ADVERT_IDENTIFIER.to_string(),
+        version: ADVERT_VERSION,
+        endpoints: vec![OverlayEndpointAdvert {
+            transport: OverlayTransportKind::Tcp,
+            addr: "8.8.8.8:443".to_string(),
+        }],
+        stun_servers: None,
+    };
+    discovery
+        .update_local_advert(Some(advert.clone()))
+        .await
+        .unwrap();
+    discovery
+        .publish_advert()
+        .await
+        .expect("no relays is a quiet no-op");
+    let event = discovery.local_advert_event().await.unwrap().unwrap();
+    event
+        .verify()
+        .expect("mesh callers still get signed local adverts");
+    assert!(discovery.current_advert_event_id.read().await.is_none());
+
+    // A later relay configuration must resume the ordinary publisher. An
+    // invalid local advert proves it reaches validation without opening a socket.
+    advert.endpoints.clear();
+    discovery.update_local_advert(Some(advert)).await.unwrap();
+    discovery.publish_advert().await.unwrap();
+    discovery
+        .update_relays(vec!["ws://127.0.0.1:1".to_string()])
+        .await
+        .unwrap();
+    assert!(matches!(
+        discovery.publish_advert().await,
+        Err(BootstrapError::InvalidAdvert(_))
+    ));
+    discovery.update_relays(Vec::new()).await.unwrap();
+    discovery
+        .publish_advert()
+        .await
+        .expect("removed relays become quiet again");
+}
+
+#[tokio::test]
 async fn external_peerfinding_never_queries_configured_advert_relays() {
     let peer = nostr::Keys::generate();
     let peer_npub = peer.public_key().to_bech32().expect("peer npub");

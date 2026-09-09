@@ -406,10 +406,13 @@ impl NostrDiscovery {
         if !self.config.uses_relay_peerfinding() {
             return Ok(());
         }
+        let relay_config = self.relay_config.read().await.clone();
+        if relay_config.advert_relays.is_empty() {
+            return Ok(());
+        }
         let previous_event_id = self.current_advert_event_id.read().await.to_owned();
         if !self.config.advertise {
             if let Some(event_id) = previous_event_id {
-                let relay_config = self.relay_config.read().await.clone();
                 self.publish_delete(&relay_config.advert_relays, [event_id])
                     .await?;
                 *self.current_advert_event_id.write().await = None;
@@ -428,7 +431,6 @@ impl NostrDiscovery {
         };
 
         let (event, advert) = self.sign_advert(advert)?;
-        let relay_config = self.relay_config.read().await.clone();
         self.client
             .send_event_to(relay_config.advert_relays.clone(), &event)
             .await

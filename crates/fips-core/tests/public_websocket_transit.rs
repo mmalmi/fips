@@ -529,6 +529,86 @@ async fn configured_websocket_seed_reauthenticates_after_proxy_outage() {
 }
 
 #[tokio::test]
+async fn service_data_retries_recover_after_seed_only_transit_restarts() {
+    let seed_url = available_websocket_url();
+    let seed_identity = Identity::from_secret_bytes(&[111; 32]).unwrap();
+    let seed_config = with_identity(websocket_config(Some(&seed_url), None), &seed_identity);
+    let seed = bind_endpoint(seed_config.clone()).await;
+    let mut leaf_config = websocket_config(None, Some((&seed_identity.npub(), &seed_url)));
+    leaf_config.node.routing.mode = RoutingMode::Tree;
+    leaf_config.peers.clear(); // The WebSocket seed's identity hint is the only bootstrap.
+    if let TransportInstances::Single(websocket) = &mut leaf_config.transports.websocket {
+        websocket.reconnect_initial_ms = None;
+        websocket.reconnect_max_ms = None;
+    }
+    let a = bind_endpoint(with_identity(
+        leaf_config.clone(),
+        &Identity::from_secret_bytes(&[112; 32]).unwrap(),
+    ))
+    .await;
+    let c = bind_endpoint(with_identity(
+        leaf_config,
+        &Identity::from_secret_bytes(&[113; 32]).unwrap(),
+    ))
+    .await;
+    let receiver = c.register_service_receiver(SERVICE_PORT).await.unwrap();
+    tokio::join!(
+        wait_for_exact_seed(&a, seed.npub()),
+        wait_for_exact_seed(&c, seed.npub())
+    );
+    let remote = PeerIdentity::from_npub(c.npub()).unwrap();
+    a.send_datagram(
+        remote,
+        SOURCE_PORT,
+        SERVICE_PORT,
+        b"before restart".to_vec(),
+    )
+    .await
+    .unwrap();
+    receive_payload(&receiver, a.npub(), b"before restart").await;
+
+    seed.shutdown().await.unwrap();
+    for (i, size) in [64, 512, 1200].into_iter().enumerate() {
+        a.send_datagram(remote, SOURCE_PORT, SERVICE_PORT, vec![i as u8; size])
+            .await
+            .unwrap();
+    }
+    let seed = bind_endpoint(seed_config).await;
+    let mut received = std::collections::BTreeSet::new();
+    let mut batch = Vec::new();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let mut retry = tokio::time::interval(Duration::from_millis(200));
+        while received.len() < 3 {
+            tokio::select! {
+                result = receiver.recv_batch_into(&mut batch, 64) => {
+                    result.unwrap();
+                    for datagram in batch.drain(..) {
+                        assert_eq!(datagram.source_peer.npub(), a.npub());
+                        let index = usize::from(datagram.data.as_slice()[0]);
+                        assert_eq!(datagram.data.as_slice(), vec![index as u8; [64, 512, 1200][index]]);
+                        received.insert(index);
+                    }
+                }
+                _ = retry.tick() => {
+                    for (i, size) in [64, 512, 1200].into_iter().enumerate() {
+                        if !received.contains(&i) {
+                            a.send_datagram(remote, SOURCE_PORT, SERVICE_PORT, vec![i as u8; size]).await.unwrap();
+                        }
+                    }
+                }
+            }
+        }
+    }).await.expect("service retries resume on the retained routed session");
+    tokio::join!(
+        wait_for_exact_seed(&a, seed.npub()),
+        wait_for_exact_seed(&c, seed.npub())
+    );
+    for endpoint in [a, seed, c] {
+        endpoint.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn closed_websocket_client_leaves_seed_roster_promptly() {
     let seed_url = available_websocket_url();
     let seed_identity = Identity::generate();
