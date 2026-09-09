@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.77] - 2026-09-09
+
+### Fixed
+
+- Reject signed peer ratings dated beyond the allowed clock skew before storing
+  them, so a future-dated fact cannot prevent later corrections from taking effect.
+
+### Changed
+
+- Remove redundant registry waits after successful Cargo publication and simplify
+  equivalent executor and terminal guards for current compiler lint checks.
+
 ## [0.4.76] - 2026-09-08
 
 ### Fixed
