@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.79] - 2026-09-10
+
+### Changed
+
+- Stop session measurement reports from continuously triggering more reports
+  after application traffic settles. Preserve all wire counters, loss and RTT
+  tracking, report modes, link heartbeats and path-MTU confirmations.
+- In a controlled three-process relayless Chat–Drive–Hashtree comparison, reduce
+  combined transit idle traffic by 33% before an outage and 24% after recovery.
+  Both unoptimized runs retain signed-event delivery, verified blobs and
+  transit-restart recovery; these short samples do not measure mobile energy.
+- Release `nvpn-fips-core` and `nvpn-fips-endpoint` 0.4.79 together. The FIPS
+  application version and protocol wire formats are unchanged.
+
 ## [0.4.78] - 2026-09-09
 
 ### Fixed
