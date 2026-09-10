@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.81] - 2026-09-10
+
+### Fixed
+
+- Rediscover missing coordinates when a live routed session needs rekey.
+  Reuse bounded, deduplicated discovery while the established session continues
+  carrying data; verify coordinate proofs before completing the new key epoch.
+- Cover cached-route delivery after coordinate eviction, repeated due checks,
+  both endpoint key cutovers, and payload delivery after recovery.
+
+### Changed
+
+- Retain batch-sized crypto buffer reservations: one item for singleton control
+  traffic, 128 for full batches, with growth across admission batches.
+- Isolate the staggered rekey fixture from periodic parent-cost optimization.
+  Preserve its zero-loss and per-session epoch assertions; routing-change
+  scenarios continue exercising best-effort mesh behavior separately.
+- Release `nvpn-fips-core` and `nvpn-fips-endpoint` 0.4.81. Protocol wire formats
+  and the FIPS application version are unchanged.
+
 ## [0.4.80] - 2026-09-10
 
 ### Changed
@@ -16,8 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Buffers can grow as dispatch continues across admission batches.
 - Cover inbound and outbound allocation bounds with real crypto completion,
   plaintext and counter-order checks, including dispatch continuation.
-- Release `nvpn-fips-core` and `nvpn-fips-endpoint` 0.4.80. Packet scheduling,
-  crypto operations, wire formats and the FIPS application version are unchanged.
+- This source-only preparation was held from the registry after hosted rekey
+  integration failed. Its public core source tag is preserved; the corrected
+  library release is 0.4.81.
 
 ## [0.4.79] - 2026-09-10
 
