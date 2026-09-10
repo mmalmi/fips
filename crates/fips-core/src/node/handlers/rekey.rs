@@ -887,6 +887,9 @@ impl Node {
 
         // Check route availability before paying crypto cost
         if self.find_next_hop(dest_addr).is_none() {
+            // Tree changes can evict coordinates while cached payload routes
+            // remain usable. Rekey must recover its own route in that case.
+            self.maybe_initiate_lookup(dest_addr).await;
             trace!(
                 peer = %self.peer_display_name(dest_addr),
                 "FSP rekey skipped: no route to destination"
