@@ -355,7 +355,9 @@ impl DataplaneOwnerShard {
                             prepared_epoch = None;
                             match owner.open_key(receive_epoch) {
                                 Some(open_key) => {
-                                    prepared_run = Some(PreparedCryptoRun::open(work, open_key));
+                                    prepared_run = Some(PreparedCryptoRun::open(
+                                        work, open_key, self.admission_run.len() + 1,
+                                    ));
                                     prepared_epoch = Some(receive_epoch);
                                 }
                                 None => ready_slots.push(CryptoReadySlot::completed(
@@ -494,7 +496,9 @@ impl DataplaneOwnerShard {
                             }
                             match owner.seal_key(work.reservation.send_epoch) {
                                 Some(seal_key) => {
-                                    prepared_run = Some(PreparedCryptoRun::seal(work, seal_key));
+                                    prepared_run = Some(PreparedCryptoRun::seal(
+                                        work, seal_key, self.outbound_admission_run.len() + 1,
+                                    ));
                                 }
                                 None => ready_slots.push(CryptoReadySlot::completed(
                                     failed_crypto_completion(

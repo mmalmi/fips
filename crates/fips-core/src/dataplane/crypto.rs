@@ -14,21 +14,21 @@ pub(crate) struct PreparedCryptoRun {
 }
 
 impl PreparedCryptoRun {
-    fn open(work: CryptoWork, cipher: AeadKey) -> Self {
+    fn open(work: CryptoWork, cipher: AeadKey, capacity: usize) -> Self {
         Self {
             run: CryptoOwnerRun::new(
                 CryptoOwnerRunItem::open(work),
-                DATAPLANE_AEAD_JOB_PACKETS,
+                capacity.clamp(1, DATAPLANE_AEAD_JOB_PACKETS),
             ),
             cipher,
         }
     }
 
-    fn seal(work: OutboundCryptoWork, cipher: AeadKey) -> Self {
+    fn seal(work: OutboundCryptoWork, cipher: AeadKey, capacity: usize) -> Self {
         Self {
             run: CryptoOwnerRun::new(
                 CryptoOwnerRunItem::seal(work),
-                DATAPLANE_AEAD_JOB_PACKETS,
+                capacity.clamp(1, DATAPLANE_AEAD_JOB_PACKETS),
             ),
             cipher,
         }

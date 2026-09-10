@@ -84,10 +84,10 @@
     fn execute_test_prepared_crypto_work(work: CapturedCryptoWork) -> CryptoCompletion {
         match work {
             CapturedCryptoWork::Open(work, key) => {
-                execute_test_prepared_crypto_run(PreparedCryptoRun::open(work, key))
+                execute_test_prepared_crypto_run(PreparedCryptoRun::open(work, key, 1))
             }
             CapturedCryptoWork::Seal(work, key) => {
-                execute_test_prepared_crypto_run(PreparedCryptoRun::seal(work, key))
+                execute_test_prepared_crypto_run(PreparedCryptoRun::seal(work, key, 1))
             }
         }
     }
@@ -96,11 +96,12 @@
         execute_test_prepared_crypto_run(PreparedCryptoRun::open(
             work,
             test_key(key),
+            1,
         ))
     }
 
     fn complete_test_seal_work(work: OutboundCryptoWork, key: u8) -> CryptoCompletion {
-        execute_test_prepared_crypto_run(PreparedCryptoRun::seal(work, test_key(key)))
+        execute_test_prepared_crypto_run(PreparedCryptoRun::seal(work, test_key(key), 1))
     }
 
     fn dispatch_available(mover: &mut Dataplane, limit: usize) -> Vec<CryptoWork> {
