@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.80] - 2026-09-10
+
+### Changed
+
+- Size prepared crypto buffers from the admitted packet batch. Singleton control
+  traffic reserves one item, and full batches retain their 128-item reservation.
+  Buffers can grow as dispatch continues across admission batches.
+- Cover inbound and outbound allocation bounds with real crypto completion,
+  plaintext and counter-order checks, including dispatch continuation.
+- Release `nvpn-fips-core` and `nvpn-fips-endpoint` 0.4.80. Packet scheduling,
+  crypto operations, wire formats and the FIPS application version are unchanged.
+
 ## [0.4.79] - 2026-09-10
 
 ### Changed
