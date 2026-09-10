@@ -192,12 +192,12 @@ encrypted message includes:
 Sessions that see no traffic for a configurable duration (default 90s) are
 torn down. When traffic resumes, a new session is established automatically.
 
-Only DataPacket (message type 0x10) send/receive and session establishment
-reset `last_activity`. MMP traffic — SenderReport, ReceiverReport, and
+Only application DataPacket (0x10), EndpointData (0x15), and session establishment
+reset the idle timer. MMP traffic — SenderReport, ReceiverReport, and
 PathMtuNotification — does not reset the idle timer. This means a session
 carrying only MMP reports and no application data will still tear down after
-`node.session.idle_timeout_secs`. MMP reports continue flowing until the
-session is torn down, providing final measurement data for the teardown log.
+`node.session.idle_timeout_secs`. Final measurement counters remain available
+for the teardown log even while report generation is quiet.
 
 The idle timeout is deliberately shorter than the coordinate cache TTL (300s).
 This ordering ensures that when traffic stops and the session tears down, the
@@ -475,9 +475,15 @@ path MTU.
 
 ### Report Intervals
 
-Session-layer report intervals are higher than link-layer to account for
-bandwidth cost: clamped to [500ms, 10s] with a cold-start interval of 1s
-(vs. link-layer [100ms, 2s] with 500ms cold-start).
+Session report intervals are clamped to [500ms, 10s] with a cold-start interval
+of 1s. Link reports use [1s, 5s] after their initial 200ms cold-start phase.
+
+Every session frame contributes to wire counters, packet-loss tracking, and
+timestamps. SenderReport and ReceiverReport frames do not themselves schedule
+more session reports: fresh application or other control traffic is required.
+This prevents a completed transfer from sustaining end-to-end report traffic
+on every transit link. New traffic resumes the existing adaptive cadence;
+independent path-MTU confirmations retain their normal schedule.
 
 ### Path MTU Tracking
 
@@ -515,11 +521,9 @@ departed the network but the local session has not yet timed out.
 
 ### Idle Timeout Interaction
 
-MMP reports (SenderReport, ReceiverReport) and PathMtuNotification do **not**
-reset the session idle timer. Only application data (DataPacket, type 0x10)
-resets `last_activity`. This ensures sessions with no application traffic
-tear down after `node.session.idle_timeout_secs` (default 90s), while MMP
-continues providing measurement data up to the teardown moment.
+Reports and path-MTU notifications do not extend the
+[session idle timeout](#session-idle-timeout). A quiet measurement interval
+preserves both the final counters and the normal session teardown deadline.
 
 ### Operator Logging
 

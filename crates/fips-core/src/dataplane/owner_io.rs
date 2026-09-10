@@ -187,6 +187,9 @@ impl OwnerState {
                     .saturating_add(packet.payload.len())
                     .saturating_add(AEAD_TAG_SIZE);
                 mmp.sender.record_sent(counter, timestamp_ms, frame_bytes);
+                if let OutboundPayloadTransform::FspInnerHeader { msg_type, .. } = packet.payload_transform {
+                    mmp.sender_report_pending |= dataplane_fsp_message_elicits_report(msg_type);
+                }
             }
         }
         self.reserve_class(packet.class);
@@ -236,6 +239,7 @@ impl OwnerState {
             ..
         } = session;
         if let Some(mmp) = &mut self.fsp_mmp {
+            mmp.receiver_report_pending |= dataplane_fsp_message_elicits_report(msg_type);
             mmp.receiver.record_recv(
                 sync.counter,
                 sync.timestamp,
@@ -489,9 +493,11 @@ impl OwnerState {
         let prior_failures = mmp.sender.consecutive_send_failures();
 
         if mode == crate::mmp::MmpMode::Full
+            && mmp.sender_report_pending
             && mmp.sender.should_send_report(now)
             && let Some(sr) = mmp.sender.build_report(now)
         {
+            mmp.sender_report_pending = false;
             let session_sr: crate::protocol::SessionSenderReport =
                 crate::protocol::SessionSenderReport::from(&sr);
             batch.reports.push(DataplaneFspMmpReport {
@@ -503,9 +509,11 @@ impl OwnerState {
         }
 
         if mode != crate::mmp::MmpMode::Minimal
+            && mmp.receiver_report_pending
             && mmp.receiver.should_send_report(now)
             && let Some(rr) = mmp.receiver.build_report(now)
         {
+            mmp.receiver_report_pending = false;
             let session_rr: crate::protocol::SessionReceiverReport =
                 crate::protocol::SessionReceiverReport::from(&rr);
             batch.reports.push(DataplaneFspMmpReport {

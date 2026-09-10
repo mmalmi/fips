@@ -249,6 +249,9 @@ impl MmpPeerState {
 pub struct MmpSessionState {
     pub sender: SenderState,
     pub receiver: ReceiverState,
+    // Reports count toward wire metrics, but must not perpetuate reporting.
+    pub(crate) sender_report_pending: bool,
+    pub(crate) receiver_report_pending: bool,
     pub metrics: MmpMetrics,
     pub spin_bit: SpinBitState,
     mode: MmpMode,
@@ -269,6 +272,8 @@ impl MmpSessionState {
                 config.owd_window_size,
                 SESSION_COLD_START_INTERVAL_MS,
             ),
+            sender_report_pending: false,
+            receiver_report_pending: false,
             metrics: MmpMetrics::new(),
             spin_bit: SpinBitState::new(is_initiator),
             mode: config.mode,
@@ -283,6 +288,8 @@ impl MmpSessionState {
         self.sender.reset_for_rekey();
         self.receiver.reset_for_rekey(now);
         self.metrics.reset_for_rekey();
+        self.sender_report_pending = false;
+        self.receiver_report_pending = false;
     }
 
     /// Current operating mode.
