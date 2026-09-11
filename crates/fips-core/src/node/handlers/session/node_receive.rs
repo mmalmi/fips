@@ -485,7 +485,7 @@ impl Node {
                 }
                 let activity = self.dataplane.fsp_owner_activity(addr)?;
                 let next_hop = activity.last_outbound_next_hop()?;
-                (activity.has_recent_outbound_without_delivery_feedback_from(
+                (activity.has_unacknowledged_outbound_from(
                     &next_hop,
                     now_ms,
                     DECRYPT_FAILURE_RECOVERY_QUIET_MS,
