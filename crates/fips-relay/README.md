@@ -121,6 +121,21 @@ performance and the public customer flow remain unfinished.
   never reopens a closed route solely because background recovery runs. The
   native controller test closes and repurchases all six channels, forwards both
   directions again, and settles both generations without resetting any wallet.
+* An explicitly requested fresh route can replace the provider, native path or
+  price while retaining unchanged neighbour channels. The controller saves a
+  replacement intent, stops old quote admission, verifies upstream funding and
+  accepts onward service before activating the new quote. Other upstream quotes
+  dependent on the old onward purchase stop and require fresh agreements.
+  Old accounting and duplicate evidence remain; a disconnected former provider
+  cannot prevent buying the new path, but its funding stays locked. Authenticated
+  stop notices retry when it reconnects. Settlement pauses pending replacements.
+* The route-change controller test disconnects the middle node through the native
+  management API and connects the outer relays directly. Both directions resume
+  at a lower price, keep the source channels, and open only two new one-way
+  channels. Controller reload recovers a lost reply and outgoing record with the
+  same replacement agreements. Reconnecting old neighbours permits all eight
+  channels to settle and all 640 test sats to be redeemed and spent again.
+  Automatic source detection/requoting and physical route changes remain unfinished.
 * If a crash leaves the provider's usage ahead of the buyer's saved submission
   evidence, the controller pays the supported portion of the cumulative claim.
   Later known submissions can continue earning payments; the unsupported

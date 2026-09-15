@@ -28,20 +28,26 @@ use std::{
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn routers_independently_fund_accept_and_pay_both_directions() {
-    controller_scenario(false, false).await;
+    controller_scenario(false, false, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn exhausted_channels_renew_automatically_without_resetting_capital_or_spending() {
-    controller_scenario(true, false).await;
+    controller_scenario(true, false, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restored_buyer_pays_supported_usage_despite_a_provider_evidence_gap() {
-    controller_scenario(false, true).await;
+    controller_scenario(false, true, false).await;
 }
 
-async fn controller_scenario(automatic_renewal: bool, evidence_gap: bool) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
+async fn changed_native_paths_reprice_routes_and_reuse_unchanged_neighbor_channels() {
+    controller_scenario(false, false, true).await;
+}
+
+async fn controller_scenario(automatic_renewal: bool, evidence_gap: bool, route_change: bool) {
     tokio::time::timeout(Duration::from_secs(240), async {
         let root = tempfile::tempdir().unwrap();
         let now = SystemTime::now()
@@ -92,6 +98,10 @@ async fn controller_scenario(automatic_renewal: bool, evidence_gap: bool) {
             config.node.identity.nsec =
                 Some(fips_core::encode_nsec(&identity.keypair().secret_key()));
             config.node.control.enabled = false;
+            if route_change && (1..=3).contains(&i) {
+                config.node.control.enabled = true;
+                config.node.control.socket_path = root.path().join(format!("native-{i}.sock")).to_str().unwrap().into();
+            }
             config.node.discovery.nostr.enabled = false;
             config.node.discovery.lan.enabled = false;
             config.node.discovery.local.enabled = false;
@@ -156,7 +166,7 @@ async fn controller_scenario(automatic_renewal: bool, evidence_gap: bool) {
             let neighbors: Vec<_> = peers
                 .iter()
                 .enumerate()
-                .filter(|(j, _)| i.abs_diff(*j) == 1)
+                .filter(|(j, _)| i.abs_diff(*j) == 1 || (route_change && ((i == 1 && *j == 3) || (i == 3 && *j == 1))))
                 .map(|(_, p)| *p)
                 .collect();
             let (quote_transport, quote_incoming) =
@@ -405,6 +415,251 @@ async fn controller_scenario(automatic_renewal: bool, evidence_gap: bool) {
                 "automatic payments replenished the initial allowance"
             );
         }
+        if route_change {
+            // Replace the middle path with 0--1--3--4. Removing config hints
+            // alone preserves live links, so use the real local control API to
+            // disconnect the old links after suppressing their retry hints.
+            for (i, node) in nodes.iter().enumerate() {
+                let edges = [(0usize, 1usize), (1, 3), (3, 4)];
+                node.update_peers(
+                    peers
+                        .iter()
+                        .enumerate()
+                        .filter(|(j, _)| {
+                            edges
+                                .iter()
+                                .any(|(a, b)| (i == *a && *j == *b) || (i == *b && *j == *a))
+                        })
+                        .map(|(j, _)| {
+                            let mut peer =
+                                PeerConfig::new(nodes[j].npub(), "udp", addresses[j].to_string());
+                            if (i == 1 && j == 3) || (i == 3 && j == 1) {
+                                peer.connect_policy = fips_core::config::ConnectPolicy::Manual;
+                            }
+                            peer
+                        })
+                        .collect(),
+                )
+                .await
+                .unwrap();
+            }
+            #[cfg(unix)]
+            for peer in [peers[1], peers[3]] {
+                native_control(
+                    root.path(),
+                    2,
+                    serde_json::json!({
+                        "command": "disconnect", "params": {"npub": peer.npub()}
+                    }),
+                )
+                .await;
+            }
+            // Explicitly establish the new carrier. Auto-connect may first warm
+            // an end-to-end session over the old graph instead of a direct link.
+            #[cfg(unix)]
+            native_control(
+                root.path(),
+                1,
+                serde_json::json!({
+                    "command": "connect", "params": {
+                        "npub": peers[3].npub(), "address": addresses[3].to_string(), "transport": "udp"
+                    }
+                }),
+            )
+            .await;
+            tokio::time::timeout(Duration::from_secs(60), async {
+                loop {
+                    let mut count = 0;
+                    for node in &nodes {
+                        count += node
+                            .peers()
+                            .await
+                            .unwrap()
+                            .iter()
+                            .filter(|p| p.connected)
+                            .count();
+                    }
+                    if count == 6
+                        && nodes[1]
+                            .resolve_next_hop(peers[4], Some(*peers[0].node_addr()))
+                            .await
+                            .unwrap()
+                            .is_some_and(|p| p == peers[3])
+                        && nodes[3]
+                            .resolve_next_hop(peers[0], Some(*peers[4].node_addr()))
+                            .await
+                            .unwrap()
+                            .is_some_and(|p| p == peers[1])
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .expect("changed native topology connects");
+            let (forward, reverse) = tokio::join!(
+                controllers[0].buy_route(peers[4]),
+                controllers[4].buy_route(peers[0])
+            );
+            let forward = forward.unwrap_or_else(|e| {
+                panic!(
+                    "changed forward route: {e}; errors={:?}",
+                    errors(&controllers)
+                )
+            });
+            let reverse = reverse.unwrap_or_else(|e| {
+                panic!(
+                    "changed reverse route: {e}; errors={:?}",
+                    errors(&controllers)
+                )
+            });
+            assert_eq!(
+                forward.channel.id, a.channel.id,
+                "same source neighbour keeps its channel"
+            );
+            assert_eq!(
+                reverse.channel.id, b.channel.id,
+                "same reverse neighbour keeps its channel"
+            );
+            assert_eq!(forward.contract.price.msat, 2048);
+            assert_eq!(reverse.contract.price.msat, 2048);
+            assert_ne!(forward.contract.id, a.contract.id);
+            assert_ne!(reverse.contract.id, b.contract.id);
+            assert_eq!(forward.contract.next_hop, *peers[3].node_addr());
+            assert_eq!(reverse.contract.next_hop, *peers[1].node_addr());
+            let unauthorized = serde_json::to_vec(&ControllerRequest::StopRoute {
+                contract_id: forward.contract.id.clone(),
+            })
+            .unwrap();
+            assert!(matches!(
+                controllers[1].handle(peers[3], &unauthorized).await,
+                ControllerResponse::Rejected
+            ));
+            let before = [forward.clone(), reverse.clone()];
+            let mut streams = Vec::new();
+            for task in tasks.drain(..) {
+                streams.push(task.stop().await.unwrap());
+            }
+            controllers.clear();
+            // Recover a lost replacement reply and a lost outgoing record.
+            // The old quote history and earlier funding intent are untouched.
+            for (source, purchase) in [(0, &forward), (4, &reverse)] {
+                let path = root
+                    .path()
+                    .join(format!("controller-{source}/controller.json"));
+                let mut journal: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                if source == 0 {
+                    journal["outgoing"][&purchase.contract.id]["accepted"] = false.into();
+                } else {
+                    journal["outgoing"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove(&purchase.contract.id);
+                }
+                std::fs::write(path, serde_json::to_vec(&journal).unwrap()).unwrap();
+            }
+            for (i, stream) in streams.into_iter().enumerate() {
+                let controller = Arc::new(
+                    Controller::load(
+                        &root.path().join(format!("controller-{i}")),
+                        policy(mint.url(), false),
+                        services[i].clone(),
+                    )
+                    .unwrap(),
+                );
+                tasks.push(ControllerTasks::start(controller.clone(), stream));
+                controllers.push(controller);
+            }
+            tokio::time::timeout(Duration::from_secs(20), async {
+                loop {
+                    if controllers[0].purchases().await.unwrap() == vec![before[0].clone()]
+                        && controllers[4].purchases().await.unwrap() == vec![before[1].clone()]
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            })
+            .await
+            .expect("replacement recovery retains the same channels and contracts");
+            for (source, destination) in [(0, 4), (4, 0)] {
+                let payload = vec![source as u8 + 99; 500];
+                nodes[source]
+                    .send_datagram(peers[destination], 44_740, 44_740, payload.clone())
+                    .await
+                    .unwrap();
+                tokio::time::timeout(Duration::from_secs(20), async {
+                    let mut received = Vec::new();
+                    loop {
+                        data[destination]
+                            .recv_batch_into(&mut received, 8)
+                            .await
+                            .unwrap();
+                        if received.iter().any(|m| m.data.as_slice() == payload) {
+                            break;
+                        }
+                    }
+                })
+                .await
+                .expect("paid delivery traverses the new native path");
+            }
+            // Reconnect the old neighbours for final bilateral settlement,
+            // retaining the new link too. No further application traffic runs.
+            for (i, node) in nodes.iter().enumerate() {
+                node.update_peers(
+                    peers
+                        .iter()
+                        .enumerate()
+                        .filter(|(j, _)| {
+                            i.abs_diff(*j) == 1 || (i == 1 && *j == 3) || (i == 3 && *j == 1)
+                        })
+                        .map(|(j, _)| PeerConfig::new(nodes[j].npub(), "udp", addresses[j].to_string()))
+                        .collect(),
+                )
+                .await
+                .unwrap();
+            }
+            tokio::time::timeout(Duration::from_secs(20), async {
+                loop {
+                    let mut count = 0;
+                    for node in &nodes {
+                        count += node
+                            .peers()
+                            .await
+                            .unwrap()
+                            .iter()
+                            .filter(|p| p.connected)
+                            .count();
+                    }
+                    if count == 10 {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .unwrap();
+            links.clear();
+            for (i, controller) in controllers.iter().enumerate() {
+                let mut seen = std::collections::HashSet::new();
+                for p in controller.purchase_history().await.unwrap() {
+                    if seen.insert(p.channel.id.clone()) {
+                        let seller = peers
+                            .iter()
+                            .position(|peer| peer.node_addr() == &p.provider)
+                            .unwrap();
+                        links.push((i, seller, p));
+                    }
+                }
+            }
+            assert_eq!(
+                links.len(),
+                8,
+                "only the two new neighbour pairs need additional funding"
+            );
+        }
         // Freeze a quiescent replacement for the lost-acceptance-reply check.
         // A last in-flight datagram can exhaust a channel after its delivery
         // was observed. Resuming that already-due channel legitimately opens
@@ -432,7 +687,7 @@ async fn controller_scenario(automatic_renewal: bool, evidence_gap: bool) {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         }).await.expect("renewal fixture reaches a funded, non-exhausted checkpoint");
-        if !automatic_renewal {
+        if !automatic_renewal && !route_change {
             // An explicit close ends this purchase, not the saved account.
             // Background recovery cannot interpret it as another purchase.
             for controller in &controllers {
@@ -582,10 +837,10 @@ async fn controller_scenario(automatic_renewal: bool, evidence_gap: bool) {
         assert!(expected[1..4].iter().all(|n| *n > seed_sat as i64));
         for (i, node) in nodes.iter().enumerate() {
             let neighbors = node.peers().await.unwrap();
-            assert_eq!(neighbors.len(), if i == 0 || i == 4 { 1 } else { 2 });
+            assert_eq!(neighbors.len(), if i == 0 || i == 4 { 1 } else if route_change && i!=2 {3} else { 2 });
             for neighbor in neighbors {
                 let j = peers.iter().position(|p| p.node_addr() == &neighbor.node_addr).unwrap();
-                assert_eq!(i.abs_diff(j), 1, "native topology cannot acquire a shortcut");
+                assert!(i.abs_diff(j)==1 || (route_change && ((i==1 && j==3)||(i==3 && j==1))), "native topology cannot acquire an unconfigured shortcut");
             }
         }
         for task in tasks {
@@ -659,4 +914,23 @@ fn policy(mint_url: &str, automatic_renewal: bool) -> ControllerPolicy {
             before_expiry_secs: 30,
         }),
     }
+}
+
+#[cfg(unix)]
+async fn native_control(root: &std::path::Path, node: usize, request: serde_json::Value) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let mut socket = tokio::net::UnixStream::connect(root.join(format!("native-{node}.sock")))
+            .await
+            .unwrap();
+        let mut bytes = serde_json::to_vec(&request).unwrap();
+        bytes.push(b'\n');
+        socket.write_all(&bytes).await.unwrap();
+        let mut reply = String::new();
+        BufReader::new(socket).read_line(&mut reply).await.unwrap();
+        let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(reply["status"], "ok", "native control failed: {reply}");
+    })
+    .await
+    .expect("native management deadline");
 }

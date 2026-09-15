@@ -46,6 +46,15 @@ opposite-direction channel when needed. Persist funding and cumulative signed
 balances; settle/renew near capacity or expiry. Persistent does not mean an
 unbounded lifetime or an unlimited balance.
 
+Open channels on demand for an authorized purchase. Discovering a neighbour
+alone is not permission to lock funds. Brief disconnects retain the account;
+expiry and settlement deadlines still apply. Keep individual channel limits and
+a total working-capital limit. A relay must redeem incoming signed balances at
+the mint before spending those funds on onward service, so capacity exhaustion,
+approaching expiry and liquidity needs motivate settlement and replacement.
+Opposite-direction channels remain separate funded obligations; do not silently
+net their balances. Payment signatures authorize value and do not prove delivery.
+
 Quotes authorize forwarding and set prices; channels hold aggregate payment and
 exposure. A quote change cannot reset channel usage or grant another grace
 window. Retain duplicate-packet evidence across quote changes and channel

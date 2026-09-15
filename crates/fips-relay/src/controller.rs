@@ -46,6 +46,10 @@ mod renewal;
 use renewal::Renewal;
 pub use renewal::RenewalPolicy;
 
+#[path = "controller_routes.rs"]
+mod routes;
+use routes::RouteChange;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ControllerPolicy {
     pub mint_url: String,
@@ -120,6 +124,8 @@ struct Incoming {
     contract: Contract,
     verified_paid_msat: u64,
     phase: Phase,
+    #[serde(default)]
+    replaces: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -141,6 +147,8 @@ struct Journal {
     seller_settlements: BTreeMap<String, SellerSettlement>,
     renewals: BTreeMap<String, Renewal>,
     renewals_paused: bool,
+    #[serde(default)]
+    route_changes: BTreeMap<String, RouteChange>,
 }
 
 struct Store {
@@ -182,6 +190,11 @@ pub enum ControllerRequest {
         offer_id: String,
         channel: ChannelTerms,
         payment: Box<CashuSpilmanPayment>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        replaces: Option<String>,
+    },
+    StopRoute {
+        contract_id: String,
     },
     Seal {
         channel_id: String,
@@ -205,6 +218,9 @@ pub enum ControllerResponse {
     Settled {
         report: SettlementReport,
     },
+    RouteStopped {
+        contract_id: String,
+    },
     Pending,
     Rejected,
 }
@@ -216,6 +232,7 @@ pub struct Controller {
     wallet: Arc<AsyncMutex<()>>,
     maintenance: AsyncMutex<()>,
     renewal_work: AsyncMutex<()>,
+    route_work: AsyncMutex<()>,
     accepting: Mutex<HashSet<String>>,
     last_error: Mutex<Option<String>>,
 }
@@ -278,6 +295,7 @@ impl Controller {
                 seller_settlements: BTreeMap::new(),
                 renewals: BTreeMap::new(),
                 renewals_paused: false,
+                route_changes: BTreeMap::new(),
             },
             ready: true,
             _owner: owner,
@@ -306,6 +324,7 @@ impl Controller {
         }
         let journal: Journal = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
         Self::validate_journal(&journal, &policy, *services.endpoint.node_addr())?;
+        Self::reconcile_route_stops(&journal, &services)?;
         Ok(Self::with_store(
             policy,
             services,
@@ -326,6 +345,7 @@ impl Controller {
             wallet: Arc::new(AsyncMutex::new(())),
             maintenance: AsyncMutex::new(()),
             renewal_work: AsyncMutex::new(()),
+            route_work: AsyncMutex::new(()),
             accepting: Mutex::new(HashSet::new()),
             last_error: Mutex::new(None),
         }
@@ -419,6 +439,7 @@ impl Controller {
         if locked > policy.max_locked_sat {
             return Err("capital budget exceeded".into());
         }
+        Self::validate_route_changes(j)?;
         let mut requested = HashSet::new();
         for (id, offer) in &j.requested {
             if id != &offer.id
@@ -449,6 +470,7 @@ impl Controller {
                 || o.purchase.channel != f.terms
                 || (!o.retired && j.requested.get(&o.offer.id) != Some(&o.offer))
                 || (o.retired
+                    && !Self::changed_route_retires(j, &o.purchase)
                     && !j
                         .buyer_settlements
                         .get(&o.purchase.channel.id)
@@ -479,6 +501,14 @@ impl Controller {
                 || i.contract.price != i.offer.price
                 || i.contract.destination != *i.offer.destination.node_addr()
                 || i.contract.next_hop != i.offer.next_hop
+                || i.replaces.as_ref().is_some_and(|previous| {
+                    previous == id
+                        || j.incoming.get(previous).is_none_or(|old| {
+                            old.channel.buyer != i.channel.buyer
+                                || old.contract.destination != i.contract.destination
+                                || old.phase != Phase::Stopped
+                        })
+                })
             {
                 return Err("invalid accepted upstream agreement".into());
             }
@@ -545,6 +575,15 @@ impl Controller {
     }
 
     async fn fund(&self, offer: &RouteOffer) -> Result<(String, Funded), String> {
+        if self
+            .snapshot()
+            .await?
+            .route_changes
+            .get(&offer.id)
+            .is_some_and(|c| c.paused)
+        {
+            return Err("route change paused".into());
+        }
         if offer.buyer != *self.services.endpoint.node_addr()
             || offer.mint_url != self.policy.mint_url
             || offer.expires_unix <= now()?
@@ -686,6 +725,7 @@ impl Controller {
 
     async fn purchase_offer(&self, offer: RouteOffer) -> Result<Purchase, String> {
         let peer = self.neighbor(offer.provider).await?;
+        self.prepare_changed_route(&offer).await?;
         let existing = self
             .snapshot()
             .await?
@@ -875,6 +915,15 @@ impl Controller {
     }
 
     async fn send_accept(&self, peer: PeerIdentity, record: Outgoing) -> Result<Purchase, String> {
+        if self
+            .snapshot()
+            .await?
+            .route_changes
+            .get(&record.offer.id)
+            .is_some_and(|c| c.paused)
+        {
+            return Err("route change paused".into());
+        }
         let payment = self
             .opening_payment(&record.purchase.channel, record.purchase.provider)
             .await?;
@@ -882,6 +931,7 @@ impl Controller {
             offer_id: record.offer.id.clone(),
             channel: record.purchase.channel.clone(),
             payment: Box::new(payment),
+            replaces: self.replaces_for(&record.offer).await?,
         })
         .map_err(|e| e.to_string())?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
@@ -935,13 +985,17 @@ impl Controller {
         if body.len() > MAX_RECORD_BYTES {
             return Err("oversized acceptance".into());
         }
-        let (offer_id, channel, payment) =
+        let (offer_id, channel, payment, replaces) =
             match serde_json::from_slice(body).map_err(|_| "invalid acceptance")? {
                 ControllerRequest::Accept {
                     offer_id,
                     channel,
                     payment,
-                } => (offer_id, channel, payment),
+                    replaces,
+                } => (offer_id, channel, payment, replaces),
+                ControllerRequest::StopRoute { contract_id } => {
+                    return self.handle_stop_route(peer, &contract_id).await;
+                }
                 ControllerRequest::Seal { channel_id } => {
                     return self.handle_seal(peer, &channel_id).await;
                 }
@@ -966,7 +1020,7 @@ impl Controller {
             .find(|i| i.offer.id == offer_id && i.channel.id == channel.id)
             .cloned();
         let (offer, downstream, contract) = if let Some(old) = &old {
-            if old.channel != channel || old.phase == Phase::Stopped {
+            if old.channel != channel || old.phase == Phase::Stopped || old.replaces != replaces {
                 return Err("closed or changed upstream agreement".into());
             }
             (
@@ -1020,6 +1074,7 @@ impl Controller {
             contract: contract.clone(),
             verified_paid_msat: credit.paid_msat,
             phase: Phase::Prepared,
+            replaces,
         };
         let saved = incoming.clone();
         self.change(move |j| {
@@ -1032,6 +1087,7 @@ impl Controller {
             if let Some(old) = j.incoming.get(&saved.contract.id) {
                 if old.channel != saved.channel
                     || old.contract != saved.contract
+                    || old.replaces != saved.replaces
                     || old.phase == Phase::Stopped
                 {
                     return Err("upstream binding conflict".into());
@@ -1041,11 +1097,25 @@ impl Controller {
             if j.incoming.len() >= MAX_ROUTES
                 || j.incoming.values().any(|i| {
                     i.phase != Phase::Stopped
+                        && saved.replaces.as_ref() != Some(&i.contract.id)
                         && i.channel.buyer == saved.channel.buyer
                         && i.contract.destination == saved.contract.destination
                 })
             {
                 return Err("upstream route capacity or conflict".into());
+            }
+            if let Some(previous) = &saved.replaces {
+                let old = j
+                    .incoming
+                    .get_mut(previous)
+                    .ok_or("replacement route missing")?;
+                if previous == &saved.contract.id
+                    || old.channel.buyer != saved.channel.buyer
+                    || old.contract.destination != saved.contract.destination
+                {
+                    return Err("replacement route ownership conflict".into());
+                }
+                old.phase = Phase::Stopped;
             }
             j.incoming.insert(saved.contract.id.clone(), saved);
             Ok(())
@@ -1066,7 +1136,15 @@ impl Controller {
         let seller = self.services.seller.clone();
         let terms = incoming.channel.clone();
         let paid = incoming.verified_paid_msat;
+        let replaces = incoming.replaces.clone();
         blocking(move || {
+            if let Some(previous) = replaces
+                && seller.usage(&previous).is_some()
+            {
+                seller
+                    .close_contract(&previous)
+                    .map_err(|e| e.to_string())?;
+            }
             if let Some(old) = seller.channel_terms(&terms.id) {
                 if old != terms {
                     return Err("retained channel terms differ".into());
@@ -1134,8 +1212,8 @@ impl Controller {
     /// allocate a new funding identity or another channel. Expired/changed routes
     /// remain stopped until a separate replacement agreement is authorized.
     pub async fn resume_pending(&self) -> Result<(), String> {
+        let mut first_error = self.resume_route_changes().await.err();
         let snapshot = self.snapshot().await?;
-        let mut first_error = None;
         // Native destination identities/coordinates are memory state. A router
         // restart does not necessarily restart the endpoints' FSP sessions, so
         // established traffic cannot rely on another handshake to restore them.
@@ -1196,7 +1274,11 @@ impl Controller {
         }
         for offer in snapshot.requested.into_values().filter(|offer| {
             let paused = snapshot.renewals_paused
-                && snapshot.renewals.values().any(|r| r.requests(&offer.id));
+                && snapshot.renewals.values().any(|r| r.requests(&offer.id))
+                || snapshot
+                    .route_changes
+                    .get(&offer.id)
+                    .is_some_and(|c| c.paused);
             let accepted = snapshot
                 .outgoing
                 .values()
@@ -1501,6 +1583,7 @@ mod tests {
             seller_settlements: BTreeMap::new(),
             renewals: BTreeMap::new(),
             renewals_paused: false,
+            route_changes: BTreeMap::new(),
         }
     }
 

@@ -489,6 +489,16 @@ impl Controller {
 
     pub async fn settle_all(&self) -> Result<Vec<SettlementReport>, String> {
         self.pause_renewals().await?;
+        {
+            let _work = self.route_work.lock().await;
+            self.change(|j| {
+                for change in j.route_changes.values_mut() {
+                    change.paused = true;
+                }
+                Ok(())
+            })
+            .await?;
+        }
         let snapshot = self.snapshot().await?;
         let mut ids: HashSet<_> = snapshot
             .outgoing
