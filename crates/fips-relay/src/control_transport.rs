@@ -6,9 +6,13 @@
 use fips_core::{FipsEndpoint, NodeAddr, PeerIdentity};
 use fips_tcp::{Config, ConnectionId, State};
 use fips_tcp_endpoint::FipsTcpEndpoint;
+use serde::Serialize;
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 use tokio::{
@@ -80,6 +84,36 @@ struct Command {
 pub struct ControlTransport {
     commands: mpsc::Sender<Command>,
     task: JoinHandle<()>,
+    statistics: Arc<ControlStatistics>,
+}
+
+/// Volatile measurement counters. Bytes include application record framing;
+/// they exclude TCP/FIPS/link headers, acknowledgments and retransmissions.
+#[derive(Default)]
+pub struct ControlStatistics {
+    sent: AtomicU64,
+    received: AtomicU64,
+    requests_started: AtomicU64,
+    requests_received: AtomicU64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ControlSnapshot {
+    pub stream_bytes_sent: u64,
+    pub stream_bytes_received: u64,
+    pub requests_started: u64,
+    pub requests_received: u64,
+}
+
+impl ControlStatistics {
+    pub fn snapshot(&self) -> ControlSnapshot {
+        ControlSnapshot {
+            stream_bytes_sent: self.sent.load(Ordering::Relaxed),
+            stream_bytes_received: self.received.load(Ordering::Relaxed),
+            requests_started: self.requests_started.load(Ordering::Relaxed),
+            requests_received: self.requests_received.load(Ordering::Relaxed),
+        }
+    }
 }
 
 impl ControlTransport {
@@ -107,8 +141,26 @@ impl ControlTransport {
         let neighbors = neighbors.iter().map(|peer| *peer.node_addr()).collect();
         let (commands, receive_commands) = mpsc::channel(QUEUE_SIZE);
         let (incoming, receive_incoming) = mpsc::channel(QUEUE_SIZE);
-        let task = tokio::spawn(run(tcp, neighbors, receive_commands, incoming));
-        Ok((Self { commands, task }, receive_incoming))
+        let statistics = Arc::new(ControlStatistics::default());
+        let task = tokio::spawn(run(
+            tcp,
+            neighbors,
+            receive_commands,
+            incoming,
+            statistics.clone(),
+        ));
+        Ok((
+            Self {
+                commands,
+                task,
+                statistics,
+            },
+            receive_incoming,
+        ))
+    }
+
+    pub fn statistics(&self) -> Arc<ControlStatistics> {
+        self.statistics.clone()
     }
 
     pub async fn request(&self, peer: PeerIdentity, body: Vec<u8>) -> Result<Vec<u8>, String> {
@@ -194,6 +246,7 @@ async fn run(
     neighbors: HashSet<NodeAddr>,
     mut commands: mpsc::Receiver<Command>,
     incoming: mpsc::Sender<IncomingRequest>,
+    statistics: Arc<ControlStatistics>,
 ) {
     let started = Instant::now();
     let mut exchanges = HashMap::<ConnectionId, Exchange>::new();
@@ -213,6 +266,7 @@ async fn run(
                 if command.response.is_closed() { continue; }
                 match tcp.connect(command.peer, now).await {
                     Ok(id) => {
+                        statistics.requests_started.fetch_add(1, Ordering::Relaxed);
                         let mut exchange = Exchange::server(command.peer);
                         exchange.outgoing = frame(command.body).expect("bounded at command entry");
                         exchange.client = Some(command.response);
@@ -246,7 +300,7 @@ async fn run(
         let ids: Vec<_> = exchanges.keys().copied().collect();
         for id in ids {
             let mut exchange = exchanges.remove(&id).expect("current exchange");
-            match drive(&mut tcp, id, &mut exchange, &incoming, now).await {
+            match drive(&mut tcp, id, &mut exchange, &incoming, now, &statistics).await {
                 Ok(true) => {
                     exchanges.insert(id, exchange);
                 }
@@ -269,6 +323,7 @@ async fn drive(
     exchange: &mut Exchange,
     incoming: &mpsc::Sender<IncomingRequest>,
     now: u64,
+    statistics: &ControlStatistics,
 ) -> Result<bool, String> {
     if exchange.started.elapsed() >= REQUEST_TIMEOUT
         || exchange.client.as_ref().is_some_and(|c| c.is_closed())
@@ -295,10 +350,12 @@ async fn drive(
     }
     if exchange.sent < exchange.outgoing.len() {
         let end = (exchange.sent + 16 * 1024).min(exchange.outgoing.len());
-        exchange.sent += tcp
+        let written = tcp
             .write(id, &exchange.outgoing[exchange.sent..end], now)
             .await
             .map_err(|e| e.to_string())?;
+        exchange.sent += written;
+        statistics.sent.fetch_add(written as u64, Ordering::Relaxed);
     }
     if exchange.client.is_none()
         && exchange.dispatched
@@ -314,6 +371,9 @@ async fn drive(
         .read(id, MAX_RECORD_BYTES + 4 - exchange.incoming.len(), now)
         .await
         .map_err(|e| e.to_string())?;
+    statistics
+        .received
+        .fetch_add(bytes.len() as u64, Ordering::Relaxed);
     exchange.incoming.extend_from_slice(&bytes);
     if complete_frame(&exchange.incoming)? {
         let body = exchange.incoming.split_off(4);
@@ -322,6 +382,7 @@ async fn drive(
             return Ok(false);
         }
         let (respond, receiver) = oneshot::channel();
+        statistics.requests_received.fetch_add(1, Ordering::Relaxed);
         incoming
             .try_send(IncomingRequest {
                 peer: exchange.peer,

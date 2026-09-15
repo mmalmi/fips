@@ -10,6 +10,8 @@ pub mod durable;
 pub mod ledger;
 pub mod payment;
 pub mod payment_control;
+#[cfg(unix)]
+pub mod probe;
 pub mod route_quotes;
 #[cfg(unix)]
 pub mod service;

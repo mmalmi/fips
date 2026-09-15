@@ -8,10 +8,12 @@ use cashu_service::{
 use fips_core::config::PeerConfig;
 use fips_relay::{
     controller::ControllerPolicy,
-    service::{AdminRequest, ServiceConfig, ServiceTerms, request},
+    probe::{ReceiveProbe, SendProbe},
+    service::{AdminRequest, ServiceConfig, ServiceTerms, native_request, request},
 };
 use sha2::{Digest, Sha256};
 use std::{
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
@@ -204,6 +206,84 @@ async fn deliver(configs: &[ServiceConfig], npubs: &[String], epoch: u8) {
     }
 }
 
+async fn measured_paid_traffic(configs: &[ServiceConfig], npubs: &[String]) {
+    for (source, destination) in [(0, 4), (4, 0)] {
+        let id = format!("{:032x}", source + 1);
+        request(
+            &configs[destination],
+            &AdminRequest::ReceiveProbe {
+                probe: ReceiveProbe {
+                    source: npubs[source].clone(),
+                    stream_id: id.clone(),
+                    packet_count: 6,
+                    payload_bytes: 80,
+                    measure_one_way_latency: true,
+                },
+            },
+        )
+        .await
+        .unwrap();
+        let send = AdminRequest::SendProbe {
+            probe: SendProbe {
+                destination: npubs[destination].clone(),
+                stream_id: id.clone(),
+                packet_count: 6,
+                payload_bytes: 80,
+                packets_per_second: 10,
+            },
+        };
+        let concurrent = async {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            let second = request(&configs[source], &send).await.unwrap_err();
+            assert!(second.contains("already running"));
+            assert_eq!(
+                request(&configs[source], &AdminRequest::Status)
+                    .await
+                    .unwrap()["npub"],
+                npubs[source]
+            );
+        };
+        let (sent, ()) = tokio::join!(request(&configs[source], &send), concurrent);
+        let sent = sent.unwrap();
+        assert_eq!(sent["probe"]["submitted_packets"], 6);
+        assert!(sent["probe"]["stopped_reason"].is_null());
+        assert!(sent["probe"]["elapsed_us"].as_u64().unwrap() >= 450_000);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let status = request(&configs[destination], &AdminRequest::Status)
+                    .await
+                    .unwrap();
+                if status["probe"]["unique_packets"] == 6 {
+                    assert_eq!(status["probe"]["unique_bytes"], 480);
+                    assert_eq!(status["probe"]["missing_packets"], 0);
+                    assert_eq!(status["probe"]["duplicate_packets"], 0);
+                    assert_eq!(status["probe"]["latency"]["samples"], 6);
+                    assert_eq!(status["probe"]["latency"]["invalid_timestamps"], 0);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("paid probe delivery");
+    }
+}
+
+async fn private_native_control(config: &ServiceConfig) {
+    assert_eq!(
+        std::fs::metadata(&config.state_directory)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o077,
+        0
+    );
+    let response = native_request(config, &serde_json::json!({"command":"show_status"}))
+        .await
+        .unwrap();
+    assert_eq!(response["status"], "ok");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn five_real_processes_preserve_paid_accounts_across_shutdown_and_router_crash() {
     tokio::time::timeout(Duration::from_secs(300), async {
@@ -282,6 +362,9 @@ async fn five_real_processes_preserve_paid_accounts_across_shutdown_and_router_c
             children.push(start(path).await);
         }
         ready(&configs, &paths, &mut children).await;
+        for cfg in &configs {
+            private_native_control(cfg).await;
+        }
         let forward_request = AdminRequest::Buy {
             destination: npubs[4].clone(),
         };
@@ -295,6 +378,7 @@ async fn five_real_processes_preserve_paid_accounts_across_shutdown_and_router_c
         forward.unwrap();
         reverse.unwrap();
         deliver(&configs, &npubs, 1).await;
+        measured_paid_traffic(&configs, &npubs).await;
         let mut before = Vec::new();
         for cfg in &configs {
             before.push(request(cfg, &AdminRequest::Status).await.unwrap());
@@ -425,6 +509,37 @@ async fn explicit_initialization_cannot_reset_missing_state_or_raise_saved_limit
         !command(&path, "init").await.status.success(),
         "init must not overwrite existing accounts"
     );
+    let mut running = start(&path).await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while request(&cfg, &AdminRequest::Status).await.is_err() {
+            assert!(running.try_wait().unwrap().is_none());
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    private_native_control(&cfg).await;
+    let mut native_cli = Command::new(env!("CARGO_BIN_EXE_fips-relay"))
+        .args(["native", path.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    {
+        use tokio::io::AsyncWriteExt;
+        let mut input = native_cli.stdin.take().unwrap();
+        input
+            .write_all(b"{\"command\":\"show_status\"}")
+            .await
+            .unwrap();
+    }
+    let native_reply = native_cli.wait_with_output().await.unwrap();
+    assert!(native_reply.status.success());
+    let native_reply: serde_json::Value = serde_json::from_slice(&native_reply.stdout).unwrap();
+    assert_eq!(native_reply["status"], "ok");
+    stop(&mut running).await;
     cfg.terms.buyer_budget_sat += 1;
     std::fs::write(&path, serde_json::to_vec(&cfg).unwrap()).unwrap();
     let changed = command(&path, "run").await;
@@ -432,6 +547,18 @@ async fn explicit_initialization_cannot_reset_missing_state_or_raise_saved_limit
     assert!(String::from_utf8_lossy(&changed.stderr).contains("saved terms"));
     cfg.terms.buyer_budget_sat -= 1;
     std::fs::write(&path, serde_json::to_vec(&cfg).unwrap()).unwrap();
+    let native_path = cfg.state_directory.join("native.sock");
+    std::fs::write(&native_path, b"retained operator file").unwrap();
+    let occupied = command(&path, "run").await;
+    assert!(!occupied.status.success());
+    assert!(
+        String::from_utf8_lossy(&occupied.stderr).contains("native control path is not a socket")
+    );
+    assert_eq!(
+        std::fs::read(&native_path).unwrap(),
+        b"retained operator file"
+    );
+    std::fs::remove_file(native_path).unwrap();
     std::fs::rename(
         cfg.state_directory.join("buyer/buyer.json"),
         root.path().join("buyer.saved"),

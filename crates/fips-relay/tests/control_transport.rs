@@ -83,7 +83,20 @@ async fn authenticated_neighbor_control_carries_large_records_and_isolates_rejec
         });
         let reply = first.request(bob, vec![42; 24_000]).await.unwrap();
         assert_eq!(reply, vec![51; 20_000]);
+        let first_sample = first.statistics().snapshot();
+        let second_sample = second.statistics().snapshot();
+        assert_eq!(first_sample.stream_bytes_sent, 24_004);
+        assert_eq!(first_sample.stream_bytes_received, 20_004);
+        assert_eq!(second_sample.stream_bytes_sent, 20_004);
+        assert_eq!(second_sample.stream_bytes_received, 24_004);
+        assert_eq!(first_sample.requests_started, 1);
+        assert_eq!(second_sample.requests_received, 1);
         assert!(first.request(bob, vec![0; 65_537]).await.is_err());
+        assert_eq!(
+            first.statistics().snapshot(),
+            first_sample,
+            "rejected oversized records consume no stream bytes"
+        );
         assert!(first.request(bob, b"cancel".to_vec()).await.is_err());
         assert_eq!(
             first.request(bob, b"retry".to_vec()).await.unwrap(),

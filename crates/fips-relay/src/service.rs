@@ -2,11 +2,12 @@
 
 use crate::{
     buyer::{BuyerAuthorizer, PaidForwarder},
-    control_transport::ControlTransport,
+    control_transport::{ControlStatistics, ControlTransport},
     controller::{Controller, ControllerPolicy, ControllerServices, ControllerTasks},
     durable::{DurableRelay, acquire_owner},
     ledger::Limits,
     payment_control::{PaymentControl, PaymentServer},
+    probe::{self, ProbeReceiver, ReceiveProbe, SendProbe},
     route_quotes::{QuotePolicy, QuoteServer, RouteQuotes},
 };
 use cashu_service::{
@@ -35,7 +36,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener, UnixStream},
     task::JoinSet,
 };
@@ -199,7 +200,12 @@ impl ServiceConfig {
     fn network(&self, identity: &Identity, initializing: bool) -> Config {
         let mut config = Config::new();
         config.node.identity.nsec = Some(fips_core::encode_nsec(&identity.keypair().secret_key()));
-        config.node.control.enabled = false;
+        config.node.control.enabled = !initializing;
+        config.node.control.socket_path = self
+            .state_directory
+            .join("native.sock")
+            .to_string_lossy()
+            .into_owned();
         config.node.discovery.nostr.enabled = false;
         config.node.discovery.lan.enabled = false;
         config.node.discovery.local.enabled = false;
@@ -306,6 +312,9 @@ pub struct RelayService {
     payment_server: PaymentServer,
     quote_server: QuoteServer,
     received: Arc<Mutex<Received>>,
+    probe_receiver: Arc<Mutex<Option<ProbeReceiver>>>,
+    probe_sender: tokio::sync::Semaphore,
+    control_statistics: Vec<(u16, Arc<ControlStatistics>)>,
     receive_task: tokio::task::JoinHandle<()>,
     receiver_pubkey: String,
     forwarding: Arc<ServiceForwarder>,
@@ -437,6 +446,14 @@ impl RelayService {
             relay: PaidForwarder::new(seller.clone(), buyer.clone()),
             ready: AtomicBool::new(false),
         });
+        if !create {
+            let native_socket = root.join("native.sock");
+            if let Ok(metadata) = std::fs::symlink_metadata(&native_socket)
+                && !metadata.file_type().is_socket()
+            {
+                return Err("native control path is not a socket".into());
+            }
+        }
         let endpoint = Arc::new(
             FipsEndpoint::builder()
                 .config(config.network(&identity, create))
@@ -456,6 +473,7 @@ impl RelayService {
         let seed = u64::from_le_bytes(entropy.node_addr().as_bytes()[..8].try_into().unwrap());
         let (quote_transport, quote_incoming) =
             ControlTransport::start(endpoint.clone(), 44_741, neighbors.clone(), seed).await?;
+        let mut control_statistics = vec![(44_741, quote_transport.statistics())];
         let t = &config.terms;
         let quotes = Arc::new(RouteQuotes::new(
             endpoint.clone(),
@@ -482,6 +500,8 @@ impl RelayService {
         let (payments, payment_incoming) =
             ControlTransport::start(endpoint.clone(), 44_743, neighbors, seed.wrapping_add(2))
                 .await?;
+        control_statistics.push((44_742, acceptance.statistics()));
+        control_statistics.push((44_743, payments.statistics()));
         let payment_control = Arc::new(PaymentControl::new(receiver, seller.clone(), vec![])?);
         let payment_server = PaymentServer::start_shared(payment_control.clone(), payment_incoming);
         let services = ControllerServices {
@@ -502,6 +522,8 @@ impl RelayService {
         let tasks = ControllerTasks::start(controller.clone(), incoming);
         let received = Arc::new(Mutex::new(Received::default()));
         let destination = received.clone();
+        let probe_receiver: Arc<Mutex<Option<ProbeReceiver>>> = Arc::new(Mutex::new(None));
+        let diagnostic = probe_receiver.clone();
         let input = endpoint
             .register_service_receiver(DATA_PORT)
             .await
@@ -514,6 +536,13 @@ impl RelayService {
                     totals.packets = totals.packets.saturating_add(1);
                     totals.bytes = totals.bytes.saturating_add(packet.data.len() as u64);
                     totals.last_sha256 = Some(format!("{:x}", Sha256::digest(&packet.data)));
+                    if let Some(probe) = diagnostic.lock().unwrap().as_mut() {
+                        probe.record(
+                            packet.source_peer,
+                            packet.data.as_ref(),
+                            probe::unix_micros(),
+                        );
+                    }
                 }
             }
         });
@@ -531,6 +560,9 @@ impl RelayService {
             payment_server,
             quote_server,
             received,
+            probe_receiver,
+            probe_sender: tokio::sync::Semaphore::new(1),
+            control_statistics,
             receive_task,
             receiver_pubkey,
             forwarding,
@@ -576,6 +608,12 @@ impl RelayService {
         match request {
             AdminRequest::Status => {
                 let peers = self.endpoint.peers().await.map_err(|e| e.to_string())?;
+                let probe = self
+                    .probe_receiver
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map(ProbeReceiver::report);
                 Ok(
                     json!({"npub": self.endpoint.npub(), "peers": peers.iter().map(|p| json!({
                     "npub": p.npub, "connected": p.connected, "transport": p.transport_type,
@@ -587,6 +625,10 @@ impl RelayService {
                     "locked_sat": self.controller.locked_capital_sat().await?,
                     "remaining_budget_sat": self.buyer.remaining_budget_sat(),
                     "received": self.received.lock().unwrap().clone(),
+                    "probe": probe,
+                    "control_traffic": self.control_statistics.iter().map(|(port, stats)| json!({
+                        "service_port": port, "counters": stats.snapshot()
+                    })).collect::<Vec<_>>(),
                     "last_error": self.controller.last_error()}),
                 )
             }
@@ -625,6 +667,19 @@ impl RelayService {
                 Ok(json!({"queued": true}))
             }
             AdminRequest::Settle => Ok(json!({"settlements": self.controller.settle_all().await?})),
+            AdminRequest::ReceiveProbe { probe } => {
+                let receiver = ProbeReceiver::new(probe)?;
+                let report = receiver.report();
+                *self.probe_receiver.lock().unwrap() = Some(receiver);
+                Ok(json!({"probe": report}))
+            }
+            AdminRequest::SendProbe { probe } => {
+                let _permit = self
+                    .probe_sender
+                    .try_acquire()
+                    .map_err(|_| "a probe sender is already running")?;
+                Ok(json!({"probe": probe::send(&self.endpoint, probe).await?}))
+            }
             AdminRequest::PauseRenewals => {
                 self.controller.pause_renewals().await?;
                 Ok(json!({"paused": true}))
@@ -697,6 +752,12 @@ pub enum AdminRequest {
         destination: String,
         payload: String,
     },
+    ReceiveProbe {
+        probe: ReceiveProbe,
+    },
+    SendProbe {
+        probe: SendProbe,
+    },
     Settle,
     PauseRenewals,
     ResumeRenewals,
@@ -739,6 +800,33 @@ pub async fn request(config: &ServiceConfig, request: &AdminRequest) -> Result<V
         return Err(error.as_str().unwrap_or("control failed").into());
     }
     value.remove("ok").ok_or("invalid control response".into())
+}
+
+/// Access the existing native node operator API inside the private account.
+/// This is never the public customer gateway or a payment authorization API.
+pub async fn native_request(config: &ServiceConfig, request: &Value) -> Result<Value, String> {
+    let mut bytes = serde_json::to_vec(request).map_err(|e| e.to_string())?;
+    if bytes.len() > MAX_REQUEST {
+        return Err("native control request too large".into());
+    }
+    bytes.push(b'\n');
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let mut socket = UnixStream::connect(config.state_directory.join("native.sock"))
+            .await
+            .map_err(|e| e.to_string())?;
+        socket.write_all(&bytes).await.map_err(|e| e.to_string())?;
+        let mut reply = Vec::new();
+        BufReader::new(socket.take(1024 * 1024 + 1))
+            .read_until(b'\n', &mut reply)
+            .await
+            .map_err(|e| e.to_string())?;
+        if reply.len() > 1024 * 1024 || !reply.ends_with(b"\n") {
+            return Err("invalid native control response size or framing".into());
+        }
+        serde_json::from_slice(&reply).map_err(|_| "invalid native control response".into())
+    })
+    .await
+    .map_err(|_| "native control request timed out".to_string())?
 }
 
 #[cfg(test)]

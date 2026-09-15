@@ -16,12 +16,12 @@ async fn main() {
 
 #[cfg(unix)]
 async fn run() -> Result<(), String> {
-    use fips_relay::service::{AdminRequest, RelayService, ServiceConfig, request};
+    use fips_relay::service::{AdminRequest, RelayService, ServiceConfig, native_request, request};
     use std::{io::Read, path::Path};
     let args: Vec<_> = std::env::args().collect();
     if args.len() != 3 {
         return Err(
-            "usage: fips-relay <init|run|ctl|wallet> <config.json>; ctl/wallet read one JSON request from stdin"
+            "usage: fips-relay <init|run|ctl|native|wallet> <config.json>; ctl/native/wallet read one JSON request from stdin"
                 .into(),
         );
     }
@@ -39,7 +39,7 @@ async fn run() -> Result<(), String> {
                 })
                 .await?;
         }
-        "ctl" => {
+        "ctl" | "native" => {
             let mut bytes = Vec::new();
             std::io::stdin()
                 .take(16 * 1024 + 1)
@@ -48,9 +48,15 @@ async fn run() -> Result<(), String> {
             if bytes.len() > 16 * 1024 {
                 return Err("control request too large".into());
             }
-            let command: AdminRequest =
-                serde_json::from_slice(&bytes).map_err(|_| "invalid control JSON")?;
-            let value = request(&config, &command).await?;
+            let value = if args[1] == "native" {
+                let command =
+                    serde_json::from_slice(&bytes).map_err(|_| "invalid native control JSON")?;
+                native_request(&config, &command).await?
+            } else {
+                let command: AdminRequest =
+                    serde_json::from_slice(&bytes).map_err(|_| "invalid control JSON")?;
+                request(&config, &command).await?
+            };
             println!(
                 "{}",
                 serde_json::to_string(&value).map_err(|e| e.to_string())?

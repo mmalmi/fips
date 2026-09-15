@@ -115,6 +115,9 @@ destinations with their price ceilings and pause state, locked
 capital, remaining lifetime budget and received test-packet totals/digest. It
 contains no bearer proofs or private keys. `last_error` is the last retained
 controller error; it may describe a transient condition that has recovered.
+It also includes volatile probe results and control-stream traffic counters.
+See [MEASUREMENTS.md](MEASUREMENTS.md) for bounded paced traffic, metric definitions
+and the local native topology-control wrapper.
 
 `send` queues a 1–1,000-byte diagnostic payload to FIPS service port 44740.
 Queue acceptance does not establish delivery. Each endpoint must buy its own
