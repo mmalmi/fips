@@ -704,19 +704,22 @@ impl Controller {
                 .buyer_settlements
                 .contains_key(&existing.purchase.channel.id)
             {
-                return Err("channel settlement started; replacement agreement required".into());
+                let fresh = offer.clone();
+                self.change(move |j| Self::reopen_refunded_route(j, &existing, fresh))
+                    .await?;
+            } else {
+                if existing.purchase.contract.expires_unix <= now()?
+                    || existing.offer.price != offer.price
+                    || existing.offer.next_hop != offer.next_hop
+                {
+                    return Err("existing route needs explicit replacement".into());
+                }
+                if existing.accepted {
+                    return Ok(existing.purchase);
+                }
+                self.ensure_buyer_purchase(&existing.purchase).await?;
+                return self.send_accept(peer, existing).await;
             }
-            if existing.purchase.contract.expires_unix <= now()?
-                || existing.offer.price != offer.price
-                || existing.offer.next_hop != offer.next_hop
-            {
-                return Err("existing route needs explicit replacement".into());
-            }
-            if existing.accepted {
-                return Ok(existing.purchase);
-            }
-            self.ensure_buyer_purchase(&existing.purchase).await?;
-            return self.send_accept(peer, existing).await;
         }
         let offer = self
             .change(move |j| {
@@ -777,6 +780,65 @@ impl Controller {
             .await?;
         self.ensure_buyer_purchase(&record.purchase).await?;
         self.send_accept(peer, record).await
+    }
+
+    /// A fresh purchase can replace a fully refunded, explicitly closed route.
+    /// Keep the old account evidence, and persist the new authorization in the
+    /// same mutation that retires its predecessor, before touching the wallet.
+    fn reopen_refunded_route(
+        j: &mut Journal,
+        previous: &Outgoing,
+        fresh: RouteOffer,
+    ) -> Result<(), String> {
+        let old = j
+            .outgoing
+            .get(&previous.purchase.contract.id)
+            .ok_or("closed purchase missing")?;
+        if old.purchase != previous.purchase || old.offer != previous.offer {
+            return Err("closed purchase changed".into());
+        }
+        if fresh.id == old.offer.id
+            || fresh.expires_unix <= now()?
+            || !renewal::same_service(&old.offer, &fresh)
+        {
+            return Err("repurchase requires a fresh offer for the same service".into());
+        }
+        if old.retired {
+            // Another purchase already advanced this route. The common
+            // requested-offer path below reconciles the winning authorization.
+            return Ok(());
+        }
+        if !old.accepted
+            || !j
+                .buyer_settlements
+                .get(&old.purchase.channel.id)
+                .is_some_and(|s| s.refunded)
+        {
+            return Err("previous channel refund incomplete".into());
+        }
+        if j.renewals
+            .get(&old.purchase.channel.id)
+            .is_some_and(|r| !r.is_completed())
+        {
+            return Err("channel replacement already in progress".into());
+        }
+        if j.requested.contains_key(&fresh.id)
+            || j.requested.values().any(|o| {
+                o.id != old.offer.id
+                    && o.provider == fresh.provider
+                    && o.destination.node_addr() == fresh.destination.node_addr()
+            })
+        {
+            return Err("repurchase authorization conflict".into());
+        }
+        let old_offer = old.offer.id.clone();
+        j.outgoing
+            .get_mut(&previous.purchase.contract.id)
+            .unwrap()
+            .retired = true;
+        j.requested.remove(&old_offer);
+        j.requested.insert(fresh.id.clone(), fresh);
+        Ok(())
     }
 
     async fn ensure_buyer_purchase(&self, purchase: &Purchase) -> Result<(), String> {
@@ -1241,8 +1303,18 @@ impl Controller {
             .buyer
             .authorized_sat(&channel_id)
             .ok_or("buyer channel missing")?;
-        if usage.paid_msat / 1_000 >= usage.submitted_msat.div_ceil(1_000)
-            && usage.paid_msat / 1_000 >= prior
+        // A crash can lose a local submission that the provider retained.
+        // Pay the supported portion of its cumulative claim; rejecting the
+        // entire claim would also prevent payment for every later known send.
+        // Controller purchases approve no advance. The strict authorizer still
+        // enforces provider identity, evidence, capacity and lifetime limits.
+        let supported = usage.submitted_msat.min(
+            self.services
+                .buyer
+                .evidence_msat(&channel_id)
+                .ok_or("buyer channel evidence missing")?,
+        );
+        if usage.paid_msat / 1_000 >= supported.div_ceil(1_000) && usage.paid_msat / 1_000 >= prior
         {
             return Ok(());
         }
@@ -1255,13 +1327,7 @@ impl Controller {
                 let _wallet = wallet_guard;
                 let signer = FileSpilmanPaymentSigner::load(&directory)?;
                 buyer
-                    .sign_claim(
-                        &signer,
-                        purchase.provider,
-                        &id,
-                        usage.submitted_msat,
-                        now()?,
-                    )
+                    .sign_claim(&signer, purchase.provider, &id, supported, now()?)
                     .map_err(|e| e.to_string())
             })
             .await?
@@ -1436,6 +1502,103 @@ mod tests {
             renewals: BTreeMap::new(),
             renewals_paused: false,
         }
+    }
+
+    #[test]
+    fn repurchase_rejects_unfinished_refunds_stale_offers_and_competing_renewal() {
+        // Exercise the transition guards directly. The integration suite
+        // uses actual funded channels, refunds and a reload of the saved journal.
+        let mut journal = unresolved_journal();
+        let destination = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+        let terms = ChannelTerms {
+            id: "closed".into(),
+            buyer: journal.local,
+            mint_url: journal.policy.mint_url.clone(),
+            capacity_sat: 32,
+            grace_msat: 8_000,
+            expires_unix: now().unwrap() + 600,
+        };
+        let offer = RouteOffer {
+            id: "old-offer".into(),
+            buyer: journal.local,
+            provider: NodeAddr::from_bytes([2; 16]),
+            destination,
+            next_hop: *destination.node_addr(),
+            path: vec![NodeAddr::from_bytes([2; 16]), *destination.node_addr()],
+            price: crate::ledger::BytePrice {
+                msat: 1024,
+                per_bytes: 1024,
+            },
+            expires_unix: now().unwrap() + 300,
+            max_units: 30_000,
+            mint_url: terms.mint_url.clone(),
+            receiver_pubkey_hex: format!("02{}", "11".repeat(32)),
+            capacity_sat: 32,
+            grace_msat: 8_000,
+        };
+        let old = Outgoing {
+            purchase: Purchase {
+                provider: offer.provider,
+                contract: contract_from_offer(&offer, &terms).unwrap(),
+                channel: terms.clone(),
+            },
+            offer: offer.clone(),
+            funding_id: "test-1".into(),
+            accepted: true,
+            retired: false,
+        };
+        journal
+            .outgoing
+            .insert(old.purchase.contract.id.clone(), old.clone());
+        journal.requested.insert(offer.id.clone(), offer.clone());
+        let mut fresh = offer.clone();
+        fresh.id = "fresh-offer".into();
+        assert_eq!(
+            Controller::reopen_refunded_route(&mut journal, &old, fresh.clone()),
+            Err("previous channel refund incomplete".into())
+        );
+        let provider = serde_json::to_value(&old.purchase).unwrap()["provider"].clone();
+        journal.buyer_settlements.insert(
+            terms.id.clone(),
+            serde_json::from_value(
+                serde_json::json!({"provider":provider,"channel":terms,"usage":null,
+                "payment":null,"report":null,"refunded":false}),
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            Controller::reopen_refunded_route(&mut journal, &old, fresh.clone()),
+            Err("previous channel refund incomplete".into())
+        );
+        journal
+            .buyer_settlements
+            .get_mut("closed")
+            .unwrap()
+            .refunded = true;
+        for mutation in [0, 1, 2, 3] {
+            let mut changed = fresh.clone();
+            match mutation {
+                0 => changed.id = offer.id.clone(),
+                1 => changed.expires_unix = 1,
+                2 => changed.price.msat += 1,
+                _ => changed.next_hop = NodeAddr::from_bytes([3; 16]),
+            }
+            assert!(Controller::reopen_refunded_route(&mut journal, &old, changed).is_err());
+            assert!(!journal.outgoing[&old.purchase.contract.id].retired);
+            assert!(journal.requested.contains_key(&offer.id));
+        }
+        journal.renewals.insert(
+            "closed".into(),
+            serde_json::from_value(serde_json::json!({
+                "previous":[old], "replacements":null, "completed":false
+            }))
+            .unwrap(),
+        );
+        assert_eq!(
+            Controller::reopen_refunded_route(&mut journal, &old, fresh),
+            Err("channel replacement already in progress".into())
+        );
+        assert!(!journal.outgoing[&old.purchase.contract.id].retired);
     }
 
     #[test]

@@ -389,11 +389,20 @@ impl Controller {
                     .close_channel(&saved.channel.id)
                     .map_err(|e| e.to_string())?;
                 let signer = FileSpilmanPaymentSigner::load(&directory)?;
+                let supported = saved
+                    .usage
+                    .ok_or("final usage missing")?
+                    .submitted_msat
+                    .min(
+                        buyer
+                            .evidence_msat(&saved.channel.id)
+                            .ok_or("final buyer evidence missing")?,
+                    );
                 match buyer.sign_claim(
                     &signer,
                     saved.provider,
                     &saved.channel.id,
-                    saved.usage.ok_or("final usage missing")?.submitted_msat,
+                    supported,
                     now()?,
                 ) {
                     Ok(_)

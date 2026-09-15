@@ -38,6 +38,10 @@ pub(super) struct Renewal {
 }
 
 impl Renewal {
+    pub(super) fn is_completed(&self) -> bool {
+        self.completed
+    }
+
     pub(super) fn requests(&self, id: &str) -> bool {
         self.replacements
             .as_ref()
@@ -45,7 +49,7 @@ impl Renewal {
     }
 }
 
-fn same_service(previous: &RouteOffer, next: &RouteOffer) -> bool {
+pub(super) fn same_service(previous: &RouteOffer, next: &RouteOffer) -> bool {
     previous.buyer == next.buyer
         && previous.provider == next.provider
         && previous.destination.node_addr() == next.destination.node_addr()

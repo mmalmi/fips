@@ -122,6 +122,21 @@ recovers refunds. `pause_renewals` and `resume_renewals` control replacement wor
 without deleting saved intents. All commands are local administrative actions;
 this socket is not the public Wi-Fi payment/onboarding service.
 
+After settlement and confirmed refund recovery, a fresh `buy` can purchase the
+same route again using the existing account. It retains closed channel history,
+unpaid exposure and lifetime spending limits, and funds a new channel. The offer
+must keep the provider, next hop, price, mint and byte allowance. An unfinished
+automatic renewal must complete through its own recovery path first. Background
+recovery alone does not reopen an explicitly settled purchase; importing more
+wallet funds also does not authorize one.
+
+After an abrupt stop, a provider may retain usage that the buyer lost from its
+last checkpoint. Payments and final settlement cover the portion supported by
+the buyer's own evidence, subject to the original capacity and lifetime limits.
+Unconfirmed usage is not reconstructed from the provider's report. The unpaid
+remainder still consumes the provider's bounded exposure allowance; repeated
+losses can exhaust that allowance and stop forwarding.
+
 ## Reproducible process check
 
 Run `cargo test -p fips-relay --test service`. The test fixture owns an isolated

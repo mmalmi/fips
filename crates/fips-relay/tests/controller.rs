@@ -7,6 +7,7 @@ use cashu_service::{
 use fips_core::{
     Config, FipsEndpoint, PeerIdentity,
     config::{PeerConfig, TransportInstances, UdpConfig},
+    node::{ForwardingOutcome, ForwardingPolicy, ForwardingRequest},
 };
 use fips_relay::{
     buyer::{BuyerAuthorizer, PaidForwarder},
@@ -27,15 +28,20 @@ use std::{
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn routers_independently_fund_accept_and_pay_both_directions() {
-    controller_scenario(false).await;
+    controller_scenario(false, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn exhausted_channels_renew_automatically_without_resetting_capital_or_spending() {
-    controller_scenario(true).await;
+    controller_scenario(true, false).await;
 }
 
-async fn controller_scenario(automatic_renewal: bool) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restored_buyer_pays_supported_usage_despite_a_provider_evidence_gap() {
+    controller_scenario(false, true).await;
+}
+
+async fn controller_scenario(automatic_renewal: bool, evidence_gap: bool) {
     tokio::time::timeout(Duration::from_secs(240), async {
         let root = tempfile::tempdir().unwrap();
         let now = SystemTime::now()
@@ -346,6 +352,22 @@ async fn controller_scenario(automatic_renewal: bool) {
                 seed_sat - capacity * expected.len() as u64,
                 "controller reload must not fund another channel");
         }
+        if evidence_gap {
+            // Model one local submission lost from the buyer's last checkpoint:
+            // the provider retained it, but the restored buyer has no evidence.
+            let (_, _, p) = links.iter().find(|(b,s,_)| *b==2 && *s==3).unwrap();
+            let request = ForwardingRequest {
+                ingress: peers[2], next_hop: p.contract.next_hop,
+                source: *peers[0].node_addr(), destination: p.contract.destination,
+                session_payload: &[219; 1_000],
+            };
+            let token = ledgers[3].admit(&request).unwrap();
+            ledgers[3].complete(token, ForwardingOutcome::Submitted);
+            ledgers[3].checkpoint().unwrap();
+            controllers[2].flush_payments().await.expect("unsupported remainder must not block supported payments");
+            assert_eq!(buyers[2].authorized_sat(&p.channel.id), Some(0),
+                "provider-only evidence cannot create a payment obligation");
+        }
         for round in 0..if automatic_renewal { 18 } else { 8 } {
             for (source, destination) in [(0, 4), (4, 0)] {
                 let mut payload = vec![round; 1_000];
@@ -383,8 +405,84 @@ async fn controller_scenario(automatic_renewal: bool) {
                 "automatic payments replenished the initial allowance"
             );
         }
-        for controller in &controllers {
-            controller.pause_renewals().await.unwrap();
+        // Freeze a quiescent replacement for the lost-acceptance-reply check.
+        // A last in-flight datagram can exhaust a channel after its delivery
+        // was observed. Resuming that already-due channel legitimately opens
+        // another replacement, which is a different event from reply recovery.
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                for controller in &controllers {
+                    controller.pause_renewals().await.unwrap();
+                }
+                let mut stable = true;
+                if automatic_renewal {
+                    for (i, controller) in controllers.iter().enumerate() {
+                        let active = controller.purchases().await.unwrap();
+                        stable &= active.len() == if i == 2 { 2 } else { 1 };
+                        for p in active {
+                            stable &= buyers[i].evidence_msat(&p.channel.id).unwrap()
+                                < p.channel.capacity_sat * 1000;
+                            stable &= buyers[i].observed_units(&p.contract.id).unwrap()
+                                < p.contract.max_units;
+                        }
+                    }
+                }
+                if stable { break; }
+                for controller in &controllers { controller.resume_renewals().await.unwrap(); }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }).await.expect("renewal fixture reaches a funded, non-exhausted checkpoint");
+        if !automatic_renewal {
+            // An explicit close ends this purchase, not the saved account.
+            // Background recovery cannot interpret it as another purchase.
+            for controller in &controllers {
+                controller.settle_all().await.unwrap();
+                assert_eq!(controller.locked_capital_sat().await.unwrap(), 0);
+                controller.resume_pending().await.unwrap();
+                assert!(controller.purchases().await.unwrap().is_empty());
+            }
+            if evidence_gap {
+                let (_, _, p) = links.iter().find(|(b,s,_)| *b==2 && *s==3).unwrap();
+                let usage = ledgers[3].channel_usage(&p.channel.id).unwrap();
+                assert!(usage.submitted_msat > usage.paid_msat,
+                    "the unsupported remainder stays unpaid after settlement");
+                assert_eq!(usage.paid_msat, buyers[2].authorized_sat(&p.channel.id).unwrap()*1000);
+            }
+            let remaining: Vec<_> = buyers.iter().map(|b| b.remaining_budget_sat().unwrap()).collect();
+            let (forward, reverse) = tokio::join!(
+                controllers[0].buy_route(peers[4]),
+                controllers[4].buy_route(peers[0])
+            );
+            let forward = forward.expect("explicit repurchase after confirmed refund");
+            let reverse = reverse.expect("explicit reverse repurchase after confirmed refund");
+            assert_ne!(forward.channel.id, a.channel.id);
+            assert_ne!(reverse.channel.id, b.channel.id);
+            assert_eq!(controllers[0].buy_route(peers[4]).await.unwrap(), forward);
+            for (buyer, left) in buyers.iter().zip(remaining) {
+                assert_eq!(buyer.remaining_budget_sat().unwrap(), left,
+                    "repurchase cannot reset lifetime authorization");
+            }
+            for (source, destination) in [(0, 4), (4, 0)] {
+                let mut payload = vec![117; 1_000];
+                payload[0] = source as u8;
+                nodes[source].send_datagram(peers[destination], 44_740, 44_740, payload.clone()).await.unwrap();
+                let mut received = Vec::new();
+                tokio::time::timeout(Duration::from_secs(10), async {
+                    loop {
+                        data[destination].recv_batch_into(&mut received, 8).await.unwrap();
+                        if received.iter().any(|m| m.data.as_slice() == payload) { break; }
+                    }
+                }).await.expect("same account forwards after repurchase");
+            }
+            links.clear();
+            for (i, controller) in controllers.iter().enumerate() {
+                let history = controller.purchase_history().await.unwrap();
+                for purchase in history {
+                    let seller = peers.iter().position(|p| p.node_addr() == &purchase.provider).unwrap();
+                    links.push((i, seller, purchase));
+                }
+            }
+            assert_eq!(links.len(), 12, "retain the six closed channels and six new channels");
         }
         if automatic_renewal {
             for (buyer, _, old) in &links {

@@ -6,8 +6,9 @@ TCP, UDP or application delivery acknowledgments inside encrypted FIPS traffic.
 
 See [SERVICE.md](SERVICE.md) for service operation and
 [TESTBENCH.md](TESTBENCH.md) for isolated funding, collection and the first
-verified three-router wireless run. Each physical router earned a positive net
-margin, and all 2,560 test sats were redeemed after settlement. Hardware recovery,
+verified three-router wireless runs. Each physical router earned a positive net
+margin. Restart, credit exhaustion and automatic renewal were exercised, and all
+3,840 test sats were redeemed after settlement. Hardware route changes,
 performance and the public customer flow remain unfinished.
 
 ## Implemented and checked
@@ -113,6 +114,20 @@ performance and the public customer flow remain unfinished.
   released only after local refund recovery confirms completion at the mint.
   The integration test retries payout recovery after spending those payouts;
   spent proofs do not become spendable balance again.
+* A fresh purchase after an explicit close can reuse the saved account once its
+  refund is confirmed. It atomically records the new offer and retires the old
+  route while retaining its channel evidence. It preserves service terms and
+  lifetime limits, rejects stale offers and unfinished refunds/renewals, and
+  never reopens a closed route solely because background recovery runs. The
+  native controller test closes and repurchases all six channels, forwards both
+  directions again, and settles both generations without resetting any wallet.
+* If a crash leaves the provider's usage ahead of the buyer's saved submission
+  evidence, the controller pays the supported portion of the cumulative claim.
+  Later known submissions can continue earning payments; the unsupported
+  remainder is never invented as evidence. Closure also signs only supported
+  usage, and any unpaid remainder continues consuming the neighbour's retained
+  exposure allowance. A native integration test injects this evidence gap,
+  forwards both ways, settles and repurchases without resetting accounts.
 * Sealing retains pending attempts as unconfirmed and freezes the final claim.
   Older closed channels' unpaid reservations reduce the next channel's available
   allowance. Unknown crash exposure stays unbilled across renewal; it never

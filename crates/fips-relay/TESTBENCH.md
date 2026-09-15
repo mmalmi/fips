@@ -145,3 +145,46 @@ the 5,754 application bytes.
 This establishes basic bidirectional paid forwarding on hardware. Hardware
 renewal, restart and route-change exercises, resource/performance measurements,
 the public customer entry and phone flow remain separate acceptance work.
+
+## Hardware recovery and renewal run
+
+A second run reused the same saved identities, accounts and financial limits,
+with another 256 test sats per participant. A fresh purchase after confirmed
+refund replaced the explicitly closed channels. The middle physical router
+then passed an orderly process restart and a forced process kill followed by
+supervisor restart. The same six funded channels and retained spending limits
+survived, and traffic resumed in both directions.
+
+Longer traffic exposed a buyer/provider accounting gap after the crash: a
+provider retained a submission that the buyer had lost from its checkpoint.
+The controller now pays only the portion supported by its own evidence, so
+later known submissions can continue earning payments. The unsupported
+remainder stays unpaid and consumes the existing exposure allowance. This was
+reproduced in a native mint-backed integration test and corrected on the same
+funded hardware accounts. A simultaneous service restart also needed native
+session recovery time; instantaneous or lossless recovery is not claimed.
+
+With renewal paused, both directions stopped at their source channels' credit
+limits while lifetime budgets remained positive. Enabling renewal replaced all
+six starting channels, confirmed their refunds and restored both directions.
+The renewal script matched 60 application payload digests across its phases
+and observed four delivery gaps during automatic replacement. Additional
+restart probes also verified both directions. These orchestration observations
+are not throughput or packet-latency measurements.
+
+| Participant | Second grant | After settlement | Net |
+| --- | ---: | ---: | ---: |
+| Endpoint A | 256 | 85 | -171 |
+| Relay 1 | 256 | 368 | +112 |
+| Relay 2 | 256 | 371 | +115 |
+| Relay 3 | 256 | 375 | +119 |
+| Endpoint B | 256 | 81 | -175 |
+
+All 16 channels opened in the second run settled, including automatic
+replacements. All 1,280 second-run test sats were collected, bringing total
+collection across both runs to 3,840; every participant wallet was empty.
+Routers retained home LAN management, client Wi-Fi and ordinary Internet access.
+
+Physical route changes, duplicate/unsolicited-traffic exercises, performance
+measurements, persistent OpenWrt packages and the public customer/phone flow
+remain separate acceptance work.
