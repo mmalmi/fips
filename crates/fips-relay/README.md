@@ -4,6 +4,12 @@ Experimental service components for **sender-funded, best-effort forwarding**.
 Delivery receipts are an optional future experiment. The relay does not inspect
 TCP, UDP or application delivery acknowledgments inside encrypted FIPS traffic.
 
+See [SERVICE.md](SERVICE.md) for service operation and
+[TESTBENCH.md](TESTBENCH.md) for isolated funding, collection and the first
+verified three-router wireless run. Each physical router earned a positive net
+margin, and all 2,560 test sats were redeemed after settlement. Hardware recovery,
+performance and the public customer flow remain unfinished.
+
 ## Implemented and checked
 
 * The core's optional `ForwardingPolicy` gates native FMP transit, including

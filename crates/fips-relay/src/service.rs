@@ -89,7 +89,7 @@ struct Manifest {
     terms: ServiceTerms,
 }
 
-fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
+pub(crate) fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
     let mut bytes = Vec::new();
     File::open(path)
         .map_err(|e| e.to_string())?
@@ -359,6 +359,15 @@ impl RelayService {
     }
 
     pub async fn load(config: ServiceConfig) -> Result<Self, String> {
+        let (identity, manifest) = Self::stored_state(&config)?;
+        Self::assemble(config, identity, Some(&manifest)).await
+    }
+
+    pub(crate) fn validate_stored_state(config: &ServiceConfig) -> Result<(), String> {
+        Self::stored_state(config).map(|_| ())
+    }
+
+    fn stored_state(config: &ServiceConfig) -> Result<(Identity, Manifest), String> {
         config.validate()?;
         let manifest: Manifest = read_json(&config.state_directory.join("service.json"))?;
         if manifest.version != 1 || manifest.terms != config.terms {
@@ -373,7 +382,7 @@ impl RelayService {
         if identity.npub() != manifest.npub {
             return Err("stored identity changed".into());
         }
-        Self::assemble(config, identity, Some(&manifest)).await
+        Ok((identity, manifest))
     }
 
     async fn assemble(
@@ -673,7 +682,7 @@ pub enum AdminRequest {
     ResumeRenewals,
 }
 
-async fn read_record(stream: &mut UnixStream, limit: usize) -> Result<Vec<u8>, String> {
+pub(crate) async fn read_record(stream: &mut UnixStream, limit: usize) -> Result<Vec<u8>, String> {
     let size = stream.read_u32().await.map_err(|e| e.to_string())? as usize;
     if size == 0 || size > limit {
         return Err("invalid control record size".into());
@@ -686,7 +695,7 @@ async fn read_record(stream: &mut UnixStream, limit: usize) -> Result<Vec<u8>, S
     Ok(bytes)
 }
 
-async fn write_record(stream: &mut UnixStream, bytes: &[u8]) -> Result<(), String> {
+pub(crate) async fn write_record(stream: &mut UnixStream, bytes: &[u8]) -> Result<(), String> {
     stream
         .write_u32(u32::try_from(bytes.len()).map_err(|_| "control record too large")?)
         .await

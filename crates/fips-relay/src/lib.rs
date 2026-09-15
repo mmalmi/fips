@@ -13,3 +13,7 @@ pub mod payment_control;
 pub mod route_quotes;
 #[cfg(unix)]
 pub mod service;
+#[cfg(all(unix, feature = "testbench"))]
+pub mod testbench;
+#[cfg(unix)]
+pub mod wallet_tools;

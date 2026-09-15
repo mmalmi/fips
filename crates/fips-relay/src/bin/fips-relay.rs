@@ -21,7 +21,7 @@ async fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args().collect();
     if args.len() != 3 {
         return Err(
-            "usage: fips-relay <init|run|ctl> <config.json>; ctl reads one JSON request from stdin"
+            "usage: fips-relay <init|run|ctl|wallet> <config.json>; ctl/wallet read one JSON request from stdin"
                 .into(),
         );
     }
@@ -54,6 +54,22 @@ async fn run() -> Result<(), String> {
             println!(
                 "{}",
                 serde_json::to_string(&value).map_err(|e| e.to_string())?
+            );
+        }
+        "wallet" => {
+            let mut bytes = Vec::new();
+            std::io::stdin()
+                .take(64 * 1024 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|e| e.to_string())?;
+            if bytes.len() > 64 * 1024 {
+                return Err("wallet request too large".into());
+            }
+            let command = serde_json::from_slice(&bytes).map_err(|_| "invalid wallet JSON")?;
+            let result = fips_relay::wallet_tools::offline_wallet(&config, command).await?;
+            println!(
+                "{}",
+                serde_json::to_string(&result).map_err(|e| e.to_string())?
             );
         }
         _ => return Err("unknown command".into()),

@@ -21,6 +21,23 @@ This produces a statically linked executable. The current build is approximately
 command-line startup were verified on three ARM64 OpenWrt test routers. This
 does not verify radio compatibility, forwarding performance or package startup.
 
+## OpenWrt service supervision
+
+`openwrt/fips-relay.init` and `openwrt/fips-relay.config` provide a procd service
+definition and disabled-by-default UCI configuration. Install them as
+`/etc/init.d/fips-relay` (mode 0755) and `/etc/config/fips-relay`, respectively.
+Set the executable and service-JSON paths explicitly, initialize the saved state
+once, and enable the UCI instance before starting `/etc/init.d/fips-relay start`.
+The supervisor never initializes accounts. It bounds crash respawns and allows
+65 seconds for orderly shutdown. The wrapper has run on three OpenWrt routers.
+
+The first hardware trial used temporary executable paths and manually started
+instances. No boot-start links were installed. A temporary executable disappears
+on reboot; persistent package installation and boot recovery remain required.
+Confirm radio capabilities, disabled mesh forwarding, an isolated native
+interface, working management access, a reachable mint and a synchronized clock
+before admitting paid traffic. Firmware package builds are still pending.
+
 ## Initialization and configuration
 
 Build with `cargo build -p fips-relay --bin fips-relay`. Copy
@@ -110,8 +127,9 @@ this socket is not the public Wi-Fi payment/onboarding service.
 Run `cargo test -p fips-relay --test service`. The test fixture owns an isolated
 local CDK mint with simulated Lightning funding. It initializes five separate
 service processes and seeds their wallets through the existing Cashu wallet API.
-No public mint, user wallet or real payment backend is involved. A general wallet
-funding command and the phone/customer interface are not implemented here yet.
+No public mint, user wallet or real payment backend is involved. The offline
+`wallet` command and isolated hardware mint are documented in
+[TESTBENCH.md](TESTBENCH.md). The phone/customer interface remains separate work.
 
 The test exercises a source, three paid routers and another endpoint, separately
 buys both directions, sends traffic, stops/restarts every process and abruptly
