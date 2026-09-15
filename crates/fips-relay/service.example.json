@@ -4,6 +4,7 @@
   "ethernet_interfaces": ["mesh0"],
   "neighbors": [],
   "terms": {
+    "billing": "forwarding_attempt",
     "controller": {
       "mint_url": "http://192.0.2.1:3338",
       "channel_capacity_sat": 64,

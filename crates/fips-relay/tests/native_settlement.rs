@@ -314,6 +314,7 @@ async fn three_native_transit_routers_redeem_both_directions_through_neighbor_co
             let neighbors = peers.iter().enumerate().filter(|(j, _)| i.abs_diff(*j) == 1).map(|(_, peer)| *peer).collect();
             let (control, incoming) = ControlTransport::start(nodes[i].clone(), SERVICE + 2, neighbors, i as u64 + 30).await.unwrap();
             let service = Arc::new(RouteQuotes::new(nodes[i].clone(), Arc::new(control), QuotePolicy {
+                billing: Default::default(),
                 mint_url: mint.url().to_string(), receiver_pubkey_hex: receiver.receiver_pubkey_hex().to_string(), fee_msat_per_kib: 1_024, max_rate_msat_per_kib: 8_192, lifetime_secs: 300, max_units: 20_000, capacity_sat: 32, grace_msat: 16_384,
             }).unwrap());
             quote_servers.push(QuoteServer::start(service.clone(), incoming));

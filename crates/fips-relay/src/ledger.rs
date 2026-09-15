@@ -45,6 +45,24 @@ impl BytePrice {
     }
 }
 
+/// Immutable unit of service accepted with each route agreement.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BillingBasis {
+    /// Original prototype semantics. Retains ciphertext hashes and its limit.
+    #[default]
+    UniqueSessionEnvelope,
+    /// Each native authenticated admission is a new forwarding attempt. Link
+    /// replay rejection belongs to FIPS; completion tokens prevent double count.
+    ForwardingAttempt,
+}
+
+impl BillingBasis {
+    pub fn is_legacy(&self) -> bool {
+        *self == Self::UniqueSessionEnvelope
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Contract {
     pub id: String,
@@ -56,6 +74,8 @@ pub struct Contract {
     pub expires_unix: u64,
     pub price: BytePrice,
     pub max_units: u64,
+    #[serde(default, skip_serializing_if = "BillingBasis::is_legacy")]
+    pub billing: BillingBasis,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -115,6 +135,7 @@ struct Account {
     contract: Contract,
     usage: Usage,
     attempts: BTreeMap<[u8; 32], Attempt>,
+    completed: Usage,
     active: bool,
 }
 
@@ -182,6 +203,8 @@ pub(crate) struct AccountSnapshot {
     pub(crate) active: bool,
     // Arrays of tuples keep JSON encoding valid for binary digest keys.
     attempts: Vec<([u8; 32], Attempt)>,
+    #[serde(default)]
+    completed: Usage,
 }
 
 #[derive(Debug, Default)]
@@ -315,6 +338,7 @@ impl RelayLedger {
                 contract,
                 usage: Usage::default(),
                 attempts: BTreeMap::new(),
+                completed: Usage::default(),
                 active: true,
             },
         );
@@ -386,6 +410,10 @@ impl RelayLedger {
                     sealed_tokens.push(attempt.token);
                 }
             }
+            if account.contract.billing == BillingBasis::ForwardingAttempt {
+                account.completed = account.usage;
+                account.attempts.clear();
+            }
         }
         for token in sealed_tokens {
             state.pending.remove(&token);
@@ -431,7 +459,7 @@ impl RelayLedger {
     pub fn snapshot(&self) -> Snapshot {
         let state = self.state.lock().unwrap();
         Snapshot {
-            version: 3,
+            version: 4,
             limits: self.limits,
             next_token: state.next_token,
             channels: state
@@ -451,6 +479,7 @@ impl RelayLedger {
                     usage: a.usage,
                     active: a.active,
                     attempts: a.attempts.iter().map(|(k, v)| (*k, v.clone())).collect(),
+                    completed: a.completed,
                 })
                 .collect(),
         }
@@ -459,7 +488,7 @@ impl RelayLedger {
     /// Retain all evidence but activate no traffic. A snapshot alone does not
     /// establish which sends occurred after its last durable checkpoint.
     pub fn restore(snapshot: Snapshot) -> Result<Self, LedgerError> {
-        if snapshot.version != 3
+        if !matches!(snapshot.version, 3 | 4)
             || snapshot.channels.len() > snapshot.limits.max_channels
             || snapshot.accounts.len() > snapshot.limits.max_contracts
         {
@@ -497,9 +526,18 @@ impl RelayLedger {
             );
         }
         let mut tokens = std::collections::BTreeSet::new();
+        let mut outstanding = 0usize;
         for saved in snapshot.accounts {
+            let legacy = saved.contract.billing.is_legacy();
             if state.accounts.contains_key(&saved.contract.id)
-                || saved.attempts.len() > snapshot.limits.max_packets_per_contract
+                || (legacy && saved.attempts.len() > snapshot.limits.max_packets_per_contract)
+                || (snapshot.version == 3 && !legacy)
+                || saved
+                    .completed
+                    .submitted_units
+                    .checked_add(saved.completed.unconfirmed_units)
+                    != Some(saved.completed.reserved_units)
+                || (legacy && saved.completed.reserved_units != 0)
             {
                 return Err(LedgerError::InvalidSnapshot);
             }
@@ -509,10 +547,10 @@ impl RelayLedger {
                 .ok_or(LedgerError::InvalidSnapshot)?;
             validate_contract(&saved.contract, &channel.terms)
                 .map_err(|_| LedgerError::InvalidSnapshot)?;
-            let mut reserved = 0u64;
-            let mut submitted = 0u64;
-            let mut unconfirmed = 0u64;
-            let mut previously_unconfirmed = 0u64;
+            let mut reserved = saved.completed.reserved_units;
+            let mut submitted = saved.completed.submitted_units;
+            let mut unconfirmed = saved.completed.unconfirmed_units;
+            let mut previously_unconfirmed = saved.completed.unconfirmed_units;
             let mut attempts = BTreeMap::new();
             for (digest, mut attempt) in saved.attempts {
                 if attempt.token == 0
@@ -520,14 +558,25 @@ impl RelayLedger {
                     || !tokens.insert(attempt.token)
                     || attempt.units == 0
                     || attempts.contains_key(&digest)
+                    || (!legacy
+                        && (digest != attempt_key(attempt.token)
+                            || attempt.state != AttemptState::Pending))
                 {
                     return Err(LedgerError::InvalidSnapshot);
                 }
                 reserved = reserved
                     .checked_add(attempt.units)
                     .ok_or(LedgerError::InvalidSnapshot)?;
-                if !state.seen.insert((channel.terms.buyer, digest)) {
+                if legacy && !state.seen.insert((channel.terms.buyer, digest)) {
                     return Err(LedgerError::InvalidSnapshot);
+                }
+                if attempt.state == AttemptState::Pending {
+                    outstanding = outstanding
+                        .checked_add(1)
+                        .ok_or(LedgerError::InvalidSnapshot)?;
+                    if outstanding > snapshot.limits.max_pending {
+                        return Err(LedgerError::InvalidSnapshot);
+                    }
                 }
                 match attempt.state {
                     AttemptState::Submitted => submitted += attempt.units,
@@ -540,7 +589,9 @@ impl RelayLedger {
                         previously_unconfirmed += attempt.units;
                     }
                 }
-                attempts.insert(digest, attempt);
+                if legacy {
+                    attempts.insert(digest, attempt);
+                }
             }
             if reserved != saved.usage.reserved_units
                 || submitted != saved.usage.submitted_units
@@ -576,6 +627,15 @@ impl RelayLedger {
                     usage: Usage {
                         unconfirmed_units: unconfirmed,
                         ..saved.usage
+                    },
+                    completed: if legacy {
+                        Usage::default()
+                    } else {
+                        Usage {
+                            reserved_units: reserved,
+                            submitted_units: submitted,
+                            unconfirmed_units: unconfirmed,
+                        }
                     },
                     attempts,
                     active: false,
@@ -626,12 +686,18 @@ impl RelayLedger {
         let a = &state.accounts[&id];
         if a.contract.next_hop != request.next_hop
             || now_unix >= a.contract.expires_unix
-            || a.attempts.len() >= self.limits.max_packets_per_contract
+            || (a.contract.billing.is_legacy()
+                && a.attempts.len() >= self.limits.max_packets_per_contract)
         {
             return None;
         }
-        let digest = fingerprint(request);
-        if state.seen.contains(&(*request.ingress.node_addr(), digest)) {
+        let legacy = a.contract.billing.is_legacy();
+        let digest = if legacy {
+            fingerprint(request)
+        } else {
+            attempt_key(token)
+        };
+        if legacy && state.seen.contains(&(*request.ingress.node_addr(), digest)) {
             return None;
         }
         let prospective = a.usage.reserved_units.checked_add(units)?;
@@ -670,7 +736,9 @@ impl RelayLedger {
         );
         state.channels.get_mut(&channel_id)?.usage.reserved_msat = channel_reserved;
         state.next_token = token;
-        state.seen.insert((*request.ingress.node_addr(), digest));
+        if legacy {
+            state.seen.insert((*request.ingress.node_addr(), digest));
+        }
         state.pending.insert(token, (id, digest));
         Some(token)
     }
@@ -777,6 +845,15 @@ impl ForwardingPolicy for RelayLedger {
                 a.usage.unconfirmed_units += attempt.units;
             }
         }
+        if a.contract.billing == BillingBasis::ForwardingAttempt {
+            let units = attempt.units;
+            a.completed.reserved_units += units;
+            match outcome {
+                ForwardingOutcome::Submitted => a.completed.submitted_units += units,
+                ForwardingOutcome::Unconfirmed => a.completed.unconfirmed_units += units,
+            }
+            a.attempts.remove(&digest);
+        }
         let delta = a
             .contract
             .price
@@ -795,6 +872,12 @@ impl ForwardingPolicy for RelayLedger {
 
 fn fingerprint(request: &ForwardingRequest<'_>) -> [u8; 32] {
     session_fingerprint(request.source, request.destination, request.session_payload)
+}
+
+fn attempt_key(token: u64) -> [u8; 32] {
+    let mut key = [0; 32];
+    key[..8].copy_from_slice(&token.to_be_bytes());
+    key
 }
 
 pub(crate) fn session_fingerprint(

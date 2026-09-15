@@ -8,6 +8,7 @@ use cashu_service::{
 use fips_core::config::PeerConfig;
 use fips_relay::{
     controller::ControllerPolicy,
+    ledger::BillingBasis,
     probe::{ReceiveProbe, SendProbe},
     service::{AdminRequest, ServiceConfig, ServiceTerms, native_request, request},
 };
@@ -53,6 +54,7 @@ fn config(root: &Path, mint: &str) -> ServiceConfig {
         ethernet_interfaces: vec![],
         neighbors: vec![],
         terms: ServiceTerms {
+            billing: Default::default(),
             controller: ControllerPolicy {
                 mint_url: mint.into(),
                 channel_capacity_sat: 32,
@@ -207,6 +209,12 @@ async fn deliver(configs: &[ServiceConfig], npubs: &[String], epoch: u8) {
 }
 
 async fn measured_paid_traffic(configs: &[ServiceConfig], npubs: &[String]) {
+    let attempts = configs[0].terms.billing == BillingBasis::ForwardingAttempt;
+    let (packet_count, payload_bytes, packets_per_second) = if attempts {
+        (6_000, 1_000, 600)
+    } else {
+        (6, 80, 10)
+    };
     for (source, destination) in [(0, 4), (4, 0)] {
         let id = format!("{:032x}", source + 1);
         request(
@@ -215,8 +223,8 @@ async fn measured_paid_traffic(configs: &[ServiceConfig], npubs: &[String]) {
                 probe: ReceiveProbe {
                     source: npubs[source].clone(),
                     stream_id: id.clone(),
-                    packet_count: 6,
-                    payload_bytes: 80,
+                    packet_count,
+                    payload_bytes,
                     measure_one_way_latency: true,
                 },
             },
@@ -227,9 +235,9 @@ async fn measured_paid_traffic(configs: &[ServiceConfig], npubs: &[String]) {
             probe: SendProbe {
                 destination: npubs[destination].clone(),
                 stream_id: id.clone(),
-                packet_count: 6,
-                payload_bytes: 80,
-                packets_per_second: 10,
+                packet_count,
+                payload_bytes,
+                packets_per_second,
             },
         };
         let concurrent = async {
@@ -245,7 +253,7 @@ async fn measured_paid_traffic(configs: &[ServiceConfig], npubs: &[String]) {
         };
         let (sent, ()) = tokio::join!(request(&configs[source], &send), concurrent);
         let sent = sent.unwrap();
-        assert_eq!(sent["probe"]["submitted_packets"], 6);
+        assert_eq!(sent["probe"]["submitted_packets"], packet_count);
         assert!(sent["probe"]["stopped_reason"].is_null());
         assert!(sent["probe"]["elapsed_us"].as_u64().unwrap() >= 450_000);
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -253,11 +261,14 @@ async fn measured_paid_traffic(configs: &[ServiceConfig], npubs: &[String]) {
                 let status = request(&configs[destination], &AdminRequest::Status)
                     .await
                     .unwrap();
-                if status["probe"]["unique_packets"] == 6 {
-                    assert_eq!(status["probe"]["unique_bytes"], 480);
+                if status["probe"]["unique_packets"] == packet_count {
+                    assert_eq!(
+                        status["probe"]["unique_bytes"],
+                        u64::from(packet_count) * payload_bytes as u64
+                    );
                     assert_eq!(status["probe"]["missing_packets"], 0);
                     assert_eq!(status["probe"]["duplicate_packets"], 0);
-                    assert_eq!(status["probe"]["latency"]["samples"], 6);
+                    assert_eq!(status["probe"]["latency"]["samples"], packet_count);
                     assert_eq!(status["probe"]["latency"]["invalid_timestamps"], 0);
                     break;
                 }
@@ -286,6 +297,15 @@ async fn private_native_control(config: &ServiceConfig) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn five_real_processes_preserve_paid_accounts_across_shutdown_and_router_crash() {
+    five_process_run(BillingBasis::UniqueSessionEnvelope).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn compact_attempt_accounting_carries_long_paid_streams_and_recovers() {
+    five_process_run(BillingBasis::ForwardingAttempt).await;
+}
+
+async fn five_process_run(billing: BillingBasis) {
     tokio::time::timeout(Duration::from_secs(300), async {
         let root = tempfile::tempdir().unwrap();
         let _diagnostic_logs = DiagnosticLogs(root.path().to_path_buf());
@@ -313,6 +333,11 @@ async fn five_real_processes_preserve_paid_accounts_across_shutdown_and_router_c
             cfg.terms.controller.channel_capacity_sat = 64;
             cfg.terms.controller.max_locked_sat = 128;
             cfg.terms.buyer_budget_sat = 128;
+            cfg.terms.billing = billing;
+            if billing == BillingBasis::ForwardingAttempt {
+                cfg.terms.fee_msat_per_kib = 1;
+                cfg.terms.quote_max_units = 64 * 1024 * 1024;
+            }
             let reservation = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
             cfg.udp_bind = Some(reservation.local_addr().unwrap());
             reservations.push(reservation);
@@ -375,8 +400,11 @@ async fn five_real_processes_preserve_paid_accounts_across_shutdown_and_router_c
             request(&configs[0], &forward_request),
             request(&configs[4], &reverse_request),
         );
-        forward.unwrap();
-        reverse.unwrap();
+        for purchase in [forward.unwrap(), reverse.unwrap()] {
+            let contract: fips_relay::ledger::Contract =
+                serde_json::from_value(purchase["purchase"]["contract"].clone()).unwrap();
+            assert_eq!(contract.billing, billing);
+        }
         deliver(&configs, &npubs, 1).await;
         measured_paid_traffic(&configs, &npubs).await;
         let mut before = Vec::new();
@@ -385,6 +413,31 @@ async fn five_real_processes_preserve_paid_accounts_across_shutdown_and_router_c
         }
         for child in &mut children {
             stop(child).await;
+        }
+        if billing == BillingBasis::ForwardingAttempt {
+            for cfg in &configs {
+                for relative in ["seller/ledger.json", "buyer/buyer.json"] {
+                    let path = cfg.state_directory.join(relative);
+                    assert!(
+                        std::fs::metadata(&path).unwrap().len() < 20_000,
+                        "packet history must not grow with the 12,000 delivered packets"
+                    );
+                    let saved: serde_json::Value =
+                        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+                    let records: Vec<_> = if relative.starts_with("seller") {
+                        saved["ledger"]["accounts"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .collect()
+                    } else {
+                        saved["quotes"].as_object().unwrap().values().collect()
+                    };
+                    for r in records {
+                        assert!(r["attempts"].as_array().unwrap().is_empty());
+                    }
+                }
+            }
         }
         for (i, child) in children.iter_mut().enumerate() {
             *child = start(&paths[i]).await;

@@ -70,6 +70,7 @@ async fn prices_follow_native_next_hops_and_accumulate_over_neighbor_control() {
                     node.clone(),
                     Arc::new(control),
                     QuotePolicy {
+                        billing: Default::default(),
                         mint_url: "http://test.invalid".into(),
                         receiver_pubkey_hex: "02".to_owned() + &"11".repeat(32),
                         fee_msat_per_kib: 1_024,

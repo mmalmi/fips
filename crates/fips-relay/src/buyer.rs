@@ -9,8 +9,8 @@ use crate::{
         DurableError, DurableRelay, MAX_JOURNAL_BYTES, acquire_owner, write_private_journal,
     },
     ledger::{
-        ChannelTerms, Contract, Limits, node_addr, session_fingerprint, validate_channel,
-        validate_contract,
+        BillingBasis, ChannelTerms, Contract, Limits, node_addr, session_fingerprint,
+        validate_channel, validate_contract,
     },
 };
 use cashu_service::{CashuSpilmanPayment, CashuSpilmanPaymentSigner};
@@ -75,6 +75,14 @@ struct Attempt {
     digest: [u8; 32],
     units: u64,
     outcome: AttemptOutcome,
+    #[serde(default)]
+    token: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct CompletedEvidence {
+    observed_units: u64,
+    submitted_units: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,6 +92,8 @@ struct PurchaseQuote {
     attempts: Vec<Attempt>,
     observed_units: u64,
     submitted_units: u64,
+    #[serde(default)]
+    completed: CompletedEvidence,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,7 +124,7 @@ impl State {
     }
 
     fn validate_and_recover(&mut self) -> Result<(), BuyerError> {
-        if self.version != 1
+        if !matches!(self.version, 1 | 2)
             || self.total_budget_sat == 0
             || self.next_token == 0
             || self.channels.len() > self.limits.max_channels
@@ -126,6 +136,8 @@ impl State {
         self.pending.clear();
         let mut active_channels = HashSet::new();
         let mut active_quotes = HashSet::new();
+        let mut tokens = HashSet::new();
+        let mut outstanding = 0usize;
         let mut total = 0u64;
         for (id, c) in &self.channels {
             let capacity = validate_channel(&c.terms).map_err(|_| BuyerError::Format)?;
@@ -146,6 +158,7 @@ impl State {
             return Err(BuyerError::Format);
         }
         for (id, q) in &mut self.quotes {
+            let legacy = q.contract.billing.is_legacy();
             let c = self
                 .channels
                 .get(&q.contract.channel_id)
@@ -153,16 +166,34 @@ impl State {
             validate_contract(&q.contract, &c.terms).map_err(|_| BuyerError::Format)?;
             if id != &q.contract.id
                 || q.contract.destination == c.provider
-                || q.attempts.len() > self.limits.max_packets_per_contract
+                || (legacy && q.attempts.len() > self.limits.max_packets_per_contract)
+                || (self.version == 1 && !legacy)
+                || q.completed.submitted_units > q.completed.observed_units
+                || (legacy && q.completed.observed_units != 0)
                 || (q.active
                     && (!c.active || !active_quotes.insert((c.provider, q.contract.destination))))
             {
                 return Err(BuyerError::Format);
             }
-            let (mut observed, mut submitted) = (0u64, 0u64);
+            let (mut observed, mut submitted) =
+                (q.completed.observed_units, q.completed.submitted_units);
             for a in &mut q.attempts {
-                if a.units == 0 || !self.seen.insert((c.provider, a.digest)) {
+                if a.units == 0
+                    || (legacy && !self.seen.insert((c.provider, a.digest)))
+                    || (!legacy
+                        && (a.token == 0
+                            || a.token >= self.next_token
+                            || !tokens.insert(a.token)
+                            || a.digest != [0; 32]
+                            || a.outcome != AttemptOutcome::Pending))
+                {
                     return Err(BuyerError::Format);
+                }
+                if a.outcome == AttemptOutcome::Pending {
+                    outstanding = outstanding.checked_add(1).ok_or(BuyerError::Format)?;
+                    if outstanding > self.limits.max_pending {
+                        return Err(BuyerError::Format);
+                    }
                 }
                 observed = observed.checked_add(a.units).ok_or(BuyerError::Format)?;
                 if a.outcome == AttemptOutcome::Submitted {
@@ -177,6 +208,13 @@ impl State {
             {
                 return Err(BuyerError::Format);
             }
+            if !legacy {
+                q.completed = CompletedEvidence {
+                    observed_units: observed,
+                    submitted_units: submitted,
+                };
+                q.attempts.clear();
+            }
         }
         for (id, c) in &self.channels {
             let maximum = self
@@ -188,6 +226,7 @@ impl State {
                 return Err(BuyerError::Format);
             }
         }
+        self.version = 2;
         Ok(())
     }
 }
@@ -225,7 +264,7 @@ impl BuyerAuthorizer {
         let buyer = Self {
             directory: directory.into(),
             state: Mutex::new(State {
-                version: 1,
+                version: 2,
                 local,
                 total_budget_sat,
                 limits,
@@ -350,6 +389,7 @@ impl BuyerAuthorizer {
                     attempts: Vec::new(),
                     observed_units: 0,
                     submitted_units: 0,
+                    completed: CompletedEvidence::default(),
                 },
             );
             Ok(())
@@ -550,11 +590,6 @@ impl BuyerAuthorizer {
         {
             return None;
         }
-        let digest =
-            session_fingerprint(request.source, request.destination, request.session_payload);
-        if s.seen.contains(&(request.next_hop, digest)) {
-            return None;
-        }
         let id = s
             .quotes
             .iter()
@@ -569,13 +604,22 @@ impl BuyerAuthorizer {
             })?
             .0
             .clone();
+        let legacy = s.quotes[&id].contract.billing.is_legacy();
+        let digest = if legacy {
+            session_fingerprint(request.source, request.destination, request.session_payload)
+        } else {
+            [0; 32]
+        };
+        if legacy && s.seen.contains(&(request.next_hop, digest)) {
+            return None;
+        }
         let limit = s.limits.max_packets_per_contract;
         let token = s.next_token;
         let next_token = token.checked_add(1)?;
         let q = s.quotes.get_mut(&id)?;
         let units = u64::try_from(request.session_payload.len()).ok()?;
         let observed = q.observed_units.checked_add(units)?;
-        if q.attempts.len() >= limit || observed > q.contract.max_units {
+        if (legacy && q.attempts.len() >= limit) || observed > q.contract.max_units {
             return None;
         }
         let admitted = admit()?;
@@ -585,9 +629,12 @@ impl BuyerAuthorizer {
             digest,
             units,
             outcome: AttemptOutcome::Pending,
+            token: if legacy { 0 } else { token },
         });
         s.pending.insert(token, (id, index));
-        s.seen.insert((request.next_hop, digest));
+        if legacy {
+            s.seen.insert((request.next_hop, digest));
+        }
         s.next_token = next_token;
         Some((token, admitted))
     }
@@ -613,6 +660,20 @@ impl OriginatedSessionObserver for BuyerAuthorizer {
             }
             ForwardingOutcome::Unconfirmed => AttemptOutcome::Unconfirmed,
         };
+        if q.contract.billing == BillingBasis::ForwardingAttempt {
+            let a = q.attempts.swap_remove(index);
+            q.completed.observed_units += a.units;
+            if outcome == ForwardingOutcome::Submitted {
+                q.completed.submitted_units += a.units;
+            }
+            let moved = q.attempts.get(index).map(|a| a.token);
+            if let Some(token) = moved {
+                s.pending
+                    .get_mut(&token)
+                    .expect("pending attempt retained")
+                    .1 = index;
+            }
+        }
     }
 }
 
@@ -705,6 +766,7 @@ mod tests {
             .unwrap();
         buyer
             .accept_quote(Contract {
+                billing: Default::default(),
                 id: "quote".into(),
                 channel_id: "channel".into(),
                 destination,

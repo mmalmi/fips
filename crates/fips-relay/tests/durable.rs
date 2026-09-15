@@ -24,6 +24,7 @@ fn channel() -> ChannelTerms {
 
 fn contract() -> Contract {
     Contract {
+        billing: Default::default(),
         id: "quote".into(),
         channel_id: "neighbor".into(),
         destination: NodeAddr::from_bytes([9; 16]),
@@ -52,6 +53,47 @@ fn start(path: &std::path::Path) -> DurableRelay {
     relay.open_channel_verified(channel(), 0).unwrap();
     relay.add_contract(contract()).unwrap();
     relay
+}
+
+#[test]
+fn compact_attempt_totals_preserve_durable_crash_and_seal_bounds() {
+    use fips_relay::ledger::BillingBasis;
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("attempts");
+    let relay = DurableRelay::create(&path, Limits::default(), 10).unwrap();
+    relay.open_channel_verified(channel(), 100).unwrap();
+    let mut quote = contract();
+    quote.billing = BillingBasis::ForwardingAttempt;
+    quote.price.per_bytes = 100;
+    quote.max_units = 100_000;
+    relay.add_contract(quote).unwrap();
+    for i in 1..=10_000 {
+        let token = relay.admit(&request(b"x")).unwrap();
+        relay.complete(token, ForwardingOutcome::Submitted);
+        if i % 500 == 0 {
+            relay.checkpoint().unwrap();
+        }
+    }
+    let token = relay.admit(&request(b"pending")).unwrap();
+    relay.checkpoint().unwrap();
+    assert!(std::fs::metadata(path.join("ledger.json")).unwrap().len() < 2_000);
+    drop(relay);
+    let relay = DurableRelay::load(&path).unwrap();
+    let old = relay.channel_usage("neighbor").unwrap();
+    assert_eq!(old.submitted_msat, 100);
+    assert_eq!(old.lost_msat, 10);
+    assert_eq!(relay.usage("quote").unwrap().unconfirmed_units, 7);
+    relay.complete(token, ForwardingOutcome::Submitted);
+    assert_eq!(relay.checkpoint().unwrap()["neighbor"].submitted_msat, 100);
+    let late = relay.admit(&request(b"new")).unwrap();
+    let sealed = relay.seal_channel("neighbor").unwrap();
+    relay.complete(late, ForwardingOutcome::Submitted);
+    assert_eq!(relay.channel_usage("neighbor").unwrap(), sealed);
+    assert_eq!(relay.usage("quote").unwrap().unconfirmed_units, 10);
+    drop(relay);
+    let relay = DurableRelay::load(&path).unwrap();
+    assert_eq!(relay.channel_usage("neighbor").unwrap(), sealed);
+    assert!(relay.admit(&request(b"new")).is_none());
 }
 
 #[test]

@@ -98,6 +98,7 @@ impl Controller {
         let changed = previous.iter().any(|o| {
             o.purchase.provider != offered.provider
                 || o.offer.price != offered.price
+                || o.offer.billing != offered.billing
                 || o.offer.next_hop != offered.next_hop
                 || o.offer.path != offered.path
                 || o.purchase.contract.expires_unix <= timestamp

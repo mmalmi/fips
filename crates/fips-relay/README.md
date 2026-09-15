@@ -29,7 +29,11 @@ size-oriented ARM64 build, startup readiness checks and backup procedure.
   quotes. Many quotes share one channel's credit and unpaid exposure. It
   reserves before enqueue and retains uncertain usage. Repeated opens, new
   destinations and route changes cannot reset grace or create credit. Replay
-  protection spans retained quotes/channels for the same authenticated buyer.
+  protection spans retained quotes/channels for the same authenticated buyer
+  under the original tariff. The explicit `forwarding_attempt` tariff keeps
+  cumulative totals plus bounded unfinished sends; FIPS rejects link replays
+  before admission. A fresh authenticated retransmission is another attempt.
+  See [ACCOUNTING.md](ACCOUNTING.md) for the precise duplicate and recovery rules.
 * `DurableRelay` records bounded allowance windows before admission and records
   submitted totals before exposing a payment claim. Crash recovery consumes the
   whole unrecorded window as unbilled exposure; repeated restarts cannot reset
@@ -201,11 +205,14 @@ random loopback port. It does not use a user's wallet or contact a public mint.
 ## Runtime work remaining
 
 Combined route-change/unfinished-renewal recovery, expired pending offers,
-broader interrupted funding exercises, bounded history retirement and a phone
+broader interrupted funding exercises, route/channel history retirement and a phone
 customer demo remain unfinished. Persistent OpenWrt packaging and bounded
 physical route-change/traffic measurements now have hardware evidence; see
 [the measurements](MEASUREMENTS.md) for scope, resource costs and the confirmed
-4,096-attempt cutoff. Sustained forwarding and maximum throughput are unverified.
+legacy 4,096-attempt cutoff. The new accounting mode passed 6,000 application
+packets in each direction through three paid relays in the five-process test,
+including subsequent restart recovery and test-mint settlement. Its physical
+wireless performance and maximum throughput are unverified.
 See [the service guide](SERVICE.md) for the runnable Unix service and local
 process test. It is not a deployed hotspot or public onboarding service.
 
@@ -221,11 +228,13 @@ during an unfinished renewal and expired pending offers still stop recovery.
 No controller loop erases history or resets the
 buyer's lifetime spending limit to make another purchase possible.
 
-Default retained history is bounded to 16 channels, 32 destination contracts
-and 4,096 distinct packets per contract. Reaching a limit stops admission;
-evidence is not evicted to make room. The journal is capped at 32 MiB. A deployment
-needs safe history retirement rather than simply larger limits. The physical
-measurement reached the packet cutoff while credit remained available.
+Retained history is bounded to 16 channels and 32 destination contracts. The
+legacy tariff also retains 4,096 distinct packets per contract; the r4 hardware
+run reached that cutoff while credit remained available. The explicit
+`forwarding_attempt` tariff retires completed packet records into cumulative
+totals, keeping at most 1,024 unfinished sends. The journal is capped at 32 MiB.
+Safe route/channel retirement and sustained physical measurements remain needed;
+new-format accounting is not established by the historical r4 hardware results.
 
 Datagrams must fit the discovered path after FIPS headers are added. The native
 test uses 1,000-byte service payloads on the default 1,280-byte path. A

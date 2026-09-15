@@ -495,6 +495,7 @@ impl Controller {
             validate_contract(&o.purchase.contract, &o.purchase.channel)
                 .map_err(|e| e.to_string())?;
             if o.purchase.contract.price != o.offer.price
+                || o.purchase.contract.billing != o.offer.billing
                 || o.purchase.contract.destination != *o.offer.destination.node_addr()
                 || o.purchase.contract.next_hop != o.offer.next_hop
             {
@@ -511,6 +512,7 @@ impl Controller {
                 || i.channel.mint_url != policy.mint_url
                 || i.verified_paid_msat > i.channel.capacity_sat * 1_000
                 || i.contract.price != i.offer.price
+                || i.contract.billing != i.offer.billing
                 || i.contract.destination != *i.offer.destination.node_addr()
                 || i.contract.next_hop != i.offer.next_hop
                 || i.replaces.as_ref().is_some_and(|previous| {
@@ -530,6 +532,7 @@ impl Controller {
                     || d.destination.node_addr() != i.offer.destination.node_addr()
                     || d.price.per_bytes != i.offer.price.per_bytes
                     || d.price.msat >= i.offer.price.msat
+                    || d.billing != i.offer.billing
                     || d.mint_url != policy.mint_url
                 {
                     return Err("invalid onward quote".into());
@@ -756,6 +759,7 @@ impl Controller {
             } else {
                 if existing.purchase.contract.expires_unix <= now()?
                     || existing.offer.price != offer.price
+                    || existing.offer.billing != offer.billing
                     || existing.offer.next_hop != offer.next_hop
                 {
                     return Err("existing route needs explicit replacement".into());
@@ -773,7 +777,10 @@ impl Controller {
                     old.provider == offer.provider
                         && old.destination.node_addr() == offer.destination.node_addr()
                 }) {
-                    if old.price != offer.price || old.next_hop != offer.next_hop {
+                    if old.price != offer.price
+                        || old.next_hop != offer.next_hop
+                        || old.billing != offer.billing
+                    {
                         return Err("pending route needs explicit replacement".into());
                     }
                     return Ok(old.clone());
@@ -810,6 +817,7 @@ impl Controller {
                         && o.purchase.contract.destination == saved.purchase.contract.destination
                 }) {
                     if old.offer.price != saved.offer.price
+                        || old.offer.billing != saved.offer.billing
                         || old.offer.next_hop != saved.offer.next_hop
                     {
                         return Err("conflicting concurrent route purchase".into());
@@ -1629,6 +1637,7 @@ mod tests {
             expires_unix: now().unwrap() + 600,
         };
         let offer = RouteOffer {
+            billing: Default::default(),
             id: "old-offer".into(),
             buyer: journal.local,
             provider: NodeAddr::from_bytes([2; 16]),

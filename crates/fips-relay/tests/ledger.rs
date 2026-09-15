@@ -25,6 +25,7 @@ fn channel() -> ChannelTerms {
 }
 fn contract() -> Contract {
     Contract {
+        billing: Default::default(),
         id: "route-a".into(),
         channel_id: "channel-a".into(),
         destination: NodeAddr::from_bytes([9; 16]),
@@ -297,5 +298,88 @@ fn channel_capacity_caps_grace_and_prices_accumulate_without_per_packet_rounding
     assert!(
         ledger.admit_at(&request(b"x"), 100).is_none(),
         "grace cannot exceed the redeemable channel capacity"
+    );
+}
+
+#[test]
+fn forwarding_attempt_totals_survive_more_than_the_fingerprint_limit() {
+    use fips_relay::ledger::BillingBasis;
+    let ledger = RelayLedger::new(Limits {
+        max_packets_per_contract: 2,
+        max_pending: 2,
+        ..Limits::default()
+    });
+    let mut terms = channel();
+    terms.capacity_sat = 100;
+    ledger.open_channel_verified(terms, 50_000).unwrap();
+    let mut route = contract();
+    route.billing = BillingBasis::ForwardingAttempt;
+    route.max_units = 100_000;
+    ledger.add_contract(route).unwrap();
+    for _ in 0..10_000 {
+        // These are separate native admissions. Equal inner contents do not
+        // imply replay of an authenticated link frame.
+        let token = ledger.admit_at(&request(b"four"), 100).unwrap();
+        ledger.complete(token, ForwardingOutcome::Submitted);
+        ledger.complete(token, ForwardingOutcome::Submitted);
+    }
+    assert_eq!(ledger.amount_due_msat("route-a"), Some(40_000));
+    let before = serde_json::to_value(ledger.snapshot()).unwrap();
+    assert!(
+        before["accounts"][0]["attempts"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(serde_json::to_vec(&before).unwrap().len() < 2_000);
+    let a = ledger.admit_at(&request(b"same"), 100).unwrap();
+    let b = ledger.admit_at(&request(b"same"), 100).unwrap();
+    assert!(ledger.admit_at(&request(b"extra"), 100).is_none());
+    ledger.complete(b, ForwardingOutcome::Unconfirmed);
+    let saved = ledger.snapshot();
+    let recovered = RelayLedger::restore(saved.clone()).unwrap();
+    assert_eq!(
+        recovered.usage("route-a").unwrap(),
+        fips_relay::ledger::Usage {
+            reserved_units: 40_008,
+            submitted_units: 40_000,
+            unconfirmed_units: 8,
+        }
+    );
+    recovered.complete(a, ForwardingOutcome::Submitted);
+    assert_eq!(recovered.amount_due_msat("route-a"), Some(40_000));
+    let value = serde_json::to_value(recovered.snapshot()).unwrap();
+    assert!(
+        value["accounts"][0]["attempts"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let mut corrupted = serde_json::to_value(saved).unwrap();
+    corrupted["accounts"][0]["completed"]["submitted_units"] = 40_001.into();
+    assert!(RelayLedger::restore(serde_json::from_value(corrupted).unwrap()).is_err());
+}
+
+#[test]
+fn legacy_snapshot_keeps_its_original_ciphertext_deduplication() {
+    let ledger = RelayLedger::new(Limits::default());
+    fund(&ledger, 100);
+    let token = ledger.admit_at(&request(b"same"), 100).unwrap();
+    ledger.complete(token, ForwardingOutcome::Submitted);
+    let mut legacy = serde_json::to_value(ledger.snapshot()).unwrap();
+    legacy["version"] = 3.into();
+    legacy["accounts"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("completed");
+    let restored = RelayLedger::restore(serde_json::from_value(legacy.clone()).unwrap()).unwrap();
+    assert_eq!(restored.amount_due_msat("route-a"), Some(4));
+    // Version three must never reinterpret a saved fingerprint table as the
+    // new transmission tariff, even if a malformed file adds a billing field.
+    legacy["accounts"][0]["contract"]["billing"] = "forwarding_attempt".into();
+    assert!(RelayLedger::restore(serde_json::from_value(legacy).unwrap()).is_err());
+    assert_eq!(
+        restored.contract("route-a").unwrap().billing,
+        fips_relay::ledger::BillingBasis::UniqueSessionEnvelope
     );
 }

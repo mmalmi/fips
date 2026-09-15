@@ -55,6 +55,7 @@ pub(super) fn same_service(previous: &RouteOffer, next: &RouteOffer) -> bool {
         && previous.destination.node_addr() == next.destination.node_addr()
         && previous.next_hop == next.next_hop
         && previous.price == next.price
+        && previous.billing == next.billing
         && previous.mint_url == next.mint_url
         && next.max_units >= previous.max_units
 }
@@ -320,6 +321,7 @@ mod tests {
         let destination = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
         let provider = NodeAddr::from_bytes([2; 16]);
         RouteOffer {
+            billing: Default::default(),
             id: "offer".into(),
             buyer: NodeAddr::from_bytes([1; 16]),
             provider,
@@ -344,6 +346,7 @@ mod tests {
         let old = offer();
         assert!(same_service(&old, &old));
         let mutations: Vec<fn(&mut RouteOffer)> = vec![
+            |o| o.billing = crate::ledger::BillingBasis::ForwardingAttempt,
             |o| o.price.msat += 1,
             |o| o.provider = NodeAddr::from_bytes([3; 16]),
             |o| o.next_hop = NodeAddr::from_bytes([4; 16]),
@@ -371,6 +374,7 @@ mod tests {
                 expires_unix: 600,
             },
             contract: Contract {
+                billing: Default::default(),
                 id: "contract".into(),
                 channel_id: "channel".into(),
                 destination: *offer.destination.node_addr(),

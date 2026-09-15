@@ -7,7 +7,7 @@
 
 use crate::{
     control_transport::{ControlTransport, IncomingRequest, MAX_RECORD_BYTES},
-    ledger::{BytePrice, ChannelTerms, Contract, node_addr},
+    ledger::{BillingBasis, BytePrice, ChannelTerms, Contract, node_addr},
 };
 use fips_core::{FipsEndpoint, Identity, NodeAddr, PeerIdentity};
 use serde::{Deserialize, Serialize};
@@ -29,6 +29,7 @@ const MAX_REQUEST_SECONDS: u64 = 30;
 
 #[derive(Debug, Clone)]
 pub struct QuotePolicy {
+    pub billing: BillingBasis,
     pub mint_url: String,
     pub receiver_pubkey_hex: String,
     pub fee_msat_per_kib: u64,
@@ -58,6 +59,8 @@ pub struct QuoteRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RouteOffer {
+    #[serde(default, skip_serializing_if = "BillingBasis::is_legacy")]
+    pub billing: BillingBasis,
     pub id: String,
     #[serde(with = "node_addr")]
     pub buyer: NodeAddr,
@@ -169,6 +172,10 @@ impl RouteQuotes {
     /// A direct final destination needs no paid forwarding quote.
     pub async fn request_route(&self, destination: PeerIdentity) -> Result<RouteOffer, String> {
         self.request_route_inner(destination, false).await
+    }
+
+    pub(crate) fn billing_basis(&self) -> BillingBasis {
+        self.policy.billing
     }
 
     /// Check current native prices and paths while reusing unchanged offers.
@@ -397,6 +404,7 @@ impl RouteQuotes {
             .checked_add(1)
             .ok_or("quote sequence exhausted")?;
         let offer = RouteOffer {
+            billing: self.policy.billing,
             id: id.clone(),
             buyer: *peer.node_addr(),
             provider: local,
@@ -508,6 +516,7 @@ pub(crate) fn contract_from_offer(
     digest.update(id.as_bytes());
     digest.update(channel.id.as_bytes());
     Ok(Contract {
+        billing: offer.billing,
         id: format!("{:x}", digest.finalize()),
         channel_id: channel.id.clone(),
         destination: *offer.destination.node_addr(),
@@ -527,6 +536,7 @@ fn validate_offer(
     now: u64,
 ) -> Result<(), String> {
     if offer.id.is_empty()
+        || offer.billing != policy.billing
         || offer.id.len() > 128
         || offer.buyer != local
         || offer.provider != *peer.node_addr()
@@ -648,6 +658,7 @@ mod tests {
     fn downstream_quotes_cannot_change_identity_price_mint_or_loop_bounds() {
         let (buyer, provider, destination) = (peer(1), peer(2), peer(3));
         let policy = QuotePolicy {
+            billing: Default::default(),
             mint_url: "http://test.invalid".into(),
             receiver_pubkey_hex: "02".to_owned() + &"11".repeat(32),
             fee_msat_per_kib: 1_024,
@@ -664,6 +675,7 @@ mod tests {
             reuse_unchanged: false,
         };
         let offer = RouteOffer {
+            billing: Default::default(),
             id: "quote".into(),
             buyer: *buyer.node_addr(),
             provider: *provider.node_addr(),
@@ -686,6 +698,7 @@ mod tests {
         };
         check(&offer).unwrap();
         let mutations: Vec<fn(&mut RouteOffer)> = vec![
+            |o| o.billing = BillingBasis::ForwardingAttempt,
             |o| o.provider = *peer(4).node_addr(),
             |o| o.buyer = *peer(4).node_addr(),
             |o| o.destination = peer(4),

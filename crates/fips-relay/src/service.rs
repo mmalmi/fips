@@ -5,7 +5,7 @@ use crate::{
     control_transport::{ControlStatistics, ControlTransport},
     controller::{Controller, ControllerPolicy, ControllerServices, ControllerTasks},
     durable::{DurableRelay, acquire_owner},
-    ledger::Limits,
+    ledger::{BillingBasis, Limits},
     payment_control::{PaymentControl, PaymentServer},
     probe::{self, ProbeReceiver, ReceiveProbe, SendProbe},
     route_quotes::{QuotePolicy, QuoteServer, RouteQuotes},
@@ -61,6 +61,8 @@ const REQUIRED: &[&str] = &[
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceTerms {
+    #[serde(default, skip_serializing_if = "BillingBasis::is_legacy")]
+    pub billing: BillingBasis,
     pub controller: ControllerPolicy,
     pub buyer_budget_sat: u64,
     pub window_msat: u64,
@@ -479,6 +481,7 @@ impl RelayService {
             endpoint.clone(),
             Arc::new(quote_transport),
             QuotePolicy {
+                billing: t.billing,
                 mint_url: t.controller.mint_url.clone(),
                 receiver_pubkey_hex: receiver.receiver_pubkey_hex().to_string(),
                 fee_msat_per_kib: t.fee_msat_per_kib,
@@ -867,6 +870,7 @@ mod tests {
             .unwrap();
         seller
             .add_contract(Contract {
+                billing: Default::default(),
                 id: "route".into(),
                 channel_id: "channel".into(),
                 destination,
@@ -908,6 +912,7 @@ mod tests {
             ethernet_interfaces: vec!["mesh0".into()],
             neighbors: vec![],
             terms: ServiceTerms {
+                billing: Default::default(),
                 controller: ControllerPolicy {
                     mint_url: "http://127.0.0.1:3338".into(),
                     channel_capacity_sat: 32,

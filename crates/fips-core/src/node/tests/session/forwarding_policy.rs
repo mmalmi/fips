@@ -207,3 +207,150 @@ fn native_forwarding_policy_gates_three_transit_hops_in_both_directions() {
         }
     });
 }
+
+#[test]
+fn authenticated_link_replay_cannot_create_another_forwarding_attempt() {
+    run_large_stack_async_test("fips-transit-wire-replay", || async {
+        use crate::node::tests::spanning_tree::process_dataplane_packet;
+
+        let _guard = lock_large_network_test().await;
+        let mut nodes = run_tree_test(3, &[(0, 1), (1, 2)], false).await;
+        verify_tree_convergence(&nodes);
+        populate_all_coord_caches(&mut nodes);
+        drain_to_quiescence(&mut nodes).await;
+        let source = *nodes[0].node.node_addr();
+        let destination = *nodes[2].node.node_addr();
+        let policy = Arc::new(Allowance::default());
+        policy.0.lock().unwrap().allowance = 1_000_000;
+        nodes[1].node.set_forwarding_policy(Some(policy.clone()));
+
+        // Deliberately opaque session contents: a transit router authenticates
+        // its paying neighbor, not the end-to-end ciphertext or claimed sender.
+        let mut payload = vec![0; 64];
+        payload[2..4].copy_from_slice(&36u16.to_le_bytes());
+        let mut datagram = SessionDatagram::new(source, destination, payload.clone());
+        let attempts = || {
+            policy
+                .0
+                .lock()
+                .unwrap()
+                .completed
+                .iter()
+                .filter(|(r, outcome)| {
+                    r.source == source
+                        && r.destination == destination
+                        && r.bytes == payload.len()
+                        && *outcome == ForwardingOutcome::Submitted
+                })
+                .count()
+        };
+
+        nodes[0]
+            .node
+            .send_session_datagram(&mut datagram)
+            .await
+            .unwrap();
+        let mut captured = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                while let Ok(packet) = nodes[1].packet_rx.try_recv() {
+                    captured.push(packet.clone());
+                    process_dataplane_packet(&mut nodes[1], packet).await;
+                }
+                if captured.is_empty() {
+                    process_available_packets(&mut nodes[..1]).await;
+                    process_available_packets(&mut nodes[2..]).await;
+                } else {
+                    // Complete deferred transport sends through ordinary node
+                    // turns after capturing the initial physical frame.
+                    process_available_packets(&mut nodes).await;
+                }
+                if attempts() == 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|error| {
+            let audit = format!("{:?}", policy.0.lock().unwrap());
+            panic!(
+                "forwarding deadline: {error}; captured={}; audit={audit}",
+                captured.len()
+            );
+        });
+        assert!(
+            !captured.is_empty(),
+            "exercise captured wire bytes, not a policy mock"
+        );
+        drain_to_quiescence(&mut nodes).await;
+        assert_eq!(attempts(), 1);
+        let admissions = || {
+            let audit = policy.0.lock().unwrap();
+            (audit.next_token, audit.denied)
+        };
+        let before_replay = admissions();
+
+        for _ in 0..3 {
+            for packet in &captured {
+                process_dataplane_packet(&mut nodes[1], packet.clone()).await;
+            }
+        }
+        drain_to_quiescence(&mut nodes).await;
+        assert_eq!(
+            attempts(),
+            1,
+            "link replay must be rejected before paid admission"
+        );
+        assert_eq!(admissions(), before_replay);
+
+        // An unauthenticated high nonce cannot advance the receive window and
+        // prevent the next legitimate frame from being counted.
+        let mut forged_frames = 0;
+        for packet in &captured {
+            let mut bytes = packet.data.as_slice().to_vec();
+            if bytes.len() >= 32 && bytes[0] & 0x0f == 0 {
+                bytes[8..16].copy_from_slice(&(u64::MAX - 1).to_le_bytes());
+                let mut forged = packet.clone();
+                forged.data = crate::transport::PacketBuffer::new(bytes);
+                process_dataplane_packet(&mut nodes[1], forged).await;
+                forged_frames += 1;
+            }
+        }
+        assert!(forged_frames > 0, "exercise an established encrypted frame");
+        drain_to_quiescence(&mut nodes).await;
+        assert_eq!(
+            attempts(),
+            1,
+            "failed authentication cannot create an attempt"
+        );
+        assert_eq!(admissions(), before_replay);
+
+        // The same inner ciphertext deliberately sent again by the neighbor is
+        // a fresh authenticated link transmission. It is distinct from replay
+        // of the captured link frame; a forwarding-attempt tariff can charge it.
+        nodes[0]
+            .node
+            .send_session_datagram(&mut datagram)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                process_available_packets(&mut nodes).await;
+                if attempts() == 2 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("fresh transmission must survive the forged high nonce");
+        for packet in captured {
+            process_dataplane_packet(&mut nodes[1], packet).await;
+        }
+        drain_to_quiescence(&mut nodes).await;
+        assert_eq!(attempts(), 2);
+        cleanup_nodes(&mut nodes).await;
+        assert!(policy.0.lock().unwrap().pending.is_empty());
+    });
+}

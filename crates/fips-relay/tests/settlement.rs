@@ -148,6 +148,7 @@ async fn persistent_neighbor_channels_settle_multiple_routes_and_preserve_every_
                 .open_channel_verified(channel.clone(), credit.paid_msat)
                 .unwrap();
             let a = Contract {
+                billing: Default::default(),
                 id: format!("route-{i}-a"),
                 channel_id: channel.id.clone(),
                 destination: *identities[4].node_addr(),

@@ -37,6 +37,7 @@ fn channel(id: &str) -> ChannelTerms {
 
 fn quote(id: &str, channel: &ChannelTerms) -> Contract {
     Contract {
+        billing: Default::default(),
         id: id.into(),
         channel_id: channel.id.clone(),
         destination: address(9),
@@ -78,6 +79,97 @@ impl CashuSpilmanPaymentSigner for FailingSigner {
 fn approve(buyer: &BuyerAuthorizer, terms: &ChannelTerms, id: &str) {
     buyer.accept_channel(address(2), terms.clone(), 0).unwrap();
     buyer.accept_quote(quote(id, terms)).unwrap();
+}
+
+#[test]
+fn forwarding_attempt_evidence_is_bounded_and_completion_is_idempotent() {
+    use fips_relay::ledger::BillingBasis;
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("buyer");
+    let buyer = BuyerAuthorizer::create(
+        &directory,
+        address(1),
+        10,
+        Limits {
+            max_packets_per_contract: 2,
+            max_pending: 2,
+            ..Limits::default()
+        },
+    )
+    .unwrap();
+    let terms = channel("bounded");
+    buyer.accept_channel(address(2), terms.clone(), 0).unwrap();
+    let mut route = quote("stream", &terms);
+    route.billing = BillingBasis::ForwardingAttempt;
+    route.price.msat = 1;
+    route.max_units = 20_000;
+    buyer.accept_quote(route).unwrap();
+    for _ in 0..10_000 {
+        let token = observe(&buyer, b"x").unwrap();
+        buyer.complete(token, ForwardingOutcome::Submitted);
+        buyer.complete(token, ForwardingOutcome::Submitted);
+    }
+    assert_eq!(buyer.evidence_msat("bounded"), Some(10_000));
+    let a = observe(&buyer, b"same").unwrap();
+    let b = observe(&buyer, b"same").unwrap();
+    assert!(observe(&buyer, b"extra").is_none());
+    buyer.complete(a, ForwardingOutcome::Unconfirmed);
+    buyer.checkpoint().unwrap();
+    assert!(
+        std::fs::metadata(directory.join("buyer.json"))
+            .unwrap()
+            .len()
+            < 2_000
+    );
+    drop(buyer);
+    let buyer = BuyerAuthorizer::load(&directory).unwrap();
+    buyer.complete(b, ForwardingOutcome::Submitted);
+    assert_eq!(buyer.evidence_msat("bounded"), Some(10_000));
+    let next = observe(&buyer, b"x").unwrap();
+    buyer.complete(next, ForwardingOutcome::Submitted);
+    assert_eq!(buyer.evidence_msat("bounded"), Some(10_001));
+    buyer.checkpoint().unwrap();
+    let journal: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(directory.join("buyer.json")).unwrap()).unwrap();
+    assert!(
+        journal["quotes"]["stream"]["attempts"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let signer = FailingSigner::default();
+    assert!(matches!(
+        buyer.sign_claim(&signer, address(2), "bounded", 10_001, now()),
+        Err(BuyerError::Budget)
+    ));
+    assert!(signer.0.lock().unwrap().is_empty());
+}
+
+#[test]
+fn loading_a_legacy_buyer_does_not_change_its_duplicate_tariff() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("buyer");
+    let buyer = BuyerAuthorizer::create(&directory, address(1), 10, Limits::default()).unwrap();
+    let terms = channel("legacy");
+    approve(&buyer, &terms, "legacy-route");
+    let token = observe(&buyer, b"same").unwrap();
+    buyer.complete(token, ForwardingOutcome::Submitted);
+    buyer.checkpoint().unwrap();
+    drop(buyer);
+    let path = directory.join("buyer.json");
+    let mut journal: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    journal["version"] = 1.into();
+    let quote = journal["quotes"]["legacy-route"].as_object_mut().unwrap();
+    quote.remove("completed");
+    quote["attempts"].as_array_mut().unwrap()[0]
+        .as_object_mut()
+        .unwrap()
+        .remove("token");
+    std::fs::write(&path, serde_json::to_vec(&journal).unwrap()).unwrap();
+    let buyer = BuyerAuthorizer::load(&directory).unwrap();
+    assert!(observe(&buyer, b"same").is_none());
+    assert_eq!(buyer.evidence_msat("legacy"), Some(400));
 }
 
 #[test]

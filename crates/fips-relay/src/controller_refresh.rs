@@ -5,6 +5,11 @@ const REFRESH_SECONDS: u64 = 5;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct WatchedRoute {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::ledger::BillingBasis::is_legacy"
+    )]
+    pub billing: crate::ledger::BillingBasis,
     pub destination: String,
     pub max_rate_msat_per_kib: u64,
     pub paused: bool,
@@ -14,6 +19,7 @@ pub struct WatchedRoute {
 impl WatchedRoute {
     fn accepts(&self, offer: &RouteOffer) -> bool {
         offer.destination.npub() == self.destination
+            && offer.billing == self.billing
             && offer.price.per_bytes == 1024
             && offer.price.msat <= self.max_rate_msat_per_kib
     }
@@ -74,9 +80,13 @@ impl Controller {
         }
         let id = destination.npub();
         let saved = id.clone();
+        let billing = self.services.quotes.billing_basis();
         let pending = self
             .change(move |j| {
                 if let Some(old) = j.watched_routes.get_mut(&saved) {
+                    if old.billing != billing {
+                        return Err("saved watch billing basis cannot change".into());
+                    }
                     if (old.pending.is_some() || !old.paused)
                         && old.max_rate_msat_per_kib != max_rate_msat_per_kib
                     {
@@ -94,6 +104,7 @@ impl Controller {
                     j.watched_routes.insert(
                         saved.clone(),
                         WatchedRoute {
+                            billing,
                             destination: saved,
                             max_rate_msat_per_kib,
                             paused: false,

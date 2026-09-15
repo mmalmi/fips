@@ -191,6 +191,7 @@ async fn controller_scenario(
                     nodes[i].clone(),
                     Arc::new(quote_transport),
                     QuotePolicy {
+                        billing: Default::default(),
                         mint_url: mint.url().to_string(),
                         receiver_pubkey_hex: receiver.receiver_pubkey_hex().to_string(),
                         fee_msat_per_kib: 1_024,
@@ -435,16 +436,20 @@ async fn controller_scenario(
             // Payments are driven only by each controller's periodic task.
             tokio::time::sleep(Duration::from_millis(600)).await;
         }
-        for (_, seller, purchase) in &links {
-            assert!(
-                ledgers[*seller]
-                    .channel_usage(&purchase.channel.id)
-                    .unwrap()
-                    .paid_msat
-                    > 8_000,
-                "automatic payments replenished the initial allowance"
-            );
-        }
+        // Delivery and the periodic payment worker are independent. Observe
+        // the verified balance transition instead of assuming the final 600ms
+        // sleep has also completed every neighbor's signature and response.
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if links.iter().all(|(_, seller, purchase)| {
+                    ledgers[*seller].channel_usage(&purchase.channel.id).unwrap().paid_msat > 8_000
+                }) { break; }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }).await.unwrap_or_else(|_| panic!("automatic payments did not replenish the initial allowance; errors={:?}; paid/evidence={:?}",
+            errors(&controllers), links.iter().map(|(buyer,seller,p)| (
+                *buyer,*seller,ledgers[*seller].channel_usage(&p.channel.id),
+                buyers[*buyer].evidence_msat(&p.channel.id))).collect::<Vec<_>>()));
         if route_change {
             // Replace the middle path with 0--1--3--4. Removing config hints
             // alone preserves live links, so use the real local control API to

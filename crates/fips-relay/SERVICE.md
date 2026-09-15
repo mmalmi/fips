@@ -6,6 +6,14 @@ and macOS local process tests use UDP. Three OpenWrt routers have also earned
 test payments over native Wi-Fi links. See [TESTBENCH.md](TESTBENCH.md) for the
 hardware evidence and remaining checks; this is not yet a complete customer hotspot.
 
+The example selects `terms.billing: "forwarding_attempt"` for fresh accounts.
+It retains totals and unfinished sends instead of every completed packet.
+Offers, accepted contracts and source watches bind that tariff explicitly.
+Omitted billing fields preserve the legacy fingerprint tariff and its packet
+limit. Saved account terms cannot be changed by editing the configuration.
+See [ACCOUNTING.md](ACCOUNTING.md) for retransmission semantics, compatibility
+and backup requirements before using a newer executable with existing journals.
+
 ## OpenWrt build
 
 The ARM64 Linux executable cross-builds with an installed Rust musl target,

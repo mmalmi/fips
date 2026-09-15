@@ -377,6 +377,7 @@ mod tests {
         relay.open_channel_verified(terms.clone(), 0).unwrap();
         relay
             .add_contract(Contract {
+                billing: Default::default(),
                 id: "quote".into(),
                 channel_id: terms.id,
                 destination: NodeAddr::from_bytes([2; 16]),
