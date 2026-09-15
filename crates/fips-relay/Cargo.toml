@@ -8,7 +8,7 @@ description = "Experimental sender-funded native FIPS forwarding service"
 
 [dependencies]
 fips-core = { package = "nvpn-fips-core", version = "=0.4.81", path = "../fips-core" }
-cashu-service = { version = "=0.4.8", default-features = false, features = ["spilman"] }
+cashu-service = { version = "=0.4.8", default-features = false, features = ["spilman-wallet-http", "spilman-configurable-host-reqwest"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

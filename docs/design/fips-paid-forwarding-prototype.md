@@ -101,10 +101,12 @@ Orderly suspension records a zero-sized next window and can resume the same
 channels/quotes without consuming unused exposure. Controllers must not erase
 missing/corrupt accounting state and silently open a fresh account.
 
-The seller wrapper rejects new admission briefly while persisting a checkpoint;
-the node never waits for disk I/O. This is a measurable packet-loss tradeoff, not
-a performance claim. Window size, checkpoint scheduling, and retained history
-need deployment measurements before sustained traffic use.
+The seller wrapper keeps the previously durable allowance usable while saving a
+checkpoint. A separate writer lock serializes disk work; node callbacks briefly
+lock memory and never wait for disk I/O. A new journal covers at least the old
+ceiling, including submissions racing its snapshot, before a larger allowance is
+published. Persistence failure suspends admission. Window size, checkpoint
+scheduling and retained history still need deployment measurements.
 
 The buyer separately records unique local transport submissions to the accepted
 provider. `BuyerAuthorizer` prices that evidence using immutable accepted quotes;
@@ -148,11 +150,12 @@ Internet-exit authorization is a separate application contract.
 
 The current control prototype uses the existing TCP/FIPS adapter for bounded
 request/reply records. The server accepts only configured neighbors and
-preapproved immutable channel/quote bindings. It validates Cashu and persists
-accounting outside the native packet loop. Record size, connection count, queue
+immutable channel/quote bindings approved by the local controller. It validates
+Cashu and persists accounting outside the native packet loop. Record size, connection count, queue
 depth and request admission are capped. These control-stream acknowledgments
-are not receipts for paid data. Automatic channel funding, acceptance, renewal
-and controller scheduling remain separate implementation work.
+are not receipts for paid data. The automatic controller now funds and accepts
+channels and schedules payment updates. Renewal and mint settlement remain
+separate implementation work.
 
 `RouteQuotes` now follows `FipsEndpoint::resolve_next_hop`: the source uses the
 native origin planner, and each provider uses the same planner as native transit
@@ -189,6 +192,38 @@ from recursive quote exchange; the fixture still orchestrates channel funding,
 acceptance and buyer scheduling. It is not the wireless or phone
 acceptance test. Service payloads must fit the discovered path after headers;
 queued sends can later fail MTU checks while session-control packets still travel.
+
+The automatic `Controller` adds a private durable journal for authorized offers,
+funding identities, outgoing contracts and incoming acceptance phases. Funding
+intent is saved before wallet work and keeps a stable Cashu request ID across
+retries. Every unresolved operation consumes its full intended capital budget.
+One provider channel is reused across destinations, while the buyer's separate
+lifetime signing limit continues to bound actual obligations. An upstream
+opening must verify before the relay commits its own capital downstream, and
+onward acceptance precedes activation of upstream data admission.
+
+Usage and signed updates run periodically over the authenticated neighbor control
+service. Signatures, including funding-proof reproduction, pass through the
+buyer's durable evidence/authorization gate. A failed channel update does not
+skip attempts to pay independent channels. Incomplete requests resume from the
+journal; conflicting or expired routes remain stopped for explicit replacement.
+Graceful controller reload drains in-flight work. Abrupt cancellation retains
+wallet ownership until any already-running blocking wallet operation finishes.
+
+The `controller` integration test gives each of five native endpoints its own
+controller and test wallet. Concurrent purchases automatically create six
+neighbor channels, then scheduled updates sustain both traffic directions past
+the initial unpaid allowance. Controller reload models a lost acceptance reply
+and an interruption after funding but before storing the outgoing contract. Both
+resume with identical channels and no extra locked funds. This exercises
+controller recovery while the network, seller and buyer services remain alive;
+it is not yet a whole-process crash/restart test. Each relay has a positive net
+margin and all final balances are redeemed and spent again at the local mint.
+
+Controller settlement, refund recovery, channel replacement and release of locked
+capital remain to be automated. The fixture still performs final mint closure.
+Current controllers retain every funding intent against the capital cap and
+never open replacement accounts merely because service expired or stopped.
 
 ## Hardware proof still required
 

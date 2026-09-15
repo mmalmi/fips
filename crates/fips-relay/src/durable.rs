@@ -14,7 +14,7 @@ use std::{
     fs::{File, OpenOptions},
     io::{self, Read, Write},
     path::{Path, PathBuf},
-    sync::RwLock,
+    sync::{Mutex, RwLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -58,6 +58,7 @@ pub struct DurableRelay {
     directory: PathBuf,
     window_msat: u64,
     windows: RwLock<PublishedWindows>,
+    writer: Mutex<()>,
     _owner: File,
 }
 
@@ -79,6 +80,7 @@ impl DurableRelay {
             directory: directory.to_path_buf(),
             window_msat,
             windows: RwLock::new(PublishedWindows::default()),
+            writer: Mutex::new(()),
             _owner: owner,
         };
         relay.initialize()?;
@@ -105,6 +107,7 @@ impl DurableRelay {
             directory: directory.to_path_buf(),
             window_msat: journal.window_msat,
             windows: RwLock::new(PublishedWindows::default()),
+            writer: Mutex::new(()),
             _owner: owner,
         };
         // Persist lost exposure and the next window before anyone can send.
@@ -113,8 +116,8 @@ impl DurableRelay {
     }
 
     fn initialize(&self) -> Result<(), DurableError> {
-        let mut windows = self.windows.write().map_err(|_| DurableError::Suspended)?;
-        self.persist(&mut windows, true)?;
+        let _writer = self.writer.lock().map_err(|_| DurableError::Suspended)?;
+        self.persist(true)?;
         Ok(())
     }
 
@@ -128,11 +131,15 @@ impl DurableRelay {
     /// stopping the endpoint, use this for an orderly restart of the same
     /// channels/quotes. Pending sends remain reserved if completion is unknown.
     pub fn suspend(&self) -> Result<BTreeMap<String, ChannelUsage>, DurableError> {
-        let mut windows = self.windows.write().map_err(|_| DurableError::Suspended)?;
-        if !windows.ready {
-            return Err(DurableError::Suspended);
+        let _writer = self.writer.lock().map_err(|_| DurableError::Suspended)?;
+        {
+            let mut windows = self.windows.write().map_err(|_| DurableError::Suspended)?;
+            if !windows.ready {
+                return Err(DurableError::Suspended);
+            }
+            windows.ready = false;
         }
-        self.persist(&mut windows, false)
+        self.persist(false)
     }
 
     pub fn open_channel_verified(
@@ -183,23 +190,49 @@ impl DurableRelay {
         &self,
         change: impl FnOnce(&RelayLedger) -> Result<T, LedgerError>,
     ) -> Result<(T, BTreeMap<String, ChannelUsage>), DurableError> {
-        let mut windows = self.windows.write().map_err(|_| DurableError::Suspended)?;
-        if !windows.ready {
+        let _writer = self.writer.lock().map_err(|_| DurableError::Suspended)?;
+        if !self
+            .windows
+            .read()
+            .map_err(|_| DurableError::Suspended)?
+            .ready
+        {
             return Err(DurableError::Suspended);
         }
         let result = change(&self.ledger)?;
-        let usage = self.persist(&mut windows, true)?;
+        let usage = self.persist(true)?;
         Ok((result, usage))
     }
 
     fn persist(
         &self,
-        published: &mut PublishedWindows,
+        allow_next_window: bool,
+    ) -> Result<BTreeMap<String, ChannelUsage>, DurableError> {
+        let result = self.persist_next(allow_next_window);
+        if result.is_err() {
+            self.windows
+                .write()
+                .map_err(|_| DurableError::Suspended)?
+                .ready = false;
+        }
+        result
+    }
+
+    fn persist_next(
+        &self,
         allow_next_window: bool,
     ) -> Result<BTreeMap<String, ChannelUsage>, DurableError> {
         // Any failure leaves admission suspended, even if rename succeeded but
         // the final directory sync failed. Recovery resolves the durable state.
-        published.ready = false;
+        // Admissions continue against their PREVIOUSLY durable ceiling during
+        // fsync. The next journal covers that whole ceiling as well as its new
+        // window, so racing submissions remain bounded even after a crash.
+        let previous = self
+            .windows
+            .read()
+            .map_err(|_| DurableError::Suspended)?
+            .ceilings
+            .clone();
         let ledger = self.ledger.snapshot();
         let mut ceilings = BTreeMap::new();
         let mut usage = BTreeMap::new();
@@ -227,11 +260,17 @@ impl DurableRelay {
                 } else {
                     0
                 };
-                let ceiling = channel
+                let mut ceiling = channel
                     .usage
                     .reserved_msat
                     .saturating_add(window)
                     .min(maximum);
+                if allow_next_window {
+                    ceiling = ceiling.max(previous.get(&channel.terms.id).copied().unwrap_or(0));
+                    if ceiling > maximum {
+                        return Err(DurableError::Format);
+                    }
+                }
                 ceilings.insert(channel.terms.id.clone(), ceiling);
             }
         }
@@ -243,6 +282,7 @@ impl DurableRelay {
         };
         let bytes = serde_json::to_vec(&journal).map_err(|_| DurableError::Format)?;
         write_private_journal(&self.directory, "ledger.json", &bytes)?;
+        let mut published = self.windows.write().map_err(|_| DurableError::Suspended)?;
         published.ceilings = ceilings;
         published.ready = allow_next_window;
         Ok(usage)
@@ -252,7 +292,7 @@ impl DurableRelay {
 impl ForwardingPolicy for DurableRelay {
     fn admit(&self, request: &ForwardingRequest<'_>) -> Option<u64> {
         // Never wait for the disk-writing controller on the native node loop.
-        let windows = self.windows.try_read().ok()?;
+        let windows = self.windows.read().ok()?;
         if !windows.ready {
             return None;
         }
@@ -325,7 +365,35 @@ mod tests {
         let relay = Arc::new(
             DurableRelay::create(&root.path().join("relay"), Limits::default(), 10).unwrap(),
         );
-        let gate = relay.windows.write().unwrap();
+        let identity = Identity::from_secret_bytes(&[1; 32]).unwrap();
+        let terms = ChannelTerms {
+            id: "channel".into(),
+            buyer: *identity.node_addr(),
+            mint_url: "http://test.invalid".into(),
+            expires_unix: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 600,
+            capacity_sat: 1,
+            grace_msat: 100,
+        };
+        relay.open_channel_verified(terms.clone(), 0).unwrap();
+        relay
+            .add_contract(Contract {
+                id: "quote".into(),
+                channel_id: terms.id,
+                destination: NodeAddr::from_bytes([2; 16]),
+                next_hop: NodeAddr::from_bytes([3; 16]),
+                expires_unix: terms.expires_unix,
+                price: crate::ledger::BytePrice {
+                    msat: 1,
+                    per_bytes: 1,
+                },
+                max_units: 100,
+            })
+            .unwrap();
+        let gate = relay.writer.lock().unwrap();
         let worker = Arc::clone(&relay);
         let (sent, received) = mpsc::channel();
         let thread = std::thread::spawn(move || {
@@ -337,8 +405,11 @@ mod tests {
                 next_hop: NodeAddr::from_bytes([3; 16]),
                 session_payload: b"packet",
             };
-            assert!(worker.admit(&request).is_none());
-            worker.complete(1, ForwardingOutcome::Unconfirmed);
+            let token = worker
+                .admit(&request)
+                .expect("previous durable window stays usable during the writer's work");
+            worker.complete(token, ForwardingOutcome::Submitted);
+            assert_eq!(worker.channel_usage("channel").unwrap().submitted_msat, 6);
             sent.send(()).unwrap();
         });
         let result = received.recv_timeout(Duration::from_secs(1));

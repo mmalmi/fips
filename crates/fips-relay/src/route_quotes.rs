@@ -425,32 +425,40 @@ impl RouteQuotes {
         channel: &ChannelTerms,
     ) -> Result<Contract, String> {
         let offer = self.retained_offer(buyer, id)?;
-        crate::ledger::validate_channel(channel).map_err(|e| e.to_string())?;
-        if channel.buyer != offer.buyer
-            || channel.mint_url != offer.mint_url
-            || channel.capacity_sat > offer.capacity_sat
-            || channel.grace_msat > offer.grace_msat
-            || channel.expires_unix <= unix_now()?
-        {
-            return Err("channel does not fit the offered terms".into());
-        }
-        // Same offer and channel produce the same bounded identifier on retries.
-        use sha2::{Digest, Sha256};
-        let mut digest = Sha256::new();
-        digest.update(b"fips-relay/accepted-quote/1");
-        digest.update((id.len() as u64).to_be_bytes());
-        digest.update(id.as_bytes());
-        digest.update(channel.id.as_bytes());
-        Ok(Contract {
-            id: format!("{:x}", digest.finalize()),
-            channel_id: channel.id.clone(),
-            destination: *offer.destination.node_addr(),
-            next_hop: offer.next_hop,
-            expires_unix: channel.expires_unix.min(offer.expires_unix),
-            price: offer.price,
-            max_units: offer.max_units,
-        })
+        contract_from_offer(&offer, channel)
     }
+}
+
+pub(crate) fn contract_from_offer(
+    offer: &RouteOffer,
+    channel: &ChannelTerms,
+) -> Result<Contract, String> {
+    let id = &offer.id;
+    crate::ledger::validate_channel(channel).map_err(|e| e.to_string())?;
+    if channel.buyer != offer.buyer
+        || channel.mint_url != offer.mint_url
+        || channel.capacity_sat > offer.capacity_sat
+        || channel.grace_msat > offer.grace_msat
+        || channel.expires_unix <= unix_now()?
+    {
+        return Err("channel does not fit the offered terms".into());
+    }
+    // Same offer and channel produce the same bounded identifier on retries.
+    use sha2::{Digest, Sha256};
+    let mut digest = Sha256::new();
+    digest.update(b"fips-relay/accepted-quote/1");
+    digest.update((id.len() as u64).to_be_bytes());
+    digest.update(id.as_bytes());
+    digest.update(channel.id.as_bytes());
+    Ok(Contract {
+        id: format!("{:x}", digest.finalize()),
+        channel_id: channel.id.clone(),
+        destination: *offer.destination.node_addr(),
+        next_hop: offer.next_hop,
+        expires_unix: channel.expires_unix.min(offer.expires_unix),
+        price: offer.price,
+        max_units: offer.max_units,
+    })
 }
 
 fn validate_offer(

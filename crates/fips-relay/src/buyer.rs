@@ -409,6 +409,30 @@ impl BuyerAuthorizer {
         claimed_msat: u64,
         now: u64,
     ) -> Result<CashuSpilmanPayment, BuyerError> {
+        self.sign_claim_inner(signer, provider, id, claimed_msat, now, false)
+    }
+
+    /// Reproduce a durable balance with funding attached. Failed persistence
+    /// cannot be bypassed by reading an uncommitted in-memory authorization.
+    pub fn reproduce_payment(
+        &self,
+        signer: &impl CashuSpilmanPaymentSigner,
+        provider: NodeAddr,
+        id: &str,
+        now: u64,
+    ) -> Result<CashuSpilmanPayment, BuyerError> {
+        self.sign_claim_inner(signer, provider, id, 0, now, true)
+    }
+
+    fn sign_claim_inner(
+        &self,
+        signer: &impl CashuSpilmanPaymentSigner,
+        provider: NodeAddr,
+        id: &str,
+        claimed_msat: u64,
+        now: u64,
+        include_funding: bool,
+    ) -> Result<CashuSpilmanPayment, BuyerError> {
         let mut ready = self
             .writer_ready
             .lock()
@@ -451,7 +475,7 @@ impl BuyerAuthorizer {
         };
         self.persist(&snapshot, &mut ready)?;
         let payment = signer
-            .sign_cashu_spilman_payment(id, balance, false)
+            .sign_cashu_spilman_payment(id, balance, include_funding)
             .map_err(BuyerError::Signer)?;
         if payment.channel_id != id || payment.balance != balance {
             return Err(BuyerError::Signer(

@@ -1,4 +1,4 @@
-//! Payment control for explicitly preapproved neighbor agreements.
+//! Payment control for locally approved neighbor agreements.
 //!
 //! Approval/price discovery is deliberately separate. A wire request cannot
 //! choose its price, payer, free allowance, destination, or next provider.
@@ -57,8 +57,19 @@ pub struct PaymentControl<R> {
 }
 
 impl<R: CashuSpilmanPaymentReceiver<String>> PaymentControl<R> {
-    /// Trusted local controller output only. A future quote/resale controller
-    /// supplies these approvals after the buyer accepts the offered terms.
+    /// Verify and durably retain authenticated funding before a trusted runtime
+    /// commits its own working capital. This alone does not activate forwarding.
+    pub(crate) fn verify_funding(
+        &self,
+        channel: &ChannelTerms,
+        peer: PeerIdentity,
+        payment: &CashuSpilmanPayment,
+    ) -> Result<crate::payment::VerifiedCredit, String> {
+        process_payment(&self.receiver, channel, peer, payment, true)
+    }
+    /// Static approvals support the Open request. The automatic controller can
+    /// instead install verified bindings in the durable ledger; subsequent
+    /// usage, payment and stop requests use those same immutable terms.
     pub fn new(
         receiver: R,
         ledger: Arc<DurableRelay>,
@@ -132,12 +143,20 @@ impl<R: CashuSpilmanPaymentReceiver<String>> PaymentControl<R> {
             | PaymentRequest::Usage { channel_id }
             | PaymentRequest::StopForwarding { channel_id } => channel_id,
         };
-        let approved = self.approved.get(id).ok_or("agreement missing")?;
-        if peer.node_addr() != &approved.channel.buyer {
+        let terms = self
+            .ledger
+            .channel_terms(id)
+            .or_else(|| self.approved.get(id).map(|a| a.channel.clone()))
+            .ok_or("agreement missing")?;
+        if peer.node_addr() != &terms.buyer {
             return Err("wrong buyer".into());
         }
         match &request {
             PaymentRequest::Open { payment, .. } => {
+                let approved = self
+                    .approved
+                    .get(id)
+                    .ok_or("opening requires a preapproved agreement")?;
                 let credit =
                     process_payment(&self.receiver, &approved.channel, peer, payment, true)?;
                 if self.ledger.channel_usage(id).is_none() {
@@ -159,8 +178,7 @@ impl<R: CashuSpilmanPaymentReceiver<String>> PaymentControl<R> {
                 if self.ledger.channel_usage(id).is_none() {
                     return Err("channel not opened".into());
                 }
-                let credit =
-                    process_payment(&self.receiver, &approved.channel, peer, payment, false)?;
+                let credit = process_payment(&self.receiver, &terms, peer, payment, false)?;
                 self.ledger
                     .apply_verified_balance(id, credit.paid_msat)
                     .map_err(|e| e.to_string())?;
@@ -198,9 +216,15 @@ impl PaymentServer {
 
     pub fn start<R: CashuSpilmanPaymentReceiver<String> + Send + Sync + 'static>(
         control: PaymentControl<R>,
+        incoming: mpsc::Receiver<IncomingRequest>,
+    ) -> Self {
+        Self::start_shared(Arc::new(control), incoming)
+    }
+
+    pub fn start_shared<R: CashuSpilmanPaymentReceiver<String> + Send + Sync + 'static>(
+        control: Arc<PaymentControl<R>>,
         mut incoming: mpsc::Receiver<IncomingRequest>,
     ) -> Self {
-        let control = Arc::new(control);
         let task = tokio::spawn(async move {
             while let Some(request) = incoming.recv().await {
                 let handler = Arc::clone(&control);

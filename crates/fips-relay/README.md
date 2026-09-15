@@ -27,9 +27,10 @@ TCP, UDP or application delivery acknowledgments inside encrypted FIPS traffic.
   unused window. Known pending sends remain reserved and unconfirmed.
 * Accounting journals use private files, atomic replacement, file/directory
   synchronization and an exclusive owner lock. Corrupt state, failed persistence
-  and exhausted windows stop admission. This first implementation briefly drops
-  new transit packets during checkpoints instead of waiting for disk on the node
-  loop. Checkpoint frequency, window size and packet loss need live measurement.
+  and exhausted windows stop admission. During a checkpoint, forwarding can use
+  its previously persisted ceiling; publishing a larger ceiling waits for disk
+  synchronization. Node callbacks hold only brief memory locks. Checkpoint
+  frequency, window size and packet loss still need live measurement.
 * The payment adapter reuses `cashu-service` and checks the authenticated buyer,
   channel, capacity, denomination, expiry and signed balance before credit can
   be published. The trusted controller owns immutable agreement bindings.
@@ -63,6 +64,16 @@ TCP, UDP or application delivery acknowledgments inside encrypted FIPS traffic.
   native next hop. Offers alone grant no credit or forwarding. A fixed channel
   grace limit is independent of destination quotes, so quoting another route
   cannot increase a relationship's unpaid allowance.
+* `Controller` persists an authorized route request and an idempotent funding
+  intent before opening a Cashu channel. It reuses the channel across routes,
+  verifies upstream funding before committing onward capital, and obtains
+  downstream acceptance before enabling upstream forwarding. Incomplete funding
+  locks its full intended capacity against a separate working-capital limit.
+* Each controller periodically requests usage and sends cumulative payments
+  through `BuyerAuthorizer`. Funding-proof retries use the same durable signing
+  gate. Background recovery resumes retained requests without allocating fresh
+  funding identities. Graceful controller reload drains outstanding work and
+  keeps the existing control transport available for its replacement.
 * A separate integration test runs a real local CDK mint and Cashu Spilman
   channels. Each channel pays for two destinations with cumulative updates.
   Three relay ledgers receive gross payments of 3, 2 and 1 test sats.
@@ -80,11 +91,18 @@ TCP, UDP or application delivery acknowledgments inside encrypted FIPS traffic.
   The test still orchestrates channel funding, acceptance and buyer scheduling.
   Its buyers reject inflated claims even when unused channel capacity exists,
   and every actual payment is authorized against local submission evidence.
+* `controller` runs the five-node path with independent per-node controllers.
+  Sources purchase both directions concurrently; routers fund and accept all six
+  neighbor channels themselves and periodically pay beyond the initial grace.
+  Controller reload exercises a lost acceptance reply and a lost outgoing record
+  after funding: retained requests recover the exact same channels and balances.
+  Seller, buyer and network services remain running during this reload. Each
+  router earns a positive margin, and all 640 test sats are redeemed and spent.
 
 Only the local mint's Lightning backend is simulated. These test tokens have no
 external backing. `settlement` supplies submission outcomes to test exact
-multi-destination prices; `native_settlement` uses real local FIPS transport.
-Neither test constitutes a wireless hardware or autonomous route-buying demo.
+multi-destination prices; `native_settlement` and `controller` use real local
+FIPS transport. These are loopback tests, not wireless hardware demonstrations.
 
 ## Run local checks
 
@@ -98,11 +116,17 @@ random loopback port. It does not use a user's wallet or contact a public mint.
 
 ## Runtime work remaining
 
-Automatic onward channel funding/acceptance, checkpoint scheduling, and channel
-renewal/settlement
-policy, OpenWrt packaging, Wi-Fi path verification and a phone
+Automatic channel renewal/settlement/refunds, route replacement, complete process
+restart exercises, OpenWrt packaging, Wi-Fi path verification and a phone
 customer demo remain to be implemented. The current library is not a deployed
 hotspot or a complete daemon.
+
+The controller retains up to 16 funded or unresolved channel intents and 32
+requested, outgoing and incoming routes in each category. Retained funding still
+counts against capital even after service stops; the test harness performs mint
+closure and refunds. Expired or changed agreements require explicit replacement
+and currently stop automatic recovery. No controller loop erases them or resets
+the buyer's lifetime spending limit to make another purchase possible.
 
 Default retained history is bounded to 16 channels, 32 destination contracts
 and 4,096 distinct packets per contract. Reaching a limit stops admission;

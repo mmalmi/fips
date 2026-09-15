@@ -351,3 +351,32 @@ fn failed_persistence_prevents_signing_and_suspends_further_authorization() {
     ));
     assert!(signer.0.lock().unwrap().is_empty());
 }
+
+#[test]
+fn funding_retry_cannot_sign_a_balance_from_failed_persistence() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("buyer");
+    let buyer = BuyerAuthorizer::create(&directory, address(1), 10, Limits::default()).unwrap();
+    approve(&buyer, &channel("one"), "quote");
+    let token = observe(&buyer, b"bytes").unwrap();
+    buyer.complete(token, ForwardingOutcome::Submitted);
+    std::fs::remove_file(directory.join("buyer.json")).unwrap();
+    std::fs::create_dir(directory.join("buyer.json")).unwrap();
+    let signer = FailingSigner::default();
+    assert!(
+        buyer
+            .sign_claim(&signer, address(2), "one", 500, now())
+            .is_err()
+    );
+    assert_eq!(
+        buyer.authorized_sat("one"),
+        Some(1),
+        "in-memory intent was changed before persistence failed"
+    );
+    assert!(
+        buyer
+            .reproduce_payment(&signer, address(2), "one", now())
+            .is_err()
+    );
+    assert!(signer.0.lock().unwrap().is_empty());
+}
