@@ -1,5 +1,6 @@
 fn pending_test_forward(owner: u8, source: u8, dest: u8) -> PreparedSessionForward {
     PreparedSessionForward {
+        permit: None,
         ingress_peer: NodeAddr::from_bytes([source; 16]),
         next_hop_addr: NodeAddr::from_bytes([owner; 16]),
         src_addr: NodeAddr::from_bytes([source; 16]),
@@ -9,6 +10,69 @@ fn pending_test_forward(owner: u8, source: u8, dest: u8) -> PreparedSessionForwa
         encoded_len: 101,
         plaintext: PacketBuffer::default(),
     }
+}
+
+#[derive(Debug, Default)]
+struct CompletionAudit(std::sync::Mutex<Vec<crate::node::ForwardingOutcome>>);
+
+impl crate::node::ForwardingPolicy for CompletionAudit {
+    fn admit(&self, _: &crate::node::ForwardingRequest<'_>) -> Option<u64> {
+        Some(7)
+    }
+
+    fn complete(&self, token: u64, outcome: crate::node::ForwardingOutcome) {
+        assert_eq!(token, 7);
+        self.0.lock().unwrap().push(outcome);
+    }
+}
+
+fn admitted_test_forward(
+    node: &Node,
+    audit: &std::sync::Arc<CompletionAudit>,
+) -> PreparedSessionForward {
+    let mut forward = pending_test_forward(1, 2, 3);
+    let policy: std::sync::Arc<dyn crate::node::ForwardingPolicy> = audit.clone();
+    forward.permit = crate::node::forwarding_policy::ForwardingPermit::admit(
+        &policy,
+        &crate::node::ForwardingRequest {
+            ingress: crate::PeerIdentity::from_pubkey_full(node.identity().pubkey_full()),
+            next_hop: forward.next_hop_addr,
+            source: forward.src_addr,
+            destination: forward.dest_addr,
+            session_payload: b"opaque-test-payload",
+        },
+    );
+    forward
+}
+
+#[tokio::test]
+async fn forwarding_policy_completes_success_error_abort_and_teardown_once() {
+    use crate::node::ForwardingOutcome::{Submitted, Unconfirmed};
+    let mut node = Node::new(crate::Config::new()).unwrap();
+    let audit = std::sync::Arc::new(CompletionAudit::default());
+    let replacement = std::sync::Arc::new(CompletionAudit::default());
+
+    let success = admitted_test_forward(&node, &audit);
+    node.set_forwarding_policy(Some(replacement.clone()));
+    node.finish_prepared_session_forward(success, Ok(()), false).await;
+    assert_eq!(*audit.0.lock().unwrap(), vec![Submitted]);
+    assert!(replacement.0.lock().unwrap().is_empty(), "completion belongs to the admitting policy");
+
+    let failure = admitted_test_forward(&node, &audit);
+    let next_hop = failure.next_hop_addr;
+    node.finish_prepared_session_forward(failure, Err(NodeError::SendFailed {
+        node_addr: next_hop,
+        reason: "test transport error".to_string(),
+    }), false).await;
+
+    let aborted = admitted_test_forward(&node, &audit);
+    node.deferred_session_forwards.insert(1, aborted, ForwardingLane::Bulk);
+    node.abort_deferred_session_forwards("test cancellation").await;
+
+    let queued = admitted_test_forward(&node, &audit);
+    node.deferred_session_forwards.insert(2, queued, ForwardingLane::Bulk);
+    drop(node);
+    assert_eq!(*audit.0.lock().unwrap(), vec![Submitted, Unconfirmed, Unconfirmed, Unconfirmed]);
 }
 
 #[test]

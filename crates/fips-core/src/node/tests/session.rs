@@ -18,6 +18,7 @@ mod direct_endpoint;
 mod discovery_tun;
 mod entry_basics;
 mod forwarded_edge;
+mod forwarding_policy;
 mod graph_fallback;
 mod handshake_timeout;
 mod mtu_exceeded;

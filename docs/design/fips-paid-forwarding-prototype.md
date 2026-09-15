@@ -1,0 +1,118 @@
+# Sender-funded forwarding prototype
+
+Status: implementation in progress; no router payment demonstration yet.
+
+## Payer rule
+
+Sending and receiving are separate decisions. A recipient never incurs debt by
+receiving unsolicited traffic. The endpoint originating a direction buys its
+delivery. A download provider or Internet exit can recover that expense through
+an application agreement with its customer. That agreement is outside routing.
+
+For the prototype, the authenticated neighbor submitting a transit packet buys
+onward forwarding from this router. A relay is both seller to its previous hop
+and buyer from its next hop. It quotes its own forwarding charge plus the cost
+of onward service. These are separate gross payments, not automatically netted
+mutual debts. This is a choice for the experiment, not a protocol requirement.
+
+## Model comparison
+
+| Model | Advantage | Cost / limitation |
+| --- | --- | --- |
+| Adjacent buyer/seller accounts with onward resale | Fits authenticated FMP neighbors and route changes; reuses existing single-seller Cashu channels | Relays need working capital; quotes must include downstream cost; upstream default can leave a bounded downstream expense |
+| Original sender pays every relay directly | No relay working capital or downstream price resale | Sender must discover/authenticate every paid participant and refresh funding when the route changes; channel count grows with route diversity |
+| Destination receipt releases all payments | Aligns payment with destination delivery | Receipt alone proves neither which relays participated nor that each can redeem; requires additional settlement machinery and deals poorly with a withholding receiver |
+| Adjacent resale with end-to-end delivery feedback | Local automatic payments and bounded risk, plus a way to stop buying a bad path | Delivery feedback detects poor service; it is not cryptographic fair exchange |
+
+Choose adjacent resale with optional endpoint delivery feedback for the first
+native-routing prototype. It matches the authenticated forwarding boundary and avoids
+inventing a multi-party conditional Cashu protocol. Keep the admission interface
+payment-neutral so direct sender funding remains possible later.
+
+Delivery receipts are not a protocol prerequisite. FIPS cannot assume the opaque
+payload is TCP or inspect its acknowledgments. Endpoints may use TCP, application
+receipts, probes or another mechanism to assess service; the routing payment
+contract buys forwarding attempts. Payment/accounting acknowledgments are a
+separate concern. A dishonest forwarder can lie about submission: small windows
+bound exposure but do not prove forwarding or provide cryptographic fair exchange.
+
+## Accounting contract
+
+* Each direction requires an explicit, capped buyer agreement. The claimed FSP
+  source is not evidence of who owes money; only the authenticated submitting
+  neighbor and its accepted agreement authorize a debit.
+* A quote names the destination, next provider, price, expiry, byte allowance and
+  route epoch. A new provider or price needs a new accepted quote. No silent
+  repricing. Quote propagation has a hop limit and rejects repeated routers.
+* Meter unique session-envelope bytes submitted to the selected outgoing local
+  transport. Exclude mutable FMP TTL/MTU, link headers and Wi-Fi retries. A local
+  successful send is **not** confirmed neighbor or destination delivery. Present
+  submitted, destination-received, claimed, signed and redeemed amounts as
+  distinct evidence. Do not advertise delivery-contingent payment.
+* Fingerprint immutable source, destination and encrypted session envelope.
+  Within the retained contract, a retry or replay must not create a second
+  upstream charge. Bound retained history and fail closed at its limit. A newly
+  encrypted application retransmission is a new network packet; logical TCP
+  retransmission accounting belongs to the application selling that service.
+* Admission reserves allowance before asynchronous send; successful local
+  completion reports submission. Errors and cancellation are unconfirmed,
+  not proof of non-delivery. Recovery must retain uncertain reservations or
+  close their epoch, never silently replenish them.
+* Reuse Cashu Spilman funding and cumulative signed updates in small windows.
+  Verify and durably store payment updates outside the forwarding loop. A
+  local counter, receipt or signature that the mint cannot redeem is not
+  payment. Demonstrations must close channels and check redeemed test proofs.
+* Use capped unpaid grace and capped buyer advances. Stop at either spending or
+  exposure limit. A buyer refusing the next update cannot create unlimited
+  provider loss; a lying provider cannot claim more than the buyer signed.
+  A relay's downstream commitments require a separate local liquidity budget.
+* Channels are relationship-local. Incoming unpaid claims cannot be spent as
+  Cashu. Incoming and outgoing redeemable claims cannot simply be netted away.
+* Restart invalidates active forwarding epochs until durable payment/usage state
+  is reconciled. Replayed opens and balance updates are idempotent. A changed
+  route must not reuse a spent allowance. Expiry and failed redemption suspend
+  service rather than manufacture a new balance.
+
+## Placement
+
+Add an optional admission interface at native FMP SessionDatagram forwarding.
+It sees authenticated ingress, selected next hop, claimed addresses and opaque
+session bytes; it reserves before enqueue and reports local transport outcomes.
+Scalar, batched and deferred sends must use the same hook. No Cashu dependency
+or wire-format change belongs in the core. Source-side buying, quote exchange,
+payment verification, durable usage and automatic downstream buying belong in
+an optional service using authenticated FSP control messages between neighbors.
+
+Direct local control services remain accessible without transit credit. Rate
+limit discovery, onboarding and payment traffic. This is not permission for
+ordinary IP forwarding, free arbitrary FMP transit, or unbounded free probes.
+Internet-exit authorization is a separate application contract.
+
+## Hardware proof still required
+
+Use Linux AF_PACKET on ordinary OpenWrt Wi-Fi interfaces. Capability-check mesh
+support; keep lower-layer mesh forwarding disabled so native FIPS accounts for
+each wireless hop. AP/STA links are another portable topology where mesh mode
+is unavailable. No monitor injection or chipset-specific frame handling.
+
+Management Ethernet stays available, but bind test links exclusively to the
+wireless interfaces and verify actual peer MACs, packet captures and counters.
+Demonstrate three independently paid transit routers between test endpoints,
+both directions, exhaustion/renewal, replay and unsolicited traffic, route
+changes, restart recovery and actual local-mint redemption. Then demonstrate an
+unrooted phone joining customer Wi-Fi and buying FIPS forwarding independently
+of ordinary Internet access. Measure throughput, latency, CPU, memory and
+installed size; publish no performance claim before measurement.
+
+Keep test balances, mint keys, device addresses and private deployment state out
+of this repository. Preserve management access and recoverable device configs.
+Use isolated user-owned test services on the endpoint host; existing services
+must not depend on this prototype.
+
+## TollGate boundary
+
+After the prototype works, evaluate a reusable adjacent-provider quote/usage/
+settlement adapter and accounting semantics. Existing hotspot Internet quotas
+are not automatically native multi-hop FIPS admission. Prepare a local proposal
+with demonstrated behavior and limitations; upstream contact or publication is
+a separate decision.

@@ -3,6 +3,7 @@ use super::*;
 /// Builder for an embedded FIPS endpoint.
 #[derive(Debug, Clone)]
 pub struct FipsEndpointBuilder {
+    forwarding_policy: Option<Arc<dyn crate::node::ForwardingPolicy>>,
     config: Config,
     identity_nsec: Option<String>,
     discovery_scope: Option<String>,
@@ -45,6 +46,7 @@ const DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY: usize = 4096;
 impl Default for FipsEndpointBuilder {
     fn default() -> Self {
         Self {
+            forwarding_policy: None,
             config: Config::new(),
             identity_nsec: None,
             discovery_scope: None,
@@ -63,6 +65,13 @@ impl Default for FipsEndpointBuilder {
 }
 
 impl FipsEndpointBuilder {
+    /// Apply application admission to native FMP transit. Local services remain
+    /// reachable independently; this does not authorize ordinary Internet use.
+    pub fn forwarding_policy(mut self, policy: Arc<dyn crate::node::ForwardingPolicy>) -> Self {
+        self.forwarding_policy = Some(policy);
+        self
+    }
+
     /// Start from an explicit FIPS config.
     pub fn config(mut self, config: Config) -> Self {
         self.config = config;
@@ -215,6 +224,7 @@ impl FipsEndpointBuilder {
             .map(|value| value.0.clone());
 
         let mut node = Node::new(config)?;
+        node.set_forwarding_policy(self.forwarding_policy);
         node.set_local_instance_roles(self.local_instance_roles);
         #[cfg(test)]
         if let Some(discovery) = test_nostr_discovery {

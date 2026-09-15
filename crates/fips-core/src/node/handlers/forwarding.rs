@@ -31,6 +31,7 @@ use tracing::{debug, warn};
 const FORWARDING_IN_FLIGHT_TRANSPORT_BATCHES: usize = 4;
 
 struct PreparedSessionForward {
+    permit: Option<crate::node::forwarding_policy::ForwardingPermit>,
     ingress_peer: NodeAddr,
     next_hop_addr: NodeAddr,
     src_addr: NodeAddr,
@@ -45,6 +46,7 @@ include!("forwarding_deferred.rs");
 include!("forwarding_terminal.rs");
 
 struct PreparedSessionForwardRoute {
+    permit: Option<crate::node::forwarding_policy::ForwardingPermit>,
     ingress_peer: NodeAddr,
     next_hop_addr: NodeAddr,
     src_addr: NodeAddr,
@@ -406,6 +408,22 @@ impl Node {
             }
         };
 
+        let permit = if let Some(policy) = &self.forwarding_policy {
+            let request = crate::node::ForwardingRequest {
+                ingress: previous_hop_peer,
+                next_hop: next_hop_addr,
+                source: datagram_ref.src_addr,
+                destination: datagram_ref.dest_addr,
+                session_payload: datagram_ref.payload,
+            };
+            match crate::node::forwarding_policy::ForwardingPermit::admit(policy, &request) {
+                Some(permit) => Some(permit),
+                None => return PreparedSessionDatagram::Done,
+            }
+        } else {
+            None
+        };
+
         // LookupResponse reverse entries are intentionally one-shot. Once a
         // well-formed initial SessionSetup has a forward route, retain its
         // ingress hop so the SessionAck can traverse the same transit chain.
@@ -458,6 +476,7 @@ impl Node {
         }
 
         PreparedSessionDatagram::Forward(PreparedSessionForwardRoute {
+            permit,
             ingress_peer: previous_hop,
             next_hop_addr,
             src_addr: datagram_ref.src_addr,
@@ -498,6 +517,7 @@ impl Node {
         record_route_failure: bool,
     ) {
         let PreparedSessionForward {
+            permit,
             ingress_peer,
             next_hop_addr,
             src_addr,
@@ -533,6 +553,9 @@ impl Node {
                 }
             }
         } else {
+            if let Some(permit) = permit {
+                permit.submitted();
+            }
             self.stats_mut().forwarding.record_forwarded(encoded_len);
             if outgoing_ce {
                 self.stats_mut().congestion.record_ce_forwarded();
@@ -870,6 +893,7 @@ impl PreparedSessionForwardRoute {
     fn with_plaintext(self, plaintext: PacketBuffer) -> PreparedSessionForward {
         let encoded_len = plaintext.len();
         PreparedSessionForward {
+            permit: self.permit,
             ingress_peer: self.ingress_peer,
             next_hop_addr: self.next_hop_addr,
             src_addr: self.src_addr,

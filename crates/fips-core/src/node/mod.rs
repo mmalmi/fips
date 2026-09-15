@@ -14,6 +14,7 @@ mod endpoint_event;
 mod endpoint_service;
 mod endpoint_traffic;
 mod error;
+mod forwarding_policy;
 mod handlers;
 mod identity_cache;
 mod io_impl;
@@ -44,6 +45,7 @@ pub(crate) mod wire;
 
 pub use endpoint_event::ExternalPacketIo;
 pub use error::NodeError;
+pub use forwarding_policy::{ForwardingOutcome, ForwardingPolicy, ForwardingRequest};
 pub use identity_cache::NodeDeliveredPacket;
 pub use state::NodeState;
 
@@ -249,6 +251,8 @@ pub struct Node {
     /// Transit sends admitted to dataplane whose terminal receipts may arrive
     /// on a later receive-loop turn.
     deferred_session_forwards: handlers::forwarding::DeferredSessionForwards,
+    /// Optional application admission for native FMP transit.
+    forwarding_policy: Option<std::sync::Arc<dyn ForwardingPolicy>>,
     /// Pre-routed established FMP packets accepted directly from UDP receive.
     dataplane_fast_ingress_rx: Option<DataplaneFastIngressRx>,
     /// Direct-FSP transport-address classifier published to packet ingress.
