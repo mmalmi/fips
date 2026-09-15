@@ -38,6 +38,21 @@ bound exposure but do not prove forwarding or provide cryptographic fair exchang
 
 ## Accounting contract
 
+Neighbors maintain persistent one-way Spilman channels, normally one active
+channel for each buyer/seller direction and accepted mint. They reuse a channel
+across many destination quotes and traffic flows. Reverse traffic can open the
+opposite-direction channel when needed. Persist funding and cumulative signed
+balances; settle/renew near capacity or expiry. Persistent does not mean an
+unbounded lifetime or an unlimited balance.
+
+Quotes authorize forwarding and set prices; channels hold aggregate payment and
+exposure. A quote change cannot reset channel usage or grant another grace
+window. Retain duplicate-packet evidence across quote changes and channel
+rollover. Route prices accumulate in millisats, then round cumulative channel
+payments to the mint's unit; do not round each payment update to an additional
+whole sat. Closed unpaid exposure must be resolved before opening another
+channel for that same neighbor and mint.
+
 * Each direction requires an explicit, capped buyer agreement. The claimed FSP
   source is not evidence of who owes money; only the authenticated submitting
   neighbor and its accepted agreement authorize a debit.
@@ -50,7 +65,7 @@ bound exposure but do not prove forwarding or provide cryptographic fair exchang
   submitted, destination-received, claimed, signed and redeemed amounts as
   distinct evidence. Do not advertise delivery-contingent payment.
 * Fingerprint immutable source, destination and encrypted session envelope.
-  Within the retained contract, a retry or replay must not create a second
+  Within the retained buyer history, a retry or replay must not create a second
   upstream charge. Bound retained history and fail closed at its limit. A newly
   encrypted application retransmission is a new network packet; logical TCP
   retransmission accounting belongs to the application selling that service.
