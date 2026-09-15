@@ -185,9 +185,9 @@ replacements. All 1,280 second-run test sats were collected, bringing total
 collection across both runs to 3,840; every participant wallet was empty.
 Routers retained home LAN management, client Wi-Fi and ordinary Internet access.
 
-Physical route changes, duplicate/unsolicited-traffic exercises, performance
-measurements and the public customer/phone flow
-remain separate acceptance work.
+At that phase, physical route changes and performance had not been measured.
+The later r4 experiment is documented below. Duplicate/unsolicited-traffic
+exercises and the public customer/phone flow remain separate acceptance work.
 
 ## Persistent OpenWrt package and boot recovery
 
@@ -221,8 +221,28 @@ repeating their reboot checks restored stable peering. The LAN/AP configuration
 was retained. See [openwrt/README.md](openwrt/README.md) for the configuration
 requirement and package procedure.
 
-The three packaged router services now run idle with boot startup enabled. Test
-endpoints remain stopped, wallets empty and prior channels settled. These checks
+At the end of the r3 phase the packaged router services ran idle with boot
+startup enabled. Test endpoints were stopped, wallets empty and prior channels
+settled. These checks
 do not establish reboot recovery during an unfinished financial operation, paid
 traffic on the new profile, other CPU architectures, firmware sysupgrade or old
 opkg/IPK packaging. Those claims need separate evidence.
+
+## r4 traffic measurements and physical route change
+
+The subsequent `835726a` application build adds bounded operator probes,
+control-stream counters and a private wrapper for native topology controls.
+Three r4 upgrades preserved stopped-service state and existing accounts. Five
+new funded accounts then exercised both directions over the wireless line and
+over an explicitly established alternate wireless link after the middle service
+stopped. Source watches changed route agreements automatically while preserving
+their original Spilman channels. Four streams each delivered all 1,200 packets
+at 0.96 Mbps; mean one-way delays were 4.2–5.6 ms on the shared-clock endpoints.
+
+A longer stream confirmed the 4,096-attempt accounting cutoff despite available
+credit. This is an explicit sustained-service limitation, not channel exhaustion.
+After the middle service reconnected, all eight channels settled. Each relay
+retained positive net income, all 2,560 new test sats were collected, and total
+collection reached 6,400. Original router accounts were restored on r4; isolated
+endpoint processes stayed stopped. See [MEASUREMENTS.md](MEASUREMENTS.md) for
+packet counts, resource use, control-counter boundaries and remaining limitations.

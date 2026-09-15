@@ -200,9 +200,12 @@ random loopback port. It does not use a user's wallet or contact a public mint.
 
 ## Runtime work remaining
 
-Physical route-change checks, combined route-change/unfinished-renewal recovery,
-expired pending offers, broader interrupted funding exercises, persistent OpenWrt
-packaging, performance measurements and a phone customer demo remain unfinished.
+Combined route-change/unfinished-renewal recovery, expired pending offers,
+broader interrupted funding exercises, bounded history retirement and a phone
+customer demo remain unfinished. Persistent OpenWrt packaging and bounded
+physical route-change/traffic measurements now have hardware evidence; see
+[the measurements](MEASUREMENTS.md) for scope, resource costs and the confirmed
+4,096-attempt cutoff. Sustained forwarding and maximum throughput are unverified.
 See [the service guide](SERVICE.md) for the runnable Unix service and local
 process test. It is not a deployed hotspot or public onboarding service.
 
@@ -221,8 +224,8 @@ buyer's lifetime spending limit to make another purchase possible.
 Default retained history is bounded to 16 channels, 32 destination contracts
 and 4,096 distinct packets per contract. Reaching a limit stops admission;
 evidence is not evicted to make room. The journal is capped at 32 MiB. A deployment
-needs explicit contract retirement and a memory/throughput
-measurement before increasing these limits.
+needs safe history retirement rather than simply larger limits. The physical
+measurement reached the packet cutoff while credit remained available.
 
 Datagrams must fit the discovered path after FIPS headers are added. The native
 test uses 1,000-byte service payloads on the default 1,280-byte path. A

@@ -114,3 +114,124 @@ assumptions, paced traffic through five paid service processes, sender exclusion
 live operator queries, private native controls and control-stream byte counts.
 Physical measurements for this build must be reported separately with their
 actual rate, topology, funding and limitations.
+
+## Physical wireless result (2026-09-15)
+
+Application revision `835726a` was built with the `openwrt` profile and installed
+as local APK revision r4 on three ARM64 Cudy TR3000 v1 routers running OpenWrt
+25.12.5. The executable is 19,989,912 bytes; the APK is 9,316,455 bytes. Existing
+accounts were backed up and preserved. Upgrading each stopped r3 service retained
+its stopped state; an explicit start restored the same account and budget.
+
+Five separate accounts each received 512 test sats from the existing isolated
+mint. Each channel had 128-sat capacity, a two-hour lifetime and an 8,000-msat
+grace limit; the durable window was 4,000 msat. Every router charged 1 msat per
+1,024 metered bytes. Source watches authorized each direction with an aggregate
+ceiling of 3 msat per 1,024 bytes. These were new accounts with explicit test
+funding, not edits to the saved terms or balances of earlier hardware runs.
+
+The initial graph was endpoint A–relay 1–relay 2–relay 3–endpoint B. Endpoint
+links used UDP; both inter-router links used native FIPS Ethernet transport over
+isolated encrypted 802.11s Wi-Fi, with kernel mesh forwarding disabled. The
+middle router had no UDP transport. Exact connected peer sets were checked
+before and after every measured stream. Both endpoint processes ran on one
+Raspberry Pi 4, sharing its kernel clock; unrelated host services remained up.
+
+Each ordinary stream sent 1,200 distinct 1,000-byte application datagrams at
+120 packets/second, approximately 0.96 Mbps for ten seconds. A fresh one-packet
+warmup arrived on its first attempt before every stream. Receiver statistics
+did not produce payment receipts or authorize return traffic.
+
+| Path and direction | Received / submitted | Mean one-way delay | p95 upper bound | Maximum observed |
+| --- | ---: | ---: | ---: | ---: |
+| Three relays, A to B | 1,200 / 1,200 | 5.297 ms | 10 ms | 31.165 ms |
+| Three relays, B to A | 1,200 / 1,200 | 5.606 ms | 20 ms | 29.146 ms |
+| Two relays, A to B | 1,200 / 1,200 | 4.208 ms | 10 ms | 21.893 ms |
+| Two relays, B to A | 1,200 / 1,200 | 4.190 ms | 10 ms | 24.617 ms |
+
+All four streams had zero observed missing, duplicate, invalid or out-of-order
+application packets. Delay includes application queues and scheduling. The p95
+values are histogram bucket bounds. This verifies an offered rate, not maximum
+throughput, sustained service or performance on other OpenWrt hardware.
+
+### Persistent channels across a route change
+
+After the two initial streams, only the middle relay's FIPS service was stopped.
+The operator explicitly established the already configured manual native link
+between relays 1 and 3. Both source watches accepted the alternate route without
+another purchase command. Observed stop-to-accepted-route time was 11.82 seconds,
+including orchestration and polling. No continuous packet stream measured the
+outage itself, and the new radio adjacency was operator-triggered.
+
+Both sources retained their original channel IDs and received new route
+agreements at 2 msat per 1,024 bytes. Only the two new neighbor payment directions
+needed funding. The two subsequent streams verified actual delivery over the
+shortened graph. Old financial relationships remained retained while the middle
+service was offline. Relays 1 and 3 reported an unavailable-provider error for
+those old purchases even while the alternate data path worked; that diagnostic
+was recorded rather than treated as an alternate-path failure or erased.
+
+### Resource and control measurements
+
+Process counters were compared only across unchanged process IDs/start times.
+CPU percentages below express a fraction of one CPU core. Sampling intervals
+were about 11.6–11.8 seconds for each ten-second stream. Memory is the largest
+sampled resident set, not a guaranteed instantaneous peak.
+
+| Window | Relay CPU range | Relay sampled memory range | Control stream bytes transmitted across active nodes |
+| --- | ---: | ---: | ---: |
+| Three relays, A to B | 19.1–22.4% | 18.0–19.0 MiB | 75,788 |
+| Three relays, B to A | 27.9–32.3% | 18.6–19.7 MiB | 76,090 |
+| Two relays, A to B | 36.3–42.8% | 20.7–20.9 MiB | 50,322 |
+| Two relays, B to A | 45.0–49.8% | 21.3 MiB | 48,334 |
+
+The endpoint processes used 13.1–14.9% of one core and 18.1–18.6 MiB sampled
+memory. Host utilization also included SSH observation and unrelated services.
+Control counts span the before/after snapshots, including the bounded drain;
+they include periodic quote/payment polling, not only traffic-triggered updates.
+They include record framing but exclude transport headers and retransmissions.
+These are not Wi-Fi airtime or complete wire-overhead measurements. History and
+CPU grew over successive runs; this experiment did not isolate their causal
+contributions or establish steady-state resource use.
+
+### Confirmed accounting cutoff
+
+A final forward stream offered 5,000 packets at 250 packets/second (2 Mbps).
+All 5,000 reached the local submission API, but the destination received 2,820
+over approximately 11.28 seconds, with 2,180 missing and one out-of-order packet.
+The two participating sellers reached exactly 4,096 retained attempts on the
+active forward contract, including traffic preceding this stream. Each recorded
+4,178,719 submitted metered bytes, well below the 128-MiB contract allowance.
+
+This was not channel exhaustion. The upstream seller had reserved 11,826 msat
+and received 12,000 msat against 128,000-msat capacity; the downstream seller had
+reserved 4,081 msat and received 5,000. Their persisted admission ceilings were
+15,826 and 8,081 msat. Source lifetime budget was still 500 sats. Accounting
+rejected new attempts at the retained-history limit. The seller journals had
+grown to about 1.31 MB; sampled relay memory reached 22.94 MiB, and relay CPU
+averaged up to 69.2% of one core during the longer observation window.
+
+The limit must be addressed before claiming long-lived paid forwarding. Merely
+increasing the packet cap or resetting a contract would not establish bounded
+memory, replay safety or preserved spending/exposure limits. Retirement of packet,
+route and closed-channel history remains implementation work.
+
+### Settlement and restoration
+
+Source watches were paused, the middle service restarted and its original
+financial neighbors reconnected. All eight channels settled. Final balances
+were 500, 520, 514, 521 and 505 test sats for A, relays 1–3 and B respectively:
+all three routers retained positive margins, and the total remained 2,560.
+Every final balance was exported and redeemed, leaving the five test wallets
+empty. Total collection across hardware phases reached 6,400 test sats.
+
+The original router accounts were restored on r4 with their prior identities,
+histories and remaining budgets. New and old test endpoints were stopped. The
+installed binary hashes, boot enablement, native neighbors, stable mesh addresses,
+AP interfaces and DNS/HTTPS checks passed on all routers. Network, Wi-Fi, DHCP
+and firewall files matched the pre-test backups; the existing host web service
+returned HTTP 200. The
+mint was kept alive; its simulated Lightning backend was not restarted. These
+measurements do not establish customer onboarding, Pixel operation, encrypted
+wire replay handling, interrupted renewal/funding recovery or full-router reboot
+recovery with active financial operations.
