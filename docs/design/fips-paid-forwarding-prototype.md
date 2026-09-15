@@ -88,6 +88,23 @@ channel for that same neighbor and mint.
   route must not reuse a spent allowance. Expiry and failed redemption suspend
   service rather than manufacture a new balance.
 
+The implemented durable wrapper persists a per-channel absolute allowance
+ceiling before exposing a window to the node. Payment claims come only from a
+completed durable checkpoint. After a crash, the difference between that ceiling
+and the last recorded reservations becomes unbilled, reserved `lost_msat`.
+Recorded packet fingerprints remain authoritative for replay protection. A
+packet lost from memory before a checkpoint was never included in a claim; its
+unknown attempt cannot justify a new debit to the buyer. Loss consumes the same
+bounded channel allowance, so repeated restarts eventually stop service.
+Orderly suspension records a zero-sized next window and can resume the same
+channels/quotes without consuming unused exposure. Controllers must not erase
+missing/corrupt accounting state and silently open a fresh account.
+
+The initial wrapper rejects new admission briefly while persisting a checkpoint;
+the node never waits for disk I/O. This is a measurable packet-loss tradeoff, not
+a performance claim. Window size, checkpoint scheduling, and retained history
+need deployment measurements before sustained traffic use.
+
 ## Placement
 
 Add an optional admission interface at native FMP SessionDatagram forwarding.

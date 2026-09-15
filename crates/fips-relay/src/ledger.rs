@@ -89,6 +89,9 @@ pub struct Usage {
 pub struct ChannelUsage {
     pub reserved_msat: u64,
     pub submitted_msat: u64,
+    /// Conservatively consumed crash window with no retained packet evidence.
+    /// This amount is never included in a payment claim.
+    pub lost_msat: u64,
     /// Verified cumulative signed payment, not total funded capacity.
     pub paid_msat: u64,
 }
@@ -127,20 +130,22 @@ pub struct Snapshot {
     version: u16,
     limits: Limits,
     next_token: u64,
-    channels: Vec<ChannelSnapshot>,
-    accounts: Vec<AccountSnapshot>,
+    pub(crate) channels: Vec<ChannelSnapshot>,
+    pub(crate) accounts: Vec<AccountSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct ChannelSnapshot {
-    terms: ChannelTerms,
-    usage: ChannelUsage,
+pub(crate) struct ChannelSnapshot {
+    pub(crate) terms: ChannelTerms,
+    pub(crate) usage: ChannelUsage,
+    pub(crate) active: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct AccountSnapshot {
-    contract: Contract,
+pub(crate) struct AccountSnapshot {
+    pub(crate) contract: Contract,
     usage: Usage,
+    pub(crate) active: bool,
     // Arrays of tuples keep JSON encoding valid for binary digest keys.
     attempts: Vec<([u8; 32], Attempt)>,
 }
@@ -340,7 +345,7 @@ impl RelayLedger {
     pub fn snapshot(&self) -> Snapshot {
         let state = self.state.lock().unwrap();
         Snapshot {
-            version: 2,
+            version: 3,
             limits: self.limits,
             next_token: state.next_token,
             channels: state
@@ -349,6 +354,7 @@ impl RelayLedger {
                 .map(|c| ChannelSnapshot {
                     terms: c.terms.clone(),
                     usage: c.usage,
+                    active: c.active,
                 })
                 .collect(),
             accounts: state
@@ -357,6 +363,7 @@ impl RelayLedger {
                 .map(|a| AccountSnapshot {
                     contract: a.contract.clone(),
                     usage: a.usage,
+                    active: a.active,
                     attempts: a.attempts.iter().map(|(k, v)| (*k, v.clone())).collect(),
                 })
                 .collect(),
@@ -366,7 +373,7 @@ impl RelayLedger {
     /// Retain all evidence but activate no traffic. A snapshot alone does not
     /// establish which sends occurred after its last durable checkpoint.
     pub fn restore(snapshot: Snapshot) -> Result<Self, LedgerError> {
-        if snapshot.version != 2
+        if snapshot.version != 3
             || snapshot.channels.len() > snapshot.limits.max_channels
             || snapshot.accounts.len() > snapshot.limits.max_contracts
         {
@@ -381,6 +388,9 @@ impl RelayLedger {
             let cap = validate_channel(&saved.terms).map_err(|_| LedgerError::InvalidSnapshot)?;
             if saved.usage.paid_msat > cap
                 || saved.usage.reserved_msat > cap
+                || saved.usage.reserved_msat
+                    > saved.usage.paid_msat.saturating_add(saved.terms.grace_msat)
+                || saved.usage.lost_msat > saved.usage.reserved_msat
                 || state.channels.contains_key(&saved.terms.id)
             {
                 return Err(LedgerError::InvalidSnapshot);
@@ -392,6 +402,8 @@ impl RelayLedger {
                     terms: saved.terms,
                     usage: ChannelUsage {
                         paid_msat: saved.usage.paid_msat,
+                        reserved_msat: saved.usage.lost_msat,
+                        lost_msat: saved.usage.lost_msat,
                         ..ChannelUsage::default()
                     },
                     active: false,
@@ -496,6 +508,15 @@ impl RelayLedger {
     }
 
     pub fn admit_at(&self, request: &ForwardingRequest<'_>, now_unix: u64) -> Option<u64> {
+        self.admit_with_windows(request, now_unix, None)
+    }
+
+    pub(crate) fn admit_with_windows(
+        &self,
+        request: &ForwardingRequest<'_>,
+        now_unix: u64,
+        windows: Option<&BTreeMap<String, u64>>,
+    ) -> Option<u64> {
         let units = u64::try_from(request.session_payload.len()).ok()?;
         if units == 0 {
             return None;
@@ -546,7 +567,8 @@ impl RelayLedger {
             .usage
             .paid_msat
             .saturating_add(channel.terms.grace_msat)
-            .min(channel.terms.capacity_sat.checked_mul(1_000)?);
+            .min(channel.terms.capacity_sat.checked_mul(1_000)?)
+            .min(windows.map_or(u64::MAX, |w| w.get(&channel_id).copied().unwrap_or(0)));
         if channel_reserved > limit {
             return None;
         }
@@ -565,6 +587,71 @@ impl RelayLedger {
         state.seen.insert((*request.ingress.node_addr(), digest));
         state.pending.insert(token, (id, digest));
         Some(token)
+    }
+
+    /// Used only by the durable wrapper, which must commit the recovered
+    /// exposure and next windows before publishing this ledger to forwarding.
+    pub(crate) fn recover_windows(
+        snapshot: Snapshot,
+        windows: &BTreeMap<String, u64>,
+    ) -> Result<Self, LedgerError> {
+        let recovered = Self::restore(snapshot.clone())?;
+        let mut state = recovered.state.lock().unwrap();
+        let mut buyers = std::collections::HashSet::new();
+        let mut destinations = std::collections::HashSet::new();
+        for saved in &snapshot.channels {
+            let channel = state.channels.get_mut(&saved.terms.id).unwrap();
+            if saved.active && !buyers.insert((saved.terms.buyer, saved.terms.mint_url.clone())) {
+                return Err(LedgerError::InvalidSnapshot);
+            }
+            channel.active = saved.active;
+        }
+        for saved in &snapshot.accounts {
+            let channel = &state.channels[&saved.contract.channel_id];
+            if saved.active
+                && (!channel.active
+                    || !destinations.insert((channel.terms.buyer, saved.contract.destination)))
+            {
+                return Err(LedgerError::InvalidSnapshot);
+            }
+            state.accounts.get_mut(&saved.contract.id).unwrap().active = saved.active;
+        }
+        for (id, ceiling) in windows {
+            let has_quote = state
+                .accounts
+                .values()
+                .any(|a| a.active && &a.contract.channel_id == id);
+            let channel = state
+                .channels
+                .get_mut(id)
+                .ok_or(LedgerError::InvalidSnapshot)?;
+            let max = validate_channel(&channel.terms)?.min(
+                channel
+                    .usage
+                    .paid_msat
+                    .saturating_add(channel.terms.grace_msat),
+            );
+            if !channel.active
+                || !has_quote
+                || *ceiling < channel.usage.reserved_msat
+                || *ceiling > max
+            {
+                return Err(LedgerError::InvalidSnapshot);
+            }
+            let lost = ceiling - channel.usage.reserved_msat;
+            channel.usage.lost_msat += lost;
+            channel.usage.reserved_msat = *ceiling;
+        }
+        // Every active quote must have been bounded by a persisted window.
+        if state
+            .accounts
+            .values()
+            .any(|a| a.active && !windows.contains_key(&a.contract.channel_id))
+        {
+            return Err(LedgerError::InvalidSnapshot);
+        }
+        drop(state);
+        Ok(recovered)
     }
 }
 

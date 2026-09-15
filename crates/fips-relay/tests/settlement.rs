@@ -19,7 +19,8 @@ use fips_core::{
     node::{ForwardingOutcome, ForwardingPolicy, ForwardingRequest},
 };
 use fips_relay::{
-    ledger::{BytePrice, ChannelTerms, Contract, Limits, RelayLedger},
+    durable::DurableRelay,
+    ledger::{BytePrice, ChannelTerms, Contract, Limits},
     payment::process_payment,
 };
 use std::{
@@ -137,7 +138,12 @@ async fn persistent_neighbor_channels_settle_multiple_routes_and_preserve_every_
                 true,
             )
             .unwrap();
-            let ledger = RelayLedger::new(Limits::default());
+            let ledger = DurableRelay::create(
+                &root.path().join(format!("ledger-{i}")),
+                Limits::default(),
+                10_000,
+            )
+            .unwrap();
             ledger
                 .open_channel_verified(channel.clone(), credit.paid_msat)
                 .unwrap();
@@ -173,13 +179,10 @@ async fn persistent_neighbor_channels_settle_multiple_routes_and_preserve_every_
                     destination: route.destination,
                     session_payload: &payload,
                 };
-                let token = ledgers[i].admit_at(&request, now).unwrap();
+                let token = ledgers[i].admit(&request).unwrap();
                 ledgers[i].complete(token, ForwardingOutcome::Submitted);
-                assert!(ledgers[i].admit_at(&request, now).is_none());
-                let due_msat = ledgers[i]
-                    .channel_usage(&channels[i].id)
-                    .unwrap()
-                    .submitted_msat;
+                assert!(ledgers[i].admit(&request).is_none());
+                let due_msat = ledgers[i].checkpoint().unwrap()[&channels[i].id].submitted_msat;
                 assert_eq!(due_msat, (3 - i) as u64 * 500 * (batch + 1) as u64);
                 let signer = FileSpilmanPaymentSigner::load(&wallets[i]).unwrap();
                 // Round the cumulative channel balance, never each flow/update separately.
@@ -209,8 +212,19 @@ async fn persistent_neighbor_channels_settle_multiple_routes_and_preserve_every_
                 );
             }
         }
+        for (ledger, channel) in ledgers.iter().zip(&channels) {
+            ledger.close_channel(&channel.id).unwrap();
+        }
+        ledgers.clear();
         sellers.clear();
-        for i in 0..3 {
+        for (i, channel) in channels.iter().enumerate() {
+            let ledger = DurableRelay::load(&root.path().join(format!("ledger-{i}"))).unwrap();
+            assert_eq!(
+                ledger.channel_usage(&channel.id).unwrap().submitted_msat,
+                (3 - i) as u64 * 1_000
+            );
+            assert_eq!(ledger.channel_usage(&channel.id).unwrap().lost_msat, 0);
+            ledgers.push(ledger);
             sellers.push(
                 FileSpilmanPaymentReceiver::load_with_keyset_refresh(
                     &root.path().join(format!("receiver-{i}")),

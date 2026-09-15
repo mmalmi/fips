@@ -1,0 +1,332 @@
+//! Durable, bounded forwarding windows. Disk I/O stays off the node loop.
+//!
+//! A controller checkpoints submissions before asking for payment. Before
+//! admission resumes, it also records the maximum exposure of the next window.
+//! Recovery consumes the entire unrecorded remainder without billing it.
+
+use crate::ledger::{
+    ChannelTerms, ChannelUsage, Contract, LedgerError, Limits, RelayLedger, Snapshot, Usage,
+};
+use fips_core::node::{ForwardingOutcome, ForwardingPolicy, ForwardingRequest};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::BTreeMap,
+    fs::{File, OpenOptions},
+    io::{self, Read, Write},
+    path::{Path, PathBuf},
+    sync::RwLock,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+const MAX_JOURNAL_BYTES: u64 = 32 * 1024 * 1024;
+
+#[derive(Debug, thiserror::Error)]
+pub enum DurableError {
+    #[error(transparent)]
+    Ledger(#[from] LedgerError),
+    #[error("accounting journal I/O failed: {0}")]
+    Io(#[from] io::Error),
+    #[error("accounting journal format is invalid")]
+    Format,
+    #[error("accounting journal already has an owner or is initialized")]
+    InUse,
+    #[error("accounting writer is suspended; restart and recover its journal")]
+    Suspended,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Journal {
+    version: u16,
+    window_msat: u64,
+    ledger: Snapshot,
+    ceilings: BTreeMap<String, u64>,
+}
+
+#[derive(Debug, Default)]
+struct PublishedWindows {
+    ceilings: BTreeMap<String, u64>,
+    ready: bool,
+}
+
+/// Single controller ownership is enforced by an OS file lock. Public mutation
+/// methods perform synchronous disk I/O: call them from a controller worker,
+/// never from a `ForwardingPolicy` callback. Numeric credit methods accept only
+/// the output of a trusted payment verifier, not unverified network requests.
+#[derive(Debug)]
+pub struct DurableRelay {
+    ledger: RelayLedger,
+    directory: PathBuf,
+    window_msat: u64,
+    windows: RwLock<PublishedWindows>,
+    _owner: File,
+}
+
+impl DurableRelay {
+    pub fn create(
+        directory: &Path,
+        limits: Limits,
+        window_msat: u64,
+    ) -> Result<Self, DurableError> {
+        if window_msat == 0 {
+            return Err(DurableError::Format);
+        }
+        let owner = acquire_owner(directory)?;
+        if directory.join("ledger.json").try_exists()? {
+            return Err(DurableError::InUse);
+        }
+        let relay = Self {
+            ledger: RelayLedger::new(limits),
+            directory: directory.to_path_buf(),
+            window_msat,
+            windows: RwLock::new(PublishedWindows::default()),
+            _owner: owner,
+        };
+        relay.initialize()?;
+        Ok(relay)
+    }
+
+    pub fn load(directory: &Path) -> Result<Self, DurableError> {
+        let owner = acquire_owner(directory)?;
+        let file = File::open(directory.join("ledger.json"))?;
+        if file.metadata()?.len() > MAX_JOURNAL_BYTES {
+            return Err(DurableError::Format);
+        }
+        let mut bytes = Vec::new();
+        file.take(MAX_JOURNAL_BYTES + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_JOURNAL_BYTES {
+            return Err(DurableError::Format);
+        }
+        let journal: Journal = serde_json::from_slice(&bytes).map_err(|_| DurableError::Format)?;
+        if journal.version != 1 || journal.window_msat == 0 {
+            return Err(DurableError::Format);
+        }
+        let relay = Self {
+            ledger: RelayLedger::recover_windows(journal.ledger, &journal.ceilings)?,
+            directory: directory.to_path_buf(),
+            window_msat: journal.window_msat,
+            windows: RwLock::new(PublishedWindows::default()),
+            _owner: owner,
+        };
+        // Persist lost exposure and the next window before anyone can send.
+        relay.initialize()?;
+        Ok(relay)
+    }
+
+    fn initialize(&self) -> Result<(), DurableError> {
+        let mut windows = self.windows.write().map_err(|_| DurableError::Suspended)?;
+        self.persist(&mut windows, true)?;
+        Ok(())
+    }
+
+    /// Return only the totals captured in this durable checkpoint. A completion
+    /// racing with disk I/O belongs to a later checkpoint, not this claim.
+    pub fn checkpoint(&self) -> Result<BTreeMap<String, ChannelUsage>, DurableError> {
+        self.mutate(|_| Ok(())).map(|(_, usage)| usage)
+    }
+
+    /// Stop admission and checkpoint without granting another window. After
+    /// stopping the endpoint, use this for an orderly restart of the same
+    /// channels/quotes. Pending sends remain reserved if completion is unknown.
+    pub fn suspend(&self) -> Result<BTreeMap<String, ChannelUsage>, DurableError> {
+        let mut windows = self.windows.write().map_err(|_| DurableError::Suspended)?;
+        if !windows.ready {
+            return Err(DurableError::Suspended);
+        }
+        self.persist(&mut windows, false)
+    }
+
+    pub fn open_channel_verified(
+        &self,
+        terms: ChannelTerms,
+        paid_msat: u64,
+    ) -> Result<(), DurableError> {
+        self.mutate(|l| l.open_channel_verified(terms, paid_msat))
+            .map(|_| ())
+    }
+
+    pub fn add_contract(&self, contract: Contract) -> Result<(), DurableError> {
+        self.mutate(|l| l.add_contract(contract)).map(|_| ())
+    }
+
+    pub fn apply_verified_balance(&self, id: &str, paid_msat: u64) -> Result<(), DurableError> {
+        self.mutate(|l| l.apply_verified_balance(id, paid_msat))
+            .map(|_| ())
+    }
+
+    pub fn close_contract(&self, id: &str) -> Result<Usage, DurableError> {
+        self.mutate(|l| l.close_contract(id))
+            .map(|(usage, _)| usage)
+    }
+
+    pub fn close_channel(&self, id: &str) -> Result<ChannelUsage, DurableError> {
+        self.mutate(|l| l.close_channel(id)).map(|(usage, _)| usage)
+    }
+
+    /// Live metrics are not a payment claim. Use `checkpoint` for that.
+    pub fn channel_usage(&self, id: &str) -> Option<ChannelUsage> {
+        self.ledger.channel_usage(id)
+    }
+
+    pub fn usage(&self, id: &str) -> Option<Usage> {
+        self.ledger.usage(id)
+    }
+
+    fn mutate<T>(
+        &self,
+        change: impl FnOnce(&RelayLedger) -> Result<T, LedgerError>,
+    ) -> Result<(T, BTreeMap<String, ChannelUsage>), DurableError> {
+        let mut windows = self.windows.write().map_err(|_| DurableError::Suspended)?;
+        if !windows.ready {
+            return Err(DurableError::Suspended);
+        }
+        let result = change(&self.ledger)?;
+        let usage = self.persist(&mut windows, true)?;
+        Ok((result, usage))
+    }
+
+    fn persist(
+        &self,
+        published: &mut PublishedWindows,
+        allow_next_window: bool,
+    ) -> Result<BTreeMap<String, ChannelUsage>, DurableError> {
+        // Any failure leaves admission suspended, even if rename succeeded but
+        // the final directory sync failed. Recovery resolves the durable state.
+        published.ready = false;
+        let ledger = self.ledger.snapshot();
+        let mut ceilings = BTreeMap::new();
+        let mut usage = BTreeMap::new();
+        for channel in &ledger.channels {
+            usage.insert(channel.terms.id.clone(), channel.usage);
+            if channel.active
+                && ledger
+                    .accounts
+                    .iter()
+                    .any(|a| a.active && a.contract.channel_id == channel.terms.id)
+            {
+                let maximum = channel
+                    .usage
+                    .paid_msat
+                    .saturating_add(channel.terms.grace_msat)
+                    .min(
+                        channel
+                            .terms
+                            .capacity_sat
+                            .checked_mul(1_000)
+                            .ok_or(DurableError::Format)?,
+                    );
+                let window = if allow_next_window {
+                    self.window_msat
+                } else {
+                    0
+                };
+                let ceiling = channel
+                    .usage
+                    .reserved_msat
+                    .saturating_add(window)
+                    .min(maximum);
+                ceilings.insert(channel.terms.id.clone(), ceiling);
+            }
+        }
+        let journal = Journal {
+            version: 1,
+            window_msat: self.window_msat,
+            ledger,
+            ceilings: ceilings.clone(),
+        };
+        let bytes = serde_json::to_vec(&journal).map_err(|_| DurableError::Format)?;
+        if bytes.len() as u64 > MAX_JOURNAL_BYTES {
+            return Err(DurableError::Format);
+        }
+        let mut pending = tempfile::NamedTempFile::new_in(&self.directory)?;
+        pending.write_all(&bytes)?;
+        pending.as_file().sync_all()?;
+        pending
+            .persist(self.directory.join("ledger.json"))
+            .map_err(|e| DurableError::Io(e.error))?;
+        File::open(&self.directory)?.sync_all()?;
+        published.ceilings = ceilings;
+        published.ready = allow_next_window;
+        Ok(usage)
+    }
+}
+
+impl ForwardingPolicy for DurableRelay {
+    fn admit(&self, request: &ForwardingRequest<'_>) -> Option<u64> {
+        // Never wait for the disk-writing controller on the native node loop.
+        let windows = self.windows.try_read().ok()?;
+        if !windows.ready {
+            return None;
+        }
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+        self.ledger
+            .admit_with_windows(request, now, Some(&windows.ceilings))
+    }
+
+    fn complete(&self, token: u64, outcome: ForwardingOutcome) {
+        // Completion never needs the controller gate. A pending outcome captured
+        // before this completion remains conservatively unconfirmed on recovery.
+        self.ledger.complete(token, outcome);
+    }
+}
+
+fn acquire_owner(directory: &Path) -> Result<File, DurableError> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+        builder.mode(0o700);
+        options.mode(0o600);
+        builder.create(directory)?;
+        if std::fs::metadata(directory)?.permissions().mode() & 0o077 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "accounting directory must be private",
+            )
+            .into());
+        }
+    }
+    #[cfg(not(unix))]
+    builder.create(directory)?;
+    let owner = options.open(directory.join("owner.lock"))?;
+    owner.try_lock().map_err(|_| DurableError::InUse)?;
+    Ok(owner)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fips_core::{Identity, NodeAddr, PeerIdentity};
+    use std::sync::{Arc, mpsc};
+    use std::time::Duration;
+
+    #[test]
+    fn node_callbacks_do_not_wait_for_a_checkpoint_writer() {
+        let root = tempfile::tempdir().unwrap();
+        let relay = Arc::new(
+            DurableRelay::create(&root.path().join("relay"), Limits::default(), 10).unwrap(),
+        );
+        let gate = relay.windows.write().unwrap();
+        let worker = Arc::clone(&relay);
+        let (sent, received) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            let identity = Identity::from_secret_bytes(&[1; 32]).unwrap();
+            let request = ForwardingRequest {
+                ingress: PeerIdentity::from_pubkey_full(identity.pubkey_full()),
+                source: NodeAddr::from_bytes([1; 16]),
+                destination: NodeAddr::from_bytes([2; 16]),
+                next_hop: NodeAddr::from_bytes([3; 16]),
+                session_payload: b"packet",
+            };
+            assert!(worker.admit(&request).is_none());
+            worker.complete(1, ForwardingOutcome::Unconfirmed);
+            sent.send(()).unwrap();
+        });
+        let result = received.recv_timeout(Duration::from_secs(1));
+        drop(gate);
+        thread.join().unwrap();
+        result.expect("callbacks must return while the controller owns the disk gate");
+    }
+}
