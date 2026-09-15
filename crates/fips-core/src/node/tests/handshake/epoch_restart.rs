@@ -31,6 +31,7 @@ fn install_peering_at_different_epoch(
     let mut peer = ActivePeer::new(peer_identity, link_id, last_seen_ms);
     peer.set_current_addr(transport_id, source_addr);
     peer.set_remote_epoch(Some([0xAA; 8]));
+    peer.update_filter(crate::bloom::BloomFilter::new(), 77, last_seen_ms);
     responder.peers.insert(peer_addr, peer);
     responder.links.insert(
         link_id,
@@ -92,7 +93,38 @@ async fn epoch_mismatch_against_live_peering_does_not_replace_it() {
         .expect("live peer must survive a replayable epoch mismatch");
     assert_eq!(retained.link_id(), retained_link);
     assert_eq!(retained.remote_epoch(), Some([0xAA; 8]));
+    assert_eq!(
+        retained.filter_sequence(),
+        77,
+        "unaccepted epoch hints cannot reset routing state"
+    );
     assert_eq!(responder.connection_count(), 0);
+}
+
+#[test]
+fn authenticated_restart_discards_old_routing_sequences_and_requests_fresh_announcements() {
+    let mut node = make_node();
+    let remote = make_node();
+    let addr = *remote.node_addr();
+    install_peering_at_different_epoch(
+        &mut node,
+        &remote,
+        TransportId::new(1),
+        &TransportAddr::from_string("127.0.0.1:41004"),
+        Node::now_ms(),
+    );
+    let our_addr = *node.node_addr();
+    node.tree_state.update_peer(
+        crate::tree::ParentDeclaration::new(addr, our_addr, 77, 0),
+        crate::tree::TreeCoordinate::from_addrs(vec![addr, our_addr]).unwrap(),
+    );
+    assert!(node.tree_state.peer_coords(&addr).is_some());
+    node.reset_peer_routing_after_restart(&addr);
+    let peer = node.get_peer(&addr).unwrap();
+    assert!(peer.inbound_filter().is_none());
+    assert_eq!(peer.filter_sequence(), 0);
+    assert!(peer.has_pending_tree_announce());
+    assert!(node.tree_state.peer_coords(&addr).is_none());
 }
 
 #[tokio::test]

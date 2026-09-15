@@ -11,3 +11,5 @@ pub mod ledger;
 pub mod payment;
 pub mod payment_control;
 pub mod route_quotes;
+#[cfg(unix)]
+pub mod service;

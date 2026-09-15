@@ -123,6 +123,13 @@ TCP, UDP or application delivery acknowledgments inside encrypted FIPS traffic.
   1,280 test sats. Controller reload recovers a replacement whose acceptance reply
   was lost without funding another channel. A saved renewal pause also survives
   reload; `resume_renewals` explicitly permits replacement recovery again.
+* The Unix `fips-relay` executable assembles those components with explicit
+  initialization, saved financial terms, native interface/UDP configuration and
+  private local controls. A five-process test recovers the same accounts after
+  all nodes stop/restart and after the middle router is killed. Both traffic
+  directions continue, all three relays retain positive margins, and all 1,280
+  test sats are redeemed/spent. Recovery rebuilds native destination knowledge;
+  authenticated peer restarts also reset stale tree/filter announcement state.
 
 Only the local mint's Lightning backend is simulated. These test tokens have no
 external backing. `settlement` supplies submission outcomes to test exact
@@ -142,9 +149,10 @@ random loopback port. It does not use a user's wallet or contact a public mint.
 ## Runtime work remaining
 
 Route-change propagation and replacement agreements for changed prices or next
-hops, complete process restart exercises, OpenWrt packaging, Wi-Fi path verification and a phone
-customer demo remain to be implemented. The current library is not a deployed
-hotspot or a complete daemon.
+hops, interrupted acceptance/funding process-restart exercises, OpenWrt packaging,
+Wi-Fi path verification and a phone customer demo remain to be implemented.
+See [the service guide](SERVICE.md) for the runnable Unix service and local
+process test. It is not a deployed hotspot or public onboarding service.
 
 The controller retains up to 16 funded or unresolved channel intents and 32
 requested, outgoing and incoming routes in each category. Retained funding still

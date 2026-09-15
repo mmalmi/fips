@@ -215,11 +215,12 @@ impl<R: CashuSpilmanPaymentReceiver<String>> PaymentControl<R> {
 /// worker. The TCP transport continues driving bounded streams while it runs.
 pub struct PaymentServer {
     task: JoinHandle<()>,
+    stopping: tokio::sync::watch::Sender<bool>,
 }
 
 impl PaymentServer {
     pub async fn stop(mut self) {
-        self.task.abort();
+        let _ = self.stopping.send(true);
         let _ = (&mut self.task).await;
     }
 
@@ -234,8 +235,17 @@ impl PaymentServer {
         control: Arc<PaymentControl<R>>,
         mut incoming: mpsc::Receiver<IncomingRequest>,
     ) -> Self {
+        let (stopping, mut stop) = tokio::sync::watch::channel(false);
         let task = tokio::spawn(async move {
-            while let Some(request) = incoming.recv().await {
+            loop {
+                let request = tokio::select! {
+                    biased;
+                    _ = stop.changed() => break,
+                    request = incoming.recv() => {
+                        let Some(request) = request else { break; };
+                        request
+                    }
+                };
                 let handler = Arc::clone(&control);
                 let result = tokio::task::spawn_blocking(move || {
                     handler.handle(request.peer, &request.body)
@@ -248,7 +258,7 @@ impl PaymentServer {
                 }
             }
         });
-        Self { task }
+        Self { task, stopping }
     }
 }
 

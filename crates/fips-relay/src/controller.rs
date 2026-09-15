@@ -331,7 +331,7 @@ impl Controller {
         }
     }
 
-    fn validate_policy(policy: &ControllerPolicy) -> Result<(), String> {
+    pub(crate) fn validate_policy(policy: &ControllerPolicy) -> Result<(), String> {
         if policy.renewal.as_ref().is_some_and(|r| {
             !(1..=100).contains(&r.at_capacity_percent)
                 || r.before_expiry_secs == 0
@@ -1074,6 +1074,44 @@ impl Controller {
     pub async fn resume_pending(&self) -> Result<(), String> {
         let snapshot = self.snapshot().await?;
         let mut first_error = None;
+        // Native destination identities/coordinates are memory state. A router
+        // restart does not necessarily restart the endpoints' FSP sessions, so
+        // established traffic cannot rely on another handshake to restore them.
+        // Prime bounded native discovery from retained agreements. This neither
+        // authorizes a changed next hop nor creates a new financial agreement.
+        let timestamp = now()?;
+        let mut routes = Vec::new();
+        for outgoing in snapshot.outgoing.values().filter(|o| {
+            o.accepted
+                && !o.retired
+                && o.purchase.contract.expires_unix > timestamp
+                && !snapshot
+                    .buyer_settlements
+                    .contains_key(&o.purchase.channel.id)
+        }) {
+            routes.push((outgoing.offer.destination, None));
+        }
+        for incoming in snapshot
+            .incoming
+            .values()
+            .filter(|i| i.phase == Phase::Active && i.contract.expires_unix > timestamp)
+        {
+            routes.push((incoming.offer.destination, Some(incoming.channel.buyer)));
+        }
+        let mut seen = HashSet::new();
+        for (destination, previous) in routes {
+            if !seen.insert((*destination.node_addr(), previous)) {
+                continue;
+            }
+            if let Err(error) = self
+                .services
+                .endpoint
+                .resolve_next_hop(destination, previous)
+                .await
+            {
+                first_error.get_or_insert(error.to_string());
+            }
+        }
         for incoming in snapshot
             .incoming
             .into_values()

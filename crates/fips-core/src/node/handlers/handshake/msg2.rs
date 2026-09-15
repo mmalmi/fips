@@ -195,6 +195,9 @@ impl Node {
                             );
                         }
 
+                        if remote_epoch_changed {
+                            self.reset_peer_routing_after_restart(&peer_node_addr);
+                        }
                         if remote_epoch_changed
                             && self.clear_stale_fsp_unless_recovered_to_remote_epoch(
                                 &peer_node_addr,
@@ -595,6 +598,9 @@ impl Node {
                 self.register_identity(peer_node_addr, peer_identity.pubkey_full());
                 self.sync_dataplane_fmp_owner(&peer_node_addr);
 
+                if remote_epoch_changed {
+                    self.reset_peer_routing_after_restart(&peer_node_addr);
+                }
                 if remote_epoch_changed
                     && self.clear_stale_fsp_unless_recovered_to_remote_epoch(
                         &peer_node_addr,

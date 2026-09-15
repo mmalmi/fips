@@ -191,6 +191,7 @@ impl Node {
 
             if this_wins {
                 if remote_epoch_changed {
+                    self.reset_peer_routing_after_restart(&peer_node_addr);
                     // A peer restart is not a session handoff; the previous FMP
                     // owner is cryptographically stale and should not drain.
                     let old_peer = self.peers.remove(&peer_node_addr).unwrap();
@@ -445,6 +446,23 @@ impl Node {
 
             Ok(PromotionResult::Promoted(peer_node_addr))
         }
+    }
+
+    /// A completed authenticated handshake proved a new startup epoch. Sequence
+    /// numbers and cached tree state from the old process cannot reject the new
+    /// process's first announcements. Never call this for an unaccepted Msg1.
+    pub(in crate::node) fn reset_peer_routing_after_restart(&mut self, peer: &NodeAddr) {
+        if let Some(active) = self.peers.get_mut(peer) {
+            active.clear_filter();
+        }
+        self.handle_peer_removal_tree_cleanup(peer);
+        self.coord_cache.invalidate_via_node(peer);
+        self.bloom_state.remove_peer_state(peer);
+        for active in self.peers.values_mut() {
+            active.mark_tree_announce_pending();
+        }
+        self.bloom_state
+            .mark_all_updates_needed(self.peers.keys().copied());
     }
 
     pub(in crate::node) fn clear_stale_fsp_unless_recovered_to_remote_epoch(

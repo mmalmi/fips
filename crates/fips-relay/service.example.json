@@ -1,0 +1,25 @@
+{
+  "state_directory": "/etc/fips-relay/state",
+  "udp_bind": null,
+  "ethernet_interfaces": ["mesh0"],
+  "neighbors": [],
+  "terms": {
+    "controller": {
+      "mint_url": "http://192.0.2.1:3338",
+      "channel_capacity_sat": 64,
+      "max_locked_sat": 128,
+      "channel_lifetime_secs": 600,
+      "renewal": {
+        "at_capacity_percent": 80,
+        "before_expiry_secs": 30
+      }
+    },
+    "buyer_budget_sat": 128,
+    "window_msat": 4000,
+    "grace_msat": 8000,
+    "fee_msat_per_kib": 1024,
+    "max_rate_msat_per_kib": 8192,
+    "quote_lifetime_secs": 300,
+    "quote_max_units": 30000
+  }
+}

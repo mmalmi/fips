@@ -266,8 +266,25 @@ checks onward availability before reserving upstream allowance, so a packet
 rejected before enqueue remains eligible after renewal. Actual uncertain sends
 still consume exposure.
 
+The Unix service now runs each node as an independent process. Its integration
+test retains the same accounts across an orderly restart of all five nodes and
+an abrupt middle-router restart, resumes bidirectional paid traffic, checks a
+positive net margin at all three routers and redeems/spends all 1,280 test sats.
+Local administrative controls are private Unix-socket requests; they are not a
+public customer onboarding API. Initialization is explicit, saved financial terms
+cannot change on ordinary startup, and data admission waits for all components
+to validate. No TUN, DHCP, DNS or ordinary Internet gateway is installed.
+
+Restart recovery primes native destination discovery from retained agreements.
+A completed native handshake proving a changed neighbor startup epoch also
+resets that neighbor's old tree/filter announcement state; otherwise new low
+sequence numbers can be rejected indefinitely. Unaccepted restart hints cannot
+reset routing state. A connected link alone does not prove end-to-end readiness,
+so the process test uses bounded endpoint retries and checks actual delivery.
+
 Route-change propagation, recovery from expired in-flight replacement offers,
-whole-process restarts and retirement of bounded history remain to be implemented.
+interruptions at every funding/acceptance stage and retirement of bounded history
+remain to be implemented.
 Settled records cannot silently reactivate an old channel; recovery of an orphaned
 funding operation still precedes closure. Renewal intentionally permits a service
 gap while settlement and new funding complete; uninterrupted service is not yet
