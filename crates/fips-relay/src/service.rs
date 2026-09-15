@@ -582,6 +582,7 @@ impl RelayService {
                     "address": p.transport_addr, "sent_bytes": p.bytes_sent, "received_bytes": p.bytes_recv,
                     "srtt_ms": p.srtt_ms })).collect::<Vec<_>>(),
                     "purchases": self.controller.purchases().await?,
+                    "watched_routes": self.controller.watched_routes().await?,
                     "history": self.controller.purchase_history().await?,
                     "locked_sat": self.controller.locked_capital_sat().await?,
                     "remaining_budget_sat": self.buyer.remaining_budget_sat(),
@@ -593,6 +594,20 @@ impl RelayService {
                 let peer = PeerIdentity::from_npub(&destination)
                     .map_err(|_| "invalid destination npub")?;
                 Ok(json!({"purchase": self.controller.buy_route(peer).await?}))
+            }
+            AdminRequest::Watch {
+                destination,
+                max_rate_msat_per_kib,
+            } => {
+                let peer = PeerIdentity::from_npub(&destination)
+                    .map_err(|_| "invalid destination npub")?;
+                Ok(
+                    json!({"purchase": self.controller.watch_route(peer, max_rate_msat_per_kib).await?}),
+                )
+            }
+            AdminRequest::PauseRouteRefresh => {
+                self.controller.pause_route_refresh().await?;
+                Ok(json!({"paused": true}))
             }
             AdminRequest::Send {
                 destination,
@@ -673,6 +688,11 @@ pub enum AdminRequest {
     Buy {
         destination: String,
     },
+    Watch {
+        destination: String,
+        max_rate_msat_per_kib: u64,
+    },
+    PauseRouteRefresh,
     Send {
         destination: String,
         payload: String,

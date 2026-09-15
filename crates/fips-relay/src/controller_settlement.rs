@@ -149,6 +149,9 @@ impl Controller {
         })
         .await?;
         let state = self.snapshot().await?;
+        for incoming in state.incoming.values().filter(|i| i.channel.id == id) {
+            self.services.quotes.stop_reusing(&incoming.offer.id)?;
+        }
         if let Some(usage) = state.seller_settlements[id].usage {
             return Ok(ControllerResponse::Sealed {
                 channel_id: id.into(),
@@ -488,6 +491,7 @@ impl Controller {
     }
 
     pub async fn settle_all(&self) -> Result<Vec<SettlementReport>, String> {
+        self.pause_route_refresh().await?;
         self.pause_renewals().await?;
         {
             let _work = self.route_work.lock().await;

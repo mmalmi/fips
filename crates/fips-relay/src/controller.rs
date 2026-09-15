@@ -50,6 +50,10 @@ pub use renewal::RenewalPolicy;
 mod routes;
 use routes::RouteChange;
 
+#[path = "controller_refresh.rs"]
+mod refresh;
+pub use refresh::WatchedRoute;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ControllerPolicy {
     pub mint_url: String,
@@ -149,6 +153,8 @@ struct Journal {
     renewals_paused: bool,
     #[serde(default)]
     route_changes: BTreeMap<String, RouteChange>,
+    #[serde(default)]
+    watched_routes: BTreeMap<String, WatchedRoute>,
 }
 
 struct Store {
@@ -233,6 +239,8 @@ pub struct Controller {
     maintenance: AsyncMutex<()>,
     renewal_work: AsyncMutex<()>,
     route_work: AsyncMutex<()>,
+    refresh_work: AsyncMutex<()>,
+    refresh_checks: Mutex<BTreeMap<String, tokio::time::Instant>>,
     accepting: Mutex<HashSet<String>>,
     last_error: Mutex<Option<String>>,
 }
@@ -296,6 +304,7 @@ impl Controller {
                 renewals: BTreeMap::new(),
                 renewals_paused: false,
                 route_changes: BTreeMap::new(),
+                watched_routes: BTreeMap::new(),
             },
             ready: true,
             _owner: owner,
@@ -346,6 +355,8 @@ impl Controller {
             maintenance: AsyncMutex::new(()),
             renewal_work: AsyncMutex::new(()),
             route_work: AsyncMutex::new(()),
+            refresh_work: AsyncMutex::new(()),
+            refresh_checks: Mutex::new(BTreeMap::new()),
             accepting: Mutex::new(HashSet::new()),
             last_error: Mutex::new(None),
         }
@@ -440,6 +451,7 @@ impl Controller {
             return Err("capital budget exceeded".into());
         }
         Self::validate_route_changes(j)?;
+        Self::validate_watched_routes(j)?;
         let mut requested = HashSet::new();
         for (id, offer) in &j.requested {
             if id != &offer.id
@@ -575,13 +587,7 @@ impl Controller {
     }
 
     async fn fund(&self, offer: &RouteOffer) -> Result<(String, Funded), String> {
-        if self
-            .snapshot()
-            .await?
-            .route_changes
-            .get(&offer.id)
-            .is_some_and(|c| c.paused)
-        {
+        if Self::offer_paused(&self.snapshot().await?, &offer.id) {
             return Err("route change paused".into());
         }
         if offer.buyer != *self.services.endpoint.node_addr()
@@ -915,13 +921,7 @@ impl Controller {
     }
 
     async fn send_accept(&self, peer: PeerIdentity, record: Outgoing) -> Result<Purchase, String> {
-        if self
-            .snapshot()
-            .await?
-            .route_changes
-            .get(&record.offer.id)
-            .is_some_and(|c| c.paused)
-        {
+        if Self::offer_paused(&self.snapshot().await?, &record.offer.id) {
             return Err("route change paused".into());
         }
         let payment = self
@@ -1214,6 +1214,12 @@ impl Controller {
     pub async fn resume_pending(&self) -> Result<(), String> {
         let mut first_error = self.resume_route_changes().await.err();
         let snapshot = self.snapshot().await?;
+        let paused_offers: HashSet<_> = snapshot
+            .requested
+            .values()
+            .filter(|o| Self::offer_paused(&snapshot, &o.id))
+            .map(|o| o.id.clone())
+            .collect();
         // Native destination identities/coordinates are memory state. A router
         // restart does not necessarily restart the endpoints' FSP sessions, so
         // established traffic cannot rely on another handshake to restore them.
@@ -1275,10 +1281,7 @@ impl Controller {
         for offer in snapshot.requested.into_values().filter(|offer| {
             let paused = snapshot.renewals_paused
                 && snapshot.renewals.values().any(|r| r.requests(&offer.id))
-                || snapshot
-                    .route_changes
-                    .get(&offer.id)
-                    .is_some_and(|c| c.paused);
+                || paused_offers.contains(&offer.id);
             let accepted = snapshot
                 .outgoing
                 .values()
@@ -1328,6 +1331,9 @@ impl Controller {
                 Ok(ids)
             })
             .await?;
+        for incoming in self.snapshot().await?.incoming.values() {
+            self.services.quotes.stop_reusing(&incoming.offer.id)?;
+        }
         let seller = self.services.seller.clone();
         blocking(move || {
             for id in channels {
@@ -1455,6 +1461,7 @@ pub struct ControllerTasks {
     requests: JoinHandle<mpsc::Receiver<IncomingRequest>>,
     payments: JoinHandle<()>,
     recovery: JoinHandle<()>,
+    refresh: JoinHandle<()>,
     stopping: watch::Sender<bool>,
 }
 impl ControllerTasks {
@@ -1465,6 +1472,7 @@ impl ControllerTasks {
         let (stopping, mut stop_requests) = watch::channel(false);
         let mut stop_payments = stop_requests.clone();
         let mut stop_recovery = stop_requests.clone();
+        let mut stop_refresh = stop_requests.clone();
         let handler = controller.clone();
         let requests = tokio::spawn(async move {
             let permits = Arc::new(Semaphore::new(8));
@@ -1506,6 +1514,21 @@ impl ControllerTasks {
                 }
             }
         });
+        let watcher = controller.clone();
+        let refresh = tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(2));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = stop_refresh.changed() => break,
+                    _ = ticker.tick() => {
+                        if let Err(error) = watcher.refresh_watched_routes().await {
+                            *watcher.last_error.lock().unwrap() = Some(error);
+                        }
+                    }
+                }
+            }
+        });
         let recovery = tokio::spawn(async move {
             let mut ticker = tokio::time::interval(Duration::from_secs(2));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1524,6 +1547,7 @@ impl ControllerTasks {
             requests,
             payments,
             recovery,
+            refresh,
             stopping,
         }
     }
@@ -1534,6 +1558,7 @@ impl ControllerTasks {
         let incoming = (&mut self.requests).await.ok();
         let _ = (&mut self.payments).await;
         let _ = (&mut self.recovery).await;
+        let _ = (&mut self.refresh).await;
         incoming
     }
 }
@@ -1542,6 +1567,7 @@ impl Drop for ControllerTasks {
         self.requests.abort();
         self.payments.abort();
         self.recovery.abort();
+        self.refresh.abort();
     }
 }
 
@@ -1584,6 +1610,7 @@ mod tests {
             renewals: BTreeMap::new(),
             renewals_paused: false,
             route_changes: BTreeMap::new(),
+            watched_routes: BTreeMap::new(),
         }
     }
 

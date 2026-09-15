@@ -135,7 +135,20 @@ performance and the public customer flow remain unfinished.
   channels. Controller reload recovers a lost reply and outgoing record with the
   same replacement agreements. Reconnecting old neighbours permits all eight
   channels to settle and all 640 test sats to be redeemed and spent again.
-  Automatic source detection/requoting and physical route changes remain unfinished.
+* Sources can opt into automatic route refresh for a specific destination with
+  an explicit maximum aggregate byte rate. The saved authorization permits
+  background path/price replacement under the existing spending and capital
+  limits. No source watch arises from transit or unsolicited traffic. Quotes
+  reuse unchanged offers, so polling does not exhaust pending-offer history;
+  stopped or sealed agreements are excluded from reuse. Pending watched offers
+  recover their exact funding intent. Settlement durably pauses source watches.
+* The automatic route-change scenario rejects an unaffordable initial rate
+  without locking funds, then accepts explicit watch ceilings in both directions.
+  Removing the middle router leads to lower-priced replacement agreements without
+  another source purchase command. The original source channels remain, only the
+  two new neighbour directions need funding, and all 640 test sats are conserved.
+  Physical route changes and combined route-change/unfinished-renewal recovery
+  remain unfinished.
 * If a crash leaves the provider's usage ahead of the buyer's saved submission
   evidence, the controller pays the supported portion of the cumulative claim.
   Later known submissions can continue earning payments; the unsupported
@@ -184,9 +197,9 @@ random loopback port. It does not use a user's wallet or contact a public mint.
 
 ## Runtime work remaining
 
-Route-change propagation and replacement agreements for changed prices or next
-hops, interrupted acceptance/funding process-restart exercises, OpenWrt packaging,
-Wi-Fi path verification and a phone customer demo remain to be implemented.
+Physical route-change checks, combined route-change/unfinished-renewal recovery,
+expired pending offers, broader interrupted funding exercises, persistent OpenWrt
+packaging, performance measurements and a phone customer demo remain unfinished.
 See [the service guide](SERVICE.md) for the runnable Unix service and local
 process test. It is not a deployed hotspot or public onboarding service.
 
@@ -194,10 +207,12 @@ The controller retains up to 16 funded or unresolved channel intents and 32
 requested, outgoing and incoming routes in each category. Retained funding still
 counts against capital after service stops until settlement and refund recovery
 complete. Settlement and renewal history are capped at 16 channels each.
-Automatic replacement requires an explicit renewal policy and remaining lifetime
-budget. `settle_all` pauses renewal before closure; saved replacement requests
-stay paused until explicitly resumed. Changed service and expired replacement
-offers still stop recovery. No controller loop erases history or resets the
+Same-service channel replacement requires an explicit renewal policy and
+remaining lifetime budget; changed routes require a source watch ceiling or a
+fresh explicit purchase. `settle_all` pauses watches and renewal before closure;
+saved replacement requests stay paused until explicitly resumed. Changed service
+during an unfinished renewal and expired pending offers still stop recovery.
+No controller loop erases history or resets the
 buyer's lifetime spending limit to make another purchase possible.
 
 Default retained history is bounded to 16 channels, 32 destination contracts

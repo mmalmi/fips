@@ -61,6 +61,7 @@ impl Controller {
         services: &ControllerServices,
     ) -> Result<(), String> {
         for i in j.incoming.values().filter(|i| i.phase == Phase::Stopped) {
+            services.quotes.stop_reusing(&i.offer.id)?;
             if services.seller.usage(&i.contract.id).is_some() {
                 services
                     .seller
@@ -82,6 +83,9 @@ impl Controller {
     pub(super) async fn prepare_changed_route(&self, offered: &RouteOffer) -> Result<(), String> {
         let _work = self.route_work.lock().await;
         let snapshot = self.snapshot().await?;
+        if Self::offer_paused(&snapshot, &offered.id) {
+            return Err("route change paused".into());
+        }
         let timestamp = now()?;
         let previous: Vec<_> = snapshot
             .outgoing
@@ -110,7 +114,7 @@ impl Controller {
             if c.offer != *offered {
                 return Err("route change offer changed".into());
             }
-            if c.paused {
+            if Self::offer_paused(&snapshot, &offered.id) {
                 return Err("route change paused".into());
             }
             c
@@ -233,15 +237,17 @@ impl Controller {
     ) -> Result<ControllerResponse, String> {
         let id = id.to_string();
         let saved = id.clone();
-        self.change(move |j| {
-            let old = j.incoming.get_mut(&saved).ok_or("unknown route")?;
-            if old.channel.buyer != *peer.node_addr() {
-                return Err("wrong route buyer".into());
-            }
-            old.phase = Phase::Stopped;
-            Ok(())
-        })
-        .await?;
+        let offer_id = self
+            .change(move |j| {
+                let old = j.incoming.get_mut(&saved).ok_or("unknown route")?;
+                if old.channel.buyer != *peer.node_addr() {
+                    return Err("wrong route buyer".into());
+                }
+                old.phase = Phase::Stopped;
+                Ok(old.offer.id.clone())
+            })
+            .await?;
+        self.services.quotes.stop_reusing(&offer_id)?;
         let seller = self.services.seller.clone();
         let saved = id.clone();
         blocking(move || {
@@ -260,7 +266,7 @@ impl Controller {
         for change in snapshot
             .route_changes
             .values()
-            .filter(|c| !c.prepared && !c.paused)
+            .filter(|c| !c.prepared && !Self::offer_paused(&snapshot, &c.offer.id))
         {
             if let Err(error) = self.prepare_changed_route(&change.offer).await {
                 first_error.get_or_insert(error);

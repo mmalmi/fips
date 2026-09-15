@@ -136,6 +136,28 @@ async fn prices_follow_native_next_hops_and_accumulate_over_neighbor_control() {
                     .collect::<Vec<_>>()
             );
             let provider = if source == 0 { 1 } else { 3 };
+            if source == 0 {
+                for _ in 0..32 {
+                    let refreshed = quotes[source]
+                        .refresh_route(peers[destination])
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        refreshed, offer,
+                        "monitoring must reuse unchanged quotes past the per-buyer offer limit"
+                    );
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                assert_ne!(
+                    quotes[source]
+                        .request_route(peers[destination])
+                        .await
+                        .unwrap()
+                        .id,
+                    offer.id,
+                    "an explicit fresh purchase still gets a fresh offer"
+                );
+            }
             let retained = quotes[provider]
                 .retained_offer(peers[source], &offer.id)
                 .unwrap();
@@ -196,6 +218,7 @@ async fn prices_follow_native_next_hops_and_accumulate_over_neighbor_control() {
             destination: peers[4],
             ancestors: vec![*peers[1].node_addr(), *peers[0].node_addr()],
             deadline_unix,
+            reuse_unchanged: false,
         };
         assert!(matches!(
             quotes[1]

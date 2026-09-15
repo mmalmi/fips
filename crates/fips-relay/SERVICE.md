@@ -105,7 +105,8 @@ printf '%s\n' '{"type":"send","destination":"REPLACE_WITH_NPUB","payload":"hello
 printf '%s\n' '{"type":"settle"}' | fips-relay ctl /absolute/path/config.json
 ```
 
-Status includes peer paths/counters, active and historical purchases, locked
+Status includes peer paths/counters, active and historical purchases, watched
+destinations with their price ceilings and pause state, locked
 capital, remaining lifetime budget and received test-packet totals/digest. It
 contains no bearer proofs or private keys. `last_error` is the last retained
 controller error; it may describe a transient condition that has recovered.
@@ -117,7 +118,29 @@ reverse direction automatically. The test receiver records totals and a digest
 without automatically replying. Control services use ports 44741–44743 over
 adjacent TCP/FIPS links, independently of transit credit.
 
-`settle` pauses renewals, seals outgoing channels, completes mint closure and
+`watch` authorizes future route purchases for one source destination, with an
+explicit maximum aggregate rate in millisats per 1,024 bytes:
+
+```json
+{"type":"watch","destination":"REPLACE_WITH_NPUB","max_rate_msat_per_kib":3072}
+```
+
+It saves authorization before requesting the first quote. If that request fails
+or exceeds the ceiling, the watch remains active and will retry. Periodic checks
+can accept a changed native path or price within the ceiling, subject to the
+saved lifetime spending and working-capital limits. Unchanged offers are reused;
+ordinary `buy` remains a one-time request. Forwarded traffic never creates a
+source watch or authorizes the reverse direction. Channels remain shared across
+destination agreements.
+
+`pause_route_refresh` waits for current watch work, then durably pauses all
+watches. Reissuing `watch` resumes a destination; pause before changing its price
+ceiling, and finish any retained purchase first. Failed purchases retain their
+exact offer and funding intent across restart. An expired offer or unfinished
+renewal may still require explicit recovery; the monitor never discards funds
+to bypass one. Watch polling yields to existing channel renewal when due.
+
+`settle` pauses route watches and renewals, seals outgoing channels, completes mint closure and
 recovers refunds. `pause_renewals` and `resume_renewals` control replacement work
 without deleting saved intents. All commands are local administrative actions;
 this socket is not the public Wi-Fi payment/onboarding service.

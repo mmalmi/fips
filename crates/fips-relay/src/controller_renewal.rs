@@ -149,7 +149,12 @@ impl Controller {
         .await
     }
 
-    fn renewal_due(&self, purchase: &Purchase, policy: &RenewalPolicy, timestamp: u64) -> bool {
+    pub(super) fn renewal_due(
+        &self,
+        purchase: &Purchase,
+        policy: &RenewalPolicy,
+        timestamp: u64,
+    ) -> bool {
         let evidence = self
             .services
             .buyer

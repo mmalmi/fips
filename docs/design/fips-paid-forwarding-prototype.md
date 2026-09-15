@@ -1,7 +1,8 @@
 # Sender-funded forwarding prototype
 
 Status: local native forwarding/control/mint integration, autonomous route buying
-and same-service renewal demonstrated; wireless router demonstration remains in progress.
+and same-service renewal demonstrated; source-authorized route refresh is also
+checked locally. Wireless router demonstration remains in progress.
 
 ## Payer rule
 
@@ -194,6 +195,18 @@ hop, verify funding, arrange onward service and persist the accepted bindings
 before enabling forwarding. If the route changes later, the existing forwarding
 policy rejects the unapproved next hop until a new agreement is accepted.
 
+An optional source watch saves one destination and its maximum aggregate byte
+price before requesting a quote. Background checks can then accept a changed
+path or price within that authorization and the saved spending/capital limits.
+An unchanged quote can reuse its prior identity and expiry while enough lifetime
+remains; explicit fresh purchases still request new identities. Providers retain
+old offers for binding/recovery but exclude stopped and sealed agreements from
+reuse. Failed watched purchases retain the exact pending offer across restart.
+Transit cannot create a source watch, and receiving data cannot authorize a
+reverse purchase. Settlement waits for active watch work and durably pauses it.
+Polling yields to due or unfinished channel renewal; combined route-change and
+unfinished-renewal recovery remains separate work.
+
 A local integration test now sends application data through three paid native
 relays in both directions, exchanges six channels' signed updates over FIPS,
 blocks delivery after forwarding closes, excludes direct peer shortcuts, and
@@ -259,7 +272,7 @@ sharing that channel, retires those old outgoing agreements and purchases their
 replacements. Historical funding, replay evidence and signed obligations remain
 retained. Released capital can be reused; the lifetime spending cap cannot reset.
 
-Automatic replacements must retain the provider, next hop, price and mint, with
+Renewal-policy replacements must retain the provider, next hop, price and mint, with
 at least the old byte allowance. Changed service stops for a new agreement so
 onward costs cannot silently exceed an upstream accepted price. The replacement
 intent and funded channel survive a lost acceptance reply. Pausing renewal is

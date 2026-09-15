@@ -28,26 +28,37 @@ use std::{
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn routers_independently_fund_accept_and_pay_both_directions() {
-    controller_scenario(false, false, false).await;
+    controller_scenario(false, false, false, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn exhausted_channels_renew_automatically_without_resetting_capital_or_spending() {
-    controller_scenario(true, false, false).await;
+    controller_scenario(true, false, false, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restored_buyer_pays_supported_usage_despite_a_provider_evidence_gap() {
-    controller_scenario(false, true, false).await;
+    controller_scenario(false, true, false, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[cfg(unix)]
 async fn changed_native_paths_reprice_routes_and_reuse_unchanged_neighbor_channels() {
-    controller_scenario(false, false, true).await;
+    controller_scenario(false, false, true, false).await;
 }
 
-async fn controller_scenario(automatic_renewal: bool, evidence_gap: bool, route_change: bool) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
+async fn source_authorized_routes_refresh_automatically_within_price_and_spending_caps() {
+    controller_scenario(false, false, true, true).await;
+}
+
+async fn controller_scenario(
+    automatic_renewal: bool,
+    evidence_gap: bool,
+    route_change: bool,
+    automatic_routes: bool,
+) {
     tokio::time::timeout(Duration::from_secs(240), async {
         let root = tempfile::tempdir().unwrap();
         let now = SystemTime::now()
@@ -70,7 +81,9 @@ async fn controller_scenario(automatic_renewal: bool, evidence_gap: bool, route_
         let mut buyers = Vec::new();
         let mut data = Vec::new();
         let seed_sat = if automatic_renewal { 256 } else { 128 };
-        let capacity = if automatic_renewal { 16 } else { 32 };
+        // Keep the route-change scenario below channel exhaustion, which the
+        // separate renewal scenario deliberately exercises with small channels.
+        let capacity = if automatic_renewal { 16 } else if route_change { 64 } else { 32 };
         let wallets: Vec<_> = (0..5)
             .map(|i| root.path().join(format!("wallet-{i}")))
             .collect();
@@ -218,7 +231,7 @@ async fn controller_scenario(automatic_renewal: bool, evidence_gap: bool, route_
             let controller = Arc::new(
                 Controller::create(
                     &root.path().join(format!("controller-{i}")),
-                    policy(mint.url(), automatic_renewal),
+                    policy(mint.url(), automatic_renewal, capacity),
                     services[i].clone(),
                 )
                 .unwrap(),
@@ -246,9 +259,17 @@ async fn controller_scenario(automatic_renewal: bool, evidence_gap: bool, route_
         })
         .await
         .unwrap();
+        if automatic_routes {
+            assert!(controllers[0].watch_route(peers[4], 1024).await.is_err());
+            assert_eq!(controllers[0].locked_capital_sat().await.unwrap(), 0);
+            assert_eq!(buyers[0].remaining_budget_sat(), Some(64));
+            controllers[0].pause_route_refresh().await.unwrap();
+        }
         let (a, b) = tokio::join!(
-            controllers[0].buy_route(peers[4]),
-            controllers[4].buy_route(peers[0])
+            async { if automatic_routes { controllers[0].watch_route(peers[4], 3072).await }
+                else { controllers[0].buy_route(peers[4]).await } },
+            async { if automatic_routes { controllers[4].watch_route(peers[0], 3072).await }
+                else { controllers[4].buy_route(peers[0]).await } }
         );
         fn errors(controllers: &[Arc<Controller>]) -> Vec<(usize, String)> {
             controllers
@@ -331,13 +352,22 @@ async fn controller_scenario(automatic_renewal: bool, evidence_gap: bool, route_
             let controller = Arc::new(
                 Controller::load(
                     &root.path().join(format!("controller-{i}")),
-                    policy(mint.url(), automatic_renewal),
+                    policy(mint.url(), automatic_renewal, capacity),
                     services[i].clone(),
                 )
                 .unwrap(),
             );
             if i == 0 || i == 4 {
                 assert!(controller.purchases().await.unwrap().is_empty());
+            }
+            let watches = controller.watched_routes().await.unwrap();
+            if automatic_routes && (i == 0 || i == 4) {
+                assert_eq!(watches.len(), 1);
+                assert_eq!(watches[0].destination, peers[4 - i].npub());
+                assert_eq!(watches[0].max_rate_msat_per_kib, 3072);
+                assert!(!watches[0].paused, "source authorization survives reload");
+            } else {
+                assert!(watches.is_empty(), "transit cannot create source watches");
             }
             tasks.push(ControllerTasks::start(controller.clone(), receiver));
             controllers.push(controller);
@@ -467,29 +497,23 @@ async fn controller_scenario(automatic_renewal: bool, evidence_gap: bool, route_
                 }),
             )
             .await;
+            let mut last_topology = Vec::new();
+            let mut last_hops = [None, None];
             tokio::time::timeout(Duration::from_secs(60), async {
                 loop {
+                    last_topology.clear();
                     let mut count = 0;
                     for node in &nodes {
-                        count += node
-                            .peers()
-                            .await
-                            .unwrap()
-                            .iter()
-                            .filter(|p| p.connected)
-                            .count();
+                        let connected: Vec<_> = node.peers().await.unwrap().into_iter().filter(|p| p.connected)
+                            .map(|n| peers.iter().position(|p| p.node_addr() == &n.node_addr).unwrap()).collect();
+                        count += connected.len();
+                        last_topology.push(connected);
                     }
-                    if count == 6
-                        && nodes[1]
-                            .resolve_next_hop(peers[4], Some(*peers[0].node_addr()))
-                            .await
-                            .unwrap()
-                            .is_some_and(|p| p == peers[3])
-                        && nodes[3]
-                            .resolve_next_hop(peers[0], Some(*peers[4].node_addr()))
-                            .await
-                            .unwrap()
-                            .is_some_and(|p| p == peers[1])
+                    for (index, source, destination, previous) in [(0, 1, 4, 0), (1, 3, 0, 4)] {
+                        last_hops[index] = nodes[source].resolve_next_hop(peers[destination], Some(*peers[previous].node_addr()))
+                            .await.unwrap().and_then(|n| peers.iter().position(|p| p.pubkey() == n.pubkey()));
+                    }
+                    if count == 6 && last_hops == [Some(3), Some(1)]
                     {
                         break;
                     }
@@ -497,11 +521,19 @@ async fn controller_scenario(automatic_renewal: bool, evidence_gap: bool, route_
                 }
             })
             .await
-            .expect("changed native topology connects");
-            let (forward, reverse) = tokio::join!(
-                controllers[0].buy_route(peers[4]),
-                controllers[4].buy_route(peers[0])
-            );
+            .unwrap_or_else(|_| panic!("changed native topology: {last_topology:?}; next hops: {last_hops:?}"));
+            let (forward, reverse) = if automatic_routes {
+                tokio::time::timeout(Duration::from_secs(60), async {
+                    loop {
+                        let forward = controllers[0].purchases().await.unwrap().into_iter().find(|p| p.contract.price.msat == 2048);
+                        let reverse = controllers[4].purchases().await.unwrap().into_iter().find(|p| p.contract.price.msat == 2048);
+                        if let (Some(forward), Some(reverse)) = (forward, reverse) { break (Ok(forward), Ok(reverse)); }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                }).await.unwrap_or_else(|_| panic!("automatic route refresh deadline; errors={:?}", errors(&controllers)))
+            } else { tokio::join!(
+                controllers[0].buy_route(peers[4]), controllers[4].buy_route(peers[0])
+            ) };
             let forward = forward.unwrap_or_else(|e| {
                 panic!(
                     "changed forward route: {e}; errors={:?}",
@@ -550,6 +582,12 @@ async fn controller_scenario(automatic_renewal: bool, evidence_gap: bool, route_
                     .join(format!("controller-{source}/controller.json"));
                 let mut journal: serde_json::Value =
                     serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                if automatic_routes {
+                    // Crash after acceptance but before clearing the watched
+                    // offer: recovery must retain its exact funding identity.
+                    journal["watched_routes"][peers[4 - source].npub()]["pending"] =
+                        journal["outgoing"][&purchase.contract.id]["offer"].clone();
+                }
                 if source == 0 {
                     journal["outgoing"][&purchase.contract.id]["accepted"] = false.into();
                 } else {
@@ -564,7 +602,7 @@ async fn controller_scenario(automatic_renewal: bool, evidence_gap: bool, route_
                 let controller = Arc::new(
                     Controller::load(
                         &root.path().join(format!("controller-{i}")),
-                        policy(mint.url(), false),
+                        policy(mint.url(), false, capacity),
                         services[i].clone(),
                     )
                     .unwrap(),
@@ -586,24 +624,31 @@ async fn controller_scenario(automatic_renewal: bool, evidence_gap: bool, route_
             .expect("replacement recovery retains the same channels and contracts");
             for (source, destination) in [(0, 4), (4, 0)] {
                 let payload = vec![source as u8 + 99; 500];
-                nodes[source]
-                    .send_datagram(peers[destination], 44_740, 44_740, payload.clone())
-                    .await
-                    .unwrap();
-                tokio::time::timeout(Duration::from_secs(20), async {
-                    let mut received = Vec::new();
-                    loop {
-                        data[destination]
-                            .recv_batch_into(&mut received, 8)
-                            .await
-                            .unwrap();
-                        if received.iter().any(|m| m.data.as_slice() == payload) {
-                            break;
+                // FIPS delivery is best effort across a topology transition.
+                // Bound application retries; every new envelope still counts
+                // against the same channel and lifetime spending allowance.
+                let mut delivered = false;
+                for _ in 0..3 {
+                    nodes[source].send_datagram(peers[destination], 44_740, 44_740, payload.clone()).await.unwrap();
+                    if tokio::time::timeout(Duration::from_secs(3), async {
+                        let mut received = Vec::new();
+                        loop {
+                            data[destination].recv_batch_into(&mut received, 8).await.unwrap();
+                            if received.iter().any(|m| m.data.as_slice() == payload) { break; }
+                        }
+                    }).await.is_ok() { delivered = true; break; }
+                }
+                if !delivered {
+                    let mut usage = Vec::new();
+                    for (buyer, controller) in controllers.iter().enumerate() {
+                        for purchase in controller.purchase_history().await.unwrap() {
+                            let seller = peers.iter().position(|p| p.node_addr() == &purchase.provider).unwrap();
+                            usage.push((buyer, seller, purchase.contract.price.msat,
+                                ledgers[seller].channel_usage(&purchase.channel.id), buyers[buyer].evidence_msat(&purchase.channel.id)));
                         }
                     }
-                })
-                .await
-                .expect("paid delivery traverses the new native path");
+                    panic!("changed-path delivery {source}->{destination}; usage={usage:?}; errors={:?}", errors(&controllers));
+                }
             }
             // Reconnect the old neighbours for final bilateral settlement,
             // retaining the new link too. No further application traffic runs.
@@ -772,7 +817,7 @@ async fn controller_scenario(automatic_renewal: bool, evidence_gap: bool, route_
             std::fs::write(&path, serde_json::to_vec(&journal).unwrap()).unwrap();
             controllers = Vec::new();
             for (i, incoming) in receiver_streams.into_iter().enumerate() {
-                let controller = Arc::new(Controller::load(&root.path().join(format!("controller-{i}")), policy(mint.url(), true), services[i].clone()).unwrap());
+                let controller = Arc::new(Controller::load(&root.path().join(format!("controller-{i}")), policy(mint.url(), true, capacity), services[i].clone()).unwrap());
                 tasks.push(ControllerTasks::start(controller.clone(), incoming));
                 controllers.push(controller);
             }
@@ -816,6 +861,7 @@ async fn controller_scenario(automatic_renewal: bool, evidence_gap: bool, route_
             assert!(reports.iter().all(|r| r.fee_sat == 0));
             assert_eq!(controller.locked_capital_sat().await.unwrap(), 0);
             assert!(controller.purchases().await.unwrap().is_empty());
+            assert!(controller.watched_routes().await.unwrap().iter().all(|w| w.paused));
         }
         assert_eq!(settlement_count, links.len());
         for (i, buyer) in buyers.iter().enumerate() {
@@ -885,7 +931,9 @@ async fn controller_scenario(automatic_renewal: bool, evidence_gap: bool, route_
                 settlement["report"] = serde_json::Value::Null;
             }
             std::fs::write(path, serde_json::to_vec(&journal).unwrap()).unwrap();
-            let controller = Controller::load(&directory, policy(mint.url(), automatic_renewal), service.clone()).unwrap();
+            let controller = Controller::load(&directory, policy(mint.url(), automatic_renewal, capacity), service.clone()).unwrap();
+            assert!(controller.watched_routes().await.unwrap().iter().all(|w| w.paused),
+                "settlement's watch pause must survive reload");
             controller.resume_pending().await.unwrap();
             assert_eq!(load_mint_balance(&wallets[i], mint.url()).await.unwrap().balance_sat, 0);
         }
@@ -903,11 +951,11 @@ async fn controller_scenario(automatic_renewal: bool, evidence_gap: bool, route_
     .expect("autonomous controller test deadline");
 }
 
-fn policy(mint_url: &str, automatic_renewal: bool) -> ControllerPolicy {
+fn policy(mint_url: &str, automatic_renewal: bool, capacity: u64) -> ControllerPolicy {
     ControllerPolicy {
         mint_url: mint_url.to_string(),
-        channel_capacity_sat: if automatic_renewal { 16 } else { 32 },
-        max_locked_sat: if automatic_renewal { 32 } else { 64 },
+        channel_capacity_sat: capacity,
+        max_locked_sat: capacity * 2,
         channel_lifetime_secs: 600,
         renewal: automatic_renewal.then_some(RenewalPolicy {
             at_capacity_percent: 100,

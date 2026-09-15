@@ -50,6 +50,9 @@ pub struct QuoteRequest {
     pub ancestors: Vec<NodeAddr>,
     /// One deadline for the whole recursive request, not a new timeout per hop.
     pub deadline_unix: u64,
+    /// Monitoring can reuse an unchanged unexpired offer without growing history.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub reuse_unchanged: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,6 +90,7 @@ pub enum QuoteResponse {
 struct StoredOffer {
     offer: RouteOffer,
     downstream: Option<RouteOffer>,
+    reusable: bool,
 }
 
 struct Offers {
@@ -107,6 +111,10 @@ fn unix_now() -> Result<u64, String> {
         .duration_since(UNIX_EPOCH)
         .map(|t| t.as_secs())
         .map_err(|_| "invalid clock".into())
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 fn valid_key(key: &str) -> bool {
@@ -160,6 +168,37 @@ impl RouteQuotes {
     /// Ask the native source planner, then buy a quote from its next neighbor.
     /// A direct final destination needs no paid forwarding quote.
     pub async fn request_route(&self, destination: PeerIdentity) -> Result<RouteOffer, String> {
+        self.request_route_inner(destination, false).await
+    }
+
+    /// Check current native prices and paths while reusing unchanged offers.
+    /// This does not accept a quote, fund a channel or authorize any traffic.
+    pub async fn refresh_route(&self, destination: PeerIdentity) -> Result<RouteOffer, String> {
+        self.request_route_inner(destination, true).await
+    }
+
+    pub(crate) fn max_rate_msat_per_kib(&self) -> u64 {
+        self.policy.max_rate_msat_per_kib
+    }
+
+    pub(crate) fn stop_reusing(&self, id: &str) -> Result<(), String> {
+        if let Some(offer) = self
+            .offers
+            .lock()
+            .map_err(|_| "quote state poisoned")?
+            .pending
+            .get_mut(id)
+        {
+            offer.reusable = false;
+        }
+        Ok(())
+    }
+
+    async fn request_route_inner(
+        &self,
+        destination: PeerIdentity,
+        reuse_unchanged: bool,
+    ) -> Result<RouteOffer, String> {
         let deadline_unix = unix_now()?.checked_add(20).ok_or("clock overflow")?;
         let provider = self.resolve(destination, None, deadline_unix).await?;
         if provider.node_addr() == destination.node_addr() {
@@ -171,6 +210,7 @@ impl RouteQuotes {
                 destination,
                 ancestors: vec![*self.endpoint.node_addr()],
                 deadline_unix,
+                reuse_unchanged,
             },
         )
         .await
@@ -267,13 +307,14 @@ impl RouteQuotes {
             offers
                 .pending
                 .retain(|_, stored| stored.offer.expires_unix > now);
-            if offers.pending.len() >= MAX_OFFERS
-                || offers
-                    .pending
-                    .values()
-                    .filter(|v| v.offer.buyer == *peer.node_addr())
-                    .count()
-                    >= MAX_OFFERS_PER_BUYER
+            if !request.reuse_unchanged
+                && (offers.pending.len() >= MAX_OFFERS
+                    || offers
+                        .pending
+                        .values()
+                        .filter(|v| v.offer.buyer == *peer.node_addr())
+                        .count()
+                        >= MAX_OFFERS_PER_BUYER)
             {
                 return Err("offer capacity".into());
             }
@@ -325,6 +366,21 @@ impl RouteQuotes {
             .max_units
             .min(downstream.as_ref().map_or(u64::MAX, |d| d.max_units));
         let mut offers = self.offers.lock().map_err(|_| "quote state poisoned")?;
+        if request.reuse_unchanged {
+            let reuse_until = now.saturating_add((self.policy.lifetime_secs / 4).max(1));
+            if let Some(stored) = offers.pending.values().filter(|s| s.reusable).find(|s| {
+                let o = &s.offer;
+                o.buyer == *peer.node_addr()
+                    && o.destination == request.destination
+                    && o.path == path
+                    && o.price == price
+                    && o.max_units == max_units
+                    && o.expires_unix > reuse_until
+                    && o.expires_unix <= expires_unix
+            }) {
+                return Ok(stored.offer.clone());
+            }
+        }
         if offers.pending.len() >= MAX_OFFERS
             || offers
                 .pending
@@ -360,6 +416,7 @@ impl RouteQuotes {
             StoredOffer {
                 offer: offer.clone(),
                 downstream,
+                reusable: true,
             },
         );
         Ok(offer)
@@ -604,6 +661,7 @@ mod tests {
             destination,
             ancestors: vec![*buyer.node_addr()],
             deadline_unix: 110,
+            reuse_unchanged: false,
         };
         let offer = RouteOffer {
             id: "quote".into(),
