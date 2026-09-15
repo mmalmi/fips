@@ -51,7 +51,10 @@ TCP, UDP or application delivery acknowledgments inside encrypted FIPS traffic.
 * `PaidForwarder` admits the upstream purchase before recording local evidence
   for an onward purchase. Unapproved transit cannot create a buyer obligation;
   the final direct endpoint needs no onward forwarding channel. Together with
-  the source observer, it records both source and relay purchases.
+  the source observer, it records both source and relay purchases. It checks that
+  the onward purchase is usable before reserving upstream allowance. A packet
+  rejected during renewal, before any send was queued, consumes no allowance
+  and can be retried after the replacement is accepted.
 * `RouteQuotes` asks the native FIPS planner for the next hop, recursively asks
   that neighbor for an offer and adds the local fee. Requests carry the
   destination's public identity so lookup responses can be verified before any
@@ -109,6 +112,17 @@ TCP, UDP or application delivery acknowledgments inside encrypted FIPS traffic.
   allowance. Unknown crash exposure stays unbilled across renewal; it never
   creates another grace period. Expired buyers may reproduce their previously
   authorized balance for closure, but cannot authorize a larger amount.
+* Optional `RenewalPolicy` schedules channel replacement from local submission
+  evidence, byte limits or approaching expiry. It settles the old channel and
+  confirms its refund before funding a replacement. Fresh offers must retain the
+  provider, next hop, price, mint and byte allowance; changed service stops for a
+  new agreement. Historical channels and authorizations remain retained.
+* A second native controller test exhausts and replaces all six original channels
+  while sending both ways across the three routers. It keeps the capital cap and
+  lifetime spending limit, verifies positive relay margins and redeems/spends all
+  1,280 test sats. Controller reload recovers a replacement whose acceptance reply
+  was lost without funding another channel. A saved renewal pause also survives
+  reload; `resume_renewals` explicitly permits replacement recovery again.
 
 Only the local mint's Lightning backend is simulated. These test tokens have no
 external backing. `settlement` supplies submission outcomes to test exact
@@ -127,18 +141,20 @@ random loopback port. It does not use a user's wallet or contact a public mint.
 
 ## Runtime work remaining
 
-Automatic renewal scheduling and replacement agreements, complete process
-restart exercises, OpenWrt packaging, Wi-Fi path verification and a phone
+Route-change propagation and replacement agreements for changed prices or next
+hops, complete process restart exercises, OpenWrt packaging, Wi-Fi path verification and a phone
 customer demo remain to be implemented. The current library is not a deployed
 hotspot or a complete daemon.
 
 The controller retains up to 16 funded or unresolved channel intents and 32
 requested, outgoing and incoming routes in each category. Retained funding still
 counts against capital after service stops until settlement and refund recovery
-complete. Settlement history is also capped at 16 channels in each direction.
-Expired, settled or changed agreements require explicit replacement
-and currently stop automatic recovery. No controller loop erases them or resets
-the buyer's lifetime spending limit to make another purchase possible.
+complete. Settlement and renewal history are capped at 16 channels each.
+Automatic replacement requires an explicit renewal policy and remaining lifetime
+budget. `settle_all` pauses renewal before closure; saved replacement requests
+stay paused until explicitly resumed. Changed service and expired replacement
+offers still stop recovery. No controller loop erases history or resets the
+buyer's lifetime spending limit to make another purchase possible.
 
 Default retained history is bounded to 16 channels, 32 destination contracts
 and 4,096 distinct packets per contract. Reaching a limit stops admission;

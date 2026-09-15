@@ -1,7 +1,7 @@
 # Sender-funded forwarding prototype
 
-Status: local native forwarding/control/mint integration demonstrated;
-autonomous route buying and wireless router demonstration remain in progress.
+Status: local native forwarding/control/mint integration, autonomous route buying
+and same-service renewal demonstrated; wireless router demonstration remains in progress.
 
 ## Payer rule
 
@@ -158,7 +158,7 @@ Cashu and persists accounting outside the native packet loop. Record size, conne
 depth and request admission are capped. These control-stream acknowledgments
 are not receipts for paid data. The automatic controller now funds and accepts
 channels, schedules payment updates and completes requested mint settlements.
-Automatic renewal scheduling remains separate implementation work.
+An optional policy also schedules same-service channel renewal.
 
 `RouteQuotes` now follows `FipsEndpoint::resolve_next_hop`: the source uses the
 native origin planner, and each provider uses the same planner as native transit
@@ -242,10 +242,36 @@ retries seller recovery with lost completion reports, verifying that no spent
 proof is restored as spendable balance. Rejected state transitions preserve the
 last committed controller journal rather than retaining a partial mutation.
 
-Automatic renewal triggers, replacement quotes and retirement of bounded history
-remain to be implemented. Settled or expired records are retained and cannot
-silently reactivate an old channel. Settlement of an accepted channel is now
-automated; recovery of an orphaned funding operation still precedes closure.
+Optional renewal policy now triggers from the buyer's local submitted value,
+observed byte allowance or approaching channel/contract expiry. Untrusted seller
+usage cannot itself trigger a new funded channel. Renewal saves its intent,
+settles and confirms the old refund, obtains fresh offers for every destination
+sharing that channel, retires those old outgoing agreements and purchases their
+replacements. Historical funding, replay evidence and signed obligations remain
+retained. Released capital can be reused; the lifetime spending cap cannot reset.
+
+Automatic replacements must retain the provider, next hop, price and mint, with
+at least the old byte allowance. Changed service stops for a new agreement so
+onward costs cannot silently exceed an upstream accepted price. The replacement
+intent and funded channel survive a lost acceptance reply. Pausing renewal is
+durable and also pauses saved replacement requests; `settle_all` pauses it before
+closing channels. Explicit resumption permits those retained requests again.
+
+The native exhaustion test replaces all six original channels, checks the same
+capital cap and retained lifetime budget throughout, preserves positive relay
+margins and redeems/spends all 1,280 test sats. Controller reload also recovers an
+interrupted replacement without another funding identity. Traffic retries during
+renewal are endpoint test behavior, not new protocol delivery receipts. A relay
+checks onward availability before reserving upstream allowance, so a packet
+rejected before enqueue remains eligible after renewal. Actual uncertain sends
+still consume exposure.
+
+Route-change propagation, recovery from expired in-flight replacement offers,
+whole-process restarts and retirement of bounded history remain to be implemented.
+Settled records cannot silently reactivate an old channel; recovery of an orphaned
+funding operation still precedes closure. Renewal intentionally permits a service
+gap while settlement and new funding complete; uninterrupted service is not yet
+demonstrated.
 
 ## Hardware proof still required
 

@@ -41,6 +41,11 @@ mod settlement;
 pub use settlement::SettlementReport;
 use settlement::{BuyerSettlement, SellerSettlement};
 
+#[path = "controller_renewal.rs"]
+mod renewal;
+use renewal::Renewal;
+pub use renewal::RenewalPolicy;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ControllerPolicy {
     pub mint_url: String,
@@ -49,6 +54,7 @@ pub struct ControllerPolicy {
     /// locked capacity, after the buyer's mint refund recovery completes.
     pub max_locked_sat: u64,
     pub channel_lifetime_secs: u64,
+    pub renewal: Option<RenewalPolicy>,
 }
 
 #[derive(Clone)]
@@ -96,6 +102,7 @@ struct Outgoing {
     funding_id: String,
     purchase: Purchase,
     accepted: bool,
+    retired: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,6 +139,8 @@ struct Journal {
     incoming: BTreeMap<String, Incoming>,
     buyer_settlements: BTreeMap<String, BuyerSettlement>,
     seller_settlements: BTreeMap<String, SellerSettlement>,
+    renewals: BTreeMap<String, Renewal>,
+    renewals_paused: bool,
 }
 
 struct Store {
@@ -206,6 +215,7 @@ pub struct Controller {
     store: Arc<Mutex<Store>>,
     wallet: Arc<AsyncMutex<()>>,
     maintenance: AsyncMutex<()>,
+    renewal_work: AsyncMutex<()>,
     accepting: Mutex<HashSet<String>>,
     last_error: Mutex<Option<String>>,
 }
@@ -266,6 +276,8 @@ impl Controller {
                 incoming: BTreeMap::new(),
                 buyer_settlements: BTreeMap::new(),
                 seller_settlements: BTreeMap::new(),
+                renewals: BTreeMap::new(),
+                renewals_paused: false,
             },
             ready: true,
             _owner: owner,
@@ -313,12 +325,20 @@ impl Controller {
             store: Arc::new(Mutex::new(store)),
             wallet: Arc::new(AsyncMutex::new(())),
             maintenance: AsyncMutex::new(()),
+            renewal_work: AsyncMutex::new(()),
             accepting: Mutex::new(HashSet::new()),
             last_error: Mutex::new(None),
         }
     }
 
     fn validate_policy(policy: &ControllerPolicy) -> Result<(), String> {
+        if policy.renewal.as_ref().is_some_and(|r| {
+            !(1..=100).contains(&r.at_capacity_percent)
+                || r.before_expiry_secs == 0
+                || r.before_expiry_secs > policy.channel_lifetime_secs / 2
+        }) {
+            return Err("invalid renewal policy".into());
+        }
         if policy.channel_capacity_sat == 0
             || policy.channel_capacity_sat.checked_mul(1_000).is_none()
             || policy.max_locked_sat < policy.channel_capacity_sat
@@ -351,6 +371,7 @@ impl Controller {
             return Err("invalid controller journal bindings".into());
         }
         Self::validate_settlements(j)?;
+        Self::validate_renewals(j)?;
         let mut providers = HashSet::new();
         let mut locked = 0u64;
         for (id, f) in &j.funding {
@@ -362,7 +383,7 @@ impl Controller {
                 || sequence.is_none_or(|n| id != &format!("{}-{n}", j.epoch))
                 || id.len() > 128
                 || f.provider == local
-                || !providers.insert(f.provider)
+                || (!Self::funding_released(j, f) && !providers.insert(f.provider))
                 || f.capacity_sat == 0
                 || f.capacity_sat > policy.channel_capacity_sat
                 || f.expires_unix <= f.created_unix
@@ -426,8 +447,14 @@ impl Controller {
                 || intent.provider != o.purchase.provider
                 || o.offer.buyer != local
                 || o.purchase.channel != f.terms
-                || j.requested.get(&o.offer.id) != Some(&o.offer)
-                || !outgoing.insert((o.purchase.provider, o.purchase.contract.destination))
+                || (!o.retired && j.requested.get(&o.offer.id) != Some(&o.offer))
+                || (o.retired
+                    && !j
+                        .buyer_settlements
+                        .get(&o.purchase.channel.id)
+                        .is_some_and(|s| s.refunded))
+                || (!o.retired
+                    && !outgoing.insert((o.purchase.provider, o.purchase.contract.destination)))
             {
                 return Err("invalid outgoing agreement".into());
             }
@@ -534,7 +561,11 @@ impl Controller {
         let created = now()?;
         let f = self
             .change(move |j| {
-                if let Some(f) = j.funding.values().find(|f| f.provider == provider) {
+                if let Some(f) = j
+                    .funding
+                    .values()
+                    .find(|f| f.provider == provider && !Self::funding_released(j, f))
+                {
                     if f.receiver_pubkey_hex != receiver
                         || f.capacity_sat > capacity
                         || f.grace_msat > grace
@@ -661,7 +692,8 @@ impl Controller {
             .outgoing
             .values()
             .find(|o| {
-                o.purchase.provider == offer.provider
+                !o.retired
+                    && o.purchase.provider == offer.provider
                     && o.purchase.contract.destination == *offer.destination.node_addr()
             })
             .cloned();
@@ -718,12 +750,14 @@ impl Controller {
                 contract,
             },
             accepted: false,
+            retired: false,
         };
         let saved = record.clone();
         let record = self
             .change(move |j| {
                 if let Some(old) = j.outgoing.values().find(|o| {
-                    o.purchase.provider == saved.purchase.provider
+                    !o.retired
+                        && o.purchase.provider == saved.purchase.provider
                         && o.purchase.contract.destination == saved.purchase.contract.destination
                 }) {
                     if old.offer.price != saved.offer.price
@@ -1061,16 +1095,22 @@ impl Controller {
             drop(claim);
         }
         for offer in snapshot.requested.into_values().filter(|offer| {
-            !snapshot
+            let paused = snapshot.renewals_paused
+                && snapshot.renewals.values().any(|r| r.requests(&offer.id));
+            let accepted = snapshot
                 .outgoing
                 .values()
-                .any(|o| o.offer.id == offer.id && o.accepted)
+                .any(|o| o.offer.id == offer.id && o.accepted);
+            !(paused || accepted)
         }) {
             if let Err(error) = self.purchase_offer(offer).await {
                 first_error.get_or_insert(error);
             }
         }
         if let Err(error) = self.resume_settlements().await {
+            first_error.get_or_insert(error);
+        }
+        if let Err(error) = self.maintain_renewals().await {
             first_error.get_or_insert(error);
         }
         first_error.map_or(Ok(()), Err)
@@ -1083,6 +1123,7 @@ impl Controller {
             .into_values()
             .filter(|o| {
                 o.accepted
+                    && !o.retired
                     && !snapshot
                         .buyer_settlements
                         .contains_key(&o.purchase.channel.id)
@@ -1329,6 +1370,7 @@ mod tests {
             channel_capacity_sat: 32,
             max_locked_sat: 32,
             channel_lifetime_secs: 600,
+            renewal: None,
         };
         let funding = FundingIntent {
             id: "test-1".into(),
@@ -1353,6 +1395,8 @@ mod tests {
             incoming: BTreeMap::new(),
             buyer_settlements: BTreeMap::new(),
             seller_settlements: BTreeMap::new(),
+            renewals: BTreeMap::new(),
+            renewals_paused: false,
         }
     }
 

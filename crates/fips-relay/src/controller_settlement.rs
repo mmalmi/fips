@@ -479,6 +479,7 @@ impl Controller {
     }
 
     pub async fn settle_all(&self) -> Result<Vec<SettlementReport>, String> {
+        self.pause_renewals().await?;
         let snapshot = self.snapshot().await?;
         let mut ids: HashSet<_> = snapshot
             .outgoing

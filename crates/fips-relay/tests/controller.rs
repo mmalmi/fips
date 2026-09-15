@@ -13,7 +13,7 @@ use fips_relay::{
     control_transport::ControlTransport,
     controller::{
         Controller, ControllerPolicy, ControllerRequest, ControllerResponse, ControllerServices,
-        ControllerTasks,
+        ControllerTasks, RenewalPolicy,
     },
     durable::DurableRelay,
     ledger::Limits,
@@ -27,7 +27,16 @@ use std::{
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn routers_independently_fund_accept_and_pay_both_directions() {
-    tokio::time::timeout(Duration::from_secs(180), async {
+    controller_scenario(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn exhausted_channels_renew_automatically_without_resetting_capital_or_spending() {
+    controller_scenario(true).await;
+}
+
+async fn controller_scenario(automatic_renewal: bool) {
+    tokio::time::timeout(Duration::from_secs(240), async {
         let root = tempfile::tempdir().unwrap();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -48,6 +57,8 @@ async fn routers_independently_fund_accept_and_pay_both_directions() {
         let mut ledgers = Vec::new();
         let mut buyers = Vec::new();
         let mut data = Vec::new();
+        let seed_sat = if automatic_renewal { 256 } else { 128 };
+        let capacity = if automatic_renewal { 16 } else { 32 };
         let wallets: Vec<_> = (0..5)
             .map(|i| root.path().join(format!("wallet-{i}")))
             .collect();
@@ -66,7 +77,7 @@ async fn routers_independently_fund_accept_and_pay_both_directions() {
                 BuyerAuthorizer::create(
                     &root.path().join(format!("buyer-{i}")),
                     *peer.node_addr(),
-                    64,
+                    if automatic_renewal { 256 } else { 64 },
                     Limits::default(),
                 )
                 .unwrap(),
@@ -99,7 +110,7 @@ async fn routers_independently_fund_accept_and_pay_both_directions() {
             nodes.push(node);
             ledgers.push(seller);
             buyers.push(buyer);
-            let quote = create_topup_quote(wallet, mint.url(), 128).await.unwrap();
+            let quote = create_topup_quote(wallet, mint.url(), seed_sat).await.unwrap();
             network
                 .orchestrator_funding()
                 .settle_external(&quote.payment_request)
@@ -157,7 +168,7 @@ async fn routers_independently_fund_accept_and_pay_both_directions() {
                         max_rate_msat_per_kib: 8_192,
                         lifetime_secs: 300,
                         max_units: 30_000,
-                        capacity_sat: 32,
+                        capacity_sat: capacity,
                         grace_msat: 8_000,
                     },
                 )
@@ -191,7 +202,7 @@ async fn routers_independently_fund_accept_and_pay_both_directions() {
             let controller = Arc::new(
                 Controller::create(
                     &root.path().join(format!("controller-{i}")),
-                    policy(mint.url()),
+                    policy(mint.url(), automatic_renewal),
                     services[i].clone(),
                 )
                 .unwrap(),
@@ -229,6 +240,25 @@ async fn routers_independently_fund_accept_and_pay_both_directions() {
                 .enumerate()
                 .filter_map(|(i, c)| c.last_error().map(|e| (i, e)))
                 .collect::<Vec<_>>()
+        }
+        fn recovery_stages(root: &std::path::Path) -> Vec<serde_json::Value> {
+            (0..5).map(|i| {
+                let path = root.join(format!("controller-{i}/controller.json"));
+                let j: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+                let rows = |name: &str, fields: &[&str]| j[name].as_object().unwrap().values().map(|row| {
+                    fields.iter().map(|field| match &row[*field] {
+                        serde_json::Value::Null => "none".to_string(),
+                        serde_json::Value::Bool(b) => b.to_string(),
+                        serde_json::Value::Array(a) => format!("{} entries", a.len()),
+                        _ => "saved".to_string(),
+                    }).collect::<Vec<_>>()
+                }).collect::<Vec<_>>();
+                serde_json::json!({"node": i, "funding": j["funding"].as_object().unwrap().len(),
+                    "outgoing": rows("outgoing", &["accepted", "retired"]),
+                    "renewals": rows("renewals", &["replacements", "completed"]),
+                    "buyer_settlements": rows("buyer_settlements", &["usage", "payment", "report", "refunded"]),
+                    "seller_settlements": rows("seller_settlements", &["usage", "payment", "report"])})
+            }).collect()
         }
         let (a, b) = (
             a.unwrap_or_else(|e| panic!("forward acceptance: {e}; errors={:?}", errors(&controllers))),
@@ -285,7 +315,7 @@ async fn routers_independently_fund_accept_and_pay_both_directions() {
             let controller = Arc::new(
                 Controller::load(
                     &root.path().join(format!("controller-{i}")),
-                    policy(mint.url()),
+                    policy(mint.url(), automatic_renewal),
                     services[i].clone(),
                 )
                 .unwrap(),
@@ -313,26 +343,32 @@ async fn routers_independently_fund_accept_and_pay_both_directions() {
                 .map(|(_, _, p)| p.clone()).collect();
             assert_eq!(controller.purchases().await.unwrap(), expected);
             assert_eq!(load_mint_balance(&wallets[i], mint.url()).await.unwrap().balance_sat,
-                128 - 32 * expected.len() as u64,
+                seed_sat - capacity * expected.len() as u64,
                 "controller reload must not fund another channel");
         }
-        for round in 0..8 {
+        for round in 0..if automatic_renewal { 18 } else { 8 } {
             for (source, destination) in [(0, 4), (4, 0)] {
                 let mut payload = vec![round; 1_000];
                 payload[0] = source as u8;
-                nodes[source]
-                    .send_datagram(peers[destination], 44_740, 44_740, payload.clone())
-                    .await
-                    .unwrap();
-                let mut received = Vec::new();
-                tokio::time::timeout(
-                    Duration::from_secs(10),
-                    data[destination].recv_batch_into(&mut received, 8),
-                )
+                tokio::time::timeout(Duration::from_secs(30), async {
+                    loop {
+                        nodes[source].send_datagram(peers[destination], 44_740, 44_740, payload.clone()).await.unwrap();
+                        let mut received = Vec::new();
+                        if let Ok(result) = tokio::time::timeout(
+                            Duration::from_millis(if automatic_renewal { 750 } else { 10_000 }),
+                            data[destination].recv_batch_into(&mut received, 8),
+                        ).await {
+                            result.unwrap();
+                            if received.iter().any(|m| m.data.as_slice() == payload) { break; }
+                        }
+                        assert!(automatic_renewal, "ordinary delivery unexpectedly needed a retry");
+                    }
+                })
                 .await
-                .unwrap_or_else(|_| panic!("autonomously paid delivery round={round} direction={source}->{destination}; errors={:?}; usage={:?}", errors(&controllers), links.iter().map(|(b,s,p)|(*b,*s,ledgers[*s].channel_usage(&p.channel.id))).collect::<Vec<_>>()))
-                .unwrap();
-                assert!(received.iter().any(|m| m.data.as_slice() == payload));
+                .unwrap_or_else(|_| panic!("autonomously paid delivery round={round} direction={source}->{destination}; errors={:?}; usage={:?}; evidence={:?}; stages={:?}", errors(&controllers), links.iter().map(|(b,s,p)|(*b,*s,ledgers[*s].channel_usage(&p.channel.id))).collect::<Vec<_>>(), links.iter().map(|(b,s,p)|(*b,*s,buyers[*b].evidence_msat(&p.channel.id))).collect::<Vec<_>>(), recovery_stages(root.path())));
+            }
+            for controller in &controllers {
+                assert!(controller.locked_capital_sat().await.unwrap() <= capacity * 2);
             }
             // Payments are driven only by each controller's periodic task.
             tokio::time::sleep(Duration::from_millis(600)).await;
@@ -346,6 +382,72 @@ async fn routers_independently_fund_accept_and_pay_both_directions() {
                     > 8_000,
                 "automatic payments replenished the initial allowance"
             );
+        }
+        for controller in &controllers {
+            controller.pause_renewals().await.unwrap();
+        }
+        if automatic_renewal {
+            for (buyer, _, old) in &links {
+                let current = controllers[*buyer].purchases().await.unwrap();
+                assert!(current.iter().any(|p| p.provider == old.provider && p.channel.id != old.channel.id), "each original direction needs a replacement channel");
+                assert!(buyers[*buyer].evidence_msat(&old.channel.id).unwrap() >= capacity * 1_000,
+                    "original channels were replaced because of local capacity evidence");
+            }
+            let mut active_before = Vec::new();
+            let mut funding_before = Vec::new();
+            for (i, controller) in controllers.iter().enumerate() {
+                active_before.push(controller.purchases().await.unwrap());
+                let j: serde_json::Value = serde_json::from_slice(&std::fs::read(root.path().join(format!("controller-{i}/controller.json"))).unwrap()).unwrap();
+                funding_before.push(j["funding"].as_object().unwrap().len());
+            }
+            let mut receiver_streams = Vec::new();
+            for task in tasks.drain(..) { receiver_streams.push(task.stop().await.unwrap()); }
+            drop(controllers);
+            let path = root.path().join("controller-0/controller.json");
+            let mut journal: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            let current = &mut journal["outgoing"][&active_before[0][0].contract.id];
+            current["accepted"] = false.into();
+            let offer_id = current["offer"]["id"].clone();
+            let mut interrupted = false;
+            for renewal in journal["renewals"].as_object_mut().unwrap().values_mut() {
+                if renewal["replacements"].as_array().is_some_and(|offers| offers.iter().any(|o| o["id"] == offer_id)) {
+                    renewal["completed"] = false.into();
+                    interrupted = true;
+                }
+            }
+            assert!(interrupted);
+            std::fs::write(&path, serde_json::to_vec(&journal).unwrap()).unwrap();
+            controllers = Vec::new();
+            for (i, incoming) in receiver_streams.into_iter().enumerate() {
+                let controller = Arc::new(Controller::load(&root.path().join(format!("controller-{i}")), policy(mint.url(), true), services[i].clone()).unwrap());
+                tasks.push(ControllerTasks::start(controller.clone(), incoming));
+                controllers.push(controller);
+            }
+            controllers[0].resume_pending().await.unwrap();
+            assert!(controllers[0].purchases().await.unwrap().is_empty(), "paused replacement cannot resend acceptance or fund another channel");
+            controllers[0].resume_renewals().await.unwrap();
+            tokio::time::timeout(Duration::from_secs(15), async {
+                loop {
+                    let journal: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                    if controllers[0].purchases().await.unwrap() == active_before[0]
+                        && journal["renewals"].as_object().unwrap().values().all(|r| r["completed"] == true) { break; }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }).await.unwrap_or_else(|_| panic!("interrupted renewal recovery: {:?}; stages={:?}", errors(&controllers), recovery_stages(root.path())));
+            controllers[0].pause_renewals().await.unwrap();
+            for (i, controller) in controllers.iter().enumerate() {
+                assert_eq!(controller.purchases().await.unwrap(), active_before[i]);
+                let j: serde_json::Value = serde_json::from_slice(&std::fs::read(root.path().join(format!("controller-{i}/controller.json"))).unwrap()).unwrap();
+                assert_eq!(j["funding"].as_object().unwrap().len(), funding_before[i], "renewal recovery cannot fund another channel");
+            }
+            links.clear();
+            for (i, controller) in controllers.iter().enumerate() {
+                for purchase in controller.purchase_history().await.unwrap() {
+                    let seller = peers.iter().position(|p| p.node_addr() == &purchase.provider).unwrap();
+                    links.push((i, seller, purchase));
+                }
+            }
+            assert!(links.len() >= 12);
         }
         for controller in &controllers {
             controller.stop_selling().await.unwrap();
@@ -362,8 +464,14 @@ async fn routers_independently_fund_accept_and_pay_both_directions() {
             assert_eq!(controller.locked_capital_sat().await.unwrap(), 0);
             assert!(controller.purchases().await.unwrap().is_empty());
         }
-        assert_eq!(settlement_count, 6);
-        let mut expected = [128i64; 5];
+        assert_eq!(settlement_count, links.len());
+        for (i, buyer) in buyers.iter().enumerate() {
+            let authorized: u64 = links.iter().filter(|(b, _, _)| *b == i)
+                .map(|(_, _, p)| buyer.authorized_sat(&p.channel.id).unwrap()).sum();
+            assert_eq!(buyer.remaining_budget_sat().unwrap() + authorized,
+                if automatic_renewal { 256 } else { 64 }, "renewal must preserve the lifetime signing cap");
+        }
+        let mut expected = [seed_sat as i64; 5];
         for (buyer, seller, purchase) in &links {
             let paid = ledgers[*seller]
                 .channel_usage(&purchase.channel.id)
@@ -373,7 +481,7 @@ async fn routers_independently_fund_accept_and_pay_both_directions() {
             expected[*buyer] -= paid as i64;
             expected[*seller] += paid as i64;
         }
-        assert!(expected[1..4].iter().all(|n| *n > 128));
+        assert!(expected[1..4].iter().all(|n| *n > seed_sat as i64));
         for (i, node) in nodes.iter().enumerate() {
             let neighbors = node.peers().await.unwrap();
             assert_eq!(neighbors.len(), if i == 0 || i == 4 { 1 } else { 2 });
@@ -424,7 +532,7 @@ async fn routers_independently_fund_accept_and_pay_both_directions() {
                 settlement["report"] = serde_json::Value::Null;
             }
             std::fs::write(path, serde_json::to_vec(&journal).unwrap()).unwrap();
-            let controller = Controller::load(&directory, policy(mint.url()), service.clone()).unwrap();
+            let controller = Controller::load(&directory, policy(mint.url(), automatic_renewal), service.clone()).unwrap();
             controller.resume_pending().await.unwrap();
             assert_eq!(load_mint_balance(&wallets[i], mint.url()).await.unwrap().balance_sat, 0);
         }
@@ -434,7 +542,7 @@ async fn routers_independently_fund_accept_and_pay_both_directions() {
                 .await
                 .unwrap()
                 .balance_sat,
-            640
+            seed_sat * 5
         );
         assert!(network.accounting().unwrap().is_conserved());
     })
@@ -442,11 +550,15 @@ async fn routers_independently_fund_accept_and_pay_both_directions() {
     .expect("autonomous controller test deadline");
 }
 
-fn policy(mint_url: &str) -> ControllerPolicy {
+fn policy(mint_url: &str, automatic_renewal: bool) -> ControllerPolicy {
     ControllerPolicy {
         mint_url: mint_url.to_string(),
-        channel_capacity_sat: 32,
-        max_locked_sat: 64,
+        channel_capacity_sat: if automatic_renewal { 16 } else { 32 },
+        max_locked_sat: if automatic_renewal { 32 } else { 64 },
         channel_lifetime_secs: 600,
+        renewal: automatic_renewal.then_some(RenewalPolicy {
+            at_capacity_percent: 100,
+            before_expiry_secs: 30,
+        }),
     }
 }

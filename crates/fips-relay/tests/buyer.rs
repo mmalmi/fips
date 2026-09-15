@@ -344,10 +344,26 @@ fn transit_needs_an_approved_upstream_payer_before_it_can_support_onward_payment
         forwarding.admit(&request).is_none(),
         "no onward agreement means no authorized resale"
     );
+    assert_eq!(
+        seller.channel_usage("incoming").unwrap().reserved_msat,
+        500,
+        "a known unavailable onward contract must be rejected before reserving upstream credit"
+    );
     assert_eq!(buyer.evidence_msat("outgoing"), Some(500));
     assert_eq!(
         seller.channel_usage("incoming").unwrap().submitted_msat,
         500
+    );
+    buyer
+        .accept_quote(quote("replacement-quote", &terms))
+        .unwrap();
+    let resumed = forwarding
+        .admit(&request)
+        .expect("a never-forwarded packet remains eligible after renewal");
+    forwarding.complete(resumed, ForwardingOutcome::Submitted);
+    assert_eq!(
+        seller.channel_usage("incoming").unwrap().submitted_msat,
+        900
     );
 }
 

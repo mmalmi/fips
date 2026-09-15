@@ -396,6 +396,19 @@ impl BuyerAuthorizer {
         Some(self.state.lock().ok()?.channels.get(id)?.authorized_sat)
     }
 
+    pub fn remaining_budget_sat(&self) -> Option<u64> {
+        let state = self.state.lock().ok()?;
+        let used = state
+            .channels
+            .values()
+            .try_fold(0u64, |sum, c| sum.checked_add(c.authorized_sat))?;
+        state.total_budget_sat.checked_sub(used)
+    }
+
+    pub fn observed_units(&self, quote_id: &str) -> Option<u64> {
+        Some(self.state.lock().ok()?.quotes.get(quote_id)?.observed_units)
+    }
+
     /// `provider` must be the authenticated peer carrying the response. All
     /// claims are cumulative. Rounding is once per channel total; stale claims
     /// can only reproduce an already reserved balance, never lower/reset it.
@@ -515,6 +528,19 @@ impl BuyerAuthorizer {
     }
 
     fn begin(&self, request: &OriginatedSessionRequest<'_>, local_only: bool) -> Option<u64> {
+        self.begin_admitted(request, local_only, || Some(()))
+            .map(|(token, ())| token)
+    }
+
+    /// Check the onward purchase before reserving upstream credit. Keep the
+    /// buyer state locked across that short, memory-only admission so a renewal
+    /// cannot close the onward quote between validation and reservation.
+    fn begin_admitted<T>(
+        &self,
+        request: &OriginatedSessionRequest<'_>,
+        local_only: bool,
+        admit: impl FnOnce() -> Option<T>,
+    ) -> Option<(u64, T)> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
         let mut s = self.state.lock().ok()?;
         if (local_only && request.source != s.local)
@@ -552,6 +578,7 @@ impl BuyerAuthorizer {
         if q.attempts.len() >= limit || observed > q.contract.max_units {
             return None;
         }
+        let admitted = admit()?;
         q.observed_units = observed;
         let index = q.attempts.len();
         q.attempts.push(Attempt {
@@ -562,7 +589,7 @@ impl BuyerAuthorizer {
         s.pending.insert(token, (id, index));
         s.seen.insert((request.next_hop, digest));
         s.next_token = next_token;
-        Some(token)
+        Some((token, admitted))
     }
 }
 
@@ -611,11 +638,10 @@ impl PaidForwarder {
 
 impl ForwardingPolicy for PaidForwarder {
     fn admit(&self, request: &ForwardingRequest<'_>) -> Option<u64> {
-        let seller_token = self.seller.admit(request)?;
-        let buyer_token = if request.next_hop == request.destination {
-            None
+        let (seller_token, buyer_token) = if request.next_hop == request.destination {
+            (self.seller.admit(request)?, None)
         } else {
-            let Some(token) = self.buyer.begin(
+            let (buyer_token, seller_token) = self.buyer.begin_admitted(
                 &OriginatedSessionRequest {
                     source: request.source,
                     destination: request.destination,
@@ -623,12 +649,9 @@ impl ForwardingPolicy for PaidForwarder {
                     session_payload: request.session_payload,
                 },
                 false,
-            ) else {
-                self.seller
-                    .complete(seller_token, ForwardingOutcome::Unconfirmed);
-                return None;
-            };
-            Some(token)
+                || self.seller.admit(request),
+            )?;
+            (seller_token, Some(buyer_token))
         };
         self.pending
             .lock()
