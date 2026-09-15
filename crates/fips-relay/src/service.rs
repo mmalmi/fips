@@ -248,8 +248,14 @@ impl RelayService {
             .collect();
         let entropy = Identity::generate();
         let seed = u64::from_le_bytes(entropy.node_addr().as_bytes()[..8].try_into().unwrap());
-        let (quote_transport, quote_incoming) =
-            ControlTransport::start(endpoint.clone(), 44_741, neighbors.clone(), seed).await?;
+        let (quote_transport, quote_incoming) = ControlTransport::start_with_customers(
+            endpoint.clone(),
+            44_741,
+            neighbors.clone(),
+            config.customer_network,
+            seed,
+        )
+        .await?;
         let mut control_statistics = vec![(44_741, quote_transport.statistics())];
         let t = &config.terms;
         let quotes = Arc::new(RouteQuotes::new(
@@ -268,16 +274,22 @@ impl RelayService {
             },
         )?);
         let quote_server = QuoteServer::start(quotes.clone(), quote_incoming);
-        let (acceptance, incoming) = ControlTransport::start(
+        let (acceptance, incoming) = ControlTransport::start_with_customers(
             endpoint.clone(),
             44_742,
             neighbors.clone(),
+            config.customer_network,
             seed.wrapping_add(1),
         )
         .await?;
-        let (payments, payment_incoming) =
-            ControlTransport::start(endpoint.clone(), 44_743, neighbors, seed.wrapping_add(2))
-                .await?;
+        let (payments, payment_incoming) = ControlTransport::start_with_customers(
+            endpoint.clone(),
+            44_743,
+            neighbors,
+            config.customer_network,
+            seed.wrapping_add(2),
+        )
+        .await?;
         control_statistics.push((44_742, acceptance.statistics()));
         control_statistics.push((44_743, payments.statistics()));
         let payment_control = Arc::new(PaymentControl::new(receiver, seller.clone(), vec![])?);

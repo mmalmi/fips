@@ -51,6 +51,7 @@ fn config(root: &Path, mint: &str) -> ServiceConfig {
     ServiceConfig {
         state_directory: root.join("state"),
         udp_bind: Some("127.0.0.1:0".parse().unwrap()),
+        customer_network: None,
         ethernet_interfaces: vec![],
         neighbors: vec![],
         terms: ServiceTerms {
@@ -109,10 +110,32 @@ async fn stop(child: &mut Child) {
     );
 }
 
-async fn ready(configs: &[ServiceConfig], paths: &[PathBuf], children: &mut [Child]) {
+fn has_line_peers(status: &serde_json::Value, npubs: &[String], index: usize) -> bool {
+    let actual = status["peers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["connected"] == true)
+        .map(|p| p["npub"].as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    let expected = npubs
+        .iter()
+        .enumerate()
+        .filter(|(j, _)| index.abs_diff(*j) == 1)
+        .map(|(_, p)| p.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    actual == expected
+}
+
+async fn ready(
+    configs: &[ServiceConfig],
+    paths: &[PathBuf],
+    npubs: &[String],
+    children: &mut [Child],
+) {
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            let mut connected = 0;
+            let mut ready_nodes = 0;
             for (i, cfg) in configs.iter().enumerate() {
                 if let Some(status) = children[i].try_wait().unwrap() {
                     panic!(
@@ -120,23 +143,20 @@ async fn ready(configs: &[ServiceConfig], paths: &[PathBuf], children: &mut [Chi
                         std::fs::read_to_string(paths[i].with_extension("log")).unwrap()
                     );
                 }
-                if let Ok(status) = request(cfg, &AdminRequest::Status).await {
-                    connected += status["peers"]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .filter(|p| p["connected"] == true)
-                        .count();
+                if let Ok(status) = request(cfg, &AdminRequest::Status).await
+                    && has_line_peers(&status, npubs, i)
+                {
+                    ready_nodes += 1;
                 }
             }
-            if connected == 8 {
+            if ready_nodes == configs.len() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
     .await
-    .expect("all five processes should establish only their configured line peers");
+    .expect("all five processes should establish exactly the intended line peers");
 }
 
 async fn deliver(configs: &[ServiceConfig], npubs: &[String], epoch: u8) {
@@ -301,7 +321,7 @@ async fn five_real_processes_preserve_paid_accounts_across_shutdown_and_router_c
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn compact_attempt_accounting_carries_long_paid_streams_and_recovers() {
+async fn public_customer_buys_long_paid_streams_and_recovers_without_static_enrollment() {
     five_process_run(BillingBasis::ForwardingAttempt).await;
 }
 
@@ -377,8 +397,13 @@ async fn five_process_run(billing: BillingBasis) {
                 .iter()
                 .enumerate()
                 .filter(|(j, _)| i.abs_diff(*j) == 1)
+                .filter(|(j, _)| !(billing == BillingBasis::ForwardingAttempt && i == 1 && *j == 0))
                 .map(|(j, p)| PeerConfig::new(p, "udp", addresses[j].to_string()))
                 .collect();
+            if billing == BillingBasis::ForwardingAttempt && i == 1 {
+                cfg.customer_network = Some("127.0.0.1/32".parse().unwrap());
+                assert!(cfg.neighbors.iter().all(|p| p.npub != npubs[0]));
+            }
             std::fs::write(&paths[i], serde_json::to_vec(cfg).unwrap()).unwrap();
         }
         drop(reservations);
@@ -386,9 +411,28 @@ async fn five_process_run(billing: BillingBasis) {
         for path in &paths {
             children.push(start(path).await);
         }
-        ready(&configs, &paths, &mut children).await;
+        ready(&configs, &paths, &npubs, &mut children).await;
         for cfg in &configs {
             private_native_control(cfg).await;
+        }
+        if billing == BillingBasis::ForwardingAttempt {
+            // Connected customer control is not a purchase or free data allowance.
+            let _ = request(
+                &configs[0],
+                &AdminRequest::Send {
+                    destination: npubs[4].clone(),
+                    payload: "unpaid customer".into(),
+                },
+            )
+            .await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            for cfg in &configs {
+                let status = request(cfg, &AdminRequest::Status).await.unwrap();
+                assert_eq!(status["locked_sat"], 0);
+                assert_eq!(status["remaining_budget_sat"], 128);
+                assert!(status["purchases"].as_array().unwrap().is_empty());
+                assert_eq!(status["received"]["packets"], 0);
+            }
         }
         let forward_request = AdminRequest::Buy {
             destination: npubs[4].clone(),
@@ -442,7 +486,7 @@ async fn five_process_run(billing: BillingBasis) {
         for (i, child) in children.iter_mut().enumerate() {
             *child = start(&paths[i]).await;
         }
-        ready(&configs, &paths, &mut children).await;
+        ready(&configs, &paths, &npubs, &mut children).await;
         for (cfg, old) in configs.iter().zip(&before) {
             let current = request(cfg, &AdminRequest::Status).await.unwrap();
             assert_eq!(current["npub"], old["npub"]);
@@ -461,17 +505,17 @@ async fn five_process_run(billing: BillingBasis) {
         let prior = request(&configs[2], &AdminRequest::Status).await.unwrap();
         children[2].kill().await.unwrap();
         children[2] = start(&paths[2]).await;
-        ready(&configs, &paths, &mut children).await;
+        ready(&configs, &paths, &npubs, &mut children).await;
         let recovered = request(&configs[2], &AdminRequest::Status).await.unwrap();
         assert_eq!(recovered["history"], prior["history"]);
         assert_eq!(recovered["locked_sat"], prior["locked_sat"]);
         deliver(&configs, &npubs, 3).await;
         let mut reports = Vec::new();
-        for cfg in &configs {
+        for (i, cfg) in configs.iter().enumerate() {
             let status = request(cfg, &AdminRequest::Status).await.unwrap();
-            assert_eq!(
-                status["peers"].as_array().unwrap().len(),
-                cfg.neighbors.len()
+            assert!(
+                has_line_peers(&status, &npubs, i),
+                "settlement must retain the intended peer path"
             );
             reports.push(request(cfg, &AdminRequest::Settle).await.unwrap());
         }

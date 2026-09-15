@@ -234,7 +234,9 @@ including subsequent restart recovery and test-mint settlement. The subsequent
 at offered rates of 2–8 Mbit/s, with compact journals and automatic renewal.
 Renewal interrupted delivery; maximum throughput remains unverified.
 See [the service guide](SERVICE.md) for the runnable Unix service and local
-process test. It is not a deployed hotspot or public onboarding service.
+process test. [Customer entry](CUSTOMER-ENTRY.md) adds opt-in control access for
+authenticated local UDP customers. The customer SSID, mint bootstrap and phone
+flow still require physical acceptance; this is not a deployed hotspot.
 
 The controller retains up to 16 funded or unresolved channel intents and 32
 requested, outgoing and incoming routes in each category. Retained funding still

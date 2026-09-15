@@ -1,11 +1,16 @@
 //! Bounded request/reply records over the existing TCP/FIPS adapter.
 //!
-//! This reliable transport is for quotes and payments between configured
-//! neighbors. Its TCP acknowledgments say nothing about paid data delivery.
+//! Configured neighbors can initiate purchases. An explicit customer network
+//! also permits bounded inbound requests from authenticated direct UDP peers.
+//! TCP acknowledgments say nothing about paid data delivery.
+
+mod admission;
+use admission::{CustomerAdmission, allow_request};
 
 use fips_core::{FipsEndpoint, NodeAddr, PeerIdentity};
 use fips_tcp::{Config, ConnectionId, State};
 use fips_tcp_endpoint::FipsTcpEndpoint;
+use ipnet::IpNet;
 use serde::Serialize;
 use std::{
     collections::{HashMap, HashSet},
@@ -25,47 +30,6 @@ const MAX_CONNECTIONS: usize = 32;
 const QUEUE_SIZE: usize = 16;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const DRIVE_INTERVAL: Duration = Duration::from_millis(10);
-const ADMISSION_BURST: u32 = 16;
-const ADMISSION_INTERVAL: Duration = Duration::from_millis(100);
-
-struct AdmissionBudget {
-    updated: Instant,
-    tokens: u32,
-}
-
-impl AdmissionBudget {
-    fn allow(&mut self, now: Instant) -> bool {
-        let intervals =
-            now.duration_since(self.updated).as_millis() / ADMISSION_INTERVAL.as_millis();
-        if intervals > 0 {
-            self.tokens = self
-                .tokens
-                .saturating_add(intervals.min(u128::from(ADMISSION_BURST)) as u32)
-                .min(ADMISSION_BURST);
-            self.updated = now;
-        }
-        if self.tokens == 0 {
-            return false;
-        }
-        self.tokens -= 1;
-        true
-    }
-}
-
-fn allow_request(
-    budgets: &mut HashMap<(NodeAddr, bool), AdmissionBudget>,
-    peer: NodeAddr,
-    outbound: bool,
-) -> bool {
-    let now = Instant::now();
-    budgets
-        .entry((peer, outbound))
-        .or_insert(AdmissionBudget {
-            updated: now,
-            tokens: ADMISSION_BURST,
-        })
-        .allow(now)
-}
 
 pub struct IncomingRequest {
     pub peer: PeerIdentity,
@@ -123,6 +87,18 @@ impl ControlTransport {
         neighbors: Vec<PeerIdentity>,
         isn_seed: u64,
     ) -> Result<(Self, mpsc::Receiver<IncomingRequest>), String> {
+        Self::start_with_customers(endpoint, service_port, neighbors, None, isn_seed).await
+    }
+
+    /// Customer access permits inbound requests only. It never adds a peer to
+    /// the set from which this node may purchase onward service.
+    pub async fn start_with_customers(
+        endpoint: Arc<FipsEndpoint>,
+        service_port: u16,
+        neighbors: Vec<PeerIdentity>,
+        customer_network: Option<IpNet>,
+        isn_seed: u64,
+    ) -> Result<(Self, mpsc::Receiver<IncomingRequest>), String> {
         if neighbors.len() > 64 {
             return Err("too many configured control neighbors".into());
         }
@@ -135,6 +111,8 @@ impl ControlTransport {
             time_wait_ms: 250,
             ..Config::default()
         };
+        let customers =
+            customer_network.map(|network| CustomerAdmission::new(endpoint.clone(), network));
         let tcp = FipsTcpEndpoint::bind(endpoint, service_port, config, isn_seed)
             .await
             .map_err(|e| e.to_string())?;
@@ -145,6 +123,7 @@ impl ControlTransport {
         let task = tokio::spawn(run(
             tcp,
             neighbors,
+            customers,
             receive_commands,
             incoming,
             statistics.clone(),
@@ -190,6 +169,7 @@ impl Drop for ControlTransport {
 
 struct Exchange {
     peer: PeerIdentity,
+    customer: bool,
     started: Instant,
     outgoing: Vec<u8>,
     sent: usize,
@@ -203,6 +183,7 @@ impl Exchange {
     fn server(peer: PeerIdentity) -> Self {
         Self {
             peer,
+            customer: false,
             started: Instant::now(),
             outgoing: Vec::new(),
             sent: 0,
@@ -244,6 +225,7 @@ fn complete_frame(bytes: &[u8]) -> Result<bool, String> {
 async fn run(
     mut tcp: FipsTcpEndpoint,
     neighbors: HashSet<NodeAddr>,
+    mut customers: Option<CustomerAdmission>,
     mut commands: mpsc::Receiver<Command>,
     incoming: mpsc::Sender<IncomingRequest>,
     statistics: Arc<ControlStatistics>,
@@ -284,18 +266,26 @@ async fn run(
         }
         let now = started.elapsed().as_millis() as u64;
         while let Some(id) = tcp.accept() {
-            match tcp.peer(id) {
-                Some(peer)
-                    if neighbors.contains(peer.node_addr())
-                        && exchanges.len() < MAX_CONNECTIONS
-                        && allow_request(&mut budgets, *peer.node_addr(), false) =>
-                {
-                    exchanges.insert(id, Exchange::server(peer));
-                }
-                _ => {
-                    let _ = tcp.abort(id).await;
+            if let Some(peer) = tcp.peer(id)
+                && exchanges.len() < MAX_CONNECTIONS
+            {
+                let known = neighbors.contains(peer.node_addr());
+                let allowed = if known {
+                    allow_request(&mut budgets, *peer.node_addr(), false)
+                } else if let Some(customers) = customers.as_mut() {
+                    let active = exchanges.values().filter(|e| e.customer).count();
+                    customers.allow(peer, active).await
+                } else {
+                    false
+                };
+                if allowed {
+                    let mut exchange = Exchange::server(peer);
+                    exchange.customer = !known;
+                    exchanges.insert(id, exchange);
+                    continue;
                 }
             }
+            let _ = tcp.abort(id).await;
         }
         let ids: Vec<_> = exchanges.keys().copied().collect();
         for id in ids {
@@ -401,23 +391,6 @@ async fn drive(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn admission_burst_refills_to_its_fixed_cap() {
-        let now = Instant::now();
-        let mut budget = AdmissionBudget {
-            updated: now,
-            tokens: ADMISSION_BURST,
-        };
-        for _ in 0..ADMISSION_BURST {
-            assert!(budget.allow(now));
-        }
-        assert!(!budget.allow(now));
-        assert!(budget.allow(now + ADMISSION_INTERVAL));
-        assert!(!budget.allow(now + ADMISSION_INTERVAL));
-        assert!(budget.allow(now + Duration::from_secs(10)));
-        assert_eq!(budget.tokens, ADMISSION_BURST - 1);
-    }
 
     #[test]
     fn record_decoder_rejects_oversize_and_extra_records() {

@@ -1,5 +1,6 @@
 //! Validate network configuration and require intact saved account state.
 use super::*;
+use ipnet::IpNet;
 
 // These files must already exist before any library that can lazily initialize
 // state is called. The explicit init command creates them in a fresh directory.
@@ -35,6 +36,10 @@ pub struct ServiceTerms {
 pub struct ServiceConfig {
     pub state_directory: PathBuf,
     pub udp_bind: Option<SocketAddr>,
+    /// Opt-in inbound payment control for authenticated direct UDP peers in
+    /// this network. It does not authorize Internet access or onward purchases.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub customer_network: Option<IpNet>,
     pub ethernet_interfaces: Vec<String>,
     pub neighbors: Vec<PeerConfig>,
     pub terms: ServiceTerms,
@@ -81,6 +86,23 @@ impl ServiceConfig {
         }
         if self.udp_bind.is_none() && self.ethernet_interfaces.is_empty() {
             return Err("configure an explicit UDP socket or native Ethernet interface".into());
+        }
+        if let Some(network) = self.customer_network {
+            let bind = self
+                .udp_bind
+                .ok_or("customer entry requires an explicit UDP socket")?;
+            if bind.ip().is_unspecified()
+                || bind.ip().is_multicast()
+                || network.prefix_len() == 0
+                || network.network().is_unspecified()
+                || network.network().is_multicast()
+                || !network.contains(&bind.ip())
+            {
+                return Err(
+                    "customer UDP socket must bind a specific address inside its customer network"
+                        .into(),
+                );
+            }
         }
         if self.neighbors.len() > 8 || self.ethernet_interfaces.len() > 4 {
             return Err("too many peers or interfaces".into());
@@ -168,6 +190,13 @@ impl ServiceConfig {
         config.node.discovery.nostr.enabled = false;
         config.node.discovery.lan.enabled = false;
         config.node.discovery.local.enabled = false;
+        if self.customer_network.is_some() {
+            config.node.limits.max_peers = self.neighbors.len() + 16;
+            config.node.limits.max_connections = config.node.limits.max_peers * 2;
+            config.node.limits.max_links = config.node.limits.max_peers * 2;
+            config.node.limits.max_pending_inbound = 16;
+            config.node.limits.max_sessions = 128;
+        }
         let bind = if initializing {
             Some("127.0.0.1:0".parse::<SocketAddr>().unwrap())
         } else {

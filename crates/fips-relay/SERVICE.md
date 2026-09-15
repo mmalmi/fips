@@ -91,6 +91,13 @@ instead bind a selected UDP socket and list numeric UDP neighbor addresses.
 Nostr, LAN/local discovery and Ethernet beacon discovery are disabled. No system
 TUN, DNS server or ordinary Internet gateway is installed by this process.
 
+An optional `customer_network` subnet enables bounded incoming quote/payment
+control from authenticated direct UDP customers without preconfiguring their
+identities. It requires a specific UDP bind address inside that subnet. Outgoing
+purchases remain restricted to configured neighbors. See
+[CUSTOMER-ENTRY.md](CUSTOMER-ENTRY.md) for admission limits, bootstrap and the
+remaining physical customer-flow checks.
+
 Financial terms are saved at initialization. Changing prices, capital, lifetime
 budget or exposure settings afterward stops startup for explicit reconciliation.
 Changing network addresses does not reset the saved financial terms. The

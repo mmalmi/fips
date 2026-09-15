@@ -73,6 +73,7 @@ fn native_interface_configuration_has_no_implicit_udp_or_discovery_shortcut() {
     let config = ServiceConfig {
         state_directory: "/tmp/fips-relay-example".into(),
         udp_bind: None,
+        customer_network: None,
         ethernet_interfaces: vec!["mesh0".into()],
         neighbors: vec![],
         terms: ServiceTerms {
@@ -118,4 +119,38 @@ fn native_interface_configuration_has_no_implicit_udp_or_discovery_shortcut() {
         invalid.validate().is_err(),
         "unconfigured transport cannot become a fallback"
     );
+}
+
+#[test]
+fn customer_entry_requires_an_explicit_matching_listener_and_bounded_native_state() {
+    let mut config: ServiceConfig =
+        serde_json::from_str(include_str!("../../service.example.json")).unwrap();
+    assert!(
+        config.customer_network.is_none(),
+        "existing accounts remain neighbor-only"
+    );
+    config.customer_network = Some("192.0.2.0/24".parse().unwrap());
+    for bind in [
+        None,
+        Some("0.0.0.0:2121"),
+        Some("198.51.100.1:2121"),
+        Some("[::1]:2121"),
+    ] {
+        config.udp_bind = bind.map(|s| s.parse().unwrap());
+        assert!(
+            config.validate().is_err(),
+            "mismatched customer bind: {bind:?}"
+        );
+    }
+    config.udp_bind = Some("192.0.2.1:2121".parse().unwrap());
+    config.validate().unwrap();
+    let native = config.network(&Identity::generate(), false);
+    assert_eq!(native.node.limits.max_peers, config.neighbors.len() + 16);
+    assert_eq!(native.node.limits.max_pending_inbound, 16);
+    assert_eq!(native.node.limits.max_sessions, 128);
+    config.customer_network = Some("0.0.0.0/0".parse().unwrap());
+    assert!(config.validate().is_err());
+    config.customer_network = Some("fd00::/64".parse().unwrap());
+    config.udp_bind = Some("[fd00::1]:2121".parse().unwrap());
+    config.validate().unwrap();
 }

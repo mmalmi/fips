@@ -27,6 +27,11 @@ async fn pair() -> (Arc<FipsEndpoint>, Arc<FipsEndpoint>) {
             .await
             .unwrap(),
     );
+    let b = attach(&a).await;
+    (a, b)
+}
+
+async fn attach(a: &Arc<FipsEndpoint>) -> Arc<FipsEndpoint> {
     let addr = a.bound_udp_listen_addrs().await.unwrap()[0];
     let mut b_config = config();
     b_config
@@ -55,7 +60,7 @@ async fn pair() -> (Arc<FipsEndpoint>, Arc<FipsEndpoint>) {
     })
     .await
     .unwrap();
-    (a, b)
+    b
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -148,4 +153,248 @@ async fn control_service_rejects_an_identity_outside_its_configured_neighbors() 
     })
     .await
     .expect("rejection deadline");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn customer_entry_accepts_authenticated_local_udp_without_authorizing_outbound_purchases() {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let (entry, customer) = pair().await;
+        let provider = PeerIdentity::from_npub(entry.npub()).unwrap();
+        let payer = PeerIdentity::from_npub(customer.npub()).unwrap();
+        let (server, mut incoming) = ControlTransport::start_with_customers(
+            entry.clone(),
+            44_712,
+            vec![],
+            Some("127.0.0.1/32".parse().unwrap()),
+            5,
+        )
+        .await
+        .unwrap();
+        let (client, _unused) =
+            ControlTransport::start(customer.clone(), 44_712, vec![provider], 6)
+                .await
+                .unwrap();
+        let response = tokio::spawn(async move {
+            let request = incoming.recv().await.unwrap();
+            assert_eq!(
+                request.peer, payer,
+                "payer identity comes from FIPS authentication"
+            );
+            assert_eq!(request.body, b"customer quote");
+            request.respond.send(b"terms".to_vec()).unwrap();
+        });
+        assert_eq!(
+            client
+                .request(provider, b"customer quote".to_vec())
+                .await
+                .unwrap(),
+            b"terms"
+        );
+        response.await.unwrap();
+        assert!(server.request(payer, b"buy onward".to_vec()).await.is_err());
+        assert_eq!(server.statistics().snapshot().requests_started, 0);
+        drop(client);
+        drop(server);
+        customer.shutdown().await.unwrap();
+        entry.shutdown().await.unwrap();
+    })
+    .await
+    .expect("public customer control deadline");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn customer_network_restriction_preserves_explicit_neighbor_access() {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let (entry, customer) = pair().await;
+        let provider = PeerIdentity::from_npub(entry.npub()).unwrap();
+        let payer = PeerIdentity::from_npub(customer.npub()).unwrap();
+        let network = Some("127.0.0.2/32".parse().unwrap());
+        let (server, mut incoming) =
+            ControlTransport::start_with_customers(entry.clone(), 44_713, vec![], network, 7)
+                .await
+                .unwrap();
+        let (client, _unused) =
+            ControlTransport::start(customer.clone(), 44_713, vec![provider], 8)
+                .await
+                .unwrap();
+        assert!(
+            client
+                .request(provider, b"outside customer network".to_vec())
+                .await
+                .is_err()
+        );
+        assert!(incoming.try_recv().is_err());
+        let (trusted, mut trusted_incoming) =
+            ControlTransport::start_with_customers(entry.clone(), 44_714, vec![payer], network, 9)
+                .await
+                .unwrap();
+        let (neighbor, _unused) =
+            ControlTransport::start(customer.clone(), 44_714, vec![provider], 10)
+                .await
+                .unwrap();
+        let responder = tokio::spawn(async move {
+            trusted_incoming
+                .recv()
+                .await
+                .unwrap()
+                .respond
+                .send(b"neighbor".to_vec())
+                .unwrap();
+        });
+        assert_eq!(
+            neighbor.request(provider, vec![]).await.unwrap(),
+            b"neighbor"
+        );
+        responder.await.unwrap();
+        drop(neighbor);
+        drop(trusted);
+        drop(client);
+        drop(server);
+        customer.shutdown().await.unwrap();
+        entry.shutdown().await.unwrap();
+    })
+    .await
+    .expect("customer network restriction deadline");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn customer_entry_does_not_admit_a_remote_session_as_a_direct_customer() {
+    tokio::time::timeout(Duration::from_secs(40), async {
+        let (entry, relay) = pair().await;
+        let remote = attach(&relay).await;
+        let provider = PeerIdentity::from_npub(entry.npub()).unwrap();
+        let payer = PeerIdentity::from_npub(remote.npub()).unwrap();
+        let (proof, mut proof_incoming) =
+            ControlTransport::start(entry.clone(), 44_715, vec![payer], 11)
+                .await
+                .unwrap();
+        let (proof_client, _unused) =
+            ControlTransport::start(remote.clone(), 44_715, vec![provider], 12)
+                .await
+                .unwrap();
+        let responder = tokio::spawn(async move {
+            proof_incoming
+                .recv()
+                .await
+                .unwrap()
+                .respond
+                .send(b"routed".to_vec())
+                .unwrap();
+        });
+        assert_eq!(
+            proof_client.request(provider, vec![]).await.unwrap(),
+            b"routed",
+            "prove the remote session reaches the entry through the middle node"
+        );
+        responder.await.unwrap();
+        assert!(
+            !entry
+                .peers()
+                .await
+                .unwrap()
+                .iter()
+                .any(|p| p.connected && p.node_addr == *payer.node_addr())
+        );
+        let (server, mut incoming) = ControlTransport::start_with_customers(
+            entry.clone(),
+            44_716,
+            vec![],
+            Some("127.0.0.0/8".parse().unwrap()),
+            13,
+        )
+        .await
+        .unwrap();
+        let (client, _unused) = ControlTransport::start(remote.clone(), 44_716, vec![provider], 14)
+            .await
+            .unwrap();
+        assert!(
+            client
+                .request(provider, b"remote customer".to_vec())
+                .await
+                .is_err()
+        );
+        assert!(incoming.try_recv().is_err());
+        drop(client);
+        drop(server);
+        drop(proof_client);
+        drop(proof);
+        remote.shutdown().await.unwrap();
+        relay.shutdown().await.unwrap();
+        entry.shutdown().await.unwrap();
+    })
+    .await
+    .expect("indirect customer rejection deadline");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn customer_connection_limit_leaves_room_for_configured_neighbor_control() {
+    tokio::time::timeout(Duration::from_secs(40), async {
+        let (entry, first) = pair().await;
+        let endpoints = vec![
+            first,
+            attach(&entry).await,
+            attach(&entry).await,
+            attach(&entry).await,
+        ];
+        let provider = PeerIdentity::from_npub(entry.npub()).unwrap();
+        let neighbor = PeerIdentity::from_npub(endpoints[3].npub()).unwrap();
+        let (server, mut incoming) = ControlTransport::start_with_customers(
+            entry.clone(),
+            44_717,
+            vec![neighbor],
+            Some("127.0.0.1/32".parse().unwrap()),
+            15,
+        )
+        .await
+        .unwrap();
+        let mut clients = Vec::new();
+        for (i, endpoint) in endpoints.iter().enumerate() {
+            let (client, _) =
+                ControlTransport::start(endpoint.clone(), 44_717, vec![provider], i as u64 + 16)
+                    .await
+                    .unwrap();
+            clients.push(Arc::new(client));
+        }
+        let mut jobs = Vec::new();
+        for (index, count) in [3, 3, 2].into_iter().enumerate() {
+            for _ in 0..count {
+                let client = clients[index].clone();
+                jobs.push(tokio::spawn(async move {
+                    client.request(provider, b"hold".to_vec()).await
+                }));
+            }
+        }
+        let mut held = Vec::new();
+        for _ in 0..8 {
+            held.push(incoming.recv().await.unwrap());
+        }
+        assert!(
+            clients[2]
+                .request(provider, b"over capacity".to_vec())
+                .await
+                .is_err()
+        );
+        assert!(incoming.try_recv().is_err());
+        let trusted = clients[3].clone();
+        let trusted_job =
+            tokio::spawn(async move { trusted.request(provider, b"neighbor".to_vec()).await });
+        let request = incoming.recv().await.unwrap();
+        assert_eq!(request.peer, neighbor);
+        request.respond.send(b"available".to_vec()).unwrap();
+        assert_eq!(trusted_job.await.unwrap().unwrap(), b"available");
+        for request in held {
+            request.respond.send(b"done".to_vec()).unwrap();
+        }
+        for job in jobs {
+            assert_eq!(job.await.unwrap().unwrap(), b"done");
+        }
+        drop(clients);
+        drop(server);
+        for endpoint in endpoints {
+            endpoint.shutdown().await.unwrap();
+        }
+        entry.shutdown().await.unwrap();
+    })
+    .await
+    .expect("bounded customer capacity deadline");
 }
