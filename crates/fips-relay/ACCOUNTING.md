@@ -97,6 +97,9 @@ The five-process service scenario selects the new billing basis on all nodes,
 negotiates real paid routes through three relays and sends 6,000 application
 packets in each direction. It checks compact stopped-account journals, restarts
 all processes, kills/restarts the middle relay, continues traffic and settles
-through the isolated Cashu mint. Keep its actual test result separate from a
-physical deployment claim: r4's documented hardware cutoff is historical
-evidence, and the new tariff needs its own wireless installation and measurement.
+through the isolated Cashu mint. The subsequent r5 wireless run delivered streams
+of 6,000 and 12,000 packets per direction, retained compact journals and renewed
+source channels automatically. Renewal interrupted delivery; it is not seamless.
+See [WIRELESS-ACCOUNTING.md](WIRELESS-ACCOUNTING.md) for the separate physical
+evidence, resource costs, settlement and limitations. The r4 cutoff remains
+historical evidence for the legacy tariff.

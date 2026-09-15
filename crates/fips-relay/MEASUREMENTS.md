@@ -93,6 +93,17 @@ a respawn starts a new measurement epoch. Record endpoint CPU too, so a small
 endpoint host is not mistaken for a router bottleneck. Keep unrelated host
 services available and include their competing load in the results.
 
+For efficiency, divide process user-plus-system CPU seconds by GiB successfully
+delivered at the destination. Obtain Linux clock ticks per second from
+`sysconf(_SC_CLK_TCK)` or `AT_CLKTCK`; do not assume a tick frequency. Retain
+offered rate, goodput, loss, latency, memory and the exact observation window.
+CPU per delivered byte includes wasted work on lost traffic and fixed control
+costs. Keep those conditions comparable before attributing a difference to an
+optimization. Process CPU excludes kernel work charged elsewhere on the host.
+
+The [r5 accounting measurements](WIRELESS-ACCOUNTING.md) report this metric on
+the physical three-relay wireless line, beyond the earlier packet-history cutoff.
+
 ## Native topology controls
 
 The existing native FIPS operator socket is at `STATE_DIRECTORY/native.sock`,
@@ -211,10 +222,12 @@ rejected new attempts at the retained-history limit. The seller journals had
 grown to about 1.31 MB; sampled relay memory reached 22.94 MiB, and relay CPU
 averaged up to 69.2% of one core during the longer observation window.
 
-The limit must be addressed before claiming long-lived paid forwarding. Merely
+This limit had to be addressed before claiming long-lived paid forwarding. Merely
 increasing the packet cap or resetting a contract would not establish bounded
-memory, replay safety or preserved spending/exposure limits. Retirement of packet,
-route and closed-channel history remains implementation work.
+memory, replay safety or preserved spending/exposure limits. The subsequent
+[r5 experiment](WIRELESS-ACCOUNTING.md) verifies compact completed-packet totals
+under an explicit forwarding-attempt tariff. Safe retirement of route and
+closed-channel history remains implementation work.
 
 ### Settlement and restoration
 

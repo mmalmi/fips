@@ -196,11 +196,29 @@ FIPS transport. These are loopback tests, not wireless hardware demonstrations.
 
 ```sh
 cargo test -p nvpn-fips-core --lib forwarding
-cargo test -p fips-relay
+cargo test -p fips-relay --features testbench
+./scripts/check-rust-file-lines.sh
 ```
 
 The settlement test owns temporary wallets/mint state and binds the mint to a
 random loopback port. It does not use a user's wallet or contact a public mint.
+
+### Code organization
+
+The existing CI file-length check caps relay source modules at 600 lines and
+integration-test files at the workspace's 1,000-line limit. No relay exception
+raises either ceiling. Split by responsibility instead of compressing code to
+satisfy the check. Public entry points remain in the top-level modules:
+
+- `controller/` separates purchases/payments, upstream acceptance, journal
+  validation, runtime supervision, settlement, renewal and route changes.
+- `buyer/forwarding.rs` owns local evidence hooks and upstream/onward admission.
+- `ledger/` separates admission/completion from snapshot recovery.
+- `route_quotes/validation.rs` owns offer validation and contract binding.
+- `service/` separates saved configuration, service assembly and private control.
+
+Buyer evidence and seller claims remain independent trust boundaries. Shared
+types and pricing helpers do not let a provider manufacture buyer authorization.
 
 ## Runtime work remaining
 
@@ -211,8 +229,10 @@ physical route-change/traffic measurements now have hardware evidence; see
 [the measurements](MEASUREMENTS.md) for scope, resource costs and the confirmed
 legacy 4,096-attempt cutoff. The new accounting mode passed 6,000 application
 packets in each direction through three paid relays in the five-process test,
-including subsequent restart recovery and test-mint settlement. Its physical
-wireless performance and maximum throughput are unverified.
+including subsequent restart recovery and test-mint settlement. The subsequent
+[r5 wireless run](WIRELESS-ACCOUNTING.md) carried 6,000/12,000-packet streams
+at offered rates of 2–8 Mbit/s, with compact journals and automatic renewal.
+Renewal interrupted delivery; maximum throughput remains unverified.
 See [the service guide](SERVICE.md) for the runnable Unix service and local
 process test. It is not a deployed hotspot or public onboarding service.
 
@@ -233,8 +253,8 @@ legacy tariff also retains 4,096 distinct packets per contract; the r4 hardware
 run reached that cutoff while credit remained available. The explicit
 `forwarding_attempt` tariff retires completed packet records into cumulative
 totals, keeping at most 1,024 unfinished sends. The journal is capped at 32 MiB.
-Safe route/channel retirement and sustained physical measurements remain needed;
-new-format accounting is not established by the historical r4 hardware results.
+Safe route/channel retirement and longer continuous physical runs remain needed.
+The r5 results establish bounded streams separately from historical r4 evidence.
 
 Datagrams must fit the discovered path after FIPS headers are added. The native
 test uses 1,000-byte service payloads on the default 1,280-byte path. A

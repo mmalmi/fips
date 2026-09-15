@@ -25,9 +25,10 @@ cargo zigbuild -p fips-relay --bin fips-relay --locked \
 ```
 
 This produces a statically linked executable of about 19 MiB, using a size-oriented
-profile that preserves normal panic semantics. The previous hardware payment
-runs used the larger release build. Forwarding performance of the new profile
-still needs measurement. See [openwrt/README.md](openwrt/README.md) for APKv3
+profile that preserves normal panic semantics. The early hardware payment
+runs used the larger release build; r5 has separate
+[wireless measurements](WIRELESS-ACCOUNTING.md) on the size-oriented profile.
+See [openwrt/README.md](openwrt/README.md) for APKv3
 packaging, installation, backups and device acceptance checks.
 
 ## OpenWrt service supervision

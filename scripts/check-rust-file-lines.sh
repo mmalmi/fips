@@ -2,6 +2,8 @@
 # Keep Rust modules small enough to review and refactor safely.
 #
 # New Rust files must stay below FIPS_RUST_FILE_MAX_LINES (default: 1000).
+# Paid-relay source modules have a tighter 600-line ceiling. Integration tests
+# keep the workspace limit so complete end-to-end scenarios remain readable.
 # Existing oversized files are ratcheted at their current line count: they may
 # shrink, but they must not grow without deliberately updating this baseline.
 set -euo pipefail
@@ -23,6 +25,9 @@ fi
 
 baseline_for() {
   case "$1" in
+    crates/fips-relay/src/*)
+      if [[ "$MAX_LINES" -lt 600 ]]; then echo "$MAX_LINES"; else echo 600; fi
+      ;;
     crates/fips-core/src/dataplane/tests/aead_owner_activity.rs) echo 1042 ;;
     crates/fips-core/src/dataplane/turn.rs) echo 1004 ;;
     crates/fips-core/src/node/handlers/handshake.rs) echo 1081 ;;
@@ -72,7 +77,7 @@ while IFS= read -r file; do
     if [[ "$allowed" -gt "$MAX_LINES" ]]; then
       echo "too large: $rel has $lines lines; baseline is $allowed, target is $MAX_LINES" >&2
     else
-      echo "too large: $rel has $lines lines; limit is $MAX_LINES" >&2
+      echo "too large: $rel has $lines lines; limit is $allowed" >&2
     fi
     failures=$((failures + 1))
   fi

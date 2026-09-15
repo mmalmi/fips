@@ -5,6 +5,10 @@
 //! bindings before enabling forwarding. Pending offers may expire on restart;
 //! accepted accounting belongs in the durable seller/buyer journals.
 
+mod validation;
+pub(crate) use validation::contract_from_offer;
+use validation::validate_offer;
+
 use crate::{
     control_transport::{ControlTransport, IncomingRequest, MAX_RECORD_BYTES},
     ledger::{BillingBasis, BytePrice, ChannelTerms, Contract, node_addr},
@@ -494,80 +498,6 @@ impl RouteQuotes {
     }
 }
 
-pub(crate) fn contract_from_offer(
-    offer: &RouteOffer,
-    channel: &ChannelTerms,
-) -> Result<Contract, String> {
-    let id = &offer.id;
-    crate::ledger::validate_channel(channel).map_err(|e| e.to_string())?;
-    if channel.buyer != offer.buyer
-        || channel.mint_url != offer.mint_url
-        || channel.capacity_sat > offer.capacity_sat
-        || channel.grace_msat > offer.grace_msat
-        || channel.expires_unix <= unix_now()?
-    {
-        return Err("channel does not fit the offered terms".into());
-    }
-    // Same offer and channel produce the same bounded identifier on retries.
-    use sha2::{Digest, Sha256};
-    let mut digest = Sha256::new();
-    digest.update(b"fips-relay/accepted-quote/1");
-    digest.update((id.len() as u64).to_be_bytes());
-    digest.update(id.as_bytes());
-    digest.update(channel.id.as_bytes());
-    Ok(Contract {
-        billing: offer.billing,
-        id: format!("{:x}", digest.finalize()),
-        channel_id: channel.id.clone(),
-        destination: *offer.destination.node_addr(),
-        next_hop: offer.next_hop,
-        expires_unix: channel.expires_unix.min(offer.expires_unix),
-        price: offer.price,
-        max_units: offer.max_units,
-    })
-}
-
-fn validate_offer(
-    policy: &QuotePolicy,
-    local: NodeAddr,
-    offer: &RouteOffer,
-    peer: PeerIdentity,
-    request: &QuoteRequest,
-    now: u64,
-) -> Result<(), String> {
-    if offer.id.is_empty()
-        || offer.billing != policy.billing
-        || offer.id.len() > 128
-        || offer.buyer != local
-        || offer.provider != *peer.node_addr()
-        || offer.destination.node_addr() != request.destination.node_addr()
-        || offer.path.len() < 2
-        || offer.path.len() + request.ancestors.len() > MAX_PAID_HOPS + 2
-        || offer.path.first() != Some(&offer.provider)
-        || offer.path.last() != Some(offer.destination.node_addr())
-        || offer.path.get(1) != Some(&offer.next_hop)
-        || offer.path.iter().collect::<HashSet<_>>().len() != offer.path.len()
-        || offer.path.iter().any(|p| request.ancestors.contains(p))
-        || offer.price.per_bytes != PRICE_BYTES
-        || offer.price.msat == 0
-        || offer.price.msat > policy.max_rate_msat_per_kib
-        || offer.expires_unix <= now
-        || offer.expires_unix > now.saturating_add(3_600)
-        || offer.mint_url != policy.mint_url
-        || !valid_key(&offer.receiver_pubkey_hex)
-        || offer.max_units == 0
-        || offer.price.amount_due_msat(offer.max_units).is_none()
-        || offer.capacity_sat == 0
-        || offer
-            .capacity_sat
-            .checked_mul(1_000)
-            .is_none_or(|cap| offer.grace_msat > cap)
-    {
-        return Err("invalid or unacceptable downstream quote".into());
-    }
-    Ok(())
-}
-
 pub struct QuoteServer {
     task: JoinHandle<()>,
 }
@@ -647,94 +577,4 @@ mod peer_identity {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn peer(n: u8) -> PeerIdentity {
-        PeerIdentity::from_pubkey_full(Identity::from_secret_bytes(&[n; 32]).unwrap().pubkey_full())
-    }
-
-    #[test]
-    fn downstream_quotes_cannot_change_identity_price_mint_or_loop_bounds() {
-        let (buyer, provider, destination) = (peer(1), peer(2), peer(3));
-        let policy = QuotePolicy {
-            billing: Default::default(),
-            mint_url: "http://test.invalid".into(),
-            receiver_pubkey_hex: "02".to_owned() + &"11".repeat(32),
-            fee_msat_per_kib: 1_024,
-            max_rate_msat_per_kib: 8_192,
-            lifetime_secs: 120,
-            max_units: 20_000,
-            capacity_sat: 32,
-            grace_msat: 16_384,
-        };
-        let request = QuoteRequest {
-            destination,
-            ancestors: vec![*buyer.node_addr()],
-            deadline_unix: 110,
-            reuse_unchanged: false,
-        };
-        let offer = RouteOffer {
-            billing: Default::default(),
-            id: "quote".into(),
-            buyer: *buyer.node_addr(),
-            provider: *provider.node_addr(),
-            destination,
-            next_hop: *destination.node_addr(),
-            path: vec![*provider.node_addr(), *destination.node_addr()],
-            price: BytePrice {
-                msat: 1_024,
-                per_bytes: PRICE_BYTES,
-            },
-            expires_unix: 200,
-            max_units: 20_000,
-            mint_url: policy.mint_url.clone(),
-            receiver_pubkey_hex: policy.receiver_pubkey_hex.clone(),
-            capacity_sat: 32,
-            grace_msat: 16_384,
-        };
-        let check = |offer: &RouteOffer| {
-            validate_offer(&policy, *buyer.node_addr(), offer, provider, &request, 100)
-        };
-        check(&offer).unwrap();
-        let mutations: Vec<fn(&mut RouteOffer)> = vec![
-            |o| o.billing = BillingBasis::ForwardingAttempt,
-            |o| o.provider = *peer(4).node_addr(),
-            |o| o.buyer = *peer(4).node_addr(),
-            |o| o.destination = peer(4),
-            |o| o.next_hop = *peer(4).node_addr(),
-            |o| o.path.clear(),
-            |o| o.path.insert(1, o.provider),
-            |o| {
-                o.path.insert(1, o.buyer);
-                o.next_hop = o.buyer;
-            },
-            |o| o.price.msat = 8_193,
-            |o| o.price.msat = 0,
-            |o| o.price.per_bytes = 1_025,
-            |o| o.expires_unix = 100,
-            |o| o.expires_unix = 3_701,
-            |o| o.mint_url = "http://another.invalid".into(),
-            |o| o.receiver_pubkey_hex = "invalid".into(),
-            |o| o.capacity_sat = u64::MAX,
-            |o| o.grace_msat = 32_001,
-            |o| o.max_units = 0,
-            |o| o.id = "x".repeat(129),
-            |o| {
-                o.path = (2..=11).map(|n| *peer(n).node_addr()).collect();
-                o.path.push(*o.destination.node_addr());
-                o.next_hop = o.path[1];
-            },
-        ];
-        for (index, mutate) in mutations.into_iter().enumerate() {
-            let mut invalid = offer.clone();
-            mutate(&mut invalid);
-            assert!(check(&invalid).is_err(), "invalid downstream quote {index}");
-        }
-        // Npub serialization is x-only. The authenticated identity is unchanged
-        // when a locally known full key had different parity metadata.
-        let mut canonical = offer;
-        canonical.destination = PeerIdentity::from_npub(&destination.npub()).unwrap();
-        check(&canonical).unwrap();
-    }
-}
+mod tests;

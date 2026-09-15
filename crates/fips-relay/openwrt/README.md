@@ -119,3 +119,9 @@ These checks passed on three ARM64 OpenWrt 25.12.5 routers using package r3,
 after fixing the two automatic mesh-address changes described above. The package
 upgrade check used a running r1 instance. See [../TESTBENCH.md](../TESTBENCH.md)
 for the measured scope and remaining acceptance work.
+
+The later r5 upgrade preserved complete original accounts after stopped-account
+backups. New forwarding-attempt accounts then passed wireless streams beyond the
+old packet-history ceiling and automatically renewed source channels. All test
+funds were collected and original services restored. This is separate from the
+r3 reboot evidence; see [../WIRELESS-ACCOUNTING.md](../WIRELESS-ACCOUNTING.md).

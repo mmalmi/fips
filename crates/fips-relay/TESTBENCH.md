@@ -246,3 +246,16 @@ retained positive net income, all 2,560 new test sats were collected, and total
 collection reached 6,400. Original router accounts were restored on r4; isolated
 endpoint processes stayed stopped. See [MEASUREMENTS.md](MEASUREMENTS.md) for
 packet counts, resource use, control-counter boundaries and remaining limitations.
+
+## r5 forwarding-attempt accounting
+
+New explicitly funded accounts on r5 carried 6,000 and 12,000 packets per
+direction over all three wireless relays at offered rates of 2–8 Mbit/s. Those
+streams had no missing packets and the accounting files stayed compact.
+Source channels renewed automatically under further traffic, with packet loss
+during the handover and successful subsequent delivery. All eight channels
+settled; relay net earnings were 75, 74 and 75 test sats. All 2,560 new test sats
+were collected, bringing cumulative collection to 8,960. Original router
+accounts and ordinary services were restored and verified on r5.
+See [WIRELESS-ACCOUNTING.md](WIRELESS-ACCOUNTING.md) for precise counts, CPU cost,
+memory, package provenance and limitations.

@@ -1,4 +1,7 @@
 //! Each router independently accepts, funds onward channels and pays usage.
+mod controller_support;
+use controller_support::{native_control, policy};
+
 use cashu_service::{
     FileSpilmanPaymentReceiver, FileSpilmanPaymentReceiverConfig, create_topup_quote,
     load_mint_balance, load_wallet_overview, receive_payment_token, send_payment_token,
@@ -53,12 +56,18 @@ async fn source_authorized_routes_refresh_automatically_within_price_and_spendin
     controller_scenario(false, false, true, true).await;
 }
 
+// Each scenario owns five live nodes and several signing workers. Keep the
+// independent scenarios apart so machine contention cannot masquerade as
+// packet-delivery or payment-timing failures; nodes within each remain concurrent.
+static NETWORK_SCENARIO: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn controller_scenario(
     automatic_renewal: bool,
     evidence_gap: bool,
     route_change: bool,
     automatic_routes: bool,
 ) {
+    let _network = NETWORK_SCENARIO.lock().await;
     tokio::time::timeout(Duration::from_secs(240), async {
         let root = tempfile::tempdir().unwrap();
         let now = SystemTime::now()
@@ -424,7 +433,9 @@ async fn controller_scenario(
                             result.unwrap();
                             if received.iter().any(|m| m.data.as_slice() == payload) { break; }
                         }
-                        assert!(automatic_renewal, "ordinary delivery unexpectedly needed a retry");
+                        assert!(automatic_renewal,
+                            "ordinary delivery needed a retry: round={round} direction={source}->{destination}; errors={:?}; usage={:?}",
+                            errors(&controllers), links.iter().map(|(b,s,p)|(*b,*s,ledgers[*s].channel_usage(&p.channel.id))).collect::<Vec<_>>());
                     }
                 })
                 .await
@@ -954,36 +965,4 @@ async fn controller_scenario(
     })
     .await
     .expect("autonomous controller test deadline");
-}
-
-fn policy(mint_url: &str, automatic_renewal: bool, capacity: u64) -> ControllerPolicy {
-    ControllerPolicy {
-        mint_url: mint_url.to_string(),
-        channel_capacity_sat: capacity,
-        max_locked_sat: capacity * 2,
-        channel_lifetime_secs: 600,
-        renewal: automatic_renewal.then_some(RenewalPolicy {
-            at_capacity_percent: 100,
-            before_expiry_secs: 30,
-        }),
-    }
-}
-
-#[cfg(unix)]
-async fn native_control(root: &std::path::Path, node: usize, request: serde_json::Value) {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    tokio::time::timeout(Duration::from_secs(10), async {
-        let mut socket = tokio::net::UnixStream::connect(root.join(format!("native-{node}.sock")))
-            .await
-            .unwrap();
-        let mut bytes = serde_json::to_vec(&request).unwrap();
-        bytes.push(b'\n');
-        socket.write_all(&bytes).await.unwrap();
-        let mut reply = String::new();
-        BufReader::new(socket).read_line(&mut reply).await.unwrap();
-        let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
-        assert_eq!(reply["status"], "ok", "native control failed: {reply}");
-    })
-    .await
-    .expect("native management deadline");
 }
