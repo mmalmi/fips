@@ -2,8 +2,9 @@
 
 `fips-relay` assembles the native endpoint, durable buyer/seller accounting,
 Spilman receiver, quotes and autonomous controller in one Unix process. Linux
-and macOS local process tests use UDP. Linux Wi-Fi deployment and packaging still
-need separate verification; this is not yet a complete customer hotspot.
+and macOS local process tests use UDP. Three OpenWrt routers have also earned
+test payments over native Wi-Fi links. See [TESTBENCH.md](TESTBENCH.md) for the
+hardware evidence and remaining checks; this is not yet a complete customer hotspot.
 
 ## OpenWrt build
 
@@ -11,32 +12,33 @@ The ARM64 Linux executable cross-builds with an installed Rust musl target,
 Zig and `cargo-zigbuild`:
 
 ```sh
-CARGO_PROFILE_RELEASE_LTO=thin CARGO_PROFILE_RELEASE_STRIP=symbols \
-  cargo zigbuild -p fips-relay --bin fips-relay \
-  --target aarch64-unknown-linux-musl --release
+cargo zigbuild -p fips-relay --bin fips-relay --locked \
+  --target aarch64-unknown-linux-musl --profile openwrt -j 4
 ```
 
-This produces a statically linked executable. The current build is approximately
-35 MB; check device storage and memory before installation. Its checksum and
-command-line startup were verified on three ARM64 OpenWrt test routers. This
-does not verify radio compatibility, forwarding performance or package startup.
+This produces a statically linked executable of about 19 MiB, using a size-oriented
+profile that preserves normal panic semantics. The previous hardware payment
+runs used the larger release build. Forwarding performance of the new profile
+still needs measurement. See [openwrt/README.md](openwrt/README.md) for APKv3
+packaging, installation, backups and device acceptance checks.
 
 ## OpenWrt service supervision
 
-`openwrt/fips-relay.init` and `openwrt/fips-relay.config` provide a procd service
-definition and disabled-by-default UCI configuration. Install them as
-`/etc/init.d/fips-relay` (mode 0755) and `/etc/config/fips-relay`, respectively.
-Set the executable and service-JSON paths explicitly, initialize the saved state
-once, and enable the UCI instance before starting `/etc/init.d/fips-relay start`.
-The supervisor never initializes accounts. It bounds crash respawns and allows
-65 seconds for orderly shutdown. The wrapper has run on three OpenWrt routers.
+The package installs a procd service, readiness wrapper, NTP hotplug hook and
+disabled-by-default UCI configuration. Set the executable and service-JSON paths
+explicitly. Initialize a new account once; retain an existing account unchanged.
+Enable the UCI instance before starting `/etc/init.d/fips-relay start`, and use
+`/etc/init.d/fips-relay enable` separately for boot startup. Installation never
+initializes accounts or enables boot startup. Procd bounds crash respawns and
+allows 65 seconds for orderly shutdown.
 
-The first hardware trial used temporary executable paths and manually started
-instances. No boot-start links were installed. A temporary executable disappears
-on reboot; persistent package installation and boot recovery remain required.
-Confirm radio capabilities, disabled mesh forwarding, an isolated native
-interface, working management access, a reachable mint and a synchronized clock
-before admitting paid traffic. Firmware package builds are still pending.
+The wrapper requires persistent account storage and waits for a valid NTP event,
+unbridged native interfaces with carrier, disabled mesh forwarding where relevant,
+and the configured mint. Waiting does not consume financial allowance or the crash
+restart budget. Query the actual relay's private control socket to establish
+readiness; a running wrapper alone is insufficient. The package changes no radio,
+bridge, DHCP or firewall configuration. Firmware sysupgrade and older opkg/IPK
+packaging remain separate work.
 
 ## Initialization and configuration
 
@@ -68,6 +70,9 @@ intended path. `ethernet_interfaces` accepts ordinary interface names, including
 Wi-Fi mesh/AP/STA interfaces exposed by Linux. The underlying native FIPS raw
 socket supplies EtherType `0x2121`; the service does not configure radios,
 bridges, DHCP or IP forwarding. Native interfaces require raw-socket permission.
+For numeric peer addresses, configure stable interface MACs and verify them after
+reboot; automatically assigned virtual Wi-Fi addresses can change with interface
+creation order. See the OpenWrt package guide for the observed failure and fix.
 Lower-layer Wi-Fi forwarding must be disabled and the intended physical path
 must still be verified on hardware.
 

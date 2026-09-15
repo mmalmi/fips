@@ -11,6 +11,9 @@ margin. Restart, credit exhaustion and automatic renewal were exercised, and all
 3,840 test sats were redeemed after settlement. Hardware route changes,
 performance and the public customer flow remain unfinished.
 
+See [openwrt/README.md](openwrt/README.md) for the persistent APK package,
+size-oriented ARM64 build, startup readiness checks and backup procedure.
+
 ## Implemented and checked
 
 * The core's optional `ForwardingPolicy` gates native FMP transit, including

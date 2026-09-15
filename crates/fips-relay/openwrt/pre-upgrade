@@ -1,0 +1,7 @@
+#!/bin/sh
+[ -z "${IPKG_INSTROOT:-}" ] || exit 0
+rm -f /var/run/fips-relay.upgrade-running
+if ubus call service list '{"name":"fips-relay"}' | jsonfilter -e '@["fips-relay"].instances.main.running' | grep -qx true; then
+	: > /var/run/fips-relay.upgrade-running
+	/etc/init.d/fips-relay stop
+fi

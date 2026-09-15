@@ -20,6 +20,15 @@ members = [
 ]
 resolver = "2"
 
+# Flash-constrained routers need room for durable payment journals and updates.
+# Keep the normal panic semantics; deployment crash recovery remains unchanged.
+[profile.openwrt]
+inherits = "release"
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
 # The optional TCP/FIPS control adapter must use this workspace's core,
 # including its forwarding policy, instead of a second registry copy.
 [patch.crates-io]

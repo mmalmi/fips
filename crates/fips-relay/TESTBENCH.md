@@ -186,5 +186,43 @@ collection across both runs to 3,840; every participant wallet was empty.
 Routers retained home LAN management, client Wi-Fi and ordinary Internet access.
 
 Physical route changes, duplicate/unsolicited-traffic exercises, performance
-measurements, persistent OpenWrt packages and the public customer/phone flow
+measurements and the public customer/phone flow
 remain separate acceptance work.
+
+## Persistent OpenWrt package and boot recovery
+
+The three ARM64 routers subsequently installed a local APKv3 package on OpenWrt
+25.12.5. The size-oriented static executable is 19,943,000 bytes; the archive is
+9,292,518 bytes. This application build includes automatic source route refresh,
+but paid hardware demonstrations above used the earlier, larger executable.
+The size comparison does not establish forwarding performance.
+
+Existing UCI paths and complete settled accounts were retained. A running r1 to
+r3 package upgrade stopped and restarted the process with identical identity,
+purchase history and remaining budget. The startup wrapper was exercised under
+the real supervisor with a missing clock marker, an unreachable mint and a
+bridged native-interface probe. It waited without loading a new account or
+changing the live radio configuration.
+
+Each router passed a real reboot, established by changed boot IDs. Final checks
+confirmed the saved accounts, exact expected native neighbour connections, live
+MAC addresses, clock synchronization, isolated mesh interfaces and disabled mesh
+forwarding. An AP interface remained active; DNS and HTTPS Internet requests from
+each router succeeded. Existing network files matched the final pre-reboot
+configuration. The isolated mint process and existing host web service survived.
+Final observed reboot-to-check-completion times were about 105 seconds per router;
+this is service recovery timing, not a network latency benchmark.
+
+The tests exposed automatically assigned virtual mesh MACs changing after boot
+on two radios. A one-sided connection initially concealed one stale configured
+peer address. After both radios rebooted, their accounts loaded but native peering
+failed. Pinning the affected mesh interfaces to their intended addresses and
+repeating their reboot checks restored stable peering. The LAN/AP configuration
+was retained. See [openwrt/README.md](openwrt/README.md) for the configuration
+requirement and package procedure.
+
+The three packaged router services now run idle with boot startup enabled. Test
+endpoints remain stopped, wallets empty and prior channels settled. These checks
+do not establish reboot recovery during an unfinished financial operation, paid
+traffic on the new profile, other CPU architectures, firmware sysupgrade or old
+opkg/IPK packaging. Those claims need separate evidence.

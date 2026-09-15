@@ -1,0 +1,52 @@
+#!/bin/sh
+# Wait under procd supervision; never initialize or modify payment accounts.
+set -eu
+
+[ "$#" -eq 2 ] || { echo "usage: fips-relay-openwrt executable config.json" >&2; exit 1; }
+executable=$1
+config_path=$2
+trap 'exit 0' TERM INT
+[ -x "$executable" ] && [ -s "$config_path" ] || exit 1
+state_directory=$(jsonfilter -i "$config_path" -e '@.state_directory')
+mint_url=$(jsonfilter -i "$config_path" -e '@.terms.controller.mint_url')
+interfaces=$(jsonfilter -i "$config_path" -e '@.ethernet_interfaces[*]' || :)
+[ -n "$state_directory" ] && [ -n "$mint_url" ] || exit 1
+[ -f "$state_directory/service.json" ] && [ -f "$state_directory/identity.key" ] || {
+	echo 'fips-relay: initialize a new account explicitly or restore the complete saved account' >&2
+	exit 1
+}
+case "$(df -PT "$state_directory" | awk 'NR == 2 {print $2}')" in
+	''|tmpfs|ramfs|squashfs) echo 'fips-relay: payment state requires writable persistent storage' >&2; exit 1 ;;
+esac
+
+readiness() {
+	[ -f /var/run/fips-relay.time-valid ] || { reason='waiting for clock synchronization'; return 1; }
+	for interface in $interfaces; do
+		case "$interface" in ''|*[!a-zA-Z0-9_.-]*) reason='invalid native interface name'; return 1 ;; esac
+		[ -e "/sys/class/net/$interface" ] || { reason='waiting for native interface'; return 1; }
+		[ ! -e "/sys/class/net/$interface/master" ] && [ ! -d "/sys/class/net/$interface/bridge" ] || {
+			reason='native interface must be outside a bridge'; return 1
+		}
+		[ "$(cat "/sys/class/net/$interface/carrier" 2>/dev/null || :)" = 1 ] || {
+			reason='waiting for native link'; return 1
+		}
+		if iw dev "$interface" info 2>/dev/null | grep -q 'type mesh point'; then
+			[ "$(iw dev "$interface" get mesh_param mesh_fwding 2>/dev/null)" = 0 ] || {
+				reason='native mesh requires mesh_fwding=0'; return 1
+			}
+		fi
+	done
+	uclient-fetch -q -T 5 -O /dev/null "${mint_url%/}/v1/info" 2>/dev/null || {
+		reason='waiting for configured mint'; return 1
+	}
+}
+
+last_reason=''
+while ! readiness; do
+	if [ "$reason" != "$last_reason" ]; then
+		echo "fips-relay: $reason" >&2
+		last_reason=$reason
+	fi
+	sleep 5
+done
+exec "$executable" run "$config_path"

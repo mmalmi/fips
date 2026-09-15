@@ -1,0 +1,6 @@
+#!/bin/sh
+[ -z "${IPKG_INSTROOT:-}" ] || exit 0
+/etc/init.d/fips-relay stop
+/etc/init.d/fips-relay disable
+# Saved account directories belong to the operator and are never deleted here.
+exit 0

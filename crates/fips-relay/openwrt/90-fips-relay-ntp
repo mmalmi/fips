@@ -1,0 +1,7 @@
+#!/bin/sh
+# BusyBox ntpd supplies the current stratum through OpenWrt's NTP hotplug bus.
+[ "$ACTION" = stratum ] || exit 0
+case "${stratum:-0}" in
+	[1-9]|1[0-5]) umask 077; : > /var/run/fips-relay.time-valid ;;
+	*) rm -f /var/run/fips-relay.time-valid ;;
+esac
