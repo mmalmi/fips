@@ -728,15 +728,32 @@ impl DataplaneFspOwnerActivity {
         now_ms: u64,
         timeout_ms: u64,
     ) -> bool {
+        self.has_recent_outbound_activity(now_ms, timeout_ms)
+            && self.has_unacknowledged_outbound_from(next_hop, now_ms, timeout_ms)
+    }
+
+    pub(crate) fn has_unacknowledged_outbound_from(
+        self,
+        next_hop: &NodeAddr,
+        now_ms: u64,
+        timeout_ms: u64,
+    ) -> bool {
         // Each unreported burst gets one feedback window. Further sends and
-        // frozen reports cannot extend a blackhole's deadline.
+        // frozen reports cannot extend a blackhole's deadline. An unanswered
+        // request stays outstanding when its sender goes quiet: requiring a
+        // recent send as well would make a lone request ineligible as soon as
+        // its feedback deadline expires.
         self.data_packets_sent > 0
             && self.last_outbound_next_hop == Some(*next_hop)
-            && self.has_recent_outbound_activity(now_ms, timeout_ms)
             && !self.has_recent_delivery_feedback_from(next_hop, now_ms, timeout_ms)
-            && (!self.receiver_reports_enabled
-                || self.first_unreported_tx_data_activity
-                    .is_some_and(|tick| tick.age_ms(now_ms) > timeout_ms))
+            && if self.receiver_reports_enabled {
+                self.first_unreported_tx_data_activity
+                    .is_some_and(|tick| tick.age_ms(now_ms) > timeout_ms)
+            } else {
+                // Without receiver reports, inactivity alone cannot tell us
+                // whether an earlier request was delivered.
+                self.has_recent_outbound_activity(now_ms, timeout_ms)
+            }
     }
 
     fn tracks_inbound_next_hop(self, next_hop: &NodeAddr) -> bool {

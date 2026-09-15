@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Recover an unresponsive end-to-end session after a single unanswered request,
+  even when the sender stops transmitting and link heartbeats remain healthy.
+  Outstanding receiver-report feedback now survives the recent-send window;
+  acknowledged idle sessions retain their keys. Packet-level regressions cover
+  automatic recovery and the healthy idle case without restarting either node.
+- Make the invalid-hostname test independent of DNS search domains by using an
+  absolute reserved name, adapting the correction from jmcorgan/fips.
+
 ## [0.4.81] - 2026-09-10
 
 ### Fixed
