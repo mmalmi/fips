@@ -56,6 +56,15 @@ pub struct PaymentControl<R> {
     approved: BTreeMap<String, ApprovedAgreement>,
 }
 
+impl PaymentControl<cashu_service::FileSpilmanPaymentReceiver> {
+    pub(crate) async fn close_at_mint(
+        &self,
+        channel_id: &str,
+    ) -> Result<cashu_service::CashuSpilmanReceiverCloseResult, String> {
+        self.receiver.close_cashu_spilman_channel(channel_id).await
+    }
+}
+
 impl<R: CashuSpilmanPaymentReceiver<String>> PaymentControl<R> {
     /// Verify and durably retain authenticated funding before a trusted runtime
     /// commits its own working capital. This alone does not activate forwarding.

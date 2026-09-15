@@ -55,6 +55,61 @@ fn start(path: &std::path::Path) -> DurableRelay {
 }
 
 #[test]
+fn renewal_carries_unbilled_crash_exposure_without_creating_another_grace() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("relay");
+    let relay = start(&path);
+    drop(relay); // An unrecorded ten-msat window must remain reserved.
+    let relay = DurableRelay::load(&path).unwrap();
+    let old = relay.seal_channel("neighbor").unwrap();
+    assert_eq!((old.lost_msat, old.submitted_msat), (10, 0));
+    let mut next = channel();
+    next.id = "renewed".into();
+    relay.open_channel_verified(next, 0).unwrap();
+    let mut quote = contract();
+    quote.id = "renewed-quote".into();
+    quote.channel_id = "renewed".into();
+    relay.add_contract(quote).unwrap();
+    let token = relay.admit(&request(b"0123456789")).unwrap();
+    relay.complete(token, ForwardingOutcome::Submitted);
+    relay.checkpoint().unwrap();
+    let token = relay.admit(&request(b"abcdefghij")).unwrap();
+    relay.complete(token, ForwardingOutcome::Submitted);
+    assert!(relay.admit(&request(b"x")).is_none());
+    let claims = relay.checkpoint().unwrap();
+    assert_eq!(claims["neighbor"].submitted_msat, 0);
+    assert_eq!(claims["renewed"].submitted_msat, 20);
+    relay.apply_verified_balance("renewed", 20).unwrap();
+    assert!(relay.admit(&request(b"paid")).is_some());
+    relay.suspend().unwrap();
+    drop(relay);
+    let relay = DurableRelay::load(&path).unwrap();
+    assert_eq!(relay.channel_usage("neighbor").unwrap().lost_msat, 10);
+    assert_eq!(relay.channel_usage("renewed").unwrap().submitted_msat, 20);
+    assert!(relay.admit(&request(b"0123456789")).is_none());
+}
+
+#[test]
+fn sealing_freezes_the_final_claim_and_keeps_late_sends_unconfirmed() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("relay");
+    let relay = start(&path);
+    let token = relay.admit(&request(b"pending")).unwrap();
+    let final_usage = relay.seal_channel("neighbor").unwrap();
+    assert_eq!(
+        (final_usage.reserved_msat, final_usage.submitted_msat),
+        (7, 0)
+    );
+    relay.complete(token, ForwardingOutcome::Submitted);
+    assert_eq!(relay.checkpoint().unwrap()["neighbor"], final_usage);
+    assert_eq!(relay.usage("quote").unwrap().unconfirmed_units, 7);
+    drop(relay);
+    let relay = DurableRelay::load(&path).unwrap();
+    assert_eq!(relay.channel_usage("neighbor").unwrap(), final_usage);
+    assert!(relay.admit(&request(b"new")).is_none());
+}
+
+#[test]
 fn windows_are_durable_before_admission_and_crashes_never_reset_grace() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("relay");

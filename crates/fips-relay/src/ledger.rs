@@ -134,6 +134,40 @@ pub struct Snapshot {
     pub(crate) accounts: Vec<AccountSnapshot>,
 }
 
+impl Snapshot {
+    pub(crate) fn reservation_limit(&self, id: &str) -> Option<u64> {
+        let channel = self.channels.iter().find(|c| c.terms.id == id)?;
+        relationship_reservation_limit(
+            &channel.terms,
+            channel.usage.paid_msat,
+            self.channels.iter().map(|c| (&c.terms, c.usage)),
+        )
+    }
+}
+
+/// Older closed channels keep consuming the relationship's unpaid allowance.
+/// Their missing/unconfirmed submissions are never added to a new payment bill.
+fn relationship_reservation_limit<'a>(
+    terms: &ChannelTerms,
+    paid_msat: u64,
+    channels: impl Iterator<Item = (&'a ChannelTerms, ChannelUsage)>,
+) -> Option<u64> {
+    let carried = channels
+        .filter(|(old, _)| {
+            old.id != terms.id && old.buyer == terms.buyer && old.mint_url == terms.mint_url
+        })
+        .try_fold(0u64, |sum, (_, usage)| {
+            sum.checked_add(usage.reserved_msat.saturating_sub(usage.paid_msat))
+        })?;
+    Some(
+        terms.capacity_sat.checked_mul(1_000)?.min(
+            paid_msat
+                .saturating_add(terms.grace_msat)
+                .saturating_sub(carried),
+        ),
+    )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ChannelSnapshot {
     pub(crate) terms: ChannelTerms,
@@ -209,6 +243,7 @@ impl RelayLedger {
             }
             return Err(LedgerError::AlreadyBound);
         }
+        let mut unpaid = false;
         for old in state
             .channels
             .values()
@@ -217,9 +252,16 @@ impl RelayLedger {
             if old.active {
                 return Err(LedgerError::AlreadyBound);
             }
-            if old.usage.reserved_msat > old.usage.paid_msat {
-                return Err(LedgerError::UnsettledChannel);
-            }
+            unpaid |= old.usage.reserved_msat > old.usage.paid_msat;
+        }
+        let available = relationship_reservation_limit(
+            &terms,
+            paid_msat,
+            state.channels.values().map(|c| (&c.terms, c.usage)),
+        )
+        .ok_or(LedgerError::Capacity)?;
+        if unpaid && available == 0 {
+            return Err(LedgerError::UnsettledChannel);
         }
         if state.channels.len() >= self.limits.max_channels {
             return Err(LedgerError::Capacity);
@@ -323,6 +365,32 @@ impl RelayLedger {
             a.active = false;
         }
         Ok(usage)
+    }
+
+    /// Stop service and freeze its final claim. Anything still awaiting a local
+    /// transport outcome stays reserved and unconfirmed, even if it finishes
+    /// later. Retained fingerprints continue to prevent replay after renewal.
+    pub fn seal_channel(&self, id: &str) -> Result<ChannelUsage, LedgerError> {
+        self.close_channel(id)?;
+        let mut state = self.state.lock().unwrap();
+        let mut sealed_tokens = Vec::new();
+        for account in state
+            .accounts
+            .values_mut()
+            .filter(|a| a.contract.channel_id == id)
+        {
+            for attempt in account.attempts.values_mut() {
+                if attempt.state == AttemptState::Pending {
+                    attempt.state = AttemptState::Unconfirmed;
+                    account.usage.unconfirmed_units += attempt.units;
+                    sealed_tokens.push(attempt.token);
+                }
+            }
+        }
+        for token in sealed_tokens {
+            state.pending.remove(&token);
+        }
+        Ok(state.channels[id].usage)
     }
 
     pub fn usage(&self, id: &str) -> Option<Usage> {
@@ -581,12 +649,12 @@ impl RelayLedger {
             return None;
         }
         let channel_reserved = channel.usage.reserved_msat.checked_add(incremental_cost)?;
-        let limit = channel
-            .usage
-            .paid_msat
-            .saturating_add(channel.terms.grace_msat)
-            .min(channel.terms.capacity_sat.checked_mul(1_000)?)
-            .min(windows.map_or(u64::MAX, |w| w.get(&channel_id).copied().unwrap_or(0)));
+        let limit = relationship_reservation_limit(
+            &channel.terms,
+            channel.usage.paid_msat,
+            state.channels.values().map(|c| (&c.terms, c.usage)),
+        )?
+        .min(windows.map_or(u64::MAX, |w| w.get(&channel_id).copied().unwrap_or(0)));
         if channel_reserved > limit {
             return None;
         }
@@ -639,16 +707,13 @@ impl RelayLedger {
                 .accounts
                 .values()
                 .any(|a| a.active && &a.contract.channel_id == id);
-            let channel = state
-                .channels
-                .get_mut(id)
-                .ok_or(LedgerError::InvalidSnapshot)?;
-            let max = validate_channel(&channel.terms)?.min(
-                channel
-                    .usage
-                    .paid_msat
-                    .saturating_add(channel.terms.grace_msat),
-            );
+            let channel = state.channels.get(id).ok_or(LedgerError::InvalidSnapshot)?;
+            let max = relationship_reservation_limit(
+                &channel.terms,
+                channel.usage.paid_msat,
+                state.channels.values().map(|c| (&c.terms, c.usage)),
+            )
+            .ok_or(LedgerError::InvalidSnapshot)?;
             if !channel.active
                 || !has_quote
                 || *ceiling < channel.usage.reserved_msat
@@ -656,6 +721,7 @@ impl RelayLedger {
             {
                 return Err(LedgerError::InvalidSnapshot);
             }
+            let channel = state.channels.get_mut(id).unwrap();
             let lost = ceiling - channel.usage.reserved_msat;
             channel.usage.lost_msat += lost;
             channel.usage.reserved_msat = *ceiling;

@@ -169,6 +169,10 @@ impl DurableRelay {
         self.mutate(|l| l.close_channel(id)).map(|(usage, _)| usage)
     }
 
+    pub fn seal_channel(&self, id: &str) -> Result<ChannelUsage, DurableError> {
+        self.mutate(|l| l.seal_channel(id)).map(|(usage, _)| usage)
+    }
+
     /// Live metrics are not a payment claim. Use `checkpoint` for that.
     pub fn channel_usage(&self, id: &str) -> Option<ChannelUsage> {
         self.ledger.channel_usage(id)
@@ -244,17 +248,9 @@ impl DurableRelay {
                     .iter()
                     .any(|a| a.active && a.contract.channel_id == channel.terms.id)
             {
-                let maximum = channel
-                    .usage
-                    .paid_msat
-                    .saturating_add(channel.terms.grace_msat)
-                    .min(
-                        channel
-                            .terms
-                            .capacity_sat
-                            .checked_mul(1_000)
-                            .ok_or(DurableError::Format)?,
-                    );
+                let maximum = ledger
+                    .reservation_limit(&channel.terms.id)
+                    .ok_or(DurableError::Format)?;
                 let window = if allow_next_window {
                     self.window_msat
                 } else {

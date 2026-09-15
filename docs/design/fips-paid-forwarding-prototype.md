@@ -51,8 +51,11 @@ exposure. A quote change cannot reset channel usage or grant another grace
 window. Retain duplicate-packet evidence across quote changes and channel
 rollover. Route prices accumulate in millisats, then round cumulative channel
 payments to the mint's unit; do not round each payment update to an additional
-whole sat. Closed unpaid exposure must be resolved before opening another
-channel for that same neighbor and mint.
+whole sat. Closed unpaid exposure carries forward for the same neighbor and mint.
+The new channel can reserve at most its verified payment plus grace minus the
+sum of older channels' positive unpaid reservations, capped by its funded value.
+This permits renewal with a partly consumed allowance while refusing a fresh
+free allowance. If no allowance remains, opening stops for reconciliation.
 
 * Each direction requires an explicit, capped buyer agreement. The claimed FSP
   source is not evidence of who owes money; only the authenticated submitting
@@ -154,8 +157,8 @@ immutable channel/quote bindings approved by the local controller. It validates
 Cashu and persists accounting outside the native packet loop. Record size, connection count, queue
 depth and request admission are capped. These control-stream acknowledgments
 are not receipts for paid data. The automatic controller now funds and accepts
-channels and schedules payment updates. Renewal and mint settlement remain
-separate implementation work.
+channels, schedules payment updates and completes requested mint settlements.
+Automatic renewal scheduling remains separate implementation work.
 
 `RouteQuotes` now follows `FipsEndpoint::resolve_next_hop`: the source uses the
 native origin planner, and each provider uses the same planner as native transit
@@ -220,10 +223,29 @@ controller recovery while the network, seller and buyer services remain alive;
 it is not yet a whole-process crash/restart test. Each relay has a positive net
 margin and all final balances are redeemed and spent again at the local mint.
 
-Controller settlement, refund recovery, channel replacement and release of locked
-capital remain to be automated. The fixture still performs final mint closure.
-Current controllers retain every funding intent against the capital cap and
-never open replacement accounts merely because service expired or stopped.
+Settlement now has durable buyer and seller stages. An authenticated buyer first
+requests sealing: stop that channel, classify any still-pending local sends as
+unconfirmed, retain their reservations and freeze the final claim. The buyer
+stops recording new purchase evidence and signs only within its established
+evidence and budget bounds. If evidence, budget or service expiry prevents an
+increase, it may resend its already-authorized balance. A failed journal or
+signer never bypasses the authorization gate. Any unpaid remainder stays in the
+relationship's carried exposure; closure does not erase it.
+
+The seller fixes the final signed balance before closing at the mint and imports
+its payout idempotently. Control replies contain paid/refunded/fee totals, never
+bearer proofs. The buyer restores and verifies its refund through the mint before
+releasing locked capital. Both sides retain their intents and completed reports;
+background recovery resumes incomplete work. The native controller test now
+uses these APIs for all six closures and refunds. It then spends all payouts and
+retries seller recovery with lost completion reports, verifying that no spent
+proof is restored as spendable balance. Rejected state transitions preserve the
+last committed controller journal rather than retaining a partial mutation.
+
+Automatic renewal triggers, replacement quotes and retirement of bounded history
+remain to be implemented. Settled or expired records are retained and cannot
+silently reactivate an old channel. Settlement of an accepted channel is now
+automated; recovery of an orphaned funding operation still precedes closure.
 
 ## Hardware proof still required
 

@@ -414,6 +414,8 @@ impl BuyerAuthorizer {
 
     /// Reproduce a durable balance with funding attached. Failed persistence
     /// cannot be bypassed by reading an uncommitted in-memory authorization.
+    /// After service expiry this can only resend the already authorized amount;
+    /// it cannot authorize an additional debit to finish settlement.
     pub fn reproduce_payment(
         &self,
         signer: &impl CashuSpilmanPaymentSigner,
@@ -447,7 +449,7 @@ impl BuyerAuthorizer {
                 .get(id)
                 .filter(|c| c.provider == provider)
                 .ok_or(BuyerError::UnknownAgreement)?;
-            if now >= c.terms.expires_unix {
+            if now >= c.terms.expires_unix && !(include_funding && claimed_msat == 0) {
                 return Err(BuyerError::Expired);
             }
             let evidence = s.evidence_msat(id).ok_or(BuyerError::Format)?;

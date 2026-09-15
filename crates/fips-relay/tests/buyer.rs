@@ -81,6 +81,39 @@ fn approve(buyer: &BuyerAuthorizer, terms: &ChannelTerms, id: &str) {
 }
 
 #[test]
+fn expired_settlement_can_only_reproduce_the_previously_authorized_balance() {
+    let root = tempfile::tempdir().unwrap();
+    let buyer = BuyerAuthorizer::create(
+        &root.path().join("buyer"),
+        address(1),
+        10,
+        Limits::default(),
+    )
+    .unwrap();
+    let terms = channel("one");
+    approve(&buyer, &terms, "quote");
+    let first = observe(&buyer, b"abcdefghij").unwrap();
+    buyer.complete(first, ForwardingOutcome::Submitted);
+    let signer = FailingSigner::default();
+    assert!(matches!(
+        buyer.sign_claim(&signer, address(2), "one", 1_000, now()),
+        Err(BuyerError::Signer(_))
+    ));
+    let second = observe(&buyer, b"0123456789").unwrap();
+    buyer.complete(second, ForwardingOutcome::Submitted);
+    assert!(matches!(
+        buyer.sign_claim(&signer, address(2), "one", 2_000, terms.expires_unix),
+        Err(BuyerError::Expired)
+    ));
+    assert!(matches!(
+        buyer.reproduce_payment(&signer, address(2), "one", terms.expires_unix),
+        Err(BuyerError::Signer(_))
+    ));
+    assert_eq!(*signer.0.lock().unwrap(), vec![1, 1]);
+    assert_eq!(buyer.authorized_sat("one"), Some(1));
+}
+
+#[test]
 fn signatures_require_accepted_provider_and_unique_local_submitted_bytes() {
     let root = tempfile::tempdir().unwrap();
     let buyer = BuyerAuthorizer::create(

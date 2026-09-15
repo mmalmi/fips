@@ -36,12 +36,17 @@ use tokio::{
 const MAX_CHANNELS: usize = 16;
 const MAX_ROUTES: usize = 32;
 
+#[path = "controller_settlement.rs"]
+mod settlement;
+pub use settlement::SettlementReport;
+use settlement::{BuyerSettlement, SellerSettlement};
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ControllerPolicy {
     pub mint_url: String,
     pub channel_capacity_sat: u64,
     /// Includes unresolved funding intents. Only confirmed settlement may release
-    /// locked capacity; this initial controller conservatively retains all of it.
+    /// locked capacity, after the buyer's mint refund recovery completes.
     pub max_locked_sat: u64,
     pub channel_lifetime_secs: u64,
 }
@@ -125,6 +130,8 @@ struct Journal {
     requested: BTreeMap<String, RouteOffer>,
     outgoing: BTreeMap<String, Outgoing>,
     incoming: BTreeMap<String, Incoming>,
+    buyer_settlements: BTreeMap<String, BuyerSettlement>,
+    seller_settlements: BTreeMap<String, SellerSettlement>,
 }
 
 struct Store {
@@ -135,6 +142,20 @@ struct Store {
 }
 
 impl Store {
+    fn change<T>(
+        &mut self,
+        job: impl FnOnce(&mut Journal) -> Result<T, String>,
+    ) -> Result<T, String> {
+        if !self.ready {
+            return Err("controller journal suspended".into());
+        }
+        let mut candidate = self.journal.clone();
+        let result = job(&mut candidate)?;
+        self.journal = candidate;
+        self.persist()?;
+        Ok(result)
+    }
+
     fn persist(&mut self) -> Result<(), String> {
         self.ready = false;
         let bytes = serde_json::to_vec(&self.journal).map_err(|e| e.to_string())?;
@@ -153,12 +174,28 @@ pub enum ControllerRequest {
         channel: ChannelTerms,
         payment: Box<CashuSpilmanPayment>,
     },
+    Seal {
+        channel_id: String,
+    },
+    Settle {
+        channel_id: String,
+        payment: Box<CashuSpilmanPayment>,
+    },
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControllerResponse {
-    Accepted { purchase: Box<Purchase> },
+    Accepted {
+        purchase: Box<Purchase>,
+    },
+    Sealed {
+        channel_id: String,
+        usage: crate::ledger::ChannelUsage,
+    },
+    Settled {
+        report: SettlementReport,
+    },
     Pending,
     Rejected,
 }
@@ -227,6 +264,8 @@ impl Controller {
                 requested: BTreeMap::new(),
                 outgoing: BTreeMap::new(),
                 incoming: BTreeMap::new(),
+                buyer_settlements: BTreeMap::new(),
+                seller_settlements: BTreeMap::new(),
             },
             ready: true,
             _owner: owner,
@@ -311,6 +350,7 @@ impl Controller {
         {
             return Err("invalid controller journal bindings".into());
         }
+        Self::validate_settlements(j)?;
         let mut providers = HashSet::new();
         let mut locked = 0u64;
         for (id, f) in &j.funding {
@@ -332,9 +372,15 @@ impl Controller {
             {
                 return Err("invalid funding intent".into());
             }
-            locked = locked
-                .checked_add(f.capacity_sat)
-                .ok_or("capital overflow")?;
+            if !f.funded.as_ref().is_some_and(|funded| {
+                j.buyer_settlements
+                    .get(&funded.terms.id)
+                    .is_some_and(|s| s.refunded)
+            }) {
+                locked = locked
+                    .checked_add(f.capacity_sat)
+                    .ok_or("capital overflow")?;
+            }
             if let Some(funded) = &f.funded {
                 validate_channel(&funded.terms).map_err(|e| e.to_string())?;
                 if funded.terms.buyer != local
@@ -433,12 +479,7 @@ impl Controller {
         let store = self.store.clone();
         blocking(move || {
             let mut store = store.lock().map_err(|_| "controller state poisoned")?;
-            if !store.ready {
-                return Err("controller journal suspended".into());
-            }
-            let result = job(&mut store.journal)?;
-            store.persist()?;
-            Ok(result)
+            store.change(job)
         })
         .await
     }
@@ -508,6 +549,13 @@ impl Controller {
                 let locked = j
                     .funding
                     .values()
+                    .filter(|f| {
+                        !f.funded.as_ref().is_some_and(|f| {
+                            j.buyer_settlements
+                                .get(&f.terms.id)
+                                .is_some_and(|s| s.refunded)
+                        })
+                    })
                     .try_fold(0u64, |sum, f| sum.checked_add(f.capacity_sat))
                     .ok_or("capital overflow")?;
                 if j.funding.len() >= MAX_CHANNELS
@@ -618,6 +666,14 @@ impl Controller {
             })
             .cloned();
         if let Some(existing) = existing {
+            if self
+                .snapshot()
+                .await?
+                .buyer_settlements
+                .contains_key(&existing.purchase.channel.id)
+            {
+                return Err("channel settlement started; replacement agreement required".into());
+            }
             if existing.purchase.contract.expires_unix <= now()?
                 || existing.offer.price != offer.price
                 || existing.offer.next_hop != offer.next_hop
@@ -760,6 +816,7 @@ impl Controller {
                 ControllerResponse::Rejected => {
                     return Err("provider rejected purchase; intent retained".into());
                 }
+                _ => return Err("unexpected acceptance response".into()),
             }
         }
     }
@@ -782,17 +839,30 @@ impl Controller {
         if body.len() > MAX_RECORD_BYTES {
             return Err("oversized acceptance".into());
         }
-        let ControllerRequest::Accept {
-            offer_id,
-            channel,
-            payment,
-        } = serde_json::from_slice(body).map_err(|_| "invalid acceptance")?;
+        let (offer_id, channel, payment) =
+            match serde_json::from_slice(body).map_err(|_| "invalid acceptance")? {
+                ControllerRequest::Accept {
+                    offer_id,
+                    channel,
+                    payment,
+                } => (offer_id, channel, payment),
+                ControllerRequest::Seal { channel_id } => {
+                    return self.handle_seal(peer, &channel_id).await;
+                }
+                ControllerRequest::Settle {
+                    channel_id,
+                    payment,
+                } => return self.handle_settle(peer, &channel_id, *payment).await,
+            };
         if channel.buyer != *peer.node_addr() || channel.mint_url != self.policy.mint_url {
             return Err("wrong upstream payer or mint".into());
         }
         let state = self.snapshot().await?;
         if state.selling_stopped {
             return Err("controller stopped selling".into());
+        }
+        if state.seller_settlements.contains_key(&channel.id) {
+            return Err("channel already sealed for settlement".into());
         }
         let old = state
             .incoming
@@ -859,6 +929,9 @@ impl Controller {
         self.change(move |j| {
             if j.selling_stopped {
                 return Err("controller stopped selling".into());
+            }
+            if j.seller_settlements.contains_key(&saved.channel.id) {
+                return Err("channel already sealed for settlement".into());
             }
             if let Some(old) = j.incoming.get(&saved.contract.id) {
                 if old.channel != saved.channel
@@ -997,16 +1070,23 @@ impl Controller {
                 first_error.get_or_insert(error);
             }
         }
+        if let Err(error) = self.resume_settlements().await {
+            first_error.get_or_insert(error);
+        }
         first_error.map_or(Ok(()), Err)
     }
 
     pub async fn purchases(&self) -> Result<Vec<Purchase>, String> {
-        Ok(self
-            .snapshot()
-            .await?
+        let snapshot = self.snapshot().await?;
+        Ok(snapshot
             .outgoing
             .into_values()
-            .filter(|o| o.accepted)
+            .filter(|o| {
+                o.accepted
+                    && !snapshot
+                        .buyer_settlements
+                        .contains_key(&o.purchase.channel.id)
+            })
             .map(|o| o.purchase)
             .collect())
     }
@@ -1271,6 +1351,8 @@ mod tests {
             requested: BTreeMap::new(),
             outgoing: BTreeMap::new(),
             incoming: BTreeMap::new(),
+            buyer_settlements: BTreeMap::new(),
+            seller_settlements: BTreeMap::new(),
         }
     }
 
@@ -1286,6 +1368,16 @@ mod tests {
             ready: true,
         };
         store.persist().unwrap();
+        let result: Result<(), String> = store.change(|j| {
+            j.next_funding += 1;
+            Err("rejected transition".into())
+        });
+        assert!(result.is_err());
+        assert_eq!(store.journal.next_funding, 2);
+        assert!(
+            store.ready,
+            "rejected mutation preserves the last committed state"
+        );
         assert!(acquire_owner(&directory).is_err());
         drop(store);
         let mut journal: Journal =

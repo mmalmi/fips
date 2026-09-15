@@ -98,6 +98,17 @@ TCP, UDP or application delivery acknowledgments inside encrypted FIPS traffic.
   after funding: retained requests recover the exact same channels and balances.
   Seller, buyer and network services remain running during this reload. Each
   router earns a positive margin, and all 640 test sats are redeemed and spent.
+* `settle_channel`/`settle_all` automate sealing, final authorized payment, mint
+  closure, payout import and refund recovery. Durable pending steps resume after
+  interruption. No bearer proofs are sent in settlement responses. Capital is
+  released only after local refund recovery confirms completion at the mint.
+  The integration test retries payout recovery after spending those payouts;
+  spent proofs do not become spendable balance again.
+* Sealing retains pending attempts as unconfirmed and freezes the final claim.
+  Older closed channels' unpaid reservations reduce the next channel's available
+  allowance. Unknown crash exposure stays unbilled across renewal; it never
+  creates another grace period. Expired buyers may reproduce their previously
+  authorized balance for closure, but cannot authorize a larger amount.
 
 Only the local mint's Lightning backend is simulated. These test tokens have no
 external backing. `settlement` supplies submission outcomes to test exact
@@ -116,15 +127,16 @@ random loopback port. It does not use a user's wallet or contact a public mint.
 
 ## Runtime work remaining
 
-Automatic channel renewal/settlement/refunds, route replacement, complete process
+Automatic renewal scheduling and replacement agreements, complete process
 restart exercises, OpenWrt packaging, Wi-Fi path verification and a phone
 customer demo remain to be implemented. The current library is not a deployed
 hotspot or a complete daemon.
 
 The controller retains up to 16 funded or unresolved channel intents and 32
 requested, outgoing and incoming routes in each category. Retained funding still
-counts against capital even after service stops; the test harness performs mint
-closure and refunds. Expired or changed agreements require explicit replacement
+counts against capital after service stops until settlement and refund recovery
+complete. Settlement history is also capped at 16 channels in each direction.
+Expired, settled or changed agreements require explicit replacement
 and currently stop automatic recovery. No controller loop erases them or resets
 the buyer's lifetime spending limit to make another purchase possible.
 
@@ -143,7 +155,9 @@ delivery. The gateway/client must enforce path limits or use a segmenting layer.
 
 The disk window limits unknown crash exposure, separately from the channel's
 unpaid grace. `lost_msat` never contributes to a claim, but remains reserved
-against credit/capacity. If repeated failures consume the available allowance,
+against the same neighbor relationship. A new channel's reservation limit is its
+verified payment plus grace, minus outstanding reservations on older channels,
+capped by its funded capacity. If repeated failures consume the available allowance,
 automatic forwarding stops; a restart is not permission to write off that loss.
 This implementation assumes the accounting files survive the process restart.
 Never automatically replace missing/corrupt state with a newly initialized ledger.

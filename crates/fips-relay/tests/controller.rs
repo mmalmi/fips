@@ -1,12 +1,7 @@
 //! Each router independently accepts, funds onward channels and pays usage.
-use cashu::{
-    Token,
-    nuts::{CurrencyUnit, Proof},
-};
 use cashu_service::{
     FileSpilmanPaymentReceiver, FileSpilmanPaymentReceiverConfig, create_topup_quote,
-    load_mint_balance, load_wallet_overview, receive_payment_token,
-    restore_streaming_route_cashu_spilman_refund, send_payment_token,
+    load_mint_balance, load_wallet_overview, receive_payment_token, send_payment_token,
     simulation::{IssuerMode, LocalMint, PaymentNetwork, VirtualClock},
 };
 use fips_core::{
@@ -16,7 +11,10 @@ use fips_core::{
 use fips_relay::{
     buyer::{BuyerAuthorizer, PaidForwarder},
     control_transport::ControlTransport,
-    controller::{Controller, ControllerPolicy, ControllerServices, ControllerTasks},
+    controller::{
+        Controller, ControllerPolicy, ControllerRequest, ControllerResponse, ControllerServices,
+        ControllerTasks,
+    },
     durable::DurableRelay,
     ledger::Limits,
     payment_control::{PaymentControl, PaymentServer},
@@ -257,6 +255,8 @@ async fn routers_independently_fund_accept_and_pay_both_directions() {
             }
         }
         assert_eq!(links.len(), 6);
+        let unauthorized = serde_json::to_vec(&ControllerRequest::Seal { channel_id: a.channel.id.clone() }).unwrap();
+        assert!(matches!(controllers[1].handle(peers[2], &unauthorized).await, ControllerResponse::Rejected));
         let mut incoming = Vec::new();
         for task in tasks.drain(..) {
             incoming.push(task.stop().await.unwrap());
@@ -353,6 +353,16 @@ async fn routers_independently_fund_accept_and_pay_both_directions() {
         for controller in &controllers {
             controller.flush_payments().await.unwrap();
         }
+        let mut settlement_count = 0;
+        for controller in &controllers {
+            let reports = controller.settle_all().await
+                .unwrap_or_else(|e| panic!("automatic mint settlement: {e}; errors={:?}", errors(&controllers)));
+            settlement_count += reports.len();
+            assert!(reports.iter().all(|r| r.fee_sat == 0));
+            assert_eq!(controller.locked_capital_sat().await.unwrap(), 0);
+            assert!(controller.purchases().await.unwrap().is_empty());
+        }
+        assert_eq!(settlement_count, 6);
         let mut expected = [128i64; 5];
         for (buyer, seller, purchase) in &links {
             let paid = ledgers[*seller]
@@ -381,34 +391,8 @@ async fn routers_independently_fund_accept_and_pay_both_directions() {
         for server in payment_servers {
             server.stop().await;
         }
-        drop(controllers);
-        drop(services);
         for node in &nodes {
             node.shutdown().await.unwrap();
-        }
-        for (buyer, seller, purchase) in links {
-            let receiver = FileSpilmanPaymentReceiver::load_with_keyset_refresh(
-                &root.path().join(format!("receiver-{seller}")),
-                FileSpilmanPaymentReceiverConfig::new([mint.url().to_string()]),
-            )
-            .await
-            .unwrap();
-            let closed = receiver
-                .close_cashu_spilman_channel(&purchase.channel.id)
-                .await
-                .unwrap();
-            let proofs: Vec<Proof> = serde_json::from_str(&closed.receiver_proofs_json).unwrap();
-            let token = Token::new(mint.url().parse().unwrap(), proofs, None, CurrencyUnit::Sat)
-                .to_string();
-            receive_payment_token(&wallets[seller], &token)
-                .await
-                .unwrap();
-            assert!(
-                restore_streaming_route_cashu_spilman_refund(&wallets[buyer], &purchase.channel.id)
-                    .await
-                    .unwrap()
-                    .complete
-            );
         }
         for (wallet, balance) in wallets.iter().zip(expected) {
             assert_eq!(
@@ -425,6 +409,26 @@ async fn routers_independently_fund_accept_and_pay_both_directions() {
                 .await
                 .unwrap();
         }
+        for controller in &controllers {
+            controller.settle_all().await.unwrap();
+        }
+        drop(controllers);
+        // A crash can lose our completion report after the mint closed and the
+        // payout was imported. Even if that payout has since been spent, retry
+        // must not reintroduce its old proofs as spendable wallet balance.
+        for (i, service) in services.iter().enumerate() {
+            let directory = root.path().join(format!("controller-{i}"));
+            let path = directory.join("controller.json");
+            let mut journal: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            for settlement in journal["seller_settlements"].as_object_mut().unwrap().values_mut() {
+                settlement["report"] = serde_json::Value::Null;
+            }
+            std::fs::write(path, serde_json::to_vec(&journal).unwrap()).unwrap();
+            let controller = Controller::load(&directory, policy(mint.url()), service.clone()).unwrap();
+            controller.resume_pending().await.unwrap();
+            assert_eq!(load_mint_balance(&wallets[i], mint.url()).await.unwrap().balance_sat, 0);
+        }
+        drop(services);
         assert_eq!(
             load_mint_balance(&root.path().join("collector"), mint.url())
                 .await
