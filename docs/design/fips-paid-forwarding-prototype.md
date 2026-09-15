@@ -101,10 +101,27 @@ Orderly suspension records a zero-sized next window and can resume the same
 channels/quotes without consuming unused exposure. Controllers must not erase
 missing/corrupt accounting state and silently open a fresh account.
 
-The initial wrapper rejects new admission briefly while persisting a checkpoint;
+The seller wrapper rejects new admission briefly while persisting a checkpoint;
 the node never waits for disk I/O. This is a measurable packet-loss tradeoff, not
 a performance claim. Window size, checkpoint scheduling, and retained history
 need deployment measurements before sustained traffic use.
+
+The buyer separately records unique local transport submissions to the accepted
+provider. `BuyerAuthorizer` prices that evidence using immutable accepted quotes;
+an untrusted provider report cannot authorize more than the evidence plus an
+explicitly bounded advance. Neither locally submitted bytes nor a valid channel
+signature proves that the provider forwarded them. Cumulative payments round up
+by less than one sat per channel; capacity and lifetime spending caps include it.
+
+Before calling the signer, the buyer persists the evidence and maximum possible
+signed obligation. Signing failure cannot release that reservation: a signature
+may already exist. The lifetime cap spans all retained channels and cannot reset
+on rollover. A stale claim only reproduces an existing balance. After restart,
+recorded pending sends remain unconfirmed; lost uncheckpointed evidence cannot
+support a signature and may conservatively interrupt service. Missing/corrupt
+files never mean fresh authorization. Accepted channels must start at zero and
+all signatures must go through this authorizer; existing externally signed
+channels require separate reconciliation before adoption.
 
 ## Placement
 
@@ -116,6 +133,14 @@ or wire-format change belongs in the core. Source-side buying, quote exchange,
 payment verification, durable usage and automatic downstream buying belong in
 an optional service using authenticated FSP control messages between neighbors.
 
+The optional `OriginatedSessionObserver` supplies the local sender's evidence
+after FSP sealing and before FMP link encryption. Internal packet-creation
+provenance excludes transit even when a packet claims the router's own source
+address. It reports local submission or uncertainty and does not gate sending.
+`PaidForwarder` combines upstream admission with onward buyer observation;
+unapproved inbound data cannot create a downstream purchase obligation. Only a
+direct final endpoint needs no onward forwarding agreement.
+
 Direct local control services remain accessible without transit credit. Rate
 limit discovery, onboarding and payment traffic. This is not permission for
 ordinary IP forwarding, free arbitrary FMP transit, or unbounded free probes.
@@ -126,14 +151,16 @@ request/reply records. The server accepts only configured neighbors and
 preapproved immutable channel/quote bindings. It validates Cashu and persists
 accounting outside the native packet loop. Record size, connection count, queue
 depth and request admission are capped. These control-stream acknowledgments
-are not receipts for paid data. Route negotiation and a buyer that bounds new
-signatures against its own outgoing traffic remain separate implementation work.
+are not receipts for paid data. Route negotiation, automatic channel funding,
+renewal and controller scheduling remain separate implementation work.
 
 A local integration test now sends application data through three paid native
 relays in both directions, exchanges six channels' signed updates over FIPS,
 blocks delivery after forwarding closes, excludes direct peer shortcuts, and
 redeems/spends every final wallet balance at a real local test mint. It uses
-explicit route approvals and buyer scheduling; it is not the wireless or phone
+local source/relay evidence to authorize every signature and rejects inflated
+provider claims despite spare capacity. It uses explicit route approvals and
+buyer scheduling; it is not the wireless or phone
 acceptance test. Service payloads must fit the discovered path after headers;
 queued sends can later fail MTU checks while session-control packets still travel.
 

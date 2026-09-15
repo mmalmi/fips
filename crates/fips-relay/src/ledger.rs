@@ -728,15 +728,23 @@ impl ForwardingPolicy for RelayLedger {
 }
 
 fn fingerprint(request: &ForwardingRequest<'_>) -> [u8; 32] {
+    session_fingerprint(request.source, request.destination, request.session_payload)
+}
+
+pub(crate) fn session_fingerprint(
+    source: NodeAddr,
+    destination: NodeAddr,
+    payload: &[u8],
+) -> [u8; 32] {
     let mut hash = Sha256::new();
     hash.update(b"fips-relay/session-attempt/1");
-    hash.update(request.source.as_bytes());
-    hash.update(request.destination.as_bytes());
-    hash.update(request.session_payload);
+    hash.update(source.as_bytes());
+    hash.update(destination.as_bytes());
+    hash.update(payload);
     hash.finalize().into()
 }
 
-fn validate_channel(c: &ChannelTerms) -> Result<u64, LedgerError> {
+pub(crate) fn validate_channel(c: &ChannelTerms) -> Result<u64, LedgerError> {
     let cap = c
         .capacity_sat
         .checked_mul(1_000)
@@ -754,7 +762,7 @@ fn validate_channel(c: &ChannelTerms) -> Result<u64, LedgerError> {
     Ok(cap)
 }
 
-fn validate_contract(c: &Contract, channel: &ChannelTerms) -> Result<(), LedgerError> {
+pub(crate) fn validate_contract(c: &Contract, channel: &ChannelTerms) -> Result<(), LedgerError> {
     if c.id.is_empty()
         || c.id.len() > 128
         || c.max_units == 0
@@ -768,7 +776,7 @@ fn validate_contract(c: &Contract, channel: &ChannelTerms) -> Result<(), LedgerE
     Ok(())
 }
 
-mod node_addr {
+pub(crate) mod node_addr {
     use super::*;
     pub fn serialize<S: serde::Serializer>(
         address: &NodeAddr,

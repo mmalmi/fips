@@ -18,7 +18,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const MAX_JOURNAL_BYTES: u64 = 32 * 1024 * 1024;
+pub(crate) const MAX_JOURNAL_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DurableError {
@@ -242,16 +242,7 @@ impl DurableRelay {
             ceilings: ceilings.clone(),
         };
         let bytes = serde_json::to_vec(&journal).map_err(|_| DurableError::Format)?;
-        if bytes.len() as u64 > MAX_JOURNAL_BYTES {
-            return Err(DurableError::Format);
-        }
-        let mut pending = tempfile::NamedTempFile::new_in(&self.directory)?;
-        pending.write_all(&bytes)?;
-        pending.as_file().sync_all()?;
-        pending
-            .persist(self.directory.join("ledger.json"))
-            .map_err(|e| DurableError::Io(e.error))?;
-        File::open(&self.directory)?.sync_all()?;
+        write_private_journal(&self.directory, "ledger.json", &bytes)?;
         published.ceilings = ceilings;
         published.ready = allow_next_window;
         Ok(usage)
@@ -277,7 +268,25 @@ impl ForwardingPolicy for DurableRelay {
     }
 }
 
-fn acquire_owner(directory: &Path) -> Result<File, DurableError> {
+pub(crate) fn write_private_journal(
+    directory: &Path,
+    name: &str,
+    bytes: &[u8],
+) -> Result<(), DurableError> {
+    if bytes.len() as u64 > MAX_JOURNAL_BYTES {
+        return Err(DurableError::Format);
+    }
+    let mut pending = tempfile::NamedTempFile::new_in(directory)?;
+    pending.write_all(bytes)?;
+    pending.as_file().sync_all()?;
+    pending
+        .persist(directory.join(name))
+        .map_err(|e| DurableError::Io(e.error))?;
+    File::open(directory)?.sync_all()?;
+    Ok(())
+}
+
+pub(crate) fn acquire_owner(directory: &Path) -> Result<File, DurableError> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
     let mut options = OpenOptions::new();

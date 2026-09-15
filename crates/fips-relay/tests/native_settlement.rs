@@ -7,11 +7,11 @@ use cashu::{
     nuts::{CurrencyUnit, Proof},
 };
 use cashu_service::{
-    CashuSpilmanPayment, CashuSpilmanPaymentSigner, FileSpilmanPaymentReceiver,
-    FileSpilmanPaymentReceiverConfig, FileSpilmanPaymentSigner,
-    StreamingRouteOpenCashuSpilmanChannelFromWalletRequest, create_topup_quote, load_mint_balance,
-    load_wallet_overview, open_streaming_route_cashu_spilman_channel_from_wallet,
-    receive_payment_token, restore_streaming_route_cashu_spilman_refund, send_payment_token,
+    CashuSpilmanPayment, FileSpilmanPaymentReceiver, FileSpilmanPaymentReceiverConfig,
+    FileSpilmanPaymentSigner, StreamingRouteOpenCashuSpilmanChannelFromWalletRequest,
+    create_topup_quote, load_mint_balance, load_wallet_overview,
+    open_streaming_route_cashu_spilman_channel_from_wallet, receive_payment_token,
+    restore_streaming_route_cashu_spilman_refund, send_payment_token,
     simulation::{IssuerMode, LocalMint, PaymentNetwork, VirtualClock},
 };
 use fips_core::{
@@ -21,6 +21,7 @@ use fips_core::{
     node::{ForwardingOutcome, ForwardingPolicy, ForwardingRequest},
 };
 use fips_relay::{
+    buyer::{BuyerAuthorizer, BuyerError, PaidForwarder},
     control_transport::ControlTransport,
     durable::DurableRelay,
     ledger::{BytePrice, ChannelTerms, ChannelUsage, Contract, Limits},
@@ -46,14 +47,14 @@ struct Link {
 
 #[derive(Debug)]
 struct AuditedPolicy {
-    ledger: Arc<DurableRelay>,
+    forwarding: PaidForwarder,
     peers: Vec<PeerIdentity>,
     denied: Mutex<Vec<String>>,
 }
 
 impl ForwardingPolicy for AuditedPolicy {
     fn admit(&self, request: &ForwardingRequest<'_>) -> Option<u64> {
-        let token = self.ledger.admit(request);
+        let token = self.forwarding.admit(request);
         if token.is_none() {
             let mut denied = self.denied.lock().unwrap();
             if denied.len() < 8 {
@@ -75,7 +76,7 @@ impl ForwardingPolicy for AuditedPolicy {
         token
     }
     fn complete(&self, token: u64, outcome: ForwardingOutcome) {
-        self.ledger.complete(token, outcome);
+        self.forwarding.complete(token, outcome);
     }
 }
 
@@ -103,6 +104,7 @@ async fn pay_usage(
     identities: &[PeerIdentity],
     wallets: &[PathBuf],
     links: &[Link],
+    buyers: &[Arc<BuyerAuthorizer>],
 ) {
     for link in links {
         let usage = status(
@@ -116,11 +118,40 @@ async fn pay_usage(
             .await,
         );
         let due = usage.submitted_msat.div_ceil(1_000);
-        assert!(due <= 32, "fixture buyer's explicit spending cap");
-        let payment = FileSpilmanPaymentSigner::load(&wallets[link.buyer])
+        let signer = FileSpilmanPaymentSigner::load(&wallets[link.buyer]).unwrap();
+        let buyer = &buyers[link.buyer];
+        let evidence = buyer.evidence_msat(&link.channel.id).unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .unwrap()
-            .sign_cashu_spilman_payment(&link.channel.id, due, false)
-            .unwrap();
+            .as_secs();
+        assert!(
+            matches!(
+                buyer.sign_claim(
+                    &signer,
+                    *identities[link.seller].node_addr(),
+                    &link.channel.id,
+                    evidence + 1,
+                    now
+                ),
+                Err(BuyerError::UnearnedClaim)
+            ),
+            "a provider cannot turn spare funded capacity into permission to charge"
+        );
+        let payment = buyer
+            .sign_claim(
+                &signer,
+                *identities[link.seller].node_addr(),
+                &link.channel.id,
+                usage.submitted_msat,
+                now,
+            )
+            .unwrap_or_else(|error| {
+                panic!(
+                    "buyer {} provider {} evidence={evidence} claim={} error={error}",
+                    link.buyer, link.seller, usage.submitted_msat
+                )
+            });
         let result = status(
             request(
                 &controls[link.buyer],
@@ -169,12 +200,14 @@ async fn three_native_transit_routers_redeem_both_directions_through_neighbor_co
         let mut nodes = Vec::new();
         let mut addresses = Vec::new();
         let mut ledgers = Vec::new();
+        let mut buyers = Vec::new();
         let mut audits = Vec::new();
         let mut data = Vec::new();
         let wallets: Vec<_> = (0..5)
             .map(|i| root.path().join(format!("wallet-{i}")))
             .collect();
         for (i, identity) in identities.iter().enumerate() {
+            let buyer = Arc::new(BuyerAuthorizer::create(&root.path().join(format!("buyer-{i}")), *peers[i].node_addr(), 64, Limits::default()).unwrap());
             let ledger = Arc::new(
                 DurableRelay::create(
                     &root.path().join(format!("ledger-{i}")),
@@ -198,10 +231,11 @@ async fn three_native_transit_routers_redeem_both_directions_through_neighbor_co
                 FipsEndpoint::builder()
                     .config(config)
                     .forwarding_policy({
-                        let audit = Arc::new(AuditedPolicy { ledger: ledger.clone(), peers: peers.clone(), denied: Mutex::new(Vec::new()) });
+                        let audit = Arc::new(AuditedPolicy { forwarding: PaidForwarder::new(ledger.clone(), buyer.clone()), peers: peers.clone(), denied: Mutex::new(Vec::new()) });
                         audits.push(audit.clone());
                         audit
                     })
+                    .originated_session_observer(buyer.clone())
                     .without_system_tun()
                     .bind()
                     .await
@@ -211,6 +245,7 @@ async fn three_native_transit_routers_redeem_both_directions_through_neighbor_co
             data.push(node.register_service_receiver(DATA).await.unwrap());
             nodes.push(node);
             ledgers.push(ledger);
+            buyers.push(buyer);
             let funding = create_topup_quote(&wallets[i], mint.url(), 128)
                 .await
                 .unwrap();
@@ -321,8 +356,10 @@ async fn three_native_transit_routers_redeem_both_directions_through_neighbor_co
             };
             approvals[seller].push(ApprovedAgreement {
                 channel: channel.clone(),
-                quotes: vec![quote],
+                quotes: vec![quote.clone()],
             });
+            buyers[buyer].accept_channel(*peers[seller].node_addr(), channel.clone(), 0).unwrap();
+            buyers[buyer].accept_quote(quote).unwrap();
             links.push(Link {
                 buyer,
                 seller,
@@ -422,7 +459,7 @@ async fn three_native_transit_routers_redeem_both_directions_through_neighbor_co
                             && message.data.as_slice() == payload)
                 );
             }
-            pay_usage(&controls, &peers, &wallets, &links).await;
+            pay_usage(&controls, &peers, &wallets, &links, &buyers).await;
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         for link in &links {
@@ -448,7 +485,7 @@ async fn three_native_transit_routers_redeem_both_directions_through_neighbor_co
                 assert!(peers.iter().enumerate().any(|(j, peer)| i.abs_diff(j) == 1 && peer.node_addr() == &connected.node_addr), "native data cannot create a shortcut around the paid chain");
             }
         }
-        pay_usage(&controls, &peers, &wallets, &links).await;
+        pay_usage(&controls, &peers, &wallets, &links, &buyers).await;
         // An exhausted/closed middle path cannot silently bypass native gates.
         nodes[0]
             .send_datagram(peers[4], DATA, DATA, b"blocked".to_vec())

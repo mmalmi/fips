@@ -41,6 +41,16 @@ TCP, UDP or application delivery acknowledgments inside encrypted FIPS traffic.
   preapproved agreements. Wire requests cannot choose their payer, price, grace
   or route. A blocking worker validates signatures and saves accounting while
   the transport continues processing messages. Startup checks retained bindings.
+* `BuyerAuthorizer` accepts immutable provider/channel/quote bindings and caps
+  cumulative signatures at priced local submissions plus an explicitly approved
+  advance (zero in the native test). It persists evidence and the full possible
+  obligation before invoking the signer. A lifetime spending cap covers every
+  retained channel, including replaced channels and interrupted signing. A stale
+  claim can reproduce a prior balance but cannot lower it or reset the budget.
+* `PaidForwarder` admits the upstream purchase before recording local evidence
+  for an onward purchase. Unapproved transit cannot create a buyer obligation;
+  the final direct endpoint needs no onward forwarding channel. Together with
+  the source observer, it records both source and relay purchases.
 * A separate integration test runs a real local CDK mint and Cashu Spilman
   channels. Each channel pays for two destinations with cumulative updates.
   Three relay ledgers receive gross payments of 3, 2 and 1 test sats.
@@ -55,6 +65,8 @@ TCP, UDP or application delivery acknowledgments inside encrypted FIPS traffic.
   peer checks reject shortcuts. Each relay retains a positive margin after
   downstream purchases, and all final balances are redeemed and spent again.
   The test supplies approved routes and bounded buyer scheduling explicitly.
+  Its buyers reject inflated claims even when unused channel capacity exists,
+  and every actual payment is authorized against local submission evidence.
 
 Only the local mint's Lightning backend is simulated. These test tokens have no
 external backing. `settlement` supplies submission outcomes to test exact
@@ -73,8 +85,8 @@ random loopback port. It does not use a user's wallet or contact a public mint.
 
 ## Runtime work remaining
 
-Quote negotiation, automatic onward buying, source-side spending controls tied
-to outgoing traffic, automatic checkpoint scheduling, channel renewal/settlement
+Quote negotiation, automatic onward buying, automatic checkpoint scheduling,
+channel renewal/settlement
 policy, OpenWrt packaging, Wi-Fi path verification and a phone
 customer demo remain to be implemented. The current library is not a deployed
 hotspot or a complete daemon.
@@ -98,6 +110,21 @@ against credit/capacity. If repeated failures consume the available allowance,
 automatic forwarding stops; a restart is not permission to write off that loss.
 This implementation assumes the accounting files survive the process restart.
 Never automatically replace missing/corrupt state with a newly initialized ledger.
+
+Buyer journals retain the same bounded evidence history. Pending observations
+become unconfirmed on restart; they cannot support a signature. Evidence lost
+before a checkpoint was never usable for a signature, and losing it may cause
+conservative underpayment/service interruption. A signer error retains the full
+reserved authorization because a signature may already have escaped. A journal
+write error suspends further signing. Packet observation does not wait for the
+disk/signing worker. The observer itself does not block source transmission;
+provider admission and the controller enforce service exhaustion.
+
+Sat-denominated payments round the cumulative channel amount up by less than one
+sat, including approved advances. Capacity and lifetime spending limits include
+that rounding. The authorizer assumes a newly accepted funded channel starts at
+zero and that its controller uses this authorizer for every signature; importing
+a channel previously signed elsewhere needs explicit reconciliation first.
 
 See [the design decision](../../docs/design/fips-paid-forwarding-prototype.md)
 for the adjacent-resale model, working-capital requirement and trust assumptions.
