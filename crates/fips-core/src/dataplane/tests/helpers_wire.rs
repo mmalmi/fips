@@ -120,6 +120,7 @@
         payload: Vec<u8>,
     ) -> PacketOutput {
         PacketOutput {
+            originated_observation: None,
             owner,
             counter,
             ingress_seq,

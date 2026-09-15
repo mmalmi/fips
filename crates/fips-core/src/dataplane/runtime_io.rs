@@ -369,9 +369,10 @@ impl DataplaneTurnDriver {
 
     fn admit_outbound_packet(
         &mut self,
-        packet: OutboundPacket,
+        mut packet: OutboundPacket,
         summary: &mut DataplaneRuntimeSummary,
     ) {
+        self.observe_originated_outbound(&mut packet);
         match self.mover.submit_outbound_packet(packet) {
             Ok(_) => summary.outbound_admitted += 1,
             Err(_) => summary.outbound_dropped += 1,
@@ -380,9 +381,12 @@ impl DataplaneTurnDriver {
 
     fn admit_outbound_packet_batch(
         &mut self,
-        packets: Vec<OutboundPacket>,
+        mut packets: Vec<OutboundPacket>,
         summary: &mut DataplaneRuntimeSummary,
     ) {
+        for packet in &mut packets {
+            self.observe_originated_outbound(packet);
+        }
         let packet_count = packets.len();
         crate::perf_profile::record_event(crate::perf_profile::Event::DataplaneOutboundBatchAdmit);
         crate::perf_profile::record_event_count(
@@ -411,6 +415,38 @@ impl DataplaneTurnDriver {
                 self.admit_outbound_packet_batch(batch, summary);
             }
         }
+    }
+
+    fn observe_originated_outbound(&self, packet: &mut OutboundPacket) {
+        let Some(observer) = &self.originated_session_observer else {
+            return;
+        };
+        // This marker is created only by local FSP sealing/wrapping. A received
+        // packet claiming our source address cannot manufacture this provenance.
+        if packet.originated_observation.is_some()
+            || !packet.has_fsp_send_receipt()
+            || packet.owner.protocol() != PacketProtocol::Fmp
+        {
+            return;
+        }
+        let bytes = packet.payload.as_slice();
+        if bytes.first().copied()
+            != Some(crate::protocol::LinkMessageType::SessionDatagram.to_byte())
+        {
+            return;
+        }
+        let Ok(envelope) = crate::protocol::SessionDatagramRef::decode(&bytes[1..]) else {
+            return;
+        };
+        packet.originated_observation = OriginatedSessionObservation::start(
+            observer,
+            &OriginatedSessionRequest {
+                source: envelope.src_addr,
+                destination: envelope.dest_addr,
+                next_hop: packet.owner.node_addr(),
+                session_payload: envelope.payload,
+            },
+        );
     }
 
     fn send_collected_outputs<S>(

@@ -238,6 +238,7 @@ pub(crate) enum CryptoFailureKind {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PacketOutput {
+    originated_observation: Option<OriginatedSessionObservation>,
     owner: OwnerId,
     counter: u64,
     ingress_seq: u64,
@@ -260,6 +261,12 @@ pub(crate) struct PacketOutput {
 }
 
 impl PacketOutput {
+    fn record_originated_submission(&self) {
+        if let Some(observation) = &self.originated_observation {
+            observation.submitted();
+        }
+    }
+
     pub(crate) fn owner(&self) -> OwnerId {
         self.owner
     }

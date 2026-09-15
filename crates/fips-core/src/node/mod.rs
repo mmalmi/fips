@@ -21,6 +21,7 @@ mod io_impl;
 mod lifecycle;
 mod link_registry;
 mod local_rendezvous;
+pub(crate) mod originated_observer;
 mod path_mtu;
 mod peer_error_budget;
 mod peer_lifecycle;
@@ -47,6 +48,7 @@ pub use endpoint_event::ExternalPacketIo;
 pub use error::NodeError;
 pub use forwarding_policy::{ForwardingOutcome, ForwardingPolicy, ForwardingRequest};
 pub use identity_cache::NodeDeliveredPacket;
+pub use originated_observer::{OriginatedSessionObserver, OriginatedSessionRequest};
 pub use state::NodeState;
 
 pub(crate) use crate::proto::lookup_state::{
@@ -253,6 +255,7 @@ pub struct Node {
     deferred_session_forwards: handlers::forwarding::DeferredSessionForwards,
     /// Optional application admission for native FMP transit.
     forwarding_policy: Option<std::sync::Arc<dyn ForwardingPolicy>>,
+    originated_session_observer: Option<std::sync::Arc<dyn OriginatedSessionObserver>>,
     /// Pre-routed established FMP packets accepted directly from UDP receive.
     dataplane_fast_ingress_rx: Option<DataplaneFastIngressRx>,
     /// Direct-FSP transport-address classifier published to packet ingress.

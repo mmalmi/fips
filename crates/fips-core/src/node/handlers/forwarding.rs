@@ -730,7 +730,7 @@ impl Node {
 
         let encoded = error_dg.encode();
         if let Err(e) = self
-            .send_dataplane_fmp_link_plaintext(&next_hop_addr, &encoded, false)
+            .send_dataplane_originated_session(&next_hop_addr, &encoded)
             .await
         {
             debug!(
@@ -783,7 +783,7 @@ impl Node {
 
         let encoded = error_dg.encode();
         if let Err(e) = self
-            .send_dataplane_fmp_link_plaintext(&next_hop_addr, &encoded, false)
+            .send_dataplane_originated_session(&next_hop_addr, &encoded)
             .await
         {
             debug!(

@@ -3,6 +3,7 @@
 mod recent_peers_file;
 
 pub use fips_core::node::{ForwardingOutcome, ForwardingPolicy, ForwardingRequest};
+pub use fips_core::node::{OriginatedSessionObserver, OriginatedSessionRequest};
 
 pub use recent_peers_file::{RecentPeersFileError, RecentPeersFileStore};
 

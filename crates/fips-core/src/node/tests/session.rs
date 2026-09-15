@@ -24,6 +24,7 @@ mod handshake_timeout;
 mod mtu_exceeded;
 mod mtu_notification;
 mod multihop_pmtud;
+mod originated_observer;
 mod purge_idle;
 mod rekey_coordinate_recovery;
 mod rekey_routed;

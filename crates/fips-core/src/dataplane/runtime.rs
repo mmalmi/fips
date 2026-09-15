@@ -4,6 +4,7 @@ type DataplaneDeferredRawIngress = (DataplaneRawIngress, u64);
 
 #[derive(Debug)]
 pub(crate) struct DataplaneTurnDriver {
+    originated_session_observer: Option<Arc<dyn OriginatedSessionObserver>>,
     mover: Dataplane,
     prepared_work: Vec<PreparedCryptoRun>,
     ready_slots: Vec<Arc<CryptoReadySlot>>,
@@ -103,6 +104,7 @@ impl DataplaneTurnDriver {
     pub(crate) fn new(config: AdmissionConfig) -> Self {
         Self {
             mover: Dataplane::new(config),
+            originated_session_observer: None,
             prepared_work: Vec::new(),
             ready_slots: Vec::new(),
             raw_ingress_drops: Vec::new(),

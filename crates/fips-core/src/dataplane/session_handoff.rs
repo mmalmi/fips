@@ -5,6 +5,9 @@ enum DataplaneSessionHandoffError {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+// `NoRoute` also carries ordinary transit packets. Keep their output inline to
+// avoid allocating on every routed session handoff.
+#[allow(clippy::large_enum_variant)]
 enum DataplaneSessionIngressHandoff {
     Raw {
         raw: DataplaneRawIngress,

@@ -4,6 +4,7 @@ use super::*;
 #[derive(Debug, Clone)]
 pub struct FipsEndpointBuilder {
     forwarding_policy: Option<Arc<dyn crate::node::ForwardingPolicy>>,
+    originated_session_observer: Option<Arc<dyn crate::node::OriginatedSessionObserver>>,
     config: Config,
     identity_nsec: Option<String>,
     discovery_scope: Option<String>,
@@ -47,6 +48,7 @@ impl Default for FipsEndpointBuilder {
     fn default() -> Self {
         Self {
             forwarding_policy: None,
+            originated_session_observer: None,
             config: Config::new(),
             identity_nsec: None,
             discovery_scope: None,
@@ -69,6 +71,14 @@ impl FipsEndpointBuilder {
     /// reachable independently; this does not authorize ordinary Internet use.
     pub fn forwarding_policy(mut self, policy: Arc<dyn crate::node::ForwardingPolicy>) -> Self {
         self.forwarding_policy = Some(policy);
+        self
+    }
+
+    pub fn originated_session_observer(
+        mut self,
+        observer: Arc<dyn crate::node::OriginatedSessionObserver>,
+    ) -> Self {
+        self.originated_session_observer = Some(observer);
         self
     }
 
@@ -225,6 +235,7 @@ impl FipsEndpointBuilder {
 
         let mut node = Node::new(config)?;
         node.set_forwarding_policy(self.forwarding_policy);
+        node.set_originated_session_observer(self.originated_session_observer);
         node.set_local_instance_roles(self.local_instance_roles);
         #[cfg(test)]
         if let Some(discovery) = test_nostr_discovery {

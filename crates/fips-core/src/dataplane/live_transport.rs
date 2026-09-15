@@ -81,6 +81,7 @@ impl DataplaneTransportPayloadBatch {
             let record_sent = item_cursor.saturating_add(item_count) <= sent_items;
             let output = record.output();
             if record_sent {
+                output.record_originated_submission();
                 *sent += 1;
                 if let Some(sent_receipts) = sent_receipts.as_deref_mut() {
                     sent_receipts.push(DataplaneTransportSentReceipt::from_output(output));
@@ -330,6 +331,7 @@ async fn send_non_udp_transport_plan_group(
                 .await
                 {
                     Ok(_) => {
+                        output.record_originated_submission();
                         *sent += 1;
                         if let Some(sent_receipts) = sent_receipts.as_deref_mut() {
                             sent_receipts
@@ -361,6 +363,7 @@ async fn send_non_udp_transport_plan_group(
                     ));
                 } else {
                     *sent += 1;
+                    segments.output.record_originated_submission();
                     if let Some(sent_receipts) = sent_receipts.as_deref_mut() {
                         sent_receipts.push(DataplaneTransportSentReceipt::from_output(
                             &segments.output,

@@ -10,6 +10,11 @@ TCP, UDP or application delivery acknowledgments inside encrypted FIPS traffic.
   batched/deferred sends. A five-node integration test crosses three gated
   routers in both directions, exhausts the middle allowance, accesses its local
   service while blocked, and resumes transit after replenishment.
+* The core's optional `OriginatedSessionObserver` records opaque session
+  envelopes created locally and their actual local transport outcome, including
+  native batches. A claimed source address in transit cannot create this
+  evidence. MTU rejection/cancellation remains unconfirmed. This read-only hook
+  lets a buyer bound payment authorization without introducing delivery receipts.
 * `RelayLedger` keeps persistent neighbor channels separate from destination
   quotes. Many quotes share one channel's credit and unpaid exposure. It
   reserves before enqueue and retains uncertain usage. Repeated opens, new

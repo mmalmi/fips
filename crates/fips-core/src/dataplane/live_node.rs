@@ -166,6 +166,10 @@ pub(crate) struct DataplaneLiveTurnIo<'a> {
 }
 
 impl DataplaneLiveNode {
+    pub(crate) fn set_originated_session_observer(&mut self, observer: Option<Arc<dyn OriginatedSessionObserver>>) {
+        self.driver.originated_session_observer = observer;
+    }
+
     pub(crate) fn new(config: AdmissionConfig) -> Self {
         let worker_capacity = config.total_capacity().max(1);
         Self {

@@ -134,7 +134,7 @@ impl Node {
     ) -> Result<(), NodeError> {
         let encoded = datagram.encode();
         if let Err(err) = self
-            .send_dataplane_fmp_link_plaintext(&runtime_route.next_hop_addr, &encoded, false)
+            .send_dataplane_originated_session(&runtime_route.next_hop_addr, &encoded)
             .await
         {
             let dest_addr = runtime_route.dest_addr;

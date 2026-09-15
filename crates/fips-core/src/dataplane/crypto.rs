@@ -701,6 +701,7 @@ fn execute_open_crypto_work(
     };
     packet.payload.truncate(ciphertext_offset + plaintext_len);
     CryptoResult::Opened(PacketOutput {
+        originated_observation: None,
         owner: reservation.owner,
         counter: reservation.counter,
         ingress_seq: reservation.ingress_seq,
@@ -823,6 +824,7 @@ fn execute_seal_crypto_work(
 
     match packet.post_seal {
         OutboundPostSeal::Transport => CryptoResult::Sealed(PacketOutput {
+            originated_observation: packet.originated_observation,
             owner: reservation.owner,
             counter: reservation.counter,
             ingress_seq: reservation.ingress_seq,

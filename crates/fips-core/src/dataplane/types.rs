@@ -231,6 +231,7 @@ pub(crate) enum OutboundPayloadTransform {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct OutboundPacket {
+    originated_observation: Option<OriginatedSessionObservation>,
     owner: OwnerId,
     generation: u64,
     class: PacketClass,
@@ -268,6 +269,7 @@ impl OutboundPacket {
             fsp_cleartext_prefix: Vec::new(),
             fsp_auto_coords_warmup: true,
             fsp_send_receipt: None,
+            originated_observation: None,
             send_token: None,
             activity_tick: None,
             send_epoch: OutboundSendEpoch::Current,
@@ -292,6 +294,7 @@ impl OutboundPacket {
             fsp_cleartext_prefix: Vec::new(),
             fsp_auto_coords_warmup: true,
             fsp_send_receipt: None,
+            originated_observation: None,
             send_token: None,
             activity_tick: None,
             send_epoch: OutboundSendEpoch::Current,
