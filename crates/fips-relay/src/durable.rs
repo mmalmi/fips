@@ -344,7 +344,15 @@ pub(crate) fn acquire_owner(directory: &Path) -> Result<File, DurableError> {
     #[cfg(not(unix))]
     builder.create(directory)?;
     let owner = options.open(directory.join("owner.lock"))?;
-    owner.try_lock().map_err(|_| DurableError::InUse)?;
+    // Rust 1.94's std File::try_lock excludes Android. fs2 uses the same OS
+    // lock on our desktop/router targets and also supports the phone target.
+    fs2::FileExt::try_lock_exclusive(&owner).map_err(|error| {
+        if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() {
+            DurableError::InUse
+        } else {
+            DurableError::Io(error)
+        }
+    })?;
     Ok(owner)
 }
 

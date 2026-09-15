@@ -1,0 +1,27 @@
+<resources>
+    <string name="app_title">FIPS Bench</string>
+    <string name="subtitle">Wi-Fi mesh · test funds only</string>
+    <string name="setup">Set up test account</string>
+    <string name="load_funds">Load test funds</string>
+    <string name="connect">Connect</string>
+    <string name="buy">Buy forwarding</string>
+    <string name="send">Send test data</string>
+    <string name="finish">Settle and stop</string>
+    <string name="stop">Stop</string>
+    <string name="return_funds">Prepare fund return</string>
+    <string name="refresh">Refresh</string>
+    <string name="wifi_settings">Wi-Fi settings</string>
+    <string name="queued">1,000 bytes queued. Check the destination for delivery.</string>
+    <string name="return_prepared">Test funds are ready for collection.</string>
+    <string name="need_setup">Open the bench setup link to begin.</string>
+    <string name="failed">The customer operation failed.</string>
+    <string name="ready_to_setup">Ready to set up</string>
+    <string name="ready_to_send">Forwarding ready</string>
+    <string name="connected">Connected · ready to buy</string>
+    <string name="stopped">Stopped</string>
+    <string name="profile_details">Test budget (sats): %1$d\nPrice limit (sats per KiB): %2$s</string>
+    <string name="spending">Test sats spent: %1$d · locked: %2$d</string>
+    <string name="balance">Available test sats: %1$d</string>
+    <string name="billing_note">Payments buy forwarding attempts. Delivery is best effort. Leaving this app stops traffic and preserves the account.</string>
+    <string name="stop_pending">The account is still stopping. Its network binding is retained.</string>
+</resources>

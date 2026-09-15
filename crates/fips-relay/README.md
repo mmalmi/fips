@@ -291,3 +291,7 @@ a channel previously signed elsewhere needs explicit reconciliation first.
 
 See [the design decision](../../docs/design/fips-paid-forwarding-prototype.md)
 for the adjacent-resale model, working-capital requirement and trust assumptions.
+
+The [Android bench customer](../fips-relay-app/README.md) reuses this service
+through `CustomerClient`; its platform shell only selects Wi-Fi and presents the
+customer actions. It is a foreground test tool with bounded, immutable profiles.

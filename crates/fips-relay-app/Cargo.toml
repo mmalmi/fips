@@ -1,0 +1,16 @@
+[package]
+name = "fips-relay-app"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Thin Android shell bridge for the FIPS paid relay test bench"
+
+[lib]
+crate-type = ["cdylib"]
+
+[target.'cfg(target_os = "android")'.dependencies]
+fips-relay = { path = "../fips-relay" }
+jni = "0.21"
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time"] }

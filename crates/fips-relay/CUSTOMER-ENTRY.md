@@ -64,6 +64,12 @@ offer validation, authenticated payer binding, mint/funding verification, local
 buyer evidence, account capacity or lifetime budgets. Incoming service payments
 do not grant permission to initiate purchases from an unconfigured provider.
 Return traffic requires its own sender authorization; reception creates none.
+This includes FIPS session replies: the destination must explicitly fund its
+return route even when application data primarily travels toward it. A forward
+purchase cannot authorize spending by the destination.
+
+The [Android bench customer](../fips-relay-app/README.md) embeds this same service
+and provides profile preview, funding, purchase, traffic and settlement controls.
 
 ## Wi-Fi and mint bootstrap
 

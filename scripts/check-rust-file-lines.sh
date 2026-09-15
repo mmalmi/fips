@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Keep Rust modules small enough to review and refactor safely.
+# Keep source modules small enough to review and refactor safely.
 #
 # New Rust files must stay below FIPS_RUST_FILE_MAX_LINES (default: 1000).
-# Paid-relay source modules have a tighter 600-line ceiling. Integration tests
+# Paid-relay Rust and Android source modules have a tighter 600-line ceiling. Integration tests
 # keep the workspace limit so complete end-to-end scenarios remain readable.
 # Existing oversized files are ratcheted at their current line count: they may
 # shrink, but they must not grow without deliberately updating this baseline.
@@ -25,7 +25,7 @@ fi
 
 baseline_for() {
   case "$1" in
-    crates/fips-relay/src/*)
+    crates/fips-relay/src/*|crates/fips-relay-app/src/*|crates/fips-relay-app/android/app/src/*)
       if [[ "$MAX_LINES" -lt 600 ]]; then echo "$MAX_LINES"; else echo 600; fi
       ;;
     crates/fips-core/src/dataplane/tests/aead_owner_activity.rs) echo 1042 ;;
@@ -81,11 +81,12 @@ while IFS= read -r file; do
     fi
     failures=$((failures + 1))
   fi
-done < <(find "${roots[@]}" -type f -name '*.rs' -not -path '*/target/*' | LC_ALL=C sort)
+done < <(find "${roots[@]}" -type f \( -name '*.rs' -o -name '*.java' \) \
+  -not -path '*/target/*' -not -path '*/build/*' -not -path '*/.gradle/*' | LC_ALL=C sort)
 
 if [[ "$failures" -gt 0 ]]; then
-  echo "Rust file line check failed: $failures issue(s)." >&2
+  echo "Source file line check failed: $failures issue(s)." >&2
   exit 1
 fi
 
-echo "Rust file line check passed: $checked files, max target $MAX_LINES lines, $oversized_baselines baseline exception(s)."
+echo "Source file line check passed: $checked files, max target $MAX_LINES lines, $oversized_baselines baseline exception(s)."

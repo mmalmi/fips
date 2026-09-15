@@ -6,6 +6,8 @@
 pub mod buyer;
 pub mod control_transport;
 pub mod controller;
+#[cfg(unix)]
+pub mod customer;
 pub mod durable;
 pub mod ledger;
 pub mod payment;

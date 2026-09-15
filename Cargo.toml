@@ -16,6 +16,7 @@ members = [
     "crates/fips-endpoint",
     "crates/fips-identity",
     "crates/fips-relay",
+    "crates/fips-relay-app",
     "crates/fips-sim",
 ]
 resolver = "2"

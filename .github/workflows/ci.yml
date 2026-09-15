@@ -31,7 +31,7 @@ env:
 # ─────────────────────────────────────────────────────────────────────────────
 jobs:
   rust-file-lines:
-    name: Rust file line check
+    name: Source file line check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
