@@ -171,6 +171,14 @@ impl DurableRelay {
         self.ledger.usage(id)
     }
 
+    pub fn channel_terms(&self, id: &str) -> Option<ChannelTerms> {
+        self.ledger.channel_terms(id)
+    }
+
+    pub fn contract(&self, id: &str) -> Option<Contract> {
+        self.ledger.contract(id)
+    }
+
     fn mutate<T>(
         &self,
         change: impl FnOnce(&RelayLedger) -> Result<T, LedgerError>,

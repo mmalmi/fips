@@ -1,6 +1,7 @@
 # Sender-funded forwarding prototype
 
-Status: implementation in progress; no router payment demonstration yet.
+Status: local native forwarding/control/mint integration demonstrated;
+autonomous route buying and wireless router demonstration remain in progress.
 
 ## Payer rule
 
@@ -119,6 +120,22 @@ Direct local control services remain accessible without transit credit. Rate
 limit discovery, onboarding and payment traffic. This is not permission for
 ordinary IP forwarding, free arbitrary FMP transit, or unbounded free probes.
 Internet-exit authorization is a separate application contract.
+
+The current control prototype uses the existing TCP/FIPS adapter for bounded
+request/reply records. The server accepts only configured neighbors and
+preapproved immutable channel/quote bindings. It validates Cashu and persists
+accounting outside the native packet loop. Record size, connection count, queue
+depth and request admission are capped. These control-stream acknowledgments
+are not receipts for paid data. Route negotiation and a buyer that bounds new
+signatures against its own outgoing traffic remain separate implementation work.
+
+A local integration test now sends application data through three paid native
+relays in both directions, exchanges six channels' signed updates over FIPS,
+blocks delivery after forwarding closes, excludes direct peer shortcuts, and
+redeems/spends every final wallet balance at a real local test mint. It uses
+explicit route approvals and buyer scheduling; it is not the wireless or phone
+acceptance test. Service payloads must fit the discovered path after headers;
+queued sends can later fail MTU checks while session-control packets still travel.
 
 ## Hardware proof still required
 

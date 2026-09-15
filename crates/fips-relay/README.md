@@ -28,6 +28,14 @@ TCP, UDP or application delivery acknowledgments inside encrypted FIPS traffic.
 * The payment adapter reuses `cashu-service` and checks the authenticated buyer,
   channel, capacity, denomination, expiry and signed balance before credit can
   be published. The trusted controller owns immutable agreement bindings.
+* `ControlTransport` reuses TCP/FIPS for bounded authenticated request/reply
+  records between configured neighbors. It supports 64 KiB records, bounded
+  queues/connections, per-neighbor request admission and cancellation. TCP
+  reliability here concerns control records, not paid data delivery.
+* `PaymentControl` opens, updates, reports and stops forwarding for explicitly
+  preapproved agreements. Wire requests cannot choose their payer, price, grace
+  or route. A blocking worker validates signatures and saves accounting while
+  the transport continues processing messages. Startup checks retained bindings.
 * A separate integration test runs a real local CDK mint and Cashu Spilman
   channels. Each channel pays for two destinations with cumulative updates.
   Three relay ledgers receive gross payments of 3, 2 and 1 test sats.
@@ -36,10 +44,17 @@ TCP, UDP or application delivery acknowledgments inside encrypted FIPS traffic.
   Buyer refunds are restored and signed using
   the existing recovery API; every final wallet balance is spent and redeemed
   again, and replayed receiver payouts are rejected by the mint.
+* `native_settlement` joins those components: actual endpoint datagrams cross
+  three native transit routers in both directions. Six one-way neighbor channels
+  exchange signed updates over TCP/FIPS. Closing forwarding blocks delivery;
+  peer checks reject shortcuts. Each relay retains a positive margin after
+  downstream purchases, and all final balances are redeemed and spent again.
+  The test supplies approved routes and bounded buyer scheduling explicitly.
 
 Only the local mint's Lightning backend is simulated. These test tokens have no
-external backing. The settlement test supplies submission outcomes directly to
-the ledger; it does not yet join automatic settlement to the native FIPS test.
+external backing. `settlement` supplies submission outcomes to test exact
+multi-destination prices; `native_settlement` uses real local FIPS transport.
+Neither test constitutes a wireless hardware or autonomous route-buying demo.
 
 ## Run local checks
 
@@ -53,9 +68,9 @@ random loopback port. It does not use a user's wallet or contact a public mint.
 
 ## Runtime work remaining
 
-Authenticated quote/payment exchange, automatic onward buying, source-side
-spending controls, automatic checkpoint scheduling, live native FIPS
-and Cashu integration, OpenWrt packaging, Wi-Fi path verification and a phone
+Quote negotiation, automatic onward buying, source-side spending controls tied
+to outgoing traffic, automatic checkpoint scheduling, channel renewal/settlement
+policy, OpenWrt packaging, Wi-Fi path verification and a phone
 customer demo remain to be implemented. The current library is not a deployed
 hotspot or a complete daemon.
 
@@ -64,6 +79,13 @@ and 4,096 distinct packets per contract. Reaching a limit stops admission;
 evidence is not evicted to make room. The journal is capped at 32 MiB. A deployment
 needs explicit contract retirement and a memory/throughput
 measurement before increasing these limits.
+
+Datagrams must fit the discovered path after FIPS headers are added. The native
+test uses 1,000-byte service payloads on the default 1,280-byte path. A
+1,200-byte application datagram exceeded that path once headers were included;
+the source dropped it while session control still incurred forwarding usage.
+Endpoint `send_datagram` queue acceptance alone is not proof of transmission or
+delivery. The gateway/client must enforce path limits or use a segmenting layer.
 
 The disk window limits unknown crash exposure, separately from the channel's
 unpaid grace. `lost_msat` never contributes to a claim, but remains reserved

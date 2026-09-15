@@ -333,6 +333,24 @@ impl RelayLedger {
         self.state.lock().unwrap().channels.get(id).map(|a| a.usage)
     }
 
+    pub fn channel_terms(&self, id: &str) -> Option<ChannelTerms> {
+        self.state
+            .lock()
+            .unwrap()
+            .channels
+            .get(id)
+            .map(|a| a.terms.clone())
+    }
+
+    pub fn contract(&self, id: &str) -> Option<Contract> {
+        self.state
+            .lock()
+            .unwrap()
+            .accounts
+            .get(id)
+            .map(|a| a.contract.clone())
+    }
+
     pub fn amount_due_msat(&self, id: &str) -> Option<u64> {
         self.state
             .lock()
