@@ -167,13 +167,21 @@ impl Node {
     /// [`Self::check_pending_lookups`] when each attempt's per-attempt timeout
     /// expires, using the sequence in `node.discovery.attempt_timeouts_secs`.
     pub(in crate::node) async fn maybe_initiate_lookup(&mut self, dest: &NodeAddr) {
-        self.maybe_initiate_lookup_with_purpose(dest, false).await;
+        self.maybe_initiate_lookup_with_purpose(dest, false, false).await;
+    }
+
+    /// An explicit route query needs the bounded first-contact retry ladder even
+    /// though it has no queued application packet. Startup bloom convergence is
+    /// not evidence that the requested destination is offline.
+    pub(in crate::node) async fn maybe_initiate_route_query_lookup(&mut self, dest: &NodeAddr) {
+        self.maybe_initiate_lookup_with_purpose(dest, false, true).await;
     }
 
     async fn maybe_initiate_lookup_with_purpose(
         &mut self,
         dest: &NodeAddr,
         path_recovery: bool,
+        route_query: bool,
     ) {
         let now_ms = Self::now_ms();
 
@@ -218,8 +226,8 @@ impl Node {
 
         // Keep first-contact traffic owned while startup reachability arrives.
         // The existing lookup ladder bounds retries and eventually drains it.
-        let queued_first_contact = self.pending_session_traffic.has_traffic_for(dest)
-            && self.sessions.get(dest).is_none();
+        let queued_first_contact = route_query || (self.pending_session_traffic.has_traffic_for(dest)
+            && self.sessions.get(dest).is_none());
 
         // Bloom filter pre-check: original routing skips if no peer's filter
         // contains the target. Reply-learned mode intentionally allows a
@@ -280,7 +288,7 @@ impl Node {
         if self.retry_pending.contains_key(dest) {
             self.maybe_initiate_direct_path_fallback_lookup(dest).await;
         } else {
-            self.maybe_initiate_lookup_with_purpose(dest, true).await;
+            self.maybe_initiate_lookup_with_purpose(dest, true, false).await;
         }
     }
 
@@ -452,7 +460,7 @@ impl Node {
             }
         }
 
-        self.maybe_initiate_lookup_with_purpose(dest, true).await;
+        self.maybe_initiate_lookup_with_purpose(dest, true, false).await;
     }
 
     /// Check pending lookups for next-attempt or final timeout.

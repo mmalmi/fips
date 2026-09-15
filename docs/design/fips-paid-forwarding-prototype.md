@@ -151,16 +151,42 @@ request/reply records. The server accepts only configured neighbors and
 preapproved immutable channel/quote bindings. It validates Cashu and persists
 accounting outside the native packet loop. Record size, connection count, queue
 depth and request admission are capped. These control-stream acknowledgments
-are not receipts for paid data. Route negotiation, automatic channel funding,
-renewal and controller scheduling remain separate implementation work.
+are not receipts for paid data. Automatic channel funding, acceptance, renewal
+and controller scheduling remain separate implementation work.
+
+`RouteQuotes` now follows `FipsEndpoint::resolve_next_hop`: the source uses the
+native origin planner, and each provider uses the same planner as native transit
+for that destination and ingress neighbor. An unresolved route starts bounded
+FIPS discovery using the destination's public identity, with no queued paid
+application packet. Explicit route queries retain the normal startup retry
+ladder while bloom reachability converges; they do not turn that interval into
+an immediate offline-destination backoff.
+
+Providers recursively request a next-hop offer and add their own positive fee.
+The prototype uses one accepted mint and a common 1,024-byte price quantum,
+checked addition, local price ceilings, and downstream expiry/byte minima.
+Requests retain their original deadline and reject repeated routers or more than
+eight paid hops. Offered paths describe the proposed route, not proof of transit.
+The receiver key comes from the authenticated neighbor's offer.
+
+Pending offers are bounded to 128 total and 16 per buyer, with eight concurrent
+handler jobs and a maximum 30-second request deadline. Pending offers may expire
+or disappear on restart; they have created no financial obligation. Accepted
+bindings must be persisted separately in the existing durable journals. Binding
+an offer to a channel is idempotent, preserves channel terms and grants no
+credit. The acceptance controller must recheck the retained offer's native next
+hop, verify funding, arrange onward service and persist the accepted bindings
+before enabling forwarding. If the route changes later, the existing forwarding
+policy rejects the unapproved next hop until a new agreement is accepted.
 
 A local integration test now sends application data through three paid native
 relays in both directions, exchanges six channels' signed updates over FIPS,
 blocks delivery after forwarding closes, excludes direct peer shortcuts, and
 redeems/spends every final wallet balance at a real local test mint. It uses
 local source/relay evidence to authorize every signature and rejects inflated
-provider claims despite spare capacity. It uses explicit route approvals and
-buyer scheduling; it is not the wireless or phone
+provider claims despite spare capacity. The paths, prices and contracts now come
+from recursive quote exchange; the fixture still orchestrates channel funding,
+acceptance and buyer scheduling. It is not the wireless or phone
 acceptance test. Service payloads must fit the discovered path after headers;
 queued sends can later fail MTU checks while session-control packets still travel.
 

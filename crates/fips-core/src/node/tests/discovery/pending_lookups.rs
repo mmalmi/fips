@@ -1,5 +1,39 @@
 use super::*;
 
+#[tokio::test]
+async fn endpoint_route_queries_keep_bounded_discovery_without_queued_application_data() {
+    let mut config = Config::new();
+    config.node.discovery.attempt_timeouts_secs = vec![1, 1];
+    let mut node = Node::new(config).unwrap();
+    let destination = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+    let target = *destination.node_addr();
+    let now = Node::now_ms();
+    for _ in 0..3 {
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        node.handle_endpoint_control(crate::node::NodeEndpointControlCommand::ResolveNextHop {
+            destination,
+            previous_hop: None,
+            response_tx,
+        })
+        .await;
+        assert!(response_rx.await.unwrap().is_none());
+    }
+    assert!(
+        node.is_explicit_target_identity(&target),
+        "need the public key to verify discovery"
+    );
+    assert!(node.pending_lookups.contains_key(&target));
+    assert_eq!(node.stats().discovery.req_deduplicated, 2);
+    assert!(!node.pending_session_traffic.has_traffic_for(&target));
+    assert!(node.sessions.get(&target).is_none());
+    node.check_pending_lookups(now + 1_100).await;
+    node.check_pending_lookups(now + 2_200).await;
+    assert!(
+        !node.pending_lookups.contains_key(&target),
+        "queries retain the existing finite retry ladder"
+    );
+}
+
 #[test]
 fn pending_discovery_lookup_queue_owns_dedup_and_capacity() {
     let mut lookups = crate::node::handlers::discovery::PendingDiscoveryLookups::default();

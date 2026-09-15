@@ -875,6 +875,31 @@ impl FipsEndpoint {
         .await
     }
 
+    /// Resolve the currently selected authenticated next hop. With an ingress
+    /// neighbor this uses the same planner as transit forwarding; without one it
+    /// uses local-origin routing. The destination's public identity is registered
+    /// so lookup responses can be verified. Missing coordinates trigger bounded FIPS
+    /// lookup and return `None`; callers may query again after discovery progresses.
+    /// This does not send application traffic, reserve a route or override later
+    /// route changes. An application must revalidate before accepting new terms.
+    pub async fn resolve_next_hop(
+        &self,
+        destination: PeerIdentity,
+        previous_hop: Option<NodeAddr>,
+    ) -> Result<Option<PeerIdentity>, FipsEndpointError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.control(
+            "resolve next hop",
+            NodeEndpointControlCommand::ResolveNextHop {
+                destination,
+                previous_hop,
+                response_tx,
+            },
+            response_rx,
+        )
+        .await
+    }
+
     /// Snapshot authenticated peers known by the endpoint.
     pub async fn peers(&self) -> Result<Vec<FipsEndpointPeer>, FipsEndpointError> {
         let (response_tx, response_rx) = oneshot::channel();

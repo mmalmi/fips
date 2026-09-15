@@ -51,6 +51,18 @@ TCP, UDP or application delivery acknowledgments inside encrypted FIPS traffic.
   for an onward purchase. Unapproved transit cannot create a buyer obligation;
   the final direct endpoint needs no onward forwarding channel. Together with
   the source observer, it records both source and relay purchases.
+* `RouteQuotes` asks the native FIPS planner for the next hop, recursively asks
+  that neighbor for an offer and adds the local fee. Requests carry the
+  destination's public identity so lookup responses can be verified before any
+  application traffic starts. Prices share a 1,024-byte quantum, with checked
+  addition, local rate ceilings and expiry/byte limits inherited downstream.
+  Paths reject repeated routers and stop at eight paid hops. One deadline covers
+  the whole request. Pending offers and concurrent work are bounded.
+* Retained offers belong to their authenticated buyer and produce deterministic
+  contract IDs when bound to a channel. The controller can recheck the actual
+  native next hop. Offers alone grant no credit or forwarding. A fixed channel
+  grace limit is independent of destination quotes, so quoting another route
+  cannot increase a relationship's unpaid allowance.
 * A separate integration test runs a real local CDK mint and Cashu Spilman
   channels. Each channel pays for two destinations with cumulative updates.
   Three relay ledgers receive gross payments of 3, 2 and 1 test sats.
@@ -64,7 +76,8 @@ TCP, UDP or application delivery acknowledgments inside encrypted FIPS traffic.
   exchange signed updates over TCP/FIPS. Closing forwarding blocks delivery;
   peer checks reject shortcuts. Each relay retains a positive margin after
   downstream purchases, and all final balances are redeemed and spent again.
-  The test supplies approved routes and bounded buyer scheduling explicitly.
+  Paths, prices and contract terms come from recursive native quote exchange.
+  The test still orchestrates channel funding, acceptance and buyer scheduling.
   Its buyers reject inflated claims even when unused channel capacity exists,
   and every actual payment is authorized against local submission evidence.
 
@@ -85,8 +98,8 @@ random loopback port. It does not use a user's wallet or contact a public mint.
 
 ## Runtime work remaining
 
-Quote negotiation, automatic onward buying, automatic checkpoint scheduling,
-channel renewal/settlement
+Automatic onward channel funding/acceptance, checkpoint scheduling, and channel
+renewal/settlement
 policy, OpenWrt packaging, Wi-Fi path verification and a phone
 customer demo remain to be implemented. The current library is not a deployed
 hotspot or a complete daemon.

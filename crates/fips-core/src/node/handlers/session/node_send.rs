@@ -130,6 +130,33 @@ impl Node {
         command: NodeEndpointControlCommand,
     ) -> Option<NetworkRebindRequest> {
         match command {
+            NodeEndpointControlCommand::ResolveNextHop {
+                destination,
+                previous_hop,
+                response_tx,
+            } => {
+                if !self.register_endpoint_identity(
+                    *destination.node_addr(),
+                    destination.pubkey_full(),
+                ) {
+                    let _ = response_tx.send(None);
+                    return None;
+                }
+                let destination = *destination.node_addr();
+                let next = match previous_hop {
+                    Some(previous) => match self.plan_transit_next_hop(&destination, &previous) {
+                        crate::node::route_impl::TransitNextHopPlan::Route(next) => {
+                            self.peers.get(&next).map(|p| *p.identity())
+                        }
+                        _ => None,
+                    },
+                    None => self.find_next_hop(&destination).map(|p| *p.identity()),
+                };
+                if next.is_none() && destination != *self.node_addr() {
+                    self.maybe_initiate_route_query_lookup(&destination).await;
+                }
+                let _ = response_tx.send(next);
+            }
             NodeEndpointControlCommand::UpdatePeers { peers, response_tx } => {
                 let result = self.update_peers(peers).await;
                 let _ = response_tx.send(result);

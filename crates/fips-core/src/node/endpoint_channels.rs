@@ -235,6 +235,11 @@ impl NodeEndpointDataBatch {
 /// Control commands accepted by the node endpoint data service.
 #[derive(Debug)]
 pub(crate) enum NodeEndpointControlCommand {
+    ResolveNextHop {
+        destination: PeerIdentity,
+        previous_hop: Option<NodeAddr>,
+        response_tx: tokio::sync::oneshot::Sender<Option<PeerIdentity>>,
+    },
     PeerSnapshot {
         response_tx: tokio::sync::oneshot::Sender<Vec<NodeEndpointPeer>>,
     },

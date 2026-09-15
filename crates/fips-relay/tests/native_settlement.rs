@@ -1,6 +1,6 @@
 //! Composes native FMP transit, authenticated TCP/FIPS payment control,
 //! durable accounting, and real local-mint redemption. Route approvals and
-//! buyer scheduling are explicit fixture inputs, not autonomous route buying.
+//! buyer scheduling remain explicit; route quotes are negotiated across native hops.
 
 use cashu::{
     Token,
@@ -24,10 +24,11 @@ use fips_relay::{
     buyer::{BuyerAuthorizer, BuyerError, PaidForwarder},
     control_transport::ControlTransport,
     durable::DurableRelay,
-    ledger::{BytePrice, ChannelTerms, ChannelUsage, Contract, Limits},
+    ledger::{ChannelTerms, ChannelUsage, Limits},
     payment_control::{
         ApprovedAgreement, PaymentControl, PaymentRequest, PaymentResponse, PaymentServer,
     },
+    route_quotes::{QuotePolicy, QuoteServer, RouteQuotes},
 };
 use std::{
     path::PathBuf,
@@ -42,6 +43,7 @@ struct Link {
     buyer: usize,
     seller: usize,
     channel: ChannelTerms,
+    contract_id: String,
     opening: CashuSpilmanPayment,
 }
 
@@ -306,66 +308,47 @@ async fn three_native_transit_routers_redeem_both_directions_through_neighbor_co
                 .unwrap(),
             );
         }
+        let mut quote_services = Vec::new();
+        let mut quote_servers = Vec::new();
+        for (i, receiver) in receivers.iter().enumerate() {
+            let neighbors = peers.iter().enumerate().filter(|(j, _)| i.abs_diff(*j) == 1).map(|(_, peer)| *peer).collect();
+            let (control, incoming) = ControlTransport::start(nodes[i].clone(), SERVICE + 2, neighbors, i as u64 + 30).await.unwrap();
+            let service = Arc::new(RouteQuotes::new(nodes[i].clone(), Arc::new(control), QuotePolicy {
+                mint_url: mint.url().to_string(), receiver_pubkey_hex: receiver.receiver_pubkey_hex().to_string(), fee_msat_per_kib: 1_024, max_rate_msat_per_kib: 8_192, lifetime_secs: 300, max_units: 20_000, capacity_sat: 32, grace_msat: 16_384,
+            }).unwrap());
+            quote_servers.push(QuoteServer::start(service.clone(), incoming));
+            quote_services.push(service);
+        }
         let mut approvals: Vec<Vec<ApprovedAgreement>> = (0..5).map(|_| Vec::new()).collect();
         let mut links = Vec::new();
-        for (buyer, seller, destination, next, rate) in [
-            (0, 1, 4, 2, 3),
-            (1, 2, 4, 3, 2),
-            (2, 3, 4, 4, 1),
-            (4, 3, 0, 2, 3),
-            (3, 2, 0, 1, 2),
-            (2, 1, 0, 0, 1),
-        ] {
-            let opened = open_streaming_route_cashu_spilman_channel_from_wallet(
-                &wallets[buyer],
-                StreamingRouteOpenCashuSpilmanChannelFromWalletRequest {
-                    mint_url: mint.url().to_string(),
-                    receiver_pubkey_hex: receivers[seller].receiver_pubkey_hex().to_string(),
-                    capacity_sat: 32,
-                    expiry_unix: now + 600,
-                    max_amount_per_output: 0,
-                    unit: "sat".into(),
-                    opening_paid_msat: 0,
-                    keyset_id: None,
-                    keyset_info_json: None,
-                    client_request_id: Some(format!("native-{buyer}-{seller}")),
-                    route_created_at_unix: Some(now),
-                },
-            )
-            .await
-            .unwrap();
-            let channel = ChannelTerms {
-                id: opened.channel.channel_id,
-                buyer: *peers[buyer].node_addr(),
-                mint_url: mint.url().to_string(),
-                expires_unix: now + 540,
-                capacity_sat: 32,
-                grace_msat: rate * 4_096,
-            };
-            let quote = Contract {
-                id: format!("native-{buyer}-{seller}"),
-                channel_id: channel.id.clone(),
-                destination: *peers[destination].node_addr(),
-                next_hop: *peers[next].node_addr(),
-                expires_unix: now + 300,
-                price: BytePrice {
-                    msat: rate,
-                    per_bytes: 1,
-                },
-                max_units: 20_000,
-            };
-            approvals[seller].push(ApprovedAgreement {
-                channel: channel.clone(),
-                quotes: vec![quote.clone()],
-            });
-            buyers[buyer].accept_channel(*peers[seller].node_addr(), channel.clone(), 0).unwrap();
-            buyers[buyer].accept_quote(quote).unwrap();
-            links.push(Link {
-                buyer,
-                seller,
-                channel,
-                opening: opened.channel.payment,
-            });
+        for (source, destination) in [(0, 4), (4, 0)] {
+            let mut offer = quote_services[source].request_route(peers[destination]).await.unwrap();
+            assert_eq!(offer.price.msat, 3_072);
+            let mut buyer = source;
+            loop {
+                let seller = peers.iter().position(|peer| peer.node_addr() == &offer.provider).unwrap();
+                assert!(quote_services[seller].route_still_matches(&offer).await.unwrap());
+                let downstream = quote_services[seller].downstream_offer(peers[buyer], &offer.id).unwrap();
+                // Fixture orchestration still funds/accepts the chain. Every path,
+                // provider, price and quote now comes from native peer negotiation.
+                let opened = open_streaming_route_cashu_spilman_channel_from_wallet(
+                    &wallets[buyer],
+                    StreamingRouteOpenCashuSpilmanChannelFromWalletRequest {
+                        mint_url: offer.mint_url.clone(), receiver_pubkey_hex: offer.receiver_pubkey_hex.clone(), capacity_sat: offer.capacity_sat, expiry_unix: now + 600,
+                        max_amount_per_output: 0, unit: "sat".into(), opening_paid_msat: 0, keyset_id: None, keyset_info_json: None,
+                        client_request_id: Some(format!("native-{buyer}-{seller}")), route_created_at_unix: Some(now),
+                    },
+                ).await.unwrap();
+                let channel = ChannelTerms { id: opened.channel.channel_id, buyer: *peers[buyer].node_addr(), mint_url: offer.mint_url.clone(), expires_unix: now + 540, capacity_sat: offer.capacity_sat, grace_msat: offer.grace_msat };
+                let quote = quote_services[seller].bind_offer(peers[buyer], &offer.id, &channel).unwrap();
+                approvals[seller].push(ApprovedAgreement { channel: channel.clone(), quotes: vec![quote.clone()] });
+                buyers[buyer].accept_channel(*peers[seller].node_addr(), channel.clone(), 0).unwrap();
+                buyers[buyer].accept_quote(quote.clone()).unwrap();
+                links.push(Link { buyer, seller, channel, contract_id: quote.id, opening: opened.channel.payment });
+                let Some(next) = downstream else { break; };
+                buyer = seller;
+                offer = next;
+            }
         }
         let mut controls = Vec::new();
         let mut servers = Vec::new();
@@ -478,7 +461,7 @@ async fn three_native_transit_routers_redeem_both_directions_through_neighbor_co
                 "every forwarder must submit native traffic"
             );
             assert_eq!(usage.lost_msat, 0);
-            assert!(ledgers[link.seller].usage(&format!("native-{}-{}", link.buyer, link.seller)).unwrap().submitted_units >= 4_000);
+            assert!(ledgers[link.seller].usage(&link.contract_id).unwrap().submitted_units >= 4_000);
         }
         for (i, node) in nodes.iter().enumerate() {
             for connected in node.peers().await.unwrap().iter().filter(|peer| peer.connected) {
@@ -514,6 +497,8 @@ async fn three_native_transit_routers_redeem_both_directions_through_neighbor_co
             expected[1..4].iter().all(|balance| *balance > 128),
             "all three relays retain a margin after buying downstream"
         );
+        for server in quote_servers { server.stop().await; }
+        drop(quote_services);
         for server in servers {
             server.stop().await;
         }
