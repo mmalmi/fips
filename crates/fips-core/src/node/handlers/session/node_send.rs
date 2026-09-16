@@ -130,6 +130,22 @@ impl Node {
         command: NodeEndpointControlCommand,
     ) -> Option<NetworkRebindRequest> {
         match command {
+            NodeEndpointControlCommand::SetSourceRoute {
+                destination,
+                next_hop,
+                response_tx,
+            } => {
+                let result = self.set_endpoint_source_route(destination, next_hop);
+                let _ = response_tx.send(result);
+            }
+            NodeEndpointControlCommand::SourceRouteQuality {
+                destination,
+                feedback_window_ms,
+                response_tx,
+            } => {
+                let quality = self.endpoint_source_route_quality(destination, feedback_window_ms);
+                let _ = response_tx.send(quality);
+            }
             NodeEndpointControlCommand::ResolveNextHop {
                 destination,
                 previous_hop,

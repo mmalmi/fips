@@ -32,8 +32,10 @@ mod builder;
 mod nostr_api;
 mod receive;
 mod recent_peers;
+mod routing;
 mod service_receiver;
 mod status;
+pub use routing::SourceRouteQuality;
 
 #[cfg(test)]
 mod tests;

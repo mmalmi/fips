@@ -110,6 +110,18 @@ reachable mint; the no-mint startup evidence is for the service directly.
 
 ## Cheapest routes that work
 
+Core now exposes native `source_route_quality` and explicit `set_source_route`
+first-hop bindings for an embedding controller. A four-endpoint SimNetwork
+diamond tests actual forwarding and MMP feedback in both Tree and ReplyLearned
+modes: a transit blackhole with healthy neighbor links times out, and an
+explicit carrier switch restores delivery and reports. Binding tests cover
+64-entry capacity, authenticated-neighbor admission, unchanged transit routing,
+cached-output replacement, failure without fallback, and same-hop feedback
+invalidation. See [source route API](../fips-core/SOURCE-ROUTES.md) for limits.
+This is groundwork: the relay does not yet compare monetary offers or select
+the cheapest working path. No prices, channels, payments or radio links are
+involved in this core simulation.
+
 Price-aware route selection is an explicit requirement, not proven by simply
 accumulating prices along the native planner's chosen next hops. Reuse FIPS's
 existing MMP link/session receiver reports, RTT/loss/goodput/ETX estimates,

@@ -88,7 +88,7 @@ impl Node {
             || update
                 .next_hop
                 .is_some_and(|next_hop| self.dataplane_has_fmp_owner(&next_hop));
-        if !(route_ready && next_hop_ready)
+        if !(route_ready && next_hop_ready || self.source_routes.contains_key(node_addr))
             && self
                 .dataplane
                 .fsp_owner_next_hop(node_addr)

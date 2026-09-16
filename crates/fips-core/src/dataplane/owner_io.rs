@@ -465,6 +465,7 @@ impl OwnerState {
         }
         if invalidated {
             self.fsp_mmp_path_changed_since_report = true;
+            self.last_direct_path_validation_activity = None;
             self.last_delivery_report_activity = None;
             self.last_delivery_report_next_hop = None;
             self.last_delivery_report_cumulative_packets_recv = None;

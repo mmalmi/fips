@@ -90,6 +90,6 @@ pub use endpoint::{
     FipsEndpointPeer, FipsEndpointRelayStatus, FipsEndpointServiceDatagram,
     FipsEndpointServiceReceiver, LocalServiceRegistrationError,
     RECENT_PEERS_MAX_ENDPOINTS_PER_PEER, RECENT_PEERS_MAX_PEERS, RECENT_PEERS_VERSION, RecentPeer,
-    RecentPeerEndpoint, RecentPeerTransport, RecentPeers, RecentPeersError,
+    RecentPeerEndpoint, RecentPeerTransport, RecentPeers, RecentPeersError, SourceRouteQuality,
 };
 pub use node::{ExternalPacketIo, Node, NodeDeliveredPacket, NodeError, NodeState};

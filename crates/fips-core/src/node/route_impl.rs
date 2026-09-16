@@ -43,6 +43,9 @@ impl Node {
 
     /// Find next hop for a destination node address.
     ///
+    /// An explicit endpoint source binding takes precedence and fails closed
+    /// when its neighbor cannot send. Transit uses the native planner below.
+    ///
     /// Routing priority:
     /// 1. Destination is self → `None` (local delivery)
     /// 2. Destination is a healthy direct peer → that peer. A known fallback
@@ -68,6 +71,13 @@ impl Node {
     /// `CoordsRequired` back to the source when `None` is returned for a
     /// non-local destination.
     pub fn find_next_hop(&mut self, dest_node_addr: &NodeAddr) -> Option<&ActivePeer> {
+        if let Some(next) = self.source_routes.get(dest_node_addr) {
+            return self.peers.get(next).filter(|p| p.can_send());
+        }
+        self.find_native_next_hop(dest_node_addr)
+    }
+
+    fn find_native_next_hop(&mut self, dest_node_addr: &NodeAddr) -> Option<&ActivePeer> {
         // 1. Local delivery
         if dest_node_addr == self.node_addr() {
             return None;
@@ -393,7 +403,7 @@ impl Node {
         }
 
         let Some(next_hop_addr) = self
-            .find_next_hop(dest_node_addr)
+            .find_native_next_hop(dest_node_addr)
             .map(|peer| *peer.node_addr())
         else {
             return TransitNextHopPlan::NoRoute;

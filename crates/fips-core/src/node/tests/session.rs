@@ -34,6 +34,7 @@ mod retransmit_harness;
 mod route_metrics;
 #[cfg(feature = "sim-transport")]
 mod sim_harness;
+mod source_routes;
 mod sparse_recovery;
 mod tun_outbound_core;
 mod tun_outbound_tail;

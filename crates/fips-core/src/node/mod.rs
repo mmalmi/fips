@@ -35,6 +35,7 @@ pub(crate) mod session;
 mod session_access_impl;
 mod session_registry;
 pub(crate) mod session_wire;
+mod source_routes;
 mod state;
 pub(crate) mod stats;
 pub(crate) mod stats_history;
@@ -256,6 +257,7 @@ pub struct Node {
     deferred_session_forwards: handlers::forwarding::DeferredSessionForwards,
     /// Optional application admission for native FMP transit.
     forwarding_policy: Option<std::sync::Arc<dyn ForwardingPolicy>>,
+    source_routes: HashMap<NodeAddr, NodeAddr>,
     originated_session_observer: Option<std::sync::Arc<dyn OriginatedSessionObserver>>,
     /// Pre-routed established FMP packets accepted directly from UDP receive.
     dataplane_fast_ingress_rx: Option<DataplaneFastIngressRx>,

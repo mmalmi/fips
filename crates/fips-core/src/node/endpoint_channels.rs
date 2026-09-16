@@ -235,6 +235,16 @@ impl NodeEndpointDataBatch {
 /// Control commands accepted by the node endpoint data service.
 #[derive(Debug)]
 pub(crate) enum NodeEndpointControlCommand {
+    SetSourceRoute {
+        destination: PeerIdentity,
+        next_hop: Option<PeerIdentity>,
+        response_tx: tokio::sync::oneshot::Sender<Result<(), NodeError>>,
+    },
+    SourceRouteQuality {
+        destination: NodeAddr,
+        feedback_window_ms: u64,
+        response_tx: tokio::sync::oneshot::Sender<crate::endpoint::SourceRouteQuality>,
+    },
     ResolveNextHop {
         destination: PeerIdentity,
         previous_hop: Option<NodeAddr>,

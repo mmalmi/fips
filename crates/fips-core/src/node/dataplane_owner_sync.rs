@@ -345,9 +345,12 @@ impl Node {
                 .is_some_and(|peer| peer.can_send())
                 && self.dataplane_has_fmp_owner(next_hop)
         });
-        let Some(next_hop) = selected_direct
-            .or(proven_next_hop)
-            .or(selected_next_hop)
+        let next = if self.source_routes.contains_key(node_addr) {
+            selected_next_hop
+        } else {
+            selected_direct.or(proven_next_hop).or(selected_next_hop)
+        };
+        let Some(next_hop) = next
         else {
             return DataplaneFspOwnerRouteUpdate {
                 routes: DataplaneLiveOwnerRoutes::new(),
