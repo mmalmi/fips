@@ -1,5 +1,6 @@
 //! Fund adjacent purchases and authorize cumulative outgoing payments.
 use super::*;
+use cashu_service::open_streaming_route_cashu_spilman_channel_from_wallet;
 
 impl Controller {
     pub async fn open_route(&self, destination: PeerIdentity) -> Result<RouteAccess, String> {
@@ -100,19 +101,7 @@ impl Controller {
         let funded = if let Some(funded) = f.funded.clone() {
             funded
         } else {
-            let request = StreamingRouteOpenCashuSpilmanChannelFromWalletRequest {
-                mint_url: self.policy.mint_url.clone(),
-                receiver_pubkey_hex: f.receiver_pubkey_hex.clone(),
-                capacity_sat: f.capacity_sat,
-                expiry_unix: f.expires_unix.checked_add(60).ok_or("expiry overflow")?,
-                max_amount_per_output: 0,
-                unit: "sat".into(),
-                opening_paid_msat: 0,
-                keyset_id: None,
-                keyset_info_json: None,
-                client_request_id: Some(f.id.clone()),
-                route_created_at_unix: Some(f.created_unix),
-            };
+            let request = f.wallet_request(&self.policy)?;
             let directory = self.services.wallet_directory.clone();
             let runtime = tokio::runtime::Handle::current();
             // The upstream wallet's file-store future is intentionally !Send.
@@ -130,27 +119,15 @@ impl Controller {
             })
             .await?;
             let opened = opened?;
-            let funded = Funded {
-                terms: ChannelTerms {
-                    id: opened.channel.channel_id,
-                    buyer: *self.services.endpoint.node_addr(),
-                    mint_url: self.policy.mint_url.clone(),
-                    expires_unix: f.expires_unix,
-                    capacity_sat: f.capacity_sat,
-                    grace_msat: f.grace_msat,
-                },
-                opening: opened.channel.payment,
-            };
+            let funded = f.funded_channel(
+                *self.services.endpoint.node_addr(),
+                &self.policy,
+                opened.channel,
+            );
             let saved = funded.clone();
-            let id = f.id.clone();
-            self.change(move |j| {
-                j.funding
-                    .get_mut(&id)
-                    .ok_or("funding intent missing")?
-                    .funded = Some(saved);
-                Ok(())
-            })
-            .await?;
+            let intent = f.clone();
+            self.change(move |j| Self::record_funding(j, intent, saved))
+                .await?;
             funded
         };
         let buyer = self.services.buyer.clone();

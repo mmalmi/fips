@@ -182,6 +182,16 @@ exact offer and funding intent across restart. An expired offer or unfinished
 renewal may still require explicit recovery; the monitor never discards funds
 to bypass one. Watch polling yields to existing channel renewal when due.
 
+Background recovery first reconciles unresolved funding intents against the
+local wallet's committed channel records, even if their offers have expired,
+are paused, or are no longer retained. It uses the original request identity,
+receiver, mint, capacity and expiry. This step cannot contact the mint, spend
+another token, accept a quote or activate a route. Missing or conflicting records
+keep their capital reservation; preserve the entire state directory for
+reconciliation. Recovering a channel record does not refund it or renew routing
+permission. An orphan channel without an accepted contract still needs separate
+refund/reconciliation work; automatic expiry refunds are not implemented.
+
 `settle` pauses route watches and renewals, seals outgoing channels, completes mint closure and
 recovers refunds. `pause_renewals` and `resume_renewals` control replacement work
 without deleting saved intents. All commands are local administrative actions;

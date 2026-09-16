@@ -77,4 +77,32 @@ pub(super) async fn exercise(
         1
     );
     server.stop().await;
+    // The next phase sends bare datagrams without retransmission. Observe the
+    // controllers paying for these quotes first: an immediate burst can exceed
+    // the shared unpaid allowance before its scheduled payment is verified.
+    let due: Vec<_> = links
+        .iter()
+        .map(|(_, seller, p)| {
+            ledgers[*seller]
+                .channel_usage(&p.channel.id)
+                .unwrap()
+                .submitted_msat
+        })
+        .collect();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if links.iter().zip(&due).all(|((_, seller, p), due)| {
+                ledgers[*seller]
+                    .channel_usage(&p.channel.id)
+                    .unwrap()
+                    .paid_msat
+                    >= *due
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("scheduled payments must cover the forwarded quote traffic");
 }

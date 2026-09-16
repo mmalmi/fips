@@ -182,6 +182,9 @@ Strict relay and Android ARM64 linting, default builds, formatting and the
   verifies upstream funding before committing onward capital, and obtains
   downstream acceptance before enabling upstream forwarding. Incomplete funding
   locks its full intended capacity against a separate working-capital limit.
+  Background recovery uses the existing wallet recovery API to find committed
+  channels even after quote expiry or pause, without spending again or enabling
+  routing. Missing records retain their reservation; orphan refunds remain work.
 * Each controller periodically requests usage and sends cumulative payments
   through `BuyerAuthorizer`. Funding-proof retries use the same durable signing
   gate. Background recovery resumes retained requests without allocating fresh

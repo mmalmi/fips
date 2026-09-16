@@ -32,6 +32,45 @@ real-money operation and public deployment are separate authorization decisions.
    procedures, supported-link/architecture matrix, and controlled router/Pixel
    regression with test funds conserved. Update the local TollGate proposal.
 
+## Funding recovery after quote expiry
+
+Recovery now looks up wallet-committed channels before applying route expiry and
+pause checks. Opening and recovery share the same immutable wallet request. The
+existing Cashu SDK recovery operation performs no mint requests and cannot open
+another channel. A successful lookup saves the original funding identity without
+accepting a quote, activating forwarding or releasing reserved capital. Missing
+and conflicting records retain their reservations. No new message, journal field
+or dependency is added.
+
+Two journal tests exercise durable, repeatable recording and rejection of changed
+funding intent or conflicting channel/payment records. The live five-node
+baseline removes the controller's funded result after the wallet has committed
+it, then exercises missing wallet identity, changed receiver, expired offer,
+paused offer and absent offer cases. Each case repeats after controller reload,
+checking unchanged wallet balance, capital reservation and acceptance counters.
+The recovered wallet opening is then used for ordinary acceptance, paid quote
+traffic, application traffic and final settlement in the enclosing scenario.
+The quote phase also waits for the controllers' scheduled payments to cover its
+submitted traffic before the separate datagram phase. An immediate burst can
+otherwise exhaust the shared unpaid allowance before replenishment. It neither
+forces a payment nor changes production credit limits.
+
+This covers the wallet-committed/controller-unrecorded boundary. It does not
+establish recovery after every mint-response or power-loss boundary, refund an
+orphan channel, or renew expired route authorization. Funding lost before the
+wallet committed its channel, automatic expiry refunds, and bounded financial
+history retirement remain work.
+
+Run `cargo test -p fips-relay --lib controller::funding::tests` and
+`cargo test -p fips-relay --test controller`.
+
+Verification passes 70 library tests and all seven controller-target tests across
+runs. The full controller run passed six tests; the affected baseline passed
+after correcting fixture serialization and observing automatic quote payments
+before the separate data phase. All live scenarios conserve their test funds.
+Strict all-feature/all-target relay Clippy, formatting and the 669-file size gate
+also pass. No hardware or performance acceptance is claimed for this change.
+
 ## Concurrent transition reservations
 
 Route-change and renewal workers now reserve shared channels in the durable

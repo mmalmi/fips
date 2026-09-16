@@ -9,7 +9,12 @@ impl Controller {
     /// allocate a new funding identity or another channel. Expired/changed routes
     /// remain stopped until a separate replacement agreement is authorized.
     pub async fn resume_pending(&self) -> Result<(), String> {
-        let mut first_error = self.resume_route_changes().await.err();
+        // Recover financial identity before applying quote expiry/pause gates.
+        // Recovering a committed channel never authorizes route activation.
+        let mut first_error = self.recover_funding().await.err();
+        if let Err(error) = self.resume_route_changes().await {
+            first_error.get_or_insert(error);
+        }
         let snapshot = self.snapshot().await?;
         let paused_offers: HashSet<_> = snapshot
             .requested

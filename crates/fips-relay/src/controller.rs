@@ -2,7 +2,7 @@
 //!
 //! Configure a test wallet, mint and finite capital policy explicitly. Quotes
 //! alone never authorize spending. An application buys a route, or a provider
-//! verifies upstream funding before buying the retained onward offer. Network
+//! verifies upstream funding before buying the retained onward offer. Peer-control
 //! awaits never hold the wallet or journal lock, preventing cross-route deadlock.
 
 use crate::{
@@ -13,11 +13,7 @@ use crate::{
     payment_control::{PaymentControl, PaymentRequest, PaymentResponse},
     route_quotes::{RouteOffer, RouteQuotes, contract_from_offer},
 };
-use cashu_service::{
-    CashuSpilmanPayment, FileSpilmanPaymentReceiver, FileSpilmanPaymentSigner,
-    StreamingRouteOpenCashuSpilmanChannelFromWalletRequest,
-    open_streaming_route_cashu_spilman_channel_from_wallet,
-};
+use cashu_service::{CashuSpilmanPayment, FileSpilmanPaymentReceiver, FileSpilmanPaymentSigner};
 use fips_core::{FipsEndpoint, Identity, NodeAddr, PeerIdentity};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -36,6 +32,7 @@ use tokio::{
 mod cadence;
 pub use cadence::PaymentCadence;
 mod acceptance;
+mod funding;
 mod journal;
 mod payments;
 mod purchase_state;
@@ -98,13 +95,13 @@ pub enum RouteAccess {
     Free(RouteOffer),
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Funded {
     terms: ChannelTerms,
     opening: CashuSpilmanPayment,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct FundingIntent {
     id: String,
     #[serde(with = "node_addr")]

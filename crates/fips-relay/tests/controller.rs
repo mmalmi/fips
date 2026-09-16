@@ -1,5 +1,7 @@
 //! Each router independently accepts, funds onward channels and pays usage.
 mod controller_support;
+#[path = "controller_support/funding_recovery.rs"]
+mod funding_recovery;
 #[path = "controller_support/payment_mobility.rs"]
 mod payment_mobility;
 #[path = "controller_support/purchase_closure.rs"]
@@ -328,9 +330,6 @@ async fn controller_scenario(
             }
         }
         assert_eq!(links.len(), 6);
-        if paid_quote_traffic {
-            quote_traffic::exercise(&nodes, &peers, &services, &ledgers, &links).await;
-        }
         let unauthorized = serde_json::to_vec(&ControllerRequest::Seal { channel_id: a.channel.id.clone() }).unwrap();
         assert!(matches!(controllers[1].handle(peers[2], &unauthorized).await, ControllerResponse::Rejected));
         let mut incoming = Vec::new();
@@ -355,6 +354,9 @@ async fn controller_scenario(
                 outgoing.clear();
             }
             std::fs::write(path, serde_json::to_vec(&journal).unwrap()).unwrap();
+        }
+        if paid_quote_traffic {
+            funding_recovery::exercise(root.path(), policy(mint.url(), false, capacity), services[4].clone()).await;
         }
         let mut controllers = Vec::new();
         for (i, receiver) in incoming.into_iter().enumerate() {
@@ -400,6 +402,10 @@ async fn controller_scenario(
             assert_eq!(load_mint_balance(&wallets[i], mint.url()).await.unwrap().balance_sat,
                 seed_sat - capacity * expected.len() as u64,
                 "controller reload must not fund another channel");
+        }
+        // Wallet-only funding recovery is checked before any paid payload.
+        if paid_quote_traffic {
+            quote_traffic::exercise(&nodes, &peers, &services, &ledgers, &links).await;
         }
         if evidence_gap {
             // Model one local submission lost from the buyer's last checkpoint:
