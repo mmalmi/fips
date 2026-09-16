@@ -99,6 +99,7 @@ impl Controller {
                 }),
             });
         }
+        self.services.payment_control.prepare_funding().await?;
         let payments = self.services.payment_control.clone();
         let terms = channel.clone();
         let credit = blocking(move || payments.verify_funding(&terms, peer, &payment)).await?;
@@ -167,6 +168,7 @@ impl Controller {
     }
 
     pub(super) async fn activate(&self, incoming: Incoming) -> Result<(), String> {
+        let _paid_route = self.services.quotes.free.paid_guard(&incoming.offer)?;
         self.check_prepared_route(&incoming).await?;
         let seller = self.services.seller.clone();
         let terms = incoming.channel.clone();
@@ -200,7 +202,11 @@ impl Controller {
         .await?;
         if let Some(downstream) = incoming.downstream.clone() {
             self.check_prepared_route(&incoming).await?;
-            self.purchase_offer(downstream).await?;
+            if downstream.price.msat == 0 {
+                self.services.quotes.free.accept(&downstream)?;
+            } else {
+                self.purchase_offer(downstream).await?;
+            }
         }
         // Onward service is accepted before any upstream data receives credit.
         self.check_prepared_route(&incoming).await?;

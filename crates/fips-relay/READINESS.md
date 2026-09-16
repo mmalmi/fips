@@ -85,31 +85,68 @@ and saved-account migration remain work.
 
 ## Destination-specific prices and free local destinations
 
-The desired policy is an explicit fee per destination identity, with a default
-fee for other destinations. Configured own FIPS addresses can have zero local
-relay fee, and other destinations can have different positive fees. Local
-delivery within one FIPS instance is already outside transit charging; relaying
-to another local instance must also support an intentionally free path without
-a funded channel, wallet payment or mint dependency.
+The service now supports explicit [destination fees](DESTINATION-PRICING.md),
+keyed by canonical FIPS identities, with the existing default fee elsewhere.
+Each router adds its local fee to the onward quote. Zero local markup over a
+paid continuation still requires paid agreements; an entirely free route uses
+bounded, expiring in-memory permissions without a channel or wallet debit.
+Zero prices require the explicitly selected forwarding-data tariff. Saved
+financial terms and accepted prices remain unchanged by future fee edits.
 
-Current contracts already bind destination-specific immutable prices, but the
-service adds one positive local fee to every quote and requires a funded paid
-agreement. The destination policy and channel-free path are not implemented.
-Do not model zero as a tiny positive charge or open a pointless zero-payment
-channel. Match configured destination identities, never a claimed source,
-private IP range, interface name or an assertion of common ownership.
+A five-process UDP test crosses three free relays, restarts and resumes with
+zero mint requests and no funding. Another mixes different destination prices,
+zero markup over a paid continuation, and a paid prefix with a free tail. Its
+two neighbor channels settle and conserve all 512 isolated test sats. Unit
+checks cover identity matching, quotas, expiry, state limits and paid/free
+transition exclusions. Free permissions do not infer ownership from a source,
+IP range or interface.
 
-Each router controls only its local fee. A zero local fee cannot waive a paid
-downstream hop or silently authorize the router to subsidize it. Preserve the
-existing onward-purchase price, capital and lifetime-spend limits, and reject
-an unfunded paid continuation. Accepted paid quotes and unresolved liabilities
-remain unchanged when future destination rules change.
+This is explicit route opening, not automatic free-route refresh or cheapest
+path selection. Permissions must be reopened after restart, expiry or path
+change. Active paid agreements must close before the same relationship becomes
+free. Radio/mixed-transport acceptance and broader concurrent transition/failure
+coverage remain work. The existing OpenWrt readiness wrapper still requires a
+reachable mint; the no-mint startup evidence is for the service directly.
 
-Acceptance must cover free forwarding between own instances with no mint or
-funding, simultaneous paid/free destinations, different positive destination
-fees, exact identity matching, route changes to a paid next hop, restart and
-policy changes without erasing prior obligations. Free destinations still need
-bounded queues/admission; they must not turn into a blanket transit bypass.
+## Cheapest routes that work
+
+Price-aware route selection is an explicit requirement, not proven by simply
+accumulating prices along the native planner's chosen next hops. Reuse FIPS's
+existing MMP link/session receiver reports, RTT/loss/goodput/ETX estimates,
+freshness checks, fallback routing and route-quality tests. Do not build a
+parallel measurement stack or inspect encrypted application traffic at relays.
+Higher-layer success, timeout or acknowledged-byte observations may supplement
+native measurements at the local endpoint if they can be attributed to the
+actual route and sampling interval. Missing feedback means unknown quality.
+
+Compare eligible loop-free paths using agreed monetary costs and observed
+quality under explicit spending/capital limits. Define the service's minimum
+quality and how to treat unknown/new paths; bound exploratory spending and
+avoid route oscillation. A quote is not proof of a working path, and local
+link acknowledgments are not end-to-end delivery evidence. Measurement reports
+need not be per-packet payment receipts and must not authorize wallet spending.
+Recent successful delivery is an estimate, not a guarantee of future service.
+
+Use existing SimNetwork/fips-sim and production route selection. Required cases:
+a cheapest healthy path, a cheaper blackhole, loss/delay/asymmetry/congestion,
+stale/replayed or misleading reports, unknown paths, disappearing feedback,
+changing prices, mobile merge/split and recovery, alternate paths, zero-price
+destinations, limited capital and insufficient reverse/control reachability.
+Measure delivered-byte cost, goodput, latency, convergence, exploration cost,
+control overhead and state bounds; use an independent small-graph reference
+where an exact optimum exists. Bind the actual forwarded path to the quote.
+
+Native quality monitoring already exists in `proto/mmp/metrics.rs`,
+`node/handlers/session/node_reports_errors.rs`, `node/tests/session/route_metrics*`
+and `node/tests/routing/stale_metrics.rs` under fips-core. The relay's new free
+handshake allowance excludes established encrypted session reports. Verify and
+resolve their return path for an unfunded recipient before relying on them for
+paid-route quality selection. Do not mistake handshake success for full feedback
+availability. Dedicated monetary delivery receipts remain an optional experiment.
+
+The ETX literature is a reference for loss-aware link metrics, not proof of
+optimal monetary routes or malicious-relay resistance:
+[De Couto et al., MobiCom 2003](https://pdos.csail.mit.edu/~decouto/my-papers/mobicom03.pdf).
 
 ## Boundaries and threats
 

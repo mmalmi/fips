@@ -95,6 +95,7 @@ pub struct RelayService {
     receive_task: tokio::task::JoinHandle<()>,
     receiver_pubkey: String,
     forwarding: Arc<ServiceForwarder>,
+    free: Arc<crate::free_routes::FreeRoutes>,
     _owner: File,
 }
 
@@ -210,17 +211,25 @@ impl RelayService {
                 .map_err(|e| e.to_string())?;
             drop(FileSpilmanPaymentSigner::load(&root.join("wallet"))?);
         }
-        let receiver = FileSpilmanPaymentReceiver::load_with_keyset_refresh(
+        let receiver = FileSpilmanPaymentReceiver::load(
             &root.join("receiver"),
             FileSpilmanPaymentReceiverConfig::new([config.terms.controller.mint_url.clone()]),
-        )
-        .await?;
+        )?;
         let receiver_pubkey = receiver.receiver_pubkey_hex().to_string();
         if manifest.is_some_and(|m| m.receiver_pubkey != receiver_pubkey) {
             return Err("stored payment receiver identity changed".into());
         }
+        let free = Arc::new(crate::free_routes::FreeRoutes::for_accounts(
+            seller.clone(),
+            buyer.clone(),
+        ));
         let forwarding = Arc::new(ServiceForwarder {
-            relay: PaidForwarder::for_billing(seller.clone(), buyer.clone(), config.terms.billing),
+            relay: PaidForwarder::with_free_routes(
+                seller.clone(),
+                buyer.clone(),
+                config.terms.billing,
+                free.clone(),
+            ),
             ready: AtomicBool::new(false),
         });
         if !create {
@@ -235,7 +244,10 @@ impl RelayService {
             FipsEndpoint::builder()
                 .config(config.network(&identity, create))
                 .forwarding_policy(forwarding.clone())
-                .originated_session_observer(buyer.clone())
+                .originated_session_observer(Arc::new(crate::buyer::RouteObserver {
+                    buyer: buyer.clone(),
+                    free: free.clone(),
+                }))
                 .without_system_tun()
                 .bind()
                 .await
@@ -258,10 +270,13 @@ impl RelayService {
         .await?;
         let mut control_statistics = vec![(44_741, quote_transport.statistics())];
         let t = &config.terms;
-        let quotes = Arc::new(RouteQuotes::new(
+        let quotes = Arc::new(RouteQuotes::with_free_routes(
             endpoint.clone(),
             Arc::new(quote_transport),
             QuotePolicy {
+                destination_fees: config
+                    .destination_fees
+                    .resolve(t.max_rate_msat_per_kib, t.billing.has_free_handshakes())?,
                 billing: t.billing,
                 mint_url: t.controller.mint_url.clone(),
                 receiver_pubkey_hex: receiver.receiver_pubkey_hex().to_string(),
@@ -272,6 +287,7 @@ impl RelayService {
                 capacity_sat: t.controller.channel_capacity_sat,
                 grace_msat: t.grace_msat,
             },
+            free.clone(),
         )?);
         let quote_server = QuoteServer::start(quotes.clone(), quote_incoming);
         let (acceptance, incoming) = ControlTransport::start_with_customers(
@@ -292,7 +308,12 @@ impl RelayService {
         .await?;
         control_statistics.push((44_742, acceptance.statistics()));
         control_statistics.push((44_743, payments.statistics()));
-        let payment_control = Arc::new(PaymentControl::new(receiver, seller.clone(), vec![])?);
+        let payment_control = Arc::new(
+            PaymentControl::new(receiver, seller.clone(), vec![])?.with_keyset_refresh(
+                root.join("receiver"),
+                FileSpilmanPaymentReceiverConfig::new([t.controller.mint_url.clone()]),
+            ),
+        );
         let payment_server = PaymentServer::start_shared(payment_control.clone(), payment_incoming);
         let services = ControllerServices {
             endpoint: endpoint.clone(),
@@ -360,6 +381,7 @@ impl RelayService {
             receive_task,
             receiver_pubkey,
             forwarding,
+            free,
             _owner: owner,
         })
     }

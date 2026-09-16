@@ -25,6 +25,7 @@ impl RelayService {
                     "locked_sat": self.controller.locked_capital_sat().await?,
                     "remaining_budget_sat": self.buyer.remaining_budget_sat(),
                     "bootstrap": self.forwarding.relay.bootstrap_stats(),
+                    "free_routes": self.free.stats(),
                     "measurements": crate::measurements::snapshot(),
                     "received": self.received.lock().unwrap().clone(),
                     "probe": probe,
@@ -37,7 +38,12 @@ impl RelayService {
             AdminRequest::Buy { destination } => {
                 let peer = PeerIdentity::from_npub(&destination)
                     .map_err(|_| "invalid destination npub")?;
-                Ok(json!({"purchase": self.controller.buy_route(peer).await?}))
+                match self.controller.open_route(peer).await? {
+                    crate::controller::RouteAccess::Paid(purchase) => {
+                        Ok(json!({"purchase": purchase}))
+                    }
+                    crate::controller::RouteAccess::Free(offer) => Ok(json!({"free_route": offer})),
+                }
             }
             AdminRequest::Watch {
                 destination,

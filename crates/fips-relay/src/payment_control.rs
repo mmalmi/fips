@@ -15,6 +15,7 @@ use fips_core::PeerIdentity;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::{sync::mpsc, task::JoinHandle};
+mod keysets;
 
 #[derive(Debug, Clone)]
 pub struct ApprovedAgreement {
@@ -55,9 +56,25 @@ pub struct PaymentControl<R> {
     receiver: R,
     ledger: Arc<DurableRelay>,
     approved: BTreeMap<String, ApprovedAgreement>,
+    keysets: Option<keysets::KeysetRefresh>,
 }
 
 impl PaymentControl<cashu_service::FileSpilmanPaymentReceiver> {
+    pub fn with_keyset_refresh(
+        mut self,
+        directory: std::path::PathBuf,
+        config: cashu_service::FileSpilmanPaymentReceiverConfig,
+    ) -> Self {
+        self.keysets = Some(keysets::KeysetRefresh::new(directory, config));
+        self
+    }
+
+    pub(crate) async fn prepare_funding(&self) -> Result<(), String> {
+        if let Some(refresh) = &self.keysets {
+            refresh.prepare(self.receiver.receiver_pubkey_hex()).await?;
+        }
+        Ok(())
+    }
     pub(crate) async fn close_at_mint(
         &self,
         channel_id: &str,
@@ -132,6 +149,7 @@ impl<R: CashuSpilmanPaymentReceiver<String>> PaymentControl<R> {
             receiver,
             ledger,
             approved,
+            keysets: None,
         })
     }
 

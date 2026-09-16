@@ -131,6 +131,7 @@ pub struct PaidForwarder {
     buyer: Arc<BuyerAuthorizer>,
     pending: Mutex<BTreeMap<u64, Option<u64>>>,
     bootstrap: Option<Mutex<crate::bootstrap::Bootstrap>>,
+    free: Arc<crate::free_routes::FreeRoutes>,
 }
 
 impl PaidForwarder {
@@ -145,10 +146,20 @@ impl PaidForwarder {
         buyer: Arc<BuyerAuthorizer>,
         billing: BillingBasis,
     ) -> Self {
+        Self::with_free_routes(seller, buyer, billing, Arc::default())
+    }
+
+    pub fn with_free_routes(
+        seller: Arc<DurableRelay>,
+        buyer: Arc<BuyerAuthorizer>,
+        billing: BillingBasis,
+        free: Arc<crate::free_routes::FreeRoutes>,
+    ) -> Self {
         Self {
             seller,
             buyer,
             pending: Mutex::new(BTreeMap::new()),
+            free,
             bootstrap: billing
                 .has_free_handshakes()
                 .then(|| Mutex::new(crate::bootstrap::Bootstrap::new())),
@@ -178,8 +189,18 @@ impl ForwardingPolicy for PaidForwarder {
                 .admit(*request.ingress.node_addr(), request.session_payload.len())
                 .then_some(0);
         }
+        if self.free.admit(request) {
+            return Some(0);
+        }
         let (seller_token, buyer_token) = if request.next_hop == request.destination {
             (self.seller.admit(request)?, None)
+        } else if let Some(token) = self.free.onward(
+            request.next_hop,
+            request.destination,
+            request.session_payload.len(),
+            || self.seller.admit(request),
+        ) {
+            (token, None)
         } else {
             let (buyer_token, seller_token) = self.buyer.begin_admitted(
                 &OriginatedSessionRequest {
@@ -209,5 +230,38 @@ impl ForwardingPolicy for PaidForwarder {
                 self.buyer.complete(token, outcome);
             }
         }
+    }
+}
+
+/// Source accounting shares the same negotiated free continuation as transit.
+/// Free submissions cannot become evidence for a retained paid agreement.
+#[derive(Debug)]
+pub struct RouteObserver {
+    pub buyer: Arc<BuyerAuthorizer>,
+    pub free: Arc<crate::free_routes::FreeRoutes>,
+}
+
+impl OriginatedSessionObserver for RouteObserver {
+    fn observe(&self, request: &OriginatedSessionRequest<'_>) -> Option<u64> {
+        if !crate::bootstrap::is_handshake(
+            request.session_payload,
+            request.source,
+            request.destination,
+        ) && self
+            .free
+            .onward(
+                request.next_hop,
+                request.destination,
+                request.session_payload.len(),
+                || Some(()),
+            )
+            .is_some()
+        {
+            return None;
+        }
+        self.buyer.observe(request)
+    }
+    fn complete(&self, token: u64, outcome: ForwardingOutcome) {
+        self.buyer.complete(token, outcome);
     }
 }

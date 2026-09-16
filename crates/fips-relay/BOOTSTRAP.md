@@ -89,4 +89,6 @@ passed. These checks do not replace the broader acceptance below.
 Remaining work includes independent bounds for other discovery/control paths,
 impaired-link/rekey/hostile-input combinations, mixed transports, payment-specific
 overhead and physical-device regression. This allowance does not implement
-permissionless discovery or destination-specific free application forwarding.
+permissionless discovery. Separate [destination permissions](DESTINATION-PRICING.md)
+now support explicitly free application forwarding; they do not expand the
+handshake classifier to established encrypted control or application messages.

@@ -23,6 +23,9 @@ The physical prototype reports below describe the earlier r6 hardware build.
 Fresh accounts can explicitly select the [bounded handshake tariff](BOOTSTRAP.md)
 to deliver through paid relays to an unfunded recipient without buying a reverse
 route. Existing account terms and the physical bench remain unchanged.
+Explicit [destination fees](DESTINATION-PRICING.md) can make selected destinations
+free without opening payment channels, or charge different local fees. These
+software checks do not yet establish cheapest working route selection.
 
 ## Implemented and checked
 

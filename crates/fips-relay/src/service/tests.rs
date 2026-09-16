@@ -89,6 +89,7 @@ fn native_interface_configuration_has_no_implicit_udp_or_discovery_shortcut() {
         state_directory: "/tmp/fips-relay-example".into(),
         udp_bind: None,
         customer_network: None,
+        destination_fees: Default::default(),
         payment_cadence: Default::default(),
         ethernet_interfaces: vec!["mesh0".into()],
         neighbors: vec![],

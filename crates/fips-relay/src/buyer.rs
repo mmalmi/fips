@@ -5,7 +5,7 @@
 //! controller accepts quotes/funded channels and owns a finite lifetime budget.
 
 mod forwarding;
-pub use forwarding::PaidForwarder;
+pub use forwarding::{PaidForwarder, RouteObserver};
 
 use crate::{
     durable::{
@@ -450,6 +450,24 @@ impl BuyerAuthorizer {
 
     pub fn observed_units(&self, quote_id: &str) -> Option<u64> {
         Some(self.state.lock().ok()?.quotes.get(quote_id)?.observed_units)
+    }
+
+    pub(crate) fn has_active_route(
+        &self,
+        provider: NodeAddr,
+        destination: NodeAddr,
+        now: u64,
+    ) -> bool {
+        let state = self.state.lock().unwrap();
+        state.quotes.values().any(|q| {
+            let c = &state.channels[&q.contract.channel_id];
+            q.active
+                && c.active
+                && c.provider == provider
+                && q.contract.destination == destination
+                && q.contract.expires_unix > now
+                && c.terms.expires_unix > now
+        })
     }
 
     /// `provider` must be the authenticated peer carrying the response. All

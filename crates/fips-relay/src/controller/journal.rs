@@ -150,9 +150,10 @@ impl Controller {
                     || d.provider != i.offer.next_hop
                     || d.destination.node_addr() != i.offer.destination.node_addr()
                     || d.price.per_bytes != i.offer.price.per_bytes
-                    || d.price.msat >= i.offer.price.msat
+                    || d.price.msat > i.offer.price.msat
+                    || (d.price.msat == 0 && !d.billing.has_free_handshakes())
                     || d.billing != i.offer.billing
-                    || d.mint_url != policy.mint_url
+                    || (d.price.msat != 0 && d.mint_url != policy.mint_url)
                 {
                     return Err("invalid onward quote".into());
                 }

@@ -9,7 +9,9 @@ pub mod control_transport;
 pub mod controller;
 #[cfg(unix)]
 pub mod customer;
+pub mod destination_pricing;
 pub mod durable;
+pub mod free_routes;
 pub mod ledger;
 pub mod measurements;
 pub mod payment;

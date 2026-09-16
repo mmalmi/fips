@@ -90,6 +90,12 @@ pub struct Purchase {
     pub contract: Contract,
 }
 
+/// A wholly free path has an expiring permission, never a payment channel.
+pub enum RouteAccess {
+    Paid(Purchase),
+    Free(RouteOffer),
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct Funded {
     terms: ChannelTerms,

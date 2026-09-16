@@ -227,7 +227,6 @@ async fn customer_app_uses_real_accounts_and_preserves_them_across_reopen() {
         }
         // Confirmed idle channels must not retain the old 500-ms network poll.
         // The actual app account, provider, control transport and mint are live.
-        tokio::time::sleep(Duration::from_millis(1_500)).await;
         let payment_counts = |status: &Value| {
             let row = status["control_traffic"]
                 .as_array()
@@ -240,8 +239,27 @@ async fn customer_app_uses_real_accounts_and_preserves_them_across_reopen() {
                 row["counters"]["requests_received"].as_u64().unwrap(),
             )
         };
-        let before_idle = request(&configs[0], &AdminRequest::Status).await.unwrap();
-        let before_idle = payment_counts(&before_idle);
+        // Delivery does not mean its final payment exchange has finished.
+        // Observe a quiet interval before the measured interval, with a hard
+        // deadline: the old perpetual 500-ms poll can never satisfy this.
+        let before_idle = tokio::time::timeout(Duration::from_secs(10), async {
+            let mut previous =
+                payment_counts(&request(&configs[0], &AdminRequest::Status).await.unwrap());
+            let mut unchanged_since = tokio::time::Instant::now();
+            loop {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let current =
+                    payment_counts(&request(&configs[0], &AdminRequest::Status).await.unwrap());
+                if current != previous {
+                    previous = current;
+                    unchanged_since = tokio::time::Instant::now();
+                } else if unchanged_since.elapsed() >= Duration::from_millis(1_500) {
+                    break current;
+                }
+            }
+        })
+        .await
+        .expect("completed customer traffic must reach payment quiescence");
         assert!(
             before_idle.0 + before_idle.1 > 0,
             "the real payment path was exercised"

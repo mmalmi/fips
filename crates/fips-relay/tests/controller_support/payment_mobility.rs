@@ -19,10 +19,10 @@ impl Gate {
         self.pause.send(false).unwrap();
     }
 
-    async fn held(&self, stage: &str) {
+    async fn held(&self) -> bool {
         tokio::time::timeout(Duration::from_secs(10), self.held.notified())
             .await
-            .unwrap_or_else(|_| panic!("the selected neighbor must hold a real {stage} request"));
+            .is_ok()
     }
 }
 
@@ -58,7 +58,7 @@ pub(super) fn gate(
                 }
                 request = incoming.recv() => {
                     let Some(request) = request else { return; };
-                    if request.peer == buyer && *paused.borrow() {
+                    if request.peer.node_addr() == buyer.node_addr() && *paused.borrow() {
                         notify.notify_one();
                         // Delay only this link's control traffic. Other buyers
                         // of the provider must still be serviced normally.
@@ -69,6 +69,39 @@ pub(super) fn gate(
         }
     });
     (receive, Some(Gate { pause, held, task }))
+}
+
+#[tokio::test]
+async fn pause_matches_the_fips_identity_across_public_key_representations() {
+    let full = (1..=32)
+        .map(|n| {
+            let identity = fips_core::Identity::from_secret_bytes(&[n; 32]).unwrap();
+            PeerIdentity::from_pubkey_full(identity.pubkey_full())
+        })
+        .find(|p| *p != PeerIdentity::from_npub(&p.npub()).unwrap())
+        .unwrap();
+    let canonical = PeerIdentity::from_npub(&full.npub()).unwrap();
+    assert_eq!(full.node_addr(), canonical.node_addr());
+    let (send, incoming) = mpsc::channel(1);
+    let (mut receive, gate) = gate(incoming, full, true);
+    let gate = gate.unwrap();
+    gate.pause();
+    let (respond, _response) = tokio::sync::oneshot::channel();
+    send.send(IncomingRequest {
+        peer: canonical,
+        body: vec![1],
+        respond,
+    })
+    .await
+    .unwrap();
+    assert!(gate.held().await);
+    assert!(receive.try_recv().is_err());
+    gate.release();
+    let request = tokio::time::timeout(Duration::from_secs(1), receive.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(request.body, vec![1]);
 }
 
 struct Traffic<'a> {
@@ -200,7 +233,17 @@ pub(super) async fn exercise(
     };
     payment_gate.pause();
     traffic.send(if slow == 1 { 4 } else { 0 }, 180).await;
-    payment_gate.held("payment").await;
+    assert!(
+        payment_gate.held().await,
+        "the selected neighbor must hold a real payment request: slow={slow}, usage={:?}, evidence={:?}, authorized={:?}, errors={:?}",
+        sellers[slow].channel_usage(&slow_purchase.channel.id),
+        buyers[2].evidence_msat(&slow_purchase.channel.id),
+        buyers[2].authorized_sat(&slow_purchase.channel.id),
+        controllers
+            .iter()
+            .map(|c| c.last_error())
+            .collect::<Vec<_>>()
+    );
     traffic
         .paid_bursts(healthy, healthy_purchase, sellers, &buyers[2], 190)
         .await;
@@ -214,7 +257,14 @@ pub(super) async fn exercise(
     let id = slow_purchase.channel.id.clone();
     let close = tokio::spawn(async move { settling.settle_channel(&id).await });
     payment_gate.release();
-    settlement_gate.held("settlement").await;
+    assert!(
+        settlement_gate.held().await,
+        "the selected neighbor must hold a real settlement request: errors={:?}",
+        controllers
+            .iter()
+            .map(|c| c.last_error())
+            .collect::<Vec<_>>()
+    );
     traffic
         .paid_bursts(healthy, healthy_purchase, sellers, &buyers[2], 200)
         .await;

@@ -211,6 +211,15 @@ impl DurableRelay {
         self.ledger.contract(id)
     }
 
+    pub(crate) fn has_active_route(
+        &self,
+        buyer: fips_core::NodeAddr,
+        destination: fips_core::NodeAddr,
+        now: u64,
+    ) -> bool {
+        self.ledger.has_active_route(buyer, destination, now)
+    }
+
     fn mutate<T>(
         &self,
         change: impl FnOnce(&RelayLedger) -> Result<T, LedgerError>,

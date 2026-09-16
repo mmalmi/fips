@@ -2,6 +2,13 @@
 use super::*;
 
 impl Controller {
+    pub async fn open_route(&self, destination: PeerIdentity) -> Result<RouteAccess, String> {
+        let offer = self.services.quotes.request_route(destination).await?;
+        if offer.price.msat == 0 {
+            return Ok(RouteAccess::Free(offer));
+        }
+        self.purchase_offer(offer).await.map(RouteAccess::Paid)
+    }
     /// Explicit application authorization for this destination under local price
     /// and lifetime spending caps. Merely receiving data never calls this method.
     pub async fn buy_route(&self, destination: PeerIdentity) -> Result<Purchase, String> {
@@ -153,6 +160,10 @@ impl Controller {
     }
 
     pub(super) async fn purchase_offer(&self, offer: RouteOffer) -> Result<Purchase, String> {
+        if offer.price.msat == 0 {
+            return Err("free route needs no payment channel; use open_route".into());
+        }
+        self.services.quotes.free.accept(&offer)?;
         let peer = self.neighbor(offer.provider).await?;
         self.prepare_changed_route(&offer).await?;
         let existing = self

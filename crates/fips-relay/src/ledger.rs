@@ -456,6 +456,24 @@ impl RelayLedger {
             .map(|a| a.contract.clone())
     }
 
+    pub(crate) fn has_active_route(
+        &self,
+        buyer: NodeAddr,
+        destination: NodeAddr,
+        now: u64,
+    ) -> bool {
+        let state = self.state.lock().unwrap();
+        state.accounts.values().any(|a| {
+            let c = &state.channels[&a.contract.channel_id];
+            a.active
+                && c.active
+                && c.terms.buyer == buyer
+                && a.contract.destination == destination
+                && a.contract.expires_unix > now
+                && c.terms.expires_unix > now
+        })
+    }
+
     pub fn amount_due_msat(&self, id: &str) -> Option<u64> {
         self.state
             .lock()

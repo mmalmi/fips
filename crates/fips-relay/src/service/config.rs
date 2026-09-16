@@ -43,6 +43,12 @@ pub struct ServiceConfig {
     pub customer_network: Option<IpNet>,
     pub ethernet_interfaces: Vec<String>,
     pub neighbors: Vec<PeerConfig>,
+    /// Local fees for future offers; existing financial agreements stay intact.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::destination_pricing::DestinationFees::is_empty"
+    )]
+    pub destination_fees: crate::destination_pricing::DestinationFees,
     pub terms: ServiceTerms,
     /// Local timing only; does not change saved financial terms or authority.
     #[serde(default, skip_serializing_if = "PaymentCadence::is_default")]
@@ -158,6 +164,8 @@ impl ServiceConfig {
             }
         }
         let t = &self.terms;
+        self.destination_fees
+            .resolve(t.max_rate_msat_per_kib, t.billing.has_free_handshakes())?;
         Controller::validate_policy(&t.controller)?;
         let cap = t
             .controller

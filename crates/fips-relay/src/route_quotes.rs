@@ -5,16 +5,17 @@
 //! bindings before enabling forwarding. Pending offers may expire on restart;
 //! accepted accounting belongs in the durable seller/buyer journals.
 
+mod messages;
+pub use messages::{QuoteRequest, QuoteResponse, RouteOffer};
 mod validation;
 pub(crate) use validation::contract_from_offer;
 use validation::validate_offer;
 
 use crate::{
     control_transport::{ControlTransport, IncomingRequest, MAX_RECORD_BYTES},
-    ledger::{BillingBasis, BytePrice, ChannelTerms, Contract, node_addr},
+    ledger::{BillingBasis, BytePrice, ChannelTerms, Contract},
 };
 use fips_core::{FipsEndpoint, Identity, NodeAddr, PeerIdentity};
-use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashSet},
     sync::{Arc, Mutex},
@@ -33,6 +34,7 @@ const MAX_REQUEST_SECONDS: u64 = 30;
 
 #[derive(Debug, Clone)]
 pub struct QuotePolicy {
+    pub destination_fees: BTreeMap<NodeAddr, u64>,
     pub billing: BillingBasis,
     pub mint_url: String,
     pub receiver_pubkey_hex: String,
@@ -44,53 +46,6 @@ pub struct QuotePolicy {
     pub capacity_sat: u64,
     /// Fixed relationship allowance; quoting another destination cannot change it.
     pub grace_msat: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct QuoteRequest {
-    #[serde(with = "peer_identity")]
-    pub destination: PeerIdentity,
-    #[serde(with = "node_addrs")]
-    pub ancestors: Vec<NodeAddr>,
-    /// One deadline for the whole recursive request, not a new timeout per hop.
-    pub deadline_unix: u64,
-    /// Monitoring can reuse an unchanged unexpired offer without growing history.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub reuse_unchanged: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RouteOffer {
-    #[serde(default, skip_serializing_if = "BillingBasis::is_legacy")]
-    pub billing: BillingBasis,
-    pub id: String,
-    #[serde(with = "node_addr")]
-    pub buyer: NodeAddr,
-    #[serde(with = "node_addr")]
-    pub provider: NodeAddr,
-    #[serde(with = "peer_identity")]
-    pub destination: PeerIdentity,
-    #[serde(with = "node_addr")]
-    pub next_hop: NodeAddr,
-    /// Provider through final destination; descriptive, not a delivery proof.
-    #[serde(with = "node_addrs")]
-    pub path: Vec<NodeAddr>,
-    pub price: BytePrice,
-    pub expires_unix: u64,
-    pub max_units: u64,
-    pub mint_url: String,
-    pub receiver_pubkey_hex: String,
-    pub capacity_sat: u64,
-    pub grace_msat: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum QuoteResponse {
-    Offer { offer: Box<RouteOffer> },
-    Rejected,
 }
 
 #[derive(Debug, Clone)]
@@ -111,6 +66,7 @@ pub struct RouteQuotes {
     control: Arc<ControlTransport>,
     policy: QuotePolicy,
     offers: Mutex<Offers>,
+    pub(crate) free: Arc<crate::free_routes::FreeRoutes>,
 }
 
 fn unix_now() -> Result<u64, String> {
@@ -136,11 +92,25 @@ impl RouteQuotes {
         control: Arc<ControlTransport>,
         policy: QuotePolicy,
     ) -> Result<Self, String> {
+        Self::with_free_routes(endpoint, control, policy, Arc::default())
+    }
+
+    pub fn with_free_routes(
+        endpoint: Arc<FipsEndpoint>,
+        control: Arc<ControlTransport>,
+        policy: QuotePolicy,
+        free: Arc<crate::free_routes::FreeRoutes>,
+    ) -> Result<Self, String> {
         let cap = policy
             .capacity_sat
             .checked_mul(1_000)
             .ok_or("capacity overflow")?;
-        if cap == 0
+        if policy.destination_fees.len() > 64
+            || policy.destination_fees.values().any(|p| {
+                *p > policy.max_rate_msat_per_kib
+                    || (*p == 0 && !policy.billing.has_free_handshakes())
+            })
+            || cap == 0
             || policy.grace_msat > cap
             || policy.fee_msat_per_kib == 0
             || policy.fee_msat_per_kib > policy.max_rate_msat_per_kib
@@ -164,6 +134,7 @@ impl RouteQuotes {
             endpoint,
             control,
             policy,
+            free,
             offers: Mutex::new(Offers {
                 epoch: Identity::generate().node_addr().to_string(),
                 next_id: 1,
@@ -281,6 +252,7 @@ impl RouteQuotes {
             &request,
             unix_now()?,
         )?;
+        self.free.accept(&offer)?;
         Ok(*offer)
     }
 
@@ -352,7 +324,10 @@ impl RouteQuotes {
         };
         let rate = self
             .policy
-            .fee_msat_per_kib
+            .destination_fees
+            .get(request.destination.node_addr())
+            .copied()
+            .unwrap_or(self.policy.fee_msat_per_kib)
             .checked_add(downstream.as_ref().map_or(0, |d| d.price.msat))
             .ok_or("quote price overflow")?;
         if rate > self.policy.max_rate_msat_per_kib {
@@ -389,6 +364,7 @@ impl RouteQuotes {
                     && o.expires_unix > reuse_until
                     && o.expires_unix <= expires_unix
             }) {
+                self.free.offer(&stored.offer)?;
                 return Ok(stored.offer.clone());
             }
         }
@@ -423,6 +399,7 @@ impl RouteQuotes {
             capacity_sat: self.policy.capacity_sat,
             grace_msat: self.policy.grace_msat,
         };
+        self.free.offer(&offer)?;
         offers.pending.insert(
             id,
             StoredOffer {
@@ -537,42 +514,6 @@ impl QuoteServer {
 impl Drop for QuoteServer {
     fn drop(&mut self) {
         self.task.abort();
-    }
-}
-
-mod node_addrs {
-    use super::*;
-    pub fn serialize<S: serde::Serializer>(
-        addresses: &[NodeAddr],
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        addresses
-            .iter()
-            .map(|a| *a.as_bytes())
-            .collect::<Vec<_>>()
-            .serialize(serializer)
-    }
-    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Vec<NodeAddr>, D::Error> {
-        Vec::<[u8; 16]>::deserialize(deserializer)
-            .map(|v| v.into_iter().map(NodeAddr::from_bytes).collect())
-    }
-}
-
-mod peer_identity {
-    use super::*;
-    pub fn serialize<S: serde::Serializer>(
-        peer: &PeerIdentity,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        peer.npub().serialize(serializer)
-    }
-    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<PeerIdentity, D::Error> {
-        let value = String::deserialize(deserializer)?;
-        PeerIdentity::from_npub(&value).map_err(serde::de::Error::custom)
     }
 }
 

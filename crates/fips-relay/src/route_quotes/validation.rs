@@ -7,7 +7,8 @@ pub(crate) fn contract_from_offer(
 ) -> Result<Contract, String> {
     let id = &offer.id;
     crate::ledger::validate_channel(channel).map_err(|e| e.to_string())?;
-    if channel.buyer != offer.buyer
+    if offer.price.msat == 0
+        || channel.buyer != offer.buyer
         || channel.mint_url != offer.mint_url
         || channel.capacity_sat > offer.capacity_sat
         || channel.grace_msat > offer.grace_msat
@@ -56,11 +57,11 @@ pub(super) fn validate_offer(
         || offer.path.iter().collect::<HashSet<_>>().len() != offer.path.len()
         || offer.path.iter().any(|p| request.ancestors.contains(p))
         || offer.price.per_bytes != PRICE_BYTES
-        || offer.price.msat == 0
+        || (offer.price.msat == 0 && !offer.billing.has_free_handshakes())
         || offer.price.msat > policy.max_rate_msat_per_kib
         || offer.expires_unix <= now
         || offer.expires_unix > now.saturating_add(3_600)
-        || offer.mint_url != policy.mint_url
+        || (offer.price.msat != 0 && offer.mint_url != policy.mint_url)
         || !valid_key(&offer.receiver_pubkey_hex)
         || offer.max_units == 0
         || offer.price.amount_due_msat(offer.max_units).is_none()

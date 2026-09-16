@@ -54,9 +54,13 @@ packaging remain separate work.
 
 Build with `cargo build -p fips-relay --bin fips-relay`. Copy
 `service.example.json` to a private local configuration file and replace its
-documentation-only mint address with the local test mint. The mint must be
-reachable when the receiver loads its keysets. Create the parent of the chosen
-state directory, but leave the state directory itself absent.
+documentation-only mint address with the local test mint. Direct service startup
+loads local receiver state without contacting the mint; new paid funding refreshes
+mint keys before verification. Funding and settlement remain mint-dependent.
+The OpenWrt readiness wrapper separately still waits for the mint. Create the
+parent of the chosen state directory, but leave that state directory absent.
+See [destination pricing](DESTINATION-PRICING.md) for free local destinations,
+explicit route opening and configuration compatibility.
 
 Run `fips-relay init /absolute/path/config.json` once. It prints the new public
 FIPS identity. Init creates private keys and empty accounts; it never overwrites

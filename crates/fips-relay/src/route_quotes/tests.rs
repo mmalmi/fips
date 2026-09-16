@@ -8,6 +8,7 @@ fn peer(n: u8) -> PeerIdentity {
 fn downstream_quotes_cannot_change_identity_price_mint_or_loop_bounds() {
     let (buyer, provider, destination) = (peer(1), peer(2), peer(3));
     let policy = QuotePolicy {
+        destination_fees: Default::default(),
         billing: Default::default(),
         mint_url: "http://test.invalid".into(),
         receiver_pubkey_hex: "02".to_owned() + &"11".repeat(32),
