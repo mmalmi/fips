@@ -1,5 +1,6 @@
 #[cfg(unix)]
-fn main() {
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
+async fn main() {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_ansi(false)
@@ -7,10 +8,7 @@ fn main() {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
         )
         .init();
-    let result = fips_relay::runtime::build("fips-relay")
-        .map_err(|error| error.to_string())
-        .and_then(|runtime| runtime.block_on(run()));
-    if let Err(error) = result {
+    if let Err(error) = run().await {
         eprintln!("fips-relay: {error}");
         std::process::exit(1);
     }

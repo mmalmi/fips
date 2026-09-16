@@ -30,7 +30,12 @@ fn dispatch(root: String, command: String) -> Result<Value, String> {
         .map_err(|_| "customer session requires an app restart")?;
     if state.is_none() {
         let client = CustomerClient::open(&root)?;
-        let runtime = fips_relay::runtime::build("fips-customer").map_err(|e| e.to_string())?;
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .thread_name("fips-customer")
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?;
         *state = Some(Session {
             root: root.clone(),
             runtime,
