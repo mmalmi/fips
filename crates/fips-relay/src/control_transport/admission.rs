@@ -6,20 +6,20 @@ const ADMISSION_INTERVAL: Duration = Duration::from_millis(100);
 const CUSTOMER_CONNECTIONS: usize = 8;
 const CUSTOMER_IDENTITIES: usize = 64;
 
-pub(super) struct AdmissionBudget {
+pub(crate) struct AdmissionBudget {
     updated: Instant,
     tokens: u32,
 }
 
 impl AdmissionBudget {
-    fn new(now: Instant) -> Self {
+    pub(crate) fn new(now: Instant) -> Self {
         Self {
             updated: now,
             tokens: ADMISSION_BURST,
         }
     }
 
-    fn allow(&mut self, now: Instant) -> bool {
+    pub(crate) fn allow(&mut self, now: Instant) -> bool {
         let intervals =
             now.duration_since(self.updated).as_millis() / ADMISSION_INTERVAL.as_millis();
         if intervals > 0 {

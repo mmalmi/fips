@@ -65,6 +65,49 @@ reviewed before a stable v1 protocol is promised. Consolidation must retain
 immutable agreement authority, channel-wide limits and crash-safe finalization.
 Private operator commands are separate from this peer API.
 
+### Price cache and request bounds
+
+Complete validated offers are cached locally for at most 30 seconds and never
+past their original expiry. The key includes provider, destination, loop ancestry
+and requested trial cap. Concurrent reusable requests share one exchange; explicit
+fresh purchases/renewals bypass a cached answer. Rejections are retained for only
+500 ms. Cached answers never renew expiry, reset quota or create another agreement.
+There are at most 128 entries and 16 per provider; idle entries can be evicted,
+while a full set of active requests refuses additional work. Each caller's deadline
+includes waiting for a shared exchange. Cancellation cannot leave a stuck owner.
+
+Quality monitoring still runs on its existing cadence. Failed active quality or
+failed watched acceptance discards the corresponding price cache; financial
+recovery intents remain durable. A changed downstream price/path can remain unseen
+until refresh; nested caches can delay propagation beyond one local cache window.
+The original downstream-bounded offer expiry still limits reuse. Acceptance
+validates the offer and actual route. The cache is volatile and adds no wire messages.
+
+Quote handling has an aggregate burst of 16 requests and refill of 10 per second,
+shared across callers, plus eight concurrent handlers. Existing TCP/FIPS limits
+also bound records to 64 KiB, total connections to 32, connections per peer to four,
+queues and per-peer/customer admission. Caller identity churn cannot multiply the
+quote service's shared budget. These are workload bounds, not a delivery promise.
+
+Forwarded quote requests and replies use the ordinary negotiated byte accounting,
+including ordinary explicit free-route/earned-return rules where configured. There
+is no quote-port exception or separate quote fee. Adjacent local service requests
+do not cross a forwarding gate. Strictly shaped FIPS handshakes retain bounded
+bootstrap admission; that allowance cannot carry encrypted quote application data.
+
+The native quote integration checks 32 cached refreshes with no additional network
+requests and eight concurrent misses with one exchange per paid hop. Sequential
+requests from 64 identities remain within the quote server's aggregate rate.
+Cache tests cover unchanged terms, expiry, rejection backoff, cancellation,
+independent deadlines and memory bounds. The controller fixture sends a real remote
+TCP/FIPS quote through three paid relays and accounts for request/reply bytes in
+all six directional agreements before normal settlement. Its test channel was
+sized for the additional traffic; production limits and the exhaustion case retain
+their prior settings. Across focused runs, 69 library/quote/transport/controller/
+paid-path tests passed, including the 13 impairment/exhaustion deployments.
+Strict relay and Android ARM64 linting, default builds, formatting and the
+663-file size gate passed. These are software results; devices remain unchanged.
+
 ## Implemented and checked
 
 * The core's optional `ForwardingPolicy` gates native FMP transit, including

@@ -5,6 +5,7 @@
 //! bindings before enabling forwarding. Pending offers may expire on restart;
 //! accepted accounting belongs in the durable seller/buyer journals.
 
+mod cache;
 mod messages;
 mod selection;
 pub use messages::{QuoteRequest, QuoteResponse, RouteOffer};
@@ -66,8 +67,8 @@ struct Offers {
 
 pub struct RouteQuotes {
     endpoint: Arc<FipsEndpoint>,
-    control: Arc<ControlTransport>,
-    policy: QuotePolicy,
+    client: Arc<cache::QuoteClient>,
+    policy: Arc<QuotePolicy>,
     offers: Mutex<Offers>,
     pub(crate) free: Arc<crate::free_routes::FreeRoutes>,
     selection: Option<selection::PriceSelection>,
@@ -134,9 +135,15 @@ impl RouteQuotes {
         {
             return Err("invalid local quote policy".into());
         }
+        let policy = Arc::new(policy);
+        let client = Arc::new(cache::QuoteClient::new(
+            control,
+            policy.clone(),
+            *endpoint.node_addr(),
+        ));
         Ok(Self {
             endpoint,
-            control,
+            client,
             policy,
             free,
             selection: None,
@@ -166,6 +173,10 @@ impl RouteQuotes {
 
     pub(crate) fn max_rate_msat_per_kib(&self) -> u64 {
         self.policy.max_rate_msat_per_kib
+    }
+
+    pub(crate) fn invalidate_price(&self, provider: NodeAddr, destination: NodeAddr) {
+        self.client.invalidate(provider, destination);
     }
 
     pub(crate) fn stop_reusing(&self, id: &str) -> Result<(), String> {
@@ -265,14 +276,7 @@ impl RouteQuotes {
         peer: PeerIdentity,
         request: QuoteRequest,
     ) -> Result<RouteOffer, String> {
-        let offer = validation::fetch_offer(
-            &self.control,
-            &self.policy,
-            *self.endpoint.node_addr(),
-            peer,
-            &request,
-        )
-        .await?;
+        let offer = self.client.request(peer, &request).await?;
         self.free.accept(&offer)?;
         Ok(offer)
     }
@@ -508,11 +512,17 @@ impl QuoteServer {
     pub fn start(quotes: Arc<RouteQuotes>, mut incoming: mpsc::Receiver<IncomingRequest>) -> Self {
         let task = tokio::spawn(async move {
             let permits = Arc::new(Semaphore::new(8));
+            let mut budget =
+                crate::control_transport::AdmissionBudget::new(std::time::Instant::now());
             let mut jobs = JoinSet::new();
             loop {
                 tokio::select! {
                     request = incoming.recv() => {
                         let Some(request) = request else { break; };
+                        if !budget.allow(std::time::Instant::now()) {
+                            let _ = request.respond.send(serde_json::to_vec(&QuoteResponse::Rejected).expect("serializable"));
+                            continue;
+                        }
                         let Ok(permit) = permits.clone().try_acquire_owned() else {
                             let _ = request.respond.send(serde_json::to_vec(&QuoteResponse::Rejected).expect("serializable"));
                             continue;

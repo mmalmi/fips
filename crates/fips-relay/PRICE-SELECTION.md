@@ -85,6 +85,12 @@ Do not downgrade an account containing them without reconciliation.
 
 ## Bounds and recovery
 
+- [Quote caching](README.md#price-cache-and-request-bounds) reuses full validated
+  offers for up to 30 seconds without extending their expiry or financial limits.
+  Quality is still observed on each selection; a cached price does not qualify a
+  failed path. Explicit fresh/trial requests retain their existing semantics.
+  Changes behind an unchanged neighbor may remain unseen until cache refresh;
+  nested caches do not provide a network-wide 30-second convergence guarantee.
 - At most 32 source destinations, four concurrent candidate quotes per round,
   16 failed providers and 16 recent quality samples per destination. The current
   provider stays in the candidate set; other connected neighbors rotate through it. Quote rounds and

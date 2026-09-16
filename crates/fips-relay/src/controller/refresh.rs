@@ -173,7 +173,11 @@ impl Controller {
             Ok(())
         })
         .await?;
-        let purchase = self.purchase_offer(offer.clone()).await?;
+        let purchase = self.purchase_offer(offer.clone()).await.inspect_err(|_| {
+            self.services
+                .quotes
+                .invalidate_price(offer.provider, *offer.destination.node_addr());
+        })?;
         let id = id.to_string();
         self.change(move |j| {
             let watch = j

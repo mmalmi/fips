@@ -311,6 +311,9 @@ impl RouteQuotes {
             let state = states.entry(dest).or_default();
             state.observe(&quality, &selection.policy, Instant::now())?;
             let active = state.active.as_ref().map(|a| a.provider);
+            if let Some(provider) = active.filter(|p| state.failed.contains_key(p)) {
+                self.client.invalidate(provider, dest);
+            }
             let mut selected = Vec::new();
             if let Some(peer) = peers.iter().find(|p| Some(p.node_addr) == active) {
                 selected.push(peer.clone());
@@ -341,13 +344,9 @@ impl RouteQuotes {
         let mut pending = JoinSet::new();
         for peer in candidates {
             let identity = PeerIdentity::from_npub(&peer.npub).map_err(|e| e.to_string())?;
-            let control = self.control.clone();
-            let policy = self.policy.clone();
-            let local = *self.endpoint.node_addr();
+            let client = self.client.clone();
             let request = request.clone();
-            pending.spawn(async move {
-                validation::fetch_offer(&control, &policy, local, identity, &request).await
-            });
+            pending.spawn(async move { client.request(identity, &request).await });
         }
         let mut offers = Vec::new();
         while let Some(result) = pending.join_next().await {

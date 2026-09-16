@@ -5,6 +5,7 @@
 //! TCP acknowledgments say nothing about paid data delivery.
 
 mod admission;
+pub(crate) use admission::AdmissionBudget;
 use admission::{CustomerAdmission, allow_request};
 
 use fips_core::{FipsEndpoint, NodeAddr, PeerIdentity};

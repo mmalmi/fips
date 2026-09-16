@@ -2,6 +2,8 @@
 mod controller_support;
 #[path = "controller_support/payment_mobility.rs"]
 mod payment_mobility;
+#[path = "controller_support/quote_traffic.rs"]
+mod quote_traffic;
 use controller_support::{native_control, policy};
 
 use cashu_service::{
@@ -98,9 +100,11 @@ async fn controller_scenario(
         let mut buyers = Vec::new();
         let mut data = Vec::new();
         let seed_sat = if automatic_renewal { 256 } else { 128 };
+        let paid_quote_traffic = !automatic_renewal && !evidence_gap && !route_change && !slow_neighbor;
         // Keep route-change and slow-neighbor scenarios below exhaustion, which the
         // separate renewal scenario deliberately exercises with small channels.
-        let capacity = if automatic_renewal { 16 } else if route_change || slow_neighbor { 64 } else { 32 };
+        // The baseline also needs room for its paid quote request/reply and data.
+        let capacity = if automatic_renewal { 16 } else if route_change || slow_neighbor || paid_quote_traffic { 64 } else { 32 };
         let wallets: Vec<_> = (0..5)
             .map(|i| root.path().join(format!("wallet-{i}")))
             .collect();
@@ -347,6 +351,9 @@ async fn controller_scenario(
             }
         }
         assert_eq!(links.len(), 6);
+        if paid_quote_traffic {
+            quote_traffic::exercise(&nodes, &peers, &services, &ledgers, &links).await;
+        }
         let unauthorized = serde_json::to_vec(&ControllerRequest::Seal { channel_id: a.channel.id.clone() }).unwrap();
         assert!(matches!(controllers[1].handle(peers[2], &unauthorized).await, ControllerResponse::Rejected));
         let mut incoming = Vec::new();

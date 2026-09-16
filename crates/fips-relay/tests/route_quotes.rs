@@ -54,6 +54,7 @@ async fn prices_follow_native_next_hops_and_accumulate_over_neighbor_control() {
         }
         let mut quotes = Vec::new();
         let mut servers = Vec::new();
+        let mut statistics = Vec::new();
         for (i, node) in nodes.iter().enumerate() {
             let neighbors = peers
                 .iter()
@@ -65,6 +66,7 @@ async fn prices_follow_native_next_hops_and_accumulate_over_neighbor_control() {
                 ControlTransport::start(node.clone(), 44_730, neighbors, i as u64 + 20)
                     .await
                     .unwrap();
+            statistics.push(control.statistics());
             let service = Arc::new(
                 RouteQuotes::new(
                     node.clone(),
@@ -139,6 +141,7 @@ async fn prices_follow_native_next_hops_and_accumulate_over_neighbor_control() {
             );
             let provider = if source == 0 { 1 } else { 3 };
             if source == 0 {
+                let before: Vec<_> = statistics.iter().map(|s| s.snapshot()).collect();
                 for _ in 0..32 {
                     let refreshed = quotes[source]
                         .refresh_route(peers[destination])
@@ -150,6 +153,39 @@ async fn prices_follow_native_next_hops_and_accumulate_over_neighbor_control() {
                     );
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
+                for (stats, old) in statistics.iter().zip(before) {
+                    assert_eq!(
+                        stats.snapshot().requests_started,
+                        old.requests_started,
+                        "fresh complete-offer reuse must avoid downstream network requests"
+                    );
+                }
+                let before: u64 = statistics
+                    .iter()
+                    .map(|s| s.snapshot().requests_started)
+                    .sum();
+                let mut concurrent = tokio::task::JoinSet::new();
+                for _ in 0..8 {
+                    let source = quotes[0].clone();
+                    let destination = peers[3];
+                    concurrent
+                        .spawn(async move { source.refresh_route(destination).await.unwrap() });
+                }
+                let mut first = None;
+                while let Some(result) = concurrent.join_next().await {
+                    let received = result.unwrap();
+                    assert_eq!(received.price.msat, 2_048);
+                    assert_eq!(first.get_or_insert_with(|| received.clone()), &received);
+                }
+                let after: u64 = statistics
+                    .iter()
+                    .map(|s| s.snapshot().requests_started)
+                    .sum();
+                assert_eq!(
+                    after - before,
+                    2,
+                    "concurrent misses share one request per paid hop"
+                );
                 assert_ne!(
                     quotes[source]
                         .request_route(peers[destination])
@@ -229,6 +265,47 @@ async fn prices_follow_native_next_hops_and_accumulate_over_neighbor_control() {
                 .await,
             QuoteResponse::Rejected
         ));
+        // Exercise the real quote server after transport authentication. Callers
+        // rotate identities, avoiding individual buckets and per-buyer offer caps.
+        // Sequential completion leaves concurrency limits out of this rate check.
+        let callers: Vec<_> = (0..64)
+            .map(|_| PeerIdentity::from_pubkey_full(fips_core::Identity::generate().pubkey_full()))
+            .collect();
+        let (incoming, receive) = tokio::sync::mpsc::channel(16);
+        let bounded = QuoteServer::start(quotes[1].clone(), receive);
+        let started = std::time::Instant::now();
+        let mut accepted = 0;
+        for caller in callers {
+            let body = serde_json::to_vec(&QuoteRequest {
+                destination: peers[2],
+                ancestors: vec![*caller.node_addr()],
+                deadline_unix,
+                reuse_unchanged: true,
+                requested_max_units: None,
+            })
+            .unwrap();
+            let (respond, reply) = tokio::sync::oneshot::channel();
+            incoming
+                .send(fips_relay::control_transport::IncomingRequest {
+                    peer: caller,
+                    body,
+                    respond,
+                })
+                .await
+                .unwrap();
+            let response: QuoteResponse = serde_json::from_slice(&reply.await.unwrap()).unwrap();
+            accepted += usize::from(matches!(response, QuoteResponse::Offer { .. }));
+        }
+        let available = 16 + started.elapsed().as_millis() / 100;
+        assert!(
+            accepted > 0 && accepted < 64,
+            "fresh identities cannot bypass the shared quote budget"
+        );
+        assert!(
+            accepted as u128 <= available,
+            "aggregate admission must respect its refill rate"
+        );
+        bounded.stop().await;
         for (i, node) in nodes.iter().enumerate() {
             for peer in node.peers().await.unwrap().iter().filter(|p| p.connected) {
                 assert!(

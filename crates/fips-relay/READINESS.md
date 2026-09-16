@@ -192,6 +192,11 @@ optimal monetary routes or malicious-relay resistance:
 
 ## Boundaries and threats
 
+- Quote discovery uses existing authenticated TCP/FIPS. A bounded complete-offer
+  cache and shared in-flight requests avoid repeated downstream negotiations;
+  the quote server adds an aggregate rate limit across identities. Forwarded
+  quotes use ordinary negotiated byte accounting, with no quote-specific fee or
+  free transit exception. See [cache and admission limits](README.md#price-cache-and-request-bounds).
 - A minted token and signed balance authorize payment, not delivery. The mint
   remains a trust dependency; neighboring relays can drop traffic. Exposure must
   remain bounded even with false usage reports, stale replies or crash gaps.
