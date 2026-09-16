@@ -1,5 +1,7 @@
 //! Each router independently accepts, funds onward channels and pays usage.
 mod controller_support;
+#[path = "controller_support/payment_mobility.rs"]
+mod payment_mobility;
 use controller_support::{native_control, policy};
 
 use cashu_service::{
@@ -31,29 +33,34 @@ use std::{
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn routers_independently_fund_accept_and_pay_both_directions() {
-    controller_scenario(false, false, false, false).await;
+    controller_scenario(false, false, false, false, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn exhausted_channels_renew_automatically_without_resetting_capital_or_spending() {
-    controller_scenario(true, false, false, false).await;
+    controller_scenario(true, false, false, false, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restored_buyer_pays_supported_usage_despite_a_provider_evidence_gap() {
-    controller_scenario(false, true, false, false).await;
+    controller_scenario(false, true, false, false, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[cfg(unix)]
 async fn changed_native_paths_reprice_routes_and_reuse_unchanged_neighbor_channels() {
-    controller_scenario(false, false, true, false).await;
+    controller_scenario(false, false, true, false, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[cfg(unix)]
 async fn source_authorized_routes_refresh_automatically_within_price_and_spending_caps() {
-    controller_scenario(false, false, true, true).await;
+    controller_scenario(false, false, true, true, false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn slow_neighbor_payment_and_settlement_do_not_stall_healthy_channels() {
+    controller_scenario(false, false, false, false, true).await;
 }
 
 // Each scenario owns five live nodes and several signing workers. Keep the
@@ -66,6 +73,7 @@ async fn controller_scenario(
     evidence_gap: bool,
     route_change: bool,
     automatic_routes: bool,
+    slow_neighbor: bool,
 ) {
     let _network = NETWORK_SCENARIO.lock().await;
     tokio::time::timeout(Duration::from_secs(240), async {
@@ -90,9 +98,9 @@ async fn controller_scenario(
         let mut buyers = Vec::new();
         let mut data = Vec::new();
         let seed_sat = if automatic_renewal { 256 } else { 128 };
-        // Keep the route-change scenario below channel exhaustion, which the
+        // Keep route-change and slow-neighbor scenarios below exhaustion, which the
         // separate renewal scenario deliberately exercises with small channels.
-        let capacity = if automatic_renewal { 16 } else if route_change { 64 } else { 32 };
+        let capacity = if automatic_renewal { 16 } else if route_change || slow_neighbor { 64 } else { 32 };
         let wallets: Vec<_> = (0..5)
             .map(|i| root.path().join(format!("wallet-{i}")))
             .collect();
@@ -178,6 +186,8 @@ async fn controller_scenario(
         let mut quote_servers = Vec::new();
         let mut payment_servers = Vec::new();
         let mut services = Vec::new();
+        let mut payment_gates = Vec::new();
+        let mut settlement_gates = Vec::new();
         for i in 0usize..5 {
             let receiver = FileSpilmanPaymentReceiver::load_with_keyset_refresh(
                 &root.path().join(format!("receiver-{i}")),
@@ -222,6 +232,10 @@ async fn controller_scenario(
                 ControlTransport::start(nodes[i].clone(), 44_743, neighbors, i as u64 + 20)
                     .await
                     .unwrap();
+            let (incoming, gate) = payment_mobility::gate(incoming, peers[2], slow_neighbor);
+            settlement_gates.push(gate);
+            let (payment_incoming, gate) = payment_mobility::gate(payment_incoming, peers[2], slow_neighbor);
+            payment_gates.push(gate);
             let payment_control =
                 Arc::new(PaymentControl::new(receiver, ledgers[i].clone(), vec![]).unwrap());
             payment_servers.push(PaymentServer::start_shared(
@@ -461,6 +475,10 @@ async fn controller_scenario(
             errors(&controllers), links.iter().map(|(buyer,seller,p)| (
                 *buyer,*seller,ledgers[*seller].channel_usage(&p.channel.id),
                 buyers[*buyer].evidence_msat(&p.channel.id))).collect::<Vec<_>>()));
+        if slow_neighbor {
+            payment_mobility::exercise(&nodes, &peers, &mut data, &controllers, &ledgers,
+                &buyers, &payment_gates, &settlement_gates).await;
+        }
         if route_change {
             // Replace the middle path with 0--1--3--4. Removing config hints
             // alone preserves live links, so use the real local control API to

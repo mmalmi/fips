@@ -8,12 +8,12 @@ mod admission;
 use admission::{CustomerAdmission, allow_request};
 
 use fips_core::{FipsEndpoint, NodeAddr, PeerIdentity};
-use fips_tcp::{Config, ConnectionId, State};
-use fips_tcp_endpoint::FipsTcpEndpoint;
+use fips_tcp::{Config, ConnectionId, StackError, State};
+use fips_tcp_endpoint::{AdapterError, FipsTcpEndpoint};
 use ipnet::IpNet;
 use serde::Serialize;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -21,7 +21,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{
-    sync::{mpsc, oneshot},
+    sync::{Semaphore, mpsc, oneshot},
     task::JoinHandle,
 };
 
@@ -30,6 +30,7 @@ const MAX_CONNECTIONS: usize = 32;
 const QUEUE_SIZE: usize = 16;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const DRIVE_INTERVAL: Duration = Duration::from_millis(10);
+const CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 
 pub struct IncomingRequest {
     pub peer: PeerIdentity,
@@ -43,12 +44,14 @@ struct Command {
     peer: PeerIdentity,
     body: Vec<u8>,
     response: oneshot::Sender<Result<Vec<u8>, String>>,
+    retry_at: Instant,
 }
 
 pub struct ControlTransport {
     commands: mpsc::Sender<Command>,
     task: JoinHandle<()>,
     statistics: Arc<ControlStatistics>,
+    outbound_slots: Semaphore,
 }
 
 /// Volatile measurement counters. Bytes include application record framing;
@@ -133,6 +136,7 @@ impl ControlTransport {
                 commands,
                 task,
                 statistics,
+                outbound_slots: Semaphore::new(QUEUE_SIZE),
             },
             receive_incoming,
         ))
@@ -146,12 +150,18 @@ impl ControlTransport {
         if body.len() > MAX_RECORD_BYTES {
             return Err("control record exceeds size limit".into());
         }
+        // Includes queued and active requests, not just the command mailbox.
+        let _slot = self
+            .outbound_slots
+            .try_acquire()
+            .map_err(|_| "control outgoing request capacity exhausted".to_string())?;
         let (response, receive) = oneshot::channel();
         self.commands
             .try_send(Command {
                 peer,
                 body,
                 response,
+                retry_at: Instant::now(),
             })
             .map_err(|_| "control command queue is closed or full".to_string())?;
         tokio::time::timeout(REQUEST_TIMEOUT, receive)
@@ -233,29 +243,21 @@ async fn run(
     let started = Instant::now();
     let mut exchanges = HashMap::<ConnectionId, Exchange>::new();
     let mut budgets = HashMap::new();
+    let mut pending = VecDeque::<Command>::new();
     let mut ticker = tokio::time::interval(DRIVE_INTERVAL);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         let now = started.elapsed().as_millis() as u64;
         tokio::select! {
-            command = commands.recv() => {
+            command = commands.recv(), if pending.len() < QUEUE_SIZE => {
                 let Some(command) = command else { break; };
-                if !neighbors.contains(command.peer.node_addr()) || exchanges.len() >= MAX_CONNECTIONS
+                if !neighbors.contains(command.peer.node_addr())
                     || !allow_request(&mut budgets, *command.peer.node_addr(), true) {
                     let _ = command.response.send(Err("not an authorized neighbor or control capacity exhausted".into()));
                     continue;
                 }
                 if command.response.is_closed() { continue; }
-                match tcp.connect(command.peer, now).await {
-                    Ok(id) => {
-                        statistics.requests_started.fetch_add(1, Ordering::Relaxed);
-                        let mut exchange = Exchange::server(command.peer);
-                        exchange.outgoing = frame(command.body).expect("bounded at command entry");
-                        exchange.client = Some(command.response);
-                        exchanges.insert(id, exchange);
-                    }
-                    Err(error) => { let _ = command.response.send(Err(error.to_string())); }
-                }
+                pending.push_back(command);
             }
             result = tcp.receive_report(now) => {
                 if result.is_err() { break; }
@@ -265,6 +267,37 @@ async fn run(
             }
         }
         let now = started.elapsed().as_millis() as u64;
+        // Round-robin only requests that have not connected yet. A saturated
+        // peer cannot hold up another peer, and cancellation discards queued
+        // work before any request is transmitted. Never replay a sent request.
+        for _ in 0..pending.len() {
+            let mut command = pending.pop_front().expect("bounded pending queue");
+            if command.response.is_closed() {
+                continue;
+            }
+            if command.retry_at > Instant::now() || exchanges.len() >= MAX_CONNECTIONS {
+                pending.push_back(command);
+                continue;
+            }
+            match tcp.connect(command.peer, now).await {
+                Ok(id) => {
+                    statistics.requests_started.fetch_add(1, Ordering::Relaxed);
+                    let mut exchange = Exchange::server(command.peer);
+                    exchange.outgoing = frame(command.body).expect("bounded at command entry");
+                    exchange.client = Some(command.response);
+                    exchanges.insert(id, exchange);
+                }
+                Err(AdapterError::Tcp(StackError::ConnectionLimit)) => {
+                    // The TCP stack rejects before creating a connection or
+                    // sending SYN. Closing streams can temporarily occupy slots.
+                    command.retry_at = Instant::now() + CONNECT_RETRY_INTERVAL;
+                    pending.push_back(command);
+                }
+                Err(error) => {
+                    let _ = command.response.send(Err(error.to_string()));
+                }
+            }
+        }
         while let Some(id) = tcp.accept() {
             if let Some(peer) = tcp.peer(id)
                 && exchanges.len() < MAX_CONNECTIONS

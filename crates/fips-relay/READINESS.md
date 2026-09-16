@@ -115,6 +115,10 @@ capability and interruption tests, especially on a single radio. Keep financial
 identity independent of channel, MAC address, interface, IP address and position.
 A mobile topology can change faster than settlement; admission/capital policy
 must fail within its bounds without freezing unrelated healthy neighbors.
+Payment exchanges now run independently per channel, with same-channel payment/
+settlement exclusion and bounded worker ownership. The delayed-control regression
+is a step toward this acceptance, not evidence of radio handover or fair progress
+through every renewal/recovery operation.
 
 ### Ad hoc formation acceptance
 

@@ -71,7 +71,16 @@ fn measurements_require_explicit_clock_assumption_and_ignore_invalid_timestamps(
     receiver.record(source, &encode_packet(id, 1, 64, 100).unwrap(), 100_000_000);
     let report = receiver.report();
     assert_eq!(report.unique_packets, 2);
-    assert_eq!(report.latency.unwrap().invalid_timestamps, 2);
+    let latency = report.latency.unwrap();
+    assert_eq!(latency.invalid_timestamps, 2);
+    assert_eq!(
+        latency.samples + latency.invalid_timestamps,
+        report.unique_packets
+    );
+    assert_eq!(
+        latency.samples, 0,
+        "clock failures cannot invent delay samples"
+    );
 }
 
 #[test]

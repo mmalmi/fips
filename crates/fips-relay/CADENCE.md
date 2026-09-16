@@ -45,11 +45,33 @@ on restart; the durable buyer/seller journals remain authoritative. Explicit
 flush and settlement paths still reconcile regardless of normal cadence.
 
 `max_delay_ms` is a scheduling target, not a bound on network or disk latency.
-The scan adds up to 50 ms, and in-flight control/settlement work can delay it.
-The current payment round still visits channels serially. Existing hard credit,
-window and budget gates can stop forwarding regardless of the selected timing.
+The scan adds up to 50 ms, and control, signing or disk work can delay it.
+Each channel has its own payment worker, bounded by the existing 16-channel
+account limit. A network await on one channel does not block payment checks or
+exchanges for another. Payment and settlement share a lock only for the same
+channel; queued work rechecks that the channel is still active before signing.
+The wallet and journal writers remain serialized for financial consistency.
+Existing hard credit, window and budget gates can stop forwarding regardless of
+the selected timing.
 The nominal grace threshold also does not model the exact residual allowance
 lost to earlier crash exposure; safe low-credit latency prediction remains work.
+
+Graceful runtime shutdown drains the in-flight exchanges. Forced cancellation
+aborts owned network tasks even if a drain was already waiting; it cannot detach
+them to keep acting after controller ownership is returned. Already-started
+blocking disk work retains its existing locks until completion. Durable financial
+intents still require the existing recovery procedures. The explicit flush visits
+all selected channels before returning; unrelated background workers keep running
+while it waits. Route recovery and renewal are separate workers and do not yet
+have a demonstrated fairness bound under many simultaneous unavailable peers.
+
+The shared control transport keeps the existing 32 total / four-per-peer TCP
+connection limits. Up to 16 live outgoing requests, including queued requests,
+may wait within the existing 30-second deadline. A full peer's slots do not block
+another peer's connection attempt. Only a pre-connection capacity refusal is
+retried, at most every 50 ms; no transmitted RPC is replayed by this queue.
+Canceled queued requests are discarded before transmission. This also handles
+the short period when successfully closed streams still occupy TCP slots.
 
 ## Independent durable windows
 
@@ -84,6 +106,31 @@ Controller cases include route repricing, automatic renewal, recovery with an
 evidence gap and bidirectional payments. Strict relay Clippy, the production
 library/binary check, Android ARM64 app Clippy, formatting and source-size checks
 also passed. The changed runtime has not yet been deployed to the physical bench.
+
+The subsequent slow-neighbor regression holds real payment and settlement control
+requests in a five-node, test-mint scenario. It requires repeated paid deliveries
+through the healthy neighbor during both holds, retains unresolved capital, then
+releases the requests and completes normal account settlement/conservation. This
+models a delayed control path, not physical radio movement or permissionless
+discovery. A cancellation check also covers an interrupted graceful drain.
+A real three-node control test fills one neighbor's four slots, cancels an
+unsent queued request, completes another neighbor's request, then proves the
+remaining queued request connects once a slot is released. All seven control
+transport integration cases pass, including existing customer isolation checks.
+
+Probe delivery and timing validity are independent checks. Every expected packet
+must arrive in the local long-stream regression, while each one-way timestamp is
+either accepted into the latency histogram or counted as invalid. Wall clocks
+can change even on a single host. Rejected timestamps stay visible and do not
+become fabricated delay samples; usable one-way timing still requires the stated
+clock assumption. This measurement check does not relax packet delivery counts.
+
+The independent-worker milestone passed 43 focused tests: 22 library, seven
+control-transport, three probe, two customer, three multi-process service and six
+controller cases. Strict relay Clippy, Android ARM64 app Clippy, production
+library/binary checks, formatting and the source-size gate passed. The physical
+routers still run the earlier build; no hardware speedup or ad hoc radio joining
+is claimed by these software checks.
 
 No new CPU or throughput saving is claimed by these checks. The next measurement
 must compare 250/500/1000/2000-ms policies with identical terms and workloads,

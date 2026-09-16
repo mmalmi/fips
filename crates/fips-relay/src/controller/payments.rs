@@ -1,14 +1,31 @@
 //! Schedule and exchange cumulative payments using the existing authorization gate.
 use super::cadence::ChannelSchedule;
 use super::*;
+use crate::ledger::ChannelUsage;
+
+type PaymentResult = Result<Option<ChannelUsage>, String>;
 
 impl Controller {
-    pub async fn flush_payments(&self) -> Result<(), String> {
-        let _maintenance = self.maintenance.lock().await;
-        self.pay_current_usage().await
+    /// Serialize financial transitions for this channel without holding other
+    /// neighbors behind a network await. Weak entries do not retain history.
+    pub(super) fn channel_work(&self, id: &str) -> Result<Arc<AsyncMutex<()>>, String> {
+        let mut channels = self
+            .channel_work
+            .lock()
+            .map_err(|_| "channel work poisoned")?;
+        channels.retain(|_, work| work.strong_count() > 0);
+        if let Some(work) = channels.get(id).and_then(Weak::upgrade) {
+            return Ok(work);
+        }
+        if channels.len() >= MAX_CHANNELS {
+            return Err("channel work capacity exhausted".into());
+        }
+        let work = Arc::new(AsyncMutex::new(()));
+        channels.insert(id.into(), Arc::downgrade(&work));
+        Ok(work)
     }
 
-    pub(super) async fn pay_current_usage(&self) -> Result<(), String> {
+    pub async fn flush_payments(&self) -> Result<(), String> {
         let mut seen = HashSet::new();
         let mut first_error = None;
         for purchase in self.purchases().await? {
@@ -22,10 +39,18 @@ impl Controller {
         first_error.map_or(Ok(()), Err)
     }
 
-    pub(super) async fn pay_channel(
-        &self,
-        purchase: Purchase,
-    ) -> Result<crate::ledger::ChannelUsage, String> {
+    pub(super) async fn pay_channel(&self, purchase: Purchase) -> PaymentResult {
+        let _channel = self.channel_work(&purchase.channel.id)?.lock_owned().await;
+        // A task can have waited behind settlement or a route replacement.
+        // Never sign from an active-purchase snapshot taken before that wait.
+        if !self
+            .purchases()
+            .await?
+            .iter()
+            .any(|p| p.channel == purchase.channel)
+        {
+            return Ok(None);
+        }
         let peer = self.neighbor(purchase.provider).await?;
         let response = self
             .services
@@ -64,7 +89,7 @@ impl Controller {
         );
         if usage.paid_msat / 1_000 >= supported.div_ceil(1_000) && usage.paid_msat / 1_000 >= prior
         {
-            return Ok(usage);
+            return Ok(Some(usage));
         }
         let payment = {
             let wallet_guard = self.wallet.clone().lock_owned().await;
@@ -99,41 +124,98 @@ impl Controller {
             PaymentResponse::Status {
                 channel_id: id,
                 usage,
-            } if id == channel_id && usage.paid_msat >= expected => Ok(usage),
+            } if id == channel_id && usage.paid_msat >= expected => Ok(Some(usage)),
             _ => Err("provider did not accept signed balance".into()),
         }
     }
 }
 
-impl Controller {
-    pub(super) async fn pay_due_usage(
-        &self,
-        schedules: &mut BTreeMap<String, ChannelSchedule>,
+#[derive(Default)]
+struct ChannelPayment {
+    schedule: ChannelSchedule,
+    job: Option<JoinHandle<PaymentResult>>,
+}
+
+impl ChannelPayment {
+    async fn finish(&mut self) -> Result<(), String> {
+        let Some(job) = self.job.as_mut() else {
+            return Ok(());
+        };
+        let result = job.await.map_err(|e| e.to_string()).and_then(|r| r);
+        self.job = None;
+        match result {
+            Ok(Some(usage)) => {
+                self.schedule.acknowledge(usage.paid_msat);
+                Ok(())
+            }
+            Ok(None) => Ok(()),
+            Err(error) => {
+                self.schedule.failed(tokio::time::Instant::now());
+                Err(error)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "payment_workers_tests.rs"]
+mod tests;
+
+impl Drop for ChannelPayment {
+    fn drop(&mut self) {
+        if let Some(job) = &self.job {
+            job.abort();
+        }
+    }
+}
+
+/// At most one exchange per saved channel, including retired in-flight work.
+/// A slow network request never holds up scanning or completing another channel.
+#[derive(Default)]
+pub(super) struct PaymentWorkers {
+    channels: BTreeMap<String, ChannelPayment>,
+}
+
+impl PaymentWorkers {
+    pub(super) async fn tick(
+        &mut self,
+        controller: &Arc<Controller>,
         policy: &PaymentCadence,
     ) -> Result<(), String> {
-        let _maintenance = self.maintenance.lock().await;
-        let purchases = self.purchases().await?;
+        let purchases = controller.purchases().await?;
         let active: HashSet<_> = purchases.iter().map(|p| p.channel.id.clone()).collect();
-        schedules.retain(|id, _| active.contains(id));
-        let mut seen = HashSet::new();
         let mut error = None;
+        for channel in self.channels.values_mut() {
+            if channel.job.as_ref().is_some_and(JoinHandle::is_finished)
+                && let Err(reason) = channel.finish().await
+            {
+                error.get_or_insert(reason);
+            }
+        }
+        self.channels
+            .retain(|id, work| active.contains(id) || work.job.is_some());
+        let mut seen = HashSet::new();
         for purchase in purchases {
             let id = purchase.channel.id.clone();
             if !seen.insert(id.clone()) {
                 continue;
             }
-            let evidence = self
-                .services
-                .buyer
-                .evidence_msat(&id)
-                .ok_or("buyer evidence missing")?;
-            let authorized = self
-                .services
-                .buyer
-                .authorized_sat(&id)
-                .ok_or("buyer channel missing")?;
-            let schedule = schedules.entry(id).or_default();
-            if !schedule.due(
+            if !self.channels.contains_key(&id) && self.channels.len() >= MAX_CHANNELS {
+                error.get_or_insert_with(|| "payment worker capacity exhausted".into());
+                continue;
+            }
+            let work = self.channels.entry(id.clone()).or_default();
+            if work.job.is_some() {
+                continue;
+            }
+            let (Some(evidence), Some(authorized)) = (
+                controller.services.buyer.evidence_msat(&id),
+                controller.services.buyer.authorized_sat(&id),
+            ) else {
+                error.get_or_insert_with(|| "buyer channel or evidence missing".into());
+                continue;
+            };
+            if !work.schedule.due(
                 tokio::time::Instant::now(),
                 evidence,
                 authorized,
@@ -142,12 +224,19 @@ impl Controller {
             ) {
                 continue;
             }
-            match self.pay_channel(purchase).await {
-                Ok(usage) => schedule.acknowledge(usage.paid_msat),
-                Err(reason) => {
-                    schedule.failed(tokio::time::Instant::now());
-                    error.get_or_insert(reason);
-                }
+            let payer = controller.clone();
+            work.job = Some(tokio::spawn(
+                async move { payer.pay_channel(purchase).await },
+            ));
+        }
+        error.map_or(Ok(()), Err)
+    }
+
+    pub(super) async fn drain(&mut self) -> Result<(), String> {
+        let mut error = None;
+        for channel in self.channels.values_mut() {
+            if let Err(reason) = channel.finish().await {
+                error.get_or_insert(reason);
             }
         }
         error.map_or(Ok(()), Err)

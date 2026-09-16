@@ -25,7 +25,7 @@ use std::{
     fs::File,
     io::Read,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
@@ -241,7 +241,7 @@ pub struct Controller {
     policy: ControllerPolicy,
     store: Arc<Mutex<Store>>,
     wallet: Arc<AsyncMutex<()>>,
-    maintenance: AsyncMutex<()>,
+    channel_work: Mutex<BTreeMap<String, Weak<AsyncMutex<()>>>>,
     renewal_work: AsyncMutex<()>,
     route_work: AsyncMutex<()>,
     refresh_work: AsyncMutex<()>,
@@ -357,7 +357,7 @@ impl Controller {
             policy,
             store: Arc::new(Mutex::new(store)),
             wallet: Arc::new(AsyncMutex::new(())),
-            maintenance: AsyncMutex::new(()),
+            channel_work: Mutex::new(BTreeMap::new()),
             renewal_work: AsyncMutex::new(()),
             route_work: AsyncMutex::new(()),
             refresh_work: AsyncMutex::new(()),

@@ -1,5 +1,6 @@
 //! Resume retained work and supervise control and payment workers.
-use super::cadence::{ChannelSchedule, SCAN_INTERVAL};
+use super::cadence::SCAN_INTERVAL;
+use super::payments::PaymentWorkers;
 use super::*;
 
 impl Controller {
@@ -95,17 +96,6 @@ impl Controller {
         }
         first_error.map_or(Ok(()), Err)
     }
-
-    pub(super) async fn tick(
-        &self,
-        schedules: &mut BTreeMap<String, ChannelSchedule>,
-        cadence: &PaymentCadence,
-    ) {
-        let result = self.pay_due_usage(schedules, cadence).await;
-        if let Err(error) = result {
-            *self.last_error.lock().unwrap() = Some(error);
-        }
-    }
 }
 
 pub struct ControllerTasks {
@@ -165,14 +155,21 @@ impl ControllerTasks {
         });
         let payer = controller.clone();
         let payments = tokio::spawn(async move {
-            let mut schedules = BTreeMap::new();
+            let mut workers = PaymentWorkers::default();
             let mut ticker = tokio::time::interval(SCAN_INTERVAL);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 tokio::select! {
                     _ = stop_payments.changed() => break,
-                    _ = ticker.tick() => payer.tick(&mut schedules, &cadence).await,
+                    _ = ticker.tick() => {
+                        if let Err(error) = workers.tick(&payer, &cadence).await {
+                            *payer.last_error.lock().unwrap() = Some(error);
+                        }
+                    }
                 }
+            }
+            if let Err(error) = workers.drain().await {
+                *payer.last_error.lock().unwrap() = Some(error);
             }
         });
         let checkpoint_controller = controller.clone();

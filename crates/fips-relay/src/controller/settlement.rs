@@ -323,7 +323,7 @@ impl Controller {
     /// Freeze an accepted purchase, deliver its final authorized balance,
     /// redeem the seller's payout and recover the buyer's unused funding.
     pub async fn settle_channel(&self, id: &str) -> Result<SettlementReport, String> {
-        let _maintenance = self.maintenance.lock().await;
+        let _channel = self.channel_work(id)?.lock_owned().await;
         self.settle_purchase(id).await
     }
 
