@@ -232,6 +232,16 @@ Strict relay and Android ARM64 linting, default builds, formatting and the
   Old accounting and duplicate evidence remain; a disconnected former provider
   cannot prevent buying the new path, but its funding stays locked. Authenticated
   stop notices retry when it reconnects. Settlement pauses pending replacements.
+* Route replacement and renewal reserve their shared channel through the same
+  durable journal mutation. The reservation rechecks current purchases,
+  acceptance, settlement and renewal state; a worker's earlier snapshot cannot
+  authorize a conflicting transition. This covers the old channel and an existing
+  channel at the replacement provider, even when used for another destination.
+  An unfinished route change, including a paused one, excludes renewal until
+  its replacement is accepted. Completed
+  history remains available without blocking future renewal. Reservation errors
+  on one channel do not skip the remaining renewal work. Deterministic tests
+  exercise both worker orderings and reload the saved records between steps.
 * The route-change controller test disconnects the middle node through the native
   management API and connects the outer relays directly. Both directions resume
   at a lower price, keep the source channels, and open only two new one-way

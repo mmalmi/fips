@@ -42,6 +42,14 @@ impl Renewal {
         self.completed
     }
 
+    pub(super) fn reserves_provider(&self, provider: NodeAddr) -> bool {
+        !self.completed
+            && self
+                .previous
+                .iter()
+                .any(|o| o.purchase.provider == provider)
+    }
+
     pub(super) fn requests(&self, id: &str) -> bool {
         self.replacements
             .as_ref()
@@ -77,6 +85,9 @@ impl Controller {
             return Err("renewal history capacity".into());
         }
         for (id, renewal) in &journal.renewals {
+            if !renewal.completed && Self::route_change_pending_on(journal, id) {
+                return Err("conflicting route and renewal intents".into());
+            }
             if renewal.previous.is_empty()
                 || renewal.previous.len() > MAX_ROUTES
                 || renewal.previous.iter().any(|old| {
@@ -171,12 +182,46 @@ impl Controller {
         policy.due(purchase, evidence, observed, timestamp)
     }
 
+    pub(super) fn reserve_renewal(j: &mut Journal, id: String) -> Result<(), String> {
+        if j.renewals.contains_key(&id) {
+            return Ok(());
+        }
+        if j.renewals.len() >= MAX_CHANNELS {
+            return Err("renewal history full".into());
+        }
+        if Self::route_change_pending_on(j, &id) {
+            return Err("channel has an unfinished route change".into());
+        }
+        let previous: Vec<_> = j
+            .outgoing
+            .values()
+            .filter(|o| o.accepted && !o.retired && o.purchase.channel.id == id)
+            .cloned()
+            .collect();
+        if previous.is_empty()
+            || j.buyer_settlements.contains_key(&id)
+            || previous.iter().any(|o| o.offer.trial)
+        {
+            return Err("renewal purchase no longer active".into());
+        }
+        j.renewals.insert(
+            id,
+            Renewal {
+                previous,
+                replacements: None,
+                completed: false,
+            },
+        );
+        Ok(())
+    }
+
     pub(super) async fn maintain_renewals(&self) -> Result<(), String> {
         let _work = self.renewal_work.lock().await;
         let snapshot = self.snapshot().await?;
         if snapshot.renewals_paused {
             return Ok(());
         }
+        let mut first_error = None;
         if let Some(policy) = &self.policy.renewal {
             let timestamp = now()?;
             let due: HashSet<_> = self
@@ -193,37 +238,12 @@ impl Controller {
                 .map(|p| p.channel.id)
                 .collect();
             for id in due {
-                self.change(move |j| {
-                    if j.renewals.contains_key(&id) {
-                        return Ok(());
-                    }
-                    if j.renewals.len() >= MAX_CHANNELS {
-                        return Err("renewal history full".into());
-                    }
-                    let previous: Vec<_> = j
-                        .outgoing
-                        .values()
-                        .filter(|o| o.accepted && !o.retired && o.purchase.channel.id == id)
-                        .cloned()
-                        .collect();
-                    if previous.is_empty() || j.buyer_settlements.contains_key(&id) {
-                        return Err("renewal purchase no longer active".into());
-                    }
-                    j.renewals.insert(
-                        id,
-                        Renewal {
-                            previous,
-                            replacements: None,
-                            completed: false,
-                        },
-                    );
-                    Ok(())
-                })
-                .await?;
+                if let Err(error) = self.change(move |j| Self::reserve_renewal(j, id)).await {
+                    first_error.get_or_insert(error);
+                }
             }
         }
         let snapshot = self.snapshot().await?;
-        let mut first_error = None;
         for (id, renewal) in snapshot.renewals {
             if !renewal.completed
                 && let Err(error) = self.advance_renewal(&id, renewal).await

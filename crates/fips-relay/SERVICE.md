@@ -187,6 +187,15 @@ recovers refunds. `pause_renewals` and `resume_renewals` control replacement wor
 without deleting saved intents. All commands are local administrative actions;
 this socket is not the public Wi-Fi payment/onboarding service.
 
+Route replacement and renewal cannot reserve the same channel concurrently.
+The first saved intent keeps ownership across restart; a paused or unfinished
+route replacement also blocks renewal until its new agreement is accepted.
+This changes no wire messages or journal fields. A saved journal containing
+both unfinished intents for one channel is rejected at startup with
+`conflicting route and renewal intents`. Preserve that state for reconciliation;
+deleting either intent can lose funding or spending evidence. The loader does
+not automatically choose which financial operation to discard.
+
 After settlement and confirmed refund recovery, a fresh `buy` can purchase the
 same route again using the existing account. It retains closed channel history,
 unpaid exposure and lifetime spending limits, and funds a new channel. The offer

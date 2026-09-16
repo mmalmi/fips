@@ -13,6 +13,70 @@ pub(super) struct RouteChange {
 }
 
 impl Controller {
+    pub(super) fn route_change_pending_on(j: &Journal, channel: &str) -> bool {
+        let provider = j.funding.values().find_map(|f| {
+            f.funded
+                .as_ref()
+                .filter(|funded| funded.terms.id == channel)
+                .map(|_| f.provider)
+        });
+        j.route_changes.values().any(|c| {
+            (c.previous.iter().any(|p| p.channel.id == channel)
+                || provider == Some(c.offer.provider))
+                && !j
+                    .outgoing
+                    .values()
+                    .any(|o| o.offer == c.offer && o.accepted)
+        })
+    }
+
+    pub(super) fn reserve_route_change(j: &mut Journal, saved: RouteChange) -> Result<(), String> {
+        // Route and renewal workers have different locks. Validate against the
+        // current journal in the same mutation that saves this reservation.
+        let active: Vec<_> = j
+            .outgoing
+            .values()
+            .filter(|o| {
+                !o.retired
+                    && o.purchase.contract.destination == *saved.offer.destination.node_addr()
+            })
+            .collect();
+        if saved.offer.expires_unix <= now()?
+            || Self::offer_paused(j, &saved.offer.id)
+            || j.renewals
+                .values()
+                .any(|r| r.reserves_provider(saved.offer.provider))
+            || active.is_empty()
+            || active.len() != saved.previous.len()
+            || active.iter().any(|o| {
+                !o.accepted
+                    || !saved.previous.contains(&o.purchase)
+                    || j.buyer_settlements
+                        .get(&o.purchase.channel.id)
+                        .is_some_and(|s| !s.refunded)
+                    || j.renewals
+                        .get(&o.purchase.channel.id)
+                        .is_some_and(|r| !r.is_completed())
+            })
+        {
+            return Err("route changed or pending acceptance, settlement or renewal".into());
+        }
+        if j.route_changes.len() >= MAX_ROUTES
+            || j.route_changes.contains_key(&saved.offer.id)
+            || j.route_changes.values().any(|c| {
+                c.offer.destination.node_addr() == saved.offer.destination.node_addr()
+                    && !j
+                        .outgoing
+                        .values()
+                        .any(|o| o.offer == c.offer && o.accepted)
+            })
+        {
+            return Err("route change capacity or unfinished transition".into());
+        }
+        j.route_changes.insert(saved.offer.id.clone(), saved);
+        Ok(())
+    }
+
     pub(super) fn changed_route_retires(j: &Journal, purchase: &Purchase) -> bool {
         j.route_changes
             .values()
@@ -123,23 +187,6 @@ impl Controller {
             }
             c
         } else {
-            if offered.expires_unix <= now()?
-                || previous.iter().any(|o| {
-                    !o.accepted
-                        || snapshot
-                            .buyer_settlements
-                            .get(&o.purchase.channel.id)
-                            .is_some_and(|s| !s.refunded)
-                        || snapshot
-                            .renewals
-                            .get(&o.purchase.channel.id)
-                            .is_some_and(|r| !r.is_completed())
-                })
-            {
-                return Err(
-                    "finish pending acceptance, settlement or renewal before changing route".into(),
-                );
-            }
             let intent = RouteChange {
                 offer: offered.clone(),
                 previous: previous.iter().map(|o| o.purchase.clone()).collect(),
@@ -148,22 +195,8 @@ impl Controller {
                 stopped_remotes: BTreeSet::new(),
             };
             let saved = intent.clone();
-            self.change(move |j| {
-                if j.route_changes.len() >= MAX_ROUTES
-                    || j.route_changes.values().any(|c| {
-                        c.offer.destination.node_addr() == saved.offer.destination.node_addr()
-                            && !j
-                                .outgoing
-                                .values()
-                                .any(|o| o.offer == c.offer && o.accepted)
-                    })
-                {
-                    return Err("route change capacity or unfinished transition".into());
-                }
-                j.route_changes.insert(saved.offer.id.clone(), saved);
-                Ok(())
-            })
-            .await?;
+            self.change(move |j| Self::reserve_route_change(j, saved))
+                .await?;
             intent
         };
         if intent.prepared {

@@ -32,6 +32,38 @@ real-money operation and public deployment are separate authorization decisions.
    procedures, supported-link/architecture matrix, and controlled router/Pixel
    regression with test funds conserved. Update the local TollGate proposal.
 
+## Concurrent transition reservations
+
+Route-change and renewal workers now reserve shared channels in the durable
+journal mutation, checking the current predecessor, acceptance, settlement and
+renewal state there. Either worker can win; the other must retry after completion.
+Both predecessor channels and a replacement provider's shared channel are
+reserved. Paused route changes retain their reservation. Accepted replacement
+history does not prevent later renewal, and a reservation conflict does not skip work
+on other channels. Startup rejects overlapping unfinished intents without
+discarding financial records; see [service recovery](SERVICE.md).
+
+Ten deterministic journal tests cover both reservation orderings, restart
+between steps, stale acceptance/predecessor/settlement/trial snapshots, the
+replacement-acceptance boundary, a new provider's shared channel, unrelated
+channels and conflicting legacy state. They exercise the actual reservation
+and storage code, using fixture
+payment records rather than mint signatures. This is not an exhaustive
+route/payment/renewal/settlement fault matrix. In particular, interruption after
+each network/mint boundary, automatic free-route transitions and history
+retirement remain part of the broader acceptance work.
+
+Run these with `cargo test -p fips-relay --lib controller::transition_tests`;
+`cargo test -p fips-relay --test controller` exercises live native routing,
+actual test-mint payments, renewal, route replacement, reload and final
+conservation of funds.
+
+The final reservation implementation passes all 61 relay library tests and
+all seven controller-target tests (six live five-node scenarios plus the
+identity-matching gate test). Strict all-feature/all-target relay Clippy,
+formatting and the source-size gate also pass. This is isolated software
+evidence; no new router, phone or radio acceptance is claimed.
+
 ## Simulation reuse
 
 The existing `fips-sim` crate starts real endpoints over `SimNetwork` and runs

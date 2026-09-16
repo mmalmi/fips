@@ -1,6 +1,6 @@
 use super::*;
 
-fn unresolved_journal() -> Journal {
+pub(super) fn unresolved_journal() -> Journal {
     let local = NodeAddr::from_bytes([1; 16]);
     let policy = ControllerPolicy {
         mint_url: "http://127.0.0.1:1234".into(),
