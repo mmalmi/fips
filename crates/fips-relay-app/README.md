@@ -134,5 +134,8 @@ scripts/check-rust-file-lines.sh
 
 Also run Android-target Clippy, build/lint the APK, and verify the actual phone UI
 with screenshots. Source-side tests and a successful app launch do not establish
-the public Wi-Fi isolation or three-router Pixel demonstration; those require
-the physical run and its capture/accounting evidence.
+public Wi-Fi isolation or three-router delivery. The subsequent actual Pixel run
+verified purchase, both traffic directions, app reopen and final settlement over
+the intended native wireless links. Each router earned 49 test sats net and all
+2,560 run funds were collected. See [the acceptance report](../fips-relay/PROTOTYPE-RESULTS.md)
+for the initial dropped attempts, capture evidence, network isolation and limits.

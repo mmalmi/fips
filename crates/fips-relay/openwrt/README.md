@@ -1,5 +1,8 @@
 # OpenWrt package
 
+For the current completed prototype scope and later phone/performance evidence,
+see [the acceptance report](../PROTOTYPE-RESULTS.md). Earlier run sections below are historical.
+
 The APKv3 package targets OpenWrt 25.12 and newer. It uses standard Linux network
 interfaces and OpenWrt services; it contains no device-specific driver changes.
 The binary must be cross-compiled for the selected CPU architecture. The package

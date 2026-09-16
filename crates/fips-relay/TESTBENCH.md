@@ -1,5 +1,8 @@
 # Isolated hardware test mint and wallet funding
 
+For the current completed prototype scope and later phone/performance evidence,
+see [the acceptance report](PROTOTYPE-RESULTS.md). Earlier run sections below are historical.
+
 `fips-relay-test-mint` runs a genuine local CDK mint with a simulated Lightning
 backend. Its tokens have no external backing. Only the private administrator
 socket can issue a bounded test grant; the HTTP listener exposes the ordinary

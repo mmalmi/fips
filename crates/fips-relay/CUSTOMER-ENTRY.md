@@ -81,9 +81,9 @@ from that subnet. The mint path must work before an ordinary Internet purchase;
 otherwise a customer cannot fund or recover its forwarding channel independently.
 
 Ordinary Internet entitlement remains a separate service. Do not convert a FIPS
-payment into an unrestricted firewall allowance. The phone client, customer SSID,
-firewall/mint bootstrap and physical isolation checks must be completed before
-claiming the whole customer flow is demonstrated.
+payment into an unrestricted firewall allowance. The phone client, isolated SSID,
+mint bootstrap and physical isolation passed the bounded three-router/Pixel run;
+see [the acceptance report](PROTOTYPE-RESULTS.md) for scope and limitations.
 
 ## Verification
 
@@ -104,5 +104,5 @@ paid relays; both sending directions, long streams, process restart, middle-rout
 crash and final test-mint settlement use the existing service implementation.
 Peer checks compare exact connected identities against the intended line.
 
-These are software checks. Physical customer Wi-Fi and the phone demonstration
-remain separate acceptance work.
+These software checks complement the subsequent physical customer Wi-Fi and
+phone demonstration in [the acceptance report](PROTOTYPE-RESULTS.md).

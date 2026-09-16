@@ -4,7 +4,8 @@
 Spilman receiver, quotes and autonomous controller in one Unix process. Linux
 and macOS local process tests use UDP. Three OpenWrt routers have also earned
 test payments over native Wi-Fi links. See [TESTBENCH.md](TESTBENCH.md) for the
-hardware evidence and remaining checks; this is not yet a complete customer hotspot.
+historical hardware evidence and [PROTOTYPE-RESULTS.md](PROTOTYPE-RESULTS.md) for
+the completed bounded customer demonstration and current limits.
 
 The example selects `terms.billing: "forwarding_attempt"` for fresh accounts.
 It retains totals and unfinished sends instead of every completed packet.
@@ -95,8 +96,8 @@ An optional `customer_network` subnet enables bounded incoming quote/payment
 control from authenticated direct UDP customers without preconfiguring their
 identities. It requires a specific UDP bind address inside that subnet. Outgoing
 purchases remain restricted to configured neighbors. See
-[CUSTOMER-ENTRY.md](CUSTOMER-ENTRY.md) for admission limits, bootstrap and the
-remaining physical customer-flow checks.
+[CUSTOMER-ENTRY.md](CUSTOMER-ENTRY.md) for admission limits and bootstrap, and
+[the acceptance report](PROTOTYPE-RESULTS.md) for the physical customer checks.
 
 Financial terms are saved at initialization. Changing prices, capital, lifetime
 budget or exposure settings afterward stops startup for explicit reconciliation.

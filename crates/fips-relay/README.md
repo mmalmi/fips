@@ -4,12 +4,13 @@ Experimental service components for **sender-funded, best-effort forwarding**.
 Delivery receipts are an optional future experiment. The relay does not inspect
 TCP, UDP or application delivery acknowledgments inside encrypted FIPS traffic.
 
-See [SERVICE.md](SERVICE.md) for service operation and
-[TESTBENCH.md](TESTBENCH.md) for isolated funding, collection and the first
-verified three-router wireless runs. Each physical router earned a positive net
-margin. Restart, credit exhaustion and automatic renewal were exercised, and all
-3,840 test sats were redeemed after settlement. Hardware route changes,
-performance and the public customer flow remain unfinished.
+See [the acceptance report and runbook](PROTOTYPE-RESULTS.md) for the completed
+three-router/Pixel demonstration and its limits, [SERVICE.md](SERVICE.md) for
+operation, and [TESTBENCH.md](TESTBENCH.md) for isolated funding and collection.
+Physical route changes, restart, exhaustion/renewal and customer Wi-Fi have been
+exercised. All 12,800 historical test sats were collected. The latest
+[performance comparison](PERFORMANCE.md) retained the baseline after rejecting
+two tuning experiments without reliable CPU savings.
 
 See [openwrt/README.md](openwrt/README.md) for the persistent APK package,
 size-oriented ARM64 build, startup readiness checks and backup procedure.
@@ -154,8 +155,8 @@ size-oriented ARM64 build, startup readiness checks and backup procedure.
   Removing the middle router leads to lower-priced replacement agreements without
   another source purchase command. The original source channels remain, only the
   two new neighbour directions need funding, and all 640 test sats are conserved.
-  Physical route changes and combined route-change/unfinished-renewal recovery
-  remain unfinished.
+  Physical route changes subsequently passed; combined route-change/unfinished-
+  renewal recovery remains outside the demonstrated cases.
 * If a crash leaves the provider's usage ahead of the buyer's saved submission
   evidence, the controller pays the supported portion of the cumulative claim.
   Later known submissions can continue earning payments; the unsupported
@@ -220,23 +221,15 @@ satisfy the check. Public entry points remain in the top-level modules:
 Buyer evidence and seller claims remain independent trust boundaries. Shared
 types and pricing helpers do not let a provider manufacture buyer authorization.
 
-## Runtime work remaining
+## Prototype limits and follow-on work
 
-Combined route-change/unfinished-renewal recovery, expired pending offers,
-broader interrupted funding exercises, route/channel history retirement and a phone
-customer demo remain unfinished. Persistent OpenWrt packaging and bounded
-physical route-change/traffic measurements now have hardware evidence; see
-[the measurements](MEASUREMENTS.md) for scope, resource costs and the confirmed
-legacy 4,096-attempt cutoff. The new accounting mode passed 6,000 application
-packets in each direction through three paid relays in the five-process test,
-including subsequent restart recovery and test-mint settlement. The subsequent
-[r5 wireless run](WIRELESS-ACCOUNTING.md) carried 6,000/12,000-packet streams
-at offered rates of 2–8 Mbit/s, with compact journals and automatic renewal.
-Renewal interrupted delivery; maximum throughput remains unverified.
-See [the service guide](SERVICE.md) for the runnable Unix service and local
-process test. [Customer entry](CUSTOMER-ENTRY.md) adds opt-in control access for
-authenticated local UDP customers. The customer SSID, mint bootstrap and phone
-flow still require physical acceptance; this is not a deployed hotspot.
+The [acceptance report](PROTOTYPE-RESULTS.md) records the completed bounded
+prototype, including the actual Pixel flow and hardware measurements. Earlier
+run reports retain their original scope; use the current report to distinguish
+completed checks from follow-on work. Combined route-change/unfinished-renewal
+recovery, expired pending offers, broader interrupted-funding exercises and safe
+route/channel history retirement remain limitations. Renewal can interrupt
+delivery, and maximum throughput and indefinite hotspot service are not claimed.
 
 The controller retains up to 16 funded or unresolved channel intents and 32
 requested, outgoing and incoming routes in each category. Retained funding still
