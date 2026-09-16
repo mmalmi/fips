@@ -5,15 +5,15 @@ use std::collections::BTreeSet;
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct RouteChange {
     pub(super) offer: RouteOffer,
-    previous: Vec<Purchase>,
-    prepared: bool,
+    pub(super) previous: Vec<Purchase>,
+    pub(super) prepared: bool,
     #[serde(default)]
     pub(super) paused: bool,
     stopped_remotes: BTreeSet<String>,
 }
 
 impl RouteChange {
-    fn is_finished(&self, j: &Journal) -> bool {
+    pub(super) fn is_finished(&self, j: &Journal) -> bool {
         j.outgoing.values().any(|o| {
             o.offer == self.offer
                 && (o.accepted
@@ -52,6 +52,7 @@ impl Controller {
             })
             .collect();
         if saved.offer.expires_unix <= now()?
+            || Self::retired_offer(j, &saved.offer)
             || Self::offer_paused(j, &saved.offer.id)
             || j.renewals
                 .values()
@@ -154,7 +155,7 @@ impl Controller {
     pub(super) async fn prepare_changed_route(&self, offered: &RouteOffer) -> Result<(), String> {
         let _work = self.route_work.lock().await;
         let snapshot = self.snapshot().await?;
-        if Self::offer_paused(&snapshot, &offered.id) {
+        if Self::retired_offer(&snapshot, offered) || Self::offer_paused(&snapshot, &offered.id) {
             return Err("route change paused".into());
         }
         let timestamp = now()?;

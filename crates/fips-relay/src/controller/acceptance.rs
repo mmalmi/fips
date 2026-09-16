@@ -110,11 +110,12 @@ impl Controller {
             contract: contract.clone(),
             verified_paid_msat: credit.paid_msat,
             phase: Phase::Prepared,
+            replacement_retired: false,
             replaces,
         };
         let saved = incoming.clone();
         self.change(move |j| {
-            if j.selling_stopped {
+            if j.selling_stopped || Self::retired_offer(j, &saved.offer) {
                 return Err("controller stopped selling".into());
             }
             if j.seller_settlements.contains_key(&saved.channel.id) {

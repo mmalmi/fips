@@ -205,6 +205,25 @@ impl DurableRelay {
             .map(|(count, _)| count)
     }
 
+    pub(crate) fn retirement_plan(
+        &self,
+        channel: &str,
+        through_unix: u64,
+    ) -> Result<crate::ledger::RouteRetirementPlan, DurableError> {
+        let _writer = self.writer.lock().map_err(|_| DurableError::Suspended)?;
+        if !self
+            .windows
+            .read()
+            .map_err(|_| DurableError::Suspended)?
+            .ready
+        {
+            return Err(DurableError::Suspended);
+        }
+        self.ledger
+            .retirement_plan(channel, through_unix)
+            .map_err(Into::into)
+    }
+
     pub fn retired_route_evidence(
         &self,
         channel: &str,

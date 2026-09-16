@@ -36,6 +36,8 @@ mod capital;
 mod funding;
 pub use capital::FundingBudget;
 mod journal;
+mod retirement;
+use retirement::History;
 mod payments;
 mod purchase_state;
 mod purchases;
@@ -149,6 +151,8 @@ struct Incoming {
     phase: Phase,
     #[serde(default)]
     replaces: Option<String>,
+    #[serde(default)]
+    replacement_retired: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -174,6 +178,8 @@ struct Journal {
     route_changes: BTreeMap<String, RouteChange>,
     #[serde(default)]
     watched_routes: BTreeMap<String, WatchedRoute>,
+    #[serde(default)]
+    history: Option<History>,
 }
 
 struct Store {
@@ -188,7 +194,7 @@ impl Store {
         &mut self,
         job: impl FnOnce(&mut Journal) -> Result<T, String>,
     ) -> Result<T, String> {
-        if !self.ready {
+        if !self.ready || self.journal.history.as_ref().is_some_and(History::pending) {
             return Err("controller journal suspended".into());
         }
         let mut candidate = self.journal.clone();
@@ -309,7 +315,7 @@ impl Controller {
         let mut store = Store {
             directory: directory.into(),
             journal: Journal {
-                version: 2,
+                version: 3,
                 local: *services.endpoint.node_addr(),
                 policy: policy.clone(),
                 epoch: Identity::generate().node_addr().to_string(),
@@ -325,6 +331,7 @@ impl Controller {
                 renewals_paused: false,
                 route_changes: BTreeMap::new(),
                 watched_routes: BTreeMap::new(),
+                history: Some(History::default()),
             },
             ready: true,
             _owner: owner,
@@ -353,17 +360,15 @@ impl Controller {
         }
         let journal: Journal = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
         Self::validate_journal(&journal, &policy, *services.endpoint.node_addr())?;
-        Self::reconcile_route_stops(&journal, &services)?;
-        Ok(Self::with_store(
-            policy,
-            services,
-            Store {
-                directory: directory.into(),
-                journal,
-                ready: true,
-                _owner: owner,
-            },
-        ))
+        let mut store = Store {
+            directory: directory.into(),
+            journal,
+            ready: true,
+            _owner: owner,
+        };
+        store.resume_retirement(&services.buyer, &services.seller)?;
+        Self::reconcile_route_stops(&store.journal, &services)?;
+        Ok(Self::with_store(policy, services, store))
     }
 
     fn with_store(policy: ControllerPolicy, services: ControllerServices, store: Store) -> Self {
@@ -468,6 +473,9 @@ impl Controller {
             .change(|j| {
                 j.selling_stopped = true;
                 let mut ids = HashSet::new();
+                if let Some(history) = &j.history {
+                    ids.extend(history.sellers.keys().cloned());
+                }
                 for i in j.incoming.values_mut() {
                     i.phase = Phase::Stopped;
                     ids.insert(i.channel.id.clone());
@@ -503,3 +511,6 @@ mod transition_tests;
 
 #[cfg(test)]
 mod purchase_state_tests;
+
+#[cfg(test)]
+mod retirement_tests;

@@ -7,7 +7,7 @@ impl Controller {
         policy: &ControllerPolicy,
         local: NodeAddr,
     ) -> Result<(), String> {
-        if j.version != 2
+        if !matches!(j.version, 2 | 3)
             || &j.policy != policy
             || j.local != local
             || j.epoch.is_empty()
@@ -20,6 +20,7 @@ impl Controller {
         {
             return Err("invalid controller journal bindings".into());
         }
+        Self::validate_history(j)?;
         Self::validate_renewals(j)?;
         let mut providers = HashSet::new();
         Self::validate_capital(j)?;
@@ -121,13 +122,19 @@ impl Controller {
                 || i.contract.billing != i.offer.billing
                 || i.contract.destination != *i.offer.destination.node_addr()
                 || i.contract.next_hop != i.offer.next_hop
+                || (i.replacement_retired
+                    && (i.replaces.is_none()
+                        || i.phase == Phase::Prepared
+                        || j.history.as_ref().is_none_or(|h| h.through_unix == 0)))
                 || i.replaces.as_ref().is_some_and(|previous| {
                     previous == id
-                        || j.incoming.get(previous).is_none_or(|old| {
-                            old.channel.buyer != i.channel.buyer
-                                || old.contract.destination != i.contract.destination
-                                || old.phase != Phase::Stopped
-                        })
+                        || j.incoming
+                            .get(previous)
+                            .map_or(!i.replacement_retired, |old| {
+                                old.channel.buyer != i.channel.buyer
+                                    || old.contract.destination != i.contract.destination
+                                    || old.phase != Phase::Stopped
+                            })
                 })
             {
                 return Err("invalid accepted upstream agreement".into());

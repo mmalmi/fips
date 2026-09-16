@@ -53,6 +53,35 @@ fee-bearing funding/replayed refunds, standalone services, and ordinary/native
 settlement. Strict all-feature/all-target linting, formatting and source-size
 checks pass with the corrected local dependencies.
 
+### Controller route-history cleanup
+
+The recovery worker now coordinates closed-route compaction across the controller,
+buyer and seller journals. It saves exact before/after accounting evidence before
+changing any store, blocks competing controller mutations during the transaction,
+replays an interrupted prefix before startup reconciliation, and only then removes
+completed replacement/renewal references. Idle maintenance does not rewrite files.
+
+Monotonic expiry floors prevent stale agreements from reopening after clock
+rollback. Accepted channel identities and seller terms remain available to settle
+funds even after their last route is removed; settle-all and stop-selling include
+these retained channels. Failed writers cannot certify unpersisted memory totals.
+
+Verification passes 136 relevant tests across the focused gates: 83 all-feature
+library tests (including nine controller-retirement cases), 43 buyer/seller/ledger
+and lower-level retirement checks, seven live controller scenarios, and three
+fee-bearing funding/ordinary/native test-mint settlement scenarios. Strict
+all-feature/all-target linting, formatting and source-size checks pass. The final
+library and mint-settlement gates include the settlement-history fallback and
+failed-controller-write guard. Expiry in the retirement fixtures is simulated;
+these tests do not claim physical power-loss or hardware acceptance.
+
+Controller journal version 3 loads version 2 without inventing financial evidence;
+version-1 cost reconciliation remains unfinished. Whole-channel and wallet-history
+retirement are still required, and the existing 16-channel funding limit remains.
+Active, pending, legacy and otherwise unresolved records are kept. No live device
+changes or production-readiness claim accompanies this local work. See [history
+and recovery](HISTORY.md).
+
 ### Route-evidence retirement foundation
 
 Buyer and seller accounting now share fixed-size per-channel rollups for closed,
@@ -67,8 +96,8 @@ unpaid grace, duplicate callbacks, failed writes, malformed summaries and loadin
 older accounting schemas. Verification passes 120 relevant relay tests, including
 fee-bearing funding and ordinary/native mint settlement; strict linting, formatting
 and source-size checks pass. See [history boundaries](HISTORY.md) for evidence and
-compatibility. Automatic controller coordination and whole-channel retirement
-remain unfinished; the existing funding-history limit is still enforced.
+compatibility. Controller coordination is described above; whole-channel retirement remains
+unfinished, and the existing funding-history limit is still enforced.
 
 ### Receiving during tree convergence
 

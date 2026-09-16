@@ -90,7 +90,8 @@ impl Controller {
         }
         for (id, s) in &j.seller_settlements {
             if id != &s.channel.id
-                || !j.incoming.values().any(|i| i.channel == s.channel)
+                || (!j.incoming.values().any(|i| i.channel == s.channel)
+                    && j.history.as_ref().and_then(|h| h.sellers.get(id)) != Some(&s.channel))
                 || j.incoming
                     .values()
                     .any(|i| i.channel.id == *id && i.phase != Phase::Stopped)
@@ -132,6 +133,13 @@ impl Controller {
             .values()
             .find(|i| i.channel.id == id)
             .map(|i| i.channel.clone())
+            .or_else(|| {
+                state
+                    .history
+                    .as_ref()
+                    .and_then(|h| h.sellers.get(id))
+                    .cloned()
+            })
             .ok_or("unknown sale channel")?;
         if peer.node_addr() != &channel.buyer {
             return Err("wrong settlement buyer".into());
@@ -350,14 +358,10 @@ impl Controller {
                 if j.buyer_settlements.len() >= MAX_CHANNELS {
                     return Err("buyer settlement history full".into());
                 }
-                let bought = j
-                    .outgoing
-                    .values()
-                    .find(|o| o.accepted && o.purchase.channel.id == channel_id)
-                    .ok_or("recover purchase acceptance before settlement")?;
+                let (provider, channel) = Self::settlement_terms(j, &channel_id)?;
                 let settlement = BuyerSettlement {
-                    provider: bought.purchase.provider,
-                    channel: bought.purchase.channel.clone(),
+                    provider,
+                    channel,
                     usage: None,
                     payment: None,
                     report: None,
@@ -506,6 +510,20 @@ impl Controller {
         Ok(report)
     }
 
+    pub(super) fn settlement_channels(j: &Journal) -> HashSet<String> {
+        let mut ids: HashSet<_> = j
+            .outgoing
+            .values()
+            .filter(|o| o.accepted)
+            .map(|o| o.purchase.channel.id.clone())
+            .collect();
+        ids.extend(j.buyer_settlements.keys().cloned());
+        if let Some(history) = &j.history {
+            ids.extend(history.buyers.iter().cloned());
+        }
+        ids
+    }
+
     pub async fn settle_all(&self) -> Result<Vec<SettlementReport>, String> {
         self.pause_route_refresh().await?;
         self.pause_renewals().await?;
@@ -520,13 +538,7 @@ impl Controller {
             .await?;
         }
         let snapshot = self.snapshot().await?;
-        let mut ids: HashSet<_> = snapshot
-            .outgoing
-            .values()
-            .filter(|o| o.accepted)
-            .map(|o| o.purchase.channel.id.clone())
-            .collect();
-        ids.extend(snapshot.buyer_settlements.keys().cloned());
+        let ids = Self::settlement_channels(&snapshot);
         let mut reports = Vec::new();
         let mut first_error = None;
         for id in ids {

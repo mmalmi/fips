@@ -7,7 +7,10 @@ impl Controller {
         offer: &RouteOffer,
         channel: Option<&str>,
     ) -> Result<(), String> {
-        if offer.expires_unix <= now()? || Self::offer_paused(j, &offer.id) {
+        if offer.expires_unix <= now()?
+            || Self::retired_offer(j, offer)
+            || Self::offer_paused(j, &offer.id)
+        {
             return Err("purchase authorization expired or paused".into());
         }
         if j.outgoing

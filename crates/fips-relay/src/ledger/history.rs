@@ -70,3 +70,13 @@ impl RetiredRouteEvidence {
         }
     }
 }
+
+/// Exact closed prefix, persisted by the controller before cross-store cleanup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct RouteRetirementPlan {
+    pub channel: String,
+    pub through_unix: u64,
+    pub contracts: Vec<Contract>,
+    pub before: RetiredRouteEvidence,
+    pub after: RetiredRouteEvidence,
+}

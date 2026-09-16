@@ -39,6 +39,7 @@ pub(super) fn unresolved_journal() -> Journal {
         renewals_paused: false,
         route_changes: BTreeMap::new(),
         watched_routes: BTreeMap::new(),
+        history: None,
     }
 }
 

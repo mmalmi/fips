@@ -5,6 +5,7 @@
 
 mod admission;
 mod history;
+pub(crate) use history::RouteRetirementPlan;
 mod recovery;
 mod retirement;
 pub use history::RetiredRouteEvidence;

@@ -32,7 +32,7 @@ impl RenewalPolicy {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct Renewal {
-    previous: Vec<Outgoing>,
+    pub(super) previous: Vec<Outgoing>,
     replacements: Option<Vec<RouteOffer>>,
     completed: bool,
 }
@@ -132,6 +132,8 @@ impl Controller {
         Ok(())
     }
 
+    /// Retained individual routes. Compacted channels remain in settlement and
+    /// financial history, and are included by `settle_all`.
     pub async fn purchase_history(&self) -> Result<Vec<Purchase>, String> {
         Ok(self
             .snapshot()

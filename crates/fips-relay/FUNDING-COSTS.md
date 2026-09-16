@@ -43,7 +43,7 @@ not enabled yet.
 
 ## Development and migration
 
-Controller journal version 2 requires the saved debit approvals, wallet cost
+Controller journal versions 2 and 3 require the saved debit approvals, wallet cost
 evidence and refund totals. Version-1 controller journals cannot be automatically
 upgraded because their fee approval and exact wallet costs may be unavailable.
 Keep old state intact and use its matching executable for recovery; do not delete

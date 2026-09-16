@@ -20,28 +20,43 @@ completion. One active, pending or legacy record rejects the whole operation.
 Legacy ciphertext fingerprints remain retained because deleting them would change
 the original duplicate tariff.
 
-## Controller integration boundary
+## Controller coordination
 
-`BuyerAuthorizer::retire_closed_routes` and `DurableRelay::retire_closed_routes`
-are trusted local maintenance APIs, not network requests. The timestamp comes from
-the local controller's clock. The seller wrapper persists the rollup before
-returning; retirement validates the entire batch before changing live state. A failed
-write suspends subsequent durable mutations; seller admission also suspends until
-recovery. Recovery can safely retain the old detailed records if the replacement
-journal never became durable.
+The controller's existing recovery worker now compacts eligible closed route
+history. It first saves one bounded intent containing the exact accounting
+prefixes and their before/after totals. It then commits buyer and seller rollups,
+and finally removes the matching controller route, request and completed
+replacement/renewal records. An idle pass writes no journals.
 
-**Automatic retirement is not enabled yet.** The controller must first retain a
-recoverable retirement intent spanning its requested/outgoing/incoming routes,
-renewals, replacements and settlements. Only then may it fold the accounting
-records and remove the corresponding controller references. Calling the accounting
-APIs alone against a running controller can prevent startup reconciliation from
-reinstalling an old agreement. Do not use them as an operator cleanup command.
+An interrupted intent resumes before normal startup reconciliation. During an
+unfinished intent, other controller mutations stop; an already completed
+accounting prefix is recognized by its exact durable totals and absence of the
+removed contracts. A suspended accounting writer cannot certify an in-memory
+result after a failed disk write. Recovery either retains the old records or
+finishes the same intent; it never invents a new payment or resets evidence.
 
-Whole-channel retirement also remains unfinished: it must retain wallet debit and
-verified refund evidence, cumulative signed spending, remaining unpaid exposure,
-and protection against replayed funding. The current 16-channel funding limit
-still applies. These route rollups are the shared accounting foundation for that
-work, not completion of long-running history management.
+Only complete reference groups can retire. Active agreements, unfinished route
+changes or renewals, prepared replacements, pending submissions and legacy
+fingerprints block their affected prefixes. Independent channels can still make
+progress. Contract and offer expiry must both have passed on the local clock.
+A monotonic controller expiry floor also prevents a removed offer from funding a
+fresh channel if the clock moves backward. Existing per-channel accounting floors
+continue preventing direct agreement replay.
+
+Accepted buyer channel identities and seller channel terms remain available for
+settlement after their last route disappears. An active incoming replacement
+keeps the original predecessor ID for repeated Accept requests, with a durable
+marker recording that its validated stopped predecessor was compacted. Funding,
+settlement reports, paid balances, signatures and lifetime budgets are retained.
+
+The lower-level `retire_closed_routes` APIs are trusted local operations, not
+network requests or operator cleanup commands. Use the controller workflow for a
+controller-owned profile; calling only an accounting API leaves stale references.
+
+Whole-channel retirement remains unfinished. The existing 16-channel funding
+limit and separate wallet-history bounds still apply. Expired agreements that
+have not been durably stopped, and interrupted financial operations, remain
+retained. Route compaction does not settle or refund them automatically.
 
 ## Journal compatibility and checks
 
@@ -50,7 +65,10 @@ versions 1/2 and seller versions 3/4 load with zero retired totals and retain th
 original evidence and billing mode. New versions require an explicit, internally
 consistent rollup field; missing fields are rejected. Older executables reject
 the new versions, so do not downgrade a profile after it has been opened by this
-code. Controller funding-journal migration is separate and remains incomplete.
+code. Controller journals now use version 3. Version 2 loads with no retired history
+and upgrades on its first retirement; new profiles start at version 3. Missing
+version-3 history is rejected, and older executables reject version 3.
+Version-1 funding-cost reconciliation remains separate and incomplete.
 
 The isolated retirement suite runs 64 successive route replacements on each side
 with a one-route storage limit and restart after every retirement. It checks exact
@@ -64,4 +82,15 @@ Run with the unreleased dependency overrides described in [funding costs](FUNDIN
 
 ```sh
 cargo test --config /path/to/local-dependencies.toml -p fips-relay --all-features --test retirement --test buyer --test ledger --test durable
+```
+
+The controller tests exercise 64 successive replacements, restart, exact
+cross-journal interruption boundaries, failed accounting and final controller
+writes, pending submissions, unfinished/prepared replacements, stale offers,
+malformed intents, idle write suppression and settlement identity after provider
+changes. These are real journal/accounting paths with simulated expiry and
+fixture funding identities; real mint/controller settlement is covered separately.
+
+```sh
+cargo test --config /path/to/local-dependencies.toml -p fips-relay --lib controller::retirement_tests
 ```
