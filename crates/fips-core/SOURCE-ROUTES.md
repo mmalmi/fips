@@ -21,9 +21,13 @@ protocol, financial receipt or payment authority.
 The window is clamped to 50 ms through 60 s. Choose it with regard to path
 latency and report cadence; session report intervals can reach 10 s. A short
 window can label a slow working path as unresponsive. Minimal MMP mode uses
-native data-return evidence and cannot verify one-way delivery. RTT and goodput
-are smoothed session estimates whose history may include previous paths. A
-quiet, previously answered session loses fresh quality evidence without being
+native data-return evidence and cannot verify one-way delivery. An observed
+outbound carrier change resets derived quality estimates on its first attributable
+report. An existing timestamp echo must identify traffic no earlier than the first
+data sent on that carrier; late reports about the former carrier cannot qualify
+or penalize its replacement. Session traffic counters are retained. Unannounced
+onward-path changes and overlapping traffic still limit attribution. A quiet,
+previously answered session loses fresh quality evidence without being
 declared failed merely because it is idle.
 
 `FipsEndpoint::set_source_route(destination, Some(neighbor))` binds the first
@@ -81,9 +85,9 @@ binding it. This API chooses only the adjacent carrier; it neither fixes every
 onward hop nor proves that relays follow an advertised path. MMP is aggregate
 quality evidence, not proof of individual packet delivery, an exact per-path
 counter across overlapping in-flight traffic, or evidence of honest forwarding
-by each relay. Attribute observations carefully across route changes; delayed
-reports and asymmetric return paths require additional controller acceptance
-tests before using the result to compare monetary offers.
+by each relay. The paid controller's [impairment acceptance](../fips-relay/PRICE-SELECTION.md#reproducible-acceptance)
+covers bounded loss, delay and asymmetric return loss. It does not prove correct
+attribution under arbitrary malicious reports or simultaneous onward-path changes.
 
 A price chooser must still bound unknown-path trials, honor destination fees,
 budgets and capital limits, avoid oscillation, and recover accepted bindings
@@ -92,6 +96,11 @@ accepted financial agreements. None of these responsibilities can be inferred
 from a positive quality sample.
 
 ## Verification
+
+`cargo test -p nvpn-fips-core --lib new_carrier_does_not_inherit`
+reproduces a 700-ms carrier poisoning a 20-ms replacement's smoothed RTT and a
+late old-carrier report qualifying the replacement. Both are rejected/reset
+without resetting traffic counters or introducing a new wire record.
 
 `cargo test -p nvpn-fips-core --features sim-transport --lib handshake_retention`
 uses the existing SimNetwork with local completion delayed after wire delivery.

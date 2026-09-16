@@ -266,6 +266,7 @@ pub(crate) struct DataplaneFspReceiverReportResult {
 pub(crate) enum DataplaneFspMmpSkip {
     UnknownOwner,
     MmpDisabled,
+    UnattributableReport,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -838,6 +839,7 @@ pub(crate) struct OwnerState {
     last_outbound_next_hop: Option<NodeAddr>,
     last_direct_path_validation_activity: Option<ActivityTick>,
     fsp_mmp_path_changed_since_report: bool,
+    fsp_outbound_path_started: Option<ActivityTick>,
     /// Largest wrapped FSP frame attempted since the last accepted decrease.
     max_sent_wire_len: u16,
     data_packets_sent: u64,

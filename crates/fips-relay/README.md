@@ -31,8 +31,39 @@ recipient return encrypted native quality reports and other small replies.
 Opt-in [price and quality selection](PRICE-SELECTION.md) now compares adjacent
 providers' real quotes by estimated delivered cost, with latency/loss limits,
 bounded path trials and cooldown. Real paid diamond simulations exercise
-failover, quota exhaustion and controller reload; global optimality, mobility
+failover, loss, latency, asymmetric feedback, quota exhaustion and controller reload; global optimality, mobility
 and broad production readiness remain unclaimed.
+
+## Peer protocol
+
+The automatic path is **quote, accept, then batched cumulative payments**.
+For A → B → C → destination, B quotes its fee plus C's onward cost. A pays B;
+B pays C using a separate persistent neighbor channel. Quotes specify destination,
+price, expiry and usage limits. Many destination agreements can share one channel;
+neither packets nor each individual onward hop require a new channel from A.
+
+The current peer API has nine request operations across three services:
+
+| Service | Requests | Purpose |
+| --- | --- | --- |
+| Quotes | Quote request | Offer or reject bounded destination service |
+| Controller | Accept, StopRoute, Seal, Settle | Bind an offer, retire one route, freeze a channel's usage, settle its final balance |
+| Payment | Open, Usage, Update, StopForwarding | Manually preapproved setup, cumulative usage/payment and channel-wide admission stop |
+
+Automatic purchases use Accept rather than Payment Open. An active payment cycle
+asks for cumulative usage, signs only the claim supported by local evidence and
+spending limits, then sends Update and receives durable status. Updates cover many
+packets. Confirmed idle channels suppress unnecessary polling. Seal and Settle are
+separate so final usage stops changing before the final balance is signed.
+StopRoute affects one agreement; channel operations affect all its agreements.
+
+These are bounded application records over existing authenticated TCP/FIPS, not
+nine new native FIPS packet types. Existing native MMP supplies quality evidence;
+there is no per-packet quote, payment message or new financial delivery receipt.
+The manual setup/stop surface overlaps the automatic lifecycle and should be
+reviewed before a stable v1 protocol is promised. Consolidation must retain
+immutable agreement authority, channel-wide limits and crash-safe finalization.
+Private operator commands are separate from this peer API.
 
 ## Implemented and checked
 

@@ -65,6 +65,7 @@ impl OwnerState {
             last_outbound_next_hop: None,
             last_direct_path_validation_activity: None,
             fsp_mmp_path_changed_since_report: false,
+            fsp_outbound_path_started: None,
             max_sent_wire_len: 0,
             data_packets_sent: 0,
             data_packets_recv: 0,
@@ -135,6 +136,7 @@ impl OwnerState {
         self.last_outbound_next_hop = None;
         self.last_direct_path_validation_activity = None;
         self.fsp_mmp_path_changed_since_report = false;
+        self.fsp_outbound_path_started = None;
         self.max_sent_wire_len = 0;
         self.data_packets_sent = 0;
         self.data_packets_recv = 0;
@@ -163,6 +165,7 @@ impl OwnerState {
         let last_outbound_next_hop = self.last_outbound_next_hop;
         let last_direct_path_validation_activity = self.last_direct_path_validation_activity;
         let fsp_mmp_path_changed_since_report = self.fsp_mmp_path_changed_since_report;
+        let fsp_outbound_path_started = self.fsp_outbound_path_started;
         let max_sent_wire_len = self.max_sent_wire_len;
         let data_packets_sent = self.data_packets_sent;
         let data_packets_recv = self.data_packets_recv;
@@ -187,6 +190,7 @@ impl OwnerState {
         self.last_outbound_next_hop = last_outbound_next_hop;
         self.last_direct_path_validation_activity = last_direct_path_validation_activity;
         self.fsp_mmp_path_changed_since_report = fsp_mmp_path_changed_since_report;
+        self.fsp_outbound_path_started = fsp_outbound_path_started;
         self.max_sent_wire_len = max_sent_wire_len;
         self.data_packets_sent = data_packets_sent;
         self.data_packets_recv = data_packets_recv;

@@ -1,4 +1,6 @@
 //! Real controllers, test-money channels, native FIPS/MMP and SimNetwork.
+#[path = "priced_paths/impairments.rs"]
+mod impairments;
 use cashu_service::{
     FileSpilmanPaymentReceiver, FileSpilmanPaymentReceiverConfig, create_topup_quote,
     load_mint_balance, load_wallet_overview,
@@ -20,6 +22,7 @@ use fips_relay::{
     payment_control::{PaymentControl, PaymentServer},
     route_quotes::{PriceSelectionPolicy, QuotePolicy, QuoteServer, RouteQuotes},
 };
+use impairments::Scenario;
 use std::{
     sync::{
         Arc,
@@ -70,9 +73,12 @@ fn policy(mint: &str) -> ControllerPolicy {
 async fn priced_paths_follow_quality_upgrade_trials_and_keep_channel_evidence() {
     for root_index in 0..4 {
         eprintln!("priced diamond root placement {root_index}");
-        tokio::time::timeout(Duration::from_secs(180), run(root_index, false))
-            .await
-            .expect("priced path scenario deadline");
+        tokio::time::timeout(
+            Duration::from_secs(180),
+            run(root_index, Scenario::Blackhole, 114),
+        )
+        .await
+        .expect("priced path scenario deadline");
     }
 }
 
@@ -80,7 +86,7 @@ async fn priced_paths_follow_quality_upgrade_trials_and_keep_channel_evidence() 
 async fn exhausted_trial_does_not_renew_and_survives_controller_reload() {
     for iteration in 0..3 {
         eprintln!("quota trial repetition {iteration}");
-        tokio::time::timeout(Duration::from_secs(90), run(0, true))
+        tokio::time::timeout(Duration::from_secs(90), run(0, Scenario::Exhaustion, 114))
             .await
             .expect("trial cap scenario deadline");
     }
@@ -103,7 +109,9 @@ fn errors(controllers: &[Arc<Controller>]) -> Vec<(usize, String)> {
         .collect()
 }
 
-async fn run(root_index: usize, exhaust_trial: bool) {
+async fn run(root_index: usize, scenario: Scenario, seed: u64) {
+    let exhaust_trial = matches!(scenario, Scenario::Exhaustion);
+    let selection = scenario.selection_policy();
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_test_writer()
@@ -123,7 +131,7 @@ async fn run(root_index: usize, exhaust_trial: bool) {
     .await
     .unwrap();
     let network_name = format!("priced-{}", Identity::generate().node_addr());
-    let network = SimNetwork::new(114);
+    let network = SimNetwork::new(seed);
     network.set_default_link(SimLink {
         up: false,
         ..Default::default()
@@ -139,7 +147,7 @@ async fn run(root_index: usize, exhaust_trial: bool) {
             },
         );
     }
-    fips_core::register_sim_network(network_name.clone(), network);
+    fips_core::register_sim_network(network_name.clone(), network.clone());
     let mut nodes = Vec::new();
     let mut peers = Vec::new();
     let mut buyers = Vec::new();
@@ -268,7 +276,11 @@ async fn run(root_index: usize, exhaust_trial: bool) {
             billing: BillingBasis::ForwardingData,
             mint_url: mint.url().into(),
             receiver_pubkey_hex: receiver.receiver_pubkey_hex().into(),
-            fee_msat_per_kib: if i == 2 { 2048 } else { 1024 },
+            fee_msat_per_kib: if i == 2 {
+                scenario.alternative_price()
+            } else {
+                1024
+            },
             max_rate_msat_per_kib: 8192,
             lifetime_secs: 300,
             max_units: 1_000_000,
@@ -278,7 +290,7 @@ async fn run(root_index: usize, exhaust_trial: bool) {
         quote_inputs.push((transport.clone(), quote_policy.clone()));
         let quotes = RouteQuotes::new(nodes[i].clone(), transport, quote_policy).unwrap();
         let quotes = Arc::new(if i == 0 {
-            quotes.with_price_selection(selection_policy()).unwrap()
+            quotes.with_price_selection(selection.clone()).unwrap()
         } else {
             quotes
         });
@@ -519,7 +531,19 @@ async fn run(root_index: usize, exhaust_trial: bool) {
         assert!(quality.has_recent_delivery_feedback);
         // Quotes/payment control are still local to the bad provider and continue
         // working. Only native end-to-end evidence can identify its blackhole.
-        gates[1].blackhole.store(true, Ordering::Relaxed);
+        if matches!(scenario, Scenario::Blackhole) {
+            gates[1].blackhole.store(true, Ordering::Relaxed);
+        } else {
+            impairments::observe_then_select(
+                scenario,
+                &network,
+                &nodes,
+                &peers,
+                &controllers[0],
+                &mut receivers[3],
+            )
+            .await;
+        }
         let replacement = tokio::time::timeout(Duration::from_secs(25), async {
             loop {
                 nodes[0]
@@ -539,10 +563,15 @@ async fn run(root_index: usize, exhaust_trial: bool) {
             }
         })
         .await
-        .unwrap_or_else(|_| panic!("blackhole replacement: {:?}", errors(&controllers)));
-        assert_eq!(replacement.contract.price.msat, 2048);
+        .unwrap_or_else(|_| panic!("impaired path replacement: {:?}", errors(&controllers)));
+        assert_eq!(
+            replacement.contract.price.msat,
+            scenario.alternative_price()
+        );
         assert_eq!(replacement.contract.max_units, 8192);
-        assert!(gates[1].dropped.load(Ordering::Relaxed) > 0);
+        if matches!(scenario, Scenario::Blackhole) {
+            assert!(gates[1].dropped.load(Ordering::Relaxed) > 0);
+        }
         assert_eq!(
             nodes[0]
                 .peers()
@@ -577,6 +606,21 @@ async fn run(root_index: usize, exhaust_trial: bool) {
                     && q.next_hop == Some(replacement.provider)
                     && q.has_recent_delivery_feedback
                 {
+                    assert!(
+                        q.rtt_ms
+                            .is_some_and(|rtt| rtt <= selection.max_rtt_ms as f64),
+                        "replacement must meet the latency limit: {q:?}"
+                    );
+                    assert!(
+                        gates[2]
+                            .paid
+                            .return_stats()
+                            .unwrap()
+                            .traffic
+                            .admitted_packets
+                            > 0,
+                        "native feedback must use the replacement's earned return allowance"
+                    );
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(200)).await;
@@ -585,8 +629,8 @@ async fn run(root_index: usize, exhaust_trial: bool) {
         .await
         .expect("working alternative carries payload and native feedback");
         assert!(controllers[0].locked_capital_sat().await.unwrap() <= 128);
-        // Re-polling cheaper advertisements during cooldown cannot send traffic
-        // back to the failed provider, even though it still answers quotes.
+        // Re-polling cheaper advertisements retains the working alternative through
+        // measured cost, switching margin or failed-provider cooldown.
         let current = controllers[0].buy_route(peers[3]).await.unwrap();
         assert_eq!(current.provider, replacement.provider);
         controllers[0].pause_route_refresh().await.unwrap();
@@ -609,7 +653,7 @@ async fn run(root_index: usize, exhaust_trial: bool) {
     services[0].quotes = Arc::new(
         RouteQuotes::new(nodes[0].clone(), transport.clone(), quote_policy.clone())
             .unwrap()
-            .with_price_selection(selection_policy())
+            .with_price_selection(selection.clone())
             .unwrap(),
     );
     let restored = Arc::new(

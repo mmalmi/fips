@@ -117,7 +117,8 @@ impl Node {
                 debug!(src = %peer_name, "SessionReceiverReport for unknown session");
                 return;
             }
-            Err(crate::dataplane::DataplaneFspMmpSkip::MmpDisabled) => return,
+            Err(crate::dataplane::DataplaneFspMmpSkip::MmpDisabled)
+            | Err(crate::dataplane::DataplaneFspMmpSkip::UnattributableReport) => return,
         };
 
         if let Some((span, loss)) = processed.sample
@@ -227,7 +228,8 @@ impl Node {
                 debug!(src = %peer_name, "PathMtuNotification for unknown session");
                 return;
             }
-            Err(crate::dataplane::DataplaneFspMmpSkip::MmpDisabled) => return,
+            Err(crate::dataplane::DataplaneFspMmpSkip::MmpDisabled)
+            | Err(crate::dataplane::DataplaneFspMmpSkip::UnattributableReport) => return,
         };
 
         debug!(
@@ -571,7 +573,8 @@ impl Node {
             }
             Ok(crate::dataplane::DataplaneFspPathMtuApplyResult::Unchanged)
             | Err(crate::dataplane::DataplaneFspMmpSkip::UnknownOwner)
-            | Err(crate::dataplane::DataplaneFspMmpSkip::MmpDisabled) => {}
+            | Err(crate::dataplane::DataplaneFspMmpSkip::MmpDisabled)
+            | Err(crate::dataplane::DataplaneFspMmpSkip::UnattributableReport) => {}
         };
 
         // Mirror the bottleneck into the FipsAddress-keyed lookup used by

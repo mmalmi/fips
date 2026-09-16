@@ -135,9 +135,17 @@ retains the real destination identity for strict bounded bootstrap. This is loca
 candidate selection, not global optimality or broad production acceptance.
 Eight deterministic core recovery cases now preserve initial/rekey state after
 local send cancellation and preserve the correct key-epoch flag on coordinate
-warmups. They verify actual payload delivery after recovery. Broader handshake
-stress, remote credit/payment-caused missing feedback, full restarts and the
-impairment/mobility matrix below remain open.
+warmups. They verify actual payload delivery after recovery. Six paid deployments
+now exercise forward loss, excess latency and a failed return direction over two
+seeds. The same harness verifies replacement delivery, feedback, reload and funds.
+Observed carrier changes reset native smoothing and reject old-path timestamp
+echoes; no new measurement messages or financial receipts are introduced.
+Broader handshake stress, remote credit/payment-caused missing feedback, full
+restarts and the remaining impairment/mobility matrix below remain open. The latest
+100-node session stress failed on both the modified tree and a freshly rebuilt
+unchanged baseline. Sparse recovery also failed once in a combined run and passed
+alone. These failures prevent a current broad-session readiness claim despite
+the earlier successful 150-test run.
 
 Price-aware route selection is an explicit requirement, not proven by simply
 accumulating prices along the native planner's chosen next hops. Reuse FIPS's

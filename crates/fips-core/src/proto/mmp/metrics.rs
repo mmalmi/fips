@@ -69,6 +69,13 @@ pub struct MmpMetrics {
 }
 
 impl MmpMetrics {
+    /// Start quality estimates for a different carrier. Smoothing the former
+    /// path into its replacement can reject a healthy replacement immediately.
+    /// Session traffic and financial counters live outside these derived metrics.
+    pub fn reset_for_path_change(&mut self) {
+        *self = Self::new();
+    }
+
     /// Discard deltas that straddle an outbound carrier change.
     ///
     /// ReceiverReport counters are cumulative for the FSP session and do not

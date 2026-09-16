@@ -190,6 +190,7 @@ impl OwnerState {
                 if let Some(next_hop) = fsp_next_hop {
                     if self.last_outbound_next_hop != Some(next_hop) {
                         self.fsp_mmp_path_changed_since_report = true;
+                        self.fsp_outbound_path_started = packet.activity_tick;
                         self.last_delivery_report_activity = None;
                         self.last_delivery_report_next_hop = None;
                         self.last_delivery_report_cumulative_packets_recv = None;
@@ -387,6 +388,7 @@ impl OwnerState {
         }
         if self.last_outbound_next_hop != Some(next_hop) {
             self.fsp_mmp_path_changed_since_report = true;
+            self.fsp_outbound_path_started = Some(tick);
             self.last_delivery_report_activity = None;
             self.last_delivery_report_next_hop = None;
             self.last_delivery_report_cumulative_packets_recv = None;
@@ -707,11 +709,22 @@ impl OwnerState {
             return Err(DataplaneFspMmpSkip::MmpDisabled);
         };
 
-        if std::mem::take(&mut self.fsp_mmp_path_changed_since_report) {
-            mmp.metrics.reset_forward_report_baseline();
+        let our_timestamp_ms = now_ms.wrapping_sub(session_start_ms) as u32;
+        if let Some(started) = self.fsp_outbound_path_started {
+            let echo_age = our_timestamp_ms.wrapping_sub(rr.timestamp_echo);
+            // A late report about the former carrier cannot qualify or penalize
+            // the replacement. Use the existing echoed send time, not a receipt.
+            if rr.timestamp_echo == 0 || echo_age >= (1 << 31)
+                || u64::from(echo_age) > now_ms.saturating_sub(started.get())
+            {
+                return Err(DataplaneFspMmpSkip::UnattributableReport);
+            }
         }
 
-        let our_timestamp_ms = now_ms.wrapping_sub(session_start_ms) as u32;
+        if std::mem::take(&mut self.fsp_mmp_path_changed_since_report) {
+            mmp.metrics.reset_for_path_change();
+        }
+
         // Only advancing receive counters prove directional delivery. A peer
         // can keep sending authenticated reports over the surviving reverse
         // direction while the forward NAT tuple is blackholed; those reports

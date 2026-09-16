@@ -434,13 +434,19 @@ async fn test_session_receiver_loss_preserves_only_working_fallback_route() {
         Some(only_fallback),
         0,
     ));
-    seed_dataplane_fsp_data_sent_for_test(&mut node, remote_addr, only_fallback, Node::now_ms());
+    // Report echoes must refer to traffic sent after this carrier was selected.
+    seed_dataplane_fsp_data_sent_for_test(
+        &mut node,
+        remote_addr,
+        only_fallback,
+        Node::now_ms() - 100,
+    );
 
     let baseline = SessionReceiverReport {
         highest_counter: 100,
         cumulative_packets_recv: 100,
         cumulative_bytes_recv: 10_000,
-        timestamp_echo: 0,
+        timestamp_echo: session_timestamp_echo_for(50),
         dwell_time: 0,
         max_burst_loss: 0,
         mean_burst_loss: 0,

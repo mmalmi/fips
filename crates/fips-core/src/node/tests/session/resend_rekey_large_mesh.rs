@@ -179,7 +179,19 @@ async fn session_100_nodes() {
             }
         }
 
-        panic!("{context}: payload was not delivered after {ATTEMPTS} attempts");
+        let destination = nodes
+            .iter()
+            .find(|n| {
+                crate::FipsAddress::from_node_addr(n.node.node_addr()).as_bytes() == &packet[24..40]
+            })
+            .map(|n| *n.node.node_addr())
+            .expect("test destination");
+        panic!(
+            "{context}: payload was not delivered after {ATTEMPTS} attempts; {}; quality={:?}; cached={:?}",
+            session_wait_snapshot(nodes, source, &destination),
+            nodes[source].node.endpoint_source_route_quality(destination, 2_000),
+            nodes[source].node.dataplane.fsp_owner_next_hop(&destination)
+        );
     }
 
     for (pair_idx, &(src, dst)) in session_pairs.iter().enumerate() {

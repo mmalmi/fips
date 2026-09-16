@@ -119,6 +119,7 @@ struct EndpointEntry {
 struct SimNetworkInner {
     endpoints: HashMap<String, EndpointEntry>,
     links: HashMap<(String, String), SimLink>,
+    directed_links: HashMap<(String, String), SimLink>,
     node_behaviors: HashMap<String, SimNodeBehavior>,
     link_queues: HashMap<(String, String), Instant>,
     default_link: SimLink,
@@ -139,6 +140,7 @@ impl SimNetwork {
             inner: Arc::new(Mutex::new(SimNetworkInner {
                 endpoints: HashMap::new(),
                 links: HashMap::new(),
+                directed_links: HashMap::new(),
                 node_behaviors: HashMap::new(),
                 link_queues: HashMap::new(),
                 default_link: SimLink::default(),
@@ -159,6 +161,25 @@ impl SimNetwork {
         inner
             .links
             .insert(link_key(a.into(), b.into()), sanitize_link(link));
+    }
+
+    /// Override one direction of a link, preserving its shared serialization queue.
+    /// Passing `None` restores the bidirectional/default link for this direction.
+    /// While present, the entire override (including `up`) takes precedence over
+    /// `set_link` and `set_link_up`; edit or remove it to change that direction.
+    pub fn set_directed_link(
+        &self,
+        source: impl Into<String>,
+        dest: impl Into<String>,
+        link: Option<SimLink>,
+    ) {
+        let mut inner = self.inner.lock().expect("sim network lock");
+        let key = (source.into(), dest.into());
+        if let Some(link) = link {
+            inner.directed_links.insert(key, sanitize_link(link));
+        } else {
+            inner.directed_links.remove(&key);
+        }
     }
 
     /// Change only the up/down state of a configured link.
@@ -294,7 +315,12 @@ impl SimNetwork {
             }
 
             let key = link_key(source.to_string(), dest.clone());
-            let link = inner.links.get(&key).copied().unwrap_or(inner.default_link);
+            let link = inner
+                .directed_links
+                .get(&(source.to_string(), dest.clone()))
+                .or_else(|| inner.links.get(&key))
+                .copied()
+                .unwrap_or(inner.default_link);
             if !link.up {
                 inner.stats.packets_dropped_down += 1;
                 return Ok(bytes);

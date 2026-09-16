@@ -131,7 +131,7 @@ async fn test_fmp_recovery_stages_prompt_direct_payload_validation_without_disca
         Some(fallback_next_hop),
         "a delayed report after fallback sends cannot prove the earlier direct probe arrived"
     );
-    seed_dataplane_fsp_data_sent_for_test(&mut node, remote_addr, remote_addr, Node::now_ms());
+    seed_dataplane_fsp_data_sent_for_test(&mut node, remote_addr, remote_addr, Node::now_ms() - 50);
     assert_eq!(
         node.find_next_hop(&remote_addr)
             .map(|peer| *peer.node_addr()),
@@ -140,6 +140,7 @@ async fn test_fmp_recovery_stages_prompt_direct_payload_validation_without_disca
     );
     report.highest_counter += 1;
     report.cumulative_packets_recv += 1;
+    report.timestamp_echo = session_timestamp_echo_for(10);
     node.handle_session_receiver_report(&remote_addr, &report.encode())
         .await;
     assert!(!node.session_direct_path_has_recent_data_return(&remote_addr, Node::now_ms()));

@@ -34,8 +34,11 @@ Only the active path can qualify for a larger allowance. Recently used paths
 retain a bounded cost sample for one feedback window after their last eligible
 observation, so switching does not instantly forget measured loss. Expired or
 evicted samples become unknown and can merit another limited trial. Native
-smoothed estimates can span path changes and delayed reports. These are aggregate quality
-observations, not per-packet receipts or proof against a dishonest participant.
+estimates restart after an observed carrier change; reports whose timestamp echo
+predates that carrier's first data cannot qualify or penalize it. Unannounced
+onward changes and overlapping in-flight traffic remain attribution limits.
+These are aggregate quality observations, not per-packet receipts or proof
+against a dishonest participant.
 
 ## Configuration and authority
 
@@ -145,6 +148,25 @@ native feedback; cooldown prevents immediately buying the failed cheap path.
 Controller/selector reload retains the working route, purchase history and capital.
 Both old and current channels settle, conserving all 259 isolated test sats per run.
 
+The same harness also runs two seeds for each of three carrier impairments:
+
+- 35% loss on the cheap relay's forward link. The loss ceiling allows the path,
+  but measured delivered-cost ranking selects the slightly dearer alternative.
+- 250-ms latency in each direction on that link. Native RTT exceeds the configured
+  150-ms ceiling and the replacement must meet it with fresh native feedback.
+- Complete loss of the reverse link only. Forward payload still arrives, but
+  missing end-to-end reports makes the source select the working alternative.
+
+These six deployments pause automatic quote refresh only while collecting
+attributable evidence; payment tasks continue. They then invoke the production
+selector and verify actual replacement payload, earned return allowance, reload,
+history/capital limits and complete test-money settlement. They reuse SimNetwork's
+packet delivery and a removable directional override, not injected quality values
+or an alternate routing model. They do not prove unattended convergence during
+arbitrary concurrent churn. A native regression reproduces inherited RTT and late
+old-path reports; filtering existing timestamp echoes fixes both without adding
+financial receipts or resetting traffic/accounting counters.
+
 A separate exhaustion case repeats three fresh deployments and leaves automatic
 renewal enabled beyond its configured threshold. An exhausted trial stays capped before and after controller/selector
 reload, preserves history/capital and settles without resetting the lifetime
@@ -172,6 +194,16 @@ positions and three exhaustion runs) also passed. Strict core/relay/simulator
 linting, Android ARM64 linting, the default relay check, formatting and the
 659-file size gate passed. These are software checks, not updated device results.
 
+The latest impairment run passed all three paid-path tests (13 deployments in
+total), 111 dataplane tests, 32 route-metric tests, 12 metric tests, two transport
+tests and 10 simulator tests. Strict core/relay/simulator and Android ARM64 linting,
+the default relay check, formatting and the 660-file size gate also passed.
+The latest broad session check was **not green**: 148/149 tests passed with the
+100-node case run separately. Sparse-session recovery failed once in the combined
+run, then both sparse cases passed alone. The 100-node case failed its first
+forward payload despite established sessions on both endpoints; a freshly rebuilt,
+unchanged baseline also failed. These remain readiness issues, not waived gates.
+
 ## Remaining limitations
 
 Initial handshake failure before data is transmitted can remain unknown rather
@@ -186,8 +218,8 @@ still need explicit attribution before penalizing a provider. No eligible altern
 existing agreement/binding in place; applications can still emit billable traffic
 within its bounds. This is not an automatic stop-on-poor-quality source gate.
 
-Further acceptance must cover actual lossy/delayed/asymmetric paths, misleading
-or late reports, multiple simultaneously changing paths/prices, renewal races,
+Further acceptance must extend the bounded loss/delay/asymmetry cases to misleading
+reports, multiple simultaneously changing paths/prices, renewal races,
 full restarts, longer operation, free-route transitions, mobile merge/split,
 permissionless admission, mixed links and physical devices. No throughput or
 selection-overhead benchmark is claimed. The physical routers remain unchanged.
