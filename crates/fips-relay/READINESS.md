@@ -53,16 +53,32 @@ fee-bearing funding/replayed refunds, standalone services, and ordinary/native
 settlement. Strict all-feature/all-target linting, formatting and source-size
 checks pass with the corrected local dependencies.
 
-### Open path-feedback regression
+### Receiving during tree convergence
 
-The broader priced-path suite is not consistently green. A healthy trial can
-deliver 42 application payloads while fresh native feedback remains absent, then
-fail to upgrade its quota. This happened before an impairment was applied in one
-scenario and also in the blackhole suite's healthy setup. Serial execution did
-not remove the failure. A freshly compiled, unchanged predecessor (`0e0de245`)
-using published cashu-service 0.4.8 reproduces the same failure, so it predates this
-funding adapter. Its cause remains unresolved; no routing readiness claim follows
-from the successful accounting gates. No timeout or assertion was weakened.
+The intermittent healthy-trial failure was traced to session ingress depending
+on an outgoing route. A responder could complete the Noise handshake before the
+current tree supplied a return route; its empty route table then discarded
+incoming encrypted traffic. Existing reply-path learning could not run until
+recovery rebuilt the owner, by which point route selection had abandoned the
+initial paid trial. This reproduced on the unchanged funding predecessor too.
+
+Established sessions now retain their encrypted receive route while an outgoing
+route is unavailable. Only authenticated incoming data can warm the existing
+reply path; outgoing authorization and quotas still apply. A focused regression
+fails before the change and passes afterward in tree mode, with the shared
+reply-learned fixture also passing. A corrupted packet cannot deliver or create a
+reply route, and does not prevent the valid packet with the same counter from
+being accepted. There is no new protocol message or receipt; existing timeouts
+and assertions were not weakened.
+
+Focused verification passes 46 core tests covering routed handshakes, route
+metrics, source bindings and queued outgoing traffic without a route. Strict
+all-feature/all-target core and relay linting, formatting and source-size gates
+pass. The full serial priced-path suite also passes its three tests across 13
+scenarios: three quota/restart repetitions, loss/delay/one-way failure under two
+seeds, and blackhole recovery at all four tree-root placements. The suite retains
+its original timing and financial-conservation assertions. This repair is not a
+production-readiness claim. Devices are unchanged.
 
 ## Earlier funding recovery after quote expiry
 

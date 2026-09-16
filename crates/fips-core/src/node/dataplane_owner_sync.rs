@@ -332,6 +332,21 @@ impl Node {
         proven_next_hop: Option<NodeAddr>,
     ) -> DataplaneFspOwnerRouteUpdate {
         let owner = OwnerId::fsp_node(*node_addr);
+        // Established keys admit inbound traffic even before an outgoing route
+        // exists. Authenticated data can then warm the reply path; coupling
+        // ingress to egress would strand the session during tree convergence.
+        let mut routes = DataplaneLiveOwnerRoutes::new();
+        routes.push_fsp_ingress(
+            *node_addr,
+            DataplaneIngressRoute::new(
+                owner,
+                generation,
+                OutputTarget::SessionPayload {
+                    local_addr: *self.node_addr(),
+                },
+            )
+            .with_class(PacketClass::Bulk),
+        );
         // A live direct peer is stronger than a routed handshake ingress. A
         // SessionAck can race direct-link promotion and return through a
         // transit peer; pinning that transient ingress would leave payload on
@@ -361,7 +376,7 @@ impl Node {
         let Some(next_hop) = next
         else {
             return DataplaneFspOwnerRouteUpdate {
-                routes: DataplaneLiveOwnerRoutes::new(),
+                routes,
                 wrap: None,
                 path: None,
                 direct_path_mtu: None,
@@ -386,25 +401,13 @@ impl Node {
         };
         if wrap.is_none() && path.is_none() {
             return DataplaneFspOwnerRouteUpdate {
-                routes: DataplaneLiveOwnerRoutes::new(),
+                routes,
                 wrap: None,
                 path: None,
                 direct_path_mtu: None,
                 next_hop: Some(next_hop),
             };
         };
-        let mut routes = DataplaneLiveOwnerRoutes::new();
-        routes.push_fsp_ingress(
-            *node_addr,
-            DataplaneIngressRoute::new(
-                owner,
-                generation,
-                OutputTarget::SessionPayload {
-                    local_addr: *self.node_addr(),
-                },
-            )
-            .with_class(PacketClass::Bulk),
-        );
         let tun = DataplaneTunOutboundRoute::fsp_ipv6_shim(
             owner,
             generation,

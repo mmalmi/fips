@@ -57,11 +57,21 @@ async fn session_3node_forwarded_handshake() {
 #[tokio::test]
 async fn test_routed_session_establishes_through_authenticated_previous_hop_without_reverse_route()
 {
+    routed_session_without_reverse_route(RoutingMode::ReplyLearned).await;
+}
+
+#[tokio::test]
+async fn tree_session_receives_authenticated_data_before_a_return_route_exists() {
+    routed_session_without_reverse_route(RoutingMode::Tree).await;
+}
+
+async fn routed_session_without_reverse_route(mode: RoutingMode) {
     // B--C is an established FMP edge. A's routed SessionSetup arrives at C
     // through B, while C deliberately has no route to A yet.
     let mut nodes = run_tree_test(2, &[(0, 1)], false).await;
     verify_tree_convergence(&nodes);
-    nodes[1].node.config.node.routing.mode = RoutingMode::ReplyLearned;
+    nodes[1].node.config.node.routing.mode = mode;
+    let mut endpoint = nodes[1].node.attach_endpoint_data_io(8).unwrap();
 
     let initiator = Node::new(Config::new()).expect("initiator node");
     let initiator_addr = *initiator.node_addr();
@@ -154,21 +164,67 @@ async fn test_routed_session_establishes_through_authenticated_previous_hop_with
         "Noise msg3 must authenticate the claimed source NodeAddr"
     );
     let transit_addr = *nodes[0].node.node_addr();
-    assert_eq!(
-        nodes[1]
-            .node
-            .find_next_hop(&initiator_addr)
-            .map(|peer| *peer.node_addr()),
-        Some(transit_addr),
-        "authenticated msg3 should install the reverse route"
-    );
+    let initial_route = (mode == RoutingMode::ReplyLearned).then_some(transit_addr);
     assert_eq!(
         nodes[1].node.dataplane.fsp_owner_next_hop(&initiator_addr),
-        Some(transit_addr),
-        "responder dataplane owner should wrap replies through the authenticated previous hop"
+        initial_route,
+        "tree routing must not select a return path from the handshake alone"
     );
 
+    // The initiator has real handshake keys but is outside the responder's
+    // current tree. Receiving must not depend on discovering an outgoing route.
+    let mut session = handshake.into_session().unwrap();
+    let plaintext = crate::node::session_wire::fsp_prepend_inner_header(
+        1,
+        crate::protocol::SessionMessageType::EndpointData.to_byte(),
+        0,
+        b"authenticated before return route",
+    );
+    let header = crate::node::session_wire::build_fsp_header(
+        session.current_send_counter(),
+        0,
+        plaintext.len() as u16,
+    );
+    let mut payload = header.to_vec();
+    payload.extend(session.encrypt_with_aad(&plaintext, &header).unwrap());
+    let mut corrupt = payload.clone();
+    *corrupt.last_mut().unwrap() ^= 1;
+    let forged = SessionDatagram::new(initiator_addr, responder_addr, corrupt);
+    nodes[0]
+        .node
+        .send_dataplane_fmp_link_plaintext(&responder_addr, &forged.encode(), false)
+        .await
+        .unwrap();
+    wait_process_packets_for_node(&mut nodes, 1).await;
+    assert!(endpoint.event_rx.try_recv().is_err());
+    assert_eq!(
+        nodes[1].node.dataplane.fsp_owner_next_hop(&initiator_addr),
+        initial_route,
+        "unauthenticated data must not establish a reply route"
+    );
+
+    let datagram = SessionDatagram::new(initiator_addr, responder_addr, payload);
+    nodes[0]
+        .node
+        .send_dataplane_fmp_link_plaintext(&responder_addr, &datagram.encode(), false)
+        .await
+        .unwrap();
+    wait_process_packets_for_node(&mut nodes, 1).await;
+    let received = endpoint.event_rx.try_recv();
+    let reply_route = nodes[1].node.dataplane.fsp_owner_next_hop(&initiator_addr);
     cleanup_nodes(&mut nodes).await;
+    let received = received.expect("authenticated data must be received without an outgoing route");
+    assert_eq!(
+        expect_single_endpoint_data_event(received)
+            .payload
+            .as_slice(),
+        b"authenticated before return route"
+    );
+    assert_eq!(
+        reply_route,
+        Some(transit_addr),
+        "accepted data warms its reply path"
+    );
 }
 
 // ============================================================================
