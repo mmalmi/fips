@@ -56,6 +56,59 @@ fn start(path: &std::path::Path) -> DurableRelay {
 }
 
 #[test]
+fn session_setup_and_first_data_share_the_same_durable_window() {
+    use fips_relay::ledger::BillingBasis;
+    let root = tempfile::tempdir().unwrap();
+    for window in [4_000, 8_000] {
+        let relay = DurableRelay::create(
+            &root.path().join(window.to_string()),
+            Limits::default(),
+            window,
+        )
+        .unwrap();
+        let mut terms = channel();
+        terms.capacity_sat = 128;
+        terms.grace_msat = 8_000;
+        relay.open_channel_verified(terms, 0).unwrap();
+        let mut quote = contract();
+        quote.billing = BillingBasis::ForwardingAttempt;
+        quote.max_units = 1_000_000;
+        quote.price = BytePrice {
+            msat: 3_072,
+            per_bytes: 1_024,
+        };
+        relay.add_contract(quote).unwrap();
+
+        // Several opaque session setup envelopes and the first data envelope
+        // can arrive in one checkpoint interval. There is no TCP/application
+        // classification at the seller; all of these bytes consume the window.
+        for _ in 0..4 {
+            let token = relay.admit(&request(&[0; 128])).unwrap();
+            relay.complete(token, ForwardingOutcome::Submitted);
+        }
+        let data = [0; 1_060];
+        let mut token = relay.admit(&request(&data));
+        if window == 4_000 {
+            assert!(token.is_none(), "setup leaves less than one data envelope");
+            assert_eq!(
+                relay.channel_usage("neighbor").unwrap().reserved_msat,
+                1_536
+            );
+            relay.checkpoint().unwrap();
+            token = relay.admit(&request(&data));
+        }
+        relay.complete(
+            token.expect("the next full window fits the data"),
+            ForwardingOutcome::Submitted,
+        );
+        let usage = relay.checkpoint().unwrap()["neighbor"];
+        assert_eq!(usage.reserved_msat, 4_716);
+        assert_eq!(usage.submitted_msat, 4_716);
+        assert_eq!(usage.lost_msat, 0);
+    }
+}
+
+#[test]
 fn compact_attempt_totals_preserve_durable_crash_and_seal_bounds() {
     use fips_relay::ledger::BillingBasis;
     let root = tempfile::tempdir().unwrap();

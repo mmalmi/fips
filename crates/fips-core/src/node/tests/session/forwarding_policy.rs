@@ -161,6 +161,13 @@ fn native_forwarding_policy_gates_three_transit_hops_in_both_directions() {
             .unwrap();
         drain_to_quiescence(&mut nodes).await;
         assert!(policies[1].0.lock().unwrap().denied > 0);
+        let counters = serde_json::to_value(nodes[2].node.stats().forwarding.snapshot()).unwrap();
+        assert_eq!(
+            counters["drop_policy_denied_packets"].as_u64(),
+            Some(policies[1].0.lock().unwrap().denied as u64),
+            "the operator API must distinguish policy refusal from routing loss"
+        );
+        assert!(counters["drop_policy_denied_bytes"].as_u64().unwrap() >= 6);
         assert!(
             bob.event_rx.try_recv().is_err(),
             "exhausted middle hop must block transit"

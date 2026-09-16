@@ -418,7 +418,12 @@ impl Node {
             };
             match crate::node::forwarding_policy::ForwardingPermit::admit(policy, &request) {
                 Some(permit) => Some(permit),
-                None => return PreparedSessionDatagram::Done,
+                None => {
+                    self.stats_mut()
+                        .forwarding
+                        .record_drop_policy_denied(payload.len());
+                    return PreparedSessionDatagram::Done;
+                }
             }
         } else {
             None

@@ -61,6 +61,37 @@ unfinished sends, not the number of completed packets. These totals are trusted
 local accounting state, not cryptographic proof of fair delivery. Protect the
 private state directory just as the wallet and signed-balance journals.
 
+## Size the window for packets and session setup
+
+The durable window is shared by session setup and application envelopes. A
+funded channel can still refuse a datagram when its remaining checkpoint window
+is smaller than that envelope's price. The router drops that attempt without
+reserving or billing it; it does not queue the packet for the next checkpoint.
+Earlier hops can still charge for their own successful forwarding attempts.
+
+For example, at 3,072 msat/KiB, 512 bytes of session setup cost 1,536 msat.
+A subsequent 1,060-byte opaque envelope costs another 3,180 msat and cannot fit
+the rest of a 4,000-msat window. A checkpoint restores enough room for a new
+attempt; an 8,000-msat window can fit both in the same interval. Actual setup and
+envelope sizes depend on the session and payload. Neither choice guarantees
+delivery, and application retries are independently billable attempts.
+
+Choose the window from the aggregate route price, largest envelope and expected
+burst between checkpoints. A window smaller than one full-priced envelope can
+prevent that packet size from ever passing. With a 500-ms payment tick, a
+4,000-msat window at 3,072 msat/KiB permits about 2.67 kB/s before payment/disk
+delays; this is an allowance estimate, not measured throughput. Increasing the
+window also increases possible unrecorded crash exposure and must stay within
+the relationship's grace and capacity. Set these terms before initializing the
+account; do not edit saved financial state to tune a live account.
+
+Native `show_routing` reports `drop_policy_denied_packets` and
+`drop_policy_denied_bytes` separately from missing routes, MTU errors and failed
+transport sends. These count any forwarding-policy refusal, not just window
+exhaustion. Like the other native forwarding counters, bytes include the FMP
+datagram rather than only the billable session envelope. Use the seller's
+durable usage and ceiling alongside these counters to diagnose allowance loss.
+
 ## Explicit agreement and compatibility
 
 The billing basis travels in route offers and accepted contracts. A service

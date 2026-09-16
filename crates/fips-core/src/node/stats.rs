@@ -26,6 +26,8 @@ pub struct ForwardingStats {
     pub drop_mtu_exceeded_bytes: u64,
     pub drop_send_error_packets: u64,
     pub drop_send_error_bytes: u64,
+    pub drop_policy_denied_packets: u64,
+    pub drop_policy_denied_bytes: u64,
     pub originated_packets: u64,
     pub originated_bytes: u64,
 }
@@ -71,6 +73,11 @@ impl ForwardingStats {
         self.drop_send_error_bytes += bytes as u64;
     }
 
+    pub fn record_drop_policy_denied(&mut self, bytes: usize) {
+        self.drop_policy_denied_packets += 1;
+        self.drop_policy_denied_bytes += bytes as u64;
+    }
+
     pub fn record_originated(&mut self, bytes: usize) {
         self.originated_packets += 1;
         self.originated_bytes += bytes as u64;
@@ -99,6 +106,8 @@ impl ForwardingStats {
             drop_mtu_exceeded_bytes: self.drop_mtu_exceeded_bytes,
             drop_send_error_packets: self.drop_send_error_packets,
             drop_send_error_bytes: self.drop_send_error_bytes,
+            drop_policy_denied_packets: self.drop_policy_denied_packets,
+            drop_policy_denied_bytes: self.drop_policy_denied_bytes,
             originated_packets: self.originated_packets,
             originated_bytes: self.originated_bytes,
         }
@@ -401,6 +410,8 @@ pub struct ForwardingStatsSnapshot {
     pub drop_mtu_exceeded_bytes: u64,
     pub drop_send_error_packets: u64,
     pub drop_send_error_bytes: u64,
+    pub drop_policy_denied_packets: u64,
+    pub drop_policy_denied_bytes: u64,
     pub originated_packets: u64,
     pub originated_bytes: u64,
 }
