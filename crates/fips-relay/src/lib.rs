@@ -15,6 +15,7 @@ pub mod payment_control;
 #[cfg(unix)]
 pub mod probe;
 pub mod route_quotes;
+pub mod runtime;
 #[cfg(unix)]
 pub mod service;
 #[cfg(all(unix, feature = "testbench"))]
