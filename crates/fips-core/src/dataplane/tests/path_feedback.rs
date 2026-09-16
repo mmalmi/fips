@@ -197,3 +197,84 @@ fn delivery_feedback_waits_one_report_window_before_degrading_a_new_burst() {
         "path changes must discard old direct proof"
     );
 }
+
+#[test]
+fn delayed_feedback_does_not_clear_a_newer_unanswered_request() {
+    // Exercise the same ordering across the wrapping millisecond timestamp.
+    for start_ms in [1_000, u64::from(u32::MAX) - 1_500] {
+        let owner = fsp_owner(95);
+        let mut mover = mover();
+        mover.register_owner(
+            owner,
+            OwnerConfig::new(1, 8)
+                .with_fsp_session_start_ms(0)
+                .with_fsp_send_headers(0, 0)
+                .with_fsp_mmp(crate::config::SessionMmpConfig::default(), true),
+        );
+        for offset_ms in [50, 1_000] {
+            mover.owner_mut(owner).unwrap().record_fsp_data_sent(
+                owner.node_addr(),
+                100,
+                ActivityTick::new(start_ms + offset_ms),
+            );
+        }
+        // The first request arrived. Its report is delayed until after a
+        // second request was sent to a recipient that has lost its session.
+        let report = crate::mmp::report::ReceiverReport {
+            highest_counter: 1,
+            cumulative_packets_recv: 1,
+            cumulative_bytes_recv: 100,
+            timestamp_echo: (start_ms + 50) as u32,
+            dwell_time: 0,
+            max_burst_loss: 0,
+            mean_burst_loss: 0,
+            jitter: 0,
+            ecn_ce_count: 0,
+            owd_trend: 0,
+            burst_loss_count: 0,
+            cumulative_reorder_count: 0,
+            interval_packets_recv: 0,
+            interval_bytes_recv: 0,
+        };
+        mover
+            .process_fsp_mmp_receiver_report(
+                owner,
+                &report,
+                Some(owner.node_addr()),
+                start_ms + 2_000,
+                std::time::Instant::now(),
+                128,
+            )
+            .unwrap();
+        assert!(
+            mover
+                .owner_fsp_activity(owner)
+                .unwrap()
+                .has_unacknowledged_outbound_from(&owner.node_addr(), start_ms + 8_000, 5_000,),
+            "a delayed report about earlier traffic must leave the newer request eligible for recovery"
+        );
+        // A report covering the newer send ends that outstanding burst, even
+        // after its freshness window passes and the sender remains idle.
+        mover
+            .process_fsp_mmp_receiver_report(
+                owner,
+                &crate::mmp::report::ReceiverReport {
+                    highest_counter: 2,
+                    cumulative_packets_recv: 2,
+                    timestamp_echo: (start_ms + 1_000) as u32,
+                    ..report
+                },
+                Some(owner.node_addr()),
+                start_ms + 8_100,
+                std::time::Instant::now(),
+                128,
+            )
+            .unwrap();
+        assert!(
+            !mover
+                .owner_fsp_activity(owner)
+                .unwrap()
+                .has_unacknowledged_outbound_from(&owner.node_addr(), start_ms + 14_000, 5_000,)
+        );
+    }
+}

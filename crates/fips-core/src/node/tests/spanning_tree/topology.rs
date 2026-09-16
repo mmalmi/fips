@@ -353,9 +353,12 @@ pub(in crate::node::tests) async fn run_tree_test_with_mtus(
     nodes
 }
 
-/// Clean up transports for all test nodes.
+/// Drain forwarding completions and clean up transports for all test nodes.
 pub(in crate::node::tests) async fn cleanup_nodes(nodes: &mut [TestNode]) {
     for tn in nodes.iter_mut() {
+        // Mirror Node::stop: a recipient may receive a packet before the
+        // sender retires its completion and releases the forwarding permit.
+        tn.node.drain_deferred_session_forwards().await;
         for (_, t) in tn.node.transports.iter_mut() {
             t.stop().await.ok();
         }

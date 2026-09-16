@@ -30,6 +30,12 @@ onward-path changes and overlapping traffic still limit attribution. A quiet,
 previously answered session loses fresh quality evidence without being
 declared failed merely because it is idle.
 
+An advancing report about earlier traffic does not clear a newer unanswered
+burst unless its echoed send time covers the most recent data send. This keeps
+sparse requests eligible for session recovery after the recipient loses its
+keys, even if old feedback arrives later. Timestamp resolution and aggregate
+counters still limit this evidence; it is not per-packet acknowledgment.
+
 `FipsEndpoint::set_source_route(destination, Some(neighbor))` binds the first
 hop to a currently sendable authenticated neighbor. It replaces the cached
 session output carrier and invalidates delivery attribution, even when the
@@ -42,6 +48,16 @@ cleared. An unavailable chosen neighbor fails closed; there is no automatic
 switch to a potentially unpriced provider. Existing in-flight packets may still
 use the previous carrier. Transit routing and native Noise setup/reply rules
 remain independent. No binding is installed by default.
+
+Without an explicit binding, initial tree-mode handshakes install the native
+forward route. An authenticated handshake may return through a different neighbor
+that makes no forward tree progress. Established payload/reply affinity and its
+metadata refresh remain independent, including earned return paths. Reply-learned
+mode retains its authenticated handshake carrier and existing failure handling.
+In both modes, a matching `PathBroken` signal releases the failed cached carrier
+so native routing can recover. Learned-route quarantine applies only in
+reply-learned mode. An explicit source binding still prevents an unapproved
+fallback to a different provider.
 
 ## Local allowance admission
 
@@ -116,6 +132,15 @@ replacement, failure without fallback and rebind invalidation without resetting
 traffic totals. It also reproduces local control-budget refusal and coordinate/
 packet-size refresh without false route failure or loss of reply affinity, with
 fallback still available when the retained carrier disconnects.
+It also rejects a nonprogressing handshake return neighbor in tree mode, retains
+established reply affinity through owner resync, and recovers from an explicit
+path failure on that carrier.
+
+`cargo test -p nvpn-fips-core --lib delayed_feedback` checks a report arriving
+after a newer unanswered request, including timestamp wrap, and an encrypted
+report queued across actual recipient session loss while link heartbeats remain
+healthy. The session recovers and payload works in both directions; the idle
+control case must keep its existing session.
 
 `cargo test -p nvpn-fips-core --lib source_admission` covers scalar/batched denial,
 unchanged sequence/coordinate/send counters, exact encrypted-envelope size and

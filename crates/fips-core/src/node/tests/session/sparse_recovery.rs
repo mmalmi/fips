@@ -3,18 +3,25 @@ use super::*;
 #[test]
 fn sparse_request_recovers_a_stale_session_while_link_heartbeats_succeed() {
     run_large_stack_async_test("fips-sparse-session-recovery", || async {
-        sparse_session_recovery(true).await;
+        sparse_session_recovery(true, false).await;
     });
 }
 
 #[test]
 fn acknowledged_sparse_request_does_not_rekey_an_idle_session() {
     run_large_stack_async_test("fips-sparse-session-idle", || async {
-        sparse_session_recovery(false).await;
+        sparse_session_recovery(false, false).await;
     });
 }
 
-async fn sparse_session_recovery(lose_remote_session: bool) {
+#[test]
+fn delayed_feedback_does_not_prevent_sparse_session_recovery() {
+    run_large_stack_async_test("fips-sparse-session-delayed-feedback", || async {
+        sparse_session_recovery(true, true).await;
+    });
+}
+
+async fn sparse_session_recovery(lose_remote_session: bool, delay_prior_report: bool) {
     let mut nodes = run_tree_test(2, &[(0, 1)], false).await;
     populate_all_coord_caches(&mut nodes);
     let identities = nodes
@@ -80,6 +87,28 @@ async fn sparse_session_recovery(lose_remote_session: bool) {
         .handshake_hash()
         .unwrap();
 
+    if delay_prior_report {
+        // Produce a report from the real receiver state and encrypt/send it
+        // before the restart. Leave it queued until after the newer request.
+        let reports = nodes[1]
+            .node
+            .dataplane
+            .collect_fsp_mmp_reports(std::time::Instant::now() + Duration::from_secs(10));
+        let report = reports
+            .reports
+            .into_iter()
+            .find(|report| {
+                report.msg_type == crate::protocol::SessionMessageType::ReceiverReport.to_byte()
+            })
+            .expect("baseline data must produce receiver feedback");
+        nodes[1]
+            .node
+            .send_session_msg(&report.dest_addr, report.msg_type, &report.encoded)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
     // Lose only the recipient's end-to-end state. The authenticated UDP
     // link remains in place and continues replying to link heartbeats.
     if lose_remote_session {
@@ -119,6 +148,17 @@ async fn sparse_session_recovery(lose_remote_session: bool) {
         .node
         .get_peer(identities[1].node_addr())
         .is_some_and(|peer| peer.is_healthy());
+    let failure = (recovered.is_ok() != lose_remote_session).then(|| {
+        format!(
+            "{}; now_ms={}; activity={:?}",
+            session_wait_snapshot(&nodes, 0, identities[1].node_addr()),
+            Node::now_ms(),
+            nodes[0]
+                .node
+                .dataplane
+                .fsp_owner_activity(identities[1].node_addr()),
+        )
+    });
     if recovered.is_ok() {
         for (source, destination) in [(0, 1), (1, 0)] {
             send_endpoint_data_via_dataplane(
@@ -148,6 +188,6 @@ async fn sparse_session_recovery(lose_remote_session: bool) {
     );
     assert!(
         recovered.is_ok() == lose_remote_session,
-        "recover unanswered traffic without a restart, but preserve acknowledged idle sessions"
+        "recover unanswered traffic without a restart, but preserve acknowledged idle sessions: {failure:?}"
     );
 }

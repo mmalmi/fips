@@ -720,19 +720,20 @@ impl Node {
         next_hop: NodeAddr,
         clear_failed_output: bool,
     ) {
-        if self.config.node.routing.mode != RoutingMode::ReplyLearned {
-            return;
-        }
         let current_next_hop = self.dataplane.fsp_owner_next_hop(&destination);
         let _ = self.dataplane.forget_fsp_data_route(destination, next_hop);
-        self.learned_routes.quarantine_failed_next_hop(
-            destination,
-            next_hop,
-            Self::now_ms(),
-            self.config.node.routing.learned_ttl_secs,
-            self.config.node.routing.max_learned_routes_per_dest,
-        );
+        if self.config.node.routing.mode == RoutingMode::ReplyLearned {
+            self.learned_routes.quarantine_failed_next_hop(
+                destination,
+                next_hop,
+                Self::now_ms(),
+                self.config.node.routing.learned_ttl_secs,
+                self.config.node.routing.max_learned_routes_per_dest,
+            );
+        }
 
+        // Both modes cache established reply carriers. Explicit failure must
+        // release that affinity even when no learned-route table is in use.
         if !clear_failed_output || current_next_hop != Some(next_hop) {
             return;
         }

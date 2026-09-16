@@ -153,8 +153,20 @@ async fn session_100_nodes() {
         context: &str,
     ) {
         const ATTEMPTS: usize = 3;
+        let destination = nodes
+            .iter()
+            .find(|n| {
+                crate::FipsAddress::from_node_addr(n.node.node_addr()).as_bytes() == &packet[24..40]
+            })
+            .map(|n| *n.node.node_addr())
+            .expect("test destination");
+        let stats_before = nodes
+            .iter()
+            .map(|node| node.node.stats().snapshot())
+            .collect::<Vec<_>>();
 
         for _ in 0..ATTEMPTS {
+            let attempted_hop = nodes[source].node.dataplane.fsp_owner_next_hop(&destination);
             send_tun_packet_via_dataplane(nodes, source, packet.to_vec()).await;
             let deadline = tokio::time::Instant::now() + timeout;
             loop {
@@ -165,11 +177,17 @@ async fn session_100_nodes() {
                 let Some(delivered) = try_recv_tun_packet_while_draining(
                     nodes,
                     receiver,
-                    deadline.saturating_duration_since(now),
+                    deadline.saturating_duration_since(now).min(Duration::from_millis(100)),
                 )
                 .await
                 else {
-                    break;
+                    // A datagram needs an upper-layer retry after a path error.
+                    // Retry promptly once routing repairs the carrier, keeping
+                    // the same bounded attempt count and stall deadline.
+                    if nodes[source].node.dataplane.fsp_owner_next_hop(&destination) != attempted_hop {
+                        break;
+                    }
+                    continue;
                 };
                 if delivered.get(40..) == Some(expected_payload) {
                     return;
@@ -179,13 +197,25 @@ async fn session_100_nodes() {
             }
         }
 
-        let destination = nodes
-            .iter()
-            .find(|n| {
-                crate::FipsAddress::from_node_addr(n.node.node_addr()).as_bytes() == &packet[24..40]
-            })
-            .map(|n| *n.node.node_addr())
-            .expect("test destination");
+        for (index, node) in nodes.iter().enumerate() {
+            let before = serde_json::to_value(&stats_before[index]).unwrap();
+            let stats_after = serde_json::to_value(node.node.stats().snapshot()).unwrap();
+            let mut changes = serde_json::Map::new();
+            for (group, fields) in stats_after.as_object().unwrap() {
+                for (field, value) in fields.as_object().unwrap() {
+                    let before = &before[group][field];
+                    if before != value {
+                        changes.insert(
+                            format!("{group}.{field}"),
+                            serde_json::json!([before, value]),
+                        );
+                    }
+                }
+            }
+            if !changes.is_empty() {
+                eprintln!("node {index} {} changes={changes:?}", node.node.node_addr());
+            }
+        }
         panic!(
             "{context}: payload was not delivered after {ATTEMPTS} attempts; {}; quality={:?}; cached={:?}",
             session_wait_snapshot(nodes, source, &destination),

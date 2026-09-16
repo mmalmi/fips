@@ -264,12 +264,19 @@ impl Node {
         let generation = snapshot.session_start_ms.max(1);
         let inner_flags = crate::protocol::FspInnerFlags { spin_bit: false }.to_byte();
         let coords_prefix = self.dataplane_fsp_coords_prefix(node_addr, coords_warmup_remaining);
+        // An asymmetric handshake ingress does not establish an outbound tree
+        // route. Start with the native route, retaining established reply
+        // affinity when a later sync/rekey replaces the owner state.
+        let preferred = match self.config.node.routing.mode {
+            crate::config::RoutingMode::Tree => self.dataplane.fsp_owner_next_hop(node_addr),
+            crate::config::RoutingMode::ReplyLearned => proven_next_hop,
+        };
         let route_update = self.dataplane_fsp_owner_routes(
             node_addr,
             generation,
             fsp_flags,
             inner_flags,
-            proven_next_hop,
+            preferred,
         );
 
         let mut config = self
@@ -334,8 +341,9 @@ impl Node {
             .map(|peer| *peer.node_addr());
         let selected_direct = (selected_next_hop == Some(*node_addr)).then_some(*node_addr);
 
-        // Otherwise, a Noise-authenticated handshake ingress remains the
-        // strongest route evidence while its adjacent FMP path can still send.
+        // A supplied handshake or established reply carrier remains preferred
+        // while its adjacent FMP path can send. Initial tree-mode handshakes
+        // deliberately supply no preference; established return affinity may.
         // Traversal liveness may briefly be stale before endpoint traffic
         // refreshes it; falling back here can seed the new FSP owner onto an
         // unproven branch.

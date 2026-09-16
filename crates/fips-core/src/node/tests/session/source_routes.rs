@@ -141,6 +141,7 @@ fn source_binding_is_bounded_and_does_not_override_transit() {
 #[test]
 fn source_binding_replaces_cached_carrier_and_fails_closed() {
     let mut node = make_node();
+    node.config.node.routing.mode = RoutingMode::ReplyLearned;
     let old = add_peer(&mut node, 1);
     let selected = add_peer(&mut node, 2);
     let remote = Identity::generate();
@@ -271,5 +272,54 @@ fn metadata_refresh_preserves_an_authenticated_reply_carrier() {
         node.dataplane.fsp_owner_next_hop(&dest),
         Some(*alternate.node_addr()),
         "a disconnected carrier must still yield to a usable route"
+    );
+}
+
+#[tokio::test]
+async fn tree_payload_route_does_not_follow_a_nonprogressing_handshake_ingress() {
+    let mut node = make_node();
+    assert_eq!(node.config.node.routing.mode, RoutingMode::Tree);
+    let forward = *add_peer(&mut node, 1).node_addr();
+    let incoming = *add_peer(&mut node, 2).node_addr();
+    let root = *node.node_addr();
+    for peer in [forward, incoming] {
+        node.tree_state_mut().update_peer(
+            ParentDeclaration::new(peer, root, 1, Node::now_ms()),
+            TreeCoordinate::from_addrs(vec![peer, root]).unwrap(),
+        );
+    }
+    let remote = Identity::generate();
+    let dest = *remote.node_addr();
+    node.coord_cache_mut().insert(
+        dest,
+        TreeCoordinate::from_addrs(vec![dest, forward, root]).unwrap(),
+        Node::now_ms(),
+    );
+    assert_eq!(
+        node.find_next_hop(&dest).map(|peer| *peer.node_addr()),
+        Some(forward)
+    );
+    install_established_session_with_mmp(&mut node, &remote);
+    // A reply may arrive on an asymmetric path. In tree mode that does not
+    // prove the incoming neighbor can forward payload away from this root.
+    node.remove_dataplane_fsp_owner(&dest);
+    assert!(node.sync_dataplane_fsp_owner_from_current_session_via(&dest, Some(incoming), 0));
+    assert_eq!(node.dataplane.fsp_owner_next_hop(&dest), Some(forward));
+    assert!(node.refresh_dataplane_fsp_owner_routes_with_coords_warmup(&dest, 3));
+    assert_eq!(node.dataplane.fsp_owner_next_hop(&dest), Some(forward));
+    // Established return affinity is distinct from the initial handshake:
+    // owner resync/rekey must preserve it, including earned paid return paths.
+    assert!(node.refresh_dataplane_fsp_owner_routes_via(&dest, Some(incoming)));
+    assert_eq!(node.dataplane.fsp_owner_next_hop(&dest), Some(incoming));
+    assert!(node.sync_dataplane_fsp_owner_from_current_session_via(&dest, Some(forward), 0));
+    assert_eq!(node.dataplane.fsp_owner_next_hop(&dest), Some(incoming));
+    seed_dataplane_fsp_data_sent_for_test(&mut node, dest, incoming, Node::now_ms());
+    let error = crate::protocol::PathBroken::new(dest, incoming).encode();
+    node.handle_session_payload(LocalSessionPayload::new(incoming, incoming, &error))
+        .await;
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&dest),
+        Some(forward),
+        "an explicit path failure must release broken reply affinity in tree mode too"
     );
 }

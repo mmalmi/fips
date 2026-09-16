@@ -710,15 +710,18 @@ impl OwnerState {
         };
 
         let our_timestamp_ms = now_ms.wrapping_sub(session_start_ms) as u32;
-        if let Some(started) = self.fsp_outbound_path_started {
-            let echo_age = our_timestamp_ms.wrapping_sub(rr.timestamp_echo);
+        let echo_age = our_timestamp_ms.wrapping_sub(rr.timestamp_echo);
+        let echo_covers = |tick: ActivityTick| {
+            rr.timestamp_echo != 0
+                && echo_age < (1 << 31)
+                && u64::from(echo_age) <= now_ms.saturating_sub(tick.get())
+        };
+        if let Some(started) = self.fsp_outbound_path_started
+            && !echo_covers(started)
+        {
             // A late report about the former carrier cannot qualify or penalize
             // the replacement. Use the existing echoed send time, not a receipt.
-            if rr.timestamp_echo == 0 || echo_age >= (1 << 31)
-                || u64::from(echo_age) > now_ms.saturating_sub(started.get())
-            {
-                return Err(DataplaneFspMmpSkip::UnattributableReport);
-            }
+            return Err(DataplaneFspMmpSkip::UnattributableReport);
         }
 
         if std::mem::take(&mut self.fsp_mmp_path_changed_since_report) {
@@ -735,7 +738,12 @@ impl OwnerState {
                     .last_delivery_report_cumulative_packets_recv
                     .is_none_or(|previous| rr.cumulative_packets_recv > previous);
             if report_advanced {
-                self.first_unreported_tx_data_activity = None;
+                // Delayed progress for an earlier send cannot clear a newer
+                // unanswered request. Reuse the existing echoed send time;
+                // this remains path feedback, not per-packet acknowledgment.
+                if self.last_tx_data_activity.is_some_and(echo_covers) {
+                    self.first_unreported_tx_data_activity = None;
+                }
                 self.last_delivery_report_activity = Some(ActivityTick::new(now_ms));
                 self.last_delivery_report_next_hop = Some(next_hop);
                 self.last_delivery_report_cumulative_packets_recv =

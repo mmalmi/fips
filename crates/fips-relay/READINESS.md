@@ -140,12 +140,23 @@ now exercise forward loss, excess latency and a failed return direction over two
 seeds. The same harness verifies replacement delivery, feedback, reload and funds.
 Observed carrier changes reset native smoothing and reject old-path timestamp
 echoes; no new measurement messages or financial receipts are introduced.
-Broader handshake stress, remote credit/payment-caused missing feedback, full
-restarts and the remaining impairment/mobility matrix below remain open. The latest
-100-node session stress failed on both the modified tree and a freshly rebuilt
-unchanged baseline. Sparse recovery also failed once in a combined run and passed
-alone. These failures prevent a current broad-session readiness claim despite
-the earlier successful 150-test run.
+The reproduced large-mesh failure came from tree mode using an asymmetric
+handshake return neighbor for outbound traffic and retaining broken reply affinity
+after `PathBroken`. Initial tree sessions now use the native forward route;
+established reply paths survive refresh/rekey and explicit failure releases them
+in both routing modes. A separate delayed-report regression keeps a newer
+unanswered request eligible for recovery using the existing timestamp echo.
+This aggregate feedback remains limited by timestamp resolution and is not a
+per-packet delivery acknowledgment.
+
+Current local acceptance passes all 152 session tests, including 200/200 payloads
+in the 100-node mesh, 112 dataplane tests, the source-quality integration in both
+routing modes, and all three paid-path tests (13 deployments with test funds
+conserved). Strict core/relay/simulator linting also passes. Test teardown now
+drains forwarding completions before closing carriers, matching production stop.
+These results cover the reproduced failures, without attributing every historical
+intermittent stall to the same causes. Longer stress runs, remote credit/payment
+effects, full restarts and the remaining impairment/mobility matrix remain open.
 
 Price-aware route selection is an explicit requirement, not proven by simply
 accumulating prices along the native planner's chosen next hops. Reuse FIPS's
