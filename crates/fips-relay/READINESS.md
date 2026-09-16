@@ -72,6 +72,14 @@ exception is direct authenticated UDP within a configured subnet. Permissionless
 router admission therefore needs a coherent discovery/admission/purchase policy;
 simply enabling Ethernet beacons or removing the Wi-Fi password is insufficient.
 
+The cadence fixture also exposed an end-to-end bootstrap constraint: a forward-only
+purchase does not admit the reverse FSP handshake reply. Current policy meters all
+session envelopes, including setup, and the existing prototype independently
+funds both sending directions. Six one-way warmup attempts over 60 seconds delivered
+no data. Bounded bootstrap design must explicitly resolve this case without a
+blanket free session-data bypass or unsolicited spending by the recipient. Cadence
+measurements with both routes funded cannot be used as proof that it is solved.
+
 ## Boundaries and threats
 
 - A minted token and signed balance authorize payment, not delivery. The mint

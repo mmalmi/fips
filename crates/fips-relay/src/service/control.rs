@@ -15,13 +15,16 @@ impl RelayService {
                 Ok(
                     json!({"npub": self.endpoint.npub(), "peers": peers.iter().map(|p| json!({
                     "npub": p.npub, "connected": p.connected, "transport": p.transport_type,
-                    "address": p.transport_addr, "sent_bytes": p.bytes_sent, "received_bytes": p.bytes_recv,
+                    "address": p.transport_addr, "link_id": p.link_id,
+                    "sent_bytes": p.bytes_sent, "received_bytes": p.bytes_recv,
+                    "sent_packets": p.packets_sent, "received_packets": p.packets_recv,
                     "srtt_ms": p.srtt_ms })).collect::<Vec<_>>(),
                     "purchases": self.controller.purchases().await?,
                     "watched_routes": self.controller.watched_routes().await?,
                     "history": self.controller.purchase_history().await?,
                     "locked_sat": self.controller.locked_capital_sat().await?,
                     "remaining_budget_sat": self.buyer.remaining_budget_sat(),
+                    "measurements": crate::measurements::snapshot(),
                     "received": self.received.lock().unwrap().clone(),
                     "probe": probe,
                     "control_traffic": self.control_statistics.iter().map(|(port, stats)| json!({

@@ -8,6 +8,7 @@ description = "Experimental sender-funded native FIPS forwarding service"
 
 [features]
 testbench = ["cashu-service/simulation"]
+measurements = ["dep:libc"]
 
 [[bin]]
 name = "fips-relay-test-mint"
@@ -30,6 +31,7 @@ fips-tcp-endpoint = { package = "nvpn-fips-tcp-endpoint", version = "=0.2.16" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "net", "io-util", "signal"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 cashu = { version = "=0.17.3", default-features = false }
+libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
 cashu-service = { version = "=0.4.8", default-features = false, features = ["simulation", "spilman-wallet-http", "spilman-configurable-host-reqwest"] }

@@ -63,6 +63,14 @@ separately when verifying billing under duplicated traffic.
 
 ## Latency and overhead
 
+The optional `measurements` build feature adds process CPU, synchronous payment
+thread CPU and attributed logical relay-journal counters to the private status
+response. It is disabled in normal builds. For definitions, exclusions and the
+matched four-policy experiment, see the [cadence benchmark](../../testing/relay-cadence/README.md)
+and [clean-link results](CADENCE-RESULTS.md). Elapsed span time is separate from
+CPU time; framing counters and logical writes are not complete wire or physical
+storage measurements.
+
 Enable `measure_one_way_latency` only when the operator can establish the clock
 relationship. Two isolated processes on the same host share a kernel clock and
 are suitable for the first bench measurement. Different devices require a

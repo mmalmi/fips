@@ -334,16 +334,21 @@ pub(crate) fn write_private_journal(
     name: &str,
     bytes: &[u8],
 ) -> Result<(), DurableError> {
+    use crate::measurements::{JournalEvent, journal};
     if bytes.len() as u64 > MAX_JOURNAL_BYTES {
         return Err(DurableError::Format);
     }
     let mut pending = tempfile::NamedTempFile::new_in(directory)?;
     pending.write_all(bytes)?;
+    journal(JournalEvent::Written(bytes.len()));
     pending.as_file().sync_all()?;
+    journal(JournalEvent::Synced);
     pending
         .persist(directory.join(name))
         .map_err(|e| DurableError::Io(e.error))?;
     File::open(directory)?.sync_all()?;
+    journal(JournalEvent::Synced);
+    journal(JournalEvent::Committed);
     Ok(())
 }
 

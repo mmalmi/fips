@@ -7,6 +7,7 @@ use crate::{
     control_transport::IncomingRequest,
     durable::DurableRelay,
     ledger::{ChannelTerms, ChannelUsage, Contract},
+    measurements::{Operation, measure},
     payment::process_payment,
 };
 use cashu_service::{CashuSpilmanPayment, CashuSpilmanPaymentReceiver};
@@ -136,16 +137,29 @@ impl<R: CashuSpilmanPaymentReceiver<String>> PaymentControl<R> {
 
     /// Performs validation and durable I/O; never call on the native node loop.
     pub fn handle(&self, peer: PeerIdentity, body: &[u8]) -> PaymentResponse {
-        self.handle_inner(peer, body)
-            .unwrap_or(PaymentResponse::Rejected)
+        if body.len() > crate::control_transport::MAX_RECORD_BYTES {
+            return PaymentResponse::Rejected;
+        }
+        let Ok(request) = serde_json::from_slice::<PaymentRequest>(body) else {
+            return PaymentResponse::Rejected;
+        };
+        let operation = match request {
+            PaymentRequest::Open { .. } => Operation::PaymentOpen,
+            PaymentRequest::Update { .. } => Operation::PaymentUpdate,
+            PaymentRequest::Usage { .. } => Operation::PaymentUsage,
+            PaymentRequest::StopForwarding { .. } => Operation::PaymentStop,
+        };
+        measure(operation, || {
+            self.handle_inner(peer, request)
+                .unwrap_or(PaymentResponse::Rejected)
+        })
     }
 
-    fn handle_inner(&self, peer: PeerIdentity, body: &[u8]) -> Result<PaymentResponse, String> {
-        if body.len() > crate::control_transport::MAX_RECORD_BYTES {
-            return Err("oversized".into());
-        }
-        let request: PaymentRequest =
-            serde_json::from_slice(body).map_err(|_| "invalid request")?;
+    fn handle_inner(
+        &self,
+        peer: PeerIdentity,
+        request: PaymentRequest,
+    ) -> Result<PaymentResponse, String> {
         let id = match &request {
             PaymentRequest::Open { channel_id, .. }
             | PaymentRequest::Update { channel_id, .. }

@@ -2,6 +2,7 @@
 use super::cadence::SCAN_INTERVAL;
 use super::payments::PaymentWorkers;
 use super::*;
+use crate::measurements::{Operation, measure};
 
 impl Controller {
     /// Resume durable incomplete requests. A missing reply is not permission to
@@ -183,7 +184,9 @@ impl ControllerTasks {
                         let result = match checkpoint_controller.services.seller.checkpoint_due() {
                             Ok(true) => {
                                 let seller = checkpoint_controller.services.seller.clone();
-                                blocking(move || seller.checkpoint().map(|_| ()).map_err(|e| e.to_string())).await
+                                blocking(move || measure(Operation::WindowCheckpoint, || {
+                                    seller.checkpoint().map(|_| ()).map_err(|e| e.to_string())
+                                })).await
                             },
                             Ok(false) => Ok(()),
                             Err(error) => Err(error.to_string()),

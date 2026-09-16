@@ -10,6 +10,7 @@ pub mod controller;
 pub mod customer;
 pub mod durable;
 pub mod ledger;
+pub mod measurements;
 pub mod payment;
 pub mod payment_control;
 #[cfg(unix)]

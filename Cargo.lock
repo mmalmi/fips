@@ -2017,6 +2017,7 @@ dependencies = [
  "cashu-service",
  "fs2",
  "ipnet",
+ "libc",
  "nvpn-fips-core",
  "nvpn-fips-tcp",
  "nvpn-fips-tcp-endpoint",

@@ -132,9 +132,19 @@ library/binary checks, formatting and the source-size gate passed. The physical
 routers still run the earlier build; no hardware speedup or ad hoc radio joining
 is claimed by these software checks.
 
-No new CPU or throughput saving is claimed by these checks. The next measurement
-must compare 250/500/1000/2000-ms policies with identical terms and workloads,
-including idle, burst, high-rate and impaired links. Count payment messages,
-crypto work, storage writes and complete wire overhead separately. The older
+An optimized [clean-link comparison](CADENCE-RESULTS.md) now covers all four
+250/500/1000/2000-ms policies with identical terms under idle, burst, steady and
+high-rate workloads. Two opposite-order passes delivered all 285,696 packets and
+settled/collected all 40,960 isolated test sats. Idle payment traffic was zero.
+At high rate, 1 s/2 s policies used 40 balance updates versus 60 at 250 ms; CPU varied
+between repeats, so this does not select a production default or prove a router
+speedup. The 500 ms default remains unchanged.
+
+The optional `measurements` feature exposes synchronous thread CPU spans and
+attributed logical journal I/O separately from whole-process CPU and payment
+record counters. See the [measurement boundaries](../../testing/relay-cadence/README.md).
+These diagnostics have no financial authority and compile to no-ops by default.
+Impaired links, total payment CPU attribution, Cashu SQLite/physical I/O and
+complete wire overhead remain unmeasured. The older
 [performance report](PERFORMANCE.md) is a baseline for the former fixed polling
 implementation, not a measurement of this scheduler.

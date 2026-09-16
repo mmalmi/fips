@@ -2,6 +2,7 @@
 use super::cadence::ChannelSchedule;
 use super::*;
 use crate::ledger::ChannelUsage;
+use crate::measurements::{Operation, measure};
 
 type PaymentResult = Result<Option<ChannelUsage>, String>;
 
@@ -98,10 +99,12 @@ impl Controller {
             let id = channel_id.clone();
             blocking(move || {
                 let _wallet = wallet_guard;
-                let signer = FileSpilmanPaymentSigner::load(&directory)?;
-                buyer
-                    .sign_claim(&signer, purchase.provider, &id, supported, now()?)
-                    .map_err(|e| e.to_string())
+                measure(Operation::PaymentSign, || {
+                    let signer = FileSpilmanPaymentSigner::load(&directory)?;
+                    buyer
+                        .sign_claim(&signer, purchase.provider, &id, supported, now()?)
+                        .map_err(|e| e.to_string())
+                })
             })
             .await?
         };
