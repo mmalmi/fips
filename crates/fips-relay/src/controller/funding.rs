@@ -2,8 +2,7 @@
 use super::*;
 use cashu_service::{
     StreamingRouteOpenCashuSpilmanChannelFromWalletRequest,
-    StreamingRouteOpenCashuSpilmanChannelResult,
-    recover_streaming_route_cashu_spilman_channel_from_wallet_request,
+    StreamingRouteOpenCashuSpilmanChannelFromWalletResult, recover_cashu_spilman_wallet_funding,
 };
 
 impl FundingIntent {
@@ -15,6 +14,7 @@ impl FundingIntent {
             mint_url: policy.mint_url.clone(),
             receiver_pubkey_hex: self.receiver_pubkey_hex.clone(),
             capacity_sat: self.capacity_sat,
+            max_total_amount_sat: Some(self.max_wallet_debit_sat),
             expiry_unix: self.expires_unix.checked_add(60).ok_or("expiry overflow")?,
             max_amount_per_output: 0,
             unit: "sat".into(),
@@ -30,9 +30,21 @@ impl FundingIntent {
         &self,
         local: NodeAddr,
         policy: &ControllerPolicy,
-        opened: StreamingRouteOpenCashuSpilmanChannelResult,
-    ) -> Funded {
-        Funded {
+        result: StreamingRouteOpenCashuSpilmanChannelFromWalletResult,
+    ) -> Result<Funded, String> {
+        let opened = result.channel;
+        if opened.mint_url != policy.mint_url
+            || opened.capacity_sat != self.capacity_sat
+            || opened.receiver_pubkey_hex != self.receiver_pubkey_hex
+            || opened.unit != "sat"
+        {
+            return Err("wallet funding differs from approved channel".into());
+        }
+        let funded = Funded {
+            wallet_operation_id: result.wallet_send.operation_id,
+            wallet_cost: result
+                .wallet_cost
+                .ok_or("wallet funding cost unavailable")?,
             terms: ChannelTerms {
                 id: opened.channel_id,
                 buyer: local,
@@ -42,7 +54,9 @@ impl FundingIntent {
                 grace_msat: self.grace_msat,
             },
             opening: opened.payment,
-        }
+        };
+        self.validate_cost(&funded)?;
+        Ok(funded)
     }
 }
 
@@ -81,11 +95,11 @@ impl Controller {
         }
         let request = intent.wallet_request(&self.policy)?;
         let directory = self.services.wallet_directory.clone();
+        let runtime = tokio::runtime::Handle::current();
         let (opened, _wallet) = blocking(move || {
-            let opened = recover_streaming_route_cashu_spilman_channel_from_wallet_request(
-                &directory, &request,
-            )
-            .map_err(|e| e.to_string());
+            let opened = runtime
+                .block_on(recover_cashu_spilman_wallet_funding(&directory, &request))
+                .map_err(|e| e.to_string());
             // Retain ownership until the blocking SDK call finishes, even when
             // the async recovery worker is cancelled.
             Ok((opened, wallet_guard))
@@ -93,7 +107,7 @@ impl Controller {
         .await?;
         if let Some(opened) = opened? {
             let funded =
-                intent.funded_channel(*self.services.endpoint.node_addr(), &self.policy, opened);
+                intent.funded_channel(*self.services.endpoint.node_addr(), &self.policy, opened)?;
             self.change(move |j| Self::record_funding(j, intent, funded))
                 .await?;
         }
@@ -105,6 +119,7 @@ impl Controller {
         mut intent: FundingIntent,
         funded: Funded,
     ) -> Result<(), String> {
+        intent.validate_cost(&funded)?;
         let current = j
             .funding
             .get_mut(&intent.id)

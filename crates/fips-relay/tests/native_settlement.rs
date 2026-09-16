@@ -336,7 +336,7 @@ async fn three_native_transit_routers_redeem_both_directions_through_neighbor_co
                 let opened = open_streaming_route_cashu_spilman_channel_from_wallet(
                     &wallets[buyer],
                     StreamingRouteOpenCashuSpilmanChannelFromWalletRequest {
-                        mint_url: offer.mint_url.clone(), receiver_pubkey_hex: offer.receiver_pubkey_hex.clone(), capacity_sat: offer.capacity_sat, expiry_unix: now + 600,
+                        mint_url: offer.mint_url.clone(), receiver_pubkey_hex: offer.receiver_pubkey_hex.clone(), capacity_sat: offer.capacity_sat, max_total_amount_sat: Some(offer.capacity_sat), expiry_unix: now + 600,
                         max_amount_per_output: 0, unit: "sat".into(), opening_paid_msat: 0, keyset_id: None, keyset_info_json: None,
                         client_request_id: Some(format!("native-{buyer}-{seller}")), route_created_at_unix: Some(now),
                     },

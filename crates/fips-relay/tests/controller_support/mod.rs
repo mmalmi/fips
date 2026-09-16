@@ -5,6 +5,8 @@ pub(super) fn policy(mint_url: &str, automatic_renewal: bool, capacity: u64) -> 
         mint_url: mint_url.to_string(),
         channel_capacity_sat: capacity,
         max_locked_sat: capacity * 2,
+        max_funding_overhead_sat: 0,
+        max_wallet_spend_sat: 1024,
         channel_lifetime_secs: 600,
         renewal: automatic_renewal.then_some(RenewalPolicy {
             at_capacity_percent: 100,

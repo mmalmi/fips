@@ -9,6 +9,8 @@
       "mint_url": "http://192.0.2.1:3338",
       "channel_capacity_sat": 64,
       "max_locked_sat": 128,
+      "max_funding_overhead_sat": 0,
+      "max_wallet_spend_sat": 128,
       "channel_lifetime_secs": 600,
       "renewal": {
         "at_capacity_percent": 80,

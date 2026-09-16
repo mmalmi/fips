@@ -427,6 +427,8 @@ mod tests {
             mint_url: "http://127.0.0.1:1234".into(),
             channel_capacity_sat: 16,
             max_locked_sat: 32,
+            max_funding_overhead_sat: 0,
+            max_wallet_spend_sat: 1024,
             channel_lifetime_secs: 600,
             renewal: Some(RenewalPolicy {
                 at_capacity_percent: 100,

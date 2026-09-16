@@ -15,6 +15,12 @@ pub(super) fn fixture(directory: &Path) -> (Store, Outgoing) {
         expires_unix: funding.expires_unix,
     };
     funding.funded = Some(Funded {
+        wallet_operation_id: "fixture-operation-1".into(),
+        wallet_cost: cashu_service::CashuSendCost {
+            token_amount_sat: 32,
+            swap_fee_sat: 0,
+            wallet_debit_sat: 32,
+        },
         terms: channel.clone(),
         // This fixture tests journal transitions, not signature verification.
         opening: CashuSpilmanPayment {
@@ -313,6 +319,7 @@ fn add_other_channel(j: &mut Journal, old: &Outgoing) -> Outgoing {
     funding.id = other.funding_id.clone();
     funding.provider = other.purchase.provider;
     let funded = funding.funded.as_mut().unwrap();
+    funded.wallet_operation_id = "fixture-operation-2".into();
     funded.terms = other.purchase.channel.clone();
     funded.opening.channel_id = other.purchase.channel.id.clone();
     j.policy.max_locked_sat *= 2;

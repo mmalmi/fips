@@ -36,6 +36,12 @@ and broad production readiness remain unclaimed.
 
 ## Peer protocol
 
+The current development adapter requires the corrected local Cashu SDK, CDK and
+Spilman sources. It reserves complete wallet costs and preserves verified refunds
+under independent capital and lifetime limits. See [funding costs and migration](FUNDING-COSTS.md)
+before building or opening existing state; the pinned published dependencies do
+not yet provide these APIs.
+
 The automatic path is **quote, accept, then batched cumulative payments**.
 For A → B → C → destination, B quotes its fee plus C's onward cost. A pays B;
 B pays C using a separate persistent neighbor channel. Quotes specify destination,

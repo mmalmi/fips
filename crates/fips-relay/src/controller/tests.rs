@@ -6,6 +6,8 @@ pub(super) fn unresolved_journal() -> Journal {
         mint_url: "http://127.0.0.1:1234".into(),
         channel_capacity_sat: 32,
         max_locked_sat: 32,
+        max_funding_overhead_sat: 0,
+        max_wallet_spend_sat: 1024,
         channel_lifetime_secs: 600,
         renewal: None,
     };
@@ -14,13 +16,14 @@ pub(super) fn unresolved_journal() -> Journal {
         provider: NodeAddr::from_bytes([2; 16]),
         receiver_pubkey_hex: format!("02{}", "11".repeat(32)),
         capacity_sat: 32,
+        max_wallet_debit_sat: 32,
         grace_msat: 8_000,
         created_unix: 100,
         expires_unix: 700,
         funded: None,
     };
     Journal {
-        version: 1,
+        version: 2,
         local,
         policy,
         epoch: "test".into(),
@@ -173,7 +176,7 @@ fn unresolved_funding_survives_storage_and_still_consumes_capital() {
     journal.funding.insert(second.id.clone(), second);
     assert_eq!(
         Controller::validate_journal(&journal, &journal.policy, journal.local),
-        Err("capital budget exceeded".into()),
+        Err("working capital exhausted".into()),
         "an unresolved mint operation still locks its whole intended capacity"
     );
 }

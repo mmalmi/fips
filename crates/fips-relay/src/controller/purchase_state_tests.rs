@@ -208,12 +208,14 @@ fn refund_retires_interrupted_acceptance_without_erasing_evidence_or_replaying_i
                 .unwrap();
                 completed["report"] = serde_json::to_value(SettlementReport {
                     channel_id: channel.id.clone(),
+                    value_after_stage1_sat: channel.capacity_sat,
                     paid_sat: 0,
                     refunded_sat: channel.capacity_sat,
                     fee_sat: 0,
                 })
                 .unwrap();
                 completed["refunded"] = true.into();
+                completed["wallet_refund_sat"] = channel.capacity_sat.into();
                 j.buyer_settlements.insert(
                     channel.id.clone(),
                     serde_json::from_value(completed).unwrap(),

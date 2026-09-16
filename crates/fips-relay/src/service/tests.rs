@@ -125,6 +125,8 @@ fn native_interface_configuration_has_no_implicit_udp_or_discovery_shortcut() {
                 mint_url: "http://127.0.0.1:3338".into(),
                 channel_capacity_sat: 32,
                 max_locked_sat: 64,
+                max_funding_overhead_sat: 0,
+                max_wallet_spend_sat: 1024,
                 channel_lifetime_secs: 600,
                 renewal: None,
             },

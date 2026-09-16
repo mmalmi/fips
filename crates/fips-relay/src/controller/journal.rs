@@ -7,7 +7,7 @@ impl Controller {
         policy: &ControllerPolicy,
         local: NodeAddr,
     ) -> Result<(), String> {
-        if j.version != 1
+        if j.version != 2
             || &j.policy != policy
             || j.local != local
             || j.epoch.is_empty()
@@ -20,10 +20,9 @@ impl Controller {
         {
             return Err("invalid controller journal bindings".into());
         }
-        Self::validate_settlements(j)?;
         Self::validate_renewals(j)?;
         let mut providers = HashSet::new();
-        let mut locked = 0u64;
+        Self::validate_capital(j)?;
         for (id, f) in &j.funding {
             let sequence = id
                 .strip_prefix(&format!("{}-", j.epoch))
@@ -43,15 +42,6 @@ impl Controller {
             {
                 return Err("invalid funding intent".into());
             }
-            if !f.funded.as_ref().is_some_and(|funded| {
-                j.buyer_settlements
-                    .get(&funded.terms.id)
-                    .is_some_and(|s| s.refunded)
-            }) {
-                locked = locked
-                    .checked_add(f.capacity_sat)
-                    .ok_or("capital overflow")?;
-            }
             if let Some(funded) = &f.funded {
                 validate_channel(&funded.terms).map_err(|e| e.to_string())?;
                 if funded.terms.buyer != local
@@ -65,9 +55,6 @@ impl Controller {
                     return Err("funded channel mismatches durable intent".into());
                 }
             }
-        }
-        if locked > policy.max_locked_sat {
-            return Err("capital budget exceeded".into());
         }
         Self::validate_route_changes(j)?;
         Self::validate_watched_routes(j)?;

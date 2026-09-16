@@ -7,6 +7,8 @@ use cashu_service::{import_payment_proofs, restore_streaming_route_cashu_spilman
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SettlementReport {
     pub channel_id: String,
+    /// Value after the funding swap, including reserves for settlement fees.
+    pub value_after_stage1_sat: u64,
     pub paid_sat: u64,
     pub refunded_sat: u64,
     pub fee_sat: u64,
@@ -21,6 +23,7 @@ pub(super) struct BuyerSettlement {
     payment: Option<CashuSpilmanPayment>,
     report: Option<SettlementReport>,
     pub(super) refunded: bool,
+    pub(super) wallet_refund_sat: Option<u64>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -43,11 +46,12 @@ fn valid_usage(channel: &ChannelTerms, usage: ChannelUsage) -> bool {
 fn valid_report(channel: &ChannelTerms, report: &SettlementReport, paid: u64) -> bool {
     report.channel_id == channel.id
         && report.paid_sat == paid
+        && report.value_after_stage1_sat >= channel.capacity_sat
         && report
             .paid_sat
             .checked_add(report.refunded_sat)
             .and_then(|n| n.checked_add(report.fee_sat))
-            == Some(channel.capacity_sat)
+            == Some(report.value_after_stage1_sat)
 }
 
 impl Controller {
@@ -69,8 +73,17 @@ impl Controller {
                     s.payment
                         .as_ref()
                         .is_none_or(|p| !valid_report(&s.channel, r, p.balance))
+                        || j.funding
+                            .values()
+                            .find_map(|f| f.funded.as_ref().filter(|f| f.terms.id == *id))
+                            .is_none_or(|f| {
+                                r.value_after_stage1_sat > f.wallet_cost.token_amount_sat
+                            })
                 })
-                || (s.refunded && s.report.is_none())
+                || (s.refunded != s.wallet_refund_sat.is_some())
+                || s.wallet_refund_sat.is_some_and(|amount| {
+                    s.report.as_ref().is_none_or(|r| amount != r.refunded_sat)
+                })
             {
                 return Err("invalid buyer settlement".into());
             }
@@ -256,11 +269,11 @@ impl Controller {
                     .ok_or("close value overflow")?;
                 let report = SettlementReport {
                     channel_id: closed.channel_id,
+                    value_after_stage1_sat: closed.total_value,
                     paid_sat: closed.receiver_sum,
                     refunded_sat: closed.sender_sum,
-                    fee_sat: sale
-                        .channel
-                        .capacity_sat
+                    fee_sat: closed
+                        .total_value
                         .checked_sub(total)
                         .ok_or("close exceeds funding")?,
                 };
@@ -349,6 +362,7 @@ impl Controller {
                     payment: None,
                     report: None,
                     refunded: false,
+                    wallet_refund_sat: None,
                 };
                 j.buyer_settlements.insert(channel_id, settlement.clone());
                 Ok(settlement)
@@ -461,7 +475,7 @@ impl Controller {
         let terms = purchase.channel.clone();
         let expected_refund = report.refunded_sat;
         let runtime = tokio::runtime::Handle::current();
-        blocking(move || {
+        let verified_refund = blocking(move || {
             let _wallet = wallet_guard;
             runtime.block_on(async move {
                 let refund = restore_streaming_route_cashu_spilman_refund(&directory, &terms.id)
@@ -471,16 +485,16 @@ impl Controller {
                     || refund.channel_id != terms.id
                     || refund.mint_url != terms.mint_url
                     || refund.unit != "sat"
-                    || (refund.recovered_amount_sat != 0
-                        && refund.recovered_amount_sat != expected_refund)
+                    || refund.total_recovered_amount_sat != Some(expected_refund)
                 {
                     return Err("mint refund incomplete or mismatched".into());
                 }
-                Ok(())
+                Ok(expected_refund)
             })
         })
         .await?;
         purchase.refunded = true;
+        purchase.wallet_refund_sat = Some(verified_refund);
         self.change(move |j| {
             let channel = purchase.channel.id.clone();
             j.buyer_settlements
@@ -527,20 +541,7 @@ impl Controller {
     }
 
     pub async fn locked_capital_sat(&self) -> Result<u64, String> {
-        let snapshot = self.snapshot().await?;
-        snapshot
-            .funding
-            .values()
-            .filter(|f| {
-                !f.funded.as_ref().is_some_and(|f| {
-                    snapshot
-                        .buyer_settlements
-                        .get(&f.terms.id)
-                        .is_some_and(|s| s.refunded)
-                })
-            })
-            .try_fold(0u64, |sum, f| sum.checked_add(f.capacity_sat))
-            .ok_or("capital overflow".into())
+        Ok(self.funding_budget().await?.locked_sat)
     }
 
     pub(super) async fn resume_settlements(&self) -> Result<(), String> {

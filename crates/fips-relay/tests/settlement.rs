@@ -98,6 +98,7 @@ async fn persistent_neighbor_channels_settle_multiple_routes_and_preserve_every_
                     mint_url: mint.url().to_string(),
                     receiver_pubkey_hex: seller.receiver_pubkey_hex().to_string(),
                     capacity_sat: 8,
+                    max_total_amount_sat: Some(8),
                     expiry_unix: now + 600,
                     max_amount_per_output: 0,
                     unit: "sat".into(),

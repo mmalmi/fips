@@ -61,6 +61,8 @@ fn policy(mint: &str) -> ControllerPolicy {
         mint_url: mint.into(),
         channel_capacity_sat: 64,
         max_locked_sat: 128,
+        max_funding_overhead_sat: 0,
+        max_wallet_spend_sat: 1024,
         channel_lifetime_secs: 600,
         renewal: Some(RenewalPolicy {
             at_capacity_percent: 90,

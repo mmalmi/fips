@@ -12,6 +12,7 @@ impl RelayService {
                     .unwrap()
                     .as_ref()
                     .map(ProbeReceiver::report);
+                let funding_budget = self.controller.funding_budget().await?;
                 Ok(
                     json!({"npub": self.endpoint.npub(), "peers": peers.iter().map(|p| json!({
                     "npub": p.npub, "connected": p.connected, "transport": p.transport_type,
@@ -22,7 +23,8 @@ impl RelayService {
                     "purchases": self.controller.purchases().await?,
                     "watched_routes": self.controller.watched_routes().await?,
                     "history": self.controller.purchase_history().await?,
-                    "locked_sat": self.controller.locked_capital_sat().await?,
+                    "locked_sat": funding_budget.locked_sat,
+                    "funding_budget": funding_budget,
                     "remaining_budget_sat": self.buyer.remaining_budget_sat(),
                     "bootstrap": self.forwarding.relay.bootstrap_stats(),
                     "return_allowance": self.forwarding.relay.return_stats(),

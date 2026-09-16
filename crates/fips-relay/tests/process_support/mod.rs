@@ -26,6 +26,8 @@ pub fn config(root: &Path, mint: &str) -> ServiceConfig {
                 mint_url: mint.into(),
                 channel_capacity_sat: 32,
                 max_locked_sat: 64,
+                max_funding_overhead_sat: 0,
+                max_wallet_spend_sat: 1024,
                 channel_lifetime_secs: 600,
                 renewal: None,
             },

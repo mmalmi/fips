@@ -32,7 +32,39 @@ real-money operation and public deployment are separate authorization decisions.
    procedures, supported-link/architecture matrix, and controlled router/Pixel
    regression with test funds conserved. Update the local TollGate proposal.
 
-## Funding recovery after quote expiry
+## Wallet costs, capital and refunds
+
+The controller now saves a full wallet-debit reservation before funding, records
+the original wallet operation and actual cost, and retains net wallet spending
+across verified refunds. Every financial mutation and restart validates the same
+capital/lifetime limits. Read-only recovery includes the original cost even after
+quote expiry or pause. Replayed refunds require the SDK's durable total; importing
+zero new coins is no longer treated as evidence of a zero original refund.
+
+The nonzero-fee service fixture also exposed unused fee reserves returning above
+nominal capacity. Settlement now validates the value after the funding swap;
+actual debit minus the wallet-verified refund determines lifetime spending.
+See [funding costs](FUNDING-COSTS.md) for limits, status fields, verification and
+the required unreleased dependencies. Controller version-1 reconciliation and
+financial-history retirement remain release blockers. Devices are unchanged.
+
+The focused gates pass 89 relay tests: library, controllers, destination pricing,
+fee-bearing funding/replayed refunds, standalone services, and ordinary/native
+settlement. Strict all-feature/all-target linting, formatting and source-size
+checks pass with the corrected local dependencies.
+
+### Open path-feedback regression
+
+The broader priced-path suite is not consistently green. A healthy trial can
+deliver 42 application payloads while fresh native feedback remains absent, then
+fail to upgrade its quota. This happened before an impairment was applied in one
+scenario and also in the blackhole suite's healthy setup. Serial execution did
+not remove the failure. A freshly compiled, unchanged predecessor (`0e0de245`)
+using published cashu-service 0.4.8 reproduces the same failure, so it predates this
+funding adapter. Its cause remains unresolved; no routing readiness claim follows
+from the successful accounting gates. No timeout or assertion was weakened.
+
+## Earlier funding recovery after quote expiry
 
 Recovery now looks up wallet-committed channels before applying route expiry and
 pause checks. Opening and recovery share the same immutable wallet request. The

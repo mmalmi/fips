@@ -97,6 +97,8 @@ impl CustomerProfile {
                     mint_url: self.mint_url.clone(),
                     channel_capacity_sat: self.channel_capacity_sat,
                     max_locked_sat: self.channel_capacity_sat * 2,
+                    max_funding_overhead_sat: 0,
+                    max_wallet_spend_sat: self.budget_sat,
                     channel_lifetime_secs: 7200,
                     renewal: Some(RenewalPolicy {
                         at_capacity_percent: 80,

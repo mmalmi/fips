@@ -32,7 +32,9 @@ use tokio::{
 mod cadence;
 pub use cadence::PaymentCadence;
 mod acceptance;
+mod capital;
 mod funding;
+pub use capital::FundingBudget;
 mod journal;
 mod payments;
 mod purchase_state;
@@ -62,9 +64,13 @@ pub use refresh::WatchedRoute;
 pub struct ControllerPolicy {
     pub mint_url: String,
     pub channel_capacity_sat: u64,
-    /// Includes unresolved funding intents. Only confirmed settlement may release
-    /// locked capacity, after the buyer's mint refund recovery completes.
+    /// Bounds unresolved reservations and actual wallet debits. Confirmed local
+    /// wallet refund recovery releases the channel's locked capital.
     pub max_locked_sat: u64,
+    /// Maximum token reserve, rounding and wallet fees above channel capacity.
+    pub max_funding_overhead_sat: u64,
+    /// Lifetime wallet debits minus verified refunds, including pending reservations.
+    pub max_wallet_spend_sat: u64,
     pub channel_lifetime_secs: u64,
     pub renewal: Option<RenewalPolicy>,
 }
@@ -99,6 +105,8 @@ pub enum RouteAccess {
 struct Funded {
     terms: ChannelTerms,
     opening: CashuSpilmanPayment,
+    wallet_operation_id: String,
+    wallet_cost: cashu_service::CashuSendCost,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,6 +116,7 @@ struct FundingIntent {
     provider: NodeAddr,
     receiver_pubkey_hex: String,
     capacity_sat: u64,
+    max_wallet_debit_sat: u64,
     grace_msat: u64,
     created_unix: u64,
     expires_unix: u64,
@@ -184,6 +193,7 @@ impl Store {
         }
         let mut candidate = self.journal.clone();
         let result = job(&mut candidate)?;
+        Controller::validate_capital(&candidate)?;
         self.journal = candidate;
         self.persist()?;
         Ok(result)
@@ -299,7 +309,7 @@ impl Controller {
         let mut store = Store {
             directory: directory.into(),
             journal: Journal {
-                version: 1,
+                version: 2,
                 local: *services.endpoint.node_addr(),
                 policy: policy.clone(),
                 epoch: Identity::generate().node_addr().to_string(),
@@ -383,6 +393,10 @@ impl Controller {
         if policy.channel_capacity_sat == 0
             || policy.channel_capacity_sat.checked_mul(1_000).is_none()
             || policy.max_locked_sat < policy.channel_capacity_sat
+            || policy
+                .channel_capacity_sat
+                .checked_add(policy.max_funding_overhead_sat)
+                .is_none_or(|max| max > policy.max_locked_sat || max > policy.max_wallet_spend_sat)
             || !(60..=86_400).contains(&policy.channel_lifetime_secs)
             || policy.mint_url.is_empty()
             || policy.mint_url.len() > 512

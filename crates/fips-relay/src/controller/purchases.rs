@@ -58,24 +58,8 @@ impl Controller {
                     }
                     return Ok(f.clone());
                 }
-                let locked = j
-                    .funding
-                    .values()
-                    .filter(|f| {
-                        !f.funded.as_ref().is_some_and(|f| {
-                            j.buyer_settlements
-                                .get(&f.terms.id)
-                                .is_some_and(|s| s.refunded)
-                        })
-                    })
-                    .try_fold(0u64, |sum, f| sum.checked_add(f.capacity_sat))
-                    .ok_or("capital overflow")?;
-                if j.funding.len() >= MAX_CHANNELS
-                    || locked
-                        .checked_add(capacity)
-                        .is_none_or(|total| total > j.policy.max_locked_sat)
-                {
-                    return Err("working capital exhausted".into());
+                if j.funding.len() >= MAX_CHANNELS {
+                    return Err("funding history capacity".into());
                 }
                 let id = format!("{}-{}", j.epoch, j.next_funding);
                 j.next_funding = j
@@ -87,6 +71,9 @@ impl Controller {
                     provider,
                     receiver_pubkey_hex: receiver,
                     capacity_sat: capacity,
+                    max_wallet_debit_sat: capacity
+                        .checked_add(j.policy.max_funding_overhead_sat)
+                        .ok_or("funding cost overflow")?,
                     grace_msat: grace,
                     created_unix: created,
                     expires_unix: created
@@ -119,11 +106,8 @@ impl Controller {
             })
             .await?;
             let opened = opened?;
-            let funded = f.funded_channel(
-                *self.services.endpoint.node_addr(),
-                &self.policy,
-                opened.channel,
-            );
+            let funded =
+                f.funded_channel(*self.services.endpoint.node_addr(), &self.policy, opened)?;
             let saved = funded.clone();
             let intent = f.clone();
             self.change(move |j| Self::record_funding(j, intent, saved))
