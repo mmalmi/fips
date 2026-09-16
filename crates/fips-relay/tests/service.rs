@@ -52,6 +52,7 @@ fn config(root: &Path, mint: &str) -> ServiceConfig {
         state_directory: root.join("state"),
         udp_bind: Some("127.0.0.1:0".parse().unwrap()),
         customer_network: None,
+        payment_cadence: Default::default(),
         ethernet_interfaces: vec![],
         neighbors: vec![],
         terms: ServiceTerms {

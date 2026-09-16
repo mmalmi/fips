@@ -74,6 +74,7 @@ fn native_interface_configuration_has_no_implicit_udp_or_discovery_shortcut() {
         state_directory: "/tmp/fips-relay-example".into(),
         udp_bind: None,
         customer_network: None,
+        payment_cadence: Default::default(),
         ethernet_interfaces: vec!["mesh0".into()],
         neighbors: vec![],
         terms: ServiceTerms {
@@ -153,4 +154,19 @@ fn customer_entry_requires_an_explicit_matching_listener_and_bounded_native_stat
     config.customer_network = Some("fd00::/64".parse().unwrap());
     config.udp_bind = Some("[fd00::1]:2121".parse().unwrap());
     config.validate().unwrap();
+}
+
+#[test]
+fn cadence_is_local_configuration_and_old_configs_keep_the_default() {
+    let original: ServiceConfig =
+        serde_json::from_str(include_str!("../../service.example.json")).unwrap();
+    assert_eq!(original.payment_cadence.max_delay_ms, 500);
+    let encoded = serde_json::to_value(&original).unwrap();
+    assert!(encoded.get("payment_cadence").is_none());
+    let mut changed = original.clone();
+    changed.payment_cadence.max_delay_ms = 2_000;
+    changed.validate().unwrap();
+    assert_eq!(changed.terms, original.terms);
+    changed.payment_cadence.unpaid_percent = 100;
+    assert!(changed.validate().is_err());
 }

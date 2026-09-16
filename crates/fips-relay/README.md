@@ -15,6 +15,11 @@ two tuning experiments without reliable CPU savings.
 See [openwrt/README.md](openwrt/README.md) for the persistent APK package,
 size-oriented ARM64 build, startup readiness checks and backup procedure.
 
+The broader [v1 readiness work](READINESS.md) is active. [Adaptive cadence](CADENCE.md)
+is the first software milestone; permissionless admission, wider transport
+acceptance, long-operation recovery and matched performance evidence remain work.
+The physical prototype reports below describe the earlier r6 hardware build.
+
 ## Implemented and checked
 
 * The core's optional `ForwardingPolicy` gates native FMP transit, including

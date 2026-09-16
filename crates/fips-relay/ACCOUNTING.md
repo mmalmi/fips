@@ -78,12 +78,12 @@ delivery, and application retries are independently billable attempts.
 
 Choose the window from the aggregate route price, largest envelope and expected
 burst between checkpoints. A window smaller than one full-priced envelope can
-prevent that packet size from ever passing. With a 500-ms payment tick, a
-4,000-msat window at 3,072 msat/KiB permits about 2.67 kB/s before payment/disk
-delays; this is an allowance estimate, not measured throughput. Increasing the
-window also increases possible unrecorded crash exposure and must stay within
-the relationship's grace and capacity. Set these terms before initializing the
-account; do not edit saved financial state to tune a live account.
+prevent that packet size from ever passing. The adaptive runtime now checkpoints
+consumed windows locally, separately from payment timing; see [CADENCE.md](CADENCE.md).
+Credit and saved allowance still bound throughput when control or disk work is
+slow. Increasing the window also increases possible unrecorded crash exposure
+and must stay within the relationship's grace and capacity. Set these terms before
+initializing the account; do not edit saved financial state to tune a live account.
 
 Native `show_routing` reports `drop_policy_denied_packets` and
 `drop_policy_denied_bytes` separately from missing routes, MTU errors and failed

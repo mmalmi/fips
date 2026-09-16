@@ -1,4 +1,5 @@
 //! Resume retained work and supervise control and payment workers.
+use super::cadence::{ChannelSchedule, SCAN_INTERVAL};
 use super::*;
 
 impl Controller {
@@ -95,8 +96,12 @@ impl Controller {
         first_error.map_or(Ok(()), Err)
     }
 
-    pub(super) async fn tick(&self) {
-        let result = self.flush_payments().await;
+    pub(super) async fn tick(
+        &self,
+        schedules: &mut BTreeMap<String, ChannelSchedule>,
+        cadence: &PaymentCadence,
+    ) {
+        let result = self.pay_due_usage(schedules, cadence).await;
         if let Err(error) = result {
             *self.last_error.lock().unwrap() = Some(error);
         }
@@ -106,17 +111,26 @@ impl Controller {
 pub struct ControllerTasks {
     requests: JoinHandle<mpsc::Receiver<IncomingRequest>>,
     payments: JoinHandle<()>,
+    checkpoints: JoinHandle<()>,
     recovery: JoinHandle<()>,
     refresh: JoinHandle<()>,
     stopping: watch::Sender<bool>,
 }
 impl ControllerTasks {
-    pub fn start(
+    pub fn start(controller: Arc<Controller>, incoming: mpsc::Receiver<IncomingRequest>) -> Self {
+        Self::start_with_cadence(controller, incoming, PaymentCadence::default())
+            .expect("default payment cadence is valid")
+    }
+
+    pub fn start_with_cadence(
         controller: Arc<Controller>,
         mut incoming: mpsc::Receiver<IncomingRequest>,
-    ) -> Self {
+        cadence: PaymentCadence,
+    ) -> Result<Self, String> {
+        cadence.validate()?;
         let (stopping, mut stop_requests) = watch::channel(false);
         let mut stop_payments = stop_requests.clone();
+        let mut stop_checkpoints = stop_requests.clone();
         let mut stop_recovery = stop_requests.clone();
         let mut stop_refresh = stop_requests.clone();
         let handler = controller.clone();
@@ -151,12 +165,36 @@ impl ControllerTasks {
         });
         let payer = controller.clone();
         let payments = tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(Duration::from_millis(500));
+            let mut schedules = BTreeMap::new();
+            let mut ticker = tokio::time::interval(SCAN_INTERVAL);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 tokio::select! {
                     _ = stop_payments.changed() => break,
-                    _ = ticker.tick() => payer.tick().await,
+                    _ = ticker.tick() => payer.tick(&mut schedules, &cadence).await,
+                }
+            }
+        });
+        let checkpoint_controller = controller.clone();
+        let checkpoints = tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(SCAN_INTERVAL);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = stop_checkpoints.changed() => break,
+                    _ = ticker.tick() => {
+                        let result = match checkpoint_controller.services.seller.checkpoint_due() {
+                            Ok(true) => {
+                                let seller = checkpoint_controller.services.seller.clone();
+                                blocking(move || seller.checkpoint().map(|_| ()).map_err(|e| e.to_string())).await
+                            },
+                            Ok(false) => Ok(()),
+                            Err(error) => Err(error.to_string()),
+                        };
+                        if let Err(error) = result {
+                            *checkpoint_controller.last_error.lock().unwrap() = Some(error);
+                        }
+                    }
                 }
             }
         });
@@ -189,13 +227,14 @@ impl ControllerTasks {
                 }
             }
         });
-        Self {
+        Ok(Self {
             requests,
             payments,
+            checkpoints,
             recovery,
             refresh,
             stopping,
-        }
+        })
     }
     /// Drain in-flight work and return the live transport's request stream for
     /// a controller reload. Dropping tasks instead is an abrupt cancellation.
@@ -203,6 +242,7 @@ impl ControllerTasks {
         let _ = self.stopping.send(true);
         let incoming = (&mut self.requests).await.ok();
         let _ = (&mut self.payments).await;
+        let _ = (&mut self.checkpoints).await;
         let _ = (&mut self.recovery).await;
         let _ = (&mut self.refresh).await;
         incoming
@@ -212,6 +252,7 @@ impl Drop for ControllerTasks {
     fn drop(&mut self) {
         self.requests.abort();
         self.payments.abort();
+        self.checkpoints.abort();
         self.recovery.abort();
         self.refresh.abort();
     }

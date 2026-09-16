@@ -396,3 +396,37 @@ fn journal_and_owner_directory_are_private() {
         0
     );
 }
+
+#[test]
+fn local_checkpoint_cadence_reopens_windows_without_payment_or_idle_writes() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("seller");
+    let relay = start(&directory);
+    assert!(!relay.checkpoint_due().unwrap());
+    let first = relay.admit(&request(b"abcde")).unwrap();
+    relay.complete(first, ForwardingOutcome::Submitted);
+    assert!(relay.checkpoint_due().unwrap());
+    let usage = relay.checkpoint().unwrap()["neighbor"];
+    assert_eq!(usage.submitted_msat, 5);
+    assert_eq!(usage.paid_msat, 0);
+    assert!(!relay.checkpoint_due().unwrap());
+    // The persisted window advanced locally despite there being no payment.
+    let second = relay.admit(&request(b"abcdefghij")).unwrap();
+    relay.complete(second, ForwardingOutcome::Submitted);
+    assert!(relay.checkpoint_due().unwrap());
+    relay.checkpoint().unwrap();
+    assert!(!relay.checkpoint_due().unwrap());
+    drop(relay);
+    let restored = DurableRelay::load(&directory).unwrap();
+    let usage = restored.channel_usage("neighbor").unwrap();
+    assert_eq!(usage.submitted_msat, 15);
+    assert_eq!(
+        usage.lost_msat, 10,
+        "crash still consumes the persisted window"
+    );
+    assert_eq!(
+        usage.paid_msat, 0,
+        "local checkpoints do not invent payment"
+    );
+    assert!(!restored.checkpoint_due().unwrap());
+}

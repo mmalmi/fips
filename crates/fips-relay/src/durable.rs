@@ -45,6 +45,7 @@ struct Journal {
 #[derive(Debug, Default)]
 struct PublishedWindows {
     ceilings: BTreeMap<String, u64>,
+    reserved_at_checkpoint: BTreeMap<String, u64>,
     ready: bool,
 }
 
@@ -125,6 +126,26 @@ impl DurableRelay {
     /// racing with disk I/O belongs to a later checkpoint, not this claim.
     pub fn checkpoint(&self) -> Result<BTreeMap<String, ChannelUsage>, DurableError> {
         self.mutate(|_| Ok(())).map(|(_, usage)| usage)
+    }
+
+    /// A local checkpoint can advance a consumed durable window independently
+    /// of payment cadence. Unchanged/credit-exhausted windows do not cause idle
+    /// writes. This is only a scheduling hint; `checkpoint` revalidates bounds.
+    pub fn checkpoint_due(&self) -> Result<bool, DurableError> {
+        let windows = self.windows.read().map_err(|_| DurableError::Suspended)?;
+        if !windows.ready {
+            return Err(DurableError::Suspended);
+        }
+        for (id, ceiling) in &windows.ceilings {
+            let usage = self.ledger.channel_usage(id).ok_or(DurableError::Format)?;
+            let recorded = windows.reserved_at_checkpoint.get(id).copied().unwrap_or(0);
+            if usage.reserved_msat > recorded
+                && ceiling.saturating_sub(usage.reserved_msat) <= self.window_msat / 2
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Stop admission and checkpoint without granting another window. After
@@ -279,6 +300,10 @@ impl DurableRelay {
         let bytes = serde_json::to_vec(&journal).map_err(|_| DurableError::Format)?;
         write_private_journal(&self.directory, "ledger.json", &bytes)?;
         let mut published = self.windows.write().map_err(|_| DurableError::Suspended)?;
+        published.reserved_at_checkpoint = usage
+            .iter()
+            .map(|(id, u)| (id.clone(), u.reserved_msat))
+            .collect();
         published.ceilings = ceilings;
         published.ready = allow_next_window;
         Ok(usage)

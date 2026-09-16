@@ -1,5 +1,6 @@
 //! Validate network configuration and require intact saved account state.
 use super::*;
+use crate::controller::PaymentCadence;
 use ipnet::IpNet;
 
 // These files must already exist before any library that can lazily initialize
@@ -43,6 +44,9 @@ pub struct ServiceConfig {
     pub ethernet_interfaces: Vec<String>,
     pub neighbors: Vec<PeerConfig>,
     pub terms: ServiceTerms,
+    /// Local timing only; does not change saved financial terms or authority.
+    #[serde(default, skip_serializing_if = "PaymentCadence::is_default")]
+    pub payment_cadence: PaymentCadence,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -79,6 +83,7 @@ impl ServiceConfig {
     }
 
     pub(super) fn validate(&self) -> Result<(), String> {
+        self.payment_cadence.validate()?;
         if !self.state_directory.is_absolute() || self.socket_path().as_os_str().len() > 100 {
             return Err(
                 "state directory must be absolute and control socket path at most 100 bytes".into(),

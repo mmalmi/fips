@@ -110,6 +110,13 @@ rate. For example, a 4,000-msat window admits a roughly 1,100-byte envelope at
 channel has spare funds. Larger windows also increase maximum uncertain crash
 exposure. Window size and write frequency need hardware measurement.
 
+## Payment timing
+
+[Adaptive payment cadence](CADENCE.md) combines priced-usage and age triggers,
+keeps confirmed idle channels quiet, and advances durable forwarding windows
+locally. Optional `payment_cadence` settings change scheduling on restart, never
+the account's saved financial terms. Renewal/settlement remain separate.
+
 ## Local controls
 
 Run `fips-relay run /absolute/path/config.json` in the foreground. Send SIGTERM

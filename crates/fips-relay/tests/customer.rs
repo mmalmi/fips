@@ -225,6 +225,34 @@ async fn customer_app_uses_real_accounts_and_preserves_them_across_reopen() {
                 assert_eq!(before["relay"]["history"], after["relay"]["history"]);
             }
         }
+        // Confirmed idle channels must not retain the old 500-ms network poll.
+        // The actual app account, provider, control transport and mint are live.
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        let payment_counts = |status: &Value| {
+            let row = status["control_traffic"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["service_port"] == 44_743)
+                .unwrap();
+            (
+                row["counters"]["requests_started"].as_u64().unwrap(),
+                row["counters"]["requests_received"].as_u64().unwrap(),
+            )
+        };
+        let before_idle = request(&configs[0], &AdminRequest::Status).await.unwrap();
+        let before_idle = payment_counts(&before_idle);
+        assert!(
+            before_idle.0 + before_idle.1 > 0,
+            "the real payment path was exercised"
+        );
+        tokio::time::sleep(Duration::from_millis(1_250)).await;
+        let after_idle = request(&configs[0], &AdminRequest::Status).await.unwrap();
+        assert_eq!(
+            payment_counts(&after_idle),
+            before_idle,
+            "confirmed idle channels must generate no payment-control requests"
+        );
         let final_wallet = client.execute(Action::Finish).await.unwrap();
         let amount = final_wallet["balance_sat"].as_u64().unwrap();
         let export = client

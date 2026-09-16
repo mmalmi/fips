@@ -309,7 +309,11 @@ impl RelayService {
         } else {
             Controller::load(&root.join("controller"), t.controller.clone(), services)
         }?);
-        let tasks = ControllerTasks::start(controller.clone(), incoming);
+        let tasks = ControllerTasks::start_with_cadence(
+            controller.clone(),
+            incoming,
+            config.payment_cadence.clone(),
+        )?;
         let received = Arc::new(Mutex::new(Received::default()));
         let destination = received.clone();
         let probe_receiver: Arc<Mutex<Option<ProbeReceiver>>> = Arc::new(Mutex::new(None));

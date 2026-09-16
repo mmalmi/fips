@@ -81,6 +81,7 @@ impl CustomerProfile {
                 .unwrap(),
             ),
             customer_network: None,
+            payment_cadence: Default::default(),
             ethernet_interfaces: vec![],
             neighbors: vec![PeerConfig::new(
                 &self.entry_npub,

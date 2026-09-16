@@ -33,8 +33,11 @@ use tokio::{
     task::{JoinHandle, JoinSet},
 };
 
+mod cadence;
+pub use cadence::PaymentCadence;
 mod acceptance;
 mod journal;
+mod payments;
 mod purchases;
 mod runtime;
 pub use runtime::ControllerTasks;
