@@ -30,6 +30,14 @@ lto = "thin"
 codegen-units = 1
 strip = "symbols"
 
+# Keep the networking hot path fast while leaving wallet and support crates
+# size-oriented on routers with limited flash.
+[profile.openwrt.package.nvpn-fips-core]
+opt-level = 3
+
+[profile.openwrt.package.fips-relay]
+opt-level = 3
+
 # The optional TCP/FIPS control adapter must use this workspace's core,
 # including its forwarding policy, instead of a second registry copy.
 [patch.crates-io]
