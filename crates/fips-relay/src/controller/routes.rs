@@ -12,6 +12,19 @@ pub(super) struct RouteChange {
     stopped_remotes: BTreeSet<String>,
 }
 
+impl RouteChange {
+    fn is_finished(&self, j: &Journal) -> bool {
+        j.outgoing.values().any(|o| {
+            o.offer == self.offer
+                && (o.accepted
+                    || (o.retired
+                        && j.buyer_settlements
+                            .get(&o.purchase.channel.id)
+                            .is_some_and(|s| s.refunded)))
+        })
+    }
+}
+
 impl Controller {
     pub(super) fn route_change_pending_on(j: &Journal, channel: &str) -> bool {
         let provider = j.funding.values().find_map(|f| {
@@ -23,10 +36,7 @@ impl Controller {
         j.route_changes.values().any(|c| {
             (c.previous.iter().any(|p| p.channel.id == channel)
                 || provider == Some(c.offer.provider))
-                && !j
-                    .outgoing
-                    .values()
-                    .any(|o| o.offer == c.offer && o.accepted)
+                && !c.is_finished(j)
         })
     }
 
@@ -65,10 +75,7 @@ impl Controller {
             || j.route_changes.contains_key(&saved.offer.id)
             || j.route_changes.values().any(|c| {
                 c.offer.destination.node_addr() == saved.offer.destination.node_addr()
-                    && !j
-                        .outgoing
-                        .values()
-                        .any(|o| o.offer == c.offer && o.accepted)
+                    && !c.is_finished(j)
             })
         {
             return Err("route change capacity or unfinished transition".into());

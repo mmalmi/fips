@@ -238,10 +238,17 @@ Strict relay and Android ARM64 linting, default builds, formatting and the
   authorize a conflicting transition. This covers the old channel and an existing
   channel at the replacement provider, even when used for another destination.
   An unfinished route change, including a paused one, excludes renewal until
-  its replacement is accepted. Completed
+  its replacement is accepted or retired after a confirmed refund. Completed
   history remains available without blocking future renewal. Reservation errors
   on one channel do not skip the remaining renewal work. Deterministic tests
   exercise both worker orderings and reload the saved records between steps.
+* New destination purchases recheck authorization and shared-channel state
+  before reservation, funding and recording. They cannot attach to a closing
+  channel or take over another renewal's authorization. Acceptance completion
+  checks the saved closure state, so a late reply cannot reactivate the purchase.
+  A confirmed refund retires cancelled, unacknowledged purchases while retaining
+  their funding and agreement evidence; old recovery snapshots cannot recreate
+  those offers.
 * The route-change controller test disconnects the middle node through the native
   management API and connects the outer relays directly. Both directions resume
   at a lower price, keep the source channels, and open only two new one-way

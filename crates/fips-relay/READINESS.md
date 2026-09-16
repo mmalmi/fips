@@ -64,6 +64,49 @@ identity-matching gate test). Strict all-feature/all-target relay Clippy,
 formatting and the source-size gate also pass. This is isolated software
 evidence; no new router, phone or radio acceptance is claimed.
 
+## Purchases during closure and interrupted acceptance
+
+Purchase checks now share one implementation at request reservation, funding
+selection and purchase recording. They reject expired/paused/retired offers,
+closing channels and competing renewal authorizations. Renewal cannot seal a
+shared channel with an unacknowledged purchase. Acceptance completion checks
+closure state in its journal mutation. Explicit settlement can proceed while
+acceptance is in flight, and late replies cannot reactivate closed purchases.
+No financial lock spans multi-hop acceptance, and no protocol message or journal
+field is added.
+
+A confirmed refund retires interrupted, unacknowledged purchases on that channel
+without dropping financial records. It clears their pending offers, including
+source-watch references, and releases their route-change reservation. Replaying
+an earlier recovery snapshot cannot recreate the same authorization. This is
+closure of interrupted work, not bounded retirement of old financial history.
+
+Seven new journal tests cover closing/renewing channels, state changes between
+funding selection and recording, unacknowledged shared-channel purchases,
+refund-confirmed retirement, restart, late acceptance, stale replay and expired
+authorization. The live five-node baseline holds a real acceptance request and
+allows settlement to queue its Seal RPC while that acceptance remains in flight.
+It cancels the purchaser and drops the held acceptance before the provider handler.
+With Seal still held, it verifies that a new destination is rejected promptly without
+another request, purchase or funding record, and that the cancelled purchase
+is retired only after confirmed settlement. Existing repurchase, reload and
+full test-fund conservation checks run afterward.
+
+These checks do not cover every mint-response loss or power-loss boundary, nor
+do they establish fair latency for simultaneous purchases on one channel.
+Automatic free-route transitions, history compaction, permissionless mobility
+and controlled hardware/performance acceptance remain work.
+
+Run `cargo test -p fips-relay --lib controller::purchase_state_tests` and
+`cargo test -p fips-relay --test controller` for this boundary and its live
+controller regressions.
+
+The final implementation passes all 68 relay library tests and all seven
+controller-target tests, including the six live five-node scenarios and final
+test-fund conservation. Strict all-feature/all-target relay Clippy, formatting
+and the 667-file size gate pass. These are isolated software results; hardware
+and updated performance acceptance remain outstanding.
+
 ## Simulation reuse
 
 The existing `fips-sim` crate starts real endpoints over `SimNetwork` and runs

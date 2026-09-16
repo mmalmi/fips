@@ -38,6 +38,7 @@ pub use cadence::PaymentCadence;
 mod acceptance;
 mod journal;
 mod payments;
+mod purchase_state;
 mod purchases;
 mod runtime;
 mod source_selection;
@@ -488,3 +489,6 @@ mod tests;
 
 #[cfg(test)]
 mod transition_tests;
+
+#[cfg(test)]
+mod purchase_state_tests;

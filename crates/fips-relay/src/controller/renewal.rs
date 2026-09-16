@@ -195,12 +195,12 @@ impl Controller {
         let previous: Vec<_> = j
             .outgoing
             .values()
-            .filter(|o| o.accepted && !o.retired && o.purchase.channel.id == id)
+            .filter(|o| !o.retired && o.purchase.channel.id == id)
             .cloned()
             .collect();
         if previous.is_empty()
             || j.buyer_settlements.contains_key(&id)
-            || previous.iter().any(|o| o.offer.trial)
+            || previous.iter().any(|o| !o.accepted || o.offer.trial)
         {
             return Err("renewal purchase no longer active".into());
         }

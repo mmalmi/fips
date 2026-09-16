@@ -2,9 +2,11 @@
 mod controller_support;
 #[path = "controller_support/payment_mobility.rs"]
 mod payment_mobility;
+#[path = "controller_support/purchase_closure.rs"]
+mod purchase_closure;
 #[path = "controller_support/quote_traffic.rs"]
 mod quote_traffic;
-use controller_support::{native_control, policy};
+use controller_support::{errors, native_control, policy, recovery_stages};
 
 use cashu_service::{
     FileSpilmanPaymentReceiver, FileSpilmanPaymentReceiverConfig, create_topup_quote,
@@ -237,7 +239,8 @@ async fn controller_scenario(
                 ControlTransport::start(nodes[i].clone(), 44_743, neighbors, i as u64 + 20)
                     .await
                     .unwrap();
-            let (incoming, gate) = payment_mobility::gate(incoming, peers[2], slow_neighbor);
+            let gate_buyer = if paid_quote_traffic { peers[0] } else { peers[2] };
+            let (incoming, gate) = payment_mobility::gate(incoming, gate_buyer, slow_neighbor || paid_quote_traffic);
             settlement_gates.push(gate);
             let (payment_incoming, gate) = payment_mobility::gate(payment_incoming, peers[2], slow_neighbor);
             payment_gates.push(gate);
@@ -300,32 +303,6 @@ async fn controller_scenario(
             async { if automatic_routes { controllers[4].watch_route(peers[0], 3072).await }
                 else { controllers[4].buy_route(peers[0]).await } }
         );
-        fn errors(controllers: &[Arc<Controller>]) -> Vec<(usize, String)> {
-            controllers
-                .iter()
-                .enumerate()
-                .filter_map(|(i, c)| c.last_error().map(|e| (i, e)))
-                .collect::<Vec<_>>()
-        }
-        fn recovery_stages(root: &std::path::Path) -> Vec<serde_json::Value> {
-            (0..5).map(|i| {
-                let path = root.join(format!("controller-{i}/controller.json"));
-                let j: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-                let rows = |name: &str, fields: &[&str]| j[name].as_object().unwrap().values().map(|row| {
-                    fields.iter().map(|field| match &row[*field] {
-                        serde_json::Value::Null => "none".to_string(),
-                        serde_json::Value::Bool(b) => b.to_string(),
-                        serde_json::Value::Array(a) => format!("{} entries", a.len()),
-                        _ => "saved".to_string(),
-                    }).collect::<Vec<_>>()
-                }).collect::<Vec<_>>();
-                serde_json::json!({"node": i, "funding": j["funding"].as_object().unwrap().len(),
-                    "outgoing": rows("outgoing", &["accepted", "retired"]),
-                    "renewals": rows("renewals", &["replacements", "completed"]),
-                    "buyer_settlements": rows("buyer_settlements", &["usage", "payment", "report", "refunded"]),
-                    "seller_settlements": rows("seller_settlements", &["usage", "payment", "report"])})
-            }).collect()
-        }
         let (a, b) = (
             a.unwrap_or_else(|e| panic!("forward acceptance: {e}; errors={:?}", errors(&controllers))),
             b.unwrap_or_else(|e| panic!("reverse acceptance: {e}; errors={:?}", errors(&controllers))),
@@ -774,6 +751,11 @@ async fn controller_scenario(
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         }).await.expect("renewal fixture reaches a funded, non-exhausted checkpoint");
+        if paid_quote_traffic {
+            let incoming = tasks.remove(0).stop().await.unwrap();
+            purchase_closure::exercise(&controllers, &services, &peers, &settlement_gates, root.path()).await;
+            tasks.insert(0, ControllerTasks::start(controllers[0].clone(), incoming));
+        }
         if !automatic_renewal && !route_change {
             // An explicit close ends this purchase, not the saved account.
             // Background recovery cannot interpret it as another purchase.

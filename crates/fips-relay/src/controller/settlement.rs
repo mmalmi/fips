@@ -482,8 +482,10 @@ impl Controller {
         .await?;
         purchase.refunded = true;
         self.change(move |j| {
+            let channel = purchase.channel.id.clone();
             j.buyer_settlements
                 .insert(purchase.channel.id.clone(), purchase);
+            Self::retire_refunded_purchases(j, &channel)?;
             Ok(())
         })
         .await?;

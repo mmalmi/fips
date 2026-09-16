@@ -189,12 +189,29 @@ this socket is not the public Wi-Fi payment/onboarding service.
 
 Route replacement and renewal cannot reserve the same channel concurrently.
 The first saved intent keeps ownership across restart; a paused or unfinished
-route replacement also blocks renewal until its new agreement is accepted.
+route replacement also blocks renewal until its new agreement is accepted or
+the interrupted purchase is retired after a confirmed refund.
 This changes no wire messages or journal fields. A saved journal containing
 both unfinished intents for one channel is rejected at startup with
 `conflicting route and renewal intents`. Preserve that state for reconciliation;
 deleting either intent can lose funding or spending evidence. The loader does
 not automatically choose which financial operation to discard.
+
+New destination purchases are rejected before saving another request when the
+provider's shared channel is already closing or renewing. Funding selection and
+purchase recording recheck this state, including after waiting for the wallet.
+Acceptance completion checks the saved channel state before activating the
+purchase. Settlement can proceed while a multi-hop acceptance request is in
+flight; a reply arriving after closure starts cannot reactivate that purchase.
+No channel lock spans the remote acceptance exchange.
+
+If an acceptance is cancelled, its funding and purchase records remain saved.
+Once channel settlement confirms the refund, any unacknowledged purchases on
+that channel are marked retired and their pending requests are removed. Their
+records, signed balances and lifetime limits remain. A source watch loses only
+the retired pending offer, preserving its pause and price settings. A stale
+recovery task cannot authorize that retired offer again; a subsequent purchase
+needs a fresh offer and existing spending authorization.
 
 After settlement and confirmed refund recovery, a fresh `buy` can purchase the
 same route again using the existing account. It retains closed channel history,

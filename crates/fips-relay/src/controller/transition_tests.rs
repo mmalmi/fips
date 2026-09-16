@@ -1,7 +1,7 @@
 //! Deterministic worker interleavings at the durable reservation boundary.
 use super::*;
 
-fn fixture(directory: &Path) -> (Store, Outgoing) {
+pub(super) fn fixture(directory: &Path) -> (Store, Outgoing) {
     let mut j = tests::unresolved_journal();
     let funding = j.funding.get_mut("test-1").unwrap();
     funding.created_unix = now().unwrap();
@@ -71,7 +71,7 @@ fn fixture(directory: &Path) -> (Store, Outgoing) {
     (store, old)
 }
 
-fn change(old: &Outgoing) -> RouteChange {
+pub(super) fn change(old: &Outgoing) -> RouteChange {
     let mut offer = old.offer.clone();
     offer.id = "replacement".into();
     offer.price.msat += 1;
@@ -82,7 +82,7 @@ fn change(old: &Outgoing) -> RouteChange {
     .unwrap()
 }
 
-fn reload(store: Store) -> Store {
+pub(super) fn reload(store: Store) -> Store {
     let directory = store.directory.clone();
     let before = serde_json::to_value(&store.journal).unwrap();
     drop(store);
@@ -241,7 +241,7 @@ fn route_reservation_rejects_a_replaced_predecessor() {
     reload(store);
 }
 
-fn prepare_replacement(j: &mut Journal, old: &Outgoing, accepted: bool) {
+pub(super) fn prepare_replacement(j: &mut Journal, old: &Outgoing, accepted: bool) {
     // Model the real journal boundary after predecessor retirement and before
     // (or after) the provider's Accept reply. The channel is intentionally reused.
     let mut value = serde_json::to_value(&j.route_changes["replacement"]).unwrap();

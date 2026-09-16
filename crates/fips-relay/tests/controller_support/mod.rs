@@ -35,3 +35,30 @@ pub(super) async fn native_control(
     .await
     .expect("native management deadline");
 }
+
+pub(super) fn errors(controllers: &[Arc<Controller>]) -> Vec<(usize, String)> {
+    controllers
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| c.last_error().map(|e| (i, e)))
+        .collect::<Vec<_>>()
+}
+pub(super) fn recovery_stages(root: &std::path::Path) -> Vec<serde_json::Value> {
+    (0..5).map(|i| {
+        let path = root.join(format!("controller-{i}/controller.json"));
+        let j: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let rows = |name: &str, fields: &[&str]| j[name].as_object().unwrap().values().map(|row| {
+            fields.iter().map(|field| match &row[*field] {
+                serde_json::Value::Null => "none".to_string(),
+                serde_json::Value::Bool(b) => b.to_string(),
+                serde_json::Value::Array(a) => format!("{} entries", a.len()),
+                _ => "saved".to_string(),
+            }).collect::<Vec<_>>()
+        }).collect::<Vec<_>>();
+        serde_json::json!({"node": i, "funding": j["funding"].as_object().unwrap().len(),
+            "outgoing": rows("outgoing", &["accepted", "retired"]),
+            "renewals": rows("renewals", &["replacements", "completed"]),
+            "buyer_settlements": rows("buyer_settlements", &["usage", "payment", "report", "refunded"]),
+            "seller_settlements": rows("seller_settlements", &["usage", "payment", "report"])})
+    }).collect()
+}

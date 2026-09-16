@@ -6,23 +6,32 @@ use tokio::sync::{Notify, mpsc, watch};
 
 pub(super) struct Gate {
     pause: watch::Sender<bool>,
+    discard: mpsc::Sender<tokio::sync::oneshot::Sender<()>>,
     held: Arc<Notify>,
     task: tokio::task::JoinHandle<()>,
 }
 
 impl Gate {
-    fn pause(&self) {
+    pub(super) fn pause(&self) {
         self.pause.send(true).unwrap();
     }
 
-    fn release(&self) {
+    pub(super) fn release(&self) {
         self.pause.send(false).unwrap();
     }
 
-    async fn held(&self) -> bool {
+    pub(super) async fn held(&self) -> bool {
         tokio::time::timeout(Duration::from_secs(10), self.held.notified())
             .await
             .is_ok()
+    }
+
+    /// Lose held acceptance requests before their real handlers run. Keep a
+    /// concurrently queued Seal, so cancellation cannot discard the close RPC.
+    pub(super) async fn discard_held(&self) {
+        let (done, finished) = tokio::sync::oneshot::channel();
+        self.discard.send(done).await.unwrap();
+        finished.await.unwrap();
     }
 }
 
@@ -42,12 +51,20 @@ pub(super) fn gate(
     }
     let (send, receive) = mpsc::channel(16);
     let (pause, mut paused) = watch::channel(false);
+    let (discard, mut discards) = mpsc::channel::<tokio::sync::oneshot::Sender<()>>(1);
     let held = Arc::new(Notify::new());
     let notify = held.clone();
     let task = tokio::spawn(async move {
         let mut pending = Vec::new();
         loop {
             tokio::select! {
+                Some(done) = discards.recv() => {
+                    pending.retain(|request: &IncomingRequest| !matches!(
+                        serde_json::from_slice::<ControllerRequest>(&request.body),
+                        Ok(ControllerRequest::Accept { .. })
+                    ));
+                    let _ = done.send(());
+                }
                 changed = paused.changed() => {
                     if changed.is_err() { return; }
                     if !*paused.borrow() {
@@ -68,7 +85,15 @@ pub(super) fn gate(
             }
         }
     });
-    (receive, Some(Gate { pause, held, task }))
+    (
+        receive,
+        Some(Gate {
+            pause,
+            discard,
+            held,
+            task,
+        }),
+    )
 }
 
 #[tokio::test]

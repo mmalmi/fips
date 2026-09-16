@@ -37,8 +37,10 @@ impl Controller {
             .grace_msat
             .min(capacity.checked_mul(1_000).ok_or("capacity overflow")?);
         let created = now()?;
+        let saved_offer = offer.clone();
         let f = self
             .change(move |j| {
+                Self::check_purchase(j, &saved_offer, None)?;
                 if let Some(f) = j
                     .funding
                     .values()
@@ -191,6 +193,11 @@ impl Controller {
                 self.change(move |j| Self::reopen_refunded_route(j, &existing, fresh))
                     .await?;
             } else {
+                Self::check_purchase(
+                    &self.snapshot().await?,
+                    &existing.offer,
+                    Some(&existing.purchase.channel.id),
+                )?;
                 if existing.purchase.contract.expires_unix <= now()?
                     || existing.offer.price != offer.price
                     || existing.offer.billing != offer.billing
@@ -210,31 +217,7 @@ impl Controller {
             }
         }
         let offer = self
-            .change(move |j| {
-                if let Some(old) = j.requested.values().find(|old| {
-                    old.provider == offer.provider
-                        && old.destination.node_addr() == offer.destination.node_addr()
-                }) {
-                    if old.price != offer.price
-                        || old.next_hop != offer.next_hop
-                        || old.billing != offer.billing
-                        || old.path != offer.path
-                        || old.max_units != offer.max_units
-                        || old.trial != offer.trial
-                    {
-                        return Err("pending route needs explicit replacement".into());
-                    }
-                    return Ok(old.clone());
-                }
-                if j.requested.len() >= MAX_ROUTES {
-                    return Err("requested route capacity".into());
-                }
-                if j.requested.contains_key(&offer.id) {
-                    return Err("conflicting requested offer identity".into());
-                }
-                j.requested.insert(offer.id.clone(), offer.clone());
-                Ok(offer)
-            })
+            .change(move |j| Self::reserve_purchase(j, offer))
             .await?;
         let (funding_id, funded) = self.fund(&offer).await?;
         let contract = contract_from_offer(&offer, &funded.terms)?;
@@ -251,30 +234,7 @@ impl Controller {
         };
         let saved = record.clone();
         let record = self
-            .change(move |j| {
-                if let Some(old) = j.outgoing.values().find(|o| {
-                    !o.retired
-                        && o.purchase.provider == saved.purchase.provider
-                        && o.purchase.contract.destination == saved.purchase.contract.destination
-                }) {
-                    if old.offer.price != saved.offer.price
-                        || old.offer.billing != saved.offer.billing
-                        || old.offer.next_hop != saved.offer.next_hop
-                        || old.offer.path != saved.offer.path
-                        || old.offer.max_units != saved.offer.max_units
-                        || old.offer.trial != saved.offer.trial
-                    {
-                        return Err("conflicting concurrent route purchase".into());
-                    }
-                    return Ok(old.clone());
-                }
-                if j.outgoing.len() >= MAX_ROUTES {
-                    return Err("outgoing route capacity".into());
-                }
-                j.outgoing
-                    .insert(saved.purchase.contract.id.clone(), saved.clone());
-                Ok(saved)
-            })
+            .change(move |j| Self::record_purchase(j, saved))
             .await?;
         self.ensure_buyer_purchase(&record.purchase).await?;
         self.send_accept(peer, record).await
@@ -404,14 +364,12 @@ impl Controller {
                         return Err("provider changed accepted terms".into());
                     }
                     let id = record.purchase.contract.id.clone();
-                    self.change(move |j| {
-                        j.outgoing
-                            .get_mut(&id)
-                            .ok_or("purchase intent missing")?
-                            .accepted = true;
-                        Ok(())
-                    })
-                    .await?;
+                    if !self
+                        .change(move |j| Self::finish_acceptance(j, &id))
+                        .await?
+                    {
+                        return Err("purchase closed before acceptance completed".into());
+                    }
                     self.activate_source_route(&record.offer).await?;
                     return Ok(*purchase);
                 }
