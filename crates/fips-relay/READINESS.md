@@ -72,13 +72,44 @@ exception is direct authenticated UDP within a configured subnet. Permissionless
 router admission therefore needs a coherent discovery/admission/purchase policy;
 simply enabling Ethernet beacons or removing the Wi-Fi password is insufficient.
 
-The cadence fixture also exposed an end-to-end bootstrap constraint: a forward-only
-purchase does not admit the reverse FSP handshake reply. Current policy meters all
-session envelopes, including setup, and the existing prototype independently
-funds both sending directions. Six one-way warmup attempts over 60 seconds delivered
-no data. Bounded bootstrap design must explicitly resolve this case without a
-blanket free session-data bypass or unsolicited spending by the recipient. Cadence
-measurements with both routes funded cannot be used as proof that it is solved.
+The cadence fixture exposed an end-to-end bootstrap constraint in the original
+tariffs: a forward purchase does not admit the reverse FSP handshake reply.
+The explicitly negotiated [forwarding-data tariff](BOOTSTRAP.md) now provides
+strictly shaped, per-neighbor and aggregate-limited free session establishment.
+A five-process test crosses three relays to an unfunded recipient, retains
+agreements across full restart, rejects unpaid reverse data and conserves all
+1,024 test sats after three settlements. Existing tariffs retain their semantics.
+The cadence measurements funded both directions and predate this change; they
+are not performance evidence for it. Broader bootstrap/adversarial acceptance
+and saved-account migration remain work.
+
+## Destination-specific prices and free local destinations
+
+The desired policy is an explicit fee per destination identity, with a default
+fee for other destinations. Configured own FIPS addresses can have zero local
+relay fee, and other destinations can have different positive fees. Local
+delivery within one FIPS instance is already outside transit charging; relaying
+to another local instance must also support an intentionally free path without
+a funded channel, wallet payment or mint dependency.
+
+Current contracts already bind destination-specific immutable prices, but the
+service adds one positive local fee to every quote and requires a funded paid
+agreement. The destination policy and channel-free path are not implemented.
+Do not model zero as a tiny positive charge or open a pointless zero-payment
+channel. Match configured destination identities, never a claimed source,
+private IP range, interface name or an assertion of common ownership.
+
+Each router controls only its local fee. A zero local fee cannot waive a paid
+downstream hop or silently authorize the router to subsidize it. Preserve the
+existing onward-purchase price, capital and lifetime-spend limits, and reject
+an unfunded paid continuation. Accepted paid quotes and unresolved liabilities
+remain unchanged when future destination rules change.
+
+Acceptance must cover free forwarding between own instances with no mint or
+funding, simultaneous paid/free destinations, different positive destination
+fees, exact identity matching, route changes to a paid next hop, restart and
+policy changes without erasing prior obligations. Free destinations still need
+bounded queues/admission; they must not turn into a blanket transit bypass.
 
 ## Boundaries and threats
 

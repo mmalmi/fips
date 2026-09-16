@@ -34,7 +34,7 @@ fn restored_allowance_is_inaccessible_until_service_startup_finishes() {
         .unwrap();
     seller
         .add_contract(Contract {
-            billing: Default::default(),
+            billing: BillingBasis::ForwardingData,
             id: "route".into(),
             channel_id: "channel".into(),
             destination,
@@ -48,22 +48,37 @@ fn restored_allowance_is_inaccessible_until_service_startup_finishes() {
         })
         .unwrap();
     let forwarding = ServiceForwarder {
-        relay: PaidForwarder::new(seller.clone(), buyer),
+        relay: PaidForwarder::for_billing(seller.clone(), buyer, BillingBasis::ForwardingData),
         ready: AtomicBool::new(false),
     };
-    let request = ForwardingRequest {
+    let handshake =
+        fips_core::protocol::SessionMsg3::new(vec![0; fips_core::noise::XK_HANDSHAKE_MSG3_SIZE])
+            .encode();
+    let mut request = ForwardingRequest {
         ingress,
         source: *ingress.node_addr(),
         destination,
         next_hop: destination,
-        session_payload: &[1, 2, 3, 4],
+        session_payload: &handshake,
     };
+    assert!(forwarding.admit(&request).is_none());
+    assert_eq!(
+        forwarding.relay.bootstrap_stats().unwrap().admitted_packets,
+        0
+    );
+    request.session_payload = &[1, 2, 3, 4];
     assert!(forwarding.admit(&request).is_none());
     assert_eq!(seller.channel_usage("channel").unwrap().reserved_msat, 0);
     forwarding.ready.store(true, Ordering::Release);
     let token = forwarding
         .admit(&request)
         .expect("validated startup exposes the existing allowance");
+    request.session_payload = &handshake;
+    let free = forwarding.admit(&request).unwrap();
+    assert_eq!(free, 0);
+    forwarding.complete(free, ForwardingOutcome::Submitted);
+    forwarding.complete(free, ForwardingOutcome::Unconfirmed);
+    assert_eq!(seller.channel_usage("channel").unwrap().submitted_msat, 0);
     forwarding.complete(token, ForwardingOutcome::Submitted);
     assert_eq!(seller.channel_usage("channel").unwrap().submitted_msat, 4);
 }

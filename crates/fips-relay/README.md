@@ -20,6 +20,10 @@ is the first software milestone; permissionless admission, wider transport
 acceptance, long-operation recovery and matched performance evidence remain work.
 The physical prototype reports below describe the earlier r6 hardware build.
 
+Fresh accounts can explicitly select the [bounded handshake tariff](BOOTSTRAP.md)
+to deliver through paid relays to an unfunded recipient without buying a reverse
+route. Existing account terms and the physical bench remain unchanged.
+
 ## Implemented and checked
 
 * The core's optional `ForwardingPolicy` gates native FMP transit, including

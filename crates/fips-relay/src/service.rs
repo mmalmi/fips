@@ -220,7 +220,7 @@ impl RelayService {
             return Err("stored payment receiver identity changed".into());
         }
         let forwarding = Arc::new(ServiceForwarder {
-            relay: PaidForwarder::new(seller.clone(), buyer.clone()),
+            relay: PaidForwarder::for_billing(seller.clone(), buyer.clone(), config.terms.billing),
             ready: AtomicBool::new(false),
         });
         if !create {

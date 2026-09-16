@@ -24,6 +24,7 @@ impl RelayService {
                     "history": self.controller.purchase_history().await?,
                     "locked_sat": self.controller.locked_capital_sat().await?,
                     "remaining_budget_sat": self.buyer.remaining_budget_sat(),
+                    "bootstrap": self.forwarding.relay.bootstrap_stats(),
                     "measurements": crate::measurements::snapshot(),
                     "received": self.received.lock().unwrap().clone(),
                     "probe": probe,

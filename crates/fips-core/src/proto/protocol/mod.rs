@@ -23,6 +23,7 @@
 pub(crate) mod discovery;
 pub(crate) mod error;
 pub(crate) mod filter;
+mod handshake;
 pub(crate) mod link;
 pub(crate) mod session;
 pub(crate) mod tree;
@@ -31,6 +32,7 @@ pub(crate) mod tree;
 pub use discovery::{LookupRequest, LookupResponse};
 pub use error::ProtocolError;
 pub use filter::FilterAnnounce;
+pub use handshake::{MAX_BOOTSTRAP_HANDSHAKE_BYTES, SessionHandshake};
 pub use link::{
     Disconnect, DisconnectReason, HandshakeMessageType, LinkMessageType,
     SESSION_DATAGRAM_HEADER_SIZE, SessionDatagram, SessionDatagramRef,

@@ -33,6 +33,17 @@ impl RelayLedger {
             .clone();
         let token = state.next_token.checked_add(1)?;
         let a = &state.accounts[&id];
+        if a.contract.billing.has_free_handshakes()
+            && crate::bootstrap::is_handshake(
+                request.session_payload,
+                request.source,
+                request.destination,
+            )
+        {
+            // The external bootstrap policy may forward this within its own
+            // limits. It must never create a paid seller reservation or claim.
+            return None;
+        }
         if a.contract.next_hop != request.next_hop
             || now_unix >= a.contract.expires_unix
             || (a.contract.billing.is_legacy()
@@ -194,7 +205,7 @@ impl ForwardingPolicy for RelayLedger {
                 a.usage.unconfirmed_units += attempt.units;
             }
         }
-        if a.contract.billing == BillingBasis::ForwardingAttempt {
+        if !a.contract.billing.is_legacy() {
             let units = attempt.units;
             a.completed.reserved_units += units;
             match outcome {

@@ -87,6 +87,7 @@ pub(in crate::node) use support_state::{
 
 use self::path_mtu::PathMtuProvenance;
 use self::peer_error_budget::PeerErrorBudget;
+pub use self::rate_limit::TokenBucket;
 use self::rate_limit::{HandshakeRateLimiter, SessionSetupRateLimiter};
 use self::wire::{FLAG_CE, FLAG_KEY_EPOCH};
 use crate::bloom::{BloomFilter, BloomState};

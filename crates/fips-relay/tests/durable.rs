@@ -111,12 +111,21 @@ fn session_setup_and_first_data_share_the_same_durable_window() {
 #[test]
 fn compact_attempt_totals_preserve_durable_crash_and_seal_bounds() {
     use fips_relay::ledger::BillingBasis;
+    for billing in [
+        BillingBasis::ForwardingAttempt,
+        BillingBasis::ForwardingData,
+    ] {
+        compact_totals_preserve_crash_bounds(billing);
+    }
+}
+
+fn compact_totals_preserve_crash_bounds(billing: fips_relay::ledger::BillingBasis) {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("attempts");
     let relay = DurableRelay::create(&path, Limits::default(), 10).unwrap();
     relay.open_channel_verified(channel(), 100).unwrap();
     let mut quote = contract();
-    quote.billing = BillingBasis::ForwardingAttempt;
+    quote.billing = billing;
     quote.price.per_bytes = 100;
     quote.max_units = 100_000;
     relay.add_contract(quote).unwrap();

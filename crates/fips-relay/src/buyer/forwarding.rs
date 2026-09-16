@@ -39,7 +39,17 @@ impl BuyerAuthorizer {
             })?
             .0
             .clone();
-        let legacy = s.quotes[&id].contract.billing.is_legacy();
+        let billing = s.quotes[&id].contract.billing;
+        if billing.has_free_handshakes()
+            && crate::bootstrap::is_handshake(
+                request.session_payload,
+                request.source,
+                request.destination,
+            )
+        {
+            return None;
+        }
+        let legacy = billing.is_legacy();
         let digest = if legacy {
             session_fingerprint(request.source, request.destination, request.session_payload)
         } else {
@@ -95,7 +105,7 @@ impl OriginatedSessionObserver for BuyerAuthorizer {
             }
             ForwardingOutcome::Unconfirmed => AttemptOutcome::Unconfirmed,
         };
-        if q.contract.billing == BillingBasis::ForwardingAttempt {
+        if !q.contract.billing.is_legacy() {
             let a = q.attempts.swap_remove(index);
             q.completed.observed_units += a.units;
             if outcome == ForwardingOutcome::Submitted {
@@ -120,20 +130,54 @@ pub struct PaidForwarder {
     seller: Arc<DurableRelay>,
     buyer: Arc<BuyerAuthorizer>,
     pending: Mutex<BTreeMap<u64, Option<u64>>>,
+    bootstrap: Option<Mutex<crate::bootstrap::Bootstrap>>,
 }
 
 impl PaidForwarder {
     pub fn new(seller: Arc<DurableRelay>, buyer: Arc<BuyerAuthorizer>) -> Self {
+        Self::for_billing(seller, buyer, BillingBasis::UniqueSessionEnvelope)
+    }
+
+    /// Enable the bounded free handshake tier only for an explicitly selected
+    /// tariff. Existing callers and saved legacy tariffs keep their semantics.
+    pub fn for_billing(
+        seller: Arc<DurableRelay>,
+        buyer: Arc<BuyerAuthorizer>,
+        billing: BillingBasis,
+    ) -> Self {
         Self {
             seller,
             buyer,
             pending: Mutex::new(BTreeMap::new()),
+            bootstrap: billing
+                .has_free_handshakes()
+                .then(|| Mutex::new(crate::bootstrap::Bootstrap::new())),
         }
+    }
+
+    pub fn bootstrap_stats(&self) -> Option<crate::bootstrap::BootstrapStats> {
+        self.bootstrap.as_ref().map(|b| b.lock().unwrap().stats())
     }
 }
 
 impl ForwardingPolicy for PaidForwarder {
     fn admit(&self, request: &ForwardingRequest<'_>) -> Option<u64> {
+        if let Some(bootstrap) = &self.bootstrap
+            && crate::bootstrap::is_handshake(
+                request.session_payload,
+                request.source,
+                request.destination,
+            )
+        {
+            // Seller tokens start at one and never wrap. Zero carries no paid
+            // reservation; its completion is a no-op. The rate budget is spent
+            // at admission even if transport submission later fails.
+            return bootstrap
+                .lock()
+                .unwrap()
+                .admit(*request.ingress.node_addr(), request.session_payload.len())
+                .then_some(0);
+        }
         let (seller_token, buyer_token) = if request.next_hop == request.destination {
             (self.seller.admit(request)?, None)
         } else {
@@ -156,6 +200,9 @@ impl ForwardingPolicy for PaidForwarder {
         Some(seller_token)
     }
     fn complete(&self, token: u64, outcome: ForwardingOutcome) {
+        if token == 0 {
+            return;
+        }
         if let Some(buyer_token) = self.pending.lock().unwrap().remove(&token) {
             self.seller.complete(token, outcome);
             if let Some(token) = buyer_token {

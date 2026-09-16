@@ -58,9 +58,15 @@ pub enum BillingBasis {
     /// Each native authenticated admission is a new forwarding attempt. Link
     /// replay rejection belongs to FIPS; completion tokens prevent double count.
     ForwardingAttempt,
+    /// Per-attempt accounting with strictly shaped, bounded FSP handshakes
+    /// excluded from paid evidence. Requires bootstrap-capable forwarding.
+    ForwardingData,
 }
 
 impl BillingBasis {
+    pub fn has_free_handshakes(&self) -> bool {
+        *self == Self::ForwardingData
+    }
     pub fn is_legacy(&self) -> bool {
         *self == Self::UniqueSessionEnvelope
     }
@@ -413,7 +419,7 @@ impl RelayLedger {
                     sealed_tokens.push(attempt.token);
                 }
             }
-            if account.contract.billing == BillingBasis::ForwardingAttempt {
+            if !account.contract.billing.is_legacy() {
                 account.completed = account.usage;
                 account.attempts.clear();
             }

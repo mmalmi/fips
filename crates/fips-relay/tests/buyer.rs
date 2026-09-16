@@ -84,6 +84,15 @@ fn approve(buyer: &BuyerAuthorizer, terms: &ChannelTerms, id: &str) {
 #[test]
 fn forwarding_attempt_evidence_is_bounded_and_completion_is_idempotent() {
     use fips_relay::ledger::BillingBasis;
+    for billing in [
+        BillingBasis::ForwardingAttempt,
+        BillingBasis::ForwardingData,
+    ] {
+        compact_evidence_is_bounded(billing);
+    }
+}
+
+fn compact_evidence_is_bounded(billing: fips_relay::ledger::BillingBasis) {
     let root = tempfile::tempdir().unwrap();
     let directory = root.path().join("buyer");
     let buyer = BuyerAuthorizer::create(
@@ -100,7 +109,7 @@ fn forwarding_attempt_evidence_is_bounded_and_completion_is_idempotent() {
     let terms = channel("bounded");
     buyer.accept_channel(address(2), terms.clone(), 0).unwrap();
     let mut route = quote("stream", &terms);
-    route.billing = BillingBasis::ForwardingAttempt;
+    route.billing = billing;
     route.price.msat = 1;
     route.max_units = 20_000;
     buyer.accept_quote(route).unwrap();
