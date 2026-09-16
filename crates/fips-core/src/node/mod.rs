@@ -49,7 +49,10 @@ pub use endpoint_event::ExternalPacketIo;
 pub use error::NodeError;
 pub use forwarding_policy::{ForwardingOutcome, ForwardingPolicy, ForwardingRequest};
 pub use identity_cache::NodeDeliveredPacket;
-pub use originated_observer::{OriginatedSessionObserver, OriginatedSessionRequest};
+pub use originated_observer::{
+    OriginatedSessionAdmission, OriginatedSessionIntent, OriginatedSessionObserver,
+    OriginatedSessionRequest,
+};
 pub use state::NodeState;
 
 pub(crate) use crate::proto::lookup_state::{

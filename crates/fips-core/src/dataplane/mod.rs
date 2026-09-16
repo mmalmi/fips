@@ -23,13 +23,15 @@
 
 #[cfg(test)]
 use crate::node::endpoint_data_batch_channel;
-use crate::node::originated_observer::OriginatedSessionObservation;
+use crate::node::originated_observer::{
+    OriginatedSessionObservation, OriginatedSessionPreparation,
+};
 use crate::node::{
     EndpointDataBatchRx, EndpointDataPayload, EndpointDirectSink, EndpointEventSender,
     FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun, FipsEndpointDirectPacketRunMeta,
     NodeEndpointDataBatch,
 };
-use crate::node::{OriginatedSessionObserver, OriginatedSessionRequest};
+use crate::node::{OriginatedSessionIntent, OriginatedSessionObserver, OriginatedSessionRequest};
 use crate::transport::{
     PacketBuffer, PacketFastIngressSink, PacketRx, PacketTx, ReceivedPacket, TransportAddr,
     TransportError, TransportHandle, TransportId,

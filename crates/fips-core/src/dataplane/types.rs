@@ -232,6 +232,8 @@ pub(crate) enum OutboundPayloadTransform {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct OutboundPacket {
     originated_observation: Option<OriginatedSessionObservation>,
+    originated_preparation: Option<OriginatedSessionPreparation>,
+    originated_prepared: bool,
     owner: OwnerId,
     generation: u64,
     class: PacketClass,
@@ -270,6 +272,8 @@ impl OutboundPacket {
             fsp_auto_coords_warmup: true,
             fsp_send_receipt: None,
             originated_observation: None,
+            originated_preparation: None,
+            originated_prepared: false,
             send_token: None,
             activity_tick: None,
             send_epoch: OutboundSendEpoch::Current,
@@ -295,6 +299,8 @@ impl OutboundPacket {
             fsp_auto_coords_warmup: true,
             fsp_send_receipt: None,
             originated_observation: None,
+            originated_preparation: None,
+            originated_prepared: false,
             send_token: None,
             activity_tick: None,
             send_epoch: OutboundSendEpoch::Current,
@@ -432,11 +438,8 @@ impl OutboundPacket {
         }
     }
 
-    /// Full outer FMP wire length for an FSP packet carried through the mesh.
-    fn fsp_wrapped_wire_len(&self) -> Option<usize> {
-        if self.owner.protocol() != PacketProtocol::Fsp
-            || !matches!(self.post_seal, OutboundPostSeal::FmpWrap(_))
-        {
+    fn fsp_session_wire_len(&self) -> Option<usize> {
+        if self.owner.protocol() != PacketProtocol::Fsp {
             return None;
         }
         let inner_prefix_len = match self.payload_transform {
@@ -444,14 +447,25 @@ impl OutboundPacket {
             OutboundPayloadTransform::None => 0,
         };
         Some(
-            FMP_ESTABLISHED_HEADER_SIZE
-                .saturating_add(std::mem::size_of::<u32>())
-                .saturating_add(crate::protocol::SESSION_DATAGRAM_HEADER_SIZE)
-                .saturating_add(FSP_HEADER_SIZE)
+            FSP_HEADER_SIZE
                 .saturating_add(self.fsp_cleartext_prefix.len())
                 .saturating_add(inner_prefix_len)
                 .saturating_add(self.payload.len())
-                .saturating_add(AEAD_TAG_SIZE * 2),
+                .saturating_add(AEAD_TAG_SIZE),
+        )
+    }
+
+    /// Full outer FMP wire length for an FSP packet carried through the mesh.
+    fn fsp_wrapped_wire_len(&self) -> Option<usize> {
+        if !matches!(self.post_seal, OutboundPostSeal::FmpWrap(_)) {
+            return None;
+        }
+        Some(
+            FMP_ESTABLISHED_HEADER_SIZE
+                .saturating_add(std::mem::size_of::<u32>())
+                .saturating_add(crate::protocol::SESSION_DATAGRAM_HEADER_SIZE)
+                .saturating_add(self.fsp_session_wire_len()?)
+                .saturating_add(AEAD_TAG_SIZE),
         )
     }
 

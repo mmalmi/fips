@@ -36,6 +36,11 @@ bytes, altered lengths, unknown phases and envelopes over 2,048 bytes are not
 eligible. Established encrypted traffic and plaintext session errors are not
 free under this rule. The size ceiling is an allowance limit, not an FSP limit.
 
+When the source knows a carrier but has no cached destination ancestry, FIPS
+uses the destination's one-entry coordinate in Setup. This preserves address
+matching without inventing ancestry; an uncached route must not substitute the
+sender's coordinates and accidentally turn canonical bootstrap into paid usage.
+
 Every admitted handshake consumes `max(session_envelope_bytes, 256)` units:
 
 | Scope | Burst | Refill per second |

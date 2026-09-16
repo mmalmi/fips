@@ -42,6 +42,34 @@ fn request<'a>(payload: &'a [u8]) -> ForwardingRequest<'a> {
 }
 
 #[test]
+fn source_free_admission_reuses_the_same_lease_and_distinguishes_denial() {
+    let routes = FreeRoutes::default();
+    let offered = offer(2, 3, 9);
+    let next = offered.provider;
+    let destination = *offered.destination.node_addr();
+    assert_eq!(routes.prepare_onward(next, destination, 40), None);
+    routes.accept(&offered).unwrap();
+    assert_eq!(routes.prepare_onward(next, destination, 40), Some(true));
+    assert!(routes.onward(next, destination, 60, || Some(())).is_some());
+    assert_eq!(routes.prepare_onward(next, destination, 1), Some(false));
+    routes.accept(&offered).unwrap();
+    assert_eq!(
+        routes.prepare_onward(next, destination, 1),
+        Some(false),
+        "same offer cannot reset the cap"
+    );
+    let mut state = routes.state.lock().unwrap();
+    state
+        .outgoing
+        .get_mut(&(next, destination))
+        .unwrap()
+        .offer
+        .expires_unix = 0;
+    drop(state);
+    assert_eq!(routes.prepare_onward(next, destination, 0), Some(false));
+}
+
+#[test]
 fn free_transit_binds_every_hop_and_cannot_authorize_a_paid_continuation() {
     let routes = FreeRoutes::default();
     let incoming = offer(1, 2, 3);

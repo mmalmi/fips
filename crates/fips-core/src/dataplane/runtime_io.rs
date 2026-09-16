@@ -421,9 +421,13 @@ impl DataplaneTurnDriver {
         let Some(observer) = &self.originated_session_observer else {
             return;
         };
+        if packet.owner.protocol() == PacketProtocol::Fsp {
+            packet.originated_preparation = Some(OriginatedSessionPreparation(observer.clone()));
+            return;
+        }
         // This marker is created only by local FSP sealing/wrapping. A received
         // packet claiming our source address cannot manufacture this provenance.
-        if packet.originated_observation.is_some()
+        if packet.originated_prepared || packet.originated_observation.is_some()
             || !packet.has_fsp_send_receipt()
             || packet.owner.protocol() != PacketProtocol::Fmp
         {

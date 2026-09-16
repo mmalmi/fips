@@ -81,6 +81,18 @@ enum DataplanePendingOutboundFailure {
     Exhausted(DataplaneLiveNodeTurn),
 }
 
+impl DataplanePendingOutboundFailure {
+    fn source_policy_rejected(&self, send_token: u64) -> bool {
+        let turn = match self {
+            Self::TurnFailed(turn) | Self::Stopped { turn, .. } | Self::Exhausted(turn) => turn,
+        };
+        turn.drops().iter().any(|drop| {
+            drop.send_token() == Some(send_token)
+                && drop.reason() == crate::dataplane::PacketDropReason::SourcePolicy
+        })
+    }
+}
+
 #[derive(Clone, Copy)]
 struct DataplanePendingOutboundPolicy {
     continuation_turns: usize,
@@ -606,8 +618,12 @@ impl Node {
                     node_addr: *dest_addr,
                     reason: Self::dataplane_pending_outbound_failure_from_stop(label, &failure),
                 };
-                self.record_route_failure(*dest_addr, next_hop);
-                self.recover_direct_payload_send_failure(*dest_addr, next_hop, &error);
+                // A local allowance refusal says nothing about carrier health.
+                // Only the drop belonging to this control send can exempt it.
+                if !failure.source_policy_rejected(send_token) {
+                    self.record_route_failure(*dest_addr, next_hop);
+                    self.recover_direct_payload_send_failure(*dest_addr, next_hop, &error);
+                }
                 return Err(error);
             }
         };

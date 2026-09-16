@@ -852,6 +852,8 @@ fn execute_seal_crypto_work(
                     owner: reservation.owner,
                     counter: reservation.counter,
                 });
+            output.originated_observation = packet.originated_observation;
+            output.originated_prepared = packet.originated_prepared;
             if let Some(send_token) = packet.send_token {
                 output = output.with_send_token(send_token);
             }

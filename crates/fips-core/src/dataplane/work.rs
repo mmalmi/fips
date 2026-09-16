@@ -388,6 +388,7 @@ impl<'a> DataplaneRetiredOutputSink<'a> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PacketDropReason {
+    SourcePolicy,
     Admission(AdmissionDropReason),
     UnknownOwner,
     Replay,
@@ -507,6 +508,7 @@ impl From<AdmissionDrop> for PacketDrop {
 impl From<OwnerReserveError> for PacketDropReason {
     fn from(error: OwnerReserveError) -> Self {
         match error {
+            OwnerReserveError::SourcePolicy => Self::SourcePolicy,
             OwnerReserveError::Replay => Self::Replay,
             OwnerReserveError::InFlightFull => Self::OwnerInFlightFull,
             OwnerReserveError::StaleGeneration => Self::StaleGeneration,

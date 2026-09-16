@@ -4,6 +4,7 @@
 //! These records cap signatures; they do not establish fair exchange. A trusted
 //! controller accepts quotes/funded channels and owns a finite lifetime budget.
 
+mod admission;
 mod forwarding;
 pub use forwarding::{PaidForwarder, RouteObserver};
 
@@ -20,8 +21,8 @@ use cashu_service::{CashuSpilmanPayment, CashuSpilmanPaymentSigner};
 use fips_core::{
     NodeAddr,
     node::{
-        ForwardingOutcome, ForwardingPolicy, ForwardingRequest, OriginatedSessionObserver,
-        OriginatedSessionRequest,
+        ForwardingOutcome, ForwardingPolicy, ForwardingRequest, OriginatedSessionAdmission,
+        OriginatedSessionIntent, OriginatedSessionObserver, OriginatedSessionRequest,
     },
 };
 use serde::{Deserialize, Serialize};

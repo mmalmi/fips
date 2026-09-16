@@ -43,8 +43,10 @@ and broad production readiness remain unclaimed.
 * The core's optional `OriginatedSessionObserver` records opaque session
   envelopes created locally and their actual local transport outcome, including
   native batches. A claimed source address in transit cannot create this
-  evidence. MTU rejection/cancellation remains unconfirmed. This read-only hook
-  lets a buyer bound payment authorization without introducing delivery receipts.
+  evidence. MTU rejection/cancellation remains unconfirmed. Its optional pre-seal
+  admission also bounds established source records against known attempt/data
+  quotes before native sequence/send metrics. The passive default and legacy
+  ciphertext accounting remain available. See [source admission](PRICE-SELECTION.md#bounds-and-recovery).
 * `RelayLedger` keeps persistent neighbor channels separate from destination
   quotes. Many quotes share one channel's credit and unpaid exposure. It
   reserves before enqueue and retains uncertain usage. Repeated opens, new
@@ -292,8 +294,12 @@ before a checkpoint was never usable for a signature, and losing it may cause
 conservative underpayment/service interruption. A signer error retains the full
 reserved authorization because a signature may already have escaped. A journal
 write error suspends further signing. Packet observation does not wait for the
-disk/signing worker. The observer itself does not block source transmission;
-provider admission and the controller enforce service exhaustion.
+disk/signing worker. Established records under the attempt/data tariffs now
+reserve existing quote allowance before encryption; a known exhausted, expired
+or inactive purchase rejects the local send without inventing wire loss. Legacy
+passive observation, manual handshakes and direct transport semantics are retained.
+Remote provider admission and signing limits still enforce their separate credit,
+capital and spending bounds; the local quote gate does not replace them.
 
 Sat-denominated payments round the cumulative channel amount up by less than one
 sat, including approved advances. Capacity and lifetime spending limits include

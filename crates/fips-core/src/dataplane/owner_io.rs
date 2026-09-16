@@ -132,7 +132,6 @@ impl OwnerState {
             return Err(OwnerReserveError::InFlightFull);
         }
 
-        let counter = self.reserve_send_counter(packet.send_epoch)?;
         let output_path = self.active_path.clone();
         let path_mtu = if self.owner.protocol() == PacketProtocol::Fsp
             && self.fsp_wrap_route.is_none()
@@ -145,12 +144,35 @@ impl OwnerState {
         } else {
             u16::MAX
         };
-        let fmp_timestamp_ms = self.reserve_fmp_timestamp(packet.activity_tick);
-        let fsp_timestamp_ms = self.reserve_fsp_timestamp(packet.activity_tick);
         self.refresh_fsp_outbound_headers(&mut packet);
         self.apply_fsp_wrap_route(&mut packet);
         self.apply_fsp_direct_transport_flag(&mut packet);
-        self.reserve_fsp_coords_warmup(&mut packet);
+        let used_coords = self.prepare_fsp_coords_warmup(&mut packet);
+        if let Some(preparation) = packet.originated_preparation.take()
+            && let OutboundPostSeal::FmpWrap(route) = packet.post_seal
+        {
+            let intent = OriginatedSessionIntent {
+                source: route.source_addr,
+                destination: route.dest_addr,
+                next_hop: route.next_hop_addr(),
+                session_bytes: packet
+                    .fsp_session_wire_len()
+                    .ok_or(OwnerReserveError::SourcePolicy)?,
+            };
+            let (handled, observation) = preparation
+                .prepare(&intent)
+                .map_err(|()| OwnerReserveError::SourcePolicy)?;
+            packet.originated_prepared = handled;
+            packet.originated_observation = observation;
+        }
+        // Admission runs before sequence and metric reservation. A local quota
+        // rejection is not a wire loss, and cannot consume coordinate warmup.
+        let counter = self.reserve_send_counter(packet.send_epoch)?;
+        if used_coords {
+            self.fsp_coords_warmup_remaining = self.fsp_coords_warmup_remaining.saturating_sub(1);
+        }
+        let fmp_timestamp_ms = self.reserve_fmp_timestamp(packet.activity_tick);
+        let fsp_timestamp_ms = self.reserve_fsp_timestamp(packet.activity_tick);
         if let Some(wire_len) = packet.fsp_wrapped_wire_len() {
             let wire_len = u16::try_from(wire_len).unwrap_or(u16::MAX);
             self.max_sent_wire_len = self.max_sent_wire_len.max(wire_len);
@@ -765,25 +787,25 @@ impl OwnerState {
         }
     }
 
-    fn reserve_fsp_coords_warmup(&mut self, packet: &mut OutboundPacket) {
+    fn prepare_fsp_coords_warmup(&self, packet: &mut OutboundPacket) -> bool {
         if self.owner.protocol() != PacketProtocol::Fsp
             || self.fsp_coords_warmup_remaining == 0
             || self.fsp_coords_prefix.is_empty()
             || !packet.fsp_auto_coords_warmup
             || !packet.fsp_cleartext_prefix.is_empty()
         {
-            return;
+            return false;
         }
 
         let OutboundWire::Fsp { flags } = &mut packet.wire else {
-            return;
+            return false;
         };
         if *flags & crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT != 0 {
-            return;
+            return false;
         }
         *flags |= crate::node::session_wire::FSP_FLAG_CP;
         packet.fsp_cleartext_prefix = self.fsp_coords_prefix.clone();
-        self.fsp_coords_warmup_remaining = self.fsp_coords_warmup_remaining.saturating_sub(1);
+        true
     }
 
     fn refresh_fsp_outbound_headers(&self, packet: &mut OutboundPacket) {

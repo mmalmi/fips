@@ -107,10 +107,33 @@ Do not downgrade an account containing them without reconciliation.
   trials. Lifetime spending, capital and bounded retained-history limits remain
   the aggregate bounds. State exhaustion is an error, never an account reset.
 
+Established source records under forwarding-attempt/data tariffs now reserve
+their exact sealed session bytes against the existing buyer allowance before
+FIPS reserves packet sequence numbers or sent-data metrics. Known exhausted,
+expired or inactive purchases reject the local attempt. Free source records use
+the same lease counter as onward forwarding. This prevents local quota refusal
+from creating artificial wire loss, without adding a second financial ledger.
+Local control refusal also leaves native carrier health unchanged. Coordinate and
+packet-size refreshes retain a usable authenticated reply carrier, preserving the
+branch on which an unfunded receiver has earned bounded return allowance.
+Completion still follows local transport submission; canceled work retains its
+conservative quota reservation. The legacy unique-envelope tariff keeps its
+post-seal ciphertext/deduplication observer and is not changed into a source gate.
+
+Unknown/unpurchased routes and direct endpoints retain their original admission
+paths, so bounded bootstrap and earned return traffic can still reach the relay's
+gate. This is not a universal source authorization gate. Seller credit/grace,
+payment failures, channel capital/lifetime budgets and network loss remain
+distinct constraints; early quote admission alone cannot explain every missing
+report. Financial signing/forwarding limits continue to apply separately.
+
 ## Reproducible acceptance
 
 ```sh
-cargo test -p fips-relay --lib --test priced_paths
+cargo test -p fips-relay --features measurements --lib \
+  --test bootstrap_service --test buyer --test controller --test customer \
+  --test destination_service --test durable --test priced_paths \
+  --test route_quotes --test service
 ```
 
 The real four-endpoint `SimNetwork` diamond uses production quotes, controllers,
@@ -122,28 +145,34 @@ native feedback; cooldown prevents immediately buying the failed cheap path.
 Controller/selector reload retains the working route, purchase history and capital.
 Both old and current channels settle, conserving all 259 isolated test sats per run.
 
-A separate exhaustion case leaves automatic renewal enabled beyond its configured
-threshold. An exhausted trial stays capped before and after controller/selector
+A separate exhaustion case repeats three fresh deployments and leaves automatic
+renewal enabled beyond its configured threshold. An exhausted trial stays capped before and after controller/selector
 reload, preserves history/capital and settles without resetting the lifetime
-budget. These reloads retain the live FIPS endpoints and control servers; they are
+budget. It first proves actual application delivery, then confirms that locally
+refused excess traffic does not increase native sent counters or quarantine the
+healthy provider. It checks that every admitted application packet arrives. These reloads retain the live FIPS endpoints and control servers; they are
 not full network/process restart tests. Unit checks cover hostile cap metadata,
 quality ceilings, cooldown, hysteresis, remembered alternative costs, bounded
 state and a 125-case independent
 cross-product reference for the delivered-cost choice.
 
-The acceptance run passed 87 focused tests across the relay library, priced
-paths, buyer, durable accounting, controller, quotes, customer, service, bootstrap
-and destination suites. The renewal scenario was rerun after renewal-provider
-binding changed. Strict all-target/all-feature relay Clippy, the default library
-and binary check, Android ARM64 app Clippy with measurements, formatting and the
-656-file source-size gate also passed (five unchanged legacy core exceptions).
+The final acceptance run passed 92 focused tests with measurements enabled across
+the relay library, priced paths, buyer, durable accounting, controller, quotes,
+customer, service, bootstrap and destination suites. Core checks also passed:
+66 targeted route/discovery/session regressions, the two pre-seal admission tests,
+and the earlier dataplane/observer/profile checks. Strict all-target/all-feature
+core and relay Clippy, the default relay library/binary check, Android ARM64 app
+Clippy with measurements, formatting and the 658-file source-size gate passed
+(five unchanged legacy core exceptions).
 
 ## Remaining limitations
 
 Initial handshake failure before data is transmitted can remain unknown rather
-than trigger end-to-end timeout. Exhausting an authorized quota can also stop
-reports; a future controller must distinguish that from an actual path failure
-before automatically penalizing the provider. No eligible alternative leaves the
+than trigger end-to-end timeout. Earlier stress runs intermittently stalled during
+Noise setup; the diagnostic trace showed failed msg2 authentication. Its cause is
+not yet established, and passing subsequent runs is not proof that it is resolved. Quote exhaustion is now locally gated, but
+remote credit/grace exhaustion, interrupted payments and missing return allowance
+still need explicit attribution before penalizing a provider. No eligible alternative leaves the
 existing agreement/binding in place; applications can still emit billable traffic
 within its bounds. This is not an automatic stop-on-poor-quality source gate.
 

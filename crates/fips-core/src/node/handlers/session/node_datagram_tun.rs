@@ -311,19 +311,15 @@ impl Node {
 
     /// Look up destination coordinates from available caches.
     ///
-    /// Returns our own coordinates as a fallback (the SessionSetup will
-    /// carry src_coords for return path routing; empty dest_coords
-    /// would fail wire encoding since TreeCoordinate requires ≥1 entry).
+    /// When ancestry is unknown, retain only the destination's identity.
+    /// A one-entry placeholder cannot assert progress through our current tree,
+    /// but remains a canonical bootstrap envelope for an already known carrier.
     pub(in crate::node) fn get_dest_coords(&self, dest: &NodeAddr) -> crate::tree::TreeCoordinate {
         let now_ms = Self::now_ms();
         if let Some(coords) = self.coord_cache.get(dest, now_ms) {
             return coords.clone();
         }
-        // Fallback: use our own coordinates. The SessionSetup dest_coords
-        // field cannot be empty (wire format requires ≥1 entry). Using our
-        // own coords is safe — transit routers will still cache them, and
-        // the destination will return its actual coords in the SessionAck.
-        self.tree_state.my_coords().clone()
+        crate::tree::TreeCoordinate::root(*dest)
     }
 
     /// Current Unix time in milliseconds.

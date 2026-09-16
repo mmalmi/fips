@@ -932,6 +932,7 @@ fn record_dataplane_live_turn_perf(turn: &DataplaneLiveNodeTurn) {
     );
     for drop in turn.drops() {
         let event = match drop.reason() {
+            PacketDropReason::SourcePolicy => crate::perf_profile::Event::DataplaneLiveDropSourcePolicy,
             PacketDropReason::Admission(reason) => {
                 let reason_event = match reason {
                     AdmissionDropReason::PriorityFull => {

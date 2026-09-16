@@ -275,7 +275,9 @@ impl Node {
             .dataplane
             .set_owner_fsp_coords_warmup(owner, coords_warmup_remaining, coords_prefix)
             .is_ok();
-        self.refresh_dataplane_fsp_owner_routes(node_addr) && warmup_applied
+        // Coordinates update the envelope, not the authenticated reply carrier.
+        // Replanning here can move reports onto an unrelated paid branch.
+        self.refresh_dataplane_fsp_owner_routes_retaining_current(node_addr) && warmup_applied
     }
 
     pub(in crate::node) fn apply_dataplane_fsp_path_mtu_signal(
@@ -294,7 +296,8 @@ impl Node {
             result,
             crate::dataplane::DataplaneFspPathMtuApplyResult::Changed(_)
         ) {
-            let _ = self.refresh_dataplane_fsp_owner_routes(node_addr);
+            // Learning the carrier's size limit must not replace that carrier.
+            let _ = self.refresh_dataplane_fsp_owner_routes_retaining_current(node_addr);
         }
         Ok(result)
     }

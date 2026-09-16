@@ -1,91 +1,10 @@
 //! Record local sends and couple onward purchases to upstream admission.
 use super::*;
 
-impl BuyerAuthorizer {
-    fn begin(&self, request: &OriginatedSessionRequest<'_>, local_only: bool) -> Option<u64> {
-        self.begin_admitted(request, local_only, || Some(()))
-            .map(|(token, ())| token)
-    }
-
-    /// Check the onward purchase before reserving upstream credit. Keep the
-    /// buyer state locked across that short, memory-only admission so a renewal
-    /// cannot close the onward quote between validation and reservation.
-    fn begin_admitted<T>(
-        &self,
-        request: &OriginatedSessionRequest<'_>,
-        local_only: bool,
-        admit: impl FnOnce() -> Option<T>,
-    ) -> Option<(u64, T)> {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
-        let mut s = self.state.lock().ok()?;
-        if (local_only && request.source != s.local)
-            || request.next_hop == request.destination
-            || request.session_payload.is_empty()
-            || s.pending.len() >= s.limits.max_pending
-        {
-            return None;
-        }
-        let id = s
-            .quotes
-            .iter()
-            .find(|(_, q)| {
-                let c = &s.channels[&q.contract.channel_id];
-                q.active
-                    && c.active
-                    && c.provider == request.next_hop
-                    && q.contract.destination == request.destination
-                    && now < q.contract.expires_unix
-                    && now < c.terms.expires_unix
-            })?
-            .0
-            .clone();
-        let billing = s.quotes[&id].contract.billing;
-        if billing.has_free_handshakes()
-            && crate::bootstrap::is_handshake(
-                request.session_payload,
-                request.source,
-                request.destination,
-            )
-        {
-            return None;
-        }
-        let legacy = billing.is_legacy();
-        let digest = if legacy {
-            session_fingerprint(request.source, request.destination, request.session_payload)
-        } else {
-            [0; 32]
-        };
-        if legacy && s.seen.contains(&(request.next_hop, digest)) {
-            return None;
-        }
-        let limit = s.limits.max_packets_per_contract;
-        let token = s.next_token;
-        let next_token = token.checked_add(1)?;
-        let q = s.quotes.get_mut(&id)?;
-        let units = u64::try_from(request.session_payload.len()).ok()?;
-        let observed = q.observed_units.checked_add(units)?;
-        if (legacy && q.attempts.len() >= limit) || observed > q.contract.max_units {
-            return None;
-        }
-        let admitted = admit()?;
-        q.observed_units = observed;
-        let index = q.attempts.len();
-        q.attempts.push(Attempt {
-            digest,
-            units,
-            outcome: AttemptOutcome::Pending,
-            token: if legacy { 0 } else { token },
-        });
-        s.pending.insert(token, (id, index));
-        if legacy {
-            s.seen.insert((request.next_hop, digest));
-        }
-        s.next_token = next_token;
-        Some((token, admitted))
-    }
-}
-
 impl OriginatedSessionObserver for BuyerAuthorizer {
+    fn prepare(&self, intent: &OriginatedSessionIntent) -> OriginatedSessionAdmission {
+        self.prepare_intent(intent)
+    }
     fn observe(&self, request: &OriginatedSessionRequest<'_>) -> Option<u64> {
         self.begin(request, true)
     }
@@ -280,6 +199,16 @@ pub struct RouteObserver {
 }
 
 impl OriginatedSessionObserver for RouteObserver {
+    fn prepare(&self, intent: &OriginatedSessionIntent) -> OriginatedSessionAdmission {
+        match self
+            .free
+            .prepare_onward(intent.next_hop, intent.destination, intent.session_bytes)
+        {
+            Some(true) => OriginatedSessionAdmission::Untracked,
+            Some(false) => OriginatedSessionAdmission::Reject,
+            None => self.buyer.prepare(intent),
+        }
+    }
     fn observe(&self, request: &OriginatedSessionRequest<'_>) -> Option<u64> {
         if !crate::bootstrap::is_handshake(
             request.session_payload,

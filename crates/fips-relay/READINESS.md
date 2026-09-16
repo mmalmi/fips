@@ -125,9 +125,16 @@ and provider cooldown. The real paid SimNetwork diamond passes all four root
 positions, preserves channels/history through trial upgrade and path replacement,
 restores a controller/selector reload, and settles all isolated test money. A
 separate exhausted-trial case proves that automatic renewal and reload do not
-reset the quota. This is local candidate selection, not global optimality or broad
-production acceptance. Initial handshake failure, quota-caused missing feedback,
-full restarts and the impairment/mobility matrix below remain open.
+reset the quota. Early source admission now rejects known quote exhaustion before
+native sequence/send counters, so local refusal cannot masquerade as wire loss;
+paid and free reservations reuse their existing counters. Local control refusal
+does not penalize native routing, and coordinate/packet-size updates retain the
+authenticated reply carrier rather than displacing earned return allowance.
+Cold-cache setup also
+retains the real destination identity for strict bounded bootstrap. This is local
+candidate selection, not global optimality or broad production acceptance.
+Initial handshake failure, remote credit/payment-caused missing feedback, full
+restarts and the impairment/mobility matrix below remain open.
 
 Price-aware route selection is an explicit requirement, not proven by simply
 accumulating prices along the native planner's chosen next hops. Reuse FIPS's

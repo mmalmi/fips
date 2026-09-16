@@ -1,4 +1,4 @@
-//! Optional local evidence for an embedding application's outgoing accounting.
+//! Optional local admission and evidence for outgoing accounting.
 
 use super::ForwardingOutcome;
 use crate::NodeAddr;
@@ -18,14 +18,45 @@ pub struct OriginatedSessionRequest<'a> {
     pub session_payload: &'a [u8],
 }
 
+/// A locally created established session record, before reserving its sequence
+/// number or recording a send. The current carrier and exact sealed length
+/// include coordinate/crypto headers; they do not expose application plaintext.
+#[derive(Debug)]
+pub struct OriginatedSessionIntent {
+    pub source: NodeAddr,
+    pub destination: NodeAddr,
+    pub next_hop: NodeAddr,
+    pub session_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OriginatedSessionAdmission {
+    /// Preserve the ordinary post-seal observer, including ciphertext hashing.
+    Defer,
+    /// Admit without accounting; do not invoke the post-seal observer again.
+    Untracked,
+    /// Reserve accounting now and complete this token on transport outcome.
+    Track(u64),
+    /// Do not reserve a sequence number, transmit or update sent/loss metrics.
+    Reject,
+}
+
 /// Observe locally originated FMP session envelopes and their local transport
-/// outcomes. This is not packet admission or proof of neighbor/destination
-/// delivery. Returning `None` opts out of tracking and does not block sending.
+/// outcomes, with optional admission before sealing established records.
+/// `observe` is passive: returning `None` opts out of tracking without blocking
+/// sending. Only `prepare` can reject a record. Neither proves delivery.
 ///
 /// Callbacks run on the packet-processing path and must not wait on disk,
 /// networking or payment validation. Keep bounded in-memory evidence and let
 /// the application's controller separately decide which payments it authorizes.
 pub trait OriginatedSessionObserver: std::fmt::Debug + Send + Sync + 'static {
+    /// Optional admission for locally sealed records carried through FMP.
+    /// Noise handshakes and direct transports keep the original observer path.
+    /// The default preserves passive observation. Like observe, this must be a
+    /// bounded memory-only operation. A tracked reservation may finish uncertain.
+    fn prepare(&self, _intent: &OriginatedSessionIntent) -> OriginatedSessionAdmission {
+        OriginatedSessionAdmission::Defer
+    }
     fn observe(&self, request: &OriginatedSessionRequest<'_>) -> Option<u64>;
     fn complete(&self, token: u64, outcome: ForwardingOutcome);
 }
@@ -50,17 +81,20 @@ impl PartialEq for OriginatedSessionObservation {
 impl Eq for OriginatedSessionObservation {}
 
 impl OriginatedSessionObservation {
+    fn from_token(observer: &Arc<dyn OriginatedSessionObserver>, token: u64) -> Self {
+        Self(Arc::new(ObservationState {
+            observer: Arc::clone(observer),
+            token,
+            completed: AtomicBool::new(false),
+        }))
+    }
     pub(crate) fn start(
         observer: &Arc<dyn OriginatedSessionObserver>,
         request: &OriginatedSessionRequest<'_>,
     ) -> Option<Self> {
-        observer.observe(request).map(|token| {
-            Self(Arc::new(ObservationState {
-                observer: Arc::clone(observer),
-                token,
-                completed: AtomicBool::new(false),
-            }))
-        })
+        observer
+            .observe(request)
+            .map(|token| Self::from_token(observer, token))
     }
 
     pub(crate) fn submitted(&self) {
@@ -68,6 +102,33 @@ impl OriginatedSessionObservation {
             self.0
                 .observer
                 .complete(self.0.token, ForwardingOutcome::Submitted);
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct OriginatedSessionPreparation(pub(crate) Arc<dyn OriginatedSessionObserver>);
+
+impl PartialEq for OriginatedSessionPreparation {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for OriginatedSessionPreparation {}
+
+impl OriginatedSessionPreparation {
+    pub(crate) fn prepare(
+        &self,
+        intent: &OriginatedSessionIntent,
+    ) -> Result<(bool, Option<OriginatedSessionObservation>), ()> {
+        match self.0.prepare(intent) {
+            OriginatedSessionAdmission::Defer => Ok((false, None)),
+            OriginatedSessionAdmission::Untracked => Ok((true, None)),
+            OriginatedSessionAdmission::Track(token) => Ok((
+                true,
+                Some(OriginatedSessionObservation::from_token(&self.0, token)),
+            )),
+            OriginatedSessionAdmission::Reject => Err(()),
         }
     }
 }

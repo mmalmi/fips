@@ -33,6 +33,7 @@ struct Gate {
     paid: PaidForwarder,
     blackhole: AtomicBool,
     dropped: AtomicU64,
+    refused: AtomicU64,
 }
 impl ForwardingPolicy for Gate {
     fn admit(&self, request: &ForwardingRequest<'_>) -> Option<u64> {
@@ -40,7 +41,11 @@ impl ForwardingPolicy for Gate {
             self.dropped.fetch_add(1, Ordering::Relaxed);
             None
         } else {
-            self.paid.admit(request)
+            let result = self.paid.admit(request);
+            if result.is_none() {
+                self.refused.fetch_add(1, Ordering::Relaxed);
+            }
+            result
         }
     }
     fn complete(&self, token: u64, outcome: ForwardingOutcome) {
@@ -73,9 +78,12 @@ async fn priced_paths_follow_quality_upgrade_trials_and_keep_channel_evidence() 
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn exhausted_trial_does_not_renew_and_survives_controller_reload() {
-    tokio::time::timeout(Duration::from_secs(90), run(0, true))
-        .await
-        .expect("trial cap scenario deadline");
+    for iteration in 0..3 {
+        eprintln!("quota trial repetition {iteration}");
+        tokio::time::timeout(Duration::from_secs(90), run(0, true))
+            .await
+            .expect("trial cap scenario deadline");
+    }
 }
 
 fn selection_policy() -> PriceSelectionPolicy {
@@ -96,6 +104,10 @@ fn errors(controllers: &[Arc<Controller>]) -> Vec<(usize, String)> {
 }
 
 async fn run(root_index: usize, exhaust_trial: bool) {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
     let root = tempfile::tempdir().unwrap();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -169,6 +181,7 @@ async fn run(root_index: usize, exhaust_trial: bool) {
             .unwrap(),
             blackhole: AtomicBool::new(false),
             dropped: AtomicU64::new(0),
+            refused: AtomicU64::new(0),
         });
         let mut config = Config::new();
         config.node.identity.nsec = Some(fips_core::encode_nsec(&key.keypair().secret_key()));
@@ -354,6 +367,31 @@ async fn run(root_index: usize, exhaust_trial: bool) {
     );
     if exhaust_trial {
         controllers[0].pause_route_refresh().await.unwrap();
+        // Establish actual delivery before the saturation phase so setup timing
+        // is not mistaken for an allowance result.
+        let mut received = Vec::new();
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                nodes[0]
+                    .send_datagram(peers[3], 44_740, 44_740, vec![6; 200])
+                    .await
+                    .unwrap();
+                if let Ok(Some(_)) = tokio::time::timeout(
+                    Duration::from_millis(250),
+                    receivers[3].recv_batch_into(&mut received, 32),
+                )
+                .await
+                    && received.iter().any(|m| {
+                        m.source_peer.node_addr() == peers[0].node_addr()
+                            && m.data.as_slice() == [6; 200]
+                    })
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("healthy trial must first deliver its application payload");
         // Renewal stays enabled. The configured 90% threshold would renew a
         // normal agreement; a trial must retain its original cumulative cap.
         for _ in 0..160 {
@@ -366,7 +404,46 @@ async fn run(root_index: usize, exhaust_trial: bool) {
         tokio::time::sleep(Duration::from_secs(6)).await;
         let observed = buyers[0].observed_units(&first.contract.id).unwrap();
         let usage = sellers[1].usage(&first.contract.id).unwrap();
-        assert!(observed >= first.contract.max_units * 90 / 100);
+        let mut delivered = received.len();
+        while let Ok(Some(_)) = tokio::time::timeout(
+            Duration::from_millis(20),
+            receivers[3].recv_batch_into(&mut received, 64),
+        )
+        .await
+        {
+            delivered += received.len();
+        }
+        let quality = nodes[0]
+            .source_route_quality(peers[3], Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert_eq!(
+            delivered as u64, quality.sent_packets,
+            "all admitted application packets must reach the receiver"
+        );
+        assert!(
+            quality.sent_packets < 160,
+            "local allowance denials must not become native sent packets: {quality:?}"
+        );
+        assert!(
+            !quality.delivery_feedback_timed_out,
+            "exhausting a healthy trial is not a failed carrier: {quality:?} observed={observed} usage={usage:?} returns={:?} errors={:?}",
+            gates
+                .iter()
+                .map(|g| (g.paid.return_stats(), g.refused.load(Ordering::Relaxed)))
+                .collect::<Vec<_>>(),
+            errors(&controllers)
+        );
+        let after_exhaustion = services[0].quotes.refresh_route(peers[3]).await.unwrap();
+        assert_eq!(
+            after_exhaustion.provider, first.provider,
+            "exhaustion cannot quarantine the healthy cheap provider"
+        );
+        assert!(
+            observed >= first.contract.max_units * 90 / 100,
+            "trial must really reach its cap: observed={observed} usage={usage:?} quality={quality:?} errors={:?}",
+            errors(&controllers)
+        );
         assert!(observed <= first.contract.max_units);
         assert!(usage.submitted_units > 0 && usage.reserved_units <= first.contract.max_units);
         assert_eq!(
@@ -572,7 +649,15 @@ async fn run(root_index: usize, exhaust_trial: bool) {
         .source_route_quality(peers[3], Duration::from_secs(2))
         .await
         .unwrap();
-    assert_eq!(q.next_hop, Some(current.provider));
+    assert_eq!(
+        q.next_hop,
+        if exhaust_trial {
+            None
+        } else {
+            Some(current.provider)
+        },
+        "a denied post-reload send cannot invent an observed carrier"
+    );
     assert_eq!(
         restored_payload, !exhaust_trial,
         "reload cannot reset an exhausted trial"

@@ -82,6 +82,121 @@ fn approve(buyer: &BuyerAuthorizer, terms: &ChannelTerms, id: &str) {
 }
 
 #[test]
+fn early_source_reservations_share_quote_limits_completion_and_recovery() {
+    use fips_core::node::{OriginatedSessionAdmission as Admission, OriginatedSessionIntent};
+    use fips_relay::ledger::BillingBasis;
+    for billing in [
+        BillingBasis::ForwardingAttempt,
+        BillingBasis::ForwardingData,
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("buyer");
+        let buyer = BuyerAuthorizer::create(
+            &directory,
+            address(1),
+            10,
+            Limits {
+                max_pending: 1,
+                ..Limits::default()
+            },
+        )
+        .unwrap();
+        let terms = channel("early");
+        buyer.accept_channel(address(2), terms.clone(), 0).unwrap();
+        let mut contract = quote("capped", &terms);
+        contract.billing = billing;
+        contract.price.msat = 1;
+        contract.max_units = 64;
+        buyer.accept_quote(contract).unwrap();
+        let mut intent = OriginatedSessionIntent {
+            source: address(1),
+            destination: address(9),
+            next_hop: address(2),
+            session_bytes: 32,
+        };
+        intent.source = address(8);
+        assert_eq!(buyer.prepare(&intent), Admission::Reject);
+        intent.source = address(1);
+        let Admission::Track(first) = buyer.prepare(&intent) else {
+            panic!("approved source");
+        };
+        assert_eq!(buyer.observed_units("capped"), Some(32));
+        assert_eq!(
+            buyer.evidence_msat("early"),
+            Some(0),
+            "reservation alone is not submission"
+        );
+        assert_eq!(
+            buyer.prepare(&intent),
+            Admission::Reject,
+            "pending state is bounded"
+        );
+        buyer.complete(first, ForwardingOutcome::Unconfirmed);
+        let Admission::Track(second) = buyer.prepare(&intent) else {
+            panic!("remaining quota");
+        };
+        buyer.complete(second, ForwardingOutcome::Submitted);
+        buyer.complete(second, ForwardingOutcome::Submitted);
+        assert_eq!(buyer.evidence_msat("early"), Some(32));
+        intent.session_bytes = 1;
+        assert_eq!(buyer.prepare(&intent), Admission::Reject);
+        assert_eq!(buyer.observed_units("capped"), Some(64));
+        buyer.checkpoint().unwrap();
+        drop(buyer);
+        let buyer = BuyerAuthorizer::load(&directory).unwrap();
+        assert_eq!(
+            buyer.prepare(&intent),
+            Admission::Reject,
+            "reload cannot reset a quota"
+        );
+        buyer.close_quote("capped").unwrap();
+        assert_eq!(
+            buyer.prepare(&intent),
+            Admission::Reject,
+            "closed does not mean untracked"
+        );
+        intent.destination = address(8);
+        assert_eq!(
+            buyer.prepare(&intent),
+            Admission::Defer,
+            "unknown return/bootstrap stays remote-gated"
+        );
+        intent.next_hop = intent.destination;
+        assert_eq!(
+            buyer.prepare(&intent),
+            Admission::Defer,
+            "direct final peers need no relay quote"
+        );
+    }
+}
+
+#[test]
+fn legacy_source_billing_keeps_the_ciphertext_observer() {
+    use fips_core::node::{OriginatedSessionAdmission as Admission, OriginatedSessionIntent};
+    let root = tempfile::tempdir().unwrap();
+    let buyer = BuyerAuthorizer::create(
+        &root.path().join("buyer"),
+        address(1),
+        10,
+        Limits::default(),
+    )
+    .unwrap();
+    approve(&buyer, &channel("legacy"), "legacy-route");
+    assert_eq!(
+        buyer.prepare(&OriginatedSessionIntent {
+            source: address(1),
+            destination: address(9),
+            next_hop: address(2),
+            session_bytes: 32,
+        }),
+        Admission::Defer
+    );
+    assert_eq!(buyer.observed_units("legacy-route"), Some(0));
+    assert!(observe(&buyer, b"exact ciphertext").is_some());
+    assert!(observe(&buyer, b"exact ciphertext").is_none());
+}
+
+#[test]
 fn forwarding_attempt_evidence_is_bounded_and_completion_is_idempotent() {
     use fips_relay::ledger::BillingBasis;
     for billing in [

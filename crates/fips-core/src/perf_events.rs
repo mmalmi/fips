@@ -271,11 +271,13 @@ pub enum Event {
     DataplaneLiveDropAdmissionInboundBulkFull = 266,
     DataplaneLiveDropAdmissionOutboundPriorityFull = 267,
     DataplaneLiveDropAdmissionOutboundBulkFull = 268,
+    DataplaneLiveDropSourcePolicy = 269,
 }
 
 impl Event {
     const fn name(self) -> &'static str {
         match self {
+            Event::DataplaneLiveDropSourcePolicy => "dataplane_live_drop_source_policy",
             Event::ReservedEvent0 => "reserved_event_0",
             Event::ReservedEvent1 => "reserved_event_1",
             Event::ReservedEvent2 => "reserved_event_2",
@@ -844,6 +846,7 @@ fn event_from_index(idx: usize) -> Event {
         266 => Event::DataplaneLiveDropAdmissionInboundBulkFull,
         267 => Event::DataplaneLiveDropAdmissionOutboundPriorityFull,
         268 => Event::DataplaneLiveDropAdmissionOutboundBulkFull,
+        269 => Event::DataplaneLiveDropSourcePolicy,
         _ => unreachable!(),
     }
 }

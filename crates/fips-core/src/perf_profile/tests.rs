@@ -33,7 +33,7 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_is_exhaustive() {
-    assert_eq!(N_EVENTS, 269);
+    assert_eq!(N_EVENTS, 270);
     for index in 0..N_EVENTS {
         let event = event_from_index(index);
         assert_eq!(event as usize, index);

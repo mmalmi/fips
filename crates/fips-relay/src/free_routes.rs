@@ -21,6 +21,14 @@ struct Lease {
     used: u64,
 }
 impl Lease {
+    fn reserve<T>(&mut self, bytes: u64, now: u64, admit: impl FnOnce() -> Option<T>) -> Option<T> {
+        if bytes == 0 || !self.fits(bytes, now) {
+            return None;
+        }
+        let admitted = admit()?;
+        self.used += bytes;
+        Some(admitted)
+    }
     fn fits(&self, bytes: u64, now: u64) -> bool {
         self.offer.expires_unix > now
             && self
@@ -230,13 +238,31 @@ impl FreeRoutes {
         let bytes = u64::try_from(bytes).ok().filter(|n| *n > 0)?;
         let now = now()?;
         let mut state = self.state.lock().ok()?;
-        let lease = state
+        let lease = state.outgoing.get_mut(&(next, destination))?;
+        lease.reserve(bytes, now, admit)
+    }
+
+    /// None means no free permission; Some(false) is a known local denial and
+    /// must not fall through to untracked sending or a paid accounting record.
+    pub(crate) fn prepare_onward(
+        &self,
+        next: NodeAddr,
+        destination: NodeAddr,
+        bytes: usize,
+    ) -> Option<bool> {
+        let Ok(bytes) = u64::try_from(bytes) else {
+            return Some(false);
+        };
+        let Some(now) = now() else {
+            return Some(false);
+        };
+        let Ok(mut state) = self.state.lock() else {
+            return Some(false);
+        };
+        state
             .outgoing
             .get_mut(&(next, destination))
-            .filter(|l| l.fits(bytes, now))?;
-        let admitted = admit()?;
-        lease.used += bytes;
-        Some(admitted)
+            .map(|lease| lease.reserve(bytes, now, || Some(())).is_some())
     }
 
     pub fn stats(&self) -> FreeRouteStats {
