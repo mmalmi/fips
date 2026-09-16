@@ -53,6 +53,23 @@ fee-bearing funding/replayed refunds, standalone services, and ordinary/native
 settlement. Strict all-feature/all-target linting, formatting and source-size
 checks pass with the corrected local dependencies.
 
+### Route-evidence retirement foundation
+
+Buyer and seller accounting now share fixed-size per-channel rollups for closed,
+expired per-attempt route records. Original per-route rounding, submitted and
+uncertain usage, paid/reserved totals, signed amounts and lifetime budgets remain
+unchanged. A durable expiry cutoff rejects stale agreements after removal and
+restart. Active or pending work and legacy fingerprints block the whole batch.
+
+The regression runs 64 replacements on each side with a one-route limit and a
+restart after every retirement, keeping journals below 4 KiB. It also covers
+unpaid grace, duplicate callbacks, failed writes, malformed summaries and loading
+older accounting schemas. Verification passes 120 relevant relay tests, including
+fee-bearing funding and ordinary/native mint settlement; strict linting, formatting
+and source-size checks pass. See [history boundaries](HISTORY.md) for evidence and
+compatibility. Automatic controller coordination and whole-channel retirement
+remain unfinished; the existing funding-history limit is still enforced.
+
 ### Receiving during tree convergence
 
 The intermittent healthy-trial failure was traced to session ingress depending

@@ -36,7 +36,10 @@ confirmed refunds, locked capital and worst-case lifetime exposure. The historic
 `locked_sat` status field has the same meaning as `funding_budget.locked_sat`.
 History currently remains bounded at 16 funding records; it stops new funding
 when full. Financial history retirement remains unfinished and must preserve these
-totals and replay evidence before any records can be removed.
+totals and replay evidence before any funding records can be removed.
+[Route evidence rollups](HISTORY.md) preserve lower-level accounting while freeing
+expired quote slots, but coordinated controller and whole-channel retirement are
+not enabled yet.
 
 ## Development and migration
 

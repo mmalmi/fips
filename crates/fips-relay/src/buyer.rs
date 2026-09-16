@@ -5,7 +5,9 @@
 //! controller accepts quotes/funded channels and owns a finite lifetime budget.
 
 mod admission;
+mod agreements;
 mod forwarding;
+mod retirement;
 pub use forwarding::{PaidForwarder, RouteObserver};
 
 use crate::{
@@ -13,8 +15,8 @@ use crate::{
         DurableError, DurableRelay, MAX_JOURNAL_BYTES, acquire_owner, write_private_journal,
     },
     ledger::{
-        BillingBasis, ChannelTerms, Contract, Limits, node_addr, session_fingerprint,
-        validate_channel, validate_contract,
+        BillingBasis, ChannelTerms, Contract, Limits, RetiredRouteEvidence, node_addr,
+        session_fingerprint, validate_channel, validate_contract,
     },
 };
 use cashu_service::{CashuSpilmanPayment, CashuSpilmanPaymentSigner};
@@ -64,6 +66,8 @@ struct PurchaseChannel {
     terms: ChannelTerms,
     advance_msat: u64,
     authorized_sat: u64,
+    #[serde(default)]
+    retired: Option<RetiredRouteEvidence>,
     active: bool,
 }
 
@@ -118,23 +122,29 @@ struct State {
 
 impl State {
     fn evidence_msat(&self, id: &str) -> Option<u64> {
-        self.channels.get(id)?;
+        let retired = self.channels.get(id)?.retired?;
         self.quotes
             .values()
             .filter(|q| q.contract.channel_id == id)
-            .try_fold(0u64, |sum, q| {
+            .try_fold(retired.submitted_msat, |sum, q| {
                 sum.checked_add(q.contract.price.amount_due_msat(q.submitted_units)?)
             })
     }
 
     fn validate_and_recover(&mut self) -> Result<(), BuyerError> {
-        if !matches!(self.version, 1 | 2)
+        if !matches!(self.version, 1..=3)
             || self.total_budget_sat == 0
             || self.next_token == 0
             || self.channels.len() > self.limits.max_channels
             || self.quotes.len() > self.limits.max_contracts
         {
             return Err(BuyerError::Format);
+        }
+        for c in self.channels.values_mut() {
+            c.retired = Some(
+                RetiredRouteEvidence::recovered(c.retired, self.version == 3, c.terms.expires_unix)
+                    .ok_or(BuyerError::Format)?,
+            );
         }
         self.seen.clear();
         self.pending.clear();
@@ -168,7 +178,10 @@ impl State {
                 .get(&q.contract.channel_id)
                 .ok_or(BuyerError::Format)?;
             validate_contract(&q.contract, &c.terms).map_err(|_| BuyerError::Format)?;
-            if id != &q.contract.id
+            if c.retired
+                .ok_or(BuyerError::Format)?
+                .rejects(q.contract.expires_unix)
+                || id != &q.contract.id
                 || q.contract.destination == c.provider
                 || (legacy && q.attempts.len() > self.limits.max_packets_per_contract)
                 || (self.version == 1 && !legacy)
@@ -230,7 +243,7 @@ impl State {
                 return Err(BuyerError::Format);
             }
         }
-        self.version = 2;
+        self.version = 3;
         Ok(())
     }
 }
@@ -268,7 +281,7 @@ impl BuyerAuthorizer {
         let buyer = Self {
             directory: directory.into(),
             state: Mutex::new(State {
-                version: 2,
+                version: 3,
                 local,
                 total_budget_sat,
                 limits,
@@ -308,125 +321,6 @@ impl BuyerAuthorizer {
         };
         buyer.checkpoint()?;
         Ok(buyer)
-    }
-
-    /// Trusted acceptance, separate from an untrusted provider's usage report.
-    /// A funded channel starts at zero; any explicit advance is a total allowance
-    /// for this channel, never a per-quote/per-update allowance.
-    pub fn accept_channel(
-        &self,
-        provider: NodeAddr,
-        terms: ChannelTerms,
-        advance_msat: u64,
-    ) -> Result<(), BuyerError> {
-        let capacity = validate_channel(&terms).map_err(|_| BuyerError::InvalidAgreement)?;
-        self.change(|state| {
-            if terms.buyer != state.local || provider == state.local || advance_msat > capacity {
-                return Err(BuyerError::InvalidAgreement);
-            }
-            if let Some(c) = state.channels.get(&terms.id) {
-                return if c.provider == provider
-                    && c.terms == terms
-                    && c.advance_msat == advance_msat
-                {
-                    Ok(())
-                } else {
-                    Err(BuyerError::InvalidAgreement)
-                };
-            }
-            if state.channels.len() >= state.limits.max_channels {
-                return Err(BuyerError::Capacity);
-            }
-            if state
-                .channels
-                .values()
-                .any(|c| c.active && c.provider == provider && c.terms.mint_url == terms.mint_url)
-            {
-                return Err(BuyerError::InvalidAgreement);
-            }
-            state.channels.insert(
-                terms.id.clone(),
-                PurchaseChannel {
-                    provider,
-                    terms,
-                    advance_msat,
-                    authorized_sat: 0,
-                    active: true,
-                },
-            );
-            Ok(())
-        })
-    }
-
-    pub fn accept_quote(&self, contract: Contract) -> Result<(), BuyerError> {
-        self.change(|state| {
-            let c = state
-                .channels
-                .get(&contract.channel_id)
-                .ok_or(BuyerError::UnknownAgreement)?;
-            validate_contract(&contract, &c.terms).map_err(|_| BuyerError::InvalidAgreement)?;
-            if let Some(q) = state.quotes.get(&contract.id) {
-                return if q.contract == contract {
-                    Ok(())
-                } else {
-                    Err(BuyerError::InvalidAgreement)
-                };
-            }
-            if !c.active || contract.destination == c.provider {
-                return Err(BuyerError::InvalidAgreement);
-            }
-            if state.quotes.len() >= state.limits.max_contracts {
-                return Err(BuyerError::Capacity);
-            }
-            if state.quotes.values().any(|q| {
-                q.active
-                    && q.contract.destination == contract.destination
-                    && state.channels[&q.contract.channel_id].provider == c.provider
-            }) {
-                return Err(BuyerError::InvalidAgreement);
-            }
-            state.quotes.insert(
-                contract.id.clone(),
-                PurchaseQuote {
-                    contract,
-                    active: true,
-                    attempts: Vec::new(),
-                    observed_units: 0,
-                    submitted_units: 0,
-                    completed: CompletedEvidence::default(),
-                },
-            );
-            Ok(())
-        })
-    }
-
-    pub fn close_quote(&self, id: &str) -> Result<(), BuyerError> {
-        self.change(|s| {
-            s.quotes
-                .get_mut(id)
-                .ok_or(BuyerError::UnknownAgreement)?
-                .active = false;
-            Ok(())
-        })
-    }
-
-    /// Stop new purchase evidence. Final claims can still be signed until expiry;
-    /// mint settlement/refund and channel funding are separate controller work.
-    pub fn close_channel(&self, id: &str) -> Result<(), BuyerError> {
-        self.change(|s| {
-            s.channels
-                .get_mut(id)
-                .ok_or(BuyerError::UnknownAgreement)?
-                .active = false;
-            for q in s
-                .quotes
-                .values_mut()
-                .filter(|q| q.contract.channel_id == id)
-            {
-                q.active = false;
-            }
-            Ok(())
-        })
     }
 
     pub fn checkpoint(&self) -> Result<(), BuyerError> {

@@ -194,6 +194,24 @@ impl DurableRelay {
         self.mutate(|l| l.seal_channel(id)).map(|(usage, _)| usage)
     }
 
+    /// Controller maintenance; persist the rollup and replay floor before
+    /// reporting completion. A failed write suspends all admission as usual.
+    pub fn retire_closed_routes(
+        &self,
+        channel: &str,
+        through_unix: u64,
+    ) -> Result<usize, DurableError> {
+        self.mutate(|l| l.retire_closed_routes(channel, through_unix))
+            .map(|(count, _)| count)
+    }
+
+    pub fn retired_route_evidence(
+        &self,
+        channel: &str,
+    ) -> Option<crate::ledger::RetiredRouteEvidence> {
+        self.ledger.retired_route_evidence(channel)
+    }
+
     /// Live metrics are not a payment claim. Use `checkpoint` for that.
     pub fn channel_usage(&self, id: &str) -> Option<ChannelUsage> {
         self.ledger.channel_usage(id)

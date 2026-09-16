@@ -4,7 +4,10 @@
 //! its exposure window before activation and reconcile it after a process crash.
 
 mod admission;
+mod history;
 mod recovery;
+mod retirement;
+pub use history::RetiredRouteEvidence;
 
 use fips_core::{
     NodeAddr,
@@ -151,6 +154,7 @@ struct Account {
 #[derive(Debug)]
 struct Channel {
     terms: ChannelTerms,
+    retired: RetiredRouteEvidence,
     usage: ChannelUsage,
     active: bool,
 }
@@ -200,6 +204,8 @@ fn relationship_reservation_limit<'a>(
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ChannelSnapshot {
+    #[serde(default)]
+    pub(crate) retired: Option<RetiredRouteEvidence>,
     pub(crate) terms: ChannelTerms,
     pub(crate) usage: ChannelUsage,
     pub(crate) active: bool,
@@ -302,6 +308,7 @@ impl RelayLedger {
             terms.id.clone(),
             Channel {
                 terms,
+                retired: RetiredRouteEvidence::default(),
                 usage: ChannelUsage {
                     paid_msat,
                     ..ChannelUsage::default()
@@ -321,6 +328,9 @@ impl RelayLedger {
             .get(&contract.channel_id)
             .ok_or(LedgerError::UnknownContract)?;
         validate_contract(&contract, &channel.terms)?;
+        if channel.retired.rejects(contract.expires_unix) {
+            return Err(LedgerError::InvalidContract);
+        }
         if let Some(existing) = state.accounts.get(&contract.id) {
             return if existing.contract == contract {
                 Ok(())

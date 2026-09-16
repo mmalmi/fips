@@ -5,13 +5,14 @@ impl RelayLedger {
     pub fn snapshot(&self) -> Snapshot {
         let state = self.state.lock().unwrap();
         Snapshot {
-            version: 4,
+            version: 5,
             limits: self.limits,
             next_token: state.next_token,
             channels: state
                 .channels
                 .values()
                 .map(|c| ChannelSnapshot {
+                    retired: Some(c.retired),
                     terms: c.terms.clone(),
                     usage: c.usage,
                     active: c.active,
@@ -34,7 +35,7 @@ impl RelayLedger {
     /// Retain all evidence but activate no traffic. A snapshot alone does not
     /// establish which sends occurred after its last durable checkpoint.
     pub fn restore(snapshot: Snapshot) -> Result<Self, LedgerError> {
-        if !matches!(snapshot.version, 3 | 4)
+        if !matches!(snapshot.version, 3..=5)
             || snapshot.channels.len() > snapshot.limits.max_channels
             || snapshot.accounts.len() > snapshot.limits.max_contracts
         {
@@ -46,6 +47,12 @@ impl RelayLedger {
         };
         let mut expected_channels = BTreeMap::new();
         for saved in snapshot.channels {
+            let retired = RetiredRouteEvidence::recovered(
+                saved.retired,
+                snapshot.version == 5,
+                saved.terms.expires_unix,
+            )
+            .ok_or(LedgerError::InvalidSnapshot)?;
             let cap = validate_channel(&saved.terms).map_err(|_| LedgerError::InvalidSnapshot)?;
             if saved.usage.paid_msat > cap
                 || saved.usage.reserved_msat > cap
@@ -61,11 +68,16 @@ impl RelayLedger {
                 saved.terms.id.clone(),
                 Channel {
                     terms: saved.terms,
+                    retired,
                     usage: ChannelUsage {
                         paid_msat: saved.usage.paid_msat,
-                        reserved_msat: saved.usage.lost_msat,
+                        reserved_msat: saved
+                            .usage
+                            .lost_msat
+                            .checked_add(retired.reserved_msat)
+                            .ok_or(LedgerError::InvalidSnapshot)?,
+                        submitted_msat: retired.submitted_msat,
                         lost_msat: saved.usage.lost_msat,
-                        ..ChannelUsage::default()
                     },
                     active: false,
                 },
@@ -91,6 +103,9 @@ impl RelayLedger {
                 .channels
                 .get_mut(&saved.contract.channel_id)
                 .ok_or(LedgerError::InvalidSnapshot)?;
+            if channel.retired.rejects(saved.contract.expires_unix) {
+                return Err(LedgerError::InvalidSnapshot);
+            }
             validate_contract(&saved.contract, &channel.terms)
                 .map_err(|_| LedgerError::InvalidSnapshot)?;
             let mut reserved = saved.completed.reserved_units;
