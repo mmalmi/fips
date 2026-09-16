@@ -54,8 +54,10 @@ pub(super) fn same_service(previous: &RouteOffer, next: &RouteOffer) -> bool {
         && previous.provider == next.provider
         && previous.destination.node_addr() == next.destination.node_addr()
         && previous.next_hop == next.next_hop
+        && previous.path == next.path
         && previous.price == next.price
         && previous.billing == next.billing
+        && previous.trial == next.trial
         && previous.mint_url == next.mint_url
         && next.max_units >= previous.max_units
 }
@@ -183,6 +185,9 @@ impl Controller {
                 .into_iter()
                 .filter(|p| {
                     !snapshot.renewals.contains_key(&p.channel.id)
+                        && !snapshot.outgoing.values().any(|o| {
+                            o.purchase.channel.id == p.channel.id && !o.retired && o.offer.trial
+                        })
                         && self.renewal_due(p, policy, timestamp)
                 })
                 .map(|p| p.channel.id)
@@ -244,11 +249,7 @@ impl Controller {
         if renewal.replacements.is_none() {
             let mut offers = Vec::new();
             for old in &renewal.previous {
-                let offer = self
-                    .services
-                    .quotes
-                    .request_route(old.offer.destination)
-                    .await?;
+                let offer = self.services.quotes.renewal_offer(&old.offer).await?;
                 if !same_service(&old.offer, &offer) {
                     return Err(
                         "renewal price or route changed; new upstream agreement required".into(),
@@ -321,6 +322,7 @@ mod tests {
         let destination = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
         let provider = NodeAddr::from_bytes([2; 16]);
         RouteOffer {
+            trial: false,
             billing: Default::default(),
             id: "offer".into(),
             buyer: NodeAddr::from_bytes([1; 16]),
@@ -350,6 +352,8 @@ mod tests {
             |o| o.price.msat += 1,
             |o| o.provider = NodeAddr::from_bytes([3; 16]),
             |o| o.next_hop = NodeAddr::from_bytes([4; 16]),
+            |o| o.path.push(NodeAddr::from_bytes([5; 16])),
+            |o| o.trial = !o.trial,
             |o| o.mint_url = "http://127.0.0.1:5678".into(),
             |o| o.max_units -= 1,
         ];

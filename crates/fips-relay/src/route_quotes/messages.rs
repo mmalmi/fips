@@ -15,11 +15,17 @@ pub struct QuoteRequest {
     /// Monitoring can reuse an unchanged unexpired offer without growing history.
     #[serde(default, skip_serializing_if = "is_false")]
     pub reuse_unchanged: bool,
+    /// Optional route-wide byte ceiling for an explicitly bounded trial.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_max_units: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RouteOffer {
+    /// A quota-limited trial cannot be renewed automatically without re-selection.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub trial: bool,
     #[serde(default, skip_serializing_if = "BillingBasis::is_legacy")]
     pub billing: BillingBasis,
     pub id: String,

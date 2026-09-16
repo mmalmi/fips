@@ -276,7 +276,7 @@ impl RelayService {
         .await?;
         let mut control_statistics = vec![(44_741, quote_transport.statistics())];
         let t = &config.terms;
-        let quotes = Arc::new(RouteQuotes::with_free_routes(
+        let quotes = RouteQuotes::with_free_routes(
             endpoint.clone(),
             Arc::new(quote_transport),
             QuotePolicy {
@@ -294,7 +294,12 @@ impl RelayService {
                 grace_msat: t.grace_msat,
             },
             free.clone(),
-        )?);
+        )?;
+        let quotes = Arc::new(if let Some(policy) = &config.price_selection {
+            quotes.with_price_selection(policy.clone())?
+        } else {
+            quotes
+        });
         let quote_server = QuoteServer::start(quotes.clone(), quote_incoming);
         let (acceptance, incoming) = ControlTransport::start_with_customers(
             endpoint.clone(),

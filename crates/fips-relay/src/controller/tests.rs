@@ -54,6 +54,7 @@ fn repurchase_rejects_unfinished_refunds_stale_offers_and_competing_renewal() {
         expires_unix: now().unwrap() + 600,
     };
     let offer = RouteOffer {
+        trial: false,
         billing: Default::default(),
         id: "old-offer".into(),
         buyer: journal.local,

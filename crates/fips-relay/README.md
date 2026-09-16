@@ -25,9 +25,14 @@ to deliver through paid relays to an unfunded recipient without buying a reverse
 route. Existing account terms and the physical bench remain unchanged.
 Explicit [destination fees](DESTINATION-PRICING.md) can make selected destinations
 free without opening payment channels, or charge different local fees. These
-software checks do not yet establish cheapest working route selection.
+software checks cover per-destination agreement and accounting semantics.
 An opt-in [bounded return allowance](RETURN-ALLOWANCE.md) lets an unfunded
 recipient return encrypted native quality reports and other small replies.
+Opt-in [price and quality selection](PRICE-SELECTION.md) now compares adjacent
+providers' real quotes by estimated delivered cost, with latency/loss limits,
+bounded path trials and cooldown. Real paid diamond simulations exercise
+failover, quota exhaustion and controller reload; global optimality, mobility
+and broad production readiness remain unclaimed.
 
 ## Implemented and checked
 

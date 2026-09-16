@@ -64,6 +64,9 @@ explicit route opening and configuration compatibility.
 For fresh forwarding-data service, `return_allowance: true` enables the
 [bounded reverse-path policy](RETURN-ALLOWANCE.md). It defaults to false and
 does not enable an unrestricted reverse route or authorize wallet spending.
+Optional `price_selection` compares source offers using native end-to-end quality
+and capped trials on forwarding-data accounts. See [PRICE-SELECTION.md](PRICE-SELECTION.md)
+for defaults, watch authority, peer compatibility and current limitations.
 
 Run `fips-relay init /absolute/path/config.json` once. It prints the new public
 FIPS identity. Init creates private keys and empty accounts; it never overwrites

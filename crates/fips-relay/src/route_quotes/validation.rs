@@ -44,6 +44,7 @@ pub(super) fn validate_offer(
     now: u64,
 ) -> Result<(), String> {
     if offer.id.is_empty()
+        || offer.trial != request.requested_max_units.is_some()
         || offer.billing != policy.billing
         || offer.id.len() > 128
         || offer.buyer != local
@@ -64,6 +65,9 @@ pub(super) fn validate_offer(
         || (offer.price.msat != 0 && offer.mint_url != policy.mint_url)
         || !valid_key(&offer.receiver_pubkey_hex)
         || offer.max_units == 0
+        || request
+            .requested_max_units
+            .is_some_and(|limit| offer.max_units > limit)
         || offer.price.amount_due_msat(offer.max_units).is_none()
         || offer.capacity_sat == 0
         || offer
@@ -74,4 +78,35 @@ pub(super) fn validate_offer(
         return Err("invalid or unacceptable downstream quote".into());
     }
     Ok(())
+}
+
+/// Shared authenticated wire request for native and priced source discovery.
+pub(super) async fn fetch_offer(
+    control: &ControlTransport,
+    policy: &QuotePolicy,
+    local: NodeAddr,
+    peer: PeerIdentity,
+    request: &QuoteRequest,
+) -> Result<RouteOffer, String> {
+    let seconds = request
+        .deadline_unix
+        .checked_sub(unix_now()?)
+        .filter(|n| *n > 0 && *n <= MAX_REQUEST_SECONDS)
+        .ok_or("quote deadline")?;
+    let bytes = tokio::time::timeout(
+        Duration::from_secs(seconds),
+        control.request(
+            peer,
+            serde_json::to_vec(request).map_err(|e| e.to_string())?,
+        ),
+    )
+    .await
+    .map_err(|_| "quote deadline")??;
+    let reply: QuoteResponse =
+        serde_json::from_slice(&bytes).map_err(|_| "invalid quote response")?;
+    let QuoteResponse::Offer { offer } = reply else {
+        return Err("provider rejected quote request".into());
+    };
+    validate_offer(policy, local, &offer, peer, request, unix_now()?)?;
+    Ok(*offer)
 }

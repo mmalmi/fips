@@ -101,6 +101,9 @@ impl Controller {
                 || o.offer.billing != offered.billing
                 || o.offer.next_hop != offered.next_hop
                 || o.offer.path != offered.path
+                || o.offer.max_units != offered.max_units
+                || o.offer.trial != offered.trial
+                || (offered.trial && o.offer.id != offered.id)
                 || o.purchase.contract.expires_unix <= timestamp
         });
         let existing = snapshot

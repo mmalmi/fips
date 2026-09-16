@@ -11,6 +11,7 @@ fn peer(n: u8) -> PeerIdentity {
 }
 fn offer(buyer: u8, provider: u8, next: u8) -> RouteOffer {
     RouteOffer {
+        trial: false,
         billing: BillingBasis::ForwardingData,
         id: format!("{buyer}-{provider}-{next}"),
         buyer: *peer(buyer).node_addr(),

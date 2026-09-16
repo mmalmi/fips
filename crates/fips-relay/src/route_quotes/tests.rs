@@ -24,8 +24,10 @@ fn downstream_quotes_cannot_change_identity_price_mint_or_loop_bounds() {
         ancestors: vec![*buyer.node_addr()],
         deadline_unix: 110,
         reuse_unchanged: false,
+        requested_max_units: None,
     };
     let offer = RouteOffer {
+        trial: false,
         billing: Default::default(),
         id: "quote".into(),
         buyer: *buyer.node_addr(),
@@ -87,4 +89,34 @@ fn downstream_quotes_cannot_change_identity_price_mint_or_loop_bounds() {
     let mut canonical = offer;
     canonical.destination = PeerIdentity::from_npub(&destination.npub()).unwrap();
     check(&canonical).unwrap();
+
+    let trial_request = QuoteRequest {
+        requested_max_units: Some(8192),
+        ..request
+    };
+    let mut trial = canonical;
+    trial.trial = true;
+    trial.max_units = 8192;
+    let check_trial = |offer: &RouteOffer| {
+        validate_offer(
+            &policy,
+            *buyer.node_addr(),
+            offer,
+            provider,
+            &trial_request,
+            100,
+        )
+    };
+    check_trial(&trial).unwrap();
+    trial.max_units += 1;
+    assert!(
+        check_trial(&trial).is_err(),
+        "provider cannot enlarge a trial"
+    );
+    trial.max_units = 8192;
+    trial.trial = false;
+    assert!(
+        check_trial(&trial).is_err(),
+        "trial cannot become renewable"
+    );
 }

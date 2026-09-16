@@ -1,0 +1,420 @@
+//! Source-side offer selection. Transit continues using the native route planner.
+use super::*;
+use fips_core::SourceRouteQuality;
+use serde::{Deserialize, Serialize};
+use tokio::time::Instant;
+
+const MAX_DESTINATIONS: usize = 32;
+const MAX_CANDIDATES: usize = 4;
+const MAX_FAILED_PROVIDERS: usize = 16;
+const MAX_OBSERVATIONS: usize = 16;
+const QUOTE_SECONDS: u64 = 5;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PriceSelectionPolicy {
+    pub feedback_timeout_ms: u64,
+    pub retry_after_ms: u64,
+    pub trial_max_units: u64,
+    pub min_improvement_percent: u8,
+    pub max_loss_percent: u8,
+    pub max_rtt_ms: u64,
+}
+
+impl Default for PriceSelectionPolicy {
+    fn default() -> Self {
+        Self {
+            feedback_timeout_ms: 15_000,
+            retry_after_ms: 60_000,
+            trial_max_units: 32_768,
+            min_improvement_percent: 10,
+            max_loss_percent: 25,
+            max_rtt_ms: 5_000,
+        }
+    }
+}
+
+impl PriceSelectionPolicy {
+    pub fn validate(&self) -> Result<(), String> {
+        if !(1_000..=60_000).contains(&self.feedback_timeout_ms)
+            || !(self.feedback_timeout_ms..=3_600_000).contains(&self.retry_after_ms)
+            || !(4_096..=1_048_576).contains(&self.trial_max_units)
+            || self.min_improvement_percent > 50
+            || self.max_loss_percent > 90
+            || !(1..=60_000).contains(&self.max_rtt_ms)
+        {
+            return Err("invalid price selection policy".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct Destination {
+    active: Option<RouteOffer>,
+    observations: BTreeMap<NodeAddr, Observation>,
+    failed: BTreeMap<NodeAddr, Instant>,
+    cursor: usize,
+}
+
+struct Observation {
+    path: Vec<NodeAddr>,
+    at: Instant,
+    loss_ppm: u32,
+}
+
+impl Destination {
+    fn observe(
+        &mut self,
+        quality: &SourceRouteQuality,
+        policy: &PriceSelectionPolicy,
+        now: Instant,
+    ) -> Result<(), String> {
+        let Some(active) = &self.active else {
+            return Ok(());
+        };
+        if quality.next_hop != Some(active.provider) {
+            self.observations.remove(&active.provider);
+            return Ok(());
+        }
+        let loss = quality
+            .loss_rate
+            .filter(|v| v.is_finite() && (0.0..=1.0).contains(v));
+        let rtt = quality.rtt_ms.filter(|v| v.is_finite() && *v >= 0.0);
+        if quality.delivery_feedback_timed_out
+            || (quality.has_recent_delivery_feedback
+                && (loss.is_some_and(|v| v * 100.0 > f64::from(policy.max_loss_percent))
+                    || rtt.is_some_and(|v| v > policy.max_rtt_ms as f64)))
+        {
+            if self.failed.len() >= MAX_FAILED_PROVIDERS
+                && !self.failed.contains_key(&active.provider)
+            {
+                if let Some(old) = self
+                    .failed
+                    .iter()
+                    .find(|(_, until)| **until <= now)
+                    .map(|(p, _)| *p)
+                {
+                    self.failed.remove(&old);
+                } else {
+                    return Err("failed-provider state capacity".into());
+                }
+            }
+            // Polling an already failed path must not push its retry time away.
+            self.failed
+                .entry(active.provider)
+                .or_insert(now + Duration::from_millis(policy.retry_after_ms));
+            self.observations.remove(&active.provider);
+        } else if quality.has_recent_delivery_feedback
+            && let (Some(loss), Some(_rtt)) = (loss, rtt)
+        {
+            self.failed.remove(&active.provider);
+            if self.observations.len() >= MAX_OBSERVATIONS
+                && !self.observations.contains_key(&active.provider)
+                && let Some(oldest) = self
+                    .observations
+                    .iter()
+                    .min_by_key(|(_, sample)| sample.at)
+                    .map(|(peer, _)| *peer)
+            {
+                self.observations.remove(&oldest);
+            }
+            self.observations.insert(
+                active.provider,
+                Observation {
+                    path: active.path.clone(),
+                    at: now,
+                    loss_ppm: (loss * 1_000_000.0).round() as u32,
+                },
+            );
+        } else {
+            self.observations.remove(&active.provider);
+        }
+        Ok(())
+    }
+
+    fn working_loss(
+        &self,
+        offer: &RouteOffer,
+        policy: &PriceSelectionPolicy,
+        now: Instant,
+    ) -> Option<u32> {
+        self.active
+            .as_ref()
+            .filter(|a| same_path(a, offer))
+            .and_then(|_| self.measured_loss(offer, policy, now))
+    }
+
+    fn measured_loss(
+        &self,
+        offer: &RouteOffer,
+        policy: &PriceSelectionPolicy,
+        now: Instant,
+    ) -> Option<u32> {
+        self.observations
+            .get(&offer.provider)
+            .filter(|sample| {
+                sample.path == offer.path
+                    && now.duration_since(sample.at)
+                        <= Duration::from_millis(policy.feedback_timeout_ms)
+            })
+            .map(|sample| sample.loss_ppm)
+    }
+
+    fn cost(&self, offer: &RouteOffer, policy: &PriceSelectionPolicy, now: Instant) -> u128 {
+        // For unknown loss, this is the advertised lower bound. Such a path
+        // receives a quota-limited trial, never an assumed zero-loss measurement.
+        let loss = self.measured_loss(offer, policy, now).unwrap_or(0);
+        u128::from(offer.price.msat) * 1_000_000_000_000 / u128::from(1_000_000 - loss.min(999_999))
+    }
+
+    fn choose(
+        &self,
+        offers: Vec<RouteOffer>,
+        policy: &PriceSelectionPolicy,
+        now: Instant,
+    ) -> Result<RouteOffer, String> {
+        let mut eligible: Vec<_> = offers
+            .into_iter()
+            .filter(|o| {
+                self.failed
+                    .get(&o.provider)
+                    .is_none_or(|until| *until <= now)
+            })
+            .collect();
+        eligible.sort_by_key(|o| (self.cost(o, policy, now), o.provider));
+        let best = eligible.first().ok_or("no eligible priced route")?;
+        if let Some(current) = eligible
+            .iter()
+            .find(|o| self.active.as_ref().is_some_and(|a| same_path(a, o)))
+        {
+            let candidate = self.cost(best, policy, now);
+            let retained = self.cost(current, policy, now);
+            if candidate * 100 >= retained * u128::from(100 - policy.min_improvement_percent) {
+                return Ok(current.clone());
+            }
+        }
+        Ok(best.clone())
+    }
+}
+
+pub(super) struct PriceSelection {
+    policy: PriceSelectionPolicy,
+    /// Bounds fanout across concurrent source calls, and serializes activation
+    /// with sampling so a report cannot be paired with an uncommitted choice.
+    work: tokio::sync::Mutex<()>,
+    destinations: Mutex<BTreeMap<NodeAddr, Destination>>,
+}
+
+fn same_path(a: &RouteOffer, b: &RouteOffer) -> bool {
+    a.provider == b.provider
+        && a.path == b.path
+        && a.destination.node_addr() == b.destination.node_addr()
+}
+
+impl RouteQuotes {
+    pub(crate) fn price_selection_enabled(&self) -> bool {
+        self.selection.is_some()
+    }
+
+    pub fn with_price_selection(mut self, policy: PriceSelectionPolicy) -> Result<Self, String> {
+        policy.validate()?;
+        if !self.policy.billing.has_free_handshakes() {
+            return Err("price selection requires forwarding-data billing".into());
+        }
+        self.selection = Some(PriceSelection {
+            policy,
+            work: Default::default(),
+            destinations: Default::default(),
+        });
+        Ok(self)
+    }
+
+    /// Called only after explicit free-route authorization or durable paid
+    /// acceptance. Discovering/comparing a quote never changes the source path.
+    pub(crate) async fn activate_source_route(&self, offer: &RouteOffer) -> Result<(), String> {
+        let Some(selection) = &self.selection else {
+            return Ok(());
+        };
+        let _work = selection.work.lock().await;
+        let dest = *offer.destination.node_addr();
+        let changed = {
+            let mut states = selection
+                .destinations
+                .lock()
+                .map_err(|_| "price selection poisoned")?;
+            if states.len() >= MAX_DESTINATIONS && !states.contains_key(&dest) {
+                return Err("source selection capacity".into());
+            }
+            let state = states.entry(dest).or_default();
+            state.active.as_ref().is_none_or(|a| {
+                !same_path(a, offer)
+                    || (a.id != offer.id && state.failed.contains_key(&offer.provider))
+            })
+        };
+        if changed {
+            let peer = self.connected_provider(offer.provider).await?;
+            self.endpoint
+                .set_source_route(offer.destination, Some(peer))
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        let mut states = selection
+            .destinations
+            .lock()
+            .map_err(|_| "price selection poisoned")?;
+        let state = states.get_mut(&dest).ok_or("selection state missing")?;
+        if changed {
+            state.observations.remove(&offer.provider);
+            state.failed.remove(&offer.provider);
+        }
+        state.active = Some(offer.clone());
+        Ok(())
+    }
+
+    pub(super) async fn select_priced_route(
+        &self,
+        destination: PeerIdentity,
+        selection: &PriceSelection,
+        reuse_unchanged: bool,
+    ) -> Result<RouteOffer, String> {
+        let _work = selection.work.lock().await;
+        let dest = *destination.node_addr();
+        let quality = self
+            .endpoint
+            .source_route_quality(
+                destination,
+                Duration::from_millis(selection.policy.feedback_timeout_ms),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut peers: Vec<_> = self
+            .endpoint
+            .peers()
+            .await
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(|p| p.connected)
+            .collect();
+        if peers.iter().any(|p| p.node_addr == dest) {
+            return Err("destination is a direct neighbor".into());
+        }
+        peers.sort_by_key(|p| p.node_addr);
+        let candidates = {
+            let mut states = selection
+                .destinations
+                .lock()
+                .map_err(|_| "price selection poisoned")?;
+            if states.len() >= MAX_DESTINATIONS && !states.contains_key(&dest) {
+                return Err("source selection capacity".into());
+            }
+            let state = states.entry(dest).or_default();
+            state.observe(&quality, &selection.policy, Instant::now())?;
+            let active = state.active.as_ref().map(|a| a.provider);
+            let mut selected = Vec::new();
+            if let Some(peer) = peers.iter().find(|p| Some(p.node_addr) == active) {
+                selected.push(peer.clone());
+            }
+            if !peers.is_empty() {
+                for offset in 0..peers.len() {
+                    let peer = &peers[(state.cursor + offset) % peers.len()];
+                    if selected.len() == MAX_CANDIDATES {
+                        break;
+                    }
+                    if Some(peer.node_addr) != active {
+                        selected.push(peer.clone());
+                    }
+                }
+                state.cursor = (state.cursor + MAX_CANDIDATES - 1) % peers.len();
+            }
+            selected
+        };
+        let request = QuoteRequest {
+            destination,
+            ancestors: vec![*self.endpoint.node_addr()],
+            deadline_unix: unix_now()?
+                .checked_add(QUOTE_SECONDS)
+                .ok_or("clock overflow")?,
+            reuse_unchanged: true,
+            requested_max_units: None,
+        };
+        let mut pending = JoinSet::new();
+        for peer in candidates {
+            let identity = PeerIdentity::from_npub(&peer.npub).map_err(|e| e.to_string())?;
+            let control = self.control.clone();
+            let policy = self.policy.clone();
+            let local = *self.endpoint.node_addr();
+            let request = request.clone();
+            pending.spawn(async move {
+                validation::fetch_offer(&control, &policy, local, identity, &request).await
+            });
+        }
+        let mut offers = Vec::new();
+        while let Some(result) = pending.join_next().await {
+            if let Ok(Ok(offer)) = result {
+                offers.push(offer);
+            }
+        }
+        let (mut selected, cap, new_trial) = {
+            let states = selection
+                .destinations
+                .lock()
+                .map_err(|_| "price selection poisoned")?;
+            let state = states.get(&dest).ok_or("selection state missing")?;
+            let selected = state.choose(offers, &selection.policy, Instant::now())?;
+            let new_trial = state.failed.contains_key(&selected.provider)
+                || state
+                    .active
+                    .as_ref()
+                    .is_none_or(|a| !same_path(a, &selected));
+            if reuse_unchanged
+                && !new_trial
+                && state
+                    .working_loss(&selected, &selection.policy, Instant::now())
+                    .is_none()
+                && let Some(active) = &state.active
+                && active.trial
+                && active.expires_unix > unix_now()?
+                && active.price == selected.price
+            {
+                return Ok(active.clone());
+            }
+            let cap = if state
+                .working_loss(&selected, &selection.policy, Instant::now())
+                .is_some()
+            {
+                None
+            } else if new_trial || !reuse_unchanged {
+                Some(selection.policy.trial_max_units)
+            } else {
+                Some(
+                    state
+                        .active
+                        .as_ref()
+                        .filter(|a| same_path(a, &selected))
+                        .map_or(selection.policy.trial_max_units, |a| a.max_units),
+                )
+            };
+            (selected, cap, new_trial)
+        };
+        if !reuse_unchanged || cap.is_some_and(|limit| selected.max_units > limit || new_trial) {
+            let provider = self.connected_provider(selected.provider).await?;
+            let mut trial = request;
+            trial.deadline_unix = unix_now()?
+                .checked_add(QUOTE_SECONDS)
+                .ok_or("clock overflow")?;
+            trial.requested_max_units = cap;
+            trial.reuse_unchanged = reuse_unchanged && !new_trial;
+            let offered = self.request_from(provider, trial).await?;
+            if !same_path(&selected, &offered) || selected.price != offered.price {
+                return Err("path or price changed while negotiating trial".into());
+            }
+            selected = offered;
+        }
+        self.free.accept(&selected)?;
+        Ok(selected)
+    }
+}
+
+#[cfg(test)]
+mod tests;

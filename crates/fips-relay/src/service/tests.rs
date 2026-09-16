@@ -1,6 +1,19 @@
 use super::*;
 
 #[test]
+fn price_selection_is_opt_in_and_validated_outside_financial_terms() {
+    let mut config: ServiceConfig =
+        serde_json::from_str(include_str!("../../service.example.json")).unwrap();
+    assert!(config.price_selection.is_none());
+    config.price_selection = Some(Default::default());
+    assert!(config.validate().unwrap_err().contains("forwarding-data"));
+    config.terms.billing = BillingBasis::ForwardingData;
+    config.validate().unwrap();
+    config.price_selection.as_mut().unwrap().trial_max_units = 0;
+    assert!(config.validate().is_err());
+}
+
+#[test]
 fn return_allowance_is_explicit_and_cannot_change_legacy_tariffs() {
     let mut config: ServiceConfig =
         serde_json::from_str(include_str!("../../service.example.json")).unwrap();
@@ -102,6 +115,7 @@ fn native_interface_configuration_has_no_implicit_udp_or_discovery_shortcut() {
         customer_network: None,
         destination_fees: Default::default(),
         return_allowance: false,
+        price_selection: None,
         payment_cadence: Default::default(),
         ethernet_interfaces: vec!["mesh0".into()],
         neighbors: vec![],

@@ -52,6 +52,9 @@ pub struct ServiceConfig {
     /// Optional bounded opaque replies on the reverse of an admitted path.
     #[serde(default)]
     pub return_allowance: bool,
+    /// Opt-in source offer comparison and native quality-based path trials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_selection: Option<crate::route_quotes::PriceSelectionPolicy>,
     pub terms: ServiceTerms,
     /// Local timing only; does not change saved financial terms or authority.
     #[serde(default, skip_serializing_if = "PaymentCadence::is_default")]
@@ -92,6 +95,12 @@ impl ServiceConfig {
     }
 
     pub(super) fn validate(&self) -> Result<(), String> {
+        if let Some(policy) = &self.price_selection {
+            policy.validate()?;
+            if !self.terms.billing.has_free_handshakes() {
+                return Err("price selection requires forwarding-data billing".into());
+            }
+        }
         self.payment_cadence.validate()?;
         if !self.state_directory.is_absolute() || self.socket_path().as_os_str().len() > 100 {
             return Err(

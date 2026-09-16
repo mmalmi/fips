@@ -3,8 +3,10 @@ use super::*;
 
 impl Controller {
     pub async fn open_route(&self, destination: PeerIdentity) -> Result<RouteAccess, String> {
+        self.authorize_source_selection(destination).await?;
         let offer = self.services.quotes.request_route(destination).await?;
         if offer.price.msat == 0 {
+            self.activate_source_route(&offer).await?;
             return Ok(RouteAccess::Free(offer));
         }
         self.purchase_offer(offer).await.map(RouteAccess::Paid)
@@ -12,6 +14,7 @@ impl Controller {
     /// Explicit application authorization for this destination under local price
     /// and lifetime spending caps. Merely receiving data never calls this method.
     pub async fn buy_route(&self, destination: PeerIdentity) -> Result<Purchase, String> {
+        self.authorize_source_selection(destination).await?;
         let offer = self.services.quotes.request_route(destination).await?;
         self.purchase_offer(offer).await
     }
@@ -192,10 +195,14 @@ impl Controller {
                     || existing.offer.price != offer.price
                     || existing.offer.billing != offer.billing
                     || existing.offer.next_hop != offer.next_hop
+                    || existing.offer.path != offer.path
+                    || existing.offer.max_units != offer.max_units
+                    || existing.offer.trial != offer.trial
                 {
                     return Err("existing route needs explicit replacement".into());
                 }
                 if existing.accepted {
+                    self.activate_source_route(&existing.offer).await?;
                     return Ok(existing.purchase);
                 }
                 self.ensure_buyer_purchase(&existing.purchase).await?;
@@ -211,6 +218,9 @@ impl Controller {
                     if old.price != offer.price
                         || old.next_hop != offer.next_hop
                         || old.billing != offer.billing
+                        || old.path != offer.path
+                        || old.max_units != offer.max_units
+                        || old.trial != offer.trial
                     {
                         return Err("pending route needs explicit replacement".into());
                     }
@@ -250,6 +260,9 @@ impl Controller {
                     if old.offer.price != saved.offer.price
                         || old.offer.billing != saved.offer.billing
                         || old.offer.next_hop != saved.offer.next_hop
+                        || old.offer.path != saved.offer.path
+                        || old.offer.max_units != saved.offer.max_units
+                        || old.offer.trial != saved.offer.trial
                     {
                         return Err("conflicting concurrent route purchase".into());
                     }
@@ -399,6 +412,7 @@ impl Controller {
                         Ok(())
                     })
                     .await?;
+                    self.activate_source_route(&record.offer).await?;
                     return Ok(*purchase);
                 }
                 ControllerResponse::Pending => tokio::time::sleep(Duration::from_millis(250)).await,

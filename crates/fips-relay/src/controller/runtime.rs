@@ -32,6 +32,9 @@ impl Controller {
                     .buyer_settlements
                     .contains_key(&o.purchase.channel.id)
         }) {
+            if let Err(error) = self.activate_source_route(&outgoing.offer).await {
+                first_error.get_or_insert(error);
+            }
             routes.push((outgoing.offer.destination, None));
         }
         for incoming in snapshot

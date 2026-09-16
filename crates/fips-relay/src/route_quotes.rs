@@ -6,9 +6,12 @@
 //! accepted accounting belongs in the durable seller/buyer journals.
 
 mod messages;
+mod selection;
 pub use messages::{QuoteRequest, QuoteResponse, RouteOffer};
+pub use selection::PriceSelectionPolicy;
 mod validation;
 pub(crate) use validation::contract_from_offer;
+#[cfg(test)]
 use validation::validate_offer;
 
 use crate::{
@@ -67,6 +70,7 @@ pub struct RouteQuotes {
     policy: QuotePolicy,
     offers: Mutex<Offers>,
     pub(crate) free: Arc<crate::free_routes::FreeRoutes>,
+    selection: Option<selection::PriceSelection>,
 }
 
 fn unix_now() -> Result<u64, String> {
@@ -135,6 +139,7 @@ impl RouteQuotes {
             control,
             policy,
             free,
+            selection: None,
             offers: Mutex::new(Offers {
                 epoch: Identity::generate().node_addr().to_string(),
                 next_id: 1,
@@ -143,7 +148,7 @@ impl RouteQuotes {
         })
     }
 
-    /// Ask the native source planner, then buy a quote from its next neighbor.
+    /// Request a fresh quote using native routing or the opted-in source selector.
     /// A direct final destination needs no paid forwarding quote.
     pub async fn request_route(&self, destination: PeerIdentity) -> Result<RouteOffer, String> {
         self.request_route_inner(destination, false).await
@@ -181,6 +186,11 @@ impl RouteQuotes {
         destination: PeerIdentity,
         reuse_unchanged: bool,
     ) -> Result<RouteOffer, String> {
+        if let Some(selection) = &self.selection {
+            return self
+                .select_priced_route(destination, selection, reuse_unchanged)
+                .await;
+        }
         let deadline_unix = unix_now()?.checked_add(20).ok_or("clock overflow")?;
         let provider = self.resolve(destination, None, deadline_unix).await?;
         if provider.node_addr() == destination.node_addr() {
@@ -193,9 +203,39 @@ impl RouteQuotes {
                 ancestors: vec![*self.endpoint.node_addr()],
                 deadline_unix,
                 reuse_unchanged,
+                requested_max_units: None,
             },
         )
         .await
+    }
+
+    /// Renewal retains its provider and financial service. It must not invoke
+    /// source discovery for an onward purchase made on behalf of transit.
+    pub(crate) async fn renewal_offer(&self, old: &RouteOffer) -> Result<RouteOffer, String> {
+        let provider = self.connected_provider(old.provider).await?;
+        self.request_from(
+            provider,
+            QuoteRequest {
+                destination: old.destination,
+                ancestors: vec![*self.endpoint.node_addr()],
+                deadline_unix: unix_now()?.checked_add(20).ok_or("clock overflow")?,
+                reuse_unchanged: false,
+                requested_max_units: old.trial.then_some(old.max_units),
+            },
+        )
+        .await
+    }
+
+    async fn connected_provider(&self, provider: NodeAddr) -> Result<PeerIdentity, String> {
+        let peer = self
+            .endpoint
+            .peers()
+            .await
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|p| p.connected && p.node_addr == provider)
+            .ok_or("selected provider is not connected")?;
+        PeerIdentity::from_npub(&peer.npub).map_err(|e| e.to_string())
     }
 
     async fn resolve(
@@ -225,35 +265,16 @@ impl RouteQuotes {
         peer: PeerIdentity,
         request: QuoteRequest,
     ) -> Result<RouteOffer, String> {
-        let seconds = request
-            .deadline_unix
-            .checked_sub(unix_now()?)
-            .filter(|n| *n > 0 && *n <= MAX_REQUEST_SECONDS)
-            .ok_or("quote deadline")?;
-        let bytes = tokio::time::timeout(
-            Duration::from_secs(seconds),
-            self.control.request(
-                peer,
-                serde_json::to_vec(&request).map_err(|e| e.to_string())?,
-            ),
-        )
-        .await
-        .map_err(|_| "quote deadline")??;
-        let reply: QuoteResponse =
-            serde_json::from_slice(&bytes).map_err(|_| "invalid quote response")?;
-        let QuoteResponse::Offer { offer } = reply else {
-            return Err("provider rejected quote request".into());
-        };
-        validate_offer(
+        let offer = validation::fetch_offer(
+            &self.control,
             &self.policy,
             *self.endpoint.node_addr(),
-            &offer,
             peer,
             &request,
-            unix_now()?,
-        )?;
+        )
+        .await?;
         self.free.accept(&offer)?;
-        Ok(*offer)
+        Ok(offer)
     }
 
     pub async fn handle(&self, peer: PeerIdentity, body: &[u8]) -> QuoteResponse {
@@ -282,6 +303,7 @@ impl RouteQuotes {
             || request.destination.node_addr() == &local
             || request.deadline_unix <= now
             || request.deadline_unix > now.saturating_add(MAX_REQUEST_SECONDS)
+            || request.requested_max_units == Some(0)
         {
             return Err("invalid quote path or deadline".into());
         }
@@ -350,7 +372,8 @@ impl RouteQuotes {
         let max_units = self
             .policy
             .max_units
-            .min(downstream.as_ref().map_or(u64::MAX, |d| d.max_units));
+            .min(downstream.as_ref().map_or(u64::MAX, |d| d.max_units))
+            .min(request.requested_max_units.unwrap_or(u64::MAX));
         let mut offers = self.offers.lock().map_err(|_| "quote state poisoned")?;
         if request.reuse_unchanged {
             let reuse_until = now.saturating_add((self.policy.lifetime_secs / 4).max(1));
@@ -361,6 +384,7 @@ impl RouteQuotes {
                     && o.path == path
                     && o.price == price
                     && o.max_units == max_units
+                    && o.trial == request.requested_max_units.is_some()
                     && o.expires_unix > reuse_until
                     && o.expires_unix <= expires_unix
             }) {
@@ -384,6 +408,7 @@ impl RouteQuotes {
             .checked_add(1)
             .ok_or("quote sequence exhausted")?;
         let offer = RouteOffer {
+            trial: request.requested_max_units.is_some(),
             billing: self.policy.billing,
             id: id.clone(),
             buyer: *peer.node_addr(),

@@ -13,7 +13,7 @@ pub struct WatchedRoute {
     pub destination: String,
     pub max_rate_msat_per_kib: u64,
     pub paused: bool,
-    pending: Option<RouteOffer>,
+    pub(super) pending: Option<RouteOffer>,
 }
 
 impl WatchedRoute {
@@ -153,6 +153,7 @@ impl Controller {
                         .contains_key(&o.purchase.channel.id)
             })
         {
+            self.activate_source_route(&old.offer).await?;
             return Ok(old.purchase.clone());
         }
         let key = id.to_string();
@@ -216,6 +217,7 @@ impl Controller {
                 && snapshot.outgoing.values().any(|o| {
                     o.accepted
                         && !o.retired
+                        && !o.offer.trial
                         && o.offer.destination.npub() == watch.destination
                         && (snapshot
                             .renewals

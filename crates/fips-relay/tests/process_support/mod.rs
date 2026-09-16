@@ -16,6 +16,7 @@ pub fn config(root: &Path, mint: &str) -> ServiceConfig {
         customer_network: None,
         destination_fees: Default::default(),
         return_allowance: false,
+        price_selection: None,
         payment_cadence: Default::default(),
         ethernet_interfaces: vec![],
         neighbors: vec![],

@@ -40,6 +40,7 @@ mod journal;
 mod payments;
 mod purchases;
 mod runtime;
+mod source_selection;
 pub use runtime::ControllerTasks;
 
 const MAX_CHANNELS: usize = 16;

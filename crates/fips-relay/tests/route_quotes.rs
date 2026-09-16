@@ -221,6 +221,7 @@ async fn prices_follow_native_next_hops_and_accumulate_over_neighbor_control() {
             ancestors: vec![*peers[1].node_addr(), *peers[0].node_addr()],
             deadline_unix,
             reuse_unchanged: false,
+            requested_max_units: None,
         };
         assert!(matches!(
             quotes[1]

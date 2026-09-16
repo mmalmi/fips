@@ -101,8 +101,7 @@ checks cover identity matching, quotas, expiry, state limits and paid/free
 transition exclusions. Free permissions do not infer ownership from a source,
 IP range or interface.
 
-This is explicit route opening, not automatic free-route refresh or cheapest
-path selection. Permissions must be reopened after restart, expiry or path
+This is explicit route opening, not automatic free-route refresh. Permissions must be reopened after restart, expiry or path
 change. Active paid agreements must close before the same relationship becomes
 free. Radio/mixed-transport acceptance and broader concurrent transition/failure
 coverage remain work. The existing OpenWrt readiness wrapper still requires a
@@ -118,9 +117,17 @@ explicit carrier switch restores delivery and reports. Binding tests cover
 64-entry capacity, authenticated-neighbor admission, unchanged transit routing,
 cached-output replacement, failure without fallback, and same-hop feedback
 invalidation. See [source route API](../fips-core/SOURCE-ROUTES.md) for limits.
-This is groundwork: the relay does not yet compare monetary offers or select
-the cheapest working path. No prices, channels, payments or radio links are
-involved in this core simulation.
+The core simulation itself involves no prices, channels, payments or radio links.
+The opt-in relay [price and quality selector](PRICE-SELECTION.md) now builds on
+this API: it ranks actual adjacent quotes by estimated delivered-byte cost with
+loss/RTT ceilings, limited unknown-path trials, recent-cost retention, hysteresis
+and provider cooldown. The real paid SimNetwork diamond passes all four root
+positions, preserves channels/history through trial upgrade and path replacement,
+restores a controller/selector reload, and settles all isolated test money. A
+separate exhausted-trial case proves that automatic renewal and reload do not
+reset the quota. This is local candidate selection, not global optimality or broad
+production acceptance. Initial handshake failure, quota-caused missing feedback,
+full restarts and the impairment/mobility matrix below remain open.
 
 Price-aware route selection is an explicit requirement, not proven by simply
 accumulating prices along the native planner's chosen next hops. Reuse FIPS's
