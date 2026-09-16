@@ -774,7 +774,7 @@ impl Simulation {
                         node.sim_addr.clone(),
                         SimNodeBehavior {
                             up: false,
-                            egress_loss_probability: 0.0,
+                            ..Default::default()
                         },
                     );
                 }

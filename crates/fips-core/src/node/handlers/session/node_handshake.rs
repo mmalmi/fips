@@ -220,6 +220,18 @@ impl Node {
                 let mut datagram = SessionDatagram::new(my_addr, *src_addr, ack_payload.clone())
                     .with_ttl(self.config.node.session.default_ttl);
 
+                // Store rekey state on the existing entry
+                let now_ms = Self::now_ms();
+                let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
+                self.sessions.install_rekey_responder_awaiting_msg3(
+                    src_addr,
+                    handshake,
+                    ack_payload,
+                    now_ms,
+                    resend_interval,
+                );
+
+                // Emitted msg2 and retained responder keys must stay paired.
                 if let Err(e) = self
                     .send_session_datagram_reply(
                         &mut datagram,
@@ -231,17 +243,6 @@ impl Node {
                     debug!(error = %e, dest = %self.peer_display_name(src_addr), "Failed to send rekey SessionAck");
                     return;
                 }
-
-                // Store rekey state on the existing entry
-                let now_ms = Self::now_ms();
-                let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
-                self.sessions.install_rekey_responder_awaiting_msg3(
-                    src_addr,
-                    handshake,
-                    ack_payload,
-                    now_ms,
-                    resend_interval,
-                );
 
                 debug!(
                     src = %self.peer_display_name(src_addr),
@@ -284,23 +285,16 @@ impl Node {
         let mut datagram = SessionDatagram::new(my_addr, *src_addr, ack_payload.clone())
             .with_ttl(self.config.node.session.default_ttl);
 
-        // Keep the reply on the authenticated ingress hop while it makes tree
-        // progress. Otherwise use one strictly closer tree peer; if coordinates
-        // cannot provide one, remain bounded to the ingress hop.
-        let ack_next_hop = match self
-            .send_session_datagram_reply(&mut datagram, previous_hop_addr, &setup.src_coords)
-            .await
-        {
-            Ok(next_hop) => next_hop,
-            Err(e) => {
-                debug!(error = %e, dest = %self.peer_display_name(src_addr), "Failed to send SessionAck");
-                return;
-            }
-        };
+        let runtime_route = self.prepare_session_datagram_reply_runtime_route(
+            &mut datagram,
+            previous_hop_addr,
+            &setup.src_coords,
+        );
+        let ack_next_hop = runtime_route.next_hop_addr;
         if changed_from_initiator_to_responder {
             // Our initiator pin belongs to the abandoned SessionSetup. The
-            // responder's msg2 was sent on a potentially different branch;
-            // make explicit route failures match the branch we just used and
+            // responder's msg2 will use a potentially different branch;
+            // make explicit route failures match the selected branch and
             // keep later responder retries off the obsolete initiator route.
             self.pin_handshake_reverse_route(*src_addr, ack_next_hop);
         }
@@ -321,6 +315,16 @@ impl Node {
         );
         if let Some(entry) = self.sessions.get_mut(src_addr) {
             entry.set_remote_supports_direct_fsp_transport(remote_supports_direct_fsp_transport);
+        }
+
+        // The peer may receive msg2 even if local send completion is canceled.
+        // Keep its responder state and exact retry payload before awaiting I/O.
+        if let Err(e) = self
+            .send_session_datagram_on_runtime_route(&datagram, runtime_route)
+            .await
+        {
+            debug!(error = %e, dest = %self.peer_display_name(src_addr), "Failed to send SessionAck");
+            return;
         }
 
         debug!(src = %self.peer_display_name(src_addr), "SessionSetup processed (XK), SessionAck sent, awaiting msg3");
@@ -406,13 +410,6 @@ impl Node {
             let mut datagram = SessionDatagram::new(my_addr, *src_addr, msg3_payload)
                 .with_ttl(self.config.node.session.default_ttl);
 
-            if let Err(e) = self.send_session_datagram(&mut datagram).await {
-                debug!(error = %e, dest = %self.peer_display_name(src_addr), "Failed to send rekey SessionMsg3");
-                entry.abandon_handshake();
-                self.sessions.insert(*src_addr, entry);
-                return;
-            }
-
             // Complete handshake → store as pending new session
             let session = match handshake.into_session() {
                 Ok(s) => s,
@@ -435,52 +432,64 @@ impl Node {
                     Some(*previous_hop_addr),
                     self.config.node.session.coords_warmup_packets,
                 );
+            } else {
+                let pending_epoch = session
+                    .recv_cipher_clone()
+                    .zip(session.send_cipher_clone())
+                    .map(|(open, seal)| {
+                        (
+                            !entry.current_k_bit(),
+                            open,
+                            seal,
+                            session.send_counter_authority(),
+                        )
+                    });
+                self.sessions.install_rekey_initiator_pending_session(
+                    *src_addr,
+                    entry,
+                    session,
+                    msg3_resend_payload,
+                    now_ms,
+                    resend_interval,
+                );
+                if let Some((pending_k_bit, open, seal, send_counter_authority)) = pending_epoch {
+                    self.install_dataplane_fsp_pending_epoch(
+                        src_addr,
+                        pending_k_bit,
+                        open,
+                        seal,
+                        send_counter_authority,
+                    );
+                }
+                self.refresh_dataplane_fsp_owner_routes(src_addr);
+            }
+
+            // A canceled/failed local completion cannot revoke an emitted msg3.
+            // Retain the current/pending epoch and its bounded retransmission.
+            if let Err(e) = self.send_session_datagram(&mut datagram).await {
+                debug!(error = %e, dest = %self.peer_display_name(src_addr), "Failed to send rekey SessionMsg3");
+                return;
+            }
+            if remote_restarted {
                 self.flush_pending_packets(src_addr).await;
                 info!(
                     src = %self.peer_display_name(src_addr),
                     "Remote FSP restart detected during rekey; replaced stale session"
                 );
-                return;
-            }
-            let pending_epoch = session
-                .recv_cipher_clone()
-                .zip(session.send_cipher_clone())
-                .map(|(open, seal)| {
-                    (
-                        !entry.current_k_bit(),
-                        open,
-                        seal,
-                        session.send_counter_authority(),
-                    )
-                });
-            self.sessions.install_rekey_initiator_pending_session(
-                *src_addr,
-                entry,
-                session,
-                msg3_resend_payload,
-                now_ms,
-                resend_interval,
-            );
-            if let Some((pending_k_bit, open, seal, send_counter_authority)) = pending_epoch {
-                self.install_dataplane_fsp_pending_epoch(
-                    src_addr,
-                    pending_k_bit,
-                    open,
-                    seal,
-                    send_counter_authority,
+            } else {
+                debug!(
+                    src = %self.peer_display_name(src_addr),
+                    "FSP rekey: completed XK as initiator, pending cutover"
                 );
             }
-            self.refresh_dataplane_fsp_owner_routes(src_addr);
-
-            debug!(
-                src = %self.peer_display_name(src_addr),
-                "FSP rekey: completed XK as initiator, pending cutover"
-            );
             return;
         }
 
         if entry.is_established() {
-            if let Some(payload) = entry.handshake_payload().map(<[u8]>::to_vec) {
+            let retry_payload = entry.handshake_payload().map(<[u8]>::to_vec);
+            // Duplicate-ACK replay must never temporarily remove live keys.
+            self.sessions.insert(*src_addr, entry);
+            if let Some(payload) = retry_payload {
                 // The Noise state that authenticated the first msg2 has
                 // already been consumed. A structurally valid duplicate may
                 // trigger the final-msg3 replay, but it cannot move an active
@@ -508,7 +517,6 @@ impl Node {
             } else {
                 debug!(src = %self.peer_display_name(src_addr), "SessionAck for already-established session");
             }
-            self.sessions.insert(*src_addr, entry);
             return;
         }
 
@@ -554,11 +562,6 @@ impl Node {
         let mut datagram = SessionDatagram::new(my_addr, *src_addr, msg3_payload)
             .with_ttl(self.config.node.session.default_ttl);
 
-        if let Err(e) = self.send_session_datagram(&mut datagram).await {
-            debug!(error = %e, dest = %self.peer_display_name(src_addr), "Failed to send SessionMsg3");
-            return;
-        }
-
         // Complete the handshake: into_session()
         let session = match handshake.into_session() {
             Ok(s) => s,
@@ -585,6 +588,13 @@ impl Node {
             Some(*previous_hop_addr),
             self.config.node.session.coords_warmup_packets,
         );
+
+        // Retain established keys, routing and the exact msg3 retry before I/O.
+        // Dropping this send must not drop the only copy of the live session.
+        if let Err(e) = self.send_session_datagram(&mut datagram).await {
+            debug!(error = %e, dest = %self.peer_display_name(src_addr), "Failed to send SessionMsg3");
+            return;
+        }
 
         // Flush any queued outbound packets for this destination
         self.flush_pending_packets(src_addr).await;

@@ -133,8 +133,11 @@ authenticated reply carrier rather than displacing earned return allowance.
 Cold-cache setup also
 retains the real destination identity for strict bounded bootstrap. This is local
 candidate selection, not global optimality or broad production acceptance.
-Initial handshake failure, remote credit/payment-caused missing feedback, full
-restarts and the impairment/mobility matrix below remain open.
+Eight deterministic core recovery cases now preserve initial/rekey state after
+local send cancellation and preserve the correct key-epoch flag on coordinate
+warmups. They verify actual payload delivery after recovery. Broader handshake
+stress, remote credit/payment-caused missing feedback, full restarts and the
+impairment/mobility matrix below remain open.
 
 Price-aware route selection is an explicit requirement, not proven by simply
 accumulating prices along the native planner's chosen next hops. Reuse FIPS's

@@ -878,8 +878,8 @@ impl Node {
 
     /// Initiate an FSP session rekey.
     ///
-    /// Creates a new XK handshake as initiator, sends SessionSetup msg1
-    /// through the mesh, and stores the handshake state on the existing entry.
+    /// Creates a new XK handshake as initiator, retains its state on the
+    /// existing entry, and sends SessionSetup msg1 through the mesh.
     pub(in crate::node) async fn initiate_session_rekey(&mut self, dest_addr: &NodeAddr) -> bool {
         if !self.config.node.rekey.enabled {
             return false;
@@ -946,15 +946,6 @@ impl Node {
         let mut datagram = SessionDatagram::new(my_addr, *dest_addr, setup_payload.clone())
             .with_ttl(self.config.node.session.default_ttl);
 
-        if let Err(e) = self.send_session_datagram(&mut datagram).await {
-            debug!(
-                peer = %self.peer_display_name(dest_addr),
-                error = %e,
-                "Failed to send FSP rekey SessionSetup"
-            );
-            return false;
-        }
-
         let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
         if !self.sessions.record_session_rekey_initiated(
             dest_addr,
@@ -962,6 +953,16 @@ impl Node {
             setup_payload,
             Self::now_ms() + resend_interval,
         ) {
+            return false;
+        }
+
+        // Retry the same generation if local completion is interrupted.
+        if let Err(e) = self.send_session_datagram(&mut datagram).await {
+            debug!(
+                peer = %self.peer_display_name(dest_addr),
+                error = %e,
+                "Failed to send FSP rekey SessionSetup"
+            );
             return false;
         }
 

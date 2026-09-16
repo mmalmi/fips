@@ -63,6 +63,17 @@ the sender's coordinates, so a cold-cache setup still names its real destination
 and can qualify for the strict bounded handshake allowance. It does not invent a
 tree route or bypass native routing/handshake authentication.
 
+## Handshake recovery
+
+Initial setup, rekey and final-message replay retain their Noise state, exact
+retry payload and established/pending keys before awaiting a transport send.
+A canceled local completion cannot withdraw a packet already delivered to the
+peer. Existing retry, timeout and admission limits still apply; this adds no
+delivery receipts. Initial setup with a definitive missing route remains refused
+before a new session is inserted. Coordinate warmups preserve the key-epoch bit
+when adding their coordinate flag, so a rekey cannot label new-key ciphertext as
+belonging to the old epoch.
+
 ## Controller responsibilities
 
 The caller must validate the downstream route and authorize its spending before
@@ -81,6 +92,14 @@ accepted financial agreements. None of these responsibilities can be inferred
 from a positive quality sample.
 
 ## Verification
+
+`cargo test -p nvpn-fips-core --features sim-transport --lib handshake_retention`
+uses the existing SimNetwork with local completion delayed after wire delivery.
+It cancels each initial and rekey handshake send, plus duplicate-ACK replay, and
+checks retained state followed by actual endpoint delivery. An ordinary rekey on
+the same carrier also exercises coordinate warmups through authenticated epoch
+cutover. These eight cases reproduced failures before the fixes and now pass.
+They do not establish that every earlier intermittent setup stall had this cause.
 
 `cargo test -p nvpn-fips-core --lib source_routes` covers binding capacity,
 non-neighbor/local rejection, independent transit routing, cached carrier

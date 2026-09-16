@@ -165,12 +165,22 @@ core and relay Clippy, the default relay library/binary check, Android ARM64 app
 Clippy with measurements, formatting and the 658-file source-size gate passed
 (five unchanged legacy core exceptions).
 
+A subsequent handshake-recovery check passed all 150 core session tests,
+including the eight cancellation/epoch regressions and bidirectional delivery
+across 100 nodes. The simulator's 10 tests and both paid-path tests (four root
+positions and three exhaustion runs) also passed. Strict core/relay/simulator
+linting, Android ARM64 linting, the default relay check, formatting and the
+659-file size gate passed. These are software checks, not updated device results.
+
 ## Remaining limitations
 
 Initial handshake failure before data is transmitted can remain unknown rather
-than trigger end-to-end timeout. Earlier stress runs intermittently stalled during
-Noise setup; the diagnostic trace showed failed msg2 authentication. Its cause is
-not yet established, and passing subsequent runs is not proof that it is resolved. Quote exhaustion is now locally gated, but
+than trigger end-to-end timeout. Deterministic core tests now reproduce and fix
+lost initial/rekey state when a send completes remotely but is canceled locally,
+including duplicate-ACK replay. They also fix coordinate warmups clearing the
+key-epoch bit after rotation. All eight [recovery cases](../fips-core/SOURCE-ROUTES.md#handshake-recovery)
+pass with actual payload delivery. The earlier intermittent setup stalls are not
+all proven to share these causes. Quote exhaustion is now locally gated, but
 remote credit/grace exhaustion, interrupted payments and missing return allowance
 still need explicit attribution before penalizing a provider. No eligible alternative leaves the
 existing agreement/binding in place; applications can still emit billable traffic

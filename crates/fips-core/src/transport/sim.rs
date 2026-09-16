@@ -55,6 +55,10 @@ pub struct SimNodeBehavior {
     /// Independent egress packet drop probability. `1.0` models a blackhole
     /// forwarder that receives but never forwards.
     pub egress_loss_probability: f64,
+    /// Delay local send completion after scheduling delivery. Canceling a send
+    /// during this delay does not withdraw a packet already put on the wire.
+    #[serde(default)]
+    pub send_completion_delay_ms: u64,
 }
 
 impl Default for SimNodeBehavior {
@@ -62,6 +66,7 @@ impl Default for SimNodeBehavior {
         Self {
             up: true,
             egress_loss_probability: 0.0,
+            send_completion_delay_ms: 0,
         }
     }
 }
@@ -188,6 +193,16 @@ impl SimNetwork {
         entry.egress_loss_probability = probability.clamp(0.0, 1.0);
     }
 
+    /// Delay a node's local send completion, independently of wire latency.
+    pub fn set_node_send_completion_delay(&self, addr: impl Into<String>, delay_ms: u64) {
+        let mut inner = self.inner.lock().expect("sim network lock");
+        inner
+            .node_behaviors
+            .entry(addr.into())
+            .or_default()
+            .send_completion_delay_ms = delay_ms;
+    }
+
     /// Return a cumulative stats snapshot.
     pub fn stats(&self) -> SimNetworkStats {
         self.inner.lock().expect("sim network lock").stats.clone()
@@ -225,6 +240,26 @@ impl SimNetwork {
     }
 
     async fn send(
+        &self,
+        source: &str,
+        dest: &TransportAddr,
+        data: Vec<u8>,
+    ) -> Result<usize, TransportError> {
+        let delay_ms = self
+            .inner
+            .lock()
+            .expect("sim network lock")
+            .node_behaviors
+            .get(source)
+            .map_or(0, |b| b.send_completion_delay_ms);
+        let result = self.schedule_delivery(source, dest, data);
+        if delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
+        result
+    }
+
+    fn schedule_delivery(
         &self,
         source: &str,
         dest: &TransportAddr,

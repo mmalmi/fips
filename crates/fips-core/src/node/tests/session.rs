@@ -20,6 +20,8 @@ mod entry_basics;
 mod forwarded_edge;
 mod forwarding_policy;
 mod graph_fallback;
+#[cfg(feature = "sim-transport")]
+mod handshake_retention;
 mod handshake_timeout;
 mod mtu_exceeded;
 mod mtu_notification;

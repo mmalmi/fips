@@ -90,13 +90,14 @@ impl Node {
         let mut datagram = SessionDatagram::new(my_addr, dest_addr, setup_payload.clone())
             .with_ttl(self.config.node.session.default_ttl);
 
-        // Route toward destination
-        self.send_session_datagram(&mut datagram).await?;
+        // A definitive routing refusal has not emitted anything yet.
+        let runtime_route = self.resolve_session_datagram_runtime_route(&mut datagram)?;
 
         // Register destination identity for TUN → session routing
         self.register_identity(dest_addr, dest_pubkey);
 
-        // Store session entry with handshake payload for potential resend
+        // Retain the exact Noise generation before yielding to a send. A
+        // canceled or uncertain completion does not withdraw an emitted msg1.
         let now_ms = Self::now_ms();
         let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
         self.sessions.install_initiating_session(
@@ -107,6 +108,9 @@ impl Node {
             now_ms,
             resend_interval,
         );
+
+        self.send_session_datagram_on_runtime_route(&datagram, runtime_route)
+            .await?;
 
         debug!(dest = %self.peer_display_name(&dest_addr), "Session initiation started");
         Ok(())

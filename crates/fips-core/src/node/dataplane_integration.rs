@@ -425,7 +425,7 @@ impl Node {
         msg_type: u8,
         payload: &[u8],
     ) -> Result<(), NodeError> {
-        self.send_dataplane_fsp_control_outbound(dest_addr, msg_type, None, payload, None, false)
+        self.send_dataplane_fsp_control_outbound(dest_addr, msg_type, 0, payload, None, false)
             .await
     }
 
@@ -437,7 +437,7 @@ impl Node {
         self.send_dataplane_fsp_control_outbound(
             dest_addr,
             SessionMessageType::CoordsWarmup.to_byte(),
-            Some(crate::node::session_wire::FSP_FLAG_CP),
+            crate::node::session_wire::FSP_FLAG_CP,
             &[],
             Some(coords_prefix),
             false,
@@ -452,7 +452,7 @@ impl Node {
         self.send_dataplane_fsp_control_outbound(
             dest_addr,
             SessionMessageType::CoordsWarmup.to_byte(),
-            None,
+            0,
             &[],
             None,
             true,
@@ -540,7 +540,7 @@ impl Node {
         &mut self,
         dest_addr: &NodeAddr,
         msg_type: u8,
-        fsp_flags_override: Option<u8>,
+        extra_fsp_flags: u8,
         payload: &[u8],
         coords_prefix: Option<Vec<u8>>,
         pending_epoch: bool,
@@ -569,7 +569,8 @@ impl Node {
             });
         };
         let coords_prefix_len = coords_prefix.as_ref().map_or(0, Vec::len);
-        let fsp_flags = fsp_flags_override.unwrap_or_else(|| send_context.fsp_flags());
+        // Coordinate metadata must preserve the epoch bit matching the owner key.
+        let fsp_flags = send_context.fsp_flags() | extra_fsp_flags;
         let inner_flags = send_context.inner_flags();
         let activity_tick = ActivityTick::new(Self::now_ms());
 
