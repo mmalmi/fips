@@ -130,8 +130,9 @@ pub struct PaidForwarder {
     seller: Arc<DurableRelay>,
     buyer: Arc<BuyerAuthorizer>,
     pending: Mutex<BTreeMap<u64, Option<u64>>>,
-    bootstrap: Option<Mutex<crate::bootstrap::Bootstrap>>,
+    bootstrap: Option<Mutex<crate::unpaid_budget::UnpaidBudget>>,
     free: Arc<crate::free_routes::FreeRoutes>,
+    returns: Option<Mutex<crate::return_allowance::ReturnAllowance>>,
 }
 
 impl PaidForwarder {
@@ -160,14 +161,34 @@ impl PaidForwarder {
             buyer,
             pending: Mutex::new(BTreeMap::new()),
             free,
+            returns: None,
             bootstrap: billing
                 .has_free_handshakes()
-                .then(|| Mutex::new(crate::bootstrap::Bootstrap::new())),
+                .then(|| Mutex::new(crate::unpaid_budget::UnpaidBudget::new())),
         }
     }
 
     pub fn bootstrap_stats(&self) -> Option<crate::bootstrap::BootstrapStats> {
         self.bootstrap.as_ref().map(|b| b.lock().unwrap().stats())
+    }
+
+    /// Optional complimentary replies, separate from existing paid agreements.
+    pub fn with_return_allowance(mut self) -> Result<Self, String> {
+        if self.bootstrap.is_none() {
+            return Err("return allowance requires forwarding-data billing".into());
+        }
+        self.returns = Some(Mutex::new(crate::return_allowance::ReturnAllowance::new()));
+        Ok(self)
+    }
+
+    pub fn return_stats(&self) -> Option<crate::return_allowance::ReturnStats> {
+        self.returns.as_ref().map(|r| r.lock().unwrap().stats())
+    }
+
+    fn earn_return(&self, request: &ForwardingRequest<'_>) {
+        if let Some(returns) = &self.returns {
+            returns.lock().unwrap().earn(request);
+        }
     }
 }
 
@@ -189,7 +210,23 @@ impl ForwardingPolicy for PaidForwarder {
                 .admit(*request.ingress.node_addr(), request.session_payload.len())
                 .then_some(0);
         }
+        if let Some(returns) = &self.returns {
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+            // Existing paid relationships keep their accounting semantics;
+            // complimentary replies must not consume somebody else's channel.
+            if !self
+                .seller
+                .has_active_route(*request.ingress.node_addr(), request.destination, now)
+                && !self
+                    .buyer
+                    .has_active_route(request.next_hop, request.destination, now)
+                && returns.lock().unwrap().admit(request)
+            {
+                return Some(0);
+            }
+        }
         if self.free.admit(request) {
+            self.earn_return(request);
             return Some(0);
         }
         let (seller_token, buyer_token) = if request.next_hop == request.destination {
@@ -218,6 +255,7 @@ impl ForwardingPolicy for PaidForwarder {
             .lock()
             .unwrap()
             .insert(seller_token, buyer_token);
+        self.earn_return(request);
         Some(seller_token)
     }
     fn complete(&self, token: u64, outcome: ForwardingOutcome) {

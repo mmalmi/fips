@@ -61,6 +61,9 @@ The OpenWrt readiness wrapper separately still waits for the mint. Create the
 parent of the chosen state directory, but leave that state directory absent.
 See [destination pricing](DESTINATION-PRICING.md) for free local destinations,
 explicit route opening and configuration compatibility.
+For fresh forwarding-data service, `return_allowance: true` enables the
+[bounded reverse-path policy](RETURN-ALLOWANCE.md). It defaults to false and
+does not enable an unrestricted reverse route or authorize wallet spending.
 
 Run `fips-relay init /absolute/path/config.json` once. It prints the new public
 FIPS identity. Init creates private keys and empty accounts; it never overwrites

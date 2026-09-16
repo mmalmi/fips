@@ -87,7 +87,8 @@ and the idle customer check observes bounded payment quiescence before measuring
 These tests do not establish permissionless admission, automatic free refresh,
 mixed radio acceptance or price-optimal routing. Quotes still follow the native
 FIPS-selected path. [Readiness work](READINESS.md) requires combining existing
-MMP quality observations with price selection and testing the return path for
-quality reports from an unfunded recipient. Those reports are outside the free
-handshake classifier; successful initial delivery alone does not prove that
-ongoing end-to-end monitoring works through paid relays.
+MMP quality observations with price selection. The optional
+[bounded return allowance](RETURN-ALLOWANCE.md) now covers native quality reports
+from an unfunded recipient on a tested reverse path. Reports remain outside the
+free handshake classifier; enabling destination pricing alone does not enable
+that return allowance or prove feedback availability on an arbitrary route.

@@ -223,13 +223,19 @@ impl RelayService {
             seller.clone(),
             buyer.clone(),
         ));
+        let relay = PaidForwarder::with_free_routes(
+            seller.clone(),
+            buyer.clone(),
+            config.terms.billing,
+            free.clone(),
+        );
+        let relay = if config.return_allowance {
+            relay.with_return_allowance()?
+        } else {
+            relay
+        };
         let forwarding = Arc::new(ServiceForwarder {
-            relay: PaidForwarder::with_free_routes(
-                seller.clone(),
-                buyer.clone(),
-                config.terms.billing,
-                free.clone(),
-            ),
+            relay,
             ready: AtomicBool::new(false),
         });
         if !create {

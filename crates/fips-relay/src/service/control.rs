@@ -25,6 +25,7 @@ impl RelayService {
                     "locked_sat": self.controller.locked_capital_sat().await?,
                     "remaining_budget_sat": self.buyer.remaining_budget_sat(),
                     "bootstrap": self.forwarding.relay.bootstrap_stats(),
+                    "return_allowance": self.forwarding.relay.return_stats(),
                     "free_routes": self.free.stats(),
                     "measurements": crate::measurements::snapshot(),
                     "received": self.received.lock().unwrap().clone(),

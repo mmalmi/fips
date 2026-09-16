@@ -18,10 +18,12 @@ pub mod payment;
 pub mod payment_control;
 #[cfg(unix)]
 pub mod probe;
+pub mod return_allowance;
 pub mod route_quotes;
 #[cfg(unix)]
 pub mod service;
 #[cfg(all(unix, feature = "testbench"))]
 pub mod testbench;
+mod unpaid_budget;
 #[cfg(unix)]
 pub mod wallet_tools;

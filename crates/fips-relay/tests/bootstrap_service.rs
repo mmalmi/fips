@@ -14,7 +14,11 @@ use std::{
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+#[path = "process_support/idle.rs"]
+mod idle;
 mod process_support;
+#[path = "process_support/quality.rs"]
+mod quality;
 use process_support::*;
 
 async fn statuses(configs: &[ServiceConfig]) -> Vec<Value> {
@@ -71,26 +75,17 @@ async fn deliver(configs: &[ServiceConfig], npubs: &[String], epoch: u8) {
     );
 }
 
-fn payment_counts(states: &[Value]) -> Vec<(u64, u64)> {
-    states
-        .iter()
-        .map(|status| {
-            let row = status["control_traffic"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|r| r["service_port"] == 44_743)
-                .unwrap();
-            (
-                row["counters"]["requests_started"].as_u64().unwrap(),
-                row["counters"]["requests_received"].as_u64().unwrap(),
-            )
-        })
-        .collect()
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_way_purchase_delivers_to_an_empty_wallet_across_a_full_restart() {
+    one_way(false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn one_way_purchase_delivers_to_an_empty_wallet_across_a_full_restart() {
+async fn native_quality_reports_return_from_an_unfunded_recipient() {
+    one_way(true).await;
+}
+
+async fn one_way(return_allowance: bool) {
     tokio::time::timeout(Duration::from_secs(240), async {
         let root = tempfile::tempdir().unwrap();
         let now = SystemTime::now()
@@ -113,6 +108,7 @@ async fn one_way_purchase_delivers_to_an_empty_wallet_across_a_full_restart() {
             std::fs::create_dir(&directory).unwrap();
             let mut cfg = config(&directory, mint.url());
             cfg.terms.billing = BillingBasis::ForwardingData;
+            cfg.return_allowance = return_allowance;
             let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
             cfg.udp_bind = Some(socket.local_addr().unwrap());
             reservations.push(socket);
@@ -185,6 +181,12 @@ async fn one_way_purchase_delivers_to_an_empty_wallet_across_a_full_restart() {
             assert_eq!(status["remaining_budget_sat"], 64);
             assert!(status["purchases"].as_array().unwrap().is_empty());
             assert_eq!(status["received"]["packets"], 0);
+            if return_allowance {
+                assert_eq!(
+                    status["return_allowance"]["tracked_paths"], 0,
+                    "free handshakes must not create reply credit"
+                );
+            }
         }
         let purchased = request(
             &configs[0],
@@ -199,16 +201,11 @@ async fn one_way_purchase_delivers_to_an_empty_wallet_across_a_full_restart() {
             "forwarding_data"
         );
         deliver(&configs, &npubs, 1).await;
-        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        if return_allowance {
+            quality::assert_quality(&configs[0], &npubs[4]).await;
+        }
+        idle::assert_idle(&configs).await;
         let before = statuses(&configs).await;
-        let counts = payment_counts(&before);
-        assert!(counts.iter().any(|(sent, received)| sent + received > 0));
-        tokio::time::sleep(Duration::from_millis(1_500)).await;
-        assert_eq!(
-            payment_counts(&statuses(&configs).await),
-            counts,
-            "free handshake must not leave unclaimable paid evidence or endless idle polls"
-        );
         for child in &mut children {
             stop(child).await;
         }
@@ -227,10 +224,33 @@ async fn one_way_purchase_delivers_to_an_empty_wallet_across_a_full_restart() {
             );
         }
         deliver(&configs, &npubs, 2).await;
-        send(&configs, &npubs, 4, 0, "receiver has no reverse purchase").await;
+        if return_allowance {
+            quality::assert_quality(&configs[0], &npubs[4]).await;
+        }
+        // Reports are encrypted, so the allowance also admits small replies.
+        // Its finite quota must prevent an unfunded bulk reverse stream.
+        let count = if return_allowance { 32 } else { 1 };
+        for _ in 0..count {
+            send(&configs, &npubs, 4, 0, &"x".repeat(1_000)).await;
+        }
         tokio::time::sleep(Duration::from_millis(1_000)).await;
         let final_states = statuses(&configs).await;
-        assert_eq!(final_states[0]["received"]["packets"], 0);
+        if return_allowance {
+            assert!(
+                final_states[0]["received"]["packets"].as_u64().unwrap() < 32,
+                "bounded replies cannot carry an unfunded bulk stream"
+            );
+            for state in &final_states[1..4] {
+                assert!(
+                    state["return_allowance"]["traffic"]["admitted_packets"]
+                        .as_u64()
+                        .unwrap()
+                        > 0
+                );
+            }
+        } else {
+            assert_eq!(final_states[0]["received"]["packets"], 0);
+        }
         for i in [3, 4] {
             assert!(final_states[i]["purchases"].as_array().unwrap().is_empty());
             assert_eq!(final_states[i]["locked_sat"], 0);

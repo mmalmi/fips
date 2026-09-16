@@ -139,10 +139,15 @@ where an exact optimum exists. Bind the actual forwarded path to the quote.
 Native quality monitoring already exists in `proto/mmp/metrics.rs`,
 `node/handlers/session/node_reports_errors.rs`, `node/tests/session/route_metrics*`
 and `node/tests/routing/stale_metrics.rs` under fips-core. The relay's new free
-handshake allowance excludes established encrypted session reports. Verify and
-resolve their return path for an unfunded recipient before relying on them for
-paid-route quality selection. Do not mistake handshake success for full feedback
-availability. Dedicated monetary delivery receipts remain an optional experiment.
+handshake allowance excludes established encrypted session reports. The opt-in
+[bounded return allowance](RETURN-ALLOWANCE.md) now earns opaque reply credit
+from admitted forward traffic. A five-process paid path obtains session RTT and
+positive goodput from an unfunded recipient before and after restart; the free
+destination case also obtains native quality with zero mint requests. Credit,
+rate, expiry and exact reverse-path bounds apply; this is not report-only traffic
+or guaranteed feedback. Impaired/asymmetric/mobile paths, hostile contention,
+transition races and performance still need acceptance. Dedicated monetary
+delivery receipts remain an optional experiment.
 
 The ETX literature is a reference for loss-aware link metrics, not proof of
 optimal monetary routes or malicious-relay resistance:

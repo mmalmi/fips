@@ -23,6 +23,8 @@ use tokio::{
     process::Child,
 };
 mod process_support;
+#[path = "process_support/quality.rs"]
+mod quality;
 use process_support::*;
 
 struct Bench {
@@ -43,6 +45,7 @@ impl Bench {
             std::fs::create_dir(&directory).unwrap();
             let mut cfg = config(&directory, mint);
             cfg.terms.billing = BillingBasis::ForwardingData;
+            cfg.return_allowance = !paid;
             let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
             cfg.udp_bind = Some(socket.local_addr().unwrap());
             sockets.push(socket);
@@ -197,6 +200,7 @@ async fn own_destination_crosses_three_relays_without_funding_or_contacting_a_mi
             assert!(offer["purchase"].is_null());
             assert_eq!(offer["free_route"]["price"]["msat"], 0);
             bench.deliver(4, epoch).await;
+            quality::assert_quality(&bench.configs[0], &bench.npubs[4]).await;
             bench.send(3, "unpaid neighboring destination").await;
             tokio::time::sleep(Duration::from_millis(500)).await;
             let states = bench.states().await;

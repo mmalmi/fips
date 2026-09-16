@@ -1,6 +1,17 @@
 use super::*;
 
 #[test]
+fn return_allowance_is_explicit_and_cannot_change_legacy_tariffs() {
+    let mut config: ServiceConfig =
+        serde_json::from_str(include_str!("../../service.example.json")).unwrap();
+    assert!(!config.return_allowance);
+    config.return_allowance = true;
+    assert!(config.validate().unwrap_err().contains("forwarding-data"));
+    config.terms.billing = BillingBasis::ForwardingData;
+    config.validate().unwrap();
+}
+
+#[test]
 fn restored_allowance_is_inaccessible_until_service_startup_finishes() {
     use crate::ledger::{BytePrice, ChannelTerms, Contract};
     let directory = tempfile::tempdir().unwrap();
@@ -90,6 +101,7 @@ fn native_interface_configuration_has_no_implicit_udp_or_discovery_shortcut() {
         udp_bind: None,
         customer_network: None,
         destination_fees: Default::default(),
+        return_allowance: false,
         payment_cadence: Default::default(),
         ethernet_interfaces: vec!["mesh0".into()],
         neighbors: vec![],

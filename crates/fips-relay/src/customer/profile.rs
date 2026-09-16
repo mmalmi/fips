@@ -82,6 +82,7 @@ impl CustomerProfile {
             ),
             customer_network: None,
             destination_fees: Default::default(),
+            return_allowance: false,
             payment_cadence: Default::default(),
             ethernet_interfaces: vec![],
             neighbors: vec![PeerConfig::new(

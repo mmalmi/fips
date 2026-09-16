@@ -26,6 +26,8 @@ route. Existing account terms and the physical bench remain unchanged.
 Explicit [destination fees](DESTINATION-PRICING.md) can make selected destinations
 free without opening payment channels, or charge different local fees. These
 software checks do not yet establish cheapest working route selection.
+An opt-in [bounded return allowance](RETURN-ALLOWANCE.md) lets an unfunded
+recipient return encrypted native quality reports and other small replies.
 
 ## Implemented and checked
 

@@ -49,6 +49,9 @@ pub struct ServiceConfig {
         skip_serializing_if = "crate::destination_pricing::DestinationFees::is_empty"
     )]
     pub destination_fees: crate::destination_pricing::DestinationFees,
+    /// Optional bounded opaque replies on the reverse of an admitted path.
+    #[serde(default)]
+    pub return_allowance: bool,
     pub terms: ServiceTerms,
     /// Local timing only; does not change saved financial terms or authority.
     #[serde(default, skip_serializing_if = "PaymentCadence::is_default")]
@@ -164,6 +167,9 @@ impl ServiceConfig {
             }
         }
         let t = &self.terms;
+        if self.return_allowance && !t.billing.has_free_handshakes() {
+            return Err("return allowance requires forwarding-data billing".into());
+        }
         self.destination_fees
             .resolve(t.max_rate_msat_per_kib, t.billing.has_free_handshakes())?;
         Controller::validate_policy(&t.controller)?;

@@ -1,4 +1,6 @@
 #![cfg(unix)]
+#[path = "process_support/idle.rs"]
+mod idle;
 
 use cashu_service::{
     create_topup_quote, load_mint_balance, load_wallet_overview, receive_payment_token,
@@ -225,52 +227,7 @@ async fn customer_app_uses_real_accounts_and_preserves_them_across_reopen() {
                 assert_eq!(before["relay"]["history"], after["relay"]["history"]);
             }
         }
-        // Confirmed idle channels must not retain the old 500-ms network poll.
-        // The actual app account, provider, control transport and mint are live.
-        let payment_counts = |status: &Value| {
-            let row = status["control_traffic"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|row| row["service_port"] == 44_743)
-                .unwrap();
-            (
-                row["counters"]["requests_started"].as_u64().unwrap(),
-                row["counters"]["requests_received"].as_u64().unwrap(),
-            )
-        };
-        // Delivery does not mean its final payment exchange has finished.
-        // Observe a quiet interval before the measured interval, with a hard
-        // deadline: the old perpetual 500-ms poll can never satisfy this.
-        let before_idle = tokio::time::timeout(Duration::from_secs(10), async {
-            let mut previous =
-                payment_counts(&request(&configs[0], &AdminRequest::Status).await.unwrap());
-            let mut unchanged_since = tokio::time::Instant::now();
-            loop {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                let current =
-                    payment_counts(&request(&configs[0], &AdminRequest::Status).await.unwrap());
-                if current != previous {
-                    previous = current;
-                    unchanged_since = tokio::time::Instant::now();
-                } else if unchanged_since.elapsed() >= Duration::from_millis(1_500) {
-                    break current;
-                }
-            }
-        })
-        .await
-        .expect("completed customer traffic must reach payment quiescence");
-        assert!(
-            before_idle.0 + before_idle.1 > 0,
-            "the real payment path was exercised"
-        );
-        tokio::time::sleep(Duration::from_millis(1_250)).await;
-        let after_idle = request(&configs[0], &AdminRequest::Status).await.unwrap();
-        assert_eq!(
-            payment_counts(&after_idle),
-            before_idle,
-            "confirmed idle channels must generate no payment-control requests"
-        );
+        idle::assert_idle(&configs[..1]).await;
         let final_wallet = client.execute(Action::Finish).await.unwrap();
         let amount = final_wallet["balance_sat"].as_u64().unwrap();
         let export = client
