@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::{sync::mpsc, task::JoinHandle};
 mod keysets;
+mod retirement;
 
 #[derive(Debug, Clone)]
 pub struct ApprovedAgreement {

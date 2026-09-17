@@ -11,7 +11,7 @@ async fn paid_service_settlement_preserves_redemption_reserves_and_signed_charge
             paths,
             npubs,
             mut children,
-        } = setup::start_bench(root.path(), 9618, 600).await;
+        } = setup::start_bench(root.path(), 9618, 60).await;
         for (source, destination) in [(0, 2), (2, 0)] {
             request(
                 &configs[source],
@@ -117,6 +117,64 @@ async fn paid_service_settlement_preserves_redemption_reserves_and_signed_charge
                 .unwrap()
                 .balance_sat,
             balance
+        );
+        let reverse = request(&configs[2], &AdminRequest::Settle).await.unwrap();
+        let receiver = cashu_service::FileSpilmanPaymentReceiver::load(
+            &configs[1].state_directory.join("receiver"),
+            cashu_service::FileSpilmanPaymentReceiverConfig::new([mint.url().to_string()]),
+        )
+        .unwrap();
+        let history = tokio::time::timeout(Duration::from_secs(150), async {
+            loop {
+                let history = receiver.retirement_history().unwrap();
+                if history.totals.iter().map(|t| t.channels).sum::<u64>() == 2
+                    && read(1)["seller_settlements"]
+                        .as_object()
+                        .unwrap()
+                        .is_empty()
+                {
+                    break history;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        })
+        .await
+        .expect("both paid/zero payout receiver handoffs must finish after actual expiry");
+        let all = reports
+            .iter()
+            .chain(reverse["settlements"].as_array().unwrap());
+        let mut expected = [0u64; 4];
+        for r in all {
+            expected[0] += r["paid_sat"].as_u64().unwrap();
+            expected[1] +=
+                r["paid_sat"].as_u64().unwrap() + r["receiver_fee_reserve_sat"].as_u64().unwrap();
+            expected[2] += r["refunded_sat"].as_u64().unwrap();
+            expected[3] += r["value_after_stage1_sat"].as_u64().unwrap();
+        }
+        let t = &history.totals[0];
+        assert_eq!(
+            [
+                t.closed_amount,
+                t.receiver_sum,
+                t.sender_sum,
+                t.value_after_stage1
+            ],
+            expected
+        );
+        assert_eq!(
+            read(1)["history"]["seller"]["totals"]["receiver"],
+            serde_json::to_value(&history).unwrap()
+        );
+        assert_eq!(
+            request(&configs[0], &AdminRequest::Status).await.unwrap()["funding_budget"],
+            budget
+        );
+        assert_eq!(
+            load_mint_balance(&configs[1].state_directory.join("wallet"), mint.url())
+                .await
+                .unwrap()
+                .balance_sat,
+            128 + expected[1]
         );
         for child in &mut children {
             stop(child).await;

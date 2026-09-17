@@ -246,7 +246,7 @@ impl Controller {
                 Err("missing controller history".into())
             };
         };
-        if !matches!(j.version, 3..=5)
+        if !matches!(j.version, 3..=6)
             || h.sellers.len() > MAX_CHANNELS
             || h.buyers.len() > MAX_CHANNELS
         {
@@ -286,10 +286,8 @@ impl Controller {
         let seller = self.services.seller.clone();
         blocking(move || {
             let mut store = store.lock().map_err(|_| "controller state poisoned")?;
-            store.resume_sales(&seller)?;
             let timestamp = now()?;
-            let routes = store.retire_routes(&buyer, &seller, timestamp)?;
-            Ok(routes + store.retire_sales(&seller, timestamp)?)
+            store.retire_routes(&buyer, &seller, timestamp)
         })
         .await
     }

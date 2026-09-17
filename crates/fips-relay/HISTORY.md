@@ -105,16 +105,40 @@ future release permission or tombstone, and writes no journal. Known unfinished
 channels and wrong buyers cannot use that acknowledgment path to remove evidence.
 
 Following release, route compaction and immutable wallet expiry, the controller
-saves one seller cleanup plan, commits the seller ledger, then removes its matching
-channel terms and settlement records. It retains cumulative settlement value,
-signed payments, receiver redemption-fee reserves, returned funds and reported
+asks the receiver SDK to verify custody of the original payout in the wallet.
+It binds the SDK's exact channel identities, expiry, mint, currency, capacity,
+signed amount and both original payout values to the released settlement reports.
+The SDK retains ownership of its nominal funding and usage accounting. An
+ineligible payout retains its records without saving a new cleanup intent.
+
+The controller then saves one exact plan, commits the seller ledger, commits
+receiver retirement through the SDK, checks the returned history, and only then
+removes its channel terms and settlement records. It retains cumulative settlement
+value, signed payments, receiver redemption-fee reserves, returned funds and reported
 fees. Reserves remain distinct from both signed spending and fees already paid;
 see [settlement values and compatibility](FUNDING-COSTS.md#signed-charges-and-payout-reserves).
-Startup/recovery resumes an interrupted plan
-before other financial work. Failed writers suspend admission; retry checks exact
-before/after evidence and does not count a completed handoff twice. Durable credit
+The wallet owner guard spans this local operation even if its async caller is
+cancelled. It performs no payout import, payment or network exchange. Startup
+resumes an interrupted plan before ordinary funding recovery. Failed writers
+suspend admission; retry checks exact before/after evidence and does not count a
+completed handoff twice. Durable credit
 windows remove only the retired channel entries; other channels keep the same
 allowance.
+
+The SDK requires original unspent payouts to retain their spending signatures;
+already-spent payouts are eligible without restoring their value. Empty zero
+payouts are valid. An exact committed plan can be retried without advancing
+history twice. SDK rollups preserve their own expiry floor and original values;
+the controller must match its previous saved SDK history before adding a batch.
+It does not silently adopt an independently advanced receiver history.
+
+Old pending seller intents still retain the channel IDs, released reports and
+original accounting needed to acquire a verified SDK plan. Recovery saves that
+plan before further deletion, including when the ledger step already committed.
+Previously completed application-only cleanup may have lost those identities;
+its SDK records require separate reconciliation. New SDK rollups can therefore
+cover a subset of cumulative application totals, without replacing older totals
+or inventing payout evidence.
 
 Seller history keeps each channel's positive unpaid exposure:
 `max(reserved_msat - paid_msat, 0)`. These amounts accumulate by buyer identity and
@@ -131,8 +155,10 @@ operator intervention after enough distinct unpaid peers. Active, unexpired,
 unacknowledged, pending, legacy or otherwise unresolved records also retain slots.
 The controller and ledger's channel bounds now count retained records on both sides.
 
-**Remaining history work:** receiver-side SDK and CDK operation/activity records
-are still retained by their respective stores. This is not yet a bound on total
+**Remaining history work:** CDK operation/activity/proof records and orphaned legacy
+receiver records remain retained. Original spent proof evidence currently supports
+the SDK's custody check; any future proof cleanup must coordinate that dependency.
+This is not yet a bound on total
 router database size or proof of indefinite operation under hostile identity churn.
 Legacy/full profiles and version-1 funding-cost reconciliation still need explicit
 migration. Missing original evidence must never be replaced with zero costs.
@@ -154,13 +180,17 @@ Existing buyer versions 1/2 and seller versions 3/4 load with zero retired total
 and retain their original evidence and billing mode. New versions require an explicit, internally
 consistent rollup field; missing fields are rejected. Older executables reject
 the new versions, so do not downgrade a profile after it has been opened by this
-code. Controller journals now use version 3. Version 2 loads with no retired history
-and upgrades on its first retirement; new profiles start at version 3. Missing
+code. New controller journals start at version 3. Version 2 loads with no retired history
+and upgrades on its first retirement. Missing
 version-3 history is rejected, and older executables reject version 3.
 The first numbered funding or outgoing-channel retirement upgrades the controller
-to version 4, which requires explicit buyer channel history. Seller cleanup upgrades
-to version 5, requiring explicit seller totals too. Later funding and route cleanup
-preserve the higher version. SDK channel retirement upgrades its client journal to version 6.
+to version 4, which requires explicit buyer channel history. Version 5 additionally
+requires explicit seller totals. Coordinated receiver retirement
+upgrades the controller to version 6, requiring explicit receiver history and an
+exact SDK plan in every pending seller intent. Versions 2 through 5 still load;
+the original rights and evidence determine which records can migrate. Later
+funding and route cleanup preserve the higher version. SDK outgoing channel
+retirement upgrades its client journal to version 6.
 Older binaries cannot read these newer journals; keep their matching code and
 dependencies together and do not downgrade a used profile.
 Version-1 funding-cost reconciliation remains separate and incomplete.
@@ -211,4 +241,14 @@ unpaid identities, missing/corrupt history, release authorization and all local
 write boundaries. The real `funding_costs` service scenario loses a release reply,
 keeps the buyer offline while the seller removes its acknowledged report, and
 then recovers both sides without changing wallet balance or lifetime spending.
-Receiver SDK and CDK history removal are not claimed by those tests.
+It also verifies SDK receiver removal and exact matching controller/SDK history.
+The paid-fee service case retires both paid and zero-usage channels after actual
+expiry, retaining the original signed amounts, redemption reserves and payouts.
+
+Coordinator fixtures additionally cover receiver failure before commit, a lost
+commit reply, final controller write failure and a mismatched returned history.
+Each resumes the original plan once. Legacy pending intents recover both before
+and after ledger removal; changed payout/history evidence and incomplete modern
+schemas are rejected. These use fixture SDK callbacks through the production
+coordinator; actual custody and removal are exercised by the service tests above.
+CDK history removal and physical power-loss recovery are not claimed.

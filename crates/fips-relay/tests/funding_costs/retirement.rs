@@ -131,6 +131,38 @@ async fn service_retires_real_wallet_channels_after_expiry_without_resetting_spe
             read(&seller_controller)["history"]["seller"]["totals"]["accounting"]["channels"],
             1
         );
+        let receiver = cashu_service::FileSpilmanPaymentReceiver::load(
+            &configs[1].state_directory.join("receiver"),
+            cashu_service::FileSpilmanPaymentReceiverConfig::new([mint.url().to_string()]),
+        )
+        .unwrap();
+        let receiver_history = receiver.retirement_history().unwrap();
+        assert_eq!(
+            receiver_history
+                .totals
+                .iter()
+                .map(|t| t.channels)
+                .sum::<u64>(),
+            1,
+            "FIPS must finish the original receiver financial handoff"
+        );
+        assert_eq!(
+            read(&seller_controller)["history"]["seller"]["totals"]["receiver"],
+            serde_json::to_value(&receiver_history).unwrap()
+        );
+        let channel_id = journal["buyer_settlements"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .next()
+            .unwrap();
+        assert!(
+            receiver
+                .close_cashu_spilman_channel(channel_id)
+                .await
+                .is_err(),
+            "the receiver API must no longer retain the released close report"
+        );
         let after = request(cfg, &AdminRequest::Status).await.unwrap();
         assert_eq!(after["funding_budget"], before);
         let buyer_after = read(&buyer_path);

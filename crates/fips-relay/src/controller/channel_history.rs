@@ -158,7 +158,7 @@ impl Controller {
                 Err("missing channel history".into())
             };
         };
-        if !matches!(j.version, 4 | 5)
+        if !matches!(j.version, 4..=6)
             || !h.totals.valid()
             || h.totals.through >= j.next_funding
             || j.funding
@@ -194,21 +194,33 @@ impl Controller {
         let buyer = self.services.buyer.clone();
         let seller = self.services.seller.clone();
         let directory = self.services.wallet_directory.clone();
+        let control = self.services.payment_control.clone();
         let runtime = tokio::runtime::Handle::current();
         blocking(move || {
             let _guard = guard;
             let mut store = store.lock().map_err(|_| "controller state poisoned")?;
-            store.resume_sales(&seller)?;
+            let timestamp = now()?;
+            let mut prepare = |ids: &[String]| {
+                runtime.block_on(control.receiver_retirement_plan(&directory, ids, timestamp))
+            };
+            let mut retire = |plan: &cashu_service::CashuSpilmanReceiverRetirement| {
+                runtime.block_on(control.retire_receiver(&directory, plan))
+            };
+            let mut count = store.resume_sales(&seller, &mut prepare, &mut retire)?;
             if select {
-                store.prepare_channel_retirement(&buyer, now()?)?;
+                store.prepare_channel_retirement(&buyer, timestamp)?;
             }
-            store.resume_channel_retirement(&buyer, |scope, through| {
+            count += store.resume_channel_retirement(&buyer, |scope, through| {
                 runtime
                     .block_on(cashu_service::retire_cashu_spilman_wallet_channels(
                         &directory, scope, through,
                     ))
                     .map_err(|e| e.to_string())
-            })
+            })?;
+            if select {
+                count += store.retire_sales(&seller, timestamp, &mut prepare, &mut retire)?;
+            }
+            Ok(count)
         })
         .await
     }

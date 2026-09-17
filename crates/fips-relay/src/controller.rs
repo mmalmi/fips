@@ -376,7 +376,6 @@ impl Controller {
             _owner: owner,
         };
         store.resume_retirement(&services.buyer, &services.seller)?;
-        store.resume_sales(&services.seller)?;
         Self::reconcile_route_stops(&store.journal, &services)?;
         Ok(Self::with_store(policy, services, store))
     }

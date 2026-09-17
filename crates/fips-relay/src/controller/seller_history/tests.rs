@@ -1,5 +1,8 @@
 use super::*;
 use crate::ledger::{ChannelUsage, Limits};
+mod recovery;
+mod support;
+use support::{prepare_sales, resume_sales, retire_sales};
 
 fn fixture(root: &Path) -> (Store, DurableRelay, ChannelTerms) {
     let (mut store, old) = super::super::transition_tests::fixture(&root.join("controller"));
@@ -100,7 +103,10 @@ fn controller_recycles_acknowledged_sales_and_keeps_cumulative_settlement_fees()
     let (mut store, mut seller, t) = fixture(root.path());
     for n in 1..=64 {
         let t = append(&mut store, &seller, &t, n, true);
-        assert_eq!(store.retire_sales(&seller, t.expires_unix + 61).unwrap(), 1);
+        assert_eq!(
+            retire_sales(&mut store, &seller, t.expires_unix + 61).unwrap(),
+            1
+        );
         let h = store.journal.history.as_ref().unwrap();
         let total = &h.seller.as_ref().unwrap().totals;
         assert_eq!(total.accounting.channels, n);
@@ -111,7 +117,10 @@ fn controller_recycles_acknowledged_sales_and_keeps_cumulative_settlement_fees()
         assert!(seller.channel_terms(&t.id).is_none());
         let path = store.directory.join("controller.json");
         let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
-        assert_eq!(store.retire_sales(&seller, t.expires_unix + 61).unwrap(), 0);
+        assert_eq!(
+            retire_sales(&mut store, &seller, t.expires_unix + 61).unwrap(),
+            0
+        );
         assert_eq!(
             std::fs::metadata(&path).unwrap().modified().unwrap(),
             modified
@@ -137,7 +146,10 @@ fn seller_history_retains_receiver_fee_reserves_without_rebilling_them() {
     report.receiver_fee_reserve_sat = 1;
     report.refunded_sat -= 4;
     store.persist().unwrap();
-    assert_eq!(store.retire_sales(&seller, t.expires_unix + 61).unwrap(), 1);
+    assert_eq!(
+        retire_sales(&mut store, &seller, t.expires_unix + 61).unwrap(),
+        1
+    );
     let mut store = reload(store);
     let total = &store
         .journal
@@ -159,7 +171,10 @@ fn seller_history_retains_receiver_fee_reserves_without_rebilling_them() {
         .remove("receiver_fee_reserve_sat");
     let missing: Journal = serde_json::from_value(missing).unwrap();
     assert!(Controller::validate_journal(&missing, &missing.policy, missing.local).is_err());
-    assert_eq!(store.retire_sales(&seller, t.expires_unix + 61).unwrap(), 0);
+    assert_eq!(
+        retire_sales(&mut store, &seller, t.expires_unix + 61).unwrap(),
+        0
+    );
 }
 
 #[test]
@@ -167,7 +182,10 @@ fn unacknowledged_or_unexpired_sales_keep_their_reports() {
     let root = tempfile::tempdir().unwrap();
     let (mut store, seller, t) = fixture(root.path());
     let t = append(&mut store, &seller, &t, 1, false);
-    assert_eq!(store.retire_sales(&seller, t.expires_unix + 61).unwrap(), 0);
+    assert_eq!(
+        retire_sales(&mut store, &seller, t.expires_unix + 61).unwrap(),
+        0
+    );
     assert!(store.journal.seller_settlements[&t.id].report.is_some());
     store
         .journal
@@ -175,8 +193,14 @@ fn unacknowledged_or_unexpired_sales_keep_their_reports() {
         .get_mut(&t.id)
         .unwrap()
         .released = true;
-    assert_eq!(store.retire_sales(&seller, t.expires_unix + 60).unwrap(), 0);
-    assert_eq!(store.retire_sales(&seller, t.expires_unix + 61).unwrap(), 1);
+    assert_eq!(
+        retire_sales(&mut store, &seller, t.expires_unix + 60).unwrap(),
+        0
+    );
+    assert_eq!(
+        retire_sales(&mut store, &seller, t.expires_unix + 61).unwrap(),
+        1
+    );
 }
 
 #[test]
@@ -186,7 +210,7 @@ fn each_seller_cleanup_write_boundary_recovers_without_losing_evidence() {
         let (mut store, seller, template) = fixture(root.path());
         let t = append(&mut store, &seller, &template, 1, true);
         if boundary != 0 {
-            store.prepare_sales(&seller, t.expires_unix + 61).unwrap();
+            prepare_sales(&mut store, &seller, t.expires_unix + 61).unwrap();
         }
         if boundary == 3 {
             seller.retire_channels(&pending(&store).ledger).unwrap();
@@ -200,20 +224,23 @@ fn each_seller_cleanup_write_boundary_recovers_without_losing_evidence() {
             std::fs::rename(&path, &saved).unwrap();
             std::fs::create_dir(&path).unwrap();
             let failed = if boundary == 0 {
-                store.prepare_sales(&seller, t.expires_unix + 61)
+                prepare_sales(&mut store, &seller, t.expires_unix + 61)
             } else {
-                store.resume_sales(&seller).map(|_| ())
+                resume_sales(&mut store, &seller).map(|_| ())
             };
             assert!(failed.is_err());
             assert!(store.change(|_| Ok(())).is_err());
-            assert!(store.resume_sales(&seller).is_err());
+            assert!(resume_sales(&mut store, &seller).is_err());
             std::fs::remove_dir(&path).unwrap();
             std::fs::rename(&saved, &path).unwrap();
         }
         store = reload(store);
         drop(seller);
         let seller = DurableRelay::load(&root.path().join("seller")).unwrap();
-        assert_eq!(store.retire_sales(&seller, t.expires_unix + 61).unwrap(), 1);
+        assert_eq!(
+            retire_sales(&mut store, &seller, t.expires_unix + 61).unwrap(),
+            1
+        );
         assert_eq!(
             store
                 .journal
@@ -236,7 +263,7 @@ fn changed_retirement_evidence_and_missing_modern_history_are_rejected() {
     let root = tempfile::tempdir().unwrap();
     let (mut store, seller, t) = fixture(root.path());
     let t = append(&mut store, &seller, &t, 1, true);
-    store.prepare_sales(&seller, t.expires_unix + 61).unwrap();
+    prepare_sales(&mut store, &seller, t.expires_unix + 61).unwrap();
     for field in ["history", "fees", "release", "paid"] {
         let mut j = store.journal.clone();
         match field {

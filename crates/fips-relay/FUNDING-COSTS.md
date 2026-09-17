@@ -65,13 +65,15 @@ recycles eligible completed numbered channels after verified settlement, route
 cleanup and immutable wallet expiry. Persistent gross debit/refund rollups keep
 lifetime exposure unchanged. Legacy, unfinished and still-referenced channels
 remain retained. Seller cleanup now requires the buyer's durable refund and report
-release; unpaid exposure remains attached to buyer and mint. Receiver/CDK history
-cleanup is still unfinished.
+release; unpaid exposure remains attached to buyer and mint. It now coordinates
+SDK receiver removal using original wallet payout custody and a durable exact
+plan. CDK histories and already-orphaned legacy receiver records still need
+separate cleanup and migration.
 [History and recovery](HISTORY.md) specifies the transaction and remaining bounds.
 
 ## Development and migration
 
-Controller journal versions 2 through 5 require the saved debit approvals, wallet cost
+Controller journal versions 2 through 6 require the saved debit approvals, wallet cost
 evidence and refund totals. Version-1 controller journals cannot be automatically
 upgraded because their fee approval and exact wallet costs may be unavailable.
 Keep old state intact and use its matching executable for recovery; do not delete
@@ -101,5 +103,7 @@ wallet spend. Unit tests exercise journal reservations, cost reconciliation,
 duplicate operation IDs, corruption and retention of spent costs after refunds.
 The paid-traffic case additionally delivers datagrams, closes a nonzero signed
 balance with a receiver redemption reserve, and checks both parties' original
-values, wallet conservation, report replay and restart. Zero-usage funding tests
-alone do not exercise this distinction.
+values, wallet conservation, report replay and restart. After actual expiry, it
+checks receiver removal and identical SDK/controller histories for both paid and
+zero-usage channels, preserving the original payout values and lifetime budget.
+Zero-usage funding tests alone do not exercise the redemption-reserve distinction.

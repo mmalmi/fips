@@ -7,7 +7,7 @@ impl Controller {
         policy: &ControllerPolicy,
         local: NodeAddr,
     ) -> Result<(), String> {
-        if !matches!(j.version, 2..=5)
+        if !matches!(j.version, 2..=6)
             || &j.policy != policy
             || j.local != local
             || j.epoch.is_empty()

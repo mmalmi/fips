@@ -1,6 +1,11 @@
 //! Retain seller debt and settlement totals after the buyer releases its report.
 use super::*;
 use crate::ledger::channel_history::{History as LedgerHistory, Plan as LedgerPlan};
+use cashu_service::{
+    CashuSpilmanReceiverHistory as ReceiverHistory, CashuSpilmanReceiverRetirement as ReceiverPlan,
+};
+
+mod receiver;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(super) struct SellerHistory {
@@ -17,6 +22,8 @@ struct Totals {
     receiver_fee_reserve_sat: u64,
     returned_sat: u64,
     fee_sat: u64,
+    #[serde(default)]
+    receiver: Option<ReceiverHistory>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -24,6 +31,8 @@ struct Plan {
     before: Totals,
     after: Totals,
     ledger: LedgerPlan,
+    #[serde(default)]
+    receiver: Option<ReceiverPlan>,
 }
 
 impl SellerHistory {
@@ -33,7 +42,7 @@ impl SellerHistory {
 }
 
 impl Totals {
-    fn valid(&self) -> bool {
+    fn valid(&self, mint: &str) -> bool {
         self.accounting.valid(MAX_CHANNELS)
             && self.accounting.capacity_sat <= self.value_sat
             && self
@@ -43,7 +52,16 @@ impl Totals {
                 .and_then(|n| n.checked_add(self.fee_sat))
                 == Some(self.value_sat)
             && self.paid_sat as u128 * 1000 == self.accounting.usage.paid_msat as u128
-            && (self.accounting.channels != 0 || *self == Self::default())
+            && self
+                .receiver
+                .as_ref()
+                .is_none_or(|r| receiver::valid_history(r, self, mint))
+            && (self.accounting.channels != 0
+                || *self
+                    == Self {
+                        receiver: self.receiver.clone(),
+                        ..Self::default()
+                    })
     }
 
     fn added(&self, report: &SettlementReport) -> Result<Self, String> {
@@ -57,6 +75,7 @@ impl Totals {
             )?,
             returned_sat: add(self.returned_sat, report.refunded_sat)?,
             fee_sat: add(self.fee_sat, report.fee_sat)?,
+            receiver: self.receiver.clone(),
         })
     }
 }
@@ -77,8 +96,8 @@ impl Plan {
         self.ledger
             .validate(MAX_CHANNELS)
             .map_err(|e| e.to_string())?;
-        if !self.before.valid()
-            || !self.after.valid()
+        if !self.before.valid(&j.policy.mint_url)
+            || !self.after.valid(&j.policy.mint_url)
             || self.before.accounting != self.ledger.before
             || self.after.accounting != self.ledger.after
             || j.history
@@ -104,6 +123,8 @@ impl Plan {
             after = after.added(s.report.as_ref().unwrap())?;
         }
         after.accounting = self.ledger.after.clone();
+        self.validate_receiver(j)?;
+        after.receiver = self.after.receiver.clone();
         if after != self.after {
             return Err("retired seller settlement changed".into());
         }
@@ -131,7 +152,10 @@ impl Controller {
                 Err("missing seller history".into())
             };
         };
-        if j.version != 5 || !h.totals.valid() {
+        if !matches!(j.version, 5 | 6)
+            || !h.totals.valid(&j.policy.mint_url)
+            || (j.version == 6) != h.totals.receiver.is_some()
+        {
             return Err("invalid seller history".into());
         }
         if let Some(p) = &h.pending {
@@ -153,12 +177,19 @@ impl Store {
         &mut self,
         seller: &DurableRelay,
         timestamp: u64,
+        mut prepare: impl FnMut(&[String]) -> Result<ReceiverPlan, String>,
+        mut retire: impl FnMut(&ReceiverPlan) -> Result<ReceiverHistory, String>,
     ) -> Result<usize, String> {
-        self.prepare_sales(seller, timestamp)?;
-        self.resume_sales(seller)
+        self.prepare_sales(seller, timestamp, &mut prepare)?;
+        self.resume_sales(seller, &mut prepare, &mut retire)
     }
 
-    fn prepare_sales(&mut self, seller: &DurableRelay, timestamp: u64) -> Result<(), String> {
+    fn prepare_sales(
+        &mut self,
+        seller: &DurableRelay,
+        timestamp: u64,
+        mut prepare: impl FnMut(&[String]) -> Result<ReceiverPlan, String>,
+    ) -> Result<(), String> {
         if !self.ready {
             return Err("controller journal suspended".into());
         }
@@ -187,29 +218,29 @@ impl Store {
                         .added(self.journal.seller_settlements[id].report.as_ref().unwrap())?;
                 }
                 after.accounting = ledger.after.clone();
-                let mut j = self.journal.clone();
-                j.version = 5;
-                let h = j.history.get_or_insert_with(History::default);
-                h.channels
-                    .get_or_insert_with(channel_history::ChannelHistory::default);
-                h.seller.get_or_insert_with(SellerHistory::default).pending = Some(Plan {
+                let plan = Plan {
                     before,
                     after,
                     ledger,
-                });
-                Controller::validate_journal(&j, &j.policy, j.local)?;
-                self.journal = j;
-                self.persist()?;
+                    receiver: None,
+                };
+                // An ineligible payout must not leave an unfulfillable intent.
+                self.save_sale_plan(plan, prepare(&ids)?)?;
             }
         }
         Ok(())
     }
 
-    pub(super) fn resume_sales(&mut self, seller: &DurableRelay) -> Result<usize, String> {
+    pub(super) fn resume_sales(
+        &mut self,
+        seller: &DurableRelay,
+        mut prepare: impl FnMut(&[String]) -> Result<ReceiverPlan, String>,
+        mut retire: impl FnMut(&ReceiverPlan) -> Result<ReceiverHistory, String>,
+    ) -> Result<usize, String> {
         if !self.ready {
             return Err("controller journal suspended".into());
         }
-        let Some(p) = self
+        let Some(mut p) = self
             .journal
             .history
             .as_ref()
@@ -219,15 +250,47 @@ impl Store {
             return Ok(0);
         };
         p.validate(&self.journal)?;
+        if p.receiver.is_none() {
+            // Legacy intents still own their original identities and reports.
+            // Upgrade before a completed ledger handoff can discard those IDs.
+            let ids = p
+                .ledger
+                .channels
+                .iter()
+                .map(|c| c.terms.id.clone())
+                .collect::<Vec<_>>();
+            p = self.save_sale_plan(p, prepare(&ids)?)?;
+        }
         seller
             .retire_channels(&p.ledger)
             .map_err(|e| e.to_string())?;
+        let receiver = p
+            .receiver
+            .as_ref()
+            .ok_or("receiver retirement intent missing")?;
+        if retire(receiver)? != receiver.after {
+            return Err("receiver retirement result changed".into());
+        }
         let mut j = self.journal.clone();
         p.finish(&mut j);
         Controller::validate_journal(&j, &j.policy, j.local)?;
         self.journal = j;
         self.persist()?;
         Ok(p.ledger.channels.len())
+    }
+
+    fn save_sale_plan(&mut self, mut plan: Plan, receiver: ReceiverPlan) -> Result<Plan, String> {
+        let mut j = self.journal.clone();
+        let h = j.history.get_or_insert_with(History::default);
+        h.channels
+            .get_or_insert_with(channel_history::ChannelHistory::default);
+        h.seller.get_or_insert_with(SellerHistory::default);
+        plan.attach_receiver(&mut j, receiver)?;
+        j.history.as_mut().unwrap().seller.as_mut().unwrap().pending = Some(plan.clone());
+        Controller::validate_journal(&j, &j.policy, j.local)?;
+        self.journal = j;
+        self.persist()?;
+        Ok(plan)
     }
 }
 
