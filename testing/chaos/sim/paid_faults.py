@@ -10,7 +10,7 @@ PACKETS = 8
 PAYLOAD_BYTES = 256
 
 
-def validate_probe(sent, received, *, loss=False):
+def validate_probe(sent, received, *, loss=False, measure_latency=True):
     if (sent["requested_packets"] != PACKETS or sent["submitted_packets"] != PACKETS
             or sent["submitted_bytes"] != PACKETS * PAYLOAD_BYTES
             or sent["stopped_reason"] is not None):
@@ -26,15 +26,19 @@ def validate_probe(sent, received, *, loss=False):
     if received["unique_packets"] != expected:
         raise RuntimeError("paid probe delivery differs from the expected fault")
     latency = received["latency"]
+    if not measure_latency:
+        if latency is not None:
+            raise RuntimeError("probe unexpectedly reports unrequested latency measurements")
+        return
     if latency is None or latency["invalid_timestamps"] != 0 or latency["samples"] != expected:
         raise RuntimeError("paid probe latency evidence is incomplete")
 
 
-def capture_probe(run, source, destination, wait, evidence, *, rate=4, loss=False):
+def capture_probe(run, source, destination, wait, evidence, *, rate=4, loss=False, measure_latency=True):
     shape = {"stream_id": secrets.token_hex(16), "packet_count": PACKETS,
              "payload_bytes": PAYLOAD_BYTES}
     run.ctl(destination, "receive_probe", probe={
-        **shape, "source": run.nodes[source].npub, "measure_one_way_latency": True,
+        **shape, "source": run.nodes[source].npub, "measure_one_way_latency": measure_latency,
     })
     # Loss is observed for the whole interval, not accepted from an initially
     # empty receive queue. This bound includes the paced send itself.
@@ -52,7 +56,7 @@ def capture_probe(run, source, destination, wait, evidence, *, rate=4, loss=Fals
         if received["source"] != run.nodes[source].npub or received["stream_id"] != shape["stream_id"]:
             raise RuntimeError("receiver did not observe the fresh source stream")
         if loss:
-            validate_probe(sent, received, loss=True)
+            validate_probe(sent, received, loss=True, measure_latency=measure_latency)
         return received if received["unique_packets"] == PACKETS else None
 
     if loss:
@@ -63,7 +67,7 @@ def capture_probe(run, source, destination, wait, evidence, *, rate=4, loss=Fals
             time.sleep(0.25)
     else:
         wait("paid probe delivery", sample, 30)
-    validate_probe(sent, evidence["received"], loss=loss)
+    validate_probe(sent, evidence["received"], loss=loss, measure_latency=measure_latency)
 
 
 def qdisc_counters(snapshot):

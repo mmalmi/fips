@@ -163,6 +163,31 @@ pricing document for the current acceptance evidence. Outgoing-link price
 selectors, a rate-limited free tier and paid traffic priority remain unfinished.
 Paid priority must derive from a valid local agreement.
 
+### Physical Wi-Fi discovery and free recovery
+
+The [physical Wi-Fi harness](../../testing/chaos/README.md#physical-wi-fi-discovery-acceptance)
+passes all 14 phases on three ARM64 OpenWrt routers. Fresh, unfunded profiles use
+native Ethernet beacons over an existing 802.11s mesh, with no FIPS peer roster.
+Temporary filters exclude the direct leaf-to-leaf shortcut. Both directions
+deliver through the middle router before and after one leaf leaves the radio
+mesh, its peers are evicted, and it rejoins. The same free-only source watches
+recover delivery without another purchase command. All 40 fresh packets arrive;
+middle-router admission and both shortcut-drop counters corroborate the route.
+
+Rejoin uses the retained supplicant network and interface, with saved and live
+kernel mesh forwarding disabled. Cleanup verifies original configuration/account
+hashes, identities, budgets, peer connections and AP availability, plus Internet
+and DNS reachability. All 228 management checks pass; their largest sampling gap
+is 2.21 seconds. No financial journals change. Candidate processes and temporary
+filters are removed without a forced stop. The 26 Wi-Fi harness checks and 17
+affected fault/probe checks also pass, including failed restoration and cleanup
+races. The installed router services remain on their original build.
+
+This establishes one controlled free radio leave/rejoin, not arbitrary physical
+mobility or throughput. Radio admission still needs the existing shared SAE key.
+Current paid-channel recovery over Wi-Fi, mixed/mobile neighborhoods, open-radio
+admission and the updated Pixel regression remain unverified by this run.
+
 ## Guarded cadence measurement
 
 The current optimized comparison covers 250/500/1000/2000-ms policies with two

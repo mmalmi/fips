@@ -140,6 +140,87 @@ Ownership and cleanup regressions run without Docker mutations:
 python3 -m unittest discover -s testing/chaos/tests -v
 ```
 
+## Physical Wi-Fi discovery acceptance
+
+`sim.wifi_discovery` exercises three explicitly supplied OpenWrt routers with an
+existing 802.11s radio triangle. It starts fresh, unfunded profiles beside the
+original services on experimental EtherType `0x88b5`. The original services must
+use a different EtherType and have no active purchases or source watches. No
+package, saved account, UCI network configuration or mint is changed. Account
+state uses persistent storage; the candidate executable uses `/tmp`.
+
+Supply a private JSON inventory with a `nodes` array of three records, ordered
+first leaf, middle, second leaf. Each record contains:
+
+| Field | Meaning |
+| --- | --- |
+| `host` | Existing SSH alias with administrative access; host-key checking remains enabled |
+| `ssh_config` | Optional absolute path to the operator's SSH configuration |
+| `interface` | Existing unbridged mesh interface on a dedicated radio, with no IP and `mesh_fwding=0` |
+| `management_interface` | Separate working management interface with a default gateway |
+| `original_binary`, `original_config` | Exact executable and JSON configuration of the existing relay |
+| `state_parent` | Existing writable persistent directory for fresh test profiles |
+| `expected_board` | Expected `ubus system board` board name |
+| `expected_mesh_mac` | Independently verified current mesh interface address |
+
+The routers need `nft` with netdev ingress support, `jsonfilter`, `flock`, `setsid`,
+`iw`, `sha256sum`, a supplicant control object and the normal OpenWrt clock-readiness
+marker. The mesh radio must have no other interfaces, including access points.
+Its sole saved supplicant network must be the current SAE mesh, with a fixed
+frequency and saved `mesh_fwding=0`. The harness derives its network ID and records
+the interface index, address and mesh profile; it does not copy the SAE key.
+Management must remain reachable when this interface leaves the mesh. The supplied static
+Linux ARM64 relay should be built from the verified source and dependency graph
+with `testbench,measurements`; the harness does not build or install packages.
+
+```sh
+cd testing/chaos
+python3 -m sim.wifi_discovery \
+  --inventory /private/operator/wifi-inventory.json \
+  --binary /private/artifacts/fips-relay \
+  --output /private/results/new-wifi-run
+```
+
+The run verifies authenticated beacon discovery without a FIPS peer roster,
+then excludes the leaf-to-leaf shortcut using temporary, owned `nft` tables that
+match only the experimental EtherType. Both directions must deliver fresh streams
+through the middle router, with observed middle-router admission and shortcut
+drop counters. Free-only source watches authorize this traffic without monetary
+journal changes. The second leaf then leaves the mesh through supplicant's
+`MESH_GROUP_REMOVE` until peers are actually evicted. `MESH_GROUP_ADD` rejoins
+the same saved network without recreating its interface. Discovery and delivery
+must recover without changing identities, peer lists or source authority.
+
+Independent management probes continue during the run and restoration. Each
+router also runs a lease-based cleanup guard: lost controller contact restores an
+owned mesh departure, removes only the owned table and stops only the candidate
+process. Guard cleanup and disruptive actions share a kernel lock so a late
+command cannot recreate an outage after cleanup. Existing tables are refused
+before deletion is armed. A mesh restore acknowledgment is insufficient: the
+guard retains its recovery marker until carrier, supplicant state, interface
+identity and forwarding policy are verified. Shutdown allows 65 seconds for
+in-flight control work to finish; a forced stop is recorded as a failure even
+after safe cleanup. Normal completion verifies the original configuration,
+account hashes, budget and peer graph. Fresh test profiles are retained; temporary
+candidate executables are removed. Inspect the private `result.json` for every
+phase, management sample and cleanup result.
+
+This is free forwarding and controlled split/rejoin acceptance. It does not prove
+paid channel recovery on radio links, arbitrary physical mobility, congestion
+fairness or permissionless radio joining: an existing SAE-protected mesh still
+requires its shared key. It runs the service directly; OpenWrt's package startup
+wrapper and power-loss recovery have separate acceptance scopes.
+
+Before hardware use, run `python3 -m unittest tests.test_wifi_discovery -v` on
+Linux with `flock`. The guard tests use real process ownership and file locks,
+with isolated fake interface/firewall commands; Linux-only tests explicitly skip
+on other hosts. They cover expired leases, late commands, table collisions,
+concurrent cleanup, exact candidate termination, changed mesh profiles and
+failed restoration. A raw `ip link down/up` is unsuitable for this test: it can
+leave supplicant's mesh state inconsistent with the kernel. The mesh-specific
+commands explicitly leave/rejoin the retained network. See the
+[hostap control implementation](https://w1.fi/cgit/hostap/tree/wpa_supplicant/ctrl_iface.c?id=ca266cc24d8705eb1a2a0857ad326e48b1408b20#n3321).
+
 ## Available Scenarios
 
 ### General stress tests

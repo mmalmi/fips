@@ -66,6 +66,16 @@ def finances():
 
 
 class PaidFaultTests(unittest.TestCase):
+    def test_delivery_can_be_verified_without_synchronized_physical_clocks(self):
+        evidence = reports()
+        evidence["received"]["latency"] = None
+        validate_probe(evidence["sent"], evidence["received"], measure_latency=False)
+        with self.assertRaises(RuntimeError):
+            validate_probe(evidence["sent"], evidence["received"])
+        evidence["received"]["unique_packets"] -= 1
+        with self.assertRaises(RuntimeError):
+            validate_probe(evidence["sent"], evidence["received"], measure_latency=False)
+
     def test_loss_requires_submitted_missing_data_and_carrier_drops(self):
         evidence = phase(loss=True)
         validate_effect("loss", evidence)
