@@ -46,7 +46,8 @@ nominal capacity. Settlement now validates the value after the funding swap;
 actual debit minus the wallet-verified refund determines lifetime spending.
 See [funding costs](FUNDING-COSTS.md) for limits, status fields, verification and
 the required unreleased dependencies. Controller version-1 reconciliation and
-financial-history retirement remain release blockers. Devices are unchanged.
+remaining seller/receiver/CDK history retirement remain release blockers. Devices
+are unchanged.
 
 The focused gates pass 89 relay tests: library, controllers, destination pricing,
 fee-bearing funding/replayed refunds, standalone services, and ordinary/native
@@ -76,11 +77,36 @@ failed-controller-write guard. Expiry in the retirement fixtures is simulated;
 these tests do not claim physical power-loss or hardware acceptance.
 
 Controller journal version 3 loads version 2 without inventing financial evidence;
-version-1 cost reconciliation remains unfinished. Whole-channel and wallet-history
-retirement are still required, and the existing 16-channel funding limit remains.
+version-1 cost reconciliation remains unfinished. The later outgoing-channel
+workflow below extends this route-only milestone; seller-side retirement remains
+required.
 Active, pending, legacy and otherwise unresolved records are kept. No live device
 changes or production-readiness claim accompanies this local work. See [history
 and recovery](HISTORY.md).
+
+### Completed outgoing channel retirement
+
+New funding uses stable numbered SDK request IDs. After verified settlement and
+wallet expiry, the recovery worker saves a recoverable plan across buyer,
+wallet/Spilman and controller records. Cumulative signed spending and gross wallet
+cost/refund totals survive deletion, restart and repeated acknowledgments. New
+funding cannot reuse retired numbers; unknown old channel identities are rejected
+even under renamed IDs or clock rollback. No network message was added.
+
+The controller's 16-slot funding bound and buyer channel bounds now count retained
+records. Seller accounting, receiver SDK and CDK activity histories still need
+retirement; full legacy profiles still need an explicit migration. This does not
+yet establish indefinitely reusable two-way routers or production readiness.
+See [the full eligibility, schema and test contract](HISTORY.md).
+
+The focused acceptance gates pass 144 distinct tests: 90 library tests, 43
+buyer/seller/ledger/route-history tests, seven live multi-node controller scenarios,
+and four real test-mint financial scenarios. The new service test waits for actual
+channel expiry and checks automatic cleanup, restart and retained lifetime budget
+refusal. It exposed and now covers accepted settled routes being stranded until
+replacement. Strict linting, formatting and file-size checks pass. These results
+cover local processes and test money, not hardware power loss or public operation.
+
 
 ### Route-evidence retirement foundation
 
@@ -96,8 +122,9 @@ unpaid grace, duplicate callbacks, failed writes, malformed summaries and loadin
 older accounting schemas. Verification passes 120 relevant relay tests, including
 fee-bearing funding and ordinary/native mint settlement; strict linting, formatting
 and source-size checks pass. See [history boundaries](HISTORY.md) for evidence and
-compatibility. Controller coordination is described above; whole-channel retirement remains
-unfinished, and the existing funding-history limit is still enforced.
+compatibility. Controller coordination is described above. Completed outgoing
+channels now have the additional workflow described in [history](HISTORY.md);
+seller-side cleanup remains unfinished.
 
 ### Receiving during tree convergence
 

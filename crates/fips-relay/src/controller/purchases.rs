@@ -61,7 +61,17 @@ impl Controller {
                 if j.funding.len() >= MAX_CHANNELS {
                     return Err("funding history capacity".into());
                 }
-                let id = format!("{}-{}", j.epoch, j.next_funding);
+                let id = cashu_service::CashuRequestSequence::new(
+                    channel_history::scope(j),
+                    j.next_funding,
+                )
+                .map_err(|e| e.to_string())?
+                .request_id();
+                j.version = 4;
+                j.history
+                    .get_or_insert_with(History::default)
+                    .channels
+                    .get_or_insert_with(channel_history::ChannelHistory::default);
                 j.next_funding = j
                     .next_funding
                     .checked_add(1)

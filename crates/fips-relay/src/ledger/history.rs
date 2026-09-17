@@ -14,6 +14,29 @@ pub struct RetiredRouteEvidence {
 }
 
 impl RetiredRouteEvidence {
+    pub(crate) fn merged(self, other: Self) -> Option<Self> {
+        Some(Self {
+            through_unix: self.through_unix.max(other.through_unix),
+            contracts: self.contracts.checked_add(other.contracts)?,
+            units: Usage {
+                reserved_units: self
+                    .units
+                    .reserved_units
+                    .checked_add(other.units.reserved_units)?,
+                submitted_units: self
+                    .units
+                    .submitted_units
+                    .checked_add(other.units.submitted_units)?,
+                unconfirmed_units: self
+                    .units
+                    .unconfirmed_units
+                    .checked_add(other.units.unconfirmed_units)?,
+            },
+            reserved_msat: self.reserved_msat.checked_add(other.reserved_msat)?,
+            submitted_msat: self.submitted_msat.checked_add(other.submitted_msat)?,
+        })
+    }
+
     pub(crate) fn added(self, contract: &Contract, usage: Usage) -> Option<Self> {
         Some(Self {
             through_unix: self.through_unix.max(contract.expires_unix),

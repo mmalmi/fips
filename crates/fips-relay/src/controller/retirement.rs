@@ -4,6 +4,15 @@ use crate::ledger::RouteRetirementPlan;
 use std::collections::BTreeSet;
 
 mod selection;
+
+fn closed_purchase(j: &Journal, o: &Outgoing) -> bool {
+    // A verified refund is terminal even when the accepted route was never
+    // replaced (and therefore has no separate replacement-retirement marker).
+    o.retired
+        || j.buyer_settlements
+            .get(&o.purchase.channel.id)
+            .is_some_and(|s| s.refunded)
+}
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(super) struct History {
     pub(super) through_unix: u64,
@@ -12,6 +21,8 @@ pub(super) struct History {
     /// Settlement still needs immutable channel terms after its last route goes.
     pub(super) sellers: BTreeMap<String, ChannelTerms>,
     pending: Option<Retirement>,
+    #[serde(default)]
+    pub(super) channels: Option<super::channel_history::ChannelHistory>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -82,7 +93,7 @@ impl Retirement {
             }
         }
         history.pending = None;
-        j.version = 3;
+        j.version = j.version.max(3);
         Ok(())
     }
 
@@ -121,7 +132,7 @@ impl Retirement {
                     }
                     let matches = if buying {
                         j.outgoing.get(&c.id).is_some_and(|o| {
-                            o.retired
+                            closed_purchase(j, o)
                                 && o.purchase.contract == *c
                                 && o.offer.expires_unix <= self.through_unix
                         })
@@ -185,6 +196,9 @@ impl Retirement {
 
 impl History {
     pub(super) fn pending(&self) -> bool {
+        self.routes_pending() || self.channels.as_ref().is_some_and(|h| h.pending())
+    }
+    pub(super) fn routes_pending(&self) -> bool {
         self.pending.is_some()
     }
 }
@@ -228,7 +242,10 @@ impl Controller {
                 Err("missing controller history".into())
             };
         };
-        if j.version != 3 || h.sellers.len() > MAX_CHANNELS || h.buyers.len() > MAX_CHANNELS {
+        if !matches!(j.version, 3 | 4)
+            || h.sellers.len() > MAX_CHANNELS
+            || h.buyers.len() > MAX_CHANNELS
+        {
             return Err("invalid controller history".into());
         }
         if h.buyers.iter().any(|id| {
@@ -290,7 +307,7 @@ impl Store {
             return Ok(());
         };
         let mut candidate = self.journal.clone();
-        candidate.version = 3;
+        candidate.version = candidate.version.max(3);
         candidate
             .history
             .get_or_insert_with(History::default)

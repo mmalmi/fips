@@ -2,6 +2,10 @@
 //! Real service processes account for mint fees and replayed refunds.
 #[allow(dead_code)]
 mod process_support;
+#[path = "funding_costs/retirement.rs"]
+mod retirement;
+#[path = "funding_costs/setup.rs"]
+mod setup;
 use cashu_service::{
     create_topup_quote, load_mint_balance, load_wallet_overview,
     simulation::{IssuerMode, LocalMint, PaymentNetwork, VirtualClock},
@@ -18,76 +22,13 @@ use std::{
 async fn wallet_costs_and_refunds_survive_restart_without_resetting_the_lifetime_limit() {
     tokio::time::timeout(Duration::from_secs(180), async {
         let root = tempfile::tempdir().unwrap();
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let network = PaymentNetwork::new(9616, 0, Arc::new(VirtualClock::new(now)));
-        let mint = LocalMint::start(
-            root.path(),
-            network.clone(),
-            "funding-costs",
-            IssuerMode::ClosedLoop,
-        )
-        .await
-        .unwrap();
-        mint.mint()
-            .rotate_keyset(
-                "sat".parse().unwrap(),
-                (0..=10).map(|b| 1u64 << b).collect(),
-                500,
-                false,
-                None,
-            )
-            .await
-            .unwrap();
-        let mut configs = Vec::new();
-        let mut paths = Vec::new();
-        let mut npubs = Vec::new();
-        let mut sockets = Vec::new();
-        for i in 0..3 {
-            let directory = root.path().join(format!("n{i}"));
-            std::fs::create_dir(&directory).unwrap();
-            let mut cfg = config(&directory, mint.url());
-            cfg.terms.controller.max_funding_overhead_sat = 8;
-            cfg.terms.controller.max_locked_sat = 40;
-            cfg.terms.controller.max_wallet_spend_sat = 40;
-            let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-            cfg.udp_bind = Some(socket.local_addr().unwrap());
-            sockets.push(socket);
-            npubs.push(RelayService::initialize(cfg.clone()).await.unwrap());
-            let wallet = cfg.state_directory.join("wallet");
-            let quote = create_topup_quote(&wallet, mint.url(), 128).await.unwrap();
-            network
-                .orchestrator_funding()
-                .settle_external(&quote.payment_request)
-                .unwrap();
-            assert!(
-                load_wallet_overview(&wallet, true)
-                    .await
-                    .unwrap()
-                    .warnings
-                    .is_empty()
-            );
-            paths.push(directory.join("config.json"));
-            configs.push(cfg);
-        }
-        let addresses: Vec<_> = configs.iter().map(|c| c.udp_bind.unwrap()).collect();
-        for (i, cfg) in configs.iter_mut().enumerate() {
-            cfg.neighbors = npubs
-                .iter()
-                .enumerate()
-                .filter(|(j, _)| i.abs_diff(*j) == 1)
-                .map(|(j, p)| PeerConfig::new(p, "udp", addresses[j].to_string()))
-                .collect();
-            std::fs::write(&paths[i], serde_json::to_vec(cfg).unwrap()).unwrap();
-        }
-        drop(sockets);
-        let mut children = Vec::new();
-        for path in &paths {
-            children.push(start(path).await);
-        }
-        ready(&configs, &paths, &npubs, &mut children).await;
+        let setup::Bench {
+            mint,
+            configs,
+            paths,
+            npubs,
+            mut children,
+        } = setup::start_bench(root.path(), 9616, 600).await;
         let buy = AdminRequest::Buy {
             destination: npubs[2].clone(),
         };

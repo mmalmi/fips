@@ -25,6 +25,13 @@ impl BuyerAuthorizer {
                     Err(BuyerError::InvalidAgreement)
                 };
             }
+            if state
+                .history
+                .as_ref()
+                .is_some_and(|h| terms.expires_unix <= h.expires_through_unix)
+            {
+                return Err(BuyerError::Expired);
+            }
             if state.channels.len() >= state.limits.max_channels {
                 return Err(BuyerError::Capacity);
             }

@@ -29,6 +29,14 @@ impl FundingIntent {
 impl Controller {
     pub(super) fn capital(j: &Journal) -> Result<FundingBudget, String> {
         let mut budget = FundingBudget::default();
+        if let Some(h) = j.history.as_ref().and_then(|h| h.channels.as_ref()) {
+            budget.wallet_debited_sat = h.totals.cost.wallet_debit_sat;
+            budget.wallet_refunded_sat = h.totals.refund_sat;
+            budget.exposure_sat = budget
+                .wallet_debited_sat
+                .checked_sub(budget.wallet_refunded_sat)
+                .ok_or("invalid retired capital")?;
+        }
         let mut operations = HashSet::new();
         for f in j.funding.values() {
             if f.capacity_sat

@@ -6,6 +6,7 @@
 
 mod admission;
 mod agreements;
+pub(crate) mod channel_history;
 mod forwarding;
 mod retirement;
 pub use forwarding::{PaidForwarder, RouteObserver};
@@ -59,7 +60,7 @@ pub enum BuyerError {
     Signer(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct PurchaseChannel {
     #[serde(with = "node_addr")]
     provider: NodeAddr,
@@ -112,6 +113,8 @@ struct State {
     total_budget_sat: u64,
     limits: Limits,
     next_token: u64,
+    #[serde(default)]
+    history: Option<channel_history::History>,
     channels: BTreeMap<String, PurchaseChannel>,
     quotes: BTreeMap<String, PurchaseQuote>,
     #[serde(skip)]
@@ -132,7 +135,7 @@ impl State {
     }
 
     fn validate_and_recover(&mut self) -> Result<(), BuyerError> {
-        if !matches!(self.version, 1..=3)
+        if !matches!(self.version, 1..=4)
             || self.total_budget_sat == 0
             || self.next_token == 0
             || self.channels.len() > self.limits.max_channels
@@ -142,17 +145,18 @@ impl State {
         }
         for c in self.channels.values_mut() {
             c.retired = Some(
-                RetiredRouteEvidence::recovered(c.retired, self.version == 3, c.terms.expires_unix)
+                RetiredRouteEvidence::recovered(c.retired, self.version >= 3, c.terms.expires_unix)
                     .ok_or(BuyerError::Format)?,
             );
         }
+        self.validate_channel_history()?;
         self.seen.clear();
         self.pending.clear();
         let mut active_channels = HashSet::new();
         let mut active_quotes = HashSet::new();
         let mut tokens = HashSet::new();
         let mut outstanding = 0usize;
-        let mut total = 0u64;
+        let mut total = self.history.as_ref().map_or(0, |h| h.authorized_sat);
         for (id, c) in &self.channels {
             let capacity = validate_channel(&c.terms).map_err(|_| BuyerError::Format)?;
             if id != &c.terms.id
@@ -243,7 +247,7 @@ impl State {
                 return Err(BuyerError::Format);
             }
         }
-        self.version = 3;
+        self.version = self.version.max(3);
         Ok(())
     }
 }
@@ -286,6 +290,7 @@ impl BuyerAuthorizer {
                 total_budget_sat,
                 limits,
                 next_token: 1,
+                history: None,
                 channels: BTreeMap::new(),
                 quotes: BTreeMap::new(),
                 seen: HashSet::new(),
@@ -336,10 +341,10 @@ impl BuyerAuthorizer {
 
     pub fn remaining_budget_sat(&self) -> Option<u64> {
         let state = self.state.lock().ok()?;
-        let used = state
-            .channels
-            .values()
-            .try_fold(0u64, |sum, c| sum.checked_add(c.authorized_sat))?;
+        let used = state.channels.values().try_fold(
+            state.history.as_ref().map_or(0, |h| h.authorized_sat),
+            |sum, c| sum.checked_add(c.authorized_sat),
+        )?;
         state.total_budget_sat.checked_sub(used)
     }
 
@@ -429,7 +434,10 @@ impl BuyerAuthorizer {
             let total = s
                 .channels
                 .values()
-                .try_fold(0u64, |sum, c| sum.checked_add(c.authorized_sat))
+                .try_fold(
+                    s.history.as_ref().map_or(0, |h| h.authorized_sat),
+                    |sum, c| sum.checked_add(c.authorized_sat),
+                )
                 .ok_or(BuyerError::Budget)?;
             if balance > c.terms.capacity_sat
                 || total

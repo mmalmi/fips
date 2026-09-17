@@ -11,7 +11,7 @@ pub(super) fn select(
         .outgoing
         .iter()
         .filter(|(_, o)| {
-            o.retired
+            closed_purchase(j, o)
                 && o.offer.expires_unix <= timestamp
                 && !o.purchase.contract.billing.is_legacy()
         })

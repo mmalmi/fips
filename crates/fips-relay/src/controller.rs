@@ -33,6 +33,7 @@ mod cadence;
 pub use cadence::PaymentCadence;
 mod acceptance;
 mod capital;
+mod channel_history;
 mod funding;
 pub use capital::FundingBudget;
 mod journal;

@@ -7,7 +7,7 @@ impl Controller {
         policy: &ControllerPolicy,
         local: NodeAddr,
     ) -> Result<(), String> {
-        if !matches!(j.version, 2 | 3)
+        if !matches!(j.version, 2..=4)
             || &j.policy != policy
             || j.local != local
             || j.epoch.is_empty()
@@ -21,16 +21,22 @@ impl Controller {
             return Err("invalid controller journal bindings".into());
         }
         Self::validate_history(j)?;
+        Self::validate_channel_history(j)?;
         Self::validate_renewals(j)?;
         let mut providers = HashSet::new();
+        let mut sequences = HashSet::new();
         Self::validate_capital(j)?;
         for (id, f) in &j.funding {
-            let sequence = id
-                .strip_prefix(&format!("{}-", j.epoch))
-                .and_then(|s| s.parse::<u64>().ok())
+            let sequence = channel_history::sequence(j, id)
+                .or_else(|| {
+                    id.strip_prefix(&format!("{}-", j.epoch))
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .filter(|n| id == &format!("{}-{n}", j.epoch))
+                })
                 .filter(|n| *n > 0 && *n < j.next_funding);
             if id != &f.id
-                || sequence.is_none_or(|n| id != &format!("{}-{n}", j.epoch))
+                || sequence.is_none_or(|n| !sequences.insert(n))
+                || (j.version < 4 && channel_history::sequence(j, id).is_some())
                 || id.len() > 128
                 || f.provider == local
                 || (!Self::funding_released(j, f) && !providers.insert(f.provider))

@@ -34,16 +34,16 @@ capacity. The wallet debit and verified refund determine the lifetime cost.
 `status.funding_budget` exposes pending reservations, total recorded debits,
 confirmed refunds, locked capital and worst-case lifetime exposure. The historical
 `locked_sat` status field has the same meaning as `funding_budget.locked_sat`.
-History currently remains bounded at 16 funding records; it stops new funding
-when full. Financial history retirement remains unfinished and must preserve these
-totals and replay evidence before any funding records can be removed.
-[Route evidence rollups](HISTORY.md) preserve lower-level accounting while freeing
-expired quote slots, but coordinated controller and whole-channel retirement are
-not enabled yet.
+The 16-record funding bound now applies to retained channels. The recovery worker
+recycles eligible completed numbered channels after verified settlement, route
+cleanup and immutable wallet expiry. Persistent gross debit/refund rollups keep
+lifetime exposure unchanged. Legacy, unfinished and still-referenced channels
+remain retained; seller/receiver/CDK history cleanup is still unfinished.
+[History and recovery](HISTORY.md) specifies the transaction and remaining bounds.
 
 ## Development and migration
 
-Controller journal versions 2 and 3 require the saved debit approvals, wallet cost
+Controller journal versions 2 through 4 require the saved debit approvals, wallet cost
 evidence and refund totals. Version-1 controller journals cannot be automatically
 upgraded because their fee approval and exact wallet costs may be unavailable.
 Keep old state intact and use its matching executable for recovery; do not delete

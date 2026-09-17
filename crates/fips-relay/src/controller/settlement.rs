@@ -26,6 +26,15 @@ pub(super) struct BuyerSettlement {
     pub(super) wallet_refund_sat: Option<u64>,
 }
 
+impl BuyerSettlement {
+    pub(super) fn final_signed_sat(&self) -> Result<u64, String> {
+        self.payment
+            .as_ref()
+            .map(|p| p.balance)
+            .ok_or("final payment missing".into())
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct SellerSettlement {
     channel: ChannelTerms,

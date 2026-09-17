@@ -69,6 +69,48 @@ fn replace(store: &mut Store, old: &Outgoing, buyer: &BuyerAuthorizer) -> Outgoi
 }
 
 #[test]
+fn completed_settlement_retires_accepted_routes_without_waiting_for_a_replacement() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut store, old, buyer, seller) = fixture(root.path());
+    let channel = &old.purchase.channel;
+    buyer.close_channel(&channel.id).unwrap();
+    let payment = &store.journal.funding[&old.funding_id]
+        .funded
+        .as_ref()
+        .unwrap()
+        .opening;
+    store.journal.buyer_settlements.insert(channel.id.clone(), serde_json::from_value(serde_json::json!({
+        "provider": old.purchase.provider.as_bytes(), "channel": channel,
+        "usage": crate::ledger::ChannelUsage::default(), "payment": payment,
+        "report": {"channel_id":channel.id, "value_after_stage1_sat":32,"paid_sat":0,"refunded_sat":32,"fee_sat":0},
+        "refunded":true,"wallet_refund_sat":32,
+    })).unwrap());
+    assert!(old.accepted && !old.retired);
+    store.persist().unwrap();
+    assert_eq!(
+        store
+            .retire_routes(&buyer, &seller, old.offer.expires_unix)
+            .unwrap(),
+        1
+    );
+    assert!(store.journal.outgoing.is_empty());
+    assert!(
+        store
+            .journal
+            .history
+            .as_ref()
+            .unwrap()
+            .buyers
+            .contains(&channel.id)
+    );
+    assert_eq!(
+        buyer.retired_route_evidence(&channel.id).unwrap().contracts,
+        1
+    );
+    transition_tests::reload(store);
+}
+
+#[test]
 fn controller_retires_repeated_replacements_without_dropping_channel_or_budget() {
     let root = tempfile::tempdir().unwrap();
     let (mut store, mut old, buyer, seller) = fixture(root.path());

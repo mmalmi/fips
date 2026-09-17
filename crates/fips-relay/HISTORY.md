@@ -1,4 +1,4 @@
-# Bounded route evidence
+# Bounded route and outgoing channel evidence
 
 Buyer and seller accounting can fold closed, expired routes into one fixed-size
 `RetiredRouteEvidence` record per retained channel. It preserves route count,
@@ -35,6 +35,10 @@ removed contracts. A suspended accounting writer cannot certify an in-memory
 result after a failed disk write. Recovery either retains the old records or
 finishes the same intent; it never invents a new payment or resets evidence.
 
+A verified completed refund also makes an accepted route eligible: a settled
+route does not have to be replaced before its history can be removed. The same
+accounting-closure and expiry checks still apply, including for existing journals.
+
 Only complete reference groups can retire. Active agreements, unfinished route
 changes or renewals, prepared replacements, pending submissions and legacy
 fingerprints block their affected prefixes. Independent channels can still make
@@ -53,14 +57,49 @@ The lower-level `retire_closed_routes` APIs are trusted local operations, not
 network requests or operator cleanup commands. Use the controller workflow for a
 controller-owned profile; calling only an accounting API leaves stale references.
 
-Whole-channel retirement remains unfinished. The existing 16-channel funding
-limit and separate wallet-history bounds still apply. Expired agreements that
-have not been durably stopped, and interrupted financial operations, remain
-retained. Route compaction does not settle or refund them automatically.
+## Completed outgoing channels
+
+New controller funding uses the SDK's numbered request IDs in one stable scope
+per controller journal. Existing issued IDs are never renamed: interrupted legacy
+funding must recover its original wallet operation, not send again under a new ID.
+
+After route compaction, the recovery worker retires a completed numbered funding
+prefix when every member has a final payment, verified refund, no remaining route
+or renewal references, and has passed the immutable wallet expiry (service expiry
+plus 60 seconds). An unfinished earlier numbered request stops the prefix. Funding
+and buyer limits apply to retained records; eligible completed records recycle
+slots. Opaque legacy channels and legacy duplicate-evidence routes remain retained.
+
+The controller saves one exact plan, then commits the buyer's channel rollup,
+invokes the SDK's coordinated wallet/channel retirement, checks returned gross
+costs, refunds, signed amounts, capacity, count and expiry, and finally removes its
+funding and settlement records. The wallet's requested token amount remains
+SDK-owned; the controller checks the actual debit, including mint fees. A saved
+intent resumes before ordinary funding recovery. Wallet ownership spans the
+blocking operation even if the async caller is cancelled. This performs local
+journal cleanup only and introduces no network message.
+
+Buyer rollups retain signed obligations, capacity, advances and rounded route
+accounting. The lifetime signing limit counts both retained and retired channels.
+The controller's capital calculation similarly includes cumulative retired gross
+debits and refunds: spent fees never become a new spending allowance. A buyer
+expiry floor rejects unknown old channels under renamed identities or after clock
+rollback; already retained channels remain available. SDK numbered cutoffs also
+reject replayed funding, including skipped request numbers. Idle passes and repeated
+completed handoffs write neither buyer nor controller journals.
+
+**Remaining limits:** seller channels, unpaid relationship exposure, receiver-side
+SDK records and CDK operation/activity history are not retired by this workflow.
+Those stores retain their bounds. This therefore does not yet establish indefinitely
+reusable bidirectional routers. Legacy funding remains one-time retained baggage;
+version-1 cost reconciliation and a migration for a profile already full of legacy
+channels remain incomplete. Missing original evidence must never be replaced with
+zero costs. Expiry alone does not settle or refund an unfinished channel.
 
 ## Journal compatibility and checks
 
-Buyer journals use version 3 and seller snapshots use version 5. Existing buyer
+Buyer journals start at version 3 and advance to version 4 on channel retirement;
+seller snapshots use version 5. Existing buyer
 versions 1/2 and seller versions 3/4 load with zero retired totals and retain their
 original evidence and billing mode. New versions require an explicit, internally
 consistent rollup field; missing fields are rejected. Older executables reject
@@ -68,6 +107,11 @@ the new versions, so do not downgrade a profile after it has been opened by this
 code. Controller journals now use version 3. Version 2 loads with no retired history
 and upgrades on its first retirement; new profiles start at version 3. Missing
 version-3 history is rejected, and older executables reject version 3.
+The first numbered funding or channel retirement upgrades the controller to
+version 4, which requires explicit channel history. Route compaction preserves
+that version. SDK channel retirement upgrades its client journal to version 6.
+Older binaries cannot read these newer journals; keep their matching code and
+dependencies together and do not downgrade a used profile.
 Version-1 funding-cost reconciliation remains separate and incomplete.
 
 The isolated retirement suite runs 64 successive route replacements on each side
@@ -93,4 +137,18 @@ fixture funding identities; real mint/controller settlement is covered separatel
 
 ```sh
 cargo test --config /path/to/local-dependencies.toml -p fips-relay --lib controller::retirement_tests
+```
+
+The channel coordinator tests cycle 64 completed channels with a one-channel buyer
+limit, restart after each handoff, preserve nonzero fees and signed spending, reject
+old/renamed channels and changed wallet evidence, and cover intent/accounting/final
+write failures. Wallet results in those deterministic tests are fixtures; the
+`funding_costs` service test separately exercises real numbered wallet funding,
+fee-bearing settlement, wall-clock expiry, automatic cleanup, restart and lifetime
+budget refusal through running FIPS processes and a local test mint. Simulated
+Lightning supplies test money; no live-router or physical power-loss claim follows.
+
+```sh
+cargo test --config /path/to/local-dependencies.toml -p fips-relay --all-features --lib channel_history
+cargo test --config /path/to/local-dependencies.toml -p fips-relay --all-features --test funding_costs
 ```
