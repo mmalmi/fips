@@ -1,6 +1,6 @@
 use super::*;
 
-fn offer(provider: u8, rate: u64) -> RouteOffer {
+pub(super) fn offer(provider: u8, rate: u64) -> RouteOffer {
     let peer = |n| {
         PeerIdentity::from_pubkey_full(Identity::from_secret_bytes(&[n; 32]).unwrap().pubkey_full())
     };
@@ -28,7 +28,7 @@ fn offer(provider: u8, rate: u64) -> RouteOffer {
     }
 }
 
-fn working(offer: &RouteOffer, loss: f64) -> SourceRouteQuality {
+pub(super) fn working(offer: &RouteOffer, loss: f64) -> SourceRouteQuality {
     SourceRouteQuality {
         next_hop: Some(offer.provider),
         receiver_reports_enabled: true,

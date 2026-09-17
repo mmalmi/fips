@@ -26,6 +26,8 @@ use tokio::{
 mod process_support;
 #[path = "process_support/quality.rs"]
 mod quality;
+#[path = "destination_service/upkeep.rs"]
+mod upkeep;
 use process_support::*;
 
 #[derive(Clone, Copy)]
@@ -96,6 +98,15 @@ impl Bench {
         pricing: Pricing,
         selection: Option<PriceSelectionPolicy>,
     ) -> Self {
+        Self::start_configured(mints, pricing, selection, |_, _| {}).await
+    }
+
+    async fn start_configured(
+        mints: [String; 5],
+        pricing: Pricing,
+        selection: Option<PriceSelectionPolicy>,
+        mut configure: impl FnMut(usize, &mut ServiceConfig),
+    ) -> Self {
         let root = tempfile::tempdir().unwrap();
         let (mut configs, mut paths, mut npubs, mut sockets) =
             (Vec::new(), Vec::new(), Vec::new(), Vec::new());
@@ -113,6 +124,7 @@ impl Bench {
                 cfg.terms.fee_msat_per_kib = fees[i];
                 cfg.terms.max_rate_msat_per_kib = ceilings[i];
             }
+            configure(i, &mut cfg);
             let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
             cfg.transports = udp_transports(socket.local_addr().unwrap());
             sockets.push(socket);

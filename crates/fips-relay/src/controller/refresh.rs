@@ -3,6 +3,11 @@ use super::*;
 
 const REFRESH_SECONDS: u64 = 5;
 
+pub(super) struct RefreshCheck {
+    checked: tokio::time::Instant,
+    free: Option<RouteOffer>,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct WatchedRoute {
     #[serde(
@@ -70,10 +75,11 @@ impl Controller {
         &self,
         destination: PeerIdentity,
         max_rate_msat_per_kib: u64,
-    ) -> Result<Purchase, String> {
+    ) -> Result<RouteAccess, String> {
         let _work = self.refresh_work.lock().await;
         if destination.node_addr() == self.services.endpoint.node_addr()
-            || max_rate_msat_per_kib == 0
+            || (max_rate_msat_per_kib == 0
+                && !self.services.quotes.billing_basis().has_free_handshakes())
             || max_rate_msat_per_kib > self.services.quotes.max_rate_msat_per_kib()
         {
             return Err("invalid automatic route price ceiling".into());
@@ -118,19 +124,25 @@ impl Controller {
         self.refresh_checks
             .lock()
             .map_err(|_| "refresh timer poisoned")?
-            .insert(id.clone(), tokio::time::Instant::now());
+            .insert(
+                id.clone(),
+                RefreshCheck {
+                    checked: tokio::time::Instant::now(),
+                    free: None,
+                },
+            );
         let offer = match pending {
             Some(offer) => offer,
             None => self.services.quotes.request_route(destination).await?,
         };
-        self.purchase_watched_offer(&id, offer).await
+        self.accept_watched_offer(&id, offer).await
     }
 
-    async fn purchase_watched_offer(
+    async fn accept_watched_offer(
         &self,
         id: &str,
         offer: RouteOffer,
-    ) -> Result<Purchase, String> {
+    ) -> Result<RouteAccess, String> {
         let snapshot = self.snapshot().await?;
         let watch = snapshot
             .watched_routes
@@ -138,6 +150,19 @@ impl Controller {
             .ok_or("source authorization missing")?;
         if watch.paused || !watch.accepts(&offer) {
             return Err("route exceeds source authorization".into());
+        }
+        if offer.price.msat == 0 {
+            if watch.pending.is_some() {
+                return Err("previous watched purchase unfinished".into());
+            }
+            self.activate_source_route(&offer).await?;
+            self.refresh_checks
+                .lock()
+                .map_err(|_| "refresh timer poisoned")?
+                .get_mut(id)
+                .ok_or("refresh state missing")?
+                .free = Some(offer.clone());
+            return Ok(RouteAccess::Free(offer));
         }
         let timestamp = now()?;
         // An unchanged monitoring result changes no financial state and needs
@@ -154,7 +179,7 @@ impl Controller {
             })
         {
             self.activate_source_route(&old.offer).await?;
-            return Ok(old.purchase.clone());
+            return Ok(RouteAccess::Paid(old.purchase.clone()));
         }
         let key = id.to_string();
         let saved = offer.clone();
@@ -178,11 +203,11 @@ impl Controller {
                 .quotes
                 .invalidate_price(offer.provider, *offer.destination.node_addr());
         })?;
-        let id = id.to_string();
+        let key = id.to_string();
         self.change(move |j| {
             let watch = j
                 .watched_routes
-                .get_mut(&id)
+                .get_mut(&key)
                 .ok_or("source authorization missing")?;
             if watch.pending.as_ref() != Some(&offer) {
                 return Err("watched purchase changed".into());
@@ -191,7 +216,15 @@ impl Controller {
             Ok(())
         })
         .await?;
-        Ok(purchase)
+        if let Some(check) = self
+            .refresh_checks
+            .lock()
+            .map_err(|_| "refresh timer poisoned")?
+            .get_mut(id)
+        {
+            check.free = None;
+        }
+        Ok(RouteAccess::Paid(purchase))
     }
 
     pub async fn pause_route_refresh(&self) -> Result<(), String> {
@@ -236,31 +269,70 @@ impl Controller {
             {
                 continue;
             }
-            {
+            let free = {
                 let mut checks = self
                     .refresh_checks
                     .lock()
                     .map_err(|_| "refresh timer poisoned")?;
-                if checks
-                    .get(&id)
-                    .is_some_and(|last| last.elapsed() < Duration::from_secs(REFRESH_SECONDS))
-                {
+                if checks.get(&id).is_some_and(|last| {
+                    last.checked.elapsed() < Duration::from_secs(REFRESH_SECONDS)
+                }) {
                     continue;
                 }
-                checks.insert(id.clone(), tokio::time::Instant::now());
-            }
+                let check = checks.entry(id.clone()).or_insert(RefreshCheck {
+                    checked: tokio::time::Instant::now(),
+                    free: None,
+                });
+                check.checked = tokio::time::Instant::now();
+                check.free.clone()
+            };
             let result = async {
-                if self.services.buyer.remaining_budget_sat().unwrap_or(0) == 0 {
-                    return Err("source spending budget exhausted".into());
-                }
                 let offer = if let Some(pending) = watch.pending {
                     pending
                 } else {
                     let destination = PeerIdentity::from_npub(&watch.destination)
                         .map_err(|_| "invalid watched destination")?;
-                    self.services.quotes.refresh_route(destination).await?
+                    if let Some(old) = free.filter(|offer| !offer.trial) {
+                        let remaining = self.services.quotes.free.remaining_units(&old);
+                        let headroom = old.max_units.div_ceil(4).max(2_048).min(old.max_units);
+                        let has_quota = remaining
+                            .is_some_and(|units| units == old.max_units || units > headroom);
+                        let same_provider = self
+                            .services
+                            .endpoint
+                            .resolve_next_hop(destination, None)
+                            .await
+                            .map_err(|e| e.to_string())?
+                            .is_some_and(|peer| peer.node_addr() == &old.provider);
+                        if has_quota
+                            && same_provider
+                            && old.expires_unix > timestamp.saturating_add(REFRESH_SECONDS)
+                            && !self.services.quotes.price_selection_enabled()
+                        {
+                            return Ok(());
+                        }
+                        if !has_quota
+                            || !same_provider
+                            || old.expires_unix <= timestamp.saturating_add(REFRESH_SECONDS)
+                        {
+                            // A fresh recursive request replaces the whole free
+                            // continuation. Cached grants cannot renew its quota.
+                            self.services.quotes.request_route(destination).await?
+                        } else {
+                            self.services.quotes.refresh_route(destination).await?
+                        }
+                    } else {
+                        // Keep the selector's evidence and retry rules for trials;
+                        // exhaustion alone must not authorize another trial quota.
+                        self.services.quotes.refresh_route(destination).await?
+                    }
                 };
-                self.purchase_watched_offer(&id, offer).await.map(|_| ())
+                if offer.price.msat != 0
+                    && self.services.buyer.remaining_budget_sat().unwrap_or(0) == 0
+                {
+                    return Err("source spending budget exhausted".into());
+                }
+                self.accept_watched_offer(&id, offer).await.map(|_| ())
             }
             .await;
             if let Err(error) = result {

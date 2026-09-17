@@ -10,7 +10,7 @@ mod payment_mobility;
 mod purchase_closure;
 #[path = "controller_support/quote_traffic.rs"]
 mod quote_traffic;
-use controller_support::{errors, native_control, policy, recovery_stages};
+use controller_support::{errors, native_control, policy, recovery_stages, require_paid};
 
 use cashu_service::{
     FileSpilmanPaymentReceiver, FileSpilmanPaymentReceiverConfig, create_topup_quote,
@@ -300,9 +300,9 @@ async fn controller_scenario(
             controllers[0].pause_route_refresh().await.unwrap();
         }
         let (a, b) = tokio::join!(
-            async { if automatic_routes { controllers[0].watch_route(peers[4], 3072).await }
+            async { if automatic_routes { controllers[0].watch_route(peers[4], 3072).await.map(require_paid) }
                 else { controllers[0].buy_route(peers[4]).await } },
-            async { if automatic_routes { controllers[4].watch_route(peers[0], 3072).await }
+            async { if automatic_routes { controllers[4].watch_route(peers[0], 3072).await.map(require_paid) }
                 else { controllers[4].buy_route(peers[0]).await } }
         );
         let (a, b) = (

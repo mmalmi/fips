@@ -59,16 +59,17 @@ against a dishonest participant.
 ```
 
 These are local selection settings outside saved financial terms. They do not
-change a legacy account's billing basis. Existing accepted agreements, channels,
-accounting and lifetime budgets remain intact. Upgrading an account's immutable
-tariff still requires the documented explicit migration/reconciliation process.
+change a saved account's billing basis. Existing accepted agreements, channels,
+accounting and lifetime budgets remain intact. Use a fresh profile for a different
+immutable tariff; migration is outside this greenfield acceptance scope.
 
 `watch` authorizes periodic selection for a destination under its saved aggregate
 price ceiling. One-shot `buy` or `open` records a paused source marker for recovery;
 it does not authorize ongoing alternative purchases. Transit resale cannot
 activate a local source binding merely because this router bought onward service.
-Free `open` can select a free path; watches remain paid-only and do not yet support
-automatic paid/free/direct transitions.
+Free `open` and `watch` can select a free path. A zero watch ceiling permits only
+free offers. Paid/free transitions still require closing incompatible active
+agreements; direct-neighbor transitions are not automatic.
 
 For an unfunded receiver, enable [return allowance](RETURN-ALLOWANCE.md) on the
 corresponding forwarding-data relays if native reports need earned reverse credit.
@@ -103,6 +104,12 @@ Do not downgrade an account containing them without reconciliation.
   Automatic channel renewal cannot reset an active trial. A fresh authorized
   trial/upgrade retains prior accounting and shares the existing neighbor channel
   where usable. A failed-path retry is a new capped agreement, not renewed grace.
+  For a free trial on the same unproven path, expiry carries only its exact
+  unused allowance into the replacement. Missing or exhausted local allowance
+  fails closed; expiry cannot refill it. Explicit fresh requests and the existing
+  failed-provider retry policy remain distinct authorization decisions.
+  Free promotion negotiates a fresh full grant at the provider, rather than
+  accepting a cached offer superseded by the trial.
   Explicit fresh requests obtain fresh offer IDs. Ordinary renewal requests a
   fresh quote from the same provider and validates the complete previous service;
   it does not run source discovery for a transit purchase.
@@ -110,8 +117,10 @@ Do not downgrade an account containing them without reconciliation.
   authorization or durable paid acceptance. Recovery checks current accepted,
   non-retired state under the route-change lock before restoring a source binding.
 - Source ownership persists; measurements/cooldowns are volatile. Controller
-  reload restores the accepted binding without granting another quota or channel.
-  Old path obligations remain locked until settlement and confirmed refund.
+  reload restores accepted paid bindings without granting another quota or channel.
+  Free grants are volatile; an active explicit watch obtains new permission after
+  full service restart. A one-shot paused marker does not reopen it. Old paid
+  path obligations remain locked until settlement and confirmed refund.
 - Trial caps bound each agreement, not the total number of future authorized
   trials. Lifetime spending, capital and bounded retained-history limits remain
   the aggregate bounds. State exhaustion is an error, never an account reset.

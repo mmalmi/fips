@@ -201,6 +201,13 @@ ordinary `buy` remains a one-time request. Forwarded traffic never creates a
 source watch or authorizes the reverse direction. Channels remain shared across
 destination agreements.
 
+On `forwarding_data` accounts, a zero watch ceiling permits automatic free
+grants only. `watch` returns `free_route` for a free grant or `purchase` for a
+paid agreement, matching `buy`. Free upkeep restores explicit watches after
+restart and replaces normal grants near expiry or quota exhaustion without
+funding channels. See [free-route bounds](DESTINATION-PRICING.md#automatic-source-watches)
+for idle behavior, offer capacity and the separate quality-trial limits.
+
 `pause_route_refresh` waits for current watch work, then durably pauses all
 watches. Reissuing `watch` resumes a destination; pause before changing its price
 ceiling, and finish any retained purchase first. Failed purchases retain their

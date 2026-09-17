@@ -196,6 +196,15 @@ impl FreeRoutes {
         })
     }
 
+    /// Remaining quota for the exact current outgoing grant. The caller checks
+    /// expiry separately; inspecting an expired grant does not remove it.
+    pub(crate) fn remaining_units(&self, offer: &RouteOffer) -> Option<u64> {
+        let key = (offer.provider, *offer.destination.node_addr());
+        let state = self.state.lock().ok()?;
+        let lease = state.outgoing.get(&key).filter(|l| l.offer == *offer)?;
+        lease.offer.max_units.checked_sub(lease.used)
+    }
+
     /// Called only for a locally generated offer under explicit operator pricing.
     pub(crate) fn offer(&self, offer: &RouteOffer) -> Result<(), String> {
         let now = now().ok_or("invalid clock")?;

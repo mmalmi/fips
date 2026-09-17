@@ -16,6 +16,7 @@ use fips_relay::{
     control_transport::ControlTransport,
     controller::{
         Controller, ControllerPolicy, ControllerServices, ControllerTasks, RenewalPolicy,
+        RouteAccess,
     },
     durable::DurableRelay,
     ledger::{BillingBasis, Limits},
@@ -353,10 +354,13 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
     })
     .await
     .unwrap();
-    let first = controllers[0]
+    let RouteAccess::Paid(first) = controllers[0]
         .watch_route(peers[3], 4096)
         .await
-        .unwrap_or_else(|e| panic!("first purchase: {e}; {:?}", errors(&controllers)));
+        .unwrap_or_else(|e| panic!("first purchase: {e}; {:?}", errors(&controllers)))
+    else {
+        panic!("priced path requires a paid purchase");
+    };
     assert_eq!(
         first.provider,
         *peers[1].node_addr(),

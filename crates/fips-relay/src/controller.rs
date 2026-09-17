@@ -105,8 +105,11 @@ pub struct Purchase {
 }
 
 /// A wholly free path has an expiring permission, never a payment channel.
+#[derive(Debug, Serialize)]
 pub enum RouteAccess {
+    #[serde(rename = "purchase")]
     Paid(Purchase),
+    #[serde(rename = "free_route")]
     Free(RouteOffer),
 }
 
@@ -281,7 +284,7 @@ pub struct Controller {
     renewal_work: AsyncMutex<()>,
     route_work: AsyncMutex<()>,
     refresh_work: AsyncMutex<()>,
-    refresh_checks: Mutex<BTreeMap<String, tokio::time::Instant>>,
+    refresh_checks: Mutex<BTreeMap<String, refresh::RefreshCheck>>,
     accepting: Mutex<HashSet<String>>,
     last_error: Mutex<Option<String>>,
 }

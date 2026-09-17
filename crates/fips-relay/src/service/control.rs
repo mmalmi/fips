@@ -51,12 +51,7 @@ impl RelayService {
             AdminRequest::Buy { destination } => {
                 let peer = PeerIdentity::from_npub(&destination)
                     .map_err(|_| "invalid destination npub")?;
-                match self.controller.open_route(peer).await? {
-                    crate::controller::RouteAccess::Paid(purchase) => {
-                        Ok(json!({"purchase": purchase}))
-                    }
-                    crate::controller::RouteAccess::Free(offer) => Ok(json!({"free_route": offer})),
-                }
+                Ok(json!(self.controller.open_route(peer).await?))
             }
             AdminRequest::Watch {
                 destination,
@@ -64,9 +59,11 @@ impl RelayService {
             } => {
                 let peer = PeerIdentity::from_npub(&destination)
                     .map_err(|_| "invalid destination npub")?;
-                Ok(
-                    json!({"purchase": self.controller.watch_route(peer, max_rate_msat_per_kib).await?}),
-                )
+                Ok(json!(
+                    self.controller
+                        .watch_route(peer, max_rate_msat_per_kib)
+                        .await?
+                ))
             }
             AdminRequest::PauseRouteRefresh => {
                 self.controller.pause_route_refresh().await?;

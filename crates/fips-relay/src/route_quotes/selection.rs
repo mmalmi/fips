@@ -63,7 +63,76 @@ struct Observation {
     loss_ppm: u32,
 }
 
+enum SelectionStep {
+    Retain(Box<RouteOffer>),
+    Accept,
+    Request {
+        max_units: Option<u64>,
+        reuse_unchanged: bool,
+    },
+}
+
 impl Destination {
+    fn selection_step(
+        &self,
+        selected: &RouteOffer,
+        policy: &PriceSelectionPolicy,
+        reuse_unchanged: bool,
+        remaining: impl Fn(&RouteOffer) -> Option<u64>,
+    ) -> Result<SelectionStep, String> {
+        let new_trial = self.failed.contains_key(&selected.provider)
+            || self.active.as_ref().is_none_or(|a| !same_path(a, selected));
+        let working = self
+            .working_loss(selected, policy, Instant::now())
+            .is_some();
+        if reuse_unchanged
+            && !new_trial
+            && !working
+            && let Some(active) = &self.active
+            && active.trial
+            && active.price == selected.price
+        {
+            if active.expires_unix > unix_now()? {
+                return Ok(SelectionStep::Retain(Box::new(active.clone())));
+            }
+            if active.price.msat == 0 {
+                let units = remaining(active)
+                    .filter(|units| *units > 0)
+                    .ok_or("unknown free trial has no retained quota")?;
+                return Ok(SelectionStep::Request {
+                    max_units: Some(units),
+                    reuse_unchanged: false,
+                });
+            }
+        }
+        let cap = if working {
+            None
+        } else if new_trial || !reuse_unchanged {
+            Some(policy.trial_max_units)
+        } else {
+            Some(
+                self.active
+                    .as_ref()
+                    .filter(|a| same_path(a, selected))
+                    .map_or(policy.trial_max_units, |a| a.max_units),
+            )
+        };
+        // A cached full offer may predate the active trial. Negotiate a fresh
+        // grant at both peers instead of restoring an obsolete provider quota.
+        let fresh_free = selected.price.msat == 0 && remaining(selected).is_none();
+        if !reuse_unchanged
+            || fresh_free
+            || cap.is_some_and(|limit| selected.max_units > limit || new_trial)
+        {
+            Ok(SelectionStep::Request {
+                max_units: cap,
+                reuse_unchanged: reuse_unchanged && !new_trial && !fresh_free,
+            })
+        } else {
+            Ok(SelectionStep::Accept)
+        }
+    }
+
     fn observe(
         &mut self,
         quality: &SourceRouteQuality,
@@ -279,7 +348,6 @@ impl RouteQuotes {
         reuse_unchanged: bool,
     ) -> Result<RouteOffer, String> {
         let _work = selection.work.lock().await;
-        let dest = *destination.node_addr();
         let quality = self
             .endpoint
             .source_route_quality(
@@ -288,6 +356,18 @@ impl RouteQuotes {
             )
             .await
             .map_err(|e| e.to_string())?;
+        self.select_with_quality(destination, selection, reuse_unchanged, &quality)
+            .await
+    }
+
+    async fn select_with_quality(
+        &self,
+        destination: PeerIdentity,
+        selection: &PriceSelection,
+        reuse_unchanged: bool,
+        quality: &SourceRouteQuality,
+    ) -> Result<RouteOffer, String> {
+        let dest = *destination.node_addr();
         let mut peers: Vec<_> = self
             .endpoint
             .peers()
@@ -309,7 +389,7 @@ impl RouteQuotes {
                 return Err("source selection capacity".into());
             }
             let state = states.entry(dest).or_default();
-            state.observe(&quality, &selection.policy, Instant::now())?;
+            state.observe(quality, &selection.policy, Instant::now())?;
             let active = state.active.as_ref().map(|a| a.provider);
             if let Some(provider) = active.filter(|p| state.failed.contains_key(p)) {
                 self.client.invalidate(provider, dest);
@@ -354,66 +434,46 @@ impl RouteQuotes {
                 offers.push(offer);
             }
         }
-        let (mut selected, cap, new_trial) = {
+        let (mut selected, step) = {
             let states = selection
                 .destinations
                 .lock()
                 .map_err(|_| "price selection poisoned")?;
             let state = states.get(&dest).ok_or("selection state missing")?;
             let selected = state.choose(offers, &selection.policy, Instant::now())?;
-            let new_trial = state.failed.contains_key(&selected.provider)
-                || state
-                    .active
-                    .as_ref()
-                    .is_none_or(|a| !same_path(a, &selected));
-            if reuse_unchanged
-                && !new_trial
-                && state
-                    .working_loss(&selected, &selection.policy, Instant::now())
-                    .is_none()
-                && let Some(active) = &state.active
-                && active.trial
-                && active.expires_unix > unix_now()?
-                && active.price == selected.price
-            {
-                return Ok(active.clone());
-            }
-            let cap = if state
-                .working_loss(&selected, &selection.policy, Instant::now())
-                .is_some()
-            {
-                None
-            } else if new_trial || !reuse_unchanged {
-                Some(selection.policy.trial_max_units)
-            } else {
-                Some(
-                    state
-                        .active
-                        .as_ref()
-                        .filter(|a| same_path(a, &selected))
-                        .map_or(selection.policy.trial_max_units, |a| a.max_units),
-                )
-            };
-            (selected, cap, new_trial)
+            let step =
+                state.selection_step(&selected, &selection.policy, reuse_unchanged, |offer| {
+                    self.free.remaining_units(offer)
+                })?;
+            (selected, step)
         };
-        if !reuse_unchanged || cap.is_some_and(|limit| selected.max_units > limit || new_trial) {
-            let provider = self.connected_provider(selected.provider).await?;
-            let mut trial = request;
-            trial.deadline_unix = unix_now()?
-                .checked_add(QUOTE_SECONDS)
-                .ok_or("clock overflow")?;
-            trial.requested_max_units = cap;
-            trial.reuse_unchanged = reuse_unchanged && !new_trial;
-            let offered = self.request_from(provider, trial).await?;
-            if !same_path(&selected, &offered) || selected.price != offered.price {
-                return Err("path or price changed while negotiating trial".into());
+        match step {
+            SelectionStep::Retain(offer) => return Ok(*offer),
+            SelectionStep::Accept => {}
+            SelectionStep::Request {
+                max_units,
+                reuse_unchanged,
+            } => {
+                let provider = self.connected_provider(selected.provider).await?;
+                let mut trial = request;
+                trial.deadline_unix = unix_now()?
+                    .checked_add(QUOTE_SECONDS)
+                    .ok_or("clock overflow")?;
+                trial.requested_max_units = max_units;
+                trial.reuse_unchanged = reuse_unchanged;
+                let offered = self.request_from(provider, trial).await?;
+                if !same_path(&selected, &offered) || selected.price != offered.price {
+                    return Err("path or price changed while negotiating trial".into());
+                }
+                selected = offered;
             }
-            selected = offered;
         }
         self.free.accept(&selected)?;
         Ok(selected)
     }
 }
 
+#[cfg(test)]
+mod free_tests;
 #[cfg(test)]
 mod tests;

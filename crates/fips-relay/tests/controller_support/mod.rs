@@ -1,4 +1,12 @@
 use super::*;
+use fips_relay::controller::{Purchase, RouteAccess};
+
+pub(super) fn require_paid(access: RouteAccess) -> Purchase {
+    let RouteAccess::Paid(purchase) = access else {
+        panic!("paid scenario returned a free route");
+    };
+    purchase
+}
 
 pub(super) fn policy(mint_url: &str, automatic_renewal: bool, capacity: u64) -> ControllerPolicy {
     ControllerPolicy {

@@ -155,10 +155,13 @@ Superseded free offers now retain bounded rejection records until expiry, so
 old cached offers cannot reset their byte quotas. The existing 128-record and
 16-per-neighbor bounds include those records. Optional source price selection
 preserves a paused zero-ceiling authorization across restart; it grants no
-automatic purchase authority. Automatic free-route renewal, outgoing-link price
-selectors, a rate-limited free tier and paid traffic priority still need
-implementation and acceptance. Free service must not create payment debt, and
-paid priority must derive from a valid local agreement.
+automatic purchase authority. An explicit free-only watch can instead authorize
+bounded automatic upkeep, without mint access or payment debt. Its normal grants
+renew through fresh recursive quotes, retaining replay history and capacity
+bounds; source quality trials keep their separate allowance rules. See the
+pricing document for the current acceptance evidence. Outgoing-link price
+selectors, a rate-limited free tier and paid traffic priority remain unfinished.
+Paid priority must derive from a valid local agreement.
 
 ## Guarded cadence measurement
 

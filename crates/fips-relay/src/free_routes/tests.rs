@@ -42,6 +42,108 @@ fn request<'a>(payload: &'a [u8]) -> ForwardingRequest<'a> {
 }
 
 #[test]
+fn remaining_units_reads_exact_outgoing_usage_without_changing_it() {
+    let routes = FreeRoutes::default();
+    let grant = offer(2, 3, 9);
+    let key = (grant.provider, *grant.destination.node_addr());
+    assert_eq!(routes.remaining_units(&grant), None);
+    routes.offer(&grant).unwrap();
+    assert_eq!(routes.remaining_units(&grant), None);
+    routes.accept(&grant).unwrap();
+    assert_eq!(routes.remaining_units(&grant), Some(100));
+    assert_eq!(routes.prepare_onward(key.0, key.1, 40), Some(true));
+    for _ in 0..3 {
+        assert_eq!(routes.remaining_units(&grant), Some(60));
+    }
+    assert_eq!(routes.stats().outgoing_leases, 1);
+    assert!(routes.onward(key.0, key.1, 60, || Some(())).is_some());
+    assert_eq!(routes.remaining_units(&grant), Some(0));
+    assert_eq!(routes.prepare_onward(key.0, key.1, 1), Some(false));
+    assert_eq!(routes.remaining_units(&grant), Some(0));
+}
+
+#[test]
+fn remaining_units_rejects_changed_and_superseded_offers() {
+    let routes = FreeRoutes::default();
+    let grant = offer(2, 3, 9);
+    let key = (grant.provider, *grant.destination.node_addr());
+    routes.accept(&grant).unwrap();
+    assert_eq!(routes.prepare_onward(key.0, key.1, 40), Some(true));
+    for changed in [
+        RouteOffer {
+            max_units: 200,
+            ..grant.clone()
+        },
+        RouteOffer {
+            expires_unix: grant.expires_unix + 1,
+            ..grant.clone()
+        },
+        RouteOffer {
+            next_hop: *peer(4).node_addr(),
+            ..grant.clone()
+        },
+        RouteOffer {
+            buyer: *peer(5).node_addr(),
+            ..grant.clone()
+        },
+    ] {
+        assert_eq!(routes.remaining_units(&changed), None);
+    }
+    assert_eq!(routes.remaining_units(&grant), Some(60));
+    let mut replacement = grant.clone();
+    replacement.id.push('b');
+    routes.accept(&replacement).unwrap();
+    assert_eq!(routes.prepare_onward(key.0, key.1, 25), Some(true));
+    assert_eq!(routes.remaining_units(&grant), None);
+    assert_eq!(routes.remaining_units(&replacement), Some(75));
+    routes.accept(&replacement).unwrap();
+    assert!(routes.accept(&grant).is_err());
+    assert_eq!(routes.remaining_units(&replacement), Some(75));
+    assert_eq!(routes.stats().outgoing_leases, 2);
+}
+
+#[test]
+fn remaining_units_keeps_expiry_separate_from_consumption() {
+    let routes = FreeRoutes::default();
+    let mut grant = offer(2, 3, 9);
+    grant.expires_unix = 1;
+    let key = (grant.provider, *grant.destination.node_addr());
+    {
+        let mut state = routes.state.lock().unwrap();
+        state.outgoing.install(key, &grant, 0).unwrap();
+        assert!(
+            state
+                .outgoing
+                .get_mut(&key)
+                .unwrap()
+                .reserve(40, 0, || Some(()))
+                .is_some()
+        );
+    }
+    assert_eq!(routes.remaining_units(&grant), Some(60));
+    assert_eq!(routes.prepare_onward(key.0, key.1, 1), Some(false));
+    assert_eq!(routes.remaining_units(&grant), Some(60));
+    assert_eq!(routes.stats().outgoing_leases, 1);
+}
+
+#[test]
+fn remaining_units_returns_none_for_poisoned_state() {
+    let routes = Arc::new(FreeRoutes::default());
+    let grant = offer(2, 3, 9);
+    routes.accept(&grant).unwrap();
+    let poisoned = routes.clone();
+    assert!(
+        std::thread::spawn(move || {
+            let _guard = poisoned.state.lock().unwrap();
+            panic!("poison free route state");
+        })
+        .join()
+        .is_err()
+    );
+    assert_eq!(routes.remaining_units(&grant), None);
+}
+
+#[test]
 fn source_free_admission_reuses_the_same_lease_and_distinguishes_denial() {
     let routes = FreeRoutes::default();
     let offered = offer(2, 3, 9);

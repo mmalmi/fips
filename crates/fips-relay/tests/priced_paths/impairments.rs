@@ -163,7 +163,10 @@ pub(super) async fn observe_then_select(
         );
     }
     eprintln!("{scenario:?}: delivered={delivered}, quality={last_quality:?}, wire={delta:?}");
-    let replacement = controller.watch_route(peers[3], 4096).await.unwrap();
+    let RouteAccess::Paid(replacement) = controller.watch_route(peers[3], 4096).await.unwrap()
+    else {
+        panic!("quality-selected replacement requires a paid purchase");
+    };
     assert_eq!(
         replacement.provider,
         *peers[2].node_addr(),

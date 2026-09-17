@@ -35,9 +35,9 @@ several destinations, including a destination where this router adds no markup.
 ## Opening and bounds
 
 The service's existing admin `buy` operation calls `Controller::open_route`.
-Paid replies contain `purchase`; free replies contain `free_route`. The older
-library `buy_route` and automatic paid watch API retain their paid semantics;
-they do not automatically refresh free routes.
+Paid replies contain `purchase`; free replies contain `free_route`. The `watch`
+operation uses the same reply shape and accepts a zero price ceiling on a
+`forwarding_data` account. The older library `buy_route` remains paid-only.
 
 Each free permission binds the authenticated neighbor, destination, actual next
 hop, offer ID, expiry and byte quota. Incoming and outgoing books each hold at
@@ -54,15 +54,43 @@ free continuation, rejected upstream traffic consumes no onward free allowance.
 Admitted bytes consume quota even if transport submission later fails. No free
 admission creates buyer payment evidence or financial credit.
 
-Free permissions are volatile. Reopen after restart, expiry, quota exhaustion or
-a route change. A newly paid continuation does not trigger automatic funding
-from a free permission. Close an active paid agreement before offering the same
+Free permissions are volatile. One-shot routes need reopening after restart,
+expiry, quota exhaustion or a route change. A newly paid continuation cannot
+exceed the saved watch ceiling. Close an active paid agreement before offering the same
 neighbor/destination relationship for free; concurrent paid activation and free
 incoming permission are mutually excluded. Financial history is retained.
 Optional source price selection can save a paused zero-ceiling authorization for
 an explicitly opened free route. This preserves the free-only limit on restart
-without authorizing automatic purchases. Automatic free-route refresh, an
-aggregate free-bandwidth allowance and paid traffic priority remain separate work.
+without authorizing automatic purchases.
+
+## Automatic source watches
+
+An explicit `watch` with `max_rate_msat_per_kib: 0` persists permission to obtain
+new free grants for that destination. It never authorizes a paid purchase, even
+when the service-wide ceiling allows positive prices. A positive watch ceiling
+allows paid offers only under the existing spending and capital limits. Free
+grants require neither monetary budget nor a common mint.
+
+Healthy free grants are retained without quote requests or journal writes when
+source price selection is disabled. The source checks its remaining allowance,
+expiry and native next hop at most once per five seconds. A normal grant nearing
+expiry or quota exhaustion is replaced through a fresh recursive quote request,
+so its downstream grants are refreshed too. Existing quotes, quotas and retained
+history bounds remain unchanged; this is not an extension of an old allowance.
+With price selection enabled, native quality checks retain their separate trial
+and retry rules. Source authorization survives restart; grants and measurements
+remain volatile. `pause_route_refresh` stops new grants after its current work
+finishes, and a paused watch does not reopen after restart.
+
+The operator must size `quote_max_units` and `quote_lifetime_secs` together.
+For example, a 1 GiB grant over 300 seconds covers about 28.6 Mbit/s of admitted
+session bytes before exhaustion; this is a byte budget, not a measured throughput
+guarantee. Small grants can exhaust the 16-per-neighbor or 128-total retained-offer
+limits before their history expires. Upkeep then fails closed and backs off;
+it does not erase history or reset quotas. Several destinations and overlapping
+replacements share those bounds. Shared downstream traffic can exhaust a grant
+before an individual source does, so arbitrary fan-in has no uninterrupted-service
+guarantee. A rate-limited free tier and paid traffic priority remain separate work.
 
 ## Mint availability
 
@@ -80,8 +108,8 @@ startup evidence below concerns running the service directly.
 
 ## Evidence and remaining work
 
-`tests/destination_service.rs` runs six scenarios, each using five real service
-processes over loopback UDP:
+`tests/destination_service.rs` and its `upkeep` module run nine scenarios, each
+using five real service processes over loopback UDP:
 
 - Two default-free scenarios deliver to multiple destinations without destination
   rules or a return allowance, before and after restart. They use distinct,
@@ -96,6 +124,16 @@ processes over loopback UDP:
   restart, differing paid prices, zero local markup over a paid continuation and
   policy changes. The mixed-price case settles two channels and conserves all
   512 test sats.
+- A single free-only watch delivers beyond its initial quota and expiry, then
+  resumes after all five processes restart. A paused watch stays paused through
+  another restart. Distinct unavailable mints receive no requests; financial
+  journals remain unchanged. Healthy idle grants make no control requests or
+  journal writes across multiple refresh checks.
+- A free-only watch refuses paid repricing despite a positive service-wide
+  ceiling, without funding or delivery, then recovers when free service returns.
+- A paid watch refreshes an expired free suffix while retaining its original
+  payment channel and funding record. The free suffix remains unfunded; final
+  settlement conserves all 256 test sats.
 
 `tests/route_quotes.rs` exercises paid and default-free quotes over TCP-FIPS. It
 covers cache reuse, concurrent misses, bounded request handling and provider-side
@@ -105,14 +143,23 @@ Regression tests reject superseded offer reuse, including after a paid switch;
 cycling new offer IDs cannot evade the per-neighbor or global retained-record
 bounds, and a rejected replacement preserves the current allowance.
 
-Verification passed all 142 relay library tests, both quote scenarios and all
-six service scenarios. The optional-selection restart scenario also passed two
-additional runs with fresh identities. Strict all-feature/all-target relay
-Clippy, default library/binary checks, formatting and the source-size gate pass.
+The free selector regressions also exercise authenticated TCP-FIPS negotiation
+and actual source/provider grant admission. Promotion obtains a fresh full grant
+after a trial supersedes the cached offer. An expired unproven trial can carry
+only its exact unused allowance; missing or exhausted quota fails closed. These
+focused tests inject quality observations; the separate paid-path simulations
+exercise native feedback under loss, delay and asymmetric connectivity.
 
-This acceptance scope uses configured peers and explicit free-route opens. It
-does not establish automatic free renewal, a rate-limited free tier, traffic
-priority, mobile radio behavior or globally optimal routing. Optional
+The upkeep verification passes all 152 relay library tests, all nine service
+scenarios, the existing automatic paid-watch scenario and all three paid-path
+scenarios. Strict all-feature/all-target relay Clippy, default library/binary
+checks, formatting and the 719-file source-size gate pass. The new free lifecycle
+test fails against the previous watch implementation at its initial zero-ceiling
+request. The preceding default-free milestone also passed both quote scenarios.
+
+This acceptance scope uses configured peers and explicit source authority. It
+does not establish a rate-limited free tier, traffic priority, mobile radio
+behavior or globally optimal routing. Optional
 [source price and quality selection](PRICE-SELECTION.md) has its own acceptance
 scope; without it, quotes follow the native FIPS-selected path. See
 [readiness](READINESS.md) for the wider deployment limits. The optional
