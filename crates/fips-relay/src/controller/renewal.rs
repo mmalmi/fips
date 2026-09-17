@@ -2,6 +2,10 @@
 
 use super::*;
 
+#[cfg(test)]
+#[path = "renewal_admission_tests.rs"]
+mod admission_tests;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RenewalPolicy {
     /// Use local submission evidence, never an untrusted usage report, to decide
@@ -205,6 +209,15 @@ impl Controller {
             || previous.iter().any(|o| !o.accepted || o.offer.trial)
         {
             return Err("renewal purchase no longer active".into());
+        }
+        // Acceptance may be durable before its parent renewal completes. A
+        // successor reservation would then block both replacements at purchase.
+        if j.renewals.values().any(|renewal| {
+            previous
+                .iter()
+                .any(|outgoing| renewal.reserves_provider(outgoing.purchase.provider))
+        }) {
+            return Err("provider has an unfinished renewal".into());
         }
         j.renewals.insert(
             id,
