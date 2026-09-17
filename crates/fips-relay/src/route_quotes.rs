@@ -117,7 +117,7 @@ impl RouteQuotes {
             })
             || cap == 0
             || policy.grace_msat > cap
-            || policy.fee_msat_per_kib == 0
+            || (policy.fee_msat_per_kib == 0 && !policy.billing.has_free_handshakes())
             || policy.fee_msat_per_kib > policy.max_rate_msat_per_kib
             || policy.lifetime_secs == 0
             || policy.lifetime_secs > 3_600
@@ -381,17 +381,22 @@ impl RouteQuotes {
         let mut offers = self.offers.lock().map_err(|_| "quote state poisoned")?;
         if request.reuse_unchanged {
             let reuse_until = now.saturating_add((self.policy.lifetime_secs / 4).max(1));
-            if let Some(stored) = offers.pending.values().filter(|s| s.reusable).find(|s| {
-                let o = &s.offer;
-                o.buyer == *peer.node_addr()
-                    && o.destination == request.destination
-                    && o.path == path
-                    && o.price == price
-                    && o.max_units == max_units
-                    && o.trial == request.requested_max_units.is_some()
-                    && o.expires_unix > reuse_until
-                    && o.expires_unix <= expires_unix
-            }) {
+            if let Some(stored) = offers
+                .pending
+                .values()
+                .filter(|s| s.reusable && self.free.can_reuse_offer(&s.offer))
+                .find(|s| {
+                    let o = &s.offer;
+                    o.buyer == *peer.node_addr()
+                        && o.destination == request.destination
+                        && o.path == path
+                        && o.price == price
+                        && o.max_units == max_units
+                        && o.trial == request.requested_max_units.is_some()
+                        && o.expires_unix > reuse_until
+                        && o.expires_unix <= expires_unix
+                })
+            {
                 self.free.offer(&stored.offer)?;
                 return Ok(stored.offer.clone());
             }

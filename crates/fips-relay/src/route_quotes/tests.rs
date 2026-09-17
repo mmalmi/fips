@@ -4,8 +4,7 @@ fn peer(n: u8) -> PeerIdentity {
     PeerIdentity::from_pubkey_full(Identity::from_secret_bytes(&[n; 32]).unwrap().pubkey_full())
 }
 
-#[test]
-fn downstream_quotes_cannot_change_identity_price_mint_or_loop_bounds() {
+fn quote_fixture() -> (QuotePolicy, QuoteRequest, RouteOffer) {
     let (buyer, provider, destination) = (peer(1), peer(2), peer(3));
     let policy = QuotePolicy {
         destination_fees: Default::default(),
@@ -46,6 +45,61 @@ fn downstream_quotes_cannot_change_identity_price_mint_or_loop_bounds() {
         capacity_sat: 32,
         grace_msat: 16_384,
     };
+    (policy, request, offer)
+}
+
+#[test]
+fn zero_price_ceiling_accepts_only_free_forwarding_data_downstream() {
+    let (mut policy, request, mut offer) = quote_fixture();
+    policy.billing = BillingBasis::ForwardingData;
+    policy.fee_msat_per_kib = 0;
+    policy.max_rate_msat_per_kib = 0;
+    offer.billing = BillingBasis::ForwardingData;
+    offer.price.msat = 0;
+    let check = |policy: &QuotePolicy, offer: &RouteOffer| {
+        validate_offer(policy, *peer(1).node_addr(), offer, peer(2), &request, 100)
+    };
+    check(&policy, &offer).expect("zero ceiling allows a free downstream route");
+    offer.price.msat = 1;
+    assert!(
+        check(&policy, &offer).is_err(),
+        "free-only buyer cannot buy positive onward cost"
+    );
+    policy.max_rate_msat_per_kib = 1;
+    check(&policy, &offer).expect("same paid quote is valid under an explicit positive ceiling");
+    offer.price.msat = 0;
+    check(&policy, &offer).expect("positive ceiling still permits a free quote");
+}
+
+#[test]
+fn free_downstream_quote_remains_incompatible_with_legacy_billing() {
+    let (mut policy, request, mut offer) = quote_fixture();
+    offer.price.msat = 0;
+    for billing in [
+        BillingBasis::UniqueSessionEnvelope,
+        BillingBasis::ForwardingAttempt,
+    ] {
+        policy.billing = billing;
+        offer.billing = billing;
+        assert!(
+            validate_offer(
+                &policy,
+                *peer(1).node_addr(),
+                &offer,
+                peer(2),
+                &request,
+                100
+            )
+            .is_err(),
+            "unsupported free {billing:?}"
+        );
+    }
+}
+
+#[test]
+fn downstream_quotes_cannot_change_identity_price_mint_or_loop_bounds() {
+    let (buyer, provider, destination) = (peer(1), peer(2), peer(3));
+    let (policy, request, offer) = quote_fixture();
     let check = |offer: &RouteOffer| {
         validate_offer(&policy, *buyer.node_addr(), offer, provider, &request, 100)
     };

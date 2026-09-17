@@ -142,15 +142,23 @@ radio mobility, congestion fairness, throughput or support for every core adapte
 
 ### Operator-selected free forwarding
 
-The intended policy permits fully free, fully paid, or a limited free allowance
-with paid priority, selected per outgoing link or destination. Resource cost does
-not force payment: an operator may donate CPU, airtime, power or metered capacity.
-A fully free route must work without funding a payment channel. A free allowance
-must not create payment debt, and paid priority must be derived from a valid
-local agreement. Existing bounded setup traffic and explicitly free
-owned destinations remain separate from this proposed general data policy.
-Queueing, route quotes and multi-hop free/paid composition need acceptance before
-this broader policy is offered; it is not implemented by the transport change.
+An operator may donate CPU, airtime, power or metered capacity. Fresh
+`forwarding_data` accounts can set their default local fee to zero for every
+destination; exact destination overrides remain available. A zero aggregate
+price ceiling refuses positive downstream prices. Entirely free routes use the
+existing authenticated, bounded permissions without funding payment channels.
+Zero local markup over a paid continuation still requires ordinary paid resale.
+See [default and destination pricing](DESTINATION-PRICING.md) for configuration,
+resource bounds and the real-process acceptance scope.
+
+Superseded free offers now retain bounded rejection records until expiry, so
+old cached offers cannot reset their byte quotas. The existing 128-record and
+16-per-neighbor bounds include those records. Optional source price selection
+preserves a paused zero-ceiling authorization across restart; it grants no
+automatic purchase authority. Automatic free-route renewal, outgoing-link price
+selectors, a rate-limited free tier and paid traffic priority still need
+implementation and acceptance. Free service must not create payment debt, and
+paid priority must derive from a valid local agreement.
 
 ## Guarded cadence measurement
 

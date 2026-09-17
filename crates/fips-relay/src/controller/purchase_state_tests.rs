@@ -1,6 +1,61 @@
 use super::transition_tests::{fixture, reload};
 use super::*;
 
+#[test]
+fn paused_free_source_authorization_keeps_its_zero_ceiling_after_reload() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut store, old) = fixture(&root.path().join("controller"));
+    let destination = old.offer.destination.npub();
+    let funding = serde_json::to_value(&store.journal.funding).unwrap();
+    store
+        .change(|j| {
+            j.watched_routes.insert(
+                destination.clone(),
+                WatchedRoute {
+                    billing: crate::ledger::BillingBasis::ForwardingData,
+                    destination: destination.clone(),
+                    max_rate_msat_per_kib: 0,
+                    paused: true,
+                    pending: None,
+                },
+            );
+            Ok(())
+        })
+        .unwrap();
+    let store = reload(store);
+    let watch = &store.journal.watched_routes[&destination];
+    assert!(watch.paused);
+    assert_eq!(watch.max_rate_msat_per_kib, 0);
+    assert_eq!(
+        serde_json::to_value(&store.journal.funding).unwrap(),
+        funding
+    );
+    let mut candidate = store.journal.clone();
+    let mut paid = old.offer;
+    paid.billing = crate::ledger::BillingBasis::ForwardingData;
+    candidate
+        .watched_routes
+        .get_mut(&destination)
+        .unwrap()
+        .pending = Some(paid);
+    assert_eq!(
+        Controller::validate_journal(&candidate, &candidate.policy, candidate.local),
+        Err("invalid watched route authorization".into()),
+        "a free-only authorization cannot resume a paid purchase"
+    );
+    let mut candidate = store.journal.clone();
+    candidate
+        .watched_routes
+        .get_mut(&destination)
+        .unwrap()
+        .billing = Default::default();
+    assert_eq!(
+        Controller::validate_journal(&candidate, &candidate.policy, candidate.local),
+        Err("invalid watched route authorization".into()),
+        "zero-price authority still requires forwarding-data billing"
+    );
+}
+
 fn additional(old: &Outgoing) -> Outgoing {
     let mut pending = old.clone();
     let destination = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());

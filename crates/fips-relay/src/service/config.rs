@@ -128,7 +128,7 @@ impl ServiceConfig {
             || t.window_msat == 0
             || t.window_msat > t.grace_msat
             || t.grace_msat > cap
-            || t.fee_msat_per_kib == 0
+            || (t.fee_msat_per_kib == 0 && !t.billing.has_free_handshakes())
             || t.fee_msat_per_kib > t.max_rate_msat_per_kib
             || t.quote_lifetime_secs == 0
             || t.quote_lifetime_secs > 3_600

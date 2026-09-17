@@ -1,9 +1,16 @@
-# Destination prices and free routes
+# Default and destination prices
+
+`terms.fee_msat_per_kib` is this router's default local forwarding fee. Set it to
+zero to offer free local forwarding to any destination, with no destination
+roster. `terms.max_rate_msat_per_kib: 0` additionally refuses every positive
+aggregate route price. This is a free-only ceiling, including downstream costs;
+it does not authorize the router to subsidize a paid continuation.
 
 `ServiceConfig.destination_fees` is an optional map from a canonical destination
 `npub` to this router's fee in millisatoshis per KiB. Omit it or use `{}` to retain
 the existing default `terms.fee_msat_per_kib`. Set an exact destination's value to
 zero for free local forwarding, or a positive value for a different price.
+Overrides work with either a paid or free default.
 At most 64 entries are accepted; each price must fit the configured price cap.
 Addresses must be canonical public identities, not IPs, interface names or aliases.
 
@@ -33,10 +40,13 @@ library `buy_route` and automatic paid watch API retain their paid semantics;
 they do not automatically refresh free routes.
 
 Each free permission binds the authenticated neighbor, destination, actual next
-hop, offer ID, expiry and byte quota. Incoming and outgoing maps each hold at
-most 128 entries and 16 per neighbor. Re-reading the same offer does not reset
-its usage. Expired entries retire during installation; status counts may include
-expired entries until then. New offers may explicitly grant a fresh allowance.
+hop, offer ID, expiry and byte quota. Incoming and outgoing books each hold at
+most 128 offer records and 16 per neighbor, including superseded offers retained
+until expiry. Re-reading the current offer does not reset its usage; a superseded
+offer cannot become active again. Rejected replacements leave the current grant
+intact. Expired entries retire during installation; status counts may include
+expired entries until then. New offers may explicitly grant a fresh allowance
+within those limits; cycling offer IDs cannot bypass the retained-record caps.
 There is no lifetime free-byte cap; discovery/control rate limits remain separate.
 
 Transit admission reserves both free sides together. For a paid prefix with a
@@ -49,6 +59,10 @@ a route change. A newly paid continuation does not trigger automatic funding
 from a free permission. Close an active paid agreement before offering the same
 neighbor/destination relationship for free; concurrent paid activation and free
 incoming permission are mutually excluded. Financial history is retained.
+Optional source price selection can save a paused zero-ceiling authorization for
+an explicitly opened free route. This preserves the free-only limit on restart
+without authorizing automatic purchases. Automatic free-route refresh, an
+aggregate free-bandwidth allowance and paid traffic priority remain separate work.
 
 ## Mint availability
 
@@ -66,28 +80,42 @@ startup evidence below concerns running the service directly.
 
 ## Evidence and remaining work
 
-`tests/destination_service.rs` runs five real service processes over loopback UDP.
-One test delivers through three free relays to an unfunded destination, restarts
-and resumes, rejects an unpurchased different destination and observes zero mint
-requests. Another mixes free destinations, different paid prices, zero local
-markup over a paid continuation and a paid prefix with a free tail. It retains
-financial state across a policy change and settles two channels, conserving all
-512 test sats. Unit tests cover exact identities, bounds, quotas, expiry,
-atomic admission and active paid/free exclusions.
+`tests/destination_service.rs` runs six scenarios, each using five real service
+processes over loopback UDP:
 
-This milestone passed 77 distinct focused tests: 33 relay unit, ten buyer, seven
-controller/helper, two customer, 12 durable, three existing service, one bootstrap
-service, two destination service, one quote integration and six native quality
-checks. Strict relay all-target/all-feature Clippy, default library/binary checks,
-Android ARM64 app Clippy with measurements, formatting and the 643-file size gate
-passed. Two pre-existing test assumptions were corrected: the stalled-neighbor
-helper now matches FIPS identity independently of public-key parity representation,
-and the idle customer check observes bounded payment quiescence before measuring.
+- Two default-free scenarios deliver to multiple destinations without destination
+  rules or a return allowance, before and after restart. They use distinct,
+  unavailable mint URLs and observe no mint requests, funding or monetary journal
+  changes. The optional source-selection scenario waits for observed native tree
+  convergence and verifies that its paused free-only authorization survives
+  restart. Routes are explicitly reopened.
+- A zero-ceiling source rejects a paid prefix without funding or data delivery.
+- A default paid prefix followed by free relays opens exactly one payment channel,
+  leaves the free suffix unfunded, and settles with all 256 test sats conserved.
+- The original destination-specific scenarios cover free destination isolation,
+  restart, differing paid prices, zero local markup over a paid continuation and
+  policy changes. The mixed-price case settles two channels and conserves all
+  512 test sats.
 
-These tests do not establish permissionless admission, automatic free refresh,
-mixed radio acceptance or price-optimal routing. Quotes still follow the native
-FIPS-selected path. [Readiness work](READINESS.md) requires combining existing
-MMP quality observations with price selection. The optional
+`tests/route_quotes.rs` exercises paid and default-free quotes over TCP-FIPS. It
+covers cache reuse, concurrent misses, bounded request handling and provider-side
+reuse of the current free grant. Unit tests cover configuration, exact identities,
+expiry, quotas, atomic admission, paid/free exclusions and saved authorization.
+Regression tests reject superseded offer reuse, including after a paid switch;
+cycling new offer IDs cannot evade the per-neighbor or global retained-record
+bounds, and a rejected replacement preserves the current allowance.
+
+Verification passed all 142 relay library tests, both quote scenarios and all
+six service scenarios. The optional-selection restart scenario also passed two
+additional runs with fresh identities. Strict all-feature/all-target relay
+Clippy, default library/binary checks, formatting and the source-size gate pass.
+
+This acceptance scope uses configured peers and explicit free-route opens. It
+does not establish automatic free renewal, a rate-limited free tier, traffic
+priority, mobile radio behavior or globally optimal routing. Optional
+[source price and quality selection](PRICE-SELECTION.md) has its own acceptance
+scope; without it, quotes follow the native FIPS-selected path. See
+[readiness](READINESS.md) for the wider deployment limits. The optional
 [bounded return allowance](RETURN-ALLOWANCE.md) now covers native quality reports
 from an unfunded recipient on a tested reverse path. Reports remain outside the
 free handshake classifier; enabling destination pricing alone does not enable

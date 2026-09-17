@@ -4,14 +4,24 @@ use fips_core::{
 };
 use fips_relay::{
     control_transport::ControlTransport,
-    ledger::ChannelTerms,
+    ledger::{BillingBasis, ChannelTerms},
     route_quotes::{QuotePolicy, QuoteRequest, QuoteResponse, QuoteServer, RouteQuotes},
 };
 use std::{sync::Arc, time::Duration};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn prices_follow_native_next_hops_and_accumulate_over_neighbor_control() {
+    quote_scenario(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn free_default_quotes_reuse_current_grants_without_channels() {
+    quote_scenario(true).await;
+}
+
+async fn quote_scenario(free: bool) {
     tokio::time::timeout(Duration::from_secs(50), async {
+        let fee = if free { 0 } else { 1_024 };
         let mut nodes = Vec::new();
         let mut addresses = Vec::new();
         for _ in 0..5 {
@@ -73,11 +83,15 @@ async fn prices_follow_native_next_hops_and_accumulate_over_neighbor_control() {
                     Arc::new(control),
                     QuotePolicy {
                         destination_fees: Default::default(),
-                        billing: Default::default(),
+                        billing: if free {
+                            BillingBasis::ForwardingData
+                        } else {
+                            Default::default()
+                        },
                         mint_url: "http://test.invalid".into(),
                         receiver_pubkey_hex: "02".to_owned() + &"11".repeat(32),
-                        fee_msat_per_kib: 1_024,
-                        max_rate_msat_per_kib: 8_192,
+                        fee_msat_per_kib: fee,
+                        max_rate_msat_per_kib: fee * 8,
                         lifetime_secs: 120,
                         max_units: 20_000,
                         capacity_sat: 32,
@@ -120,7 +134,7 @@ async fn prices_follow_native_next_hops_and_accumulate_over_neighbor_control() {
         {
             assert_eq!(offer.buyer, *peers[source].node_addr());
             assert_eq!(offer.destination, peers[destination]);
-            assert_eq!(offer.price.msat, 3_072);
+            assert_eq!(offer.price.msat, fee * 3);
             assert_eq!(offer.price.per_bytes, 1_024);
             assert_eq!(
                 offer.path.len(),
@@ -174,7 +188,7 @@ async fn prices_follow_native_next_hops_and_accumulate_over_neighbor_control() {
                 let mut first = None;
                 while let Some(result) = concurrent.join_next().await {
                     let received = result.unwrap();
-                    assert_eq!(received.price.msat, 2_048);
+                    assert_eq!(received.price.msat, fee * 2);
                     assert_eq!(first.get_or_insert_with(|| received.clone()), &received);
                 }
                 let after: u64 = statistics
@@ -186,15 +200,38 @@ async fn prices_follow_native_next_hops_and_accumulate_over_neighbor_control() {
                     2,
                     "concurrent misses share one request per paid hop"
                 );
+                let fresh = quotes[source]
+                    .request_route(peers[destination])
+                    .await
+                    .unwrap();
                 assert_ne!(
-                    quotes[source]
-                        .request_route(peers[destination])
-                        .await
-                        .unwrap()
-                        .id,
-                    offer.id,
+                    fresh.id, offer.id,
                     "an explicit fresh purchase still gets a fresh offer"
                 );
+                if free {
+                    // Bypass the source cache: the provider must select its
+                    // current grant B, never reinstall superseded grant A.
+                    let request = QuoteRequest {
+                        destination: peers[destination],
+                        ancestors: vec![*peers[source].node_addr()],
+                        deadline_unix: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs()
+                            + 10,
+                        reuse_unchanged: true,
+                        requested_max_units: None,
+                    };
+                    for _ in 0..3 {
+                        let QuoteResponse::Offer { offer: reused } = quotes[provider]
+                            .handle(peers[source], &serde_json::to_vec(&request).unwrap())
+                            .await
+                        else {
+                            panic!("current free grant must remain reusable")
+                        };
+                        assert_eq!(*reused, fresh);
+                    }
+                }
             }
             let retained = quotes[provider]
                 .retained_offer(peers[source], &offer.id)
@@ -209,7 +246,7 @@ async fn prices_follow_native_next_hops_and_accumulate_over_neighbor_control() {
                 .downstream_offer(peers[source], &offer.id)
                 .unwrap()
                 .unwrap();
-            assert_eq!(downstream.price.msat, 2_048);
+            assert_eq!(downstream.price.msat, fee * 2);
             assert!(downstream.expires_unix >= offer.expires_unix);
             assert!(quotes[provider].route_still_matches(&offer).await.unwrap());
             let channel = ChannelTerms {
@@ -220,6 +257,15 @@ async fn prices_follow_native_next_hops_and_accumulate_over_neighbor_control() {
                 capacity_sat: offer.capacity_sat,
                 grace_msat: offer.grace_msat,
             };
+            if free {
+                assert!(
+                    quotes[provider]
+                        .bind_offer(peers[source], &offer.id, &channel)
+                        .is_err(),
+                    "a zero-price grant cannot become a payment contract"
+                );
+                continue;
+            }
             let bound = quotes[provider]
                 .bind_offer(peers[source], &offer.id, &channel)
                 .unwrap();

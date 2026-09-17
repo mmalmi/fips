@@ -35,7 +35,7 @@ impl Controller {
                 .map_err(|_| "invalid watched destination")?;
             if id != &watch.destination
                 || destination.node_addr() == &j.local
-                || watch.max_rate_msat_per_kib == 0
+                || (watch.max_rate_msat_per_kib == 0 && !watch.billing.has_free_handshakes())
                 || watch.pending.as_ref().is_some_and(|offer| {
                     !watch.accepts(offer)
                         || offer.buyer != j.local

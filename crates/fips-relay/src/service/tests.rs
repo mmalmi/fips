@@ -3,6 +3,76 @@ use super::*;
 #[path = "network_tests.rs"]
 mod network_tests;
 
+fn zero_default_fee_config() -> ServiceConfig {
+    let mut config: ServiceConfig =
+        serde_json::from_str(include_str!("../../service.example.json")).unwrap();
+    config.terms.billing = BillingBasis::ForwardingData;
+    config.terms.fee_msat_per_kib = 0;
+    config
+}
+
+#[test]
+fn public_configuration_accepts_zero_default_fee_and_free_only_ceiling() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("service.json");
+    for max_rate in [0, 8_192] {
+        let mut config = zero_default_fee_config();
+        config.terms.max_rate_msat_per_kib = max_rate;
+        std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+        let loaded = ServiceConfig::read(&path).expect("explicit free forwarding-data tariff");
+        assert_eq!(loaded.terms, config.terms);
+        assert!(loaded.destination_fees.is_empty());
+    }
+}
+
+#[test]
+fn zero_default_fee_does_not_enable_free_legacy_billing() {
+    for billing in [
+        BillingBasis::UniqueSessionEnvelope,
+        BillingBasis::ForwardingAttempt,
+    ] {
+        let mut config = zero_default_fee_config();
+        config.terms.billing = billing;
+        assert!(config.validate().is_err(), "unsupported free {billing:?}");
+        config.terms.fee_msat_per_kib = 1;
+        config.validate().expect("existing positive tariff");
+    }
+}
+
+#[test]
+fn zero_price_ceiling_rejects_positive_default_and_destination_fees() {
+    let mut config = zero_default_fee_config();
+    config.terms.max_rate_msat_per_kib = 0;
+    let destination = Identity::from_secret_bytes(&[91; 32]).unwrap().npub();
+    config.destination_fees = serde_json::from_value(json!({destination.clone(): 0})).unwrap();
+    config.validate().expect("all offered routes are free");
+
+    config.terms.fee_msat_per_kib = 1;
+    assert!(
+        config.validate().is_err(),
+        "global fee exceeds free-only ceiling"
+    );
+    config.terms.fee_msat_per_kib = 0;
+    config.destination_fees = serde_json::from_value(json!({destination: 1})).unwrap();
+    assert!(
+        config.validate().is_err(),
+        "destination fee exceeds free-only ceiling"
+    );
+}
+
+#[test]
+fn free_default_keeps_positive_destination_fees_within_the_price_ceiling() {
+    let mut config = zero_default_fee_config();
+    config.terms.max_rate_msat_per_kib = 7;
+    let destination = Identity::from_secret_bytes(&[92; 32]).unwrap().npub();
+    config.destination_fees = serde_json::from_value(json!({destination.clone(): 7})).unwrap();
+    config
+        .validate()
+        .expect("paid exception at the configured ceiling");
+    config.destination_fees = serde_json::from_value(json!({destination: 8})).unwrap();
+    assert!(config.validate().is_err(), "paid exception exceeds ceiling");
+}
+
 #[test]
 fn price_selection_is_opt_in_and_validated_outside_financial_terms() {
     let mut config: ServiceConfig =

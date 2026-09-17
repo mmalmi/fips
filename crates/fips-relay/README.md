@@ -23,9 +23,9 @@ The physical prototype reports below describe the earlier r6 hardware build.
 Fresh accounts can explicitly select the [bounded handshake tariff](BOOTSTRAP.md)
 to deliver through paid relays to an unfunded recipient without buying a reverse
 route. Existing account terms and the physical bench remain unchanged.
-Explicit [destination fees](DESTINATION-PRICING.md) can make selected destinations
-free without opening payment channels, or charge different local fees. These
-software checks cover per-destination agreement and accounting semantics.
+The [default and destination fees](DESTINATION-PRICING.md) can make all or selected
+destinations free without opening payment channels, or charge different local
+fees. These software checks cover route agreement and accounting semantics.
 An opt-in [bounded return allowance](RETURN-ALLOWANCE.md) lets an unfunded
 recipient return encrypted native quality reports and other small replies.
 Opt-in [price and quality selection](PRICE-SELECTION.md) now compares adjacent

@@ -70,6 +70,152 @@ fn source_free_admission_reuses_the_same_lease_and_distinguishes_denial() {
 }
 
 #[test]
+fn superseded_free_offers_cannot_reactivate_or_reset_consumed_quota() {
+    let routes = FreeRoutes::default();
+    let original = offer(1, 2, 9);
+    let mut replacement = original.clone();
+    replacement.id.push('b');
+    let mut packet = request(&[0; 100]);
+    packet.next_hop = packet.destination;
+    routes.offer(&original).unwrap();
+    assert!(routes.admit(&packet));
+    assert!(routes.can_reuse_offer(&original));
+    routes.offer(&replacement).unwrap();
+    assert!(routes.admit(&packet));
+    assert!(!routes.can_reuse_offer(&original));
+    assert!(routes.can_reuse_offer(&replacement));
+    assert!(
+        routes.offer(&original).is_err(),
+        "superseded grant must stay closed"
+    );
+    assert!(
+        !routes.admit(&packet),
+        "replay must not replenish the replacement"
+    );
+    assert_eq!(routes.stats().admitted_session_bytes, 200);
+
+    let original = offer(2, 3, 9);
+    let mut replacement = original.clone();
+    replacement.id.push('b');
+    let key = (original.provider, *original.destination.node_addr());
+    routes.accept(&original).unwrap();
+    assert_eq!(routes.prepare_onward(key.0, key.1, 100), Some(true));
+    routes.accept(&replacement).unwrap();
+    assert_eq!(routes.prepare_onward(key.0, key.1, 100), Some(true));
+    assert!(
+        routes.accept(&original).is_err(),
+        "cached source offer cannot roll back"
+    );
+    assert_eq!(routes.prepare_onward(key.0, key.1, 1), Some(false));
+}
+
+#[test]
+fn paid_switch_preserves_retired_free_offer_identity() {
+    let routes = FreeRoutes::default();
+    let original = offer(1, 2, 9);
+    routes.offer(&original).unwrap();
+    let mut paid = original.clone();
+    paid.id.push('p');
+    paid.price.msat = 1;
+    routes.offer(&paid).unwrap();
+    assert!(!routes.can_reuse_offer(&original));
+    assert!(routes.can_reuse_offer(&paid));
+    assert!(
+        routes.offer(&original).is_err(),
+        "paid switch cannot erase replay evidence"
+    );
+
+    let original = offer(2, 3, 9);
+    routes.accept(&original).unwrap();
+    let mut paid = original.clone();
+    paid.id.push('p');
+    paid.price.msat = 1;
+    routes.accept(&paid).unwrap();
+    assert!(routes.accept(&original).is_err());
+}
+
+#[test]
+fn repeated_identity_cannot_change_terms_or_replenish_quota() {
+    let routes = FreeRoutes::default();
+    let original = offer(1, 2, 9);
+    routes.offer(&original).unwrap();
+    let mut packet = request(&[0; 60]);
+    packet.next_hop = packet.destination;
+    assert!(routes.admit(&packet));
+    for changed in [
+        RouteOffer {
+            max_units: 200,
+            ..original.clone()
+        },
+        RouteOffer {
+            expires_unix: original.expires_unix + 1,
+            ..original.clone()
+        },
+        RouteOffer {
+            next_hop: *peer(4).node_addr(),
+            ..original.clone()
+        },
+        RouteOffer {
+            price: BytePrice {
+                msat: 1,
+                per_bytes: 1024,
+            },
+            ..original.clone()
+        },
+    ] {
+        assert!(routes.offer(&changed).is_err());
+        if changed.price.msat == 0 {
+            assert!(!routes.can_reuse_offer(&changed));
+        }
+    }
+    routes.offer(&original).unwrap();
+    assert!(!routes.admit(&packet));
+    packet.session_payload = &[0; 40];
+    assert!(routes.admit(&packet));
+    assert_eq!(routes.stats().incoming_leases, 1);
+}
+
+#[test]
+fn new_offer_ids_count_toward_peer_and_global_capacity() {
+    let routes = FreeRoutes::default();
+    let mut grant = offer(1, 2, 9);
+    for identity in 0..8 {
+        grant.buyer = *peer(identity + 1).node_addr();
+        for generation in 0..MAX_PER_PEER {
+            grant.id = format!("{identity}/{generation}");
+            routes.offer(&grant).unwrap();
+        }
+        let last = grant.clone();
+        grant.id = format!("{identity}/overflow");
+        assert!(
+            routes.offer(&grant).is_err(),
+            "replacement history counts per peer"
+        );
+        routes.offer(&last).unwrap();
+    }
+    assert_eq!(routes.stats().incoming_leases, MAX_LEASES);
+    grant.buyer = *peer(30).node_addr();
+    grant.id = "another-peer".into();
+    assert!(
+        routes.offer(&grant).is_err(),
+        "retained grants count globally"
+    );
+
+    for identity in 0..8 {
+        grant.provider = *peer(identity + 1).node_addr();
+        for generation in 0..MAX_PER_PEER {
+            grant.id = format!("{identity}/{generation}");
+            routes.accept(&grant).unwrap();
+        }
+        grant.id = format!("{identity}/overflow");
+        assert!(routes.accept(&grant).is_err());
+    }
+    assert_eq!(routes.stats().outgoing_leases, MAX_LEASES);
+    grant.provider = *peer(30).node_addr();
+    assert!(routes.accept(&grant).is_err());
+}
+
+#[test]
 fn free_transit_binds_every_hop_and_cannot_authorize_a_paid_continuation() {
     let routes = FreeRoutes::default();
     let incoming = offer(1, 2, 3);
@@ -156,6 +302,7 @@ fn free_offers_and_paid_activation_cannot_own_the_same_route() {
     let routes = FreeRoutes::default();
     let free = offer(1, 2, 9);
     let mut paid = free.clone();
+    paid.id.push('p');
     paid.price.msat = 1;
     let guard = routes.paid_guard(&paid).unwrap();
     assert!(routes.offer(&free).is_err());
@@ -231,32 +378,81 @@ fn paid_accounts_must_close_before_a_free_switch_without_erasing_history() {
 
 #[test]
 fn peer_churn_has_bounded_state_and_retirement_needs_expiry() {
-    let mut leases = BTreeMap::new();
+    let mut leases = LeaseBook::default();
     let mut grant = offer(1, 2, 9);
     for p in 0..8 {
         for d in 0..16 {
             let key = (NodeAddr::from_bytes([p; 16]), NodeAddr::from_bytes([d; 16]));
-            FreeRoutes::install(&mut leases, key, &grant, 0).unwrap();
+            leases.install(key, &grant, 0).unwrap();
         }
     }
     assert_eq!(leases.len(), 128);
     assert!(
-        FreeRoutes::install(
-            &mut leases,
-            (*peer(1).node_addr(), *peer(9).node_addr()),
-            &grant,
-            0
-        )
-        .is_err()
+        leases
+            .install((*peer(1).node_addr(), *peer(9).node_addr()), &grant, 0)
+            .is_err()
     );
     let expired = grant.expires_unix;
     grant.expires_unix += 1;
-    FreeRoutes::install(
-        &mut leases,
-        (*peer(1).node_addr(), *peer(9).node_addr()),
-        &grant,
-        expired,
-    )
-    .unwrap();
+    leases
+        .install(
+            (*peer(1).node_addr(), *peer(9).node_addr()),
+            &grant,
+            expired,
+        )
+        .unwrap();
     assert_eq!(leases.len(), 1);
+}
+
+#[test]
+fn expired_replacement_history_releases_capacity_without_closing_live_grants() {
+    let mut leases = LeaseBook::default();
+    let mut grant = offer(1, 2, 9);
+    let key = (grant.buyer, *grant.destination.node_addr());
+    for generation in 0..MAX_PER_PEER {
+        grant.id = generation.to_string();
+        grant.expires_unix = if generation + 1 == MAX_PER_PEER {
+            20
+        } else {
+            10
+        };
+        leases.install(key, &grant, 0).unwrap();
+    }
+    assert_eq!(leases.len(), MAX_PER_PEER);
+    assert!(
+        leases
+            .get_mut(&key)
+            .unwrap()
+            .reserve(60, 9, || Some(()))
+            .is_some()
+    );
+    let old = grant.clone();
+    grant.id = "replacement-after-expiry".into();
+    grant.expires_unix = 30;
+    assert!(leases.install(key, &grant, 9).is_err());
+    assert_eq!(leases.get(&key).unwrap().offer, old);
+    assert_eq!(leases.get(&key).unwrap().used, 60);
+
+    leases.install(key, &grant, 10).unwrap();
+    assert_eq!(
+        leases.len(),
+        2,
+        "unexpired superseded grant still occupies a slot"
+    );
+    assert!(leases.install(key, &old, 10).is_err());
+    assert_eq!(leases.get(&key).unwrap().offer, grant);
+    let mut expired = old.clone();
+    expired.id = "0".into();
+    expired.expires_unix = 10;
+    assert!(leases.install(key, &expired, 10).is_err());
+
+    let mut fresh = grant.clone();
+    fresh.id = "fresh".into();
+    fresh.expires_unix = 40;
+    leases.install(key, &fresh, 30).unwrap();
+    assert_eq!(
+        leases.len(),
+        1,
+        "expired active and retired records are both reclaimed"
+    );
 }

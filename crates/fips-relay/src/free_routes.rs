@@ -38,10 +38,80 @@ impl Lease {
     }
 }
 
+/// Superseded identities retain their original expiry, sharing the same limits
+/// as active grants. Packet admission only looks up the active route.
+#[derive(Debug, Default)]
+struct LeaseBook {
+    active: BTreeMap<Key, Lease>,
+    retired: BTreeMap<(Key, String), u64>,
+}
+
+impl LeaseBook {
+    fn get(&self, key: &Key) -> Option<&Lease> {
+        self.active.get(key)
+    }
+
+    fn get_mut(&mut self, key: &Key) -> Option<&mut Lease> {
+        self.active.get_mut(key)
+    }
+
+    fn len(&self) -> usize {
+        self.active.len() + self.retired.len()
+    }
+
+    fn retire(&mut self, key: Key) {
+        if let Some(old) = self.active.remove(&key) {
+            self.retired
+                .insert((key, old.offer.id), old.offer.expires_unix);
+        }
+    }
+
+    fn install(&mut self, key: Key, offer: &RouteOffer, now: u64) -> Result<(), String> {
+        self.active.retain(|_, l| l.offer.expires_unix > now);
+        self.retired.retain(|_, expires| *expires > now);
+        if self.retired.contains_key(&(key, offer.id.clone())) {
+            return Err("free offer was superseded".into());
+        }
+        if let Some(old) = self.active.get(&key)
+            && old.offer.id == offer.id
+        {
+            return if old.offer == *offer {
+                Ok(())
+            } else {
+                Err("free offer identity changed".into())
+            };
+        }
+        if offer.price.msat != 0 {
+            self.retire(key);
+            return Ok(());
+        }
+        if !offer.billing.has_free_handshakes() || offer.expires_unix <= now || offer.max_units == 0
+        {
+            return Err("invalid free route permission".into());
+        }
+        let retained_for_peer = self.active.keys().filter(|k| k.0 == key.0).count()
+            + self.retired.keys().filter(|(k, _)| k.0 == key.0).count();
+        if self.len() >= MAX_LEASES || retained_for_peer >= MAX_PER_PEER {
+            return Err("free route capacity".into());
+        }
+        // Check capacity before replacing the current grant. A rejected offer
+        // must not close the route or reset its remaining allowance.
+        self.retire(key);
+        self.active.insert(
+            key,
+            Lease {
+                offer: offer.clone(),
+                used: 0,
+            },
+        );
+        Ok(())
+    }
+}
+
 #[derive(Debug, Default)]
 struct State {
-    incoming: BTreeMap<Key, Lease>,
-    outgoing: BTreeMap<Key, Lease>,
+    incoming: LeaseBook,
+    outgoing: LeaseBook,
     free_packets: u64,
     free_bytes: u64,
     activating_paid: BTreeSet<Key>,
@@ -73,7 +143,9 @@ impl Drop for PaidRouteGuard<'_> {
 
 #[derive(Debug, Serialize)]
 pub struct FreeRouteStats {
+    /// Active and superseded incoming offers retained until expiry.
     pub incoming_leases: usize,
+    /// Active and superseded outgoing offers retained until expiry.
     pub outgoing_leases: usize,
     pub admitted_packets: u64,
     pub admitted_session_bytes: u64,
@@ -108,44 +180,20 @@ impl FreeRoutes {
         }
         Ok(PaidRouteGuard { routes: self, key })
     }
-    fn install(
-        leases: &mut BTreeMap<Key, Lease>,
-        key: Key,
-        offer: &RouteOffer,
-        now: u64,
-    ) -> Result<(), String> {
-        leases.retain(|_, l| l.offer.expires_unix > now);
+
+    /// Cached zero-price offers may only reuse the current grant. Paid offers
+    /// retain their existing quote reuse and financial validation rules.
+    pub(crate) fn can_reuse_offer(&self, offer: &RouteOffer) -> bool {
         if offer.price.msat != 0 {
-            leases.remove(&key);
-            return Ok(());
+            return true;
         }
-        if !offer.billing.has_free_handshakes() || offer.expires_unix <= now || offer.max_units == 0
-        {
-            return Err("invalid free route permission".into());
-        }
-        if let Some(old) = leases.get(&key)
-            && old.offer.id == offer.id
-        {
-            return if old.offer == *offer {
-                Ok(())
-            } else {
-                Err("free offer identity changed".into())
-            };
-        }
-        if !leases.contains_key(&key)
-            && (leases.len() >= MAX_LEASES
-                || leases.keys().filter(|(peer, _)| peer == &key.0).count() >= MAX_PER_PEER)
-        {
-            return Err("free route capacity".into());
-        }
-        leases.insert(
-            key,
-            Lease {
-                offer: offer.clone(),
-                used: 0,
-            },
-        );
-        Ok(())
+        let key = (offer.buyer, *offer.destination.node_addr());
+        self.state.lock().is_ok_and(|state| {
+            state
+                .incoming
+                .get(&key)
+                .is_some_and(|lease| lease.offer == *offer)
+        })
     }
 
     /// Called only for a locally generated offer under explicit operator pricing.
@@ -162,7 +210,7 @@ impl FreeRoutes {
         {
             return Err("close the active paid route before offering free service".into());
         }
-        Self::install(&mut state.incoming, key, offer, now)
+        state.incoming.install(key, offer, now)
     }
 
     /// Called only after the common authenticated quote validation succeeds.
@@ -177,16 +225,11 @@ impl FreeRoutes {
         {
             return Err("close the active paid purchase before selecting free service".into());
         }
-        Self::install(
-            &mut self
-                .state
-                .lock()
-                .map_err(|_| "free routes poisoned")?
-                .outgoing,
-            key,
-            offer,
-            now,
-        )
+        self.state
+            .lock()
+            .map_err(|_| "free routes poisoned")?
+            .outgoing
+            .install(key, offer, now)
     }
 
     pub(crate) fn admit(&self, request: &ForwardingRequest<'_>) -> bool {
