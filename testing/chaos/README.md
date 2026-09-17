@@ -21,6 +21,64 @@ Ethernet). Logs are collected and analyzed automatically.
 ./testing/chaos/scripts/chaos.sh smoke-10
 ```
 
+## Paid Ethernet acceptance
+
+The focused three-node line uses the production relay and a local test mint,
+with native Ethernet beacon discovery and no configured peer identities or
+addresses. It requires an existing Linux ARM64 `fips-test` image containing
+`ip`, `nsenter`, and Python 3 with SQLite, plus freshly built Linux ARM64
+`fips-relay` and `fips-relay-test-mint` executables. The harness never builds or
+pulls images. Its Python entry point needs only the standard library.
+
+From the repository root, set `BINARIES` to the directory containing those two
+executables, then run:
+
+```sh
+umask 077
+run="$(mktemp -d /tmp/fips-paid.XXXXXXXX)"
+mkdir "$run/bin"
+cp "$BINARIES/fips-relay" "$BINARIES/fips-relay-test-mint" "$run/bin/"
+cd testing/chaos
+python3 -m sim.paid_relay --binary-dir "$run/bin" --output "$run/result" \
+  --image fips-test:latest
+```
+
+Use a fresh output directory. Only the two executable files and configuration/
+log directories are bind-mounted. State and control sockets stay inside Linux;
+host-shared filesystems on Docker Desktop may not support Unix sockets. The
+mint uses a Docker-allocated private address on an internal network and issues
+exactly 384 disposable test sats. No host LAN or Wi-Fi configuration is changed.
+
+The acceptance checks:
+
+- Discovery leaves wallet balances and funding authority unchanged.
+- Unpaid application traffic is denied before either source authorizes a buy.
+- Paid traffic arrives in both directions and automatic payments reach the relay.
+- A link outage evicts the neighbor using production timeouts; beacon discovery
+  reconnects it with the same funding operations, channels, and capital budget.
+- Traffic and payments resume without resetting the lifetime buyer budget.
+- The test mint's accounting remains conserved.
+
+The quote-only financial invariant is covered separately by the production
+controller integration tests. This three-node run checks native discovery and
+one forwarding hop; it does not establish Wi-Fi behavior, throughput, or scaling.
+The corrected Linux ARM64 fixture passed all phases in approximately 104 seconds.
+
+The scenario has a 15-minute deadline. Individual Docker commands are bounded,
+and cleanup continues independently of that deadline. Run-scoped names refuse
+collisions; cleanup checks exact resource IDs, ownership labels, and interface
+aliases. The result JSON records binary hashes, aggregate financial evidence,
+and cleanup errors; it excludes private keys and token contents. Live wallet
+totals come from a read-only SQLite transaction inside each container, without
+copying a live database. Logs and results remain in the output directory;
+containers, their private state, veth pairs, and the internal network are removed.
+
+Ownership and cleanup regressions run without Docker mutations:
+
+```sh
+python3 -m unittest discover -s testing/chaos/tests -v
+```
+
 ## Available Scenarios
 
 ### General stress tests

@@ -6,9 +6,13 @@ import math
 import random
 from collections import deque
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from .keys import derive
-from .scenario import TopologyConfig
+from .run_scope import validate_run_name
+
+if TYPE_CHECKING:
+    from .scenario import TopologyConfig
 
 
 @dataclass
@@ -28,6 +32,11 @@ class SimTopology:
     edges: set[tuple[str, str]] = field(default_factory=set)
     # Per-edge transport type; edges not in this dict default to "udp"
     edge_transport: dict[tuple[str, str], str] = field(default_factory=dict)
+    run_name: str | None = None
+
+    def __post_init__(self):
+        if self.run_name is not None:
+            validate_run_name(self.run_name)
 
     def transport_for_edge(self, a: str, b: str) -> str:
         """Get the transport type for an edge (defaults to 'udp')."""
@@ -107,6 +116,8 @@ class SimTopology:
         return not connected
 
     def container_name(self, node_id: str) -> str:
+        if self.run_name is not None:
+            return f"fips-{self.run_name}-{node_id}"
         return f"fips-node-{node_id}"
 
     def directed_outbound(self) -> dict[str, list[str]]:

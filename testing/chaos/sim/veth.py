@@ -44,6 +44,10 @@ class VethManager:
 
     def __init__(self, topology: SimTopology):
         self.topology = topology
+        self._scoped = None
+        if topology.run_name is not None:
+            from .scoped_veth import ScopedVeth
+            self._scoped = ScopedVeth(topology)
         # Track created host-side temp names for cleanup
         self._host_pairs: list[tuple[str, str, str, str]] = []
         # (node_a, node_b, host_name_a, host_name_b)
@@ -86,6 +90,8 @@ class VethManager:
         4. Rename to final names and bring up
         5. Query MACs and store in SimNode.ethernet_macs
         """
+        if self._scoped is not None:
+            return self._scoped.setup_all(self._get_image())
         eth_edges = self.topology.ethernet_edges()
         if not eth_edges:
             return
@@ -108,6 +114,8 @@ class VethManager:
         destroyed. We re-create the veth pairs for all Ethernet edges
         involving this node.
         """
+        if self._scoped is not None:
+            raise RuntimeError("scoped runs support link flaps, not container replacement")
         image = self._get_image()
         for a, b in self.topology.ethernet_edges():
             if a != node_id and b != node_id:
@@ -122,10 +130,18 @@ class VethManager:
 
     def teardown_all(self):
         """Clean up all veth pairs."""
+        if self._scoped is not None:
+            return self._scoped.teardown_all()
         image = self._get_image()
         for _, _, host_a, _ in self._host_pairs:
             _run_host(["ip", "link", "delete", host_a], image, check=False)
         self._host_pairs.clear()
+
+    def set_scoped_edge(self, a: str, b: str, up: bool):
+        """Change only an alias-verified edge in a scoped acceptance run."""
+        if self._scoped is None:
+            raise RuntimeError("explicit edge changes require a scoped run")
+        self._scoped.set_edge(a, b, up)
 
     def _create_veth_pair(self, node_a: str, node_b: str, image: str):
         """Create a single veth pair between two containers."""

@@ -39,8 +39,8 @@ both directions at 250-ms intervals, with bounded additional control traffic.
 This is a capacity calculation, not a latency or hardware throughput guarantee.
 Multiple hostile identities can still compete for the shared slots and budget;
 the limits bound their resource use without promising Sybil-resistant fairness.
-Native beacon discovery, mobile merge/split/rejoin and router/Pixel acceptance
-remain separate checks from authenticated-link control admission.
+Mobile Wi-Fi merge/split and router/Pixel acceptance remain separate checks from
+authenticated-link control admission and the Ethernet fixture below.
 
 Focused checks cover rate/capacity limits, cancellation, disconnect/reconnect,
 customer restrictions and rejection of routed non-neighbors. A five-node paid
@@ -53,6 +53,18 @@ benchmark remains ignored. After a lint-only conditional cleanup, all 116
 library and 11 control-transport tests pass again. Strict all-target linting,
 formatting and the 704-file source-size check pass with the corrected local
 dependencies. These are software checks, not router performance measurements.
+
+An isolated three-router ARM64 Linux fixture also passes using only native
+Ethernet beacons and empty neighbor rosters. Discovery leaves wallets and
+spending authority unchanged; four unpaid packets deliver none. Funded probes
+deliver eight of eight packets in both directions before and after a link
+outage, actual dead-peer eviction and beacon rejoin. Funding operation and
+channel identities, capital and wallet aggregates remain unchanged; automatic
+payments advance without resetting lifetime budgets. All 384 test sats remain
+conserved, and owned containers, links and network are cleaned up. This checks
+one Ethernet partition/rejoin, not radio mobility or physical power loss.
+See the [reproducible harness](../../testing/chaos/README.md#paid-ethernet-acceptance)
+for its configuration and runtime requirements.
 
 The forwarding audit found shared transit admission before outgoing transport
 selection, including batched sends. The paid service currently configures only

@@ -45,7 +45,7 @@ services:
 {% for node in nodes %}
   {{ node.node_id }}:
     <<: *fips-common
-    container_name: fips-node-{{ node.node_id }}
+    container_name: {{ container_names[node.node_id] }}
     hostname: {{ node.node_id }}
     volumes:
       - ./{{ node.node_id }}.yaml:/etc/fips/fips.yaml:ro
@@ -79,6 +79,7 @@ def generate_compose(
         rust_log=scenario.logging.rust_log,
         image=FIPS_SIM_IMAGE,
         nodes=nodes,
+        container_names={node.node_id: topology.container_name(node.node_id) for node in nodes},
         resolv_conf=resolv_conf,
     )
 
