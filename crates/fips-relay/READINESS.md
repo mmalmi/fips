@@ -46,7 +46,7 @@ nominal capacity. Settlement now validates the value after the funding swap;
 actual debit minus the wallet-verified refund determines lifetime spending.
 See [funding costs](FUNDING-COSTS.md) for limits, status fields, verification and
 the required unreleased dependencies. Controller version-1 reconciliation and
-remaining seller/receiver/CDK history retirement remain release blockers. Devices
+remaining receiver/CDK history retirement remain release blockers. Devices
 are unchanged.
 
 The focused gates pass 89 relay tests: library, controllers, destination pricing,
@@ -78,8 +78,8 @@ these tests do not claim physical power-loss or hardware acceptance.
 
 Controller journal version 3 loads version 2 without inventing financial evidence;
 version-1 cost reconciliation remains unfinished. The later outgoing-channel
-workflow below extends this route-only milestone; seller-side retirement remains
-required.
+workflow below extends this route-only milestone; the seller workflow also
+preserves unpaid exposure.
 Active, pending, legacy and otherwise unresolved records are kept. No live device
 changes or production-readiness claim accompanies this local work. See [history
 and recovery](HISTORY.md).
@@ -94,9 +94,10 @@ funding cannot reuse retired numbers; unknown old channel identities are rejecte
 even under renamed IDs or clock rollback. No network message was added.
 
 The controller's 16-slot funding bound and buyer channel bounds now count retained
-records. Seller accounting, receiver SDK and CDK activity histories still need
-retirement; full legacy profiles still need an explicit migration. This does not
-yet establish indefinitely reusable two-way routers or production readiness.
+records. The later seller workflow below extends this milestone. Receiver SDK and
+CDK activity histories still need retirement; full legacy profiles need an
+explicit migration. This does not yet establish indefinitely reusable two-way
+routers or production readiness.
 See [the full eligibility, schema and test contract](HISTORY.md).
 
 The focused acceptance gates pass 144 distinct tests: 90 library tests, 43
@@ -107,6 +108,31 @@ refusal. It exposed and now covers accepted settled routes being stranded until
 replacement. Strict linting, formatting and file-size checks pass. These results
 cover local processes and test money, not hardware power loss or public operation.
 
+
+### Seller channel retirement and report release
+
+The buyer now acknowledges report release after durable refund recovery. Completed
+seller records can then retire after route compaction and expiry. One persistent
+controller/ledger plan preserves exact settlement totals and each buyer/mint's
+unpaid allowance across cleanup, restart and failed writes. Unacknowledged reports
+remain recoverable; an absent release retry is a read-only no-op and cannot
+preauthorize removal of a future channel. Existing neighbor control carries this
+one-time exchange; payment and packet-delivery cadence are unchanged.
+
+Fully paid channels recycle slots without retaining one record per former peer.
+Unpaid relationships remain bounded and never get silently evicted; reaching that
+bound retains further channel evidence. Receiver SDK/CDK database cleanup,
+legacy/full-profile migration and hostile-identity admission remain incomplete.
+See [history and compatibility](HISTORY.md) for these explicit limits.
+
+Verification passes 154 distinct focused tests: 100 library tests, 43 accounting
+and route-retirement tests, seven live multi-node controller scenarios, and four
+test-mint financial scenarios. The service test keeps the buyer offline after a
+lost release reply until seller cleanup, then recovers unchanged balances and
+lifetime spending. The crash fixture now rolls back a report and its later release
+flag together; contradictory saved state remains rejected. Strict linting, default
+build, formatting and the 694-file source-size gate pass. These results cover local
+processes and test money; router and Pixel acceptance remains separate.
 
 ### Route-evidence retirement foundation
 
@@ -124,7 +150,7 @@ fee-bearing funding and ordinary/native mint settlement; strict linting, formatt
 and source-size checks pass. See [history boundaries](HISTORY.md) for evidence and
 compatibility. Controller coordination is described above. Completed outgoing
 channels now have the additional workflow described in [history](HISTORY.md);
-seller-side cleanup remains unfinished.
+receiver/CDK cleanup remains unfinished.
 
 ### Receiving during tree convergence
 

@@ -7,7 +7,7 @@ impl Controller {
         policy: &ControllerPolicy,
         local: NodeAddr,
     ) -> Result<(), String> {
-        if !matches!(j.version, 2..=4)
+        if !matches!(j.version, 2..=5)
             || &j.policy != policy
             || j.local != local
             || j.epoch.is_empty()
@@ -22,6 +22,7 @@ impl Controller {
         }
         Self::validate_history(j)?;
         Self::validate_channel_history(j)?;
+        Self::validate_seller_history(j)?;
         Self::validate_renewals(j)?;
         let mut providers = HashSet::new();
         let mut sequences = HashSet::new();

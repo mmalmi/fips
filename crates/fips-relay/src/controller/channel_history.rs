@@ -158,7 +158,7 @@ impl Controller {
                 Err("missing channel history".into())
             };
         };
-        if j.version != 4
+        if !matches!(j.version, 4 | 5)
             || !h.totals.valid()
             || h.totals.through >= j.next_funding
             || j.funding
@@ -168,7 +168,14 @@ impl Controller {
             return Err("invalid retired channel history".into());
         }
         if let Some(p) = &h.pending {
-            if j.history.as_ref().unwrap().routes_pending() {
+            if j.history.as_ref().unwrap().routes_pending()
+                || j.history
+                    .as_ref()
+                    .unwrap()
+                    .seller
+                    .as_ref()
+                    .is_some_and(|h| h.pending())
+            {
                 return Err("conflicting retirement intents".into());
             }
             p.validate(j)?;
@@ -185,11 +192,13 @@ impl Controller {
         let guard = self.wallet.clone().lock_owned().await;
         let store = self.store.clone();
         let buyer = self.services.buyer.clone();
+        let seller = self.services.seller.clone();
         let directory = self.services.wallet_directory.clone();
         let runtime = tokio::runtime::Handle::current();
         blocking(move || {
             let _guard = guard;
             let mut store = store.lock().map_err(|_| "controller state poisoned")?;
+            store.resume_sales(&seller)?;
             if select {
                 store.prepare_channel_retirement(&buyer, now()?)?;
             }
@@ -221,7 +230,7 @@ impl Store {
             return Ok(());
         };
         let mut j = self.journal.clone();
-        j.version = 4;
+        j.version = j.version.max(4);
         j.history
             .get_or_insert_with(History::default)
             .channels

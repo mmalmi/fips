@@ -79,6 +79,7 @@ impl RelayLedger {
             &channel.terms,
             channel.usage.paid_msat,
             state.channels.values().map(|c| (&c.terms, c.usage)),
+            state.history.as_ref(),
         )?
         .min(windows.map_or(u64::MAX, |w| w.get(&channel_id).copied().unwrap_or(0)));
         if channel_reserved > limit {
@@ -140,6 +141,7 @@ impl RelayLedger {
                 &channel.terms,
                 channel.usage.paid_msat,
                 state.channels.values().map(|c| (&c.terms, c.usage)),
+                state.history.as_ref(),
             )
             .ok_or(LedgerError::InvalidSnapshot)?;
             if !channel.active

@@ -5,7 +5,8 @@ impl RelayLedger {
     pub fn snapshot(&self) -> Snapshot {
         let state = self.state.lock().unwrap();
         Snapshot {
-            version: 5,
+            version: if state.history.is_some() { 6 } else { 5 },
+            history: state.history.clone(),
             limits: self.limits,
             next_token: state.next_token,
             channels: state
@@ -35,13 +36,19 @@ impl RelayLedger {
     /// Retain all evidence but activate no traffic. A snapshot alone does not
     /// establish which sends occurred after its last durable checkpoint.
     pub fn restore(snapshot: Snapshot) -> Result<Self, LedgerError> {
-        if !matches!(snapshot.version, 3..=5)
+        if !matches!(snapshot.version, 3..=6)
             || snapshot.channels.len() > snapshot.limits.max_channels
             || snapshot.accounts.len() > snapshot.limits.max_contracts
         {
             return Err(LedgerError::InvalidSnapshot);
         }
+        match &snapshot.history {
+            Some(h) if snapshot.version == 6 && h.valid(snapshot.limits.max_channels) => {}
+            None if snapshot.version < 6 => {}
+            _ => return Err(LedgerError::InvalidSnapshot),
+        }
         let mut state = State {
+            history: snapshot.history,
             next_token: snapshot.next_token,
             ..State::default()
         };
@@ -49,7 +56,7 @@ impl RelayLedger {
         for saved in snapshot.channels {
             let retired = RetiredRouteEvidence::recovered(
                 saved.retired,
-                snapshot.version == 5,
+                snapshot.version >= 5,
                 saved.terms.expires_unix,
             )
             .ok_or(LedgerError::InvalidSnapshot)?;

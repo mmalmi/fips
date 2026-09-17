@@ -4,6 +4,8 @@
 //! its exposure window before activation and reconcile it after a process crash.
 
 mod admission;
+pub(crate) mod channel_history;
+use channel_history::relationship_reservation_limit;
 mod history;
 pub(crate) use history::RouteRetirementPlan;
 mod recovery;
@@ -165,6 +167,8 @@ pub struct Snapshot {
     version: u16,
     limits: Limits,
     next_token: u64,
+    #[serde(default)]
+    history: Option<channel_history::History>,
     pub(crate) channels: Vec<ChannelSnapshot>,
     pub(crate) accounts: Vec<AccountSnapshot>,
 }
@@ -176,34 +180,12 @@ impl Snapshot {
             &channel.terms,
             channel.usage.paid_msat,
             self.channels.iter().map(|c| (&c.terms, c.usage)),
+            self.history.as_ref(),
         )
     }
 }
 
-/// Older closed channels keep consuming the relationship's unpaid allowance.
-/// Their missing/unconfirmed submissions are never added to a new payment bill.
-fn relationship_reservation_limit<'a>(
-    terms: &ChannelTerms,
-    paid_msat: u64,
-    channels: impl Iterator<Item = (&'a ChannelTerms, ChannelUsage)>,
-) -> Option<u64> {
-    let carried = channels
-        .filter(|(old, _)| {
-            old.id != terms.id && old.buyer == terms.buyer && old.mint_url == terms.mint_url
-        })
-        .try_fold(0u64, |sum, (_, usage)| {
-            sum.checked_add(usage.reserved_msat.saturating_sub(usage.paid_msat))
-        })?;
-    Some(
-        terms.capacity_sat.checked_mul(1_000)?.min(
-            paid_msat
-                .saturating_add(terms.grace_msat)
-                .saturating_sub(carried),
-        ),
-    )
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ChannelSnapshot {
     #[serde(default)]
     pub(crate) retired: Option<RetiredRouteEvidence>,
@@ -225,6 +207,7 @@ pub(crate) struct AccountSnapshot {
 
 #[derive(Debug, Default)]
 struct State {
+    history: Option<channel_history::History>,
     seen: std::collections::HashSet<(NodeAddr, [u8; 32])>,
     channels: BTreeMap<String, Channel>,
     accounts: BTreeMap<String, Account>,
@@ -282,7 +265,14 @@ impl RelayLedger {
             }
             return Err(LedgerError::AlreadyBound);
         }
-        let mut unpaid = false;
+        if state
+            .history
+            .as_ref()
+            .is_some_and(|h| terms.expires_unix <= h.expires_through_unix)
+        {
+            return Err(LedgerError::InvalidContract);
+        }
+        let mut unpaid = state.history.as_ref().is_some_and(|h| h.debt(&terms) > 0);
         for old in state
             .channels
             .values()
@@ -297,6 +287,7 @@ impl RelayLedger {
             &terms,
             paid_msat,
             state.channels.values().map(|c| (&c.terms, c.usage)),
+            state.history.as_ref(),
         )
         .ok_or(LedgerError::Capacity)?;
         if unpaid && available == 0 {

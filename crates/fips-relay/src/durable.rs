@@ -4,6 +4,8 @@
 //! admission resumes, it also records the maximum exposure of the next window.
 //! Recovery consumes the entire unrecorded remainder without billing it.
 
+mod channel_history;
+
 use crate::ledger::{
     ChannelTerms, ChannelUsage, Contract, LedgerError, Limits, RelayLedger, Snapshot, Usage,
 };

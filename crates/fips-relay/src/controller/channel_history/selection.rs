@@ -5,6 +5,7 @@ pub(super) fn completed<'a>(j: &'a Journal, f: &'a FundingIntent, now: u64) -> O
     let id = &funded.terms.id;
     if f.expires_unix.checked_add(60)? >= now
         || !j.buyer_settlements.get(id)?.refunded
+        || !j.buyer_settlements.get(id)?.released
         || j.outgoing.values().any(|o| o.purchase.channel.id == *id)
         || j.renewals
             .values()

@@ -66,7 +66,7 @@ fn append(store: &mut Store, buyer: &BuyerAuthorizer, template: &FundingIntent) 
         "provider": f.provider.as_bytes(), "channel": terms,
         "usage": {"paid_msat":1000,"reserved_msat":0,"submitted_msat":0,"lost_msat":0},
         "payment": payment, "report": {"channel_id":terms.id,"value_after_stage1_sat":32,
-        "paid_sat":1,"refunded_sat":30,"fee_sat":1}, "refunded":true,"wallet_refund_sat":30
+        "paid_sat":1,"refunded_sat":30,"fee_sat":1}, "refunded":true,"released":true,"wallet_refund_sat":30
     }))
     .unwrap();
     j.buyer_settlements.insert(terms.id.clone(), settlement);

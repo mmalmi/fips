@@ -34,6 +34,9 @@ impl Controller {
                 ControllerRequest::Seal { channel_id } => {
                     return self.handle_seal(peer, &channel_id).await;
                 }
+                ControllerRequest::ReleaseSettlement { channel_id } => {
+                    return self.handle_release_settlement(peer, &channel_id).await;
+                }
                 ControllerRequest::Settle {
                     channel_id,
                     payment,

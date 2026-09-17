@@ -93,6 +93,7 @@ async fn wallet_costs_and_refunds_survive_restart_without_resetting_the_lifetime
             .values_mut()
         {
             entry["refunded"] = false.into();
+            entry["released"] = false.into();
             entry["wallet_refund_sat"] = serde_json::Value::Null;
         }
         // Retired offers were removed; recover only the already-recorded close.

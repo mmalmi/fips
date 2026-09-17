@@ -49,7 +49,9 @@ pub use runtime::ControllerTasks;
 const MAX_CHANNELS: usize = 16;
 const MAX_ROUTES: usize = 32;
 
+mod seller_history;
 mod settlement;
+mod settlement_release;
 pub use settlement::SettlementReport;
 use settlement::{BuyerSettlement, SellerSettlement};
 
@@ -236,6 +238,9 @@ pub enum ControllerRequest {
         channel_id: String,
         payment: Box<CashuSpilmanPayment>,
     },
+    ReleaseSettlement {
+        channel_id: String,
+    },
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -250,6 +255,9 @@ pub enum ControllerResponse {
     },
     Settled {
         report: SettlementReport,
+    },
+    SettlementReleased {
+        channel_id: String,
     },
     RouteStopped {
         contract_id: String,
@@ -368,6 +376,7 @@ impl Controller {
             _owner: owner,
         };
         store.resume_retirement(&services.buyer, &services.seller)?;
+        store.resume_sales(&services.seller)?;
         Self::reconcile_route_stops(&store.journal, &services)?;
         Ok(Self::with_store(policy, services, store))
     }

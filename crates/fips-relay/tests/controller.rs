@@ -959,6 +959,8 @@ async fn controller_scenario(
             let mut journal: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
             for settlement in journal["seller_settlements"].as_object_mut().unwrap().values_mut() {
                 settlement["report"] = serde_json::Value::Null;
+                // Losing the report also loses its later release acknowledgment.
+                settlement["released"] = serde_json::Value::Bool(false);
             }
             std::fs::write(path, serde_json::to_vec(&journal).unwrap()).unwrap();
             let controller = Controller::load(&directory, policy(mint.url(), automatic_renewal, capacity), service.clone()).unwrap();

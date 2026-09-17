@@ -38,12 +38,14 @@ The 16-record funding bound now applies to retained channels. The recovery worke
 recycles eligible completed numbered channels after verified settlement, route
 cleanup and immutable wallet expiry. Persistent gross debit/refund rollups keep
 lifetime exposure unchanged. Legacy, unfinished and still-referenced channels
-remain retained; seller/receiver/CDK history cleanup is still unfinished.
+remain retained. Seller cleanup now requires the buyer's durable refund and report
+release; unpaid exposure remains attached to buyer and mint. Receiver/CDK history
+cleanup is still unfinished.
 [History and recovery](HISTORY.md) specifies the transaction and remaining bounds.
 
 ## Development and migration
 
-Controller journal versions 2 through 4 require the saved debit approvals, wallet cost
+Controller journal versions 2 through 5 require the saved debit approvals, wallet cost
 evidence and refund totals. Version-1 controller journals cannot be automatically
 upgraded because their fee approval and exact wallet costs may be unavailable.
 Keep old state intact and use its matching executable for recovery; do not delete

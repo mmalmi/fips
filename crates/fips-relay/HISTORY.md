@@ -1,4 +1,4 @@
-# Bounded route and outgoing channel evidence
+# Bounded route and channel evidence
 
 Buyer and seller accounting can fold closed, expired routes into one fixed-size
 `RetiredRouteEvidence` record per retained channel. It preserves route count,
@@ -64,10 +64,10 @@ per controller journal. Existing issued IDs are never renamed: interrupted legac
 funding must recover its original wallet operation, not send again under a new ID.
 
 After route compaction, the recovery worker retires a completed numbered funding
-prefix when every member has a final payment, verified refund, no remaining route
-or renewal references, and has passed the immutable wallet expiry (service expiry
-plus 60 seconds). An unfinished earlier numbered request stops the prefix. Funding
-and buyer limits apply to retained records; eligible completed records recycle
+prefix when every member has a final payment, verified refund, acknowledged report
+release, no remaining route or renewal references, and has passed the immutable
+wallet expiry (service expiry plus 60 seconds). An unfinished earlier numbered
+request stops the prefix. Funding and buyer limits apply to retained records; eligible completed records recycle
 slots. Opaque legacy channels and legacy duplicate-evidence routes remain retained.
 
 The controller saves one exact plan, then commits the buyer's channel rollup,
@@ -88,28 +88,76 @@ rollback; already retained channels remain available. SDK numbered cutoffs also
 reject replayed funding, including skipped request numbers. Idle passes and repeated
 completed handoffs write neither buyer nor controller journals.
 
-**Remaining limits:** seller channels, unpaid relationship exposure, receiver-side
-SDK records and CDK operation/activity history are not retired by this workflow.
-Those stores retain their bounds. This therefore does not yet establish indefinitely
-reusable bidirectional routers. Legacy funding remains one-time retained baggage;
-version-1 cost reconciliation and a migration for a profile already full of legacy
-channels remain incomplete. Missing original evidence must never be replaced with
-zero costs. Expiry alone does not settle or refund an unfinished channel.
+## Completed seller channels and report release
+
+After the buyer has durably recovered its refund, it sends one
+`ReleaseSettlement { channel_id }` request over the existing authenticated
+neighbor control connection. `SettlementReleased { channel_id }` acknowledges
+release of the saved report. This happens once per settled channel; payment and
+packet-delivery cadence are unchanged. The buyer saves the acknowledgment before
+its own outgoing-channel records can retire. A lost reply remains retryable.
+
+The seller requires the original FIPS buyer identity and a completed settlement
+report, which already follows its verified payout import. Unfinished or
+unacknowledged reports stay retained. After removal, another release of an absent
+ID is a no-op acknowledgment: it certifies neither channel existence nor a payment, creates no
+future release permission or tombstone, and writes no journal. Known unfinished
+channels and wrong buyers cannot use that acknowledgment path to remove evidence.
+
+Following release, route compaction and immutable wallet expiry, the controller
+saves one seller cleanup plan, commits the seller ledger, then removes its matching
+channel terms and settlement records. It retains cumulative settlement value,
+payments, returned funds and fees. Startup/recovery resumes an interrupted plan
+before other financial work. Failed writers suspend admission; retry checks exact
+before/after evidence and does not count a completed handoff twice. Durable credit
+windows remove only the retired channel entries; other channels keep the same
+allowance.
+
+Seller history keeps each channel's positive unpaid exposure:
+`max(reserved_msat - paid_msat, 0)`. These amounts accumulate by buyer identity and
+mint, including lost crash windows and unconfirmed submissions. They keep consuming
+the relationship's shared allowance on later channels, without being billed again.
+An overpayment on another channel does not erase that debt. Fully paid channels
+need no relationship record. Unknown old channel terms are rejected using a saved
+expiry floor, including renamed IDs and clock rollback.
+
+Debt relationships are bounded by the ledger's channel limit. If a new unpaid
+relationship would exceed it, cleanup retains the channel and all evidence; it
+never drops another identity to create room. This conservative bound can require
+operator intervention after enough distinct unpaid peers. Active, unexpired,
+unacknowledged, pending, legacy or otherwise unresolved records also retain slots.
+The controller and ledger's channel bounds now count retained records on both sides.
+
+**Remaining history work:** receiver-side SDK and CDK operation/activity records
+are still retained by their respective stores. This is not yet a bound on total
+router database size or proof of indefinite operation under hostile identity churn.
+Legacy/full profiles and version-1 funding-cost reconciliation still need explicit
+migration. Missing original evidence must never be replaced with zero costs.
+Expiry alone does not settle or refund an unfinished channel.
+
+The release exchange requires matching controller versions to complete cleanup.
+Old journals load with `released: false`, preserving retrieval rights until the
+buyer acknowledges them. An older peer that does not support release may already
+have completed the financial settlement; the new buyer then reports that its
+refund is recovered and report release remains pending. Existing records remain
+available. Profiles whose old buyer already removed its records without a release
+need separate reconciliation; do not fabricate an acknowledgment.
 
 ## Journal compatibility and checks
 
 Buyer journals start at version 3 and advance to version 4 on channel retirement;
-seller snapshots use version 5. Existing buyer
-versions 1/2 and seller versions 3/4 load with zero retired totals and retain their
-original evidence and billing mode. New versions require an explicit, internally
+seller snapshots start at version 5 and advance to version 6 on channel retirement.
+Existing buyer versions 1/2 and seller versions 3/4 load with zero retired totals
+and retain their original evidence and billing mode. New versions require an explicit, internally
 consistent rollup field; missing fields are rejected. Older executables reject
 the new versions, so do not downgrade a profile after it has been opened by this
 code. Controller journals now use version 3. Version 2 loads with no retired history
 and upgrades on its first retirement; new profiles start at version 3. Missing
 version-3 history is rejected, and older executables reject version 3.
-The first numbered funding or channel retirement upgrades the controller to
-version 4, which requires explicit channel history. Route compaction preserves
-that version. SDK channel retirement upgrades its client journal to version 6.
+The first numbered funding or outgoing-channel retirement upgrades the controller
+to version 4, which requires explicit buyer channel history. Seller cleanup upgrades
+to version 5, requiring explicit seller totals too. Later funding and route cleanup
+preserve the higher version. SDK channel retirement upgrades its client journal to version 6.
 Older binaries cannot read these newer journals; keep their matching code and
 dependencies together and do not downgrade a used profile.
 Version-1 funding-cost reconciliation remains separate and incomplete.
@@ -152,3 +200,12 @@ Lightning supplies test money; no live-router or physical power-loss claim follo
 cargo test --config /path/to/local-dependencies.toml -p fips-relay --all-features --lib channel_history
 cargo test --config /path/to/local-dependencies.toml -p fips-relay --all-features --test funding_costs
 ```
+
+Seller tests cycle 64 completed channels through a single retained slot and
+restart after each cleanup. They verify exact debt, crash-window retention,
+non-netting of unrelated overpayments, buyer/mint isolation, bounds under distinct
+unpaid identities, missing/corrupt history, release authorization and all local
+write boundaries. The real `funding_costs` service scenario loses a release reply,
+keeps the buyer offline while the seller removes its acknowledged report, and
+then recovers both sides without changing wallet balance or lifetime spending.
+Receiver SDK and CDK history removal are not claimed by those tests.

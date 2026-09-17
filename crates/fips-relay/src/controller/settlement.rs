@@ -4,123 +4,13 @@ use super::*;
 use crate::{buyer::BuyerError, ledger::ChannelUsage};
 use cashu_service::{import_payment_proofs, restore_streaming_route_cashu_spilman_refund};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SettlementReport {
-    pub channel_id: String,
-    /// Value after the funding swap, including reserves for settlement fees.
-    pub value_after_stage1_sat: u64,
-    pub paid_sat: u64,
-    pub refunded_sat: u64,
-    pub fee_sat: u64,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub(super) struct BuyerSettlement {
-    #[serde(with = "node_addr")]
-    provider: NodeAddr,
-    channel: ChannelTerms,
-    usage: Option<ChannelUsage>,
-    payment: Option<CashuSpilmanPayment>,
-    report: Option<SettlementReport>,
-    pub(super) refunded: bool,
-    pub(super) wallet_refund_sat: Option<u64>,
-}
-
-impl BuyerSettlement {
-    pub(super) fn final_signed_sat(&self) -> Result<u64, String> {
-        self.payment
-            .as_ref()
-            .map(|p| p.balance)
-            .ok_or("final payment missing".into())
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub(super) struct SellerSettlement {
-    channel: ChannelTerms,
-    usage: Option<ChannelUsage>,
-    payment: Option<CashuSpilmanPayment>,
-    report: Option<SettlementReport>,
-}
-
-fn valid_usage(channel: &ChannelTerms, usage: ChannelUsage) -> bool {
-    channel.capacity_sat.checked_mul(1_000).is_some_and(|cap| {
-        usage.paid_msat <= cap
-            && usage.reserved_msat <= cap
-            && usage.submitted_msat <= usage.reserved_msat
-            && usage.lost_msat <= usage.reserved_msat - usage.submitted_msat
-    })
-}
-
-fn valid_report(channel: &ChannelTerms, report: &SettlementReport, paid: u64) -> bool {
-    report.channel_id == channel.id
-        && report.paid_sat == paid
-        && report.value_after_stage1_sat >= channel.capacity_sat
-        && report
-            .paid_sat
-            .checked_add(report.refunded_sat)
-            .and_then(|n| n.checked_add(report.fee_sat))
-            == Some(report.value_after_stage1_sat)
-}
+mod state;
+pub use state::SettlementReport;
+pub(super) use state::{BuyerSettlement, SellerSettlement};
+use state::{valid_report, valid_usage};
 
 impl Controller {
-    pub(super) fn validate_settlements(j: &Journal) -> Result<(), String> {
-        if j.buyer_settlements.len() > MAX_CHANNELS || j.seller_settlements.len() > MAX_CHANNELS {
-            return Err("settlement history capacity".into());
-        }
-        for (id, s) in &j.buyer_settlements {
-            if id != &s.channel.id
-                || !j.funding.values().any(|f| {
-                    f.provider == s.provider
-                        && f.funded.as_ref().is_some_and(|f| f.terms == s.channel)
-                })
-                || s.usage.is_some_and(|u| !valid_usage(&s.channel, u))
-                || s.payment.as_ref().is_some_and(|p| {
-                    s.usage.is_none() || p.channel_id != *id || p.balance > s.channel.capacity_sat
-                })
-                || s.report.as_ref().is_some_and(|r| {
-                    s.payment
-                        .as_ref()
-                        .is_none_or(|p| !valid_report(&s.channel, r, p.balance))
-                        || j.funding
-                            .values()
-                            .find_map(|f| f.funded.as_ref().filter(|f| f.terms.id == *id))
-                            .is_none_or(|f| {
-                                r.value_after_stage1_sat > f.wallet_cost.token_amount_sat
-                            })
-                })
-                || (s.refunded != s.wallet_refund_sat.is_some())
-                || s.wallet_refund_sat.is_some_and(|amount| {
-                    s.report.as_ref().is_none_or(|r| amount != r.refunded_sat)
-                })
-            {
-                return Err("invalid buyer settlement".into());
-            }
-        }
-        for (id, s) in &j.seller_settlements {
-            if id != &s.channel.id
-                || (!j.incoming.values().any(|i| i.channel == s.channel)
-                    && j.history.as_ref().and_then(|h| h.sellers.get(id)) != Some(&s.channel))
-                || j.incoming
-                    .values()
-                    .any(|i| i.channel.id == *id && i.phase != Phase::Stopped)
-                || s.usage.is_some_and(|u| !valid_usage(&s.channel, u))
-                || s.payment.as_ref().is_some_and(|p| {
-                    s.usage.is_none() || p.channel_id != *id || p.balance > s.channel.capacity_sat
-                })
-                || s.report.as_ref().is_some_and(|r| {
-                    s.payment
-                        .as_ref()
-                        .is_none_or(|p| !valid_report(&s.channel, r, p.balance))
-                })
-            {
-                return Err("invalid seller settlement".into());
-            }
-        }
-        Ok(())
-    }
-
-    fn settlement_claim(&self, id: &str) -> Option<AcceptGuard<'_>> {
+    pub(super) fn settlement_claim(&self, id: &str) -> Option<AcceptGuard<'_>> {
         let id = format!("settle/{id}");
         if !self.accepting.lock().ok()?.insert(id.clone()) {
             return None;
@@ -172,6 +62,7 @@ impl Controller {
                         usage: None,
                         payment: None,
                         report: None,
+                        released: false,
                     },
                 );
             }
@@ -328,7 +219,7 @@ impl Controller {
         Ok(report)
     }
 
-    async fn settlement_request(
+    pub(super) async fn settlement_request(
         &self,
         peer: PeerIdentity,
         request: ControllerRequest,
@@ -374,6 +265,7 @@ impl Controller {
                     usage: None,
                     payment: None,
                     report: None,
+                    released: false,
                     refunded: false,
                     wallet_refund_sat: None,
                 };
@@ -382,6 +274,7 @@ impl Controller {
             })
             .await?;
         if purchase.refunded {
+            self.release_settlement(id).await?;
             return purchase.report.ok_or("settlement report missing".into());
         }
         if purchase.usage.is_none() {
@@ -516,6 +409,7 @@ impl Controller {
             Ok(())
         })
         .await?;
+        self.release_settlement(id).await?;
         Ok(report)
     }
 
@@ -579,7 +473,7 @@ impl Controller {
             }
         }
         for (id, purchase) in snapshot.buyer_settlements {
-            if !purchase.refunded
+            if (!purchase.refunded || !purchase.released)
                 && let Err(error) = self.settle_channel(&id).await
             {
                 first_error.get_or_insert(error);

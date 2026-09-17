@@ -67,7 +67,7 @@ impl Controller {
                 )
                 .map_err(|e| e.to_string())?
                 .request_id();
-                j.version = 4;
+                j.version = j.version.max(4);
                 j.history
                     .get_or_insert_with(History::default)
                     .channels

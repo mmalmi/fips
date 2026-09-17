@@ -23,6 +23,8 @@ pub(super) struct History {
     pending: Option<Retirement>,
     #[serde(default)]
     pub(super) channels: Option<super::channel_history::ChannelHistory>,
+    #[serde(default)]
+    pub(super) seller: Option<super::seller_history::SellerHistory>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -196,7 +198,9 @@ impl Retirement {
 
 impl History {
     pub(super) fn pending(&self) -> bool {
-        self.routes_pending() || self.channels.as_ref().is_some_and(|h| h.pending())
+        self.routes_pending()
+            || self.channels.as_ref().is_some_and(|h| h.pending())
+            || self.seller.as_ref().is_some_and(|h| h.pending())
     }
     pub(super) fn routes_pending(&self) -> bool {
         self.pending.is_some()
@@ -242,7 +246,7 @@ impl Controller {
                 Err("missing controller history".into())
             };
         };
-        if !matches!(j.version, 3 | 4)
+        if !matches!(j.version, 3..=5)
             || h.sellers.len() > MAX_CHANNELS
             || h.buyers.len() > MAX_CHANNELS
         {
@@ -281,10 +285,11 @@ impl Controller {
         let buyer = self.services.buyer.clone();
         let seller = self.services.seller.clone();
         blocking(move || {
-            store
-                .lock()
-                .map_err(|_| "controller state poisoned")?
-                .retire_routes(&buyer, &seller, now()?)
+            let mut store = store.lock().map_err(|_| "controller state poisoned")?;
+            store.resume_sales(&seller)?;
+            let timestamp = now()?;
+            let routes = store.retire_routes(&buyer, &seller, timestamp)?;
+            Ok(routes + store.retire_sales(&seller, timestamp)?)
         })
         .await
     }
