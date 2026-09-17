@@ -26,9 +26,10 @@ Ethernet). Logs are collected and analyzed automatically.
 The focused three-node line uses the production relay and a local test mint,
 with native Ethernet beacon discovery and no configured peer identities or
 addresses. It requires an existing Linux ARM64 `fips-test` image containing
-`ip`, `nsenter`, and Python 3 with SQLite, plus freshly built Linux ARM64
+`ip`, `nsenter`, `tc` with kernel netem support, and Python 3.9+ with SQLite
+and Linux pidfd support, plus freshly built Linux ARM64
 `fips-relay` and `fips-relay-test-mint` executables. The harness never builds or
-pulls images. Its Python entry point needs only the standard library.
+pulls images. Its Python 3.9+ entry point needs only the standard library.
 
 From the repository root, set `BINARIES` to the directory containing those two
 executables, then run:
@@ -57,18 +58,51 @@ The acceptance checks:
 - A link outage evicts the neighbor using production timeouts; beacon discovery
   reconnects it with the same funding operations, channels, and capital budget.
 - Traffic and payments resume without resetting the lifetime buyer budget.
-- The test mint's accounting remains conserved.
+- Each direction experiences 80-ms delay, a short 100% loss interval, and
+  reordering (`delay 80ms reorder 100% gap 2`) on the relay's outgoing veth.
+  Raw traffic-control counters and probe reports must show the intended effect:
+  observed delay, eight submissions with zero received during loss, or actual
+  out-of-order delivery. Route accounting must advance while loss is active;
+  aggregate link counters do not identify individual encrypted probe packets.
+- A fresh stream delivers all eight packets after the faults; automatic payment
+  reconciliation retains the original channels, quotes and spending limits.
+- Both channels settle while the services are live. After verified graceful
+  shutdown, all node balances are exported and redeemed by the test collector.
+  All 384 issued sats must be collected, with zero spendable balance on each node.
+
+Each probe submits eight 256-byte payloads. Delay/reordering probes use 40 packets
+per second; other probes use four. Both directions keep the original 32-sat
+channel capacity and 30,000-unit quote limit. Billing counts locally submitted
+opaque session envelopes, including attempts later dropped by the impaired
+link; received payload bytes are reported separately. Lost datagrams are not
+replayed to manufacture complete delivery. The mint's separate interface is
+never impaired. Collection redeems Cashu into the collector wallet; it is not a
+Lightning withdrawal.
+
+Payment checks freeze a supported cumulative claim once the affected route's
+accounting advances, then wait for that claim to be credited. FIPS background
+traffic can keep accumulating usage; the test does not demand zero outstanding
+credit. Each seller journal must retain the original capacity and grace bounds,
+and a later durable buyer authorization must cover its recorded credit. The
+last financial sample, fixed validation error, and sampling times are retained
+on failure so a deadline does not hide an accounting assertion.
 
 The quote-only financial invariant is covered separately by the production
 controller integration tests. This three-node run checks native discovery and
 one forwarding hop; it does not establish Wi-Fi behavior, throughput, or scaling.
-The corrected Linux ARM64 fixture passed all phases in approximately 104 seconds.
+Faults have fixed parameters and must be observed, but packet scheduling is not
+claimed deterministic. Payment reconciliation after data faults does not prove
+recovery from an interrupted payment reply; that remains a separate acceptance.
+The corrected Linux ARM64 fixture passed all 16 phases in about 140 seconds.
 
 The scenario has a 15-minute deadline. Individual Docker commands are bounded,
 and cleanup continues independently of that deadline. Run-scoped names refuse
 collisions; cleanup checks exact resource IDs, ownership labels, and interface
-aliases. The result JSON records binary hashes, aggregate financial evidence,
-and cleanup errors; it excludes private keys and token contents. Live wallet
+aliases. Impairments require an alias-verified owned veth with its default queue;
+an existing or changed traffic-control queue is never replaced or removed. The
+result JSON records binary hashes, exact owned resource IDs, traffic-control and
+probe reports, aggregate financial evidence, and cleanup errors; it excludes
+private keys and token contents. Live wallet
 totals come from a read-only SQLite transaction inside each container, without
 copying a live database. Logs and results remain in the output directory;
 containers, their private state, veth pairs, and the internal network are removed.

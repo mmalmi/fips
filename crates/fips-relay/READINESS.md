@@ -60,15 +60,30 @@ also pass. Strict all-target linting, formatting and the source-size check pass
 with the corrected local dependencies. These are software checks, not router
 performance measurements.
 
-An isolated three-router ARM64 Linux fixture also passes using only native
-Ethernet beacons and empty neighbor rosters. Discovery leaves wallets and
+An isolated three-router ARM64 Linux fixture passes all 16 phases using only
+native Ethernet beacons and empty neighbor rosters. Discovery leaves wallets and
 spending authority unchanged; four unpaid packets deliver none. Funded probes
 deliver eight of eight packets in both directions before and after a link
 outage, actual dead-peer eviction and beacon rejoin. Funding operation and
 channel identities, capital and wallet aggregates remain unchanged; automatic
-payments advance without resetting lifetime budgets. All 384 test sats remain
-conserved, and owned containers, links and network are cleaned up. This checks
-one Ethernet partition/rejoin, not radio mobility or physical power loss.
+payments advance without resetting lifetime budgets.
+
+Both directions also pass observed 80-ms delay, a short 100% loss interval,
+reordering and healthy recovery. Loss has eight source submissions and zero
+received packets, with matching-route accounting advancing while the fault is
+active; the same stream remains undelivered after restoration and payment
+reconciliation. Aggregate carrier counters do not identify individual encrypted
+probe packets. Payments reach fixed supported claims while background traffic
+continues; seller exposure stays within the original grace and capacity, and
+recorded credit is bounded by later durable buyer authorization.
+
+The original two channels settle, all 384 test sats are redeemed into the test
+collector, and all three node wallets have zero spendable balance. Exact owned
+containers, links and network are cleaned up. The corrected fixture takes about
+140 seconds; 59 Python checks cover ownership, fault evidence, active credit and
+settlement validation. No payment wire messages or relay implementation changed.
+This checks bounded Ethernet faults and one partition/rejoin, not radio mobility,
+physical power loss or an intentionally interrupted payment reply.
 See the [reproducible harness](../../testing/chaos/README.md#paid-ethernet-acceptance)
 for its configuration and runtime requirements.
 
@@ -104,8 +119,9 @@ radio mobility, congestion fairness, throughput or support for every core adapte
 The intended policy permits fully free, fully paid, or a limited free allowance
 with paid priority, selected per outgoing link or destination. Resource cost does
 not force payment: an operator may donate CPU, airtime, power or metered capacity.
-A free allowance must not create payment debt, and paid priority must be derived
-from a valid local agreement. Existing bounded setup traffic and explicitly free
+A fully free route must work without funding a payment channel. A free allowance
+must not create payment debt, and paid priority must be derived from a valid
+local agreement. Existing bounded setup traffic and explicitly free
 owned destinations remain separate from this proposed general data policy.
 Queueing, route quotes and multi-hop free/paid composition need acceptance before
 this broader policy is offered; it is not implemented by the transport change.

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 
+from .netem_params import NetemParams
 from .run_scope import RUN_LABEL, docker, inspect_owned
 from .topology import veth_interface_name
 
@@ -21,6 +22,7 @@ class ScopedVeth:
         self.topology = topology
         self.created: list[tuple[str, str]] = []
         self.image: str | None = None
+        self.impairments: dict[tuple[str, str], dict] = {}
 
     def host(self, args: list[str], entrypoint="ip") -> str:
         return docker([
@@ -84,15 +86,65 @@ class ScopedVeth:
                 raise RuntimeError("moved interface did not retain its ownership alias")
             self.topology.nodes[node].ethernet_macs[peer] = link["address"]
 
-    def set_edge(self, a: str, b: str, up: bool):
-        if (a, b) not in self.created:
+    def endpoint(self, node: str, peer: str) -> tuple[str, str, str]:
+        edge = next((pair for pair in self.created if pair in ((node, peer), (peer, node))), None)
+        if edge is None:
             raise RuntimeError("cannot change an edge this run did not create")
-        for node, peer in ((a, b), (b, a)):
-            container = self.container(node)["Id"]
-            name = veth_interface_name(node, peer)
-            if self.links(container).get(name, {}).get("ifalias") != self.owner(a, b):
-                raise RuntimeError("refusing an interface with changed ownership")
+        container = self.container(node)["Id"]
+        name, owner = veth_interface_name(node, peer), self.owner(*edge)
+        if self.links(container).get(name, {}).get("ifalias") != owner:
+            raise RuntimeError("refusing an interface with changed ownership")
+        return container, name, owner
+
+    def set_edge(self, a: str, b: str, up: bool):
+        endpoints = [self.endpoint(a, b), self.endpoint(b, a)]
+        for container, name, _ in endpoints:
             docker(["exec", container, "ip", "link", "set", name, "up" if up else "down"])
+
+    @staticmethod
+    def qdiscs(container: str, name: str) -> list[dict]:
+        result = json.loads(docker(["exec", container, "tc", "-j", "-s", "qdisc", "show", "dev", name]))
+        if not isinstance(result, list) or not all(isinstance(item, dict) for item in result):
+            raise RuntimeError("invalid tc qdisc statistics")
+        return result
+
+    @staticmethod
+    def is_noqueue(qdiscs: list[dict]) -> bool:
+        return (len(qdiscs) == 1 and qdiscs[0].get("kind") == "noqueue"
+                and qdiscs[0].get("handle") == "0:" and qdiscs[0].get("root") is True)
+
+    def set_impairment(self, node: str, peer: str, params: NetemParams) -> dict:
+        args = params.to_tc_argv()
+        container, name, owner = self.endpoint(node, peer)
+        if (node, peer) in self.impairments or not self.is_noqueue(self.qdiscs(container, name)):
+            raise RuntimeError("refusing to replace an existing qdisc")
+        # Record before mutation so a failed readback never licenses replacement.
+        self.impairments[node, peer] = {"node": node, "peer": peer, "container_id": container,
+                                       "interface": name, "alias": owner, "requested": args}
+        docker(["exec", container, "tc", "qdisc", "add", "dev", name, "root", "handle",
+                "7a11:", "netem", *args])
+        return self.impairment_stats(node, peer)
+
+    def impairment_stats(self, node: str, peer: str) -> dict:
+        record = self.impairments.get((node, peer))
+        if record is None:
+            raise RuntimeError("no recorded impairment for this direction")
+        container, name, owner = self.endpoint(node, peer)
+        if (container, name, owner) != (record["container_id"], record["interface"], record["alias"]):
+            raise RuntimeError("impaired interface ownership changed")
+        qdiscs = self.qdiscs(container, name)
+        if (len(qdiscs) != 1 or qdiscs[0].get("kind") != "netem"
+                or qdiscs[0].get("handle") != "7a11:" or qdiscs[0].get("root") is not True):
+            raise RuntimeError("expected netem qdisc is absent or changed")
+        return {**record, "qdiscs": qdiscs}
+
+    def clear_impairment(self, node: str, peer: str):
+        snapshot = self.impairment_stats(node, peer)
+        container, name = snapshot["container_id"], snapshot["interface"]
+        docker(["exec", container, "tc", "qdisc", "del", "dev", name, "root", "handle", "7a11:"])
+        if not self.is_noqueue(self.qdiscs(container, name)):
+            raise RuntimeError("cleared impairment did not restore the default qdisc")
+        del self.impairments[node, peer]
 
     def teardown_all(self):
         errors = []
@@ -123,3 +175,4 @@ class ScopedVeth:
         if errors:
             raise RuntimeError("; ".join(errors))
         self.created.clear()
+        self.impairments.clear()

@@ -18,6 +18,8 @@ import subprocess
 import time
 
 from .run_scope import RUN_LABEL, OwnedResources, docker, inspect_owned, refuse_name_collision
+from .paid_faults import capture_probe, exercise_faults
+from .paid_settlement import settle_and_collect
 from .topology import SimNode, SimTopology
 from .veth import VethManager
 
@@ -211,22 +213,24 @@ class PaidRelayRun:
                             "remaining": status["remaining_budget_sat"], "authorized": authorized,
                             "signed": {key: item["authorized_sat"] for key, item in buyer["channels"].items()},
                             "credited": {item["terms"]["id"]: item["usage"]["paid_msat"] for item in seller["channels"]},
+                            "seller_channels": {item["terms"]["id"]: item["usage"] for item in seller["channels"]},
+                            "buyer_units": {key: item["submitted_units"] for key, item in buyer["quotes"].items()},
+                            "buyer_observed_units": {key: item["observed_units"] for key, item in buyer["quotes"].items()},
+                            "seller_units": {item["contract"]["id"]: item["usage"]["submitted_units"] for item in seller["accounts"]},
+                            "seller_unconfirmed_units": {item["contract"]["id"]: item["usage"]["unconfirmed_units"] for item in seller["accounts"]},
                             "wallet": self.wallet(node)}
+        # Provider credit can advance after an earlier buyer read. Bracket it
+        # with a later durable authorization, without demanding an idle mesh.
+        for node in self.nodes:
+            buyer = self.state_json(node, "buyer/buyer.json")
+            result[node]["signed_after"] = {
+                key: item["authorized_sat"] for key, item in buyer["channels"].items()}
         return result
 
     def probe(self, source, destination):
-        stream = secrets.token_hex(16)
-        shape = {"stream_id": stream, "packet_count": 8, "payload_bytes": 256}
-        self.ctl(destination, "receive_probe", probe={**shape, "source": self.nodes[source].npub})
-        report = self.ctl(source, "send_probe", probe={**shape, "destination": self.nodes[destination].npub,
-                                                     "packets_per_second": 4})["probe"]
-        if report["submitted_packets"] != 8 or report["stopped_reason"] is not None:
-            raise RuntimeError("paid probe was not fully submitted")
-        def received():
-            report = self.ctl(destination, "status")["probe"]
-            return report if report["unique_packets"] == 8 and report["invalid_packets"] == 0 else None
-        received_report = eventually("paid probe delivery", received, 30)
-        self.evidence["phases"].append({"probe": f"{source}->{destination}", "received": received_report["unique_packets"]})
+        evidence = {"probe": f"{source}->{destination}"}
+        self.evidence["phases"].append(evidence)
+        capture_probe(self, source, destination, eventually, evidence)
 
     def unpaid_probe(self, before):
         shape = {"stream_id": secrets.token_hex(16), "packet_count": 4, "payload_bytes": 256}
@@ -288,17 +292,15 @@ class PaidRelayRun:
                for node in self.nodes for key in ("funding", "budget", "wallet")):
             raise RuntimeError("rejoin changed original funding or wallet custody")
         self.evidence["phases"].append({"rejoin": "same funding operations and channels", "financial": final})
-        report = self.execute("mint", "fips-relay-test-mint", "ctl", {"type": "report"})
-        if not report["conserved"] or report["issued_sat"] != 384:
-            raise RuntimeError("test mint accounting is not conserved")
-        self.evidence["mint"] = report
+        final = exercise_faults(self, final, eventually)
+        settle_and_collect(self, final)
 
-    def paid_after(self, prior):
+    def paid_after(self, prior, sources=("n01", "n03")):
         current = self.finances()
         credited = {key: value for state in current.values() for key, value in state["credited"].items()}
         delivered = all(credited.get(key, -1) >= value * 1000
                         for state in current.values() for key, value in state["signed"].items())
-        advanced = all(current[node]["authorized"] > prior[node]["authorized"] for node in ("n01", "n03"))
+        advanced = all(current[node]["authorized"] > prior[node]["authorized"] for node in sources)
         return current if delivered and advanced else None
 
     def run(self):
@@ -314,6 +316,9 @@ class PaidRelayRun:
             # The scenario deadline must not interrupt ownership-checked
             # cleanup. Each remaining Docker operation has its own deadline.
             signal.alarm(0)
+            self.evidence["owned_resources"] = [
+                {"kind": kind, "id": identity} for kind, identity in self.resources.created
+            ]
             errors = []
             try:
                 self.veth.teardown_all()

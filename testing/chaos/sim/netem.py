@@ -24,42 +24,13 @@ import random
 from dataclasses import dataclass, field
 
 from .docker_exec import docker_exec_quiet, is_container_running
+from .netem_params import NetemParams
 from .scenario import BandwidthConfig, IngressConfig, LinkPolicyOverride, NetemConfig, NetemPolicy
 from .topology import SimTopology, veth_interface_name
 
 log = logging.getLogger(__name__)
 
 IFACE = "eth0"
-
-
-@dataclass
-class NetemParams:
-    """Concrete netem parameters for one link direction."""
-
-    delay_ms: int = 0
-    jitter_ms: int = 0
-    loss_pct: float = 0.0
-    duplicate_pct: float = 0.0
-    reorder_pct: float = 0.0
-    corrupt_pct: float = 0.0
-
-    def to_tc_args(self) -> str:
-        """Build the netem arguments string for tc."""
-        parts = []
-        if self.delay_ms > 0:
-            if self.jitter_ms > 0:
-                parts.append(f"delay {self.delay_ms}ms {self.jitter_ms}ms")
-            else:
-                parts.append(f"delay {self.delay_ms}ms")
-        if self.loss_pct > 0:
-            parts.append(f"loss {self.loss_pct:.1f}%")
-        if self.duplicate_pct > 0:
-            parts.append(f"duplicate {self.duplicate_pct:.1f}%")
-        if self.reorder_pct > 0 and self.delay_ms > 0:
-            parts.append(f"reorder {self.reorder_pct:.1f}%")
-        if self.corrupt_pct > 0:
-            parts.append(f"corrupt {self.corrupt_pct:.1f}%")
-        return " ".join(parts) if parts else "delay 0ms"
 
 
 @dataclass

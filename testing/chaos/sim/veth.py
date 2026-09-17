@@ -143,6 +143,21 @@ class VethManager:
             raise RuntimeError("explicit edge changes require a scoped run")
         self._scoped.set_edge(a, b, up)
 
+    def set_scoped_impairment(self, node: str, peer: str, params):
+        if self._scoped is None:
+            raise RuntimeError("explicit impairments require a scoped run")
+        return self._scoped.set_impairment(node, peer, params)
+
+    def scoped_impairment_stats(self, node: str, peer: str):
+        if self._scoped is None:
+            raise RuntimeError("impairment statistics require a scoped run")
+        return self._scoped.impairment_stats(node, peer)
+
+    def clear_scoped_impairment(self, node: str, peer: str):
+        if self._scoped is None:
+            raise RuntimeError("clearing impairments requires a scoped run")
+        self._scoped.clear_impairment(node, peer)
+
     def _create_veth_pair(self, node_a: str, node_b: str, image: str):
         """Create a single veth pair between two containers."""
         container_a = self.topology.container_name(node_a)
