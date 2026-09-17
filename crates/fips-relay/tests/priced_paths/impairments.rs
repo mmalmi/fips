@@ -9,6 +9,7 @@ pub(super) enum Scenario {
     Loss,
     Delay,
     ReturnLoss,
+    Mobility,
 }
 
 impl Scenario {
@@ -18,6 +19,7 @@ impl Scenario {
             // Loss must change the delivered-cost ranking, not trip the ceiling.
             Self::Loss => policy.max_loss_percent = 80,
             Self::Delay => policy.max_rtt_ms = 150,
+            Self::Mobility => policy.retry_after_ms = policy.feedback_timeout_ms,
             _ => {}
         }
         policy

@@ -659,6 +659,27 @@ These results cover the reproduced failures, without attributing every historica
 intermittent stall to the same causes. Longer stress runs, remote credit/payment
 effects, full restarts and the remaining impairment/mobility matrix remain open.
 
+The paid diamond also passes two departure/rejoin cycles in each of two root
+placements and seeds. Its source starts with one adjacent provider, then admits
+the second through shared authenticated-adjacent control with empty control
+rosters. SimNetwork removes the original carrier until both native endpoints
+report it disconnected. Automatic selection uses the available provider and
+returns to the cheaper original provider after reconnection; no further Buy,
+Watch or payment-flush command is issued. Every handover delivers fresh payloads,
+obtains native feedback on the selected carrier and advances automatic seller
+credit. Both original 64-sat channels and their funding operation identities are
+retained through repeated use. Locked capital and historical wallet debits stay
+at 128 sats after the second channel opens, refunds remain zero, and the lifetime
+buyer allowance never increases. Controller/selector reload still delivers, and
+each deployment conserves all 259 test sats after final settlement.
+
+These are real controllers over explicitly configured simulated carriers, with
+a two-second feedback/cooldown policy. They do not establish radio discovery,
+physical movement, open-radio admission, or interruption before a replacement
+purchase is accepted. Run the focused case with `cargo test -p fips-relay
+--all-features --test priced_paths
+mobile_neighbors_reuse_channels_and_preserve_spending_authority`.
+
 Price-aware route selection is an explicit requirement, not proven by simply
 accumulating prices along the native planner's chosen next hops. Reuse FIPS's
 existing MMP link/session receiver reports, RTT/loss/goodput/ETX estimates,

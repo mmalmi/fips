@@ -1,6 +1,8 @@
 //! Real controllers, test-money channels, native FIPS/MMP and SimNetwork.
 #[path = "priced_paths/impairments.rs"]
 mod impairments;
+#[path = "priced_paths/mobility.rs"]
+mod mobility;
 use cashu_service::{
     FileSpilmanPaymentReceiver, FileSpilmanPaymentReceiverConfig, create_topup_quote,
     load_mint_balance, load_wallet_overview,
@@ -13,7 +15,7 @@ use fips_core::{
 };
 use fips_relay::{
     buyer::{BuyerAuthorizer, PaidForwarder},
-    control_transport::ControlTransport,
+    control_transport::{ControlAdmission, ControlTransport, NeighborAdmission},
     controller::{
         Controller, ControllerPolicy, ControllerServices, ControllerTasks, RenewalPolicy,
         RouteAccess,
@@ -95,6 +97,19 @@ async fn exhausted_trial_does_not_renew_and_survives_controller_reload() {
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mobile_neighbors_reuse_channels_and_preserve_spending_authority() {
+    for (root_index, seed) in [(0, 114), (1, 115)] {
+        eprintln!("mobile paid diamond: root={root_index}, seed={seed}");
+        tokio::time::timeout(
+            Duration::from_secs(360),
+            run(root_index, Scenario::Mobility, seed),
+        )
+        .await
+        .expect("mobile paid scenario deadline");
+    }
+}
+
 fn selection_policy() -> PriceSelectionPolicy {
     PriceSelectionPolicy {
         feedback_timeout_ms: 2_000,
@@ -114,6 +129,7 @@ fn errors(controllers: &[Arc<Controller>]) -> Vec<(usize, String)> {
 
 async fn run(root_index: usize, scenario: Scenario, seed: u64) {
     let exhaust_trial = matches!(scenario, Scenario::Exhaustion);
+    let mobile = matches!(scenario, Scenario::Mobility);
     let selection = scenario.selection_policy();
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -149,6 +165,9 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
                 ..Default::default()
             },
         );
+    }
+    if mobile {
+        network.set_link_up("0", "2", false);
     }
     fips_core::register_sim_network(network_name.clone(), network.clone());
     let mut nodes = Vec::new();
@@ -269,10 +288,25 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
             .filter(|&j| edges.contains(&(i, j)) || edges.contains(&(j, i)))
             .map(|j| peers[j])
             .collect();
-        let (transport, incoming) =
-            ControlTransport::start(nodes[i].clone(), 44_741, neighbors.clone(), i as u64 + 1)
-                .await
-                .unwrap();
+        let admission = ControlAdmission::new(
+            nodes[i].clone(),
+            if mobile { vec![] } else { neighbors },
+            None,
+            if mobile {
+                NeighborAdmission::AuthenticatedAdjacent
+            } else {
+                NeighborAdmission::ConfiguredOnly
+            },
+        )
+        .unwrap();
+        let (transport, incoming) = ControlTransport::start_with_admission(
+            nodes[i].clone(),
+            44_741,
+            admission.clone(),
+            i as u64 + 1,
+        )
+        .await
+        .unwrap();
         let transport = Arc::new(transport);
         let quote_policy = QuotePolicy {
             destination_fees: Default::default(),
@@ -298,14 +332,22 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
             quotes
         });
         quote_servers.push(QuoteServer::start(quotes.clone(), incoming));
-        let (acceptance, incoming) =
-            ControlTransport::start(nodes[i].clone(), 44_742, neighbors.clone(), i as u64 + 10)
-                .await
-                .unwrap();
-        let (payment, requests) =
-            ControlTransport::start(nodes[i].clone(), 44_743, neighbors, i as u64 + 20)
-                .await
-                .unwrap();
+        let (acceptance, incoming) = ControlTransport::start_with_admission(
+            nodes[i].clone(),
+            44_742,
+            admission.clone(),
+            i as u64 + 10,
+        )
+        .await
+        .unwrap();
+        let (payment, requests) = ControlTransport::start_with_admission(
+            nodes[i].clone(),
+            44_743,
+            admission,
+            i as u64 + 20,
+        )
+        .await
+        .unwrap();
         let payment_control =
             Arc::new(PaymentControl::new(receiver, sellers[i].clone(), vec![]).unwrap());
         payment_servers.push(PaymentServer::start_shared(
@@ -346,7 +388,7 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
                     .filter(|p| p.connected)
                     .count();
             }
-            if n == 8 {
+            if n == if mobile { 6 } else { 8 } {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -535,110 +577,124 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
             .unwrap();
         assert_eq!(quality.next_hop, Some(first.provider));
         assert!(quality.has_recent_delivery_feedback);
-        // Quotes/payment control are still local to the bad provider and continue
-        // working. Only native end-to-end evidence can identify its blackhole.
-        if matches!(scenario, Scenario::Blackhole) {
-            gates[1].blackhole.store(true, Ordering::Relaxed);
-        } else {
-            impairments::observe_then_select(
-                scenario,
+        if mobile {
+            mobility::exercise(
                 &network,
                 &nodes,
                 &peers,
-                &controllers[0],
+                &controllers,
+                &services,
                 &mut receivers[3],
+                &upgraded,
+                root.path(),
             )
             .await;
-        }
-        let replacement = tokio::time::timeout(Duration::from_secs(25), async {
-            loop {
-                nodes[0]
-                    .send_datagram(peers[3], 44_740, 44_740, vec![8; 200])
-                    .await
-                    .unwrap();
-                if let Some(p) = controllers[0]
-                    .purchases()
-                    .await
-                    .unwrap()
-                    .into_iter()
-                    .find(|p| p.provider == *peers[2].node_addr())
-                {
-                    break p;
-                }
-                tokio::time::sleep(Duration::from_millis(200)).await;
-            }
-        })
-        .await
-        .unwrap_or_else(|_| panic!("impaired path replacement: {:?}", errors(&controllers)));
-        assert_eq!(
-            replacement.contract.price.msat,
-            scenario.alternative_price()
-        );
-        assert_eq!(replacement.contract.max_units, 8192);
-        if matches!(scenario, Scenario::Blackhole) {
-            assert!(gates[1].dropped.load(Ordering::Relaxed) > 0);
-        }
-        assert_eq!(
-            nodes[0]
-                .peers()
-                .await
-                .unwrap()
-                .iter()
-                .filter(|p| p.connected)
-                .count(),
-            2
-        );
-        let mut replacement_delivered = false;
-        tokio::time::timeout(Duration::from_secs(20), async {
-            loop {
-                nodes[0]
-                    .send_datagram(peers[3], 44_740, 44_740, vec![9; 200])
-                    .await
-                    .unwrap();
-                let _ = tokio::time::timeout(
-                    Duration::from_millis(200),
-                    receivers[3].recv_batch_into(&mut batch, 32),
+        } else {
+            // Quotes/payment control are still local to the bad provider and continue
+            // working. Only native end-to-end evidence can identify its blackhole.
+            if matches!(scenario, Scenario::Blackhole) {
+                gates[1].blackhole.store(true, Ordering::Relaxed);
+            } else {
+                impairments::observe_then_select(
+                    scenario,
+                    &network,
+                    &nodes,
+                    &peers,
+                    &controllers[0],
+                    &mut receivers[3],
                 )
                 .await;
-                replacement_delivered |= batch.iter().any(|m| {
-                    m.source_peer.node_addr() == peers[0].node_addr()
-                        && m.data.as_slice() == [9; 200]
-                });
-                let q = nodes[0]
-                    .source_route_quality(peers[3], Duration::from_secs(2))
-                    .await
-                    .unwrap();
-                if replacement_delivered
-                    && q.next_hop == Some(replacement.provider)
-                    && q.has_recent_delivery_feedback
-                {
-                    assert!(
-                        q.rtt_ms
-                            .is_some_and(|rtt| rtt <= selection.max_rtt_ms as f64),
-                        "replacement must meet the latency limit: {q:?}"
-                    );
-                    assert!(
-                        gates[2]
-                            .paid
-                            .return_stats()
-                            .unwrap()
-                            .traffic
-                            .admitted_packets
-                            > 0,
-                        "native feedback must use the replacement's earned return allowance"
-                    );
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(200)).await;
             }
-        })
-        .await
-        .expect("working alternative carries payload and native feedback");
-        assert!(controllers[0].locked_capital_sat().await.unwrap() <= 128);
-        // Re-polling cheaper advertisements retains the working alternative through
-        // measured cost, switching margin or failed-provider cooldown.
-        let current = controllers[0].buy_route(peers[3]).await.unwrap();
-        assert_eq!(current.provider, replacement.provider);
+            let replacement = tokio::time::timeout(Duration::from_secs(25), async {
+                loop {
+                    nodes[0]
+                        .send_datagram(peers[3], 44_740, 44_740, vec![8; 200])
+                        .await
+                        .unwrap();
+                    if let Some(p) = controllers[0]
+                        .purchases()
+                        .await
+                        .unwrap()
+                        .into_iter()
+                        .find(|p| p.provider == *peers[2].node_addr())
+                    {
+                        break p;
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("impaired path replacement: {:?}", errors(&controllers)));
+            assert_eq!(
+                replacement.contract.price.msat,
+                scenario.alternative_price()
+            );
+            assert_eq!(replacement.contract.max_units, 8192);
+            if matches!(scenario, Scenario::Blackhole) {
+                assert!(gates[1].dropped.load(Ordering::Relaxed) > 0);
+            }
+            assert_eq!(
+                nodes[0]
+                    .peers()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .filter(|p| p.connected)
+                    .count(),
+                2
+            );
+            let mut replacement_delivered = false;
+            tokio::time::timeout(Duration::from_secs(20), async {
+                loop {
+                    nodes[0]
+                        .send_datagram(peers[3], 44_740, 44_740, vec![9; 200])
+                        .await
+                        .unwrap();
+                    let _ = tokio::time::timeout(
+                        Duration::from_millis(200),
+                        receivers[3].recv_batch_into(&mut batch, 32),
+                    )
+                    .await;
+                    replacement_delivered |= batch.iter().any(|m| {
+                        m.source_peer.node_addr() == peers[0].node_addr()
+                            && m.data.as_slice() == [9; 200]
+                    });
+                    let q = nodes[0]
+                        .source_route_quality(peers[3], Duration::from_secs(2))
+                        .await
+                        .unwrap();
+                    if replacement_delivered
+                        && q.next_hop == Some(replacement.provider)
+                        && q.has_recent_delivery_feedback
+                    {
+                        assert!(
+                            q.rtt_ms
+                                .is_some_and(|rtt| rtt <= selection.max_rtt_ms as f64),
+                            "replacement must meet the latency limit: {q:?}"
+                        );
+                        assert!(
+                            gates[2]
+                                .paid
+                                .return_stats()
+                                .unwrap()
+                                .traffic
+                                .admitted_packets
+                                > 0,
+                            "native feedback must use the replacement's earned return allowance"
+                        );
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            })
+            .await
+            .expect("working alternative carries payload and native feedback");
+            assert!(controllers[0].locked_capital_sat().await.unwrap() <= 128);
+            // Re-polling cheaper advertisements retains the working alternative through
+            // measured cost, switching margin or failed-provider cooldown.
+            let current = controllers[0].buy_route(peers[3]).await.unwrap();
+            assert_eq!(current.provider, replacement.provider);
+        }
         controllers[0].pause_route_refresh().await.unwrap();
         controllers[0].pause_renewals().await.unwrap();
     }
