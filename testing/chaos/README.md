@@ -91,9 +91,36 @@ The quote-only financial invariant is covered separately by the production
 controller integration tests. This three-node run checks native discovery and
 one forwarding hop; it does not establish Wi-Fi behavior, throughput, or scaling.
 Faults have fixed parameters and must be observed, but packet scheduling is not
-claimed deterministic. Payment reconciliation after data faults does not prove
-recovery from an interrupted payment reply; that remains a separate acceptance.
+claimed deterministic. Payment reconciliation after data faults alone does not
+prove recovery from an interrupted payment reply.
 The corrected Linux ARM64 fixture passed all 16 phases in about 140 seconds.
+
+To also interrupt payment control, build both executables with
+`--features testbench,measurements` and add `--payment-faults` to the command
+above. This optional phase drops the relay-to-buyer carrier direction while a
+fresh paid data stream continues in the other direction. It requires observed
+carrier drops, a new payment-port request, and repeated observations of an
+unacknowledged payment. Restoring the carrier must let the automatic scheduler
+reconcile a fixed supported balance on the original channel, then pay for a
+further healthy stream. The original capacity, quote limits and lifetime budgets
+remain in force, followed by the same settlement and complete test-fund collection.
+
+This short carrier fault can interrupt a connection or a Usage exchange before
+an Update is accepted. It does not identify a lost encrypted reply. Exact
+post-acceptance reply loss is covered by the relay controller integration test
+`slow_neighbor_payment_and_settlement_do_not_stall_healthy_channels` with
+`--all-features`: a test proxy discards one real payment handler's successful
+reply after the seller has saved the credit. Recovery must use the automatic
+scheduler, preserve funding and budgets, and leave another neighbor able to pay.
+Neither recovery phase manually flushes payments or settles channels.
+The same controller scenario without `measurements` delays a request before its
+handler instead; both feature modes retain the interrupted-settlement check and
+the original spending limits.
+The optional Linux ARM64 run passed all 20 phases in about 176 seconds, including
+both short carrier interruptions and collection of all 384 test sats. The two
+observations recorded no completed Update handlers; they establish interrupted
+control and automatic reconciliation, while the proxy test establishes the
+separate post-acceptance reply-loss boundary.
 
 The scenario has a 15-minute deadline. Individual Docker commands are bounded,
 and cleanup continues independently of that deadline. Run-scoped names refuse

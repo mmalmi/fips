@@ -467,7 +467,7 @@ async fn controller_scenario(
                 *buyer,*seller,ledgers[*seller].channel_usage(&p.channel.id),
                 buyers[*buyer].evidence_msat(&p.channel.id))).collect::<Vec<_>>()));
         if slow_neighbor {
-            payment_mobility::exercise(&nodes, &peers, &mut data, &controllers, &ledgers,
+            payment_mobility::exercise(root.path(), &nodes, &peers, &mut data, &controllers, &ledgers,
                 &buyers, &payment_gates, &settlement_gates).await;
         }
         if route_change {

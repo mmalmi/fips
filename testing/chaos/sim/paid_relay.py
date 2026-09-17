@@ -20,6 +20,7 @@ import time
 from .run_scope import RUN_LABEL, OwnedResources, docker, inspect_owned, refuse_name_collision
 from .paid_faults import capture_probe, exercise_faults
 from .paid_settlement import settle_and_collect
+from .paid_payment_faults import diagnostics, exercise_payment_faults
 from .topology import SimNode, SimTopology
 from .veth import VethManager
 
@@ -79,7 +80,8 @@ class PaidRelayRun:
         self.veth = VethManager(self.topology)
         self.containers = {}
         self.output_created = False
-        self.evidence = {"run": self.name, "test_funds_only": True, "phases": []}
+        self.evidence = {"run": self.name, "test_funds_only": True, "phases": [],
+                         "payment_faults_requested": bool(getattr(args, "payment_faults", False))}
 
     def execute(self, node, binary, action, request=None, timeout=90):
         item = inspect_owned("container", self.containers[node], self.name)
@@ -259,6 +261,9 @@ class PaidRelayRun:
 
     def exercise(self):
         eventually("native Ethernet beacon line", self.line_ready, 150)
+        if self.evidence["payment_faults_requested"]:
+            for node in self.nodes:
+                diagnostics(self.ctl(node, "status"))
         discovered = eventually("discovery financial snapshot", self.finances)
         for node, state in discovered.items():
             if (state["wallet"] != self.initial_wallets[node] or state["funding"]
@@ -293,6 +298,8 @@ class PaidRelayRun:
             raise RuntimeError("rejoin changed original funding or wallet custody")
         self.evidence["phases"].append({"rejoin": "same funding operations and channels", "financial": final})
         final = exercise_faults(self, final, eventually)
+        if self.evidence["payment_faults_requested"]:
+            final = exercise_payment_faults(self, final, eventually)
         settle_and_collect(self, final)
 
     def paid_after(self, prior, sources=("n01", "n03")):
@@ -339,6 +346,8 @@ def main():
     parser.add_argument("--binary-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True, help="new private evidence directory")
     parser.add_argument("--image", default="fips-test:latest", help="existing Linux ARM64 image; never pulled or rebuilt")
+    parser.add_argument("--payment-faults", action="store_true",
+                        help="also test short payment-carrier interruptions; requires measurements-enabled binaries")
     args = parser.parse_args()
     os.umask(0o077)
     def deadline(_signum, _frame):

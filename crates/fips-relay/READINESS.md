@@ -83,9 +83,35 @@ containers, links and network are cleaned up. The corrected fixture takes about
 140 seconds; 59 Python checks cover ownership, fault evidence, active credit and
 settlement validation. No payment wire messages or relay implementation changed.
 This checks bounded Ethernet faults and one partition/rejoin, not radio mobility,
-physical power loss or an intentionally interrupted payment reply.
+physical power loss or an intentionally interrupted payment reply. The additional
+payment checks below cover two distinct interruption boundaries.
 See the [reproducible harness](../../testing/chaos/README.md#paid-ethernet-acceptance)
 for its configuration and runtime requirements.
+
+With `measurements` enabled, the five-node controller test discards a successful
+Update reply only after the real payment handler has persisted the received
+balance and seller credit. Another neighbor keeps paying while the reply is held.
+After it is discarded, the first recovery request must be Usage; the automatic
+scheduler acknowledges the saved balance without repeating that cumulative
+Update, then pays for further traffic. Funding identities and the original
+64-sat lifetime limits remain unchanged. The ordinary feature mode instead pauses
+a request before handling. Both scenarios pass their held-settlement phase and
+complete test-fund collection. Recovery itself uses no manual payment flush or
+settlement; this is a lost-response test, not a process-crash test.
+
+The optional `--payment-faults` Ethernet run passes all 20 phases in about
+176 seconds with `testbench,measurements` binaries. Reverse carrier loss lasts
+8.8 and 8.7 seconds, below production request and dead-link timeouts. Each
+direction delivers eight fresh paid data packets while payment acknowledgment
+stays unresolved across repeated observations; the owned queues drop 43 and 33
+opaque carrier packets. Both original channels automatically reconcile fixed
+supported balances after restoration and pay for a further healthy stream.
+Neither fault observation records a completed Update handler, so this native
+result does not identify an accepted Update's lost reply. All 384 test sats are
+collected, every node has zero spendable balance, and all owned resources are
+removed. The 76 Python checks, both controller feature modes, strict all-target
+linting, formatting and source-size checks pass. Production code and payment
+wire messages are unchanged.
 
 The forwarding audit found shared transit admission before outgoing transport
 selection, including batched sends. Service configuration now uses the core

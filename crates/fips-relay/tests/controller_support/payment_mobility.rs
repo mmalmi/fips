@@ -3,12 +3,17 @@ use super::*;
 use fips_core::FipsEndpointServiceReceiver;
 use fips_relay::control_transport::IncomingRequest;
 use tokio::sync::{Notify, mpsc, watch};
+#[cfg(feature = "measurements")]
+#[path = "payment_mobility/payment_replies.rs"]
+mod payment_replies;
 
 pub(super) struct Gate {
     pause: watch::Sender<bool>,
     discard: mpsc::Sender<tokio::sync::oneshot::Sender<()>>,
     held: Arc<Notify>,
     task: tokio::task::JoinHandle<()>,
+    #[cfg(feature = "measurements")]
+    replies: payment_replies::ReplyGate,
 }
 
 impl Gate {
@@ -42,13 +47,16 @@ impl Drop for Gate {
 }
 
 pub(super) fn gate(
-    mut incoming: mpsc::Receiver<IncomingRequest>,
+    incoming: mpsc::Receiver<IncomingRequest>,
     buyer: PeerIdentity,
     enabled: bool,
 ) -> (mpsc::Receiver<IncomingRequest>, Option<Gate>) {
     if !enabled {
         return (incoming, None);
     }
+    #[cfg(feature = "measurements")]
+    let (incoming, replies) = payment_replies::proxy(incoming, buyer);
+    let mut incoming = incoming;
     let (send, receive) = mpsc::channel(16);
     let (pause, mut paused) = watch::channel(false);
     let (discard, mut discards) = mpsc::channel::<tokio::sync::oneshot::Sender<()>>(1);
@@ -92,6 +100,8 @@ pub(super) fn gate(
             discard,
             held,
             task,
+            #[cfg(feature = "measurements")]
+            replies,
         }),
     )
 }
@@ -222,6 +232,7 @@ impl Traffic<'_> {
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn exercise(
+    root: &std::path::Path,
     nodes: &[Arc<FipsEndpoint>],
     peers: &[PeerIdentity],
     data: &mut [FipsEndpointServiceReceiver],
@@ -256,26 +267,41 @@ pub(super) async fn exercise(
         controllers,
         sellers,
     };
-    payment_gate.pause();
-    traffic.send(if slow == 1 { 4 } else { 0 }, 180).await;
-    assert!(
-        payment_gate.held().await,
-        "the selected neighbor must hold a real payment request: slow={slow}, usage={:?}, evidence={:?}, authorized={:?}, errors={:?}",
-        sellers[slow].channel_usage(&slow_purchase.channel.id),
-        buyers[2].evidence_msat(&slow_purchase.channel.id),
-        buyers[2].authorized_sat(&slow_purchase.channel.id),
-        controllers
-            .iter()
-            .map(|c| c.last_error())
-            .collect::<Vec<_>>()
-    );
-    traffic
-        .paid_bursts(healthy, healthy_purchase, sellers, &buyers[2], 190)
-        .await;
+    // Complementary payment faults share the original traffic budget: measured
+    // runs lose an applied reply; ordinary runs delay a request before handling.
+    #[cfg(feature = "measurements")]
+    payment_replies::accepted_update_reply_loss_recovers_automatically(
+        root,
+        &mut traffic,
+        &payment_gate.replies,
+        &purchases,
+        buyers,
+    )
+    .await;
+    #[cfg(not(feature = "measurements"))]
+    {
+        let _ = root;
+        payment_gate.pause();
+        traffic.send(if slow == 1 { 4 } else { 0 }, 180).await;
+        assert!(
+            payment_gate.held().await,
+            "the selected neighbor must hold a real payment request: slow={slow}, usage={:?}, evidence={:?}, authorized={:?}, errors={:?}",
+            sellers[slow].channel_usage(&slow_purchase.channel.id),
+            buyers[2].evidence_msat(&slow_purchase.channel.id),
+            buyers[2].authorized_sat(&slow_purchase.channel.id),
+            controllers
+                .iter()
+                .map(|c| c.last_error())
+                .collect::<Vec<_>>()
+        );
+        traffic
+            .paid_bursts(healthy, healthy_purchase, sellers, &buyers[2], 190)
+            .await;
+    }
     assert_eq!(buyer.locked_capital_sat().await.unwrap(), capital);
     assert_eq!(buyer.purchases().await.unwrap(), purchases);
 
-    // Settlement waits for its own in-flight payment, then holds a real Seal RPC.
+    // Settlement waits for any in-flight payment, then holds a real Seal RPC.
     // A healthy channel must make several further payments in both phases.
     settlement_gate.pause();
     let settling = buyer.clone();

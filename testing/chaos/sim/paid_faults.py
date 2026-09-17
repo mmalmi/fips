@@ -78,7 +78,7 @@ def qdisc_counters(snapshot):
     return counters
 
 
-def validate_effect(kind, evidence):
+def validate_impairment(kind, evidence):
     before, after = evidence["qdisc_before"], evidence["qdisc_after"]
     for key in ("node", "peer", "container_id", "interface", "alias"):
         if before[key] != after[key]:
@@ -98,12 +98,17 @@ def validate_effect(kind, evidence):
             raise RuntimeError("installed netem fault options differ from the requested phase")
     if any(final[key] < initial[key] for key in initial):
         raise RuntimeError("impairment counters reset during the probe")
+    return {key: final[key] - initial[key] for key in initial}
+
+
+def validate_effect(kind, evidence):
+    delta = validate_impairment(kind, evidence)
     received = evidence["received"]
     validate_probe(evidence["sent"], received, loss=kind == "loss")
     if kind == "loss":
-        if final["drops"] - initial["drops"] < PACKETS:
+        if delta["drops"] < PACKETS:
             raise RuntimeError("packet loss did not reach the impaired carrier")
-    elif final["packets"] - initial["packets"] < PACKETS:
+    elif delta["packets"] < PACKETS:
         raise RuntimeError("probe did not traverse the impaired carrier")
     if kind == "delay" and received["latency"]["min_us"] < 60_000:
         raise RuntimeError("configured delay was not observed by the receiver")
@@ -162,7 +167,7 @@ def original_quote(before, source):
     return next(iter(quotes))
 
 
-def paid_progress(run, before, source, evidence):
+def financial_sample(run, before, evidence):
     evidence["financial_sample_attempts"] = evidence.get("financial_sample_attempts", 0) + 1
     evidence["financial_sample_started"] = time.monotonic()
     try:
@@ -181,6 +186,11 @@ def paid_progress(run, before, source, evidence):
         evidence["last_financial_validation_error"] = str(error)
         raise
     evidence.pop("last_financial_validation_error", None)
+    return current
+
+
+def paid_progress(run, before, source, evidence):
+    current = financial_sample(run, before, evidence)
     quote = original_quote(before, source)
     if any(current[node][key][quote] - before[node][key][quote] < PACKETS * PAYLOAD_BYTES
            for node, key in ((source, "buyer_units"), ("n02", "seller_units"))):
