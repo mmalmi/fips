@@ -50,7 +50,7 @@ pub(super) async fn start_bench(root: &Path, seed: u64, lifetime: u64) -> Bench 
         cfg.terms.quote_lifetime_secs = lifetime / 2;
         cfg.terms.billing = fips_relay::ledger::BillingBasis::ForwardingAttempt;
         let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-        cfg.udp_bind = Some(socket.local_addr().unwrap());
+        cfg.transports = udp_transports(socket.local_addr().unwrap());
         sockets.push(socket);
         npubs.push(RelayService::initialize(cfg.clone()).await.unwrap());
         let wallet = cfg.state_directory.join("wallet");
@@ -69,7 +69,7 @@ pub(super) async fn start_bench(root: &Path, seed: u64, lifetime: u64) -> Bench 
         paths.push(directory.join("config.json"));
         configs.push(cfg);
     }
-    let addresses: Vec<_> = configs.iter().map(|c| c.udp_bind.unwrap()).collect();
+    let addresses: Vec<_> = configs.iter().map(udp_bind).collect();
     for (i, cfg) in configs.iter_mut().enumerate() {
         cfg.neighbors = npubs
             .iter()

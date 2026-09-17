@@ -302,12 +302,17 @@ Strict relay and Android ARM64 linting, default builds, formatting and the
   was lost without funding another channel. A saved renewal pause also survives
   reload; `resume_renewals` explicitly permits replacement recovery again.
 * The Unix `fips-relay` executable assembles those components with explicit
-  initialization, saved financial terms, native interface/UDP configuration and
+  initialization, saved financial terms, the core `transports` configuration and
   private local controls. A five-process test recovers the same accounts after
   all nodes stop/restart and after the middle router is killed. Both traffic
   directions continue, all three relays retain positive margins, and all 1,280
   test sats are redeemed/spent. Recovery rebuilds native destination knowledge;
   authenticated peer restarts also reset stale tree/filter announcement state.
+
+Transport discovery settings are independent of payment-control admission.
+Paid-link acceptance covers UDP and Ethernet, plus a mixed UDP/TCP route with
+allowance exhaustion, renewal and restart. See [service configuration](SERVICE.md)
+for explicit link settings.
 
 Only the local mint's Lightning backend is simulated. These test tokens have no
 external backing. `settlement` supplies submission outcomes to test exact

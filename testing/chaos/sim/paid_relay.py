@@ -45,8 +45,13 @@ def eventually(description, condition, seconds=120):
 
 def relay_config(interfaces, mint):
     return {
-        "state_directory": "/tmp/bench-state", "udp_bind": None,
-        "neighbor_admission": "authenticated_adjacent", "ethernet_interfaces": interfaces,
+        "state_directory": "/tmp/bench-state",
+        "transports": {"ethernet": {
+            interface: {"interface": interface, "discovery": True, "announce": True,
+                        "auto_connect": True, "accept_connections": True}
+            for interface in interfaces
+        }},
+        "neighbor_admission": "authenticated_adjacent",
         "neighbors": [], "terms": {
             "billing": "forwarding_data",
             "controller": {"mint_url": mint, "channel_capacity_sat": 32,

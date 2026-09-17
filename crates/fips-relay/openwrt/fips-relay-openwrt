@@ -9,7 +9,10 @@ trap 'exit 0' TERM INT
 [ -x "$executable" ] && [ -s "$config_path" ] || exit 1
 state_directory=$(jsonfilter -i "$config_path" -e '@.state_directory')
 mint_url=$(jsonfilter -i "$config_path" -e '@.terms.controller.mint_url')
-interfaces=$(jsonfilter -i "$config_path" -e '@.ethernet_interfaces[*]' || :)
+interfaces=$(jsonfilter -i "$config_path" -e '@.transports.ethernet[*].interface' || :)
+if [ -z "$interfaces" ]; then
+	interfaces=$(jsonfilter -i "$config_path" -e '@.transports.ethernet.interface' || :)
+fi
 [ -n "$state_directory" ] && [ -n "$mint_url" ] || exit 1
 [ -f "$state_directory/service.json" ] && [ -f "$state_directory/identity.key" ] || {
 	echo 'fips-relay: initialize a new account explicitly or restore the complete saved account' >&2

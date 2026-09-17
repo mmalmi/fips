@@ -9,17 +9,19 @@ use std::{
 };
 use tokio::process::{Child, Command};
 
+mod transports;
+pub use transports::{udp_bind, udp_transports};
+
 pub fn config(root: &Path, mint: &str) -> ServiceConfig {
     ServiceConfig {
         state_directory: root.join("state"),
-        udp_bind: Some("127.0.0.1:0".parse().unwrap()),
+        transports: udp_transports("127.0.0.1:0".parse().unwrap()),
         customer_network: None,
         neighbor_admission: Default::default(),
         destination_fees: Default::default(),
         return_allowance: false,
         price_selection: None,
         payment_cadence: Default::default(),
-        ethernet_interfaces: vec![],
         neighbors: vec![],
         terms: ServiceTerms {
             billing: Default::default(),

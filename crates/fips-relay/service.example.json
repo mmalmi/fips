@@ -1,7 +1,16 @@
 {
   "state_directory": "/etc/fips-relay/state",
-  "udp_bind": null,
-  "ethernet_interfaces": ["mesh0"],
+  "transports": {
+    "ethernet": {
+      "mesh0": {
+        "interface": "mesh0",
+        "discovery": false,
+        "announce": false,
+        "auto_connect": false,
+        "accept_connections": true
+      }
+    }
+  },
   "neighbors": [],
   "terms": {
     "billing": "forwarding_attempt",

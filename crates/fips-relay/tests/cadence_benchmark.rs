@@ -153,7 +153,7 @@ async fn trial(delay: u64, trial_id: usize, output: &mut std::fs::File) {
         cfg.terms.max_rate_msat_per_kib = 8;
         cfg.terms.quote_max_units = 128 * 1024 * 1024;
         let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-        cfg.udp_bind = Some(socket.local_addr().unwrap());
+        cfg.transports = udp_transports(socket.local_addr().unwrap());
         reservations.push(socket);
         let path = directory.join("config.json");
         std::fs::write(&path, serde_json::to_vec(&cfg).unwrap()).unwrap();
@@ -182,7 +182,7 @@ async fn trial(delay: u64, trial_id: usize, output: &mut std::fs::File) {
         configs.push(cfg);
         paths.push(path);
     }
-    let addresses: Vec<_> = configs.iter().map(|c| c.udp_bind.unwrap()).collect();
+    let addresses: Vec<_> = configs.iter().map(udp_bind).collect();
     for (i, cfg) in configs.iter_mut().enumerate() {
         cfg.neighbors = npubs
             .iter()

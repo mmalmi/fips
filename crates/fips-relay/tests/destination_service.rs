@@ -47,7 +47,7 @@ impl Bench {
             cfg.terms.billing = BillingBasis::ForwardingData;
             cfg.return_allowance = !paid;
             let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-            cfg.udp_bind = Some(socket.local_addr().unwrap());
+            cfg.transports = udp_transports(socket.local_addr().unwrap());
             sockets.push(socket);
             let path = directory.join("config.json");
             std::fs::write(&path, serde_json::to_vec(&cfg).unwrap()).unwrap();
@@ -61,7 +61,7 @@ impl Bench {
             configs.push(cfg);
             paths.push(path);
         }
-        let addresses: Vec<_> = configs.iter().map(|c| c.udp_bind.unwrap()).collect();
+        let addresses: Vec<_> = configs.iter().map(udp_bind).collect();
         for (i, cfg) in configs.iter_mut().enumerate() {
             // Rules live outside immutable financial terms: new offers can
             // change without editing or discarding old account records.

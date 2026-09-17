@@ -1,6 +1,9 @@
 #![cfg(unix)]
 #[path = "process_support/idle.rs"]
 mod idle;
+#[path = "process_support/transports.rs"]
+mod transports;
+use transports::{udp_bind, udp_transports};
 
 use cashu_service::{
     create_topup_quote, load_mint_balance, load_wallet_overview, receive_payment_token,
@@ -32,8 +35,7 @@ fn profile(entry: &str, address: String, destination: &str, mint: &str) -> Custo
 fn config(root: &Path, mint: &str) -> ServiceConfig {
     let mut value: Value = serde_json::from_str(include_str!("../service.example.json")).unwrap();
     value["state_directory"] = json!(root.join("state"));
-    value["udp_bind"] = json!("127.0.0.1:0");
-    value["ethernet_interfaces"] = json!([]);
+    value["transports"] = json!({"udp": {"bind_addr": "127.0.0.1:0", "advertise_on_nostr": false}});
     value["terms"]["controller"]["mint_url"] = json!(mint);
     value["terms"]["controller"]["channel_capacity_sat"] = json!(32);
     value["terms"]["controller"]["renewal"] = Value::Null;
@@ -115,7 +117,7 @@ async fn customer_app_uses_real_accounts_and_preserves_them_across_reopen() {
         let mut npubs = Vec::new();
         for cfg in &mut configs {
             let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-            cfg.udp_bind = Some(socket.local_addr().unwrap());
+            cfg.transports = udp_transports(socket.local_addr().unwrap());
             sockets.push(socket);
             std::fs::create_dir_all(cfg.state_directory.parent().unwrap()).unwrap();
             npubs.push(RelayService::initialize(cfg.clone()).await.unwrap());
@@ -131,7 +133,7 @@ async fn customer_app_uses_real_accounts_and_preserves_them_across_reopen() {
             configs[i].neighbors = vec![PeerConfig::new(
                 &npubs[1 - i],
                 "udp",
-                configs[1 - i].udp_bind.unwrap().to_string(),
+                udp_bind(&configs[1 - i]).to_string(),
             )];
         }
         configs[0].customer_network = Some("127.0.0.1/32".parse().unwrap());
@@ -150,7 +152,7 @@ async fn customer_app_uses_real_accounts_and_preserves_them_across_reopen() {
         let directory = root.path().join("customer");
         let profile = profile(
             &npubs[0],
-            configs[0].udp_bind.unwrap().to_string(),
+            udp_bind(&configs[0]).to_string(),
             &npubs[1],
             mint.url(),
         );

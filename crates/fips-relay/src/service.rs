@@ -2,6 +2,8 @@
 
 mod config;
 mod control;
+mod network;
+mod transport_startup;
 pub(crate) use config::read_json;
 use config::{Manifest, REQUIRED, check_state};
 pub use config::{ServiceConfig, ServiceTerms};
@@ -24,18 +26,17 @@ use cashu_service::{
     load_mint_balance,
 };
 use fips_core::{
-    Config, FipsEndpoint, Identity, PeerIdentity,
-    config::{EthernetConfig, PeerConfig, TransportInstances, UdpConfig},
+    FipsEndpoint, Identity, PeerIdentity,
+    config::PeerConfig,
     node::{ForwardingOutcome, ForwardingPolicy, ForwardingRequest},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::BTreeMap,
     fs::{File, OpenOptions},
     io::{Read, Write},
-    net::SocketAddr,
     os::unix::fs::{DirBuilderExt, FileTypeExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::{
@@ -259,6 +260,10 @@ impl RelayService {
                 .await
                 .map_err(|e| e.to_string())?,
         );
+        if !create && let Err(error) = transport_startup::verify(&config).await {
+            let _ = endpoint.shutdown().await;
+            return Err(error);
+        }
         let neighbors: Vec<_> = config
             .neighbors
             .iter()

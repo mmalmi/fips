@@ -1,6 +1,74 @@
 use super::*;
 
 #[test]
+fn transport_instance_counts_omit_unconfigured_types() {
+    let config = TransportsConfig::default();
+    assert!(config.is_empty());
+    assert_eq!(config.instance_counts().next(), None);
+
+    let config: TransportsConfig = serde_yaml::from_str("tcp: {}").unwrap();
+    assert!(!config.is_empty());
+    assert_eq!(config.instance_counts().collect::<Vec<_>>(), [("tcp", 1)]);
+    assert!(config.udp.is_empty());
+}
+
+#[test]
+fn transport_instance_counts_include_single_and_named_adapters() {
+    let config: TransportsConfig = serde_yaml::from_str(
+        r#"
+udp:
+  primary:
+    bind_addr: "127.0.0.1:0"
+  secondary:
+    bind_addr: "[::1]:0"
+ethernet:
+  interface: "test0"
+tcp: {}
+websocket: {}
+tor: {}
+webrtc: {}
+ble: {}
+"#,
+    )
+    .unwrap();
+    let counts: std::collections::BTreeMap<_, _> = config.instance_counts().collect();
+    assert_eq!(
+        counts,
+        std::collections::BTreeMap::from([
+            ("udp", 2),
+            ("ethernet", 1),
+            ("tcp", 1),
+            ("websocket", 1),
+            ("tor", 1),
+            ("webrtc", 1),
+            ("ble", 1),
+        ])
+    );
+    assert!(!config.is_empty());
+}
+
+#[test]
+fn unknown_transport_types_are_rejected() {
+    let error =
+        serde_yaml::from_str::<crate::config::Config>("transports:\n  udpp: {}").unwrap_err();
+    assert!(error.to_string().contains("unknown field `udpp`"));
+}
+
+#[cfg(feature = "sim-transport")]
+#[test]
+fn transport_instance_counts_include_enabled_sim_adapter() {
+    let config: TransportsConfig = serde_yaml::from_str("sim: {}").unwrap();
+    assert_eq!(config.instance_counts().collect::<Vec<_>>(), [("sim", 1)]);
+    assert!(!config.is_empty());
+}
+
+#[cfg(not(feature = "sim-transport"))]
+#[test]
+fn unavailable_sim_transport_schema_is_rejected() {
+    assert!(serde_yaml::from_str::<TransportsConfig>("sim: {}").is_err());
+}
+
+#[test]
 fn parse_external_addr_accepts_bare_ipv4_with_appended_bind_port() {
     let sa = parse_external_advert_addr("198.51.100.1", 2121).unwrap();
     assert_eq!(sa.to_string(), "198.51.100.1:2121");

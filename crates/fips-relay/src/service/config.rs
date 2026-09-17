@@ -37,16 +37,15 @@ pub struct ServiceTerms {
 #[serde(deny_unknown_fields)]
 pub struct ServiceConfig {
     pub state_directory: PathBuf,
-    pub udp_bind: Option<SocketAddr>,
+    pub transports: fips_core::config::TransportsConfig,
     /// Opt-in inbound payment control for authenticated direct UDP peers in
     /// this network. It does not authorize Internet access or onward purchases.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub customer_network: Option<IpNet>,
-    /// Permit bounded control with authenticated adjacent peers, and discovery
-    /// on the listed Ethernet interfaces. This grants no purchase authority.
+    /// Permit bounded control with authenticated adjacent peers. Link discovery
+    /// is configured separately; neither grants purchase authority.
     #[serde(default)]
     pub neighbor_admission: NeighborAdmission,
-    pub ethernet_interfaces: Vec<String>,
     pub neighbors: Vec<PeerConfig>,
     /// Local fees for future offers; existing financial agreements stay intact.
     #[serde(
@@ -112,74 +111,7 @@ impl ServiceConfig {
                 "state directory must be absolute and control socket path at most 100 bytes".into(),
             );
         }
-        if self.udp_bind.is_none() && self.ethernet_interfaces.is_empty() {
-            return Err("configure an explicit UDP socket or native Ethernet interface".into());
-        }
-        if let Some(network) = self.customer_network {
-            let bind = self
-                .udp_bind
-                .ok_or("customer entry requires an explicit UDP socket")?;
-            if bind.ip().is_unspecified()
-                || bind.ip().is_multicast()
-                || network.prefix_len() == 0
-                || network.network().is_unspecified()
-                || network.network().is_multicast()
-                || !network.contains(&bind.ip())
-            {
-                return Err(
-                    "customer UDP socket must bind a specific address inside its customer network"
-                        .into(),
-                );
-            }
-        }
-        if self.neighbors.len() > 8 || self.ethernet_interfaces.len() > 4 {
-            return Err("too many peers or interfaces".into());
-        }
-        let mut interfaces = HashSet::new();
-        for interface in &self.ethernet_interfaces {
-            if interface.is_empty()
-                || interface.len() > 15
-                || !interface
-                    .bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || b"_.-".contains(&c))
-                || !interfaces.insert(interface)
-            {
-                return Err("invalid or repeated native interface".into());
-            }
-        }
-        let mut peers = HashSet::new();
-        for peer in &self.neighbors {
-            let identity =
-                PeerIdentity::from_npub(&peer.npub).map_err(|_| "invalid neighbor npub")?;
-            if !peers.insert(*identity.node_addr())
-                || peer.addresses.is_empty()
-                || peer.addresses.len() > 4
-            {
-                return Err("invalid or repeated neighbor".into());
-            }
-            for address in &peer.addresses {
-                match address.transport.as_str() {
-                    "udp" if self.udp_bind.is_some() => {
-                        let addr: SocketAddr = address
-                            .addr
-                            .parse()
-                            .map_err(|_| "neighbor UDP address must be numeric")?;
-                        if addr.port() == 0
-                            || addr.ip().is_unspecified()
-                            || addr.ip().is_multicast()
-                        {
-                            return Err("invalid neighbor UDP address".into());
-                        }
-                    }
-                    "ethernet"
-                        if address
-                            .addr
-                            .split_once('/')
-                            .is_some_and(|(iface, _)| interfaces.contains(&iface.to_string())) => {}
-                    _ => return Err("neighbor uses an unconfigured transport/interface".into()),
-                }
-            }
-        }
+        self.validate_network()?;
         let t = &self.terms;
         if self.return_allowance && !t.billing.has_free_handshakes() {
             return Err("return allowance requires forwarding-data billing".into());
@@ -209,64 +141,6 @@ impl ServiceConfig {
             return Err("invalid service spending, exposure or price limits".into());
         }
         Ok(())
-    }
-
-    pub(super) fn network(&self, identity: &Identity, initializing: bool) -> Config {
-        let mut config = Config::new();
-        config.node.identity.nsec = Some(fips_core::encode_nsec(&identity.keypair().secret_key()));
-        config.node.control.enabled = !initializing;
-        config.node.control.socket_path = self
-            .state_directory
-            .join("native.sock")
-            .to_string_lossy()
-            .into_owned();
-        config.node.discovery.nostr.enabled = false;
-        config.node.discovery.lan.enabled = false;
-        config.node.discovery.local.enabled = false;
-        let dynamic_neighbors = self.neighbor_admission == NeighborAdmission::AuthenticatedAdjacent;
-        if self.customer_network.is_some() || dynamic_neighbors {
-            config.node.limits.max_peers = self.neighbors.len() + 16;
-            config.node.limits.max_connections = config.node.limits.max_peers * 2;
-            config.node.limits.max_links = config.node.limits.max_peers * 2;
-            config.node.limits.max_pending_inbound = 16;
-            config.node.limits.max_sessions = 128;
-        }
-        let bind = if initializing {
-            Some("127.0.0.1:0".parse::<SocketAddr>().unwrap())
-        } else {
-            self.udp_bind
-        };
-        if let Some(bind) = bind {
-            config.transports.udp = TransportInstances::Single(UdpConfig {
-                bind_addr: Some(bind.to_string()),
-                advertise_on_nostr: Some(false),
-                ..UdpConfig::default()
-            });
-        }
-        if !initializing {
-            if !self.ethernet_interfaces.is_empty() {
-                config.transports.ethernet = TransportInstances::Named(
-                    self.ethernet_interfaces
-                        .iter()
-                        .map(|interface| {
-                            (
-                                interface.clone(),
-                                EthernetConfig {
-                                    interface: interface.clone(),
-                                    discovery: Some(dynamic_neighbors),
-                                    announce: Some(dynamic_neighbors),
-                                    auto_connect: Some(dynamic_neighbors),
-                                    accept_connections: Some(true),
-                                    ..EthernetConfig::default()
-                                },
-                            )
-                        })
-                        .collect(),
-                );
-            }
-            config.peers = self.neighbors.clone();
-        }
-        config
     }
 }
 

@@ -2,7 +2,7 @@
 
 `fips-relay` assembles the native endpoint, durable buyer/seller accounting,
 Spilman receiver, quotes and autonomous controller in one Unix process. Linux
-and macOS local process tests use UDP. Three OpenWrt routers have also earned
+and macOS local process tests cover UDP and native TCP. Three OpenWrt routers have also earned
 test payments over native Wi-Fi links. See [TESTBENCH.md](TESTBENCH.md) for the
 historical hardware evidence and [PROTOTYPE-RESULTS.md](PROTOTYPE-RESULTS.md) for
 the completed bounded customer demonstration and current limits.
@@ -86,8 +86,9 @@ explicit transport address. For a native interface the form is:
 ```
 
 The MAC above is an example. Configure only the real adjacent peers for the
-intended path. `ethernet_interfaces` accepts ordinary interface names, including
-Wi-Fi mesh/AP/STA interfaces exposed by Linux. The underlying native FIPS raw
+intended path. `transports.ethernet` uses the core transport schema: one instance
+or named instances, each with an `interface` such as a Wi-Fi mesh/AP/STA interface
+exposed by Linux. The underlying native FIPS raw
 socket supplies EtherType `0x2121`; the service does not configure radios,
 bridges, DHCP or IP forwarding. Native interfaces require raw-socket permission.
 For numeric peer addresses, configure stable interface MACs and verify them after
@@ -96,16 +97,41 @@ creation order. See the OpenWrt package guide for the observed failure and fix.
 Lower-layer Wi-Fi forwarding must be disabled and the intended physical path
 must still be verified on hardware.
 
-`udp_bind` is an optional explicit numeric socket address. Set it to null for a
-native-only node; there is no implicit UDP fallback. Endpoint adapters can
-instead bind a selected UDP socket and list numeric UDP neighbor addresses.
-Nostr, LAN/local discovery and Ethernet beacon discovery are disabled. No system
-TUN, DNS server or ordinary Internet gateway is installed by this process.
+All link settings belong in `transports`, using the same single/named instance
+schema as the FIPS core. For UDP, set `transports.udp.bind_addr` to an explicit
+numeric socket address and list numeric UDP neighbor addresses. Omit UDP for a
+native-only node; there is no implicit UDP fallback. The old `udp_bind` and
+`ethernet_interfaces` service fields are not accepted.
+
+The paid service currently accepts UDP, native TCP and Ethernet, with at most
+four total transport instances and eight configured neighbors. Native TCP uses
+`transports.tcp.bind_addr` for a listener; an omitted TCP bind makes that instance
+outbound-only. Neighbor addresses identify the transport type (`tcp`, for example),
+not its optional instance name. Other core adapters are rejected until their
+paid-service acceptance is supplied.
+
+Before starting payment workers, the service checks that every requested
+transport instance is operational. A failed listener or unavailable adapter
+stops startup and closes any sibling transports that did start. Network changes
+leave saved financial terms and spending authority intact.
+
+Set Ethernet `discovery`, `announce`, `auto_connect` and `accept_connections`
+explicitly. The example retains static peers with discovery disabled. For beacon
+joining, enable these flags on each intended interface and select
+`neighbor_admission: "authenticated_adjacent"` for payment-control access.
+That admission setting does not enable discovery or authorize wallet spending.
+Nostr and LAN/local discovery remain disabled. No system TUN, DNS server or
+ordinary Internet gateway is installed by this process. Paid-service acceptance
+covers UDP and Ethernet, plus a mixed UDP/TCP route with payment, exhausted
+allowance, renewal and relay restart.
 
 An optional `customer_network` subnet enables bounded incoming quote/payment
 control from authenticated direct UDP customers without preconfiguring their
-identities. It requires a specific UDP bind address inside that subnet. Outgoing
-purchases remain restricted to configured neighbors. See
+identities. It requires a specific UDP bind address inside that subnet. In the
+default `configured_only` mode, outgoing purchases require configured neighbors.
+The `authenticated_adjacent` mode also permits authenticated adjacent providers;
+customer-subnet peers remain inbound-only unless explicitly configured as
+neighbors. These admission rules do not authorize spending by themselves. See
 [CUSTOMER-ENTRY.md](CUSTOMER-ENTRY.md) for admission limits and bootstrap, and
 [the acceptance report](PROTOTYPE-RESULTS.md) for the physical customer checks.
 

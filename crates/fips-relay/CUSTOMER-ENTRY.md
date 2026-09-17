@@ -13,7 +13,9 @@ specific address on that subnet. For example, with documentation addresses:
 
 ```json
 {
-  "udp_bind": "192.0.2.1:39211",
+  "transports": {
+    "udp": {"bind_addr": "192.0.2.1:39211", "advertise_on_nostr": false}
+  },
   "customer_network": "192.0.2.0/24"
 }
 ```

@@ -21,7 +21,11 @@ use std::{
 };
 use tokio::process::Command;
 
+#[path = "service/mixed_transport.rs"]
+mod mixed_transport;
 mod process_support;
+#[path = "service/transport_startup.rs"]
+mod transport_startup;
 use process_support::*;
 
 struct DiagnosticLogs(PathBuf);
@@ -260,7 +264,7 @@ async fn five_process_run(billing: BillingBasis) {
                 cfg.terms.quote_max_units = 64 * 1024 * 1024;
             }
             let reservation = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-            cfg.udp_bind = Some(reservation.local_addr().unwrap());
+            cfg.transports = udp_transports(reservation.local_addr().unwrap());
             reservations.push(reservation);
             let path = directory.join("config.json");
             std::fs::write(&path, serde_json::to_vec(&cfg).unwrap()).unwrap();
@@ -292,7 +296,7 @@ async fn five_process_run(billing: BillingBasis) {
             configs.push(cfg);
             paths.push(path);
         }
-        let addresses: Vec<_> = configs.iter().map(|c| c.udp_bind.unwrap()).collect();
+        let addresses: Vec<_> = configs.iter().map(udp_bind).collect();
         for (i, cfg) in configs.iter_mut().enumerate() {
             cfg.neighbors = npubs
                 .iter()

@@ -14,9 +14,11 @@ requirement to the current milestone. Existing accounts remain untouched.
 The opt-in service setting `"neighbor_admission": "authenticated_adjacent"`
 admits bounded payment control from currently connected, authenticated FIPS
 neighbors without a payment-control roster. The default is `"configured_only"`.
-The opt-in also enables native Ethernet beacons and automatic connection on only
-the interfaces listed in `ethernet_interfaces`. Account initialization still
-uses loopback. Other discovery mechanisms remain disabled.
+Native Ethernet beacons and automatic connection are configured separately in
+`transports.ethernet`, with explicit `discovery`, `announce`, `auto_connect` and
+`accept_connections` flags on each intended interface. Control admission does
+not enable transport discovery. Account initialization still uses loopback.
+Other discovery mechanisms remain disabled.
 
 Quote, acceptance and payment ports share one admission object. Unconfigured
 peers share eight active exchanges, with at most four per identity across ports
@@ -48,11 +50,15 @@ controller scenario uses empty control rosters, verifies quotes do not authorize
 wallet spending, then funds, forwards and settles in both directions. Its
 underlying links are configured UDP peers; it does not test beacon discovery.
 
-The full all-feature relay gate passes 203 tests; the existing manual cadence
-benchmark remains ignored. After a lint-only conditional cleanup, all 116
-library and 11 control-transport tests pass again. Strict all-target linting,
-formatting and the 704-file source-size check pass with the corrected local
-dependencies. These are software checks, not router performance measurements.
+The final affected suite passes 136 tests: all 127 relay library tests, two
+customer scenarios and seven service scenarios. Core configuration checks,
+repeated native-control shutdown/rebind and the multi-hop renewal scenario also
+pass. The earlier complete relay run passed 214 checks and exposed two regressions:
+a detached control listener and overlapping channel renewals. Both now have tests
+that fail before the fix and pass afterward; their affected integration checks
+also pass. Strict all-target linting, formatting and the source-size check pass
+with the corrected local dependencies. These are software checks, not router
+performance measurements.
 
 An isolated three-router ARM64 Linux fixture also passes using only native
 Ethernet beacons and empty neighbor rosters. Discovery leaves wallets and
@@ -67,9 +73,42 @@ See the [reproducible harness](../../testing/chaos/README.md#paid-ethernet-accep
 for its configuration and runtime requirements.
 
 The forwarding audit found shared transit admission before outgoing transport
-selection, including batched sends. The paid service currently configures only
-UDP and Ethernet. Other core transports still need service configuration and
-mixed-link financial acceptance before they are supported by the paid service.
+selection, including batched sends. Service configuration now uses the core
+`transports` schema and accepts UDP, native TCP and Ethernet. Other core adapters
+are explicitly rejected until their paid-service acceptance is supplied. The
+service checks the exact configured type/name set against operational adapters
+before starting payment workers. A failed TCP listener beside a healthy UDP
+socket stops startup, releases the sibling socket and preserves financial state.
+Initialization still uses only loopback, without runtime discovery or listeners.
+The node owns and joins its operator listener during shutdown before the same
+account path can be reopened, including when the endpoint cancels its receive loop.
+
+Channel renewal also serializes unfinished replacements for each provider. A
+replacement accepted before its predecessor's completion checkpoint cannot reserve
+another renewal that would block both. Existing retries and unrelated providers
+continue normally; rejection leaves funding, capital and saved journals unchanged.
+
+A three-process UDP-to-TCP route passes two-way unpaid denial and paid delivery,
+full use of each initial 8-sat channel, denial with connected links, explicitly
+resumed renewal, middle-relay crash/restart and settlement. Both sources retain
+their lifetime budgets and exact wallet debit history; the relay earns payment
+and all 384 test sats are conserved. One endpoint has only native TCP, so no UDP
+fallback can satisfy the scenario. Payment control remains TCP-over-FIPS over
+the selected physical carriers; no new payment wire messages are introduced.
+
+These results establish bounded configured-link behavior. They do not establish
+radio mobility, congestion fairness, throughput or support for every core adapter.
+
+### Operator-selected free forwarding
+
+The intended policy permits fully free, fully paid, or a limited free allowance
+with paid priority, selected per outgoing link or destination. Resource cost does
+not force payment: an operator may donate CPU, airtime, power or metered capacity.
+A free allowance must not create payment debt, and paid priority must be derived
+from a valid local agreement. Existing bounded setup traffic and explicitly free
+owned destinations remain separate from this proposed general data policy.
+Queueing, route quotes and multi-hop free/paid composition need acceptance before
+this broader policy is offered; it is not implemented by the transport change.
 
 ## Sequence and acceptance
 
@@ -81,7 +120,7 @@ mixed-link financial acceptance before they are supported by the paid service.
    250/500/1000/2000-ms maximum ages under idle, burst and sustained workloads.
 2. **Transport and admission coverage.** Audit every production FIPS transit
    entry/exit, batching and failure path. Exercise mixed supported transports
-   through the real forwarding gate. The present service enables UDP and native
+   through the real forwarding gate. Existing results cover UDP, TCP and native
    Ethernet interfaces; generic core support alone is not a tested service claim.
 3. **Permissionless neighbors.** Use authenticated FIPS identities discovered
    locally or through an explicitly enabled transport. Remove dependence on a
@@ -422,8 +461,8 @@ routing/discovery control have distinct paths that need explicit bootstrap bound
 
 Ethernet already has versioned public-key discovery beacons and a bounded pending
 peer buffer. Discovery scope is explicitly a noise filter, not access control.
-The current relay service disables native discovery/auto-connect and authorizes
-outgoing purchases through configured neighbors. Its public customer control
+At the initial audit, the relay service disabled native discovery/auto-connect
+and authorized outgoing purchases through configured neighbors. Its customer control
 exception is direct authenticated UDP within a configured subnet. Permissionless
 router admission therefore needs a coherent discovery/admission/purchase policy;
 simply enabling Ethernet beacons or removing the Wi-Fi password is insufficient.

@@ -9,6 +9,7 @@ use super::*;
 /// Each transport type can have either a single instance (config directly
 /// under the type name) or multiple named instances.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TransportsConfig {
     /// UDP transport instances.
     #[serde(default, skip_serializing_if = "is_transport_empty")]
@@ -50,25 +51,29 @@ fn is_transport_empty<T>(instances: &TransportInstances<T>) -> bool {
 }
 
 impl TransportsConfig {
+    /// Configured transport types and their instance counts, omitting empty sections.
+    ///
+    /// Names identify adapter types, not individual named instances. A configured
+    /// adapter is not necessarily available on the current platform or build.
+    pub fn instance_counts(&self) -> impl Iterator<Item = (&'static str, usize)> {
+        [
+            ("udp", self.udp.len()),
+            #[cfg(feature = "sim-transport")]
+            ("sim", self.sim.len()),
+            ("ethernet", self.ethernet.len()),
+            ("tcp", self.tcp.len()),
+            ("websocket", self.websocket.len()),
+            ("tor", self.tor.len()),
+            ("webrtc", self.webrtc.len()),
+            ("ble", self.ble.len()),
+        ]
+        .into_iter()
+        .filter(|(_, count)| *count > 0)
+    }
+
     /// Check if any transports are configured.
     pub fn is_empty(&self) -> bool {
-        self.udp.is_empty()
-            && {
-                #[cfg(feature = "sim-transport")]
-                {
-                    self.sim.is_empty()
-                }
-                #[cfg(not(feature = "sim-transport"))]
-                {
-                    true
-                }
-            }
-            && self.ethernet.is_empty()
-            && self.tcp.is_empty()
-            && self.websocket.is_empty()
-            && self.tor.is_empty()
-            && self.webrtc.is_empty()
-            && self.ble.is_empty()
+        self.instance_counts().next().is_none()
     }
 
     /// Merge another TransportsConfig into this one.

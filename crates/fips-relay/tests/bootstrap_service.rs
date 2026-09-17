@@ -110,7 +110,7 @@ async fn one_way(return_allowance: bool) {
             cfg.terms.billing = BillingBasis::ForwardingData;
             cfg.return_allowance = return_allowance;
             let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-            cfg.udp_bind = Some(socket.local_addr().unwrap());
+            cfg.transports = udp_transports(socket.local_addr().unwrap());
             reservations.push(socket);
             let path = directory.join("config.json");
             std::fs::write(&path, serde_json::to_vec(&cfg).unwrap()).unwrap();
@@ -145,7 +145,7 @@ async fn one_way(return_allowance: bool) {
             configs.push(cfg);
             paths.push(path);
         }
-        let addresses: Vec<_> = configs.iter().map(|c| c.udp_bind.unwrap()).collect();
+        let addresses: Vec<_> = configs.iter().map(udp_bind).collect();
         for (i, cfg) in configs.iter_mut().enumerate() {
             cfg.neighbors = npubs
                 .iter()

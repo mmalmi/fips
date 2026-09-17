@@ -173,11 +173,15 @@ class RunScopeTests(unittest.TestCase):
 
     def test_config_has_only_native_ethernet_discovery(self):
         config = relay_config(["ve-n01-n02"], "http://172.25.0.2:3338")
-        self.assertIsNone(config["udp_bind"])
+        self.assertEqual(set(config["transports"]), {"ethernet"})
         self.assertEqual(config["neighbors"], [])
         self.assertEqual(config["neighbor_admission"], "authenticated_adjacent")
         self.assertNotIn("identity", config)
-        self.assertEqual(config["ethernet_interfaces"], ["ve-n01-n02"])
+        self.assertEqual(config["transports"]["ethernet"], {
+            "ve-n01-n02": {"interface": "ve-n01-n02", "discovery": True,
+                           "announce": True, "auto_connect": True,
+                           "accept_connections": True},
+        })
         self.assertEqual(config["state_directory"], "/tmp/bench-state")
 
     def test_container_mounts_only_executables_and_private_runtime(self):

@@ -5,7 +5,10 @@ use crate::{
     ledger::BillingBasis,
     service::ServiceTerms,
 };
-use fips_core::{PeerIdentity, config::PeerConfig};
+use fips_core::{
+    PeerIdentity,
+    config::{PeerConfig, TransportInstances, TransportsConfig, UdpConfig},
+};
 use std::net::{IpAddr, SocketAddr};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,22 +74,27 @@ impl CustomerProfile {
     pub(super) fn config(&self, root: &Path) -> ServiceConfig {
         ServiceConfig {
             state_directory: root.join("state"),
-            udp_bind: Some(
-                if self.entry_address.is_ipv4() {
-                    "0.0.0.0:0"
-                } else {
-                    "[::]:0"
-                }
-                .parse()
-                .unwrap(),
-            ),
+            transports: TransportsConfig {
+                udp: TransportInstances::Single(UdpConfig {
+                    bind_addr: Some(
+                        if self.entry_address.is_ipv4() {
+                            "0.0.0.0:0"
+                        } else {
+                            "[::]:0"
+                        }
+                        .into(),
+                    ),
+                    advertise_on_nostr: Some(false),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
             customer_network: None,
             neighbor_admission: Default::default(),
             destination_fees: Default::default(),
             return_allowance: false,
             price_selection: None,
             payment_cadence: Default::default(),
-            ethernet_interfaces: vec![],
             neighbors: vec![PeerConfig::new(
                 &self.entry_npub,
                 "udp",

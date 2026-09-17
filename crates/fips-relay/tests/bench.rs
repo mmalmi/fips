@@ -11,8 +11,7 @@ use std::{os::unix::fs::PermissionsExt, path::Path};
 fn config(root: &Path, mint: &str) -> ServiceConfig {
     let mut value: Value = serde_json::from_str(include_str!("../service.example.json")).unwrap();
     value["state_directory"] = json!(root.join("relay"));
-    value["udp_bind"] = json!("127.0.0.1:0");
-    value["ethernet_interfaces"] = json!([]);
+    value["transports"] = json!({"udp": {"bind_addr": "127.0.0.1:0", "advertise_on_nostr": false}});
     value["terms"]["controller"]["mint_url"] = json!(mint);
     serde_json::from_value(value).unwrap()
 }
