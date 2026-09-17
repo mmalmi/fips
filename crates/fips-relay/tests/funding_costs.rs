@@ -1,5 +1,7 @@
 #![cfg(unix)]
 //! Real service processes account for mint fees and replayed refunds.
+#[path = "funding_costs/paid_fees.rs"]
+mod paid_fees;
 #[allow(dead_code)]
 mod process_support;
 #[path = "funding_costs/retirement.rs"]

@@ -13,6 +13,8 @@ struct Totals {
     accounting: LedgerHistory,
     value_sat: u64,
     paid_sat: u64,
+    #[serde(default)]
+    receiver_fee_reserve_sat: u64,
     returned_sat: u64,
     fee_sat: u64,
 }
@@ -36,7 +38,8 @@ impl Totals {
             && self.accounting.capacity_sat <= self.value_sat
             && self
                 .paid_sat
-                .checked_add(self.returned_sat)
+                .checked_add(self.receiver_fee_reserve_sat)
+                .and_then(|n| n.checked_add(self.returned_sat))
                 .and_then(|n| n.checked_add(self.fee_sat))
                 == Some(self.value_sat)
             && self.paid_sat as u128 * 1000 == self.accounting.usage.paid_msat as u128
@@ -48,6 +51,10 @@ impl Totals {
             accounting: self.accounting.clone(),
             value_sat: add(self.value_sat, report.value_after_stage1_sat)?,
             paid_sat: add(self.paid_sat, report.paid_sat)?,
+            receiver_fee_reserve_sat: add(
+                self.receiver_fee_reserve_sat,
+                report.receiver_fee_reserve_sat,
+            )?,
             returned_sat: add(self.returned_sat, report.refunded_sat)?,
             fee_sat: add(self.fee_sat, report.fee_sat)?,
         })

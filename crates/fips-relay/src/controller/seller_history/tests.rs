@@ -53,6 +53,7 @@ fn append(
                 channel_id: t.id.clone(),
                 value_after_stage1_sat: t.capacity_sat,
                 paid_sat: 0,
+                receiver_fee_reserve_sat: 0,
                 refunded_sat: t.capacity_sat - 1,
                 fee_sat: 1,
             }),
@@ -120,6 +121,45 @@ fn controller_recycles_acknowledged_sales_and_keeps_cumulative_settlement_fees()
         drop(seller);
         seller = DurableRelay::load(&root.path().join("seller")).unwrap();
     }
+}
+
+#[test]
+fn seller_history_retains_receiver_fee_reserves_without_rebilling_them() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut store, seller, t) = fixture(root.path());
+    let t = append(&mut store, &seller, &t, 1, true);
+    seller.apply_verified_balance(&t.id, 3_000).unwrap();
+    let sale = store.journal.seller_settlements.get_mut(&t.id).unwrap();
+    sale.payment.as_mut().unwrap().balance = 3;
+    sale.usage.as_mut().unwrap().paid_msat = 3_000;
+    let report = sale.report.as_mut().unwrap();
+    report.paid_sat = 3;
+    report.receiver_fee_reserve_sat = 1;
+    report.refunded_sat -= 4;
+    store.persist().unwrap();
+    assert_eq!(store.retire_sales(&seller, t.expires_unix + 61).unwrap(), 1);
+    let mut store = reload(store);
+    let total = &store
+        .journal
+        .history
+        .as_ref()
+        .unwrap()
+        .seller
+        .as_ref()
+        .unwrap()
+        .totals;
+    assert_eq!(total.paid_sat, 3);
+    assert_eq!(total.accounting.usage.paid_msat, 3_000);
+    assert_eq!(total.receiver_fee_reserve_sat, 1);
+    assert_eq!(total.fee_sat, 1);
+    let mut missing = serde_json::to_value(&store.journal).unwrap();
+    missing["history"]["seller"]["totals"]
+        .as_object_mut()
+        .unwrap()
+        .remove("receiver_fee_reserve_sat");
+    let missing: Journal = serde_json::from_value(missing).unwrap();
+    assert!(Controller::validate_journal(&missing, &missing.policy, missing.local).is_err());
+    assert_eq!(store.retire_sales(&seller, t.expires_unix + 61).unwrap(), 0);
 }
 
 #[test]

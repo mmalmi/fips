@@ -107,7 +107,10 @@ channels and wrong buyers cannot use that acknowledgment path to remove evidence
 Following release, route compaction and immutable wallet expiry, the controller
 saves one seller cleanup plan, commits the seller ledger, then removes its matching
 channel terms and settlement records. It retains cumulative settlement value,
-payments, returned funds and fees. Startup/recovery resumes an interrupted plan
+signed payments, receiver redemption-fee reserves, returned funds and reported
+fees. Reserves remain distinct from both signed spending and fees already paid;
+see [settlement values and compatibility](FUNDING-COSTS.md#signed-charges-and-payout-reserves).
+Startup/recovery resumes an interrupted plan
 before other financial work. Failed writers suspend admission; retry checks exact
 before/after evidence and does not count a completed handoff twice. Durable credit
 windows remove only the retired channel entries; other channels keep the same

@@ -171,20 +171,7 @@ impl Controller {
             let _wallet = wallet_guard;
             runtime.block_on(async move {
                 let closed = control.close_at_mint(&sale.channel.id).await?;
-                let total = closed
-                    .receiver_sum
-                    .checked_add(closed.sender_sum)
-                    .ok_or("close value overflow")?;
-                let report = SettlementReport {
-                    channel_id: closed.channel_id,
-                    value_after_stage1_sat: closed.total_value,
-                    paid_sat: closed.receiver_sum,
-                    refunded_sat: closed.sender_sum,
-                    fee_sat: closed
-                        .total_value
-                        .checked_sub(total)
-                        .ok_or("close exceeds funding")?,
-                };
+                let report = SettlementReport::from_close(&closed)?;
                 if closed.mint_url != sale.channel.mint_url
                     || closed.unit != "sat"
                     || closed.closed_amount != payment.balance
@@ -192,7 +179,7 @@ impl Controller {
                 {
                     return Err("mint close does not match final agreement".into());
                 }
-                if report.paid_sat != 0 {
+                if closed.receiver_sum != 0 {
                     import_payment_proofs(
                         &directory,
                         &sale.channel.mint_url,

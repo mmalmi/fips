@@ -31,6 +31,32 @@ reports alone cannot release budget. A settlement report also names the value
 after the funding swap; returned unused fee reserves can exceed nominal channel
 capacity. The wallet debit and verified refund determine the lifetime cost.
 
+## Signed charges and payout reserves
+
+`SettlementReport.paid_sat` is the final signed traffic charge. The separate
+`receiver_fee_reserve_sat` retains extra receiver proof value reserved for later
+redemption. Their sum is the original receiver payout proof value. For example,
+a three-sat signed payment can close with four sats of receiver proofs: three
+charged sats plus one reserve sat. Importing those proofs increases the wallet's
+stored proof value by four; it does not authorize billing four sats for traffic.
+
+`refunded_sat` remains the original sender refund proof value, before later
+redemption fees. `fee_sat` retains the difference between the reported
+post-stage-one value and both parties' proof values. It excludes fee reserves and
+earlier wallet funding fees. A reserve is not evidence that a later fee was paid.
+Actual wallet debits/refunds continue to control lifetime exposure independently.
+
+Settlement validates these values before importing the receiver payout. Seller
+cleanup preserves signed payments, receiver reserves, refunds and reported fees
+separately; a reserve never consumes the traffic-signing budget or becomes another
+usage claim. Checked arithmetic rejects overflow and inconsistent reports.
+
+Older reports and seller rollups load with zero receiver reserve. Their original
+accounting must still conserve value; removing a nonzero reserve from a new record
+fails validation. Older executables reject nonzero-reserve reports and histories
+under their original value-sum checks. Use matching settlement implementations;
+this adds one report field over existing control, not another request operation.
+
 `status.funding_budget` exposes pending reservations, total recorded debits,
 confirmed refunds, locked capital and worst-case lifetime exposure. The historical
 `locked_sat` status field has the same meaning as `funding_budget.locked_sat`.
@@ -68,8 +94,12 @@ cargo clippy --config /path/to/local-dependencies.toml -p fips-relay --all-featu
 scripts/check-rust-file-lines.sh
 ```
 
-The focused process test uses three real services and a local test mint charging
-fees. It checks wallet balance deltas, restart, actual refund recovery, replay
+The focused process tests use three real services and a local test mint charging
+fees. They check wallet balance deltas, restart, actual refund recovery, replay
 after lost controller completion, and lifetime-budget rejection before another
 wallet spend. Unit tests exercise journal reservations, cost reconciliation,
 duplicate operation IDs, corruption and retention of spent costs after refunds.
+The paid-traffic case additionally delivers datagrams, closes a nonzero signed
+balance with a receiver redemption reserve, and checks both parties' original
+values, wallet conservation, report replay and restart. Zero-usage funding tests
+alone do not exercise this distinction.

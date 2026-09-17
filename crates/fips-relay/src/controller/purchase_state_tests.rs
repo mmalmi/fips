@@ -210,6 +210,7 @@ fn refund_retires_interrupted_acceptance_without_erasing_evidence_or_replaying_i
                     channel_id: channel.id.clone(),
                     value_after_stage1_sat: channel.capacity_sat,
                     paid_sat: 0,
+                    receiver_fee_reserve_sat: 0,
                     refunded_sat: channel.capacity_sat,
                     fee_sat: 0,
                 })

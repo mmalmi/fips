@@ -5,9 +5,44 @@ pub struct SettlementReport {
     pub channel_id: String,
     /// Value after the funding swap, including reserves for settlement fees.
     pub value_after_stage1_sat: u64,
+    /// Final signed traffic charge, excluding redemption-fee reserves.
     pub paid_sat: u64,
+    /// Extra receiver proof value reserved for later redemption, not a paid fee.
+    #[serde(default)]
+    pub receiver_fee_reserve_sat: u64,
+    /// Original sender refund proof value, before any later redemption fees.
     pub refunded_sat: u64,
+    /// Reported value not returned in either party's proofs. Excludes reserves.
     pub fee_sat: u64,
+}
+
+impl SettlementReport {
+    pub(in crate::controller) fn receiver_value_sat(&self) -> Option<u64> {
+        self.paid_sat.checked_add(self.receiver_fee_reserve_sat)
+    }
+
+    pub(super) fn from_close(
+        closed: &cashu_service::CashuSpilmanReceiverCloseResult,
+    ) -> Result<Self, String> {
+        let returned = closed
+            .receiver_sum
+            .checked_add(closed.sender_sum)
+            .ok_or("close value overflow")?;
+        Ok(Self {
+            channel_id: closed.channel_id.clone(),
+            value_after_stage1_sat: closed.total_value,
+            paid_sat: closed.closed_amount,
+            receiver_fee_reserve_sat: closed
+                .receiver_sum
+                .checked_sub(closed.closed_amount)
+                .ok_or("receiver proof value below signed payment")?,
+            refunded_sat: closed.sender_sum,
+            fee_sat: closed
+                .total_value
+                .checked_sub(returned)
+                .ok_or("close exceeds funding")?,
+        })
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -57,8 +92,8 @@ pub(super) fn valid_report(channel: &ChannelTerms, report: &SettlementReport, pa
         && report.paid_sat == paid
         && report.value_after_stage1_sat >= channel.capacity_sat
         && report
-            .paid_sat
-            .checked_add(report.refunded_sat)
+            .receiver_value_sat()
+            .and_then(|n| n.checked_add(report.refunded_sat))
             .and_then(|n| n.checked_add(report.fee_sat))
             == Some(report.value_after_stage1_sat)
 }
@@ -122,3 +157,6 @@ impl Controller {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;
