@@ -137,6 +137,8 @@ impl Controller {
 struct ChannelPayment {
     schedule: ChannelSchedule,
     job: Option<JoinHandle<PaymentResult>>,
+    #[cfg(feature = "measurements")]
+    progress: Option<Arc<Mutex<super::payment_progress::ScheduleProgress>>>,
 }
 
 impl ChannelPayment {
@@ -146,6 +148,16 @@ impl ChannelPayment {
         };
         let result = job.await.map_err(|e| e.to_string()).and_then(|r| r);
         self.job = None;
+        #[cfg(feature = "measurements")]
+        if let Some(progress) = &self.progress {
+            progress.lock().unwrap().finished(
+                result
+                    .as_ref()
+                    .ok()
+                    .and_then(|usage| usage.as_ref())
+                    .map(|usage| usage.paid_msat),
+            );
+        }
         match result {
             Ok(Some(usage)) => {
                 self.schedule.acknowledge(usage.paid_msat);
@@ -168,6 +180,10 @@ impl Drop for ChannelPayment {
     fn drop(&mut self) {
         if let Some(job) = &self.job {
             job.abort();
+        }
+        #[cfg(feature = "measurements")]
+        if let Some(progress) = &self.progress {
+            progress.lock().unwrap().finished(None);
         }
     }
 }
@@ -208,6 +224,10 @@ impl PaymentWorkers {
                 continue;
             }
             let work = self.channels.entry(id.clone()).or_default();
+            #[cfg(feature = "measurements")]
+            if work.progress.is_none() {
+                work.progress = controller.payment_progress.track(&id);
+            }
             if work.job.is_some() {
                 continue;
             }
@@ -228,6 +248,10 @@ impl PaymentWorkers {
                 continue;
             }
             let payer = controller.clone();
+            #[cfg(feature = "measurements")]
+            if let Some(progress) = &work.progress {
+                progress.lock().unwrap().started();
+            }
             work.job = Some(tokio::spawn(
                 async move { payer.pay_channel(purchase).await },
             ));

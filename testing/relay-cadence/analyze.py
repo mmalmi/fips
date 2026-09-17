@@ -5,6 +5,9 @@ import json
 from collections import defaultdict
 from pathlib import Path
 from statistics import mean
+from validation import (PAYMENT_OPERATIONS, POLICIES, WORKLOADS,
+                        payment_counters, quiet_boundary, unsigned,
+                        validate_gap, validate_idle, validate_measurements, validate_probe)
 
 
 def paired(before, after):
@@ -15,7 +18,7 @@ def paired(before, after):
 
 def delta(before, after, key):
     a, b = before[key], after[key]
-    if not isinstance(a, int) or not isinstance(b, int) or b < a:
+    if unsigned(b) < unsigned(a):
         raise ValueError(f"missing or reset counter: {key}")
     return b - a
 
@@ -24,9 +27,15 @@ def summarize(row):
     data = row["data"]
     if len(data["before"]) != 5 or len(data["after"]) != 5:
         raise ValueError("expected five measured service processes")
-    counts = {"idle": [], "bursty": [64] * 8, "steady": [3200], "high_rate": [32000]}
-    if [p["sender"]["requested_packets"] for p in data["probes"]] != counts[data["workload"]]:
+    counts = WORKLOADS[data["workload"]]
+    if len(data["probes"]) != len(counts):
         raise ValueError("offered workload changed")
+    for probe, count in zip(data["probes"], counts):
+        validate_probe(probe, count)
+    if quiet_boundary(data["before"]) != quiet_boundary(data["after"]):
+        raise ValueError("paying channels changed during measurement")
+    validate_gap(data["before_guard"], data["before"])
+    validate_gap(data["after"], data["after_guard"])
     result = defaultdict(float)
     for key in ("submitted_packets", "unsubmitted_packets", "delivered_packets",
                 "delivered_bytes", "duplicates", "out_of_order_packets", "invalid_packets",
@@ -34,8 +43,7 @@ def summarize(row):
         result[key] = 0
     for before, after in paired(data["before"], data["after"]):
         a, b = before["measurements"], after["measurements"]
-        if a["process_id"] != b["process_id"]:
-            raise ValueError("a service restarted during a measurement")
+        validate_measurements(a, b)
         result["process_cpu_ms"] += delta(a, b, "process_cpu_ns") / 1e6
         for name, prior in a["operations"].items():
             current = b["operations"][name]
@@ -45,7 +53,7 @@ def summarize(row):
             result["journal_writes"] += delta(prior, current, "journal_writes")
             result["journal_bytes"] += delta(prior, current, "journal_bytes_written")
             result["journal_syncs"] += delta(prior, current, "journal_syncs")
-            if name in ("payment_sign", "payment_usage", "payment_update"):
+            if name in PAYMENT_OPERATIONS:
                 result["payment_cpu_ms"] += delta(prior, current, "thread_cpu_ns") / 1e6
                 result["payment_journal_bytes"] += delta(prior, current, "journal_bytes_written")
                 result["payment_journal_writes"] += delta(prior, current, "journal_writes")
@@ -53,12 +61,11 @@ def summarize(row):
                 result["signs"] += spans
             if name == "payment_update":
                 result["updates"] += spans
-        control_before = {c["service_port"]: c["counters"] for c in before["control_traffic"]}
-        for service in after["control_traffic"]:
-            if service["service_port"] == 44743:
-                prior = control_before[44743]
-                result["payment_record_bytes"] += delta(prior, service["counters"], "stream_bytes_sent")
-                result["payment_requests"] += delta(prior, service["counters"], "requests_started")
+        prior, current = payment_counters(before), payment_counters(after)
+        result["payment_record_bytes"] += delta(prior, current, "stream_bytes_sent")
+        result["payment_requests"] += delta(prior, current, "requests_started")
+        result["payment_received_bytes"] += delta(prior, current, "stream_bytes_received")
+        result["payment_received_requests"] += delta(prior, current, "requests_received")
         peers_before = {p["npub"]: p for p in before["peers"] if p["connected"]}
         peers_after = {p["npub"]: p for p in after["peers"] if p["connected"]}
         if peers_before.keys() != peers_after.keys():
@@ -107,35 +114,67 @@ def summarize(row):
             if cumulative >= result["latency_samples"] * 0.95:
                 result["p95_upper_us"] = bounds[index] if index < len(bounds) else None
                 break
-    result["observation_seconds"] = data["observation_elapsed_ms"] / 1000
-    result["goodput_mbps"] = result["delivered_bytes"] * 8 / (data["offered_elapsed_ms"] * 1000)
+    offered = unsigned(data["offered_elapsed_ms"])
+    observed = unsigned(data["observation_elapsed_ms"])
+    if not offered or observed < offered + 3000:
+        raise ValueError("missing common three-second payment tail")
+    result["observation_seconds"] = observed / 1000
+    result["goodput_mbps"] = result["delivered_bytes"] * 8 / (offered * 1000)
     result["process_cpu_seconds_per_gib"] = result["process_cpu_ms"] / 1000 * 2**30 / result["delivered_bytes"] if result["delivered_bytes"] else None
+    result["payment_cpu_seconds_per_gib"] = result["payment_cpu_ms"] / 1000 * 2**30 / result["delivered_bytes"] if result["delivered_bytes"] else None
+    result["payment_record_bytes_per_delivered_byte"] = result["payment_record_bytes"] / result["delivered_bytes"] if result["delivered_bytes"] else None
+    result["payment_journal_bytes_per_delivered_byte"] = result["payment_journal_bytes"] / result["delivered_bytes"] if result["delivered_bytes"] else None
+    result["payment_cpu_ms_per_update"] = result["payment_cpu_ms"] / result["updates"] if result["updates"] else None
+    if data["workload"] == "idle":
+        validate_idle(result)
+        if result["payment_received_bytes"] or result["payment_received_requests"]:
+            raise ValueError("idle payment traffic received")
     return dict(result)
 
 
 def analyze(path):
-    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    try:
+        return analyze_rows([json.loads(line) for line in path.read_text().splitlines()])
+    except (KeyError, TypeError, IndexError) as error:
+        raise ValueError(f"incomplete or invalid report: {error}") from error
+
+
+def analyze_rows(rows):
     metadata = rows[0]
-    if metadata["schema"] != 1 or metadata["funded_directions"] != 2:
+    if metadata["schema"] != 2 or metadata["funded_directions"] != 2:
         raise ValueError("unsupported experiment schema or funding setup")
+    if metadata["optimized"] is not True:
+        raise ValueError("cadence comparison requires an optimized build")
+    fixed = {"nodes": 5, "paid_relays": 3, "repeats": 2, "unpaid_percent": 50,
+             "window_msat": 4000, "grace_msat": 8000,
+             "channel_capacity_sat": 256, "fee_msat_per_kib": 1,
+             "transport": "UDP loopback"}
+    if any(metadata.get(key) != value for key, value in fixed.items()):
+        raise ValueError("fixed experiment configuration changed")
     records = [r for r in rows[1:] if "data" in r]
-    conserved = {r["trial"]: r for r in rows[1:] if r.get("conserved")}
-    expected = [250, 500, 1000, 2000, 2000, 1000, 500, 250]
-    if len(records) != 32 or len(conserved) != 8:
+    accounting_rows = [r for r in rows[1:] if "conserved" in r]
+    conserved = {r["trial"]: r for r in accounting_rows}
+    if len(records) != 32 or len(accounting_rows) != 8 or set(conserved) != set(range(8)):
         raise ValueError("incomplete matrix or missing financial conservation evidence")
     grouped = defaultdict(list)
     trials = []
-    for trial_id, delay in enumerate(expected):
+    for trial_id, delay in enumerate(POLICIES):
         accounting = conserved[trial_id]
-        if accounting["collected_sat"] != accounting["issued_sat"] or accounting["settled_channels"] != 6:
+        if (accounting["conserved"] is not True or accounting["max_delay_ms"] != delay
+                or accounting["collected_sat"] != 5120 or accounting["issued_sat"] != 5120
+                or accounting["settled_channels"] != 6):
             raise ValueError("invalid trial conservation")
         trial_records = [r for r in records if r["trial"] == trial_id]
         if [r["data"]["workload"] for r in trial_records] != ["idle", "bursty", "steady", "high_rate"]:
             raise ValueError("unmatched workload sequence")
+        previous = None
         for row in trial_records:
             if row["max_delay_ms"] != delay:
                 raise ValueError("unmatched policy order")
             result = summarize(row)
+            if previous is not None:
+                validate_gap(previous, row["data"]["before_guard"])
+            previous = row["data"]["after_guard"]
             trials.append({"trial":trial_id, "max_delay_ms":delay, "workload":row["data"]["workload"], **result})
             grouped[(row["data"]["workload"], delay)].append(result)
     return metadata, trials, grouped
@@ -143,7 +182,7 @@ def analyze(path):
 
 def markdown(metadata, grouped):
     lines = ["# Cadence measurements", "", f"Optimized build: **{metadata['optimized']}**. Two opposite-order repetitions; five real service processes and three paid relays over loopback UDP.", "",
-        "All costs below sum the five service processes. CPU is measured CPU time. Payment CPU covers synchronous signing, usage handling and balance update handling; it excludes scheduler, serialization and transport CPU. Storage is logical relay journal I/O, excluding Cashu SQLite and physical writes. Record bytes exclude TCP/FIPS/carrier overhead. These are offered workloads, not maximum throughput.", "",
+        "All costs below sum the five service processes. CPU is measured CPU time. Payment CPU covers synchronous signing, usage handling and balance update handling; it excludes scheduler, control-envelope serialization outside those spans, and transport CPU. Storage is logical relay journal I/O, excluding Cashu SQLite and physical writes. Record bytes exclude TCP/FIPS/carrier overhead. These are offered workloads, not maximum throughput.", "",
         "| Workload | Limit ms | Delivered / submitted | Payment CPU ms | All CPU ms | Updates | Payment records KiB | Payment journal writes | Mean delay ms |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for workload in ("idle", "bursty", "steady", "high_rate"):
         for delay in (250, 500, 1000, 2000):

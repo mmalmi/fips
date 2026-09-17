@@ -110,6 +110,22 @@ owned destinations remain separate from this proposed general data policy.
 Queueing, route quotes and multi-hop free/paid composition need acceptance before
 this broader policy is offered; it is not implemented by the transport change.
 
+## Guarded cadence measurement
+
+The current optimized comparison covers 250/500/1000/2000-ms policies with two
+opposite-order repetitions. All 285,696 packets arrived and all 40,960 test sats
+were conserved. Both sampling passes at every boundary show all six paying
+channels reconciled, with no pending payment or unmeasured payment/journal activity
+between windows. The validator rejects missing evidence, delivery loss, controller
+errors and unexpected idle work. Optional diagnostics add no financial authority.
+
+At high rate, 1 s/2 s produced 40 updates versus 59 at 250 ms, but CPU varied
+substantially across repeats; the 500-ms default remains unchanged. These are
+loopback observations with partial synchronous CPU, logical relay journal and
+application-record attribution. SDK/receiver storage writes, full carrier cost,
+impaired links and current hardware measurements remain open. See
+[the results and boundaries](CADENCE-RESULTS.md).
+
 ## Sequence and acceptance
 
 1. **Adaptive payment cadence.** Share one schedule per neighbor channel and

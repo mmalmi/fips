@@ -35,6 +35,7 @@ async fn sample(configs: &[ServiceConfig]) -> Vec<Value> {
         );
         values.push(json!({
             "measurements": status["measurements"],
+            "payment_progress": status["payment_progress"],
             "control_traffic": status["control_traffic"],
             "peers": status["peers"],
             "last_error": status["last_error"],
@@ -93,6 +94,7 @@ async fn stream(
 }
 
 async fn workload(configs: &[ServiceConfig], npubs: &[String], name: &str, id: u64) -> Value {
+    let before_guard = sample(configs).await;
     let before = sample(configs).await;
     let started = Instant::now();
     let mut probes = Vec::new();
@@ -109,13 +111,19 @@ async fn workload(configs: &[ServiceConfig], npubs: &[String], name: &str, id: u
         _ => unreachable!(),
     }
     let offered_elapsed_ms = started.elapsed().as_millis();
-    // Identical tail for every policy includes its final automatic payment and
-    // prevents attributing deferred work to the next workload. No forced flush.
+    // Identical tail for every policy; the report validator rejects unreconciled
+    // payment work at either boundary. Never flush or extend a selected trial.
     tokio::time::sleep(Duration::from_secs(3)).await;
     let after = sample(configs).await;
+    let observation_elapsed_ms = started.elapsed().as_millis();
+    // A provider's cost snapshot can precede its buyer's acknowledgment in a
+    // sequential status pass. A second full pass must show no deferred work,
+    // including after the final workload where there is no next gap check.
+    let after_guard = sample(configs).await;
     json!({"workload":name, "offered_elapsed_ms":offered_elapsed_ms,
-        "observation_elapsed_ms":started.elapsed().as_millis(),
-        "before":before, "after":after, "probes":probes})
+        "observation_elapsed_ms":observation_elapsed_ms,
+        "before_guard":before_guard, "before":before, "after":after,
+        "after_guard":after_guard, "probes":probes})
 }
 
 async fn trial(delay: u64, trial_id: usize, output: &mut std::fs::File) {
@@ -207,9 +215,8 @@ async fn trial(delay: u64, trial_id: usize, output: &mut std::fs::File) {
     .await
     .unwrap();
     assert_eq!(purchase["purchase"]["contract"]["price"]["msat"], 3);
-    // The current tariff includes FSP setup envelopes. Its reply needs an
-    // independently authorized reverse route even for one-way probe traffic.
-    // This is not evidence of free/bounded end-to-end bootstrap support.
+    // Fund both paying directions to keep this cadence comparison matched with
+    // its historical baseline. Unfunded return setup has separate acceptance.
     request(
         &configs[4],
         &AdminRequest::Buy {
@@ -321,7 +328,7 @@ async fn matched_cadence_matrix() {
         .mode(0o600)
         .open(path)
         .unwrap();
-    writeln!(output, "{}", json!({"schema":1, "optimized":!cfg!(debug_assertions),
+    writeln!(output, "{}", json!({"schema":2, "optimized":!cfg!(debug_assertions),
         "platform":std::env::consts::OS, "architecture":std::env::consts::ARCH,
         "nodes":5, "paid_relays":3, "funded_directions":2, "transport":"UDP loopback",
         "repeats":2, "unpaid_percent":50, "window_msat":4_000, "grace_msat":8_000,

@@ -15,6 +15,9 @@ use std::{
 mod bench;
 use crate::process_support;
 use bench::MixedBench;
+#[cfg(feature = "measurements")]
+#[path = "mixed_transport/payment_progress.rs"]
+mod payment_progress;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mixed_udp_tcp_daemons_preserve_paid_limits_through_exhaustion_and_restart() {
@@ -35,6 +38,8 @@ async fn mixed_udp_tcp_daemons_preserve_paid_limits_through_exhaustion_and_resta
         .unwrap();
         let mut bench = MixedBench::start(mint.url(), &network).await;
         bench.assert_carriers().await;
+        #[cfg(feature = "measurements")]
+        payment_progress::assert_empty(&bench).await;
 
         // Authentication and control connectivity cannot spend wallet funds.
         for (source, destination) in [(0, 2), (2, 0)] {
@@ -73,6 +78,8 @@ async fn mixed_udp_tcp_daemons_preserve_paid_limits_through_exhaustion_and_resta
             bench.wait_paid(&channel).await;
             original_channels.push(channel);
         }
+        #[cfg(feature = "measurements")]
+        payment_progress::assert_reconciled(&bench, &original_channels).await;
 
         // Fill a small channel with renewals explicitly paused. This tests a
         // financial denial, not an inference from a lost TCP connection.
@@ -140,6 +147,8 @@ async fn mixed_udp_tcp_daemons_preserve_paid_limits_through_exhaustion_and_resta
         for config in &bench.configs {
             request(config, &AdminRequest::Settle).await.unwrap();
         }
+        #[cfg(feature = "measurements")]
+        payment_progress::assert_empty(&bench).await;
         for child in &mut bench.children {
             process_support::stop(child).await;
         }

@@ -39,7 +39,11 @@ pub use capital::FundingBudget;
 mod journal;
 mod retirement;
 use retirement::History;
+#[cfg(feature = "measurements")]
+mod payment_progress;
 mod payments;
+#[cfg(feature = "measurements")]
+pub use payment_progress::PaymentProgress;
 mod purchase_state;
 mod purchases;
 mod runtime;
@@ -272,6 +276,8 @@ pub struct Controller {
     store: Arc<Mutex<Store>>,
     wallet: Arc<AsyncMutex<()>>,
     channel_work: Mutex<BTreeMap<String, Weak<AsyncMutex<()>>>>,
+    #[cfg(feature = "measurements")]
+    payment_progress: payment_progress::ProgressRegistry,
     renewal_work: AsyncMutex<()>,
     route_work: AsyncMutex<()>,
     refresh_work: AsyncMutex<()>,
@@ -387,6 +393,8 @@ impl Controller {
             store: Arc::new(Mutex::new(store)),
             wallet: Arc::new(AsyncMutex::new(())),
             channel_work: Mutex::new(BTreeMap::new()),
+            #[cfg(feature = "measurements")]
+            payment_progress: Default::default(),
             renewal_work: AsyncMutex::new(()),
             route_work: AsyncMutex::new(()),
             refresh_work: AsyncMutex::new(()),

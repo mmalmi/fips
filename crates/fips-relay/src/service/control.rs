@@ -13,8 +13,11 @@ impl RelayService {
                     .as_ref()
                     .map(ProbeReceiver::report);
                 let funding_budget = self.controller.funding_budget().await?;
-                Ok(
-                    json!({"npub": self.endpoint.npub(), "peers": peers.iter().map(|p| json!({
+                // Sample progress before cost counters: an exchange completing
+                // during status must not certify an earlier counter boundary.
+                #[cfg(feature = "measurements")]
+                let payment_progress = self.controller.payment_progress().await?;
+                let status = json!({"npub": self.endpoint.npub(), "peers": peers.iter().map(|p| json!({
                     "npub": p.npub, "connected": p.connected, "transport": p.transport_type,
                     "address": p.transport_addr, "link_id": p.link_id,
                     "sent_bytes": p.bytes_sent, "received_bytes": p.bytes_recv,
@@ -35,8 +38,15 @@ impl RelayService {
                     "control_traffic": self.control_statistics.iter().map(|(port, stats)| json!({
                         "service_port": port, "counters": stats.snapshot()
                     })).collect::<Vec<_>>(),
-                    "last_error": self.controller.last_error()}),
-                )
+                    "last_error": self.controller.last_error()});
+                #[cfg(feature = "measurements")]
+                let status = {
+                    let mut status = status;
+                    status["payment_progress"] = serde_json::to_value(payment_progress)
+                        .map_err(|error| error.to_string())?;
+                    status
+                };
+                Ok(status)
             }
             AdminRequest::Buy { destination } => {
                 let peer = PeerIdentity::from_npub(&destination)
