@@ -189,6 +189,8 @@ pub struct Node {
     // === Configuration ===
     /// Loaded configuration.
     config: Config,
+    /// Operator listener owned until shutdown has joined its socket cleanup.
+    control_task: Option<tokio::task::JoinHandle<()>>,
 
     // === State ===
     /// Node operational state.

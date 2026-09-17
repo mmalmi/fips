@@ -188,6 +188,8 @@ fn endpoint_data_batch_owns_payload_bytes_and_queue_stamp() {
     assert_eq!(owned_enqueued_at_ms, enqueued_at_ms);
 }
 
+#[cfg(unix)]
+mod control_lifecycle;
 mod local_rendezvous;
 mod runtime;
 

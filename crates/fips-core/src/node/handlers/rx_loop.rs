@@ -178,7 +178,7 @@ impl Node {
         if self.config.node.control.enabled {
             let config = self.config.node.control.clone();
             let senders = ControlSenders::new(control_query_tx.clone(), control_command_tx.clone());
-            tokio::spawn(async move {
+            self.control_task = Some(tokio::spawn(async move {
                 match ControlSocket::bind(&config) {
                     Ok(socket) => {
                         socket.accept_loop_split(senders).await;
@@ -187,7 +187,7 @@ impl Node {
                         warn!(error = %e, "Failed to bind control socket");
                     }
                 }
-            });
+            }));
         }
         // Drop unused sender to avoid keeping channel open if control is disabled
         drop(control_query_tx);

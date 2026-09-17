@@ -395,6 +395,17 @@ impl Node {
         self.state = NodeState::Stopping;
         info!(state = %self.state, "Node stopping");
 
+        // Endpoint shutdown cancels the RX future before reaching this method.
+        // Join the listener's cleanup before another node can reuse its path.
+        if let Some(task) = self.control_task.take() {
+            task.abort();
+            if let Err(error) = task.await
+                && !error.is_cancelled()
+            {
+                warn!(%error, "Control socket task failed during shutdown");
+            }
+        }
+
         if tokio::time::timeout(
             SHUTDOWN_FORWARDING_DRAIN_BUDGET,
             self.drain_deferred_session_forwards(),
