@@ -18,7 +18,8 @@ import subprocess
 import time
 
 from .run_scope import RUN_LABEL, OwnedResources, docker, inspect_owned, refuse_name_collision
-from .paid_faults import capture_probe, exercise_faults
+from .paid_faults import capture_probe, exercise_faults, validate_unpaid_probe
+from .paid_finances import financial_snapshot, payment_progress
 from .paid_settlement import settle_and_collect
 from .paid_payment_faults import diagnostics, exercise_payment_faults
 from .topology import SimNode, SimTopology
@@ -199,35 +200,7 @@ class PaidRelayRun:
         return True
 
     def finances(self):
-        result = {}
-        for node in self.nodes:
-            status = self.ctl(node, "status")
-            buyer = self.state_json(node, "buyer/buyer.json")
-            controller = self.state_json(node, "controller/controller.json")
-            seller = self.state_json(node, "seller/ledger.json")["ledger"]
-            authorized = sum(channel["authorized_sat"] for channel in buyer["channels"].values())
-            if status["remaining_budget_sat"] != buyer["total_budget_sat"] - authorized:
-                # Journals and status are individually atomic, not one snapshot.
-                raise RuntimeError("financial observation changed during sampling")
-            funding = {key: (item["funded"]["terms"]["id"], item["funded"]["wallet_operation_id"])
-                       for key, item in controller["funding"].items() if item["funded"] is not None}
-            result[node] = {"funding": funding, "budget": status["funding_budget"],
-                            "remaining": status["remaining_budget_sat"], "authorized": authorized,
-                            "signed": {key: item["authorized_sat"] for key, item in buyer["channels"].items()},
-                            "credited": {item["terms"]["id"]: item["usage"]["paid_msat"] for item in seller["channels"]},
-                            "seller_channels": {item["terms"]["id"]: item["usage"] for item in seller["channels"]},
-                            "buyer_units": {key: item["submitted_units"] for key, item in buyer["quotes"].items()},
-                            "buyer_observed_units": {key: item["observed_units"] for key, item in buyer["quotes"].items()},
-                            "seller_units": {item["contract"]["id"]: item["usage"]["submitted_units"] for item in seller["accounts"]},
-                            "seller_unconfirmed_units": {item["contract"]["id"]: item["usage"]["unconfirmed_units"] for item in seller["accounts"]},
-                            "wallet": self.wallet(node)}
-        # Provider credit can advance after an earlier buyer read. Bracket it
-        # with a later durable authorization, without demanding an idle mesh.
-        for node in self.nodes:
-            buyer = self.state_json(node, "buyer/buyer.json")
-            result[node]["signed_after"] = {
-                key: item["authorized_sat"] for key, item in buyer["channels"].items()}
-        return result
+        return financial_snapshot(self, wallet=self.wallet)
 
     def probe(self, source, destination):
         evidence = {"probe": f"{source}->{destination}"}
@@ -240,8 +213,9 @@ class PaidRelayRun:
         attempted = self.ctl("n01", "send_probe", probe={
             **shape, "destination": self.nodes["n03"].npub, "packets_per_second": 4,
         })["probe"]
-        # An early forwarding rejection is also valid. Observe the receiver for
-        # a complete interval, rather than accepting an immediate empty queue.
+        validate_unpaid_probe(attempted, shape["stream_id"])
+        # Observe the receiver for a complete interval. An empty queue caused
+        # by a failed submission does not establish unpaid forwarding denial.
         until = time.monotonic() + 3
         while True:
             report = self.ctl("n03", "status")["probe"]
@@ -256,6 +230,7 @@ class PaidRelayRun:
             "unpaid_forwarding": "denied", "received": 0,
             "attempted_packets": attempted["requested_packets"],
             "submitted_packets": attempted["submitted_packets"],
+            "sent": attempted,
             "observation_seconds": 3,
         })
 
@@ -303,12 +278,7 @@ class PaidRelayRun:
         settle_and_collect(self, final)
 
     def paid_after(self, prior, sources=("n01", "n03")):
-        current = self.finances()
-        credited = {key: value for state in current.values() for key, value in state["credited"].items()}
-        delivered = all(credited.get(key, -1) >= value * 1000
-                        for state in current.values() for key, value in state["signed"].items())
-        advanced = all(current[node]["authorized"] > prior[node]["authorized"] for node in sources)
-        return current if delivered and advanced else None
+        return payment_progress(self.finances(), prior, sources=sources)
 
     def run(self):
         try:

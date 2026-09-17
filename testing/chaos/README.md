@@ -221,6 +221,46 @@ leave supplicant's mesh state inconsistent with the kernel. The mesh-specific
 commands explicitly leave/rejoin the retained network. See the
 [hostap control implementation](https://w1.fi/cgit/hostap/tree/wpa_supplicant/ctrl_iface.c?id=ca266cc24d8705eb1a2a0857ad326e48b1408b20#n3321).
 
+### Paid Wi-Fi recovery
+
+`sim.paid_wifi` reuses the same inventory, guard and radio lifecycle. It needs a
+native `fips-relay-test-mint` executable on the controller and an assigned private
+controller address reachable from all three routers. The mint binds that address
+on an allocated port, caps issuance at 384 test sats, and checks reachability from
+every router before funding three fresh accounts with 128 sats each.
+
+```sh
+python3 -m sim.paid_wifi \
+  --inventory /private/operator/wifi-inventory.json \
+  --binary /private/artifacts/fips-relay \
+  --mint-binary /private/artifacts/controller/fips-relay-test-mint \
+  --mint-address "$CONTROLLER_LAN_ADDRESS" \
+  --output /private/results/new-paid-wifi-run
+```
+
+After verifying unpaid forwarding is denied, each endpoint buys the route through
+the middle router. Fresh streams must cause matching buyer/provider usage and
+automatic signed payments before and after radio leave/rejoin. The original two
+32-sat channels, funding operations, route agreements and lifetime budgets must
+survive; recovery does not issue another purchase command. These checks reuse the
+paid Ethernet accounting and settlement validators. Routers need no SQLite CLI:
+wallet balances are checked offline before launch and after settlement; live
+observations use accounting journals and bounded authorization, credit and
+exposure, without claiming a live wallet snapshot.
+
+Completion requires the middle router to earn both endpoints' payments, settlement
+of both original channels, collection of all 384 sats, empty test wallets, and the
+same restoration checks as the free run. The mint stops only after conservation
+and complete collection are confirmed. If a financial operation is uncertain, the
+run fails and preserves the original mint process, persistent accounts and private
+export records for deliberate reconciliation. Do not restart or replace that mint:
+its simulated Lightning state is in memory. Issuance, import, export and collection
+are never automatically retried. Keep the controller online until reconciliation
+is complete. The output path must fit the local Unix socket's length limit.
+
+Run the Wi-Fi, financial, fault and settlement tests on Linux before hardware use;
+include `tests` in `PYTHONPATH` for the existing payment-fault test imports.
+
 ## Available Scenarios
 
 ### General stress tests

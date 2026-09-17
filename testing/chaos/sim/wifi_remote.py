@@ -168,19 +168,7 @@ owned_candidate() {{
   expected=$(printf '%s\\n' sh {t}/start.sh)
   [ "$actual" = "$expected" ]
 }}
-cleanup() {{
-  exec 9>{t}/operation.lock
-  flock -x 9
-  rm -f {t}/active
-  if [ -f {t}/mesh-down ]; then
-    mesh_restore && rm -f {t}/mesh-down || echo 'mesh restore failed' >&2
-  fi
-  if [ -f {t}/table-created ]; then
-    owner=$(nft -j list table netdev {self.table} 2>/dev/null | jsonfilter -e '@.nftables[*].table.comment' || :)
-    if [ "$owner" = "{self.table_owner}" ]; then
-      nft delete table netdev {self.table} && rm -f {t}/table-created || echo 'table restore failed' >&2
-    fi
-  fi
+stop_candidate() {{
   if [ -f {t}/process.pid ]; then
     pid=$(cat {t}/process.pid)
     if owned_candidate; then
@@ -194,11 +182,28 @@ cleanup() {{
       if owned_candidate; then touch {t}/candidate-stop-failed; fi
     fi
   fi
+}}
+cleanup() {{
+  exec 9>{t}/operation.lock
+  flock -x 9
+  rm -f {t}/active
+  if [ -f {t}/mesh-down ]; then
+    mesh_restore && rm -f {t}/mesh-down || echo 'mesh restore failed' >&2
+  fi
+  if [ -f {t}/table-created ]; then
+    owner=$(nft -j list table netdev {self.table} 2>/dev/null | jsonfilter -e '@.nftables[*].table.comment' || :)
+    if [ "$owner" = "{self.table_owner}" ]; then
+      nft delete table netdev {self.table} && rm -f {t}/table-created || echo 'table restore failed' >&2
+    fi
+  fi
+  stop_candidate
   touch {t}/guard-cleaned
   flock -u 9
   exec 9>&-
 }}
 [ "${{1:-}}" != cleanup ] || {{ cleanup; exit 0; }}
+# The caller holds operation.lock and checks the live lease for this path.
+[ "${{1:-}}" != stop ] || {{ stop_candidate; exit 0; }}
 trap cleanup EXIT
 trap 'exit 0' TERM INT
 echo $$ >{t}/guard.pid
@@ -267,8 +272,16 @@ test "$age" -le 35
             raise RuntimeError("staged binary checksum differs")
         self.npub = self.remote([self.binary, "init", self.config], timeout=45).decode().strip()
         self.write(self.temporary + "/start.sh", self.start_script())
+
+    def start(self):
         self.remote(f"setsid sh {self.temporary}/start.sh </dev/null "
                     f">{self.temporary}/process.log 2>&1 &")
+
+    def stop(self):
+        # Preserve the guard, executable and profiles for offline wallet collection.
+        t = self.temporary
+        self.guarded(f"sh {t}/guard.sh stop; test ! -f {t}/candidate-stop-failed; "
+                     f"test ! -f {t}/candidate-forced-stop", timeout=CLEANUP_TIMEOUT_SECONDS)
 
     def install_filter(self, excluded_mac):
         if not re.fullmatch(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", excluded_mac):

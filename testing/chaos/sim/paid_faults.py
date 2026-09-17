@@ -10,6 +10,13 @@ PACKETS = 8
 PAYLOAD_BYTES = 256
 
 
+def validate_unpaid_probe(sent, stream_id):
+    if (sent["stream_id"] != stream_id or sent["requested_packets"] != 4
+            or sent["submitted_packets"] != 4 or sent["submitted_bytes"] != 1024
+            or sent["stopped_reason"] is not None):
+        raise RuntimeError("unpaid denial requires the complete submitted stream")
+
+
 def validate_probe(sent, received, *, loss=False, measure_latency=True):
     if (sent["requested_packets"] != PACKETS or sent["submitted_packets"] != PACKETS
             or sent["submitted_bytes"] != PACKETS * PAYLOAD_BYTES
@@ -120,14 +127,15 @@ def validate_effect(kind, evidence):
         raise RuntimeError("configured reordering was not observed by the receiver")
 
 
-def validate_finances(before, after):
+def validate_finances(before, after, *, wallet=True):
     signed = {key: value for state in after.values() for key, value in state["signed"].items()}
     credited = {key: value for state in after.values() for key, value in state["credited"].items()}
     if len(signed) != 2 or set(signed) != set(credited):
         raise RuntimeError("paid line must retain exactly two funded channels")
     for node, state in after.items():
         old = before[node]
-        if any(state[key] != old[key] for key in ("funding", "budget", "wallet")):
+        retained = ("funding", "budget", "wallet") if wallet else ("funding", "budget")
+        if any(state[key] != old[key] for key in retained):
             raise RuntimeError("data fault changed funding, capital or wallet custody")
         if set(state["signed"]) != set(old["signed"]):
             raise RuntimeError("data fault replaced a paid channel")
@@ -171,7 +179,7 @@ def original_quote(before, source):
     return next(iter(quotes))
 
 
-def financial_sample(run, before, evidence):
+def financial_sample(run, before, evidence, *, wallet=True):
     evidence["financial_sample_attempts"] = evidence.get("financial_sample_attempts", 0) + 1
     evidence["financial_sample_started"] = time.monotonic()
     try:
@@ -184,7 +192,7 @@ def financial_sample(run, before, evidence):
         evidence["financial_sample_finished"] = time.monotonic()
     evidence["last_financial_observation"] = current
     try:
-        validate_finances(before, current)
+        validate_finances(before, current, wallet=wallet)
     except RuntimeError as error:
         # Validation messages are fixed local strings, with no request bodies.
         evidence["last_financial_validation_error"] = str(error)
@@ -193,8 +201,8 @@ def financial_sample(run, before, evidence):
     return current
 
 
-def paid_progress(run, before, source, evidence):
-    current = financial_sample(run, before, evidence)
+def paid_progress(run, before, source, evidence, *, wallet=True):
+    current = financial_sample(run, before, evidence, wallet=wallet)
     quote = original_quote(before, source)
     if any(current[node][key][quote] - before[node][key][quote] < PACKETS * PAYLOAD_BYTES
            for node, key in ((source, "buyer_units"), ("n02", "seller_units"))):

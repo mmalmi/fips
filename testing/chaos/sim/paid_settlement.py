@@ -131,10 +131,13 @@ def check_mint(report, collected):
     require(amount(report["collected_sat"]) == collected, "test collection is incomplete")
 
 
-def settle_and_collect(run, prior_finances):
+def settle_and_collect(run, prior_finances, *, execute=None, stop=None, export_path=None):
     """Settle once, stop relays, then export/collect once without new funding."""
+    execute = execute or run.execute
+    stop = stop or (lambda node: stop_relay(run, node))
+    export_path = export_path or (lambda _node, relative: f"/tmp/bench-state/{relative}")
     owners = original_channels(run.nodes, prior_finances)
-    initial = run.execute("mint", "fips-relay-test-mint", "ctl", {"type": "report"})
+    initial = execute("mint", "fips-relay-test-mint", "ctl", {"type": "report"})
     check_mint(initial, 0)
     mint = initial["url"]
     reports = {}
@@ -149,11 +152,11 @@ def settle_and_collect(run, prior_finances):
     settled = run.finances()
     validate_finances(prior_finances, settled, reports)
     for node in run.nodes:
-        stop_relay(run, node)
+        stop(node)
 
     balances, collections = {}, {}
     for node in run.nodes:
-        balance = run.execute(node, "fips-relay", "wallet", {"type": "balance"})
+        balance = execute(node, "fips-relay", "wallet", {"type": "balance"})
         require(balance["mint_url"] == mint and balance["unit"] == "sat",
                 "wallet balance has the wrong scope")
         balances[node] = amount(balance["balance_sat"])
@@ -161,10 +164,10 @@ def settle_and_collect(run, prior_finances):
     for node, balance in balances.items():
         if balance:
             export_id = f"collect-{node}"
-            exported = run.execute(node, "fips-relay", "wallet", {
+            exported = execute(node, "fips-relay", "wallet", {
                 "type": "export", "id": export_id, "amount_sat": balance})
             relative = f"exports/{export_id}.json"
-            require(exported["path"] == f"/tmp/bench-state/{relative}"
+            require(exported["path"] == export_path(node, relative)
                     and amount(exported["amount_sat"]) == balance,
                     "wallet export changed its reserved terms")
             payment = run.state_json(node, relative)
@@ -174,7 +177,7 @@ def settle_and_collect(run, prior_finances):
                     and isinstance(exported["operation_id"], str) and bool(exported["operation_id"])
                     and payment["operation_id"] == exported["operation_id"],
                     "saved export differs from the zero-fee transfer")
-            received = run.execute("mint", "fips-relay-test-mint", "ctl", {
+            received = execute("mint", "fips-relay-test-mint", "ctl", {
                 "type": "collect", "token": payment["token"]})
             require(received["mint_url"] == mint and received["unit"] == "sat"
                     and amount(received["amount_sat"]) == balance,
@@ -182,10 +185,10 @@ def settle_and_collect(run, prior_finances):
             collections[node] = balance
         else:
             collections[node] = 0
-        empty = run.execute(node, "fips-relay", "wallet", {"type": "balance"})
+        empty = execute(node, "fips-relay", "wallet", {"type": "balance"})
         require(empty["mint_url"] == mint and empty["unit"] == "sat"
                 and amount(empty["balance_sat"]) == 0, "node wallet is not empty")
-    final = run.execute("mint", "fips-relay-test-mint", "ctl", {"type": "report"})
+    final = execute("mint", "fips-relay-test-mint", "ctl", {"type": "report"})
     check_mint(final, 384)
     require(final["url"] == mint, "collector mint identity changed")
     # Evidence contains amounts and settlement terms, never bearer tokens.

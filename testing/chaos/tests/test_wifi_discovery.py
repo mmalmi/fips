@@ -279,6 +279,21 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(candidate.wait(timeout=3), -15)
         self.assertIsNone(other.poll())
 
+    def test_stop_only_preserves_guard_and_profile_for_offline_wallet_operations(self):
+        guard = self.start_guard()
+        (self.remote / "run").write_text("import time; time.sleep(30)\n")
+        profile = Path(self.node.config)
+        profile.write_text("retained account settings")
+        candidate = subprocess.Popen([sys.executable, "run", self.node.config], cwd=self.remote)
+        self.children.append(candidate)
+        (self.remote / "process.pid").write_text(str(candidate.pid))
+        self.node.stop()
+        self.assertEqual(candidate.wait(timeout=3), -15)
+        self.assertIsNone(guard.poll())
+        self.assertTrue((self.remote / "active").exists())
+        self.assertEqual(profile.read_text(), "retained account settings")
+        self.node.guarded(":")
+
     def test_cleanup_does_not_terminate_a_process_with_additional_arguments(self):
         (self.remote / "run").write_text("import time; time.sleep(30)\n")
         other = subprocess.Popen([sys.executable, "run", self.node.config, "other"], cwd=self.remote)

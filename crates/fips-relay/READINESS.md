@@ -188,6 +188,18 @@ mobility or throughput. Radio admission still needs the existing shared SAE key.
 Current paid-channel recovery over Wi-Fi, mixed/mobile neighborhoods, open-radio
 admission and the updated Pixel regression remain unverified by this run.
 
+The [paid Wi-Fi harness](../../testing/chaos/README.md#paid-wi-fi-recovery) now reuses
+this radio lifecycle and the Ethernet financial/settlement checks. Its 92 focused
+Linux checks pass, including a reconciled payment checkpoint before departure,
+rejection of failed probe submissions as unpaid-denial evidence, retained mint
+state after uncertain financial operations, and offline wallet collection.
+The first physical attempt stopped at the controller mint's LAN reachability
+preflight, before any issuance or import. All 72 management checks and original
+router restoration checks passed, and the zero-issuance mint stopped cleanly.
+Paid forwarding, paid radio recovery and final collection are therefore still
+pending hardware verification. The controller must accept the routers' mint
+connections before the paid scenario can run.
+
 ## Guarded cadence measurement
 
 The current optimized comparison covers 250/500/1000/2000-ms policies with two

@@ -155,6 +155,12 @@ class WifiRun:
         capture_probe(self, source, destination, eventually, evidence, measure_latency=False)
         self.phase(phase, **evidence)
 
+    def profile_config(self, node):
+        return free_config(node)
+
+    def before_launch(self):
+        """Optional offline funding step; the default profiles remain unfunded."""
+
     def setup(self):
         binary = self.args.binary.read_bytes()
         if binary[:6] != b"\x7fELF\x02\x01" or binary[18:20] != b"\xb7\x00":
@@ -167,12 +173,15 @@ class WifiRun:
         self.evidence["original_baselines"] = self.original
         self.phase("read-only baseline and management checks passed")
         self.monitor.start()
+        for node in self.nodes.values():
+            node.prepare(binary, self.profile_config(node))
+        self.before_launch()
         for name, node in self.nodes.items():
-            node.prepare(binary, free_config(node))
+            node.start()
             eventually("new service control", lambda: self.ctl(name, "status"), 60)
             self.financial[name] = node.monetary_journals()
         self.evidence["test_identities"] = {name: node.npub for name, node in self.nodes.items()}
-        self.phase("isolated free profiles started beside original instances")
+        self.phase("isolated profiles started beside original instances")
 
     def beacon_evidence(self):
         transports = {name: node.native({"command": "show_transports"})
@@ -189,7 +198,7 @@ class WifiRun:
                 announced_and_observed = False
         return transports if announced_and_observed else None
 
-    def exercise(self):
+    def form_line(self):
         eventually("automatic radio triangle discovery", self.ready, 150)
         # A late starter can authenticate incoming peers before hearing their
         # next periodic beacon. Observe the unmodified announcement cadence.
@@ -207,6 +216,9 @@ class WifiRun:
                           for command in ("show_tree", "show_routing", "show_cache")}
                    for name, node in self.nodes.items()}
         self.phase("test-only shortcut filters established a two-hop line", filters=filters, routing=routing)
+
+    def exercise(self):
+        self.form_line()
         forwarded_before = self.ctl("n02", "status")["free_routes"]
         for source, destination in (("n01", "n03"), ("n03", "n01")):
             response = self.ctl(source, "watch", destination=self.nodes[destination].npub,
@@ -221,13 +233,7 @@ class WifiRun:
         self.phase("two-hop forwarding preserves every financial journal",
                    middle_before=forwarded_before, middle_after=forwarded_after)
 
-        last.mesh_down()
-        self.phase("leaf left the radio mesh; management monitoring continues")
-        eventually("actual mesh peer eviction", lambda: self.ready(line=True, isolated=True), 100)
-        self.assert_finances()
-        self.phase("leaf peers evicted without changing accounts")
-        last.mesh_up()
-        eventually("automatic mesh rejoin", lambda: self.ready(line=True), 150)
+        self.mesh_outage()
         for source, destination in (("n01", "n03"), ("n03", "n01")):
             self.probe(source, destination, "same watched route delivers after automatic rejoin")
         self.assert_finances()
@@ -242,6 +248,19 @@ class WifiRun:
             if node.npub != state["npub"]:
                 raise RuntimeError("rejoin changed identity")
         self.phase("automatic rejoin retains identities, free-only watches and financial state")
+        self.verify_shortcuts()
+
+    def mesh_outage(self):
+        last = self.nodes["n03"]
+        last.mesh_down()
+        self.phase("leaf left the radio mesh; management monitoring continues")
+        eventually("actual mesh peer eviction", lambda: self.ready(line=True, isolated=True), 100)
+        self.assert_finances()
+        self.phase("leaf peers evicted; financial invariants hold")
+        last.mesh_up()
+        eventually("automatic mesh rejoin", lambda: self.ready(line=True), 150)
+
+    def verify_shortcuts(self):
         counters = {}
         for name in ("n01", "n03"):
             node = self.nodes[name]
