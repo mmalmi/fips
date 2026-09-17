@@ -38,7 +38,7 @@ and broad production readiness remain unclaimed.
 
 The current development adapter requires the corrected local Cashu SDK, CDK and
 Spilman sources. It reserves complete wallet costs and preserves verified refunds
-under independent capital and lifetime limits. See [funding costs and migration](FUNDING-COSTS.md)
+under independent capital and lifetime limits. See [funding costs and dependencies](FUNDING-COSTS.md)
 before building or opening existing state; the pinned published dependencies do
 not yet provide these APIs.
 
@@ -151,8 +151,8 @@ Strict relay and Android ARM64 linting, default builds, formatting and the
   channel, capacity, denomination, expiry and signed balance before credit can
   be published. The trusted controller owns immutable agreement bindings.
 * `ControlTransport` reuses TCP/FIPS for bounded authenticated request/reply
-  records between configured neighbors. It supports 64 KiB records, bounded
-  queues/connections, per-neighbor request admission and cancellation. TCP
+  records between configured or explicitly enabled dynamic neighbors. It supports
+  64 KiB records, bounded queues/connections, per-neighbor request admission and cancellation. TCP
   reliability here concerns control records, not paid data delivery.
 * `PaymentControl` opens, updates, reports and stops forwarding for explicitly
   preapproved agreements. Wire requests cannot choose their payer, price, grace

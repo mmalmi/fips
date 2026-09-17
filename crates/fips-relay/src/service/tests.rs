@@ -1,6 +1,54 @@
 use super::*;
 
 #[test]
+fn dynamic_neighbors_enable_selected_link_discovery_without_changing_financial_authority() {
+    use crate::control_transport::NeighborAdmission;
+
+    let original: ServiceConfig =
+        serde_json::from_str(include_str!("../../service.example.json")).unwrap();
+    assert_eq!(
+        original.neighbor_admission,
+        NeighborAdmission::ConfiguredOnly
+    );
+    let mut config = original.clone();
+    config.neighbor_admission = NeighborAdmission::AuthenticatedAdjacent;
+    config.ethernet_interfaces = vec!["mesh0".into()];
+    config.neighbors.clear();
+    config.validate().unwrap();
+    let identity = Identity::generate();
+    let native = config.network(&identity, false);
+    assert!(native.peers.is_empty());
+    assert_eq!(config.terms, original.terms);
+    assert_eq!(native.node.limits.max_peers, 16);
+    assert_eq!(native.node.limits.max_connections, 32);
+    assert_eq!(native.node.limits.max_links, 32);
+    assert_eq!(native.node.limits.max_pending_inbound, 16);
+    assert_eq!(native.node.limits.max_sessions, 128);
+    assert!(!native.node.discovery.nostr.enabled);
+    assert!(!native.node.discovery.lan.enabled);
+    assert!(!native.node.discovery.local.enabled);
+    let TransportInstances::Named(interfaces) = native.transports.ethernet else {
+        panic!("explicit interfaces");
+    };
+    assert_eq!(interfaces.len(), 1);
+    assert_eq!(interfaces["mesh0"].discovery, Some(true));
+    assert_eq!(interfaces["mesh0"].announce, Some(true));
+    assert_eq!(interfaces["mesh0"].auto_connect, Some(true));
+
+    // Initializing an account does not expose it on the discovery interface.
+    let initializing = config.network(&identity, true);
+    assert!(initializing.transports.ethernet.is_empty());
+    assert!(initializing.peers.is_empty());
+    assert!(!initializing.node.control.enabled);
+    let TransportInstances::Single(udp) = initializing.transports.udp else {
+        panic!("initialization uses loopback");
+    };
+    assert_eq!(udp.bind_addr.as_deref(), Some("127.0.0.1:0"));
+    let encoded = serde_json::to_value(&config).unwrap();
+    assert_eq!(encoded["neighbor_admission"], "authenticated_adjacent");
+}
+
+#[test]
 fn price_selection_is_opt_in_and_validated_outside_financial_terms() {
     let mut config: ServiceConfig =
         serde_json::from_str(include_str!("../../service.example.json")).unwrap();
@@ -113,6 +161,7 @@ fn native_interface_configuration_has_no_implicit_udp_or_discovery_shortcut() {
         state_directory: "/tmp/fips-relay-example".into(),
         udp_bind: None,
         customer_network: None,
+        neighbor_admission: Default::default(),
         destination_fees: Default::default(),
         return_allowance: false,
         price_selection: None,

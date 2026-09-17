@@ -11,7 +11,7 @@ pub(crate) use control::{read_record, write_record};
 
 use crate::{
     buyer::{BuyerAuthorizer, PaidForwarder},
-    control_transport::{ControlStatistics, ControlTransport},
+    control_transport::{ControlAdmission, ControlStatistics, ControlTransport},
     controller::{Controller, ControllerPolicy, ControllerServices, ControllerTasks},
     durable::{DurableRelay, acquire_owner},
     ledger::{BillingBasis, Limits},
@@ -266,11 +266,16 @@ impl RelayService {
             .collect();
         let entropy = Identity::generate();
         let seed = u64::from_le_bytes(entropy.node_addr().as_bytes()[..8].try_into().unwrap());
-        let (quote_transport, quote_incoming) = ControlTransport::start_with_customers(
+        let admission = ControlAdmission::new(
+            endpoint.clone(),
+            neighbors,
+            config.customer_network,
+            config.neighbor_admission,
+        )?;
+        let (quote_transport, quote_incoming) = ControlTransport::start_with_admission(
             endpoint.clone(),
             44_741,
-            neighbors.clone(),
-            config.customer_network,
+            admission.clone(),
             seed,
         )
         .await?;
@@ -301,19 +306,17 @@ impl RelayService {
             quotes
         });
         let quote_server = QuoteServer::start(quotes.clone(), quote_incoming);
-        let (acceptance, incoming) = ControlTransport::start_with_customers(
+        let (acceptance, incoming) = ControlTransport::start_with_admission(
             endpoint.clone(),
             44_742,
-            neighbors.clone(),
-            config.customer_network,
+            admission.clone(),
             seed.wrapping_add(1),
         )
         .await?;
-        let (payments, payment_incoming) = ControlTransport::start_with_customers(
+        let (payments, payment_incoming) = ControlTransport::start_with_admission(
             endpoint.clone(),
             44_743,
-            neighbors,
-            config.customer_network,
+            admission,
             seed.wrapping_add(2),
         )
         .await?;

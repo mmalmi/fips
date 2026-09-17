@@ -5,6 +5,60 @@ claimed. The target is sender-funded FIPS forwarding across supported transports
 with permissionless discovery and bounded financial/resource risk. Publication,
 real-money operation and public deployment are separate authorization decisions.
 
+Acceptance targets fresh wallet/controller profiles. Migrating legacy profiles
+is outside this greenfield scope; historical migration notes below do not add a
+requirement to the current milestone. Existing accounts remain untouched.
+
+## Authenticated adjacent neighbors
+
+The opt-in service setting `"neighbor_admission": "authenticated_adjacent"`
+admits bounded payment control from currently connected, authenticated FIPS
+neighbors without a payment-control roster. The default is `"configured_only"`.
+The opt-in also enables native Ethernet beacons and automatic connection on only
+the interfaces listed in `ethernet_interfaces`. Account initialization still
+uses loopback. Other discovery mechanisms remain disabled.
+
+Quote, acceptance and payment ports share one admission object. Unconfigured
+peers share eight active exchanges, with at most four per identity across ports
+and directions. The node-wide bucket allows a burst of 80 requests and refills
+at 320 requests/second; existing per-peer directional and quote-service limits
+remain 16 requests with 10/second refill. The identity table holds at most 64
+entries and reclaims only idle, fully refilled entries. Reconnection cannot
+reset a retained bucket. Core peer, link, handshake and session limits also apply.
+
+An advertised identity or a routed session does not establish adjacency.
+Membership is checked again before an unsent request connects and before an
+incoming record reaches its handler. Disconnection does not cancel dispatched
+financial work, release channel capital or reset lifetime spending. Explicit
+source purchases and verified onward funding keep their existing authority.
+UDP customers in the configured customer network remain inbound-only unless
+explicitly listed as neighbors.
+
+The aggregate rate accommodates the request count of 16 neighbors paying in
+both directions at 250-ms intervals, with bounded additional control traffic.
+This is a capacity calculation, not a latency or hardware throughput guarantee.
+Multiple hostile identities can still compete for the shared slots and budget;
+the limits bound their resource use without promising Sybil-resistant fairness.
+Native beacon discovery, mobile merge/split/rejoin and router/Pixel acceptance
+remain separate checks from authenticated-link control admission.
+
+Focused checks cover rate/capacity limits, cancellation, disconnect/reconnect,
+customer restrictions and rejection of routed non-neighbors. A five-node paid
+controller scenario uses empty control rosters, verifies quotes do not authorize
+wallet spending, then funds, forwards and settles in both directions. Its
+underlying links are configured UDP peers; it does not test beacon discovery.
+
+The full all-feature relay gate passes 203 tests; the existing manual cadence
+benchmark remains ignored. After a lint-only conditional cleanup, all 116
+library and 11 control-transport tests pass again. Strict all-target linting,
+formatting and the 704-file source-size check pass with the corrected local
+dependencies. These are software checks, not router performance measurements.
+
+The forwarding audit found shared transit admission before outgoing transport
+selection, including batched sends. The paid service currently configures only
+UDP and Ethernet. Other core transports still need service configuration and
+mixed-link financial acceptance before they are supported by the paid service.
+
 ## Sequence and acceptance
 
 1. **Adaptive payment cadence.** Share one schedule per neighbor channel and
@@ -28,7 +82,7 @@ real-money operation and public deployment are separate authorization decisions.
    lifetime spending and replay evidence. Any unresolved financial operation must
    keep its identity and capital reservation; never reset an account to proceed.
 5. **Readiness evidence.** Reproducible seeded topology/fault sweeps, full relevant
-   integration checks, measured CPU/storage/wire overhead, migration/recovery
+   integration checks, measured CPU/storage/wire overhead, initialization/recovery
    procedures, supported-link/architecture matrix, and controlled router/Pixel
    regression with test funds conserved. Update the local TollGate proposal.
 

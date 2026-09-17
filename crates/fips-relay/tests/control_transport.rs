@@ -474,3 +474,6 @@ async fn customer_connection_limit_leaves_room_for_configured_neighbor_control()
     .await
     .expect("bounded customer capacity deadline");
 }
+
+#[path = "control_transport/dynamic.rs"]
+mod dynamic;

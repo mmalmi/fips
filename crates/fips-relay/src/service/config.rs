@@ -1,5 +1,6 @@
 //! Validate network configuration and require intact saved account state.
 use super::*;
+use crate::control_transport::NeighborAdmission;
 use crate::controller::PaymentCadence;
 use ipnet::IpNet;
 
@@ -41,6 +42,10 @@ pub struct ServiceConfig {
     /// this network. It does not authorize Internet access or onward purchases.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub customer_network: Option<IpNet>,
+    /// Permit bounded control with authenticated adjacent peers, and discovery
+    /// on the listed Ethernet interfaces. This grants no purchase authority.
+    #[serde(default)]
+    pub neighbor_admission: NeighborAdmission,
     pub ethernet_interfaces: Vec<String>,
     pub neighbors: Vec<PeerConfig>,
     /// Local fees for future offers; existing financial agreements stay intact.
@@ -218,7 +223,8 @@ impl ServiceConfig {
         config.node.discovery.nostr.enabled = false;
         config.node.discovery.lan.enabled = false;
         config.node.discovery.local.enabled = false;
-        if self.customer_network.is_some() {
+        let dynamic_neighbors = self.neighbor_admission == NeighborAdmission::AuthenticatedAdjacent;
+        if self.customer_network.is_some() || dynamic_neighbors {
             config.node.limits.max_peers = self.neighbors.len() + 16;
             config.node.limits.max_connections = config.node.limits.max_peers * 2;
             config.node.limits.max_links = config.node.limits.max_peers * 2;
@@ -247,9 +253,9 @@ impl ServiceConfig {
                                 interface.clone(),
                                 EthernetConfig {
                                     interface: interface.clone(),
-                                    discovery: Some(false),
-                                    announce: Some(false),
-                                    auto_connect: Some(false),
+                                    discovery: Some(dynamic_neighbors),
+                                    announce: Some(dynamic_neighbors),
+                                    auto_connect: Some(dynamic_neighbors),
                                     accept_connections: Some(true),
                                     ..EthernetConfig::default()
                                 },

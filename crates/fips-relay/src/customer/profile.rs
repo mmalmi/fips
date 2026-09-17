@@ -81,6 +81,7 @@ impl CustomerProfile {
                 .unwrap(),
             ),
             customer_network: None,
+            neighbor_admission: Default::default(),
             destination_fees: Default::default(),
             return_allowance: false,
             price_selection: None,

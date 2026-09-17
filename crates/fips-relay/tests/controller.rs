@@ -1,4 +1,6 @@
 //! Each router independently accepts, funds onward channels and pays usage.
+#[path = "controller_support/admission.rs"]
+mod admission;
 mod controller_support;
 #[path = "controller_support/funding_recovery.rs"]
 mod funding_recovery;
@@ -38,7 +40,7 @@ use std::{
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn routers_independently_fund_accept_and_pay_both_directions() {
+async fn authenticated_adjacent_routers_fund_accept_and_pay_without_a_control_roster() {
     controller_scenario(false, false, false, false, false).await;
 }
 
@@ -203,14 +205,9 @@ async fn controller_scenario(
             )
             .await
             .unwrap();
-            let neighbors: Vec<_> = peers
-                .iter()
-                .enumerate()
-                .filter(|(j, _)| i.abs_diff(*j) == 1 || (route_change && ((i == 1 && *j == 3) || (i == 3 && *j == 1))))
-                .map(|(_, p)| *p)
-                .collect();
+            let admission = admission::for_router(nodes[i].clone(), &peers, i, route_change, paid_quote_traffic);
             let (quote_transport, quote_incoming) =
-                ControlTransport::start(nodes[i].clone(), 44_741, neighbors.clone(), i as u64 + 1)
+                ControlTransport::start_with_admission(nodes[i].clone(), 44_741, admission.clone(), i as u64 + 1)
                     .await
                     .unwrap();
             let quotes = Arc::new(
@@ -234,11 +231,11 @@ async fn controller_scenario(
             );
             quote_servers.push(QuoteServer::start(quotes.clone(), quote_incoming));
             let (acceptance, incoming) =
-                ControlTransport::start(nodes[i].clone(), 44_742, neighbors.clone(), i as u64 + 10)
+                ControlTransport::start_with_admission(nodes[i].clone(), 44_742, admission.clone(), i as u64 + 10)
                     .await
                     .unwrap();
             let (payments, payment_incoming) =
-                ControlTransport::start(nodes[i].clone(), 44_743, neighbors, i as u64 + 20)
+                ControlTransport::start_with_admission(nodes[i].clone(), 44_743, admission, i as u64 + 20)
                     .await
                     .unwrap();
             let gate_buyer = if paid_quote_traffic { peers[0] } else { peers[2] };
@@ -293,6 +290,9 @@ async fn controller_scenario(
         })
         .await
         .unwrap();
+        if paid_quote_traffic {
+            admission::quotes_preserve_financial_authority(&controllers, &services, &peers, mint.url()).await;
+        }
         if automatic_routes {
             assert!(controllers[0].watch_route(peers[4], 1024).await.is_err());
             assert_eq!(controllers[0].locked_capital_sat().await.unwrap(), 0);

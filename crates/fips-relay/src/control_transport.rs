@@ -1,20 +1,21 @@
 //! Bounded request/reply records over the existing TCP/FIPS adapter.
 //!
-//! Configured neighbors can initiate purchases. An explicit customer network
-//! also permits bounded inbound requests from authenticated direct UDP peers.
+//! Configured neighbors and opt-in authenticated adjacent peers may exchange
+//! control. Explicit customer networks remain inbound-only; none grant spending authority.
 //! TCP acknowledgments say nothing about paid data delivery.
 
 mod admission;
 pub(crate) use admission::AdmissionBudget;
-use admission::{CustomerAdmission, allow_request};
+use admission::AdmissionPermit;
+pub use admission::{ControlAdmission, NeighborAdmission};
 
-use fips_core::{FipsEndpoint, NodeAddr, PeerIdentity};
+use fips_core::{FipsEndpoint, PeerIdentity};
 use fips_tcp::{Config, ConnectionId, StackError, State};
 use fips_tcp_endpoint::{AdapterError, FipsTcpEndpoint};
 use ipnet::IpNet;
 use serde::Serialize;
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -103,8 +104,24 @@ impl ControlTransport {
         customer_network: Option<IpNet>,
         isn_seed: u64,
     ) -> Result<(Self, mpsc::Receiver<IncomingRequest>), String> {
-        if neighbors.len() > 64 {
-            return Err("too many configured control neighbors".into());
+        let admission = ControlAdmission::new(
+            endpoint.clone(),
+            neighbors,
+            customer_network,
+            NeighborAdmission::ConfiguredOnly,
+        )?;
+        Self::start_with_admission(endpoint, service_port, admission, isn_seed).await
+    }
+
+    /// Reuse the same admission object on every control port of this endpoint.
+    pub async fn start_with_admission(
+        endpoint: Arc<FipsEndpoint>,
+        service_port: u16,
+        admission: Arc<ControlAdmission>,
+        isn_seed: u64,
+    ) -> Result<(Self, mpsc::Receiver<IncomingRequest>), String> {
+        if !admission.owns_endpoint(&endpoint) {
+            return Err("control admission belongs to another endpoint".into());
         }
         let config = Config {
             receive_buffer: u16::MAX as usize,
@@ -115,19 +132,15 @@ impl ControlTransport {
             time_wait_ms: 250,
             ..Config::default()
         };
-        let customers =
-            customer_network.map(|network| CustomerAdmission::new(endpoint.clone(), network));
         let tcp = FipsTcpEndpoint::bind(endpoint, service_port, config, isn_seed)
             .await
             .map_err(|e| e.to_string())?;
-        let neighbors = neighbors.iter().map(|peer| *peer.node_addr()).collect();
         let (commands, receive_commands) = mpsc::channel(QUEUE_SIZE);
         let (incoming, receive_incoming) = mpsc::channel(QUEUE_SIZE);
         let statistics = Arc::new(ControlStatistics::default());
         let task = tokio::spawn(run(
             tcp,
-            neighbors,
-            customers,
+            admission,
             receive_commands,
             incoming,
             statistics.clone(),
@@ -178,9 +191,14 @@ impl Drop for ControlTransport {
     }
 }
 
+struct PendingCommand {
+    command: Command,
+    admission: AdmissionPermit,
+}
+
 struct Exchange {
     peer: PeerIdentity,
-    customer: bool,
+    admission: AdmissionPermit,
     started: Instant,
     outgoing: Vec<u8>,
     sent: usize,
@@ -191,10 +209,10 @@ struct Exchange {
 }
 
 impl Exchange {
-    fn server(peer: PeerIdentity) -> Self {
+    fn server(peer: PeerIdentity, admission: AdmissionPermit) -> Self {
         Self {
             peer,
-            customer: false,
+            admission,
             started: Instant::now(),
             outgoing: Vec::new(),
             sent: 0,
@@ -235,16 +253,14 @@ fn complete_frame(bytes: &[u8]) -> Result<bool, String> {
 
 async fn run(
     mut tcp: FipsTcpEndpoint,
-    neighbors: HashSet<NodeAddr>,
-    mut customers: Option<CustomerAdmission>,
+    admission: Arc<ControlAdmission>,
     mut commands: mpsc::Receiver<Command>,
     incoming: mpsc::Sender<IncomingRequest>,
     statistics: Arc<ControlStatistics>,
 ) {
     let started = Instant::now();
     let mut exchanges = HashMap::<ConnectionId, Exchange>::new();
-    let mut budgets = HashMap::new();
-    let mut pending = VecDeque::<Command>::new();
+    let mut pending = VecDeque::<PendingCommand>::new();
     let mut ticker = tokio::time::interval(DRIVE_INTERVAL);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -252,13 +268,11 @@ async fn run(
         tokio::select! {
             command = commands.recv(), if pending.len() < QUEUE_SIZE => {
                 let Some(command) = command else { break; };
-                if !neighbors.contains(command.peer.node_addr())
-                    || !allow_request(&mut budgets, *command.peer.node_addr(), true) {
-                    let _ = command.response.send(Err("not an authorized neighbor or control capacity exhausted".into()));
-                    continue;
-                }
                 if command.response.is_closed() { continue; }
-                pending.push_back(command);
+                match admission.admit(command.peer, true).await {
+                    Ok(permit) => pending.push_back(PendingCommand { command, admission: permit }),
+                    Err(error) => { let _ = command.response.send(Err(error)); }
+                }
             }
             result = tcp.receive_report(now) => {
                 if result.is_err() { break; }
@@ -272,18 +286,28 @@ async fn run(
         // peer cannot hold up another peer, and cancellation discards queued
         // work before any request is transmitted. Never replay a sent request.
         for _ in 0..pending.len() {
-            let mut command = pending.pop_front().expect("bounded pending queue");
+            let PendingCommand {
+                mut command,
+                admission: permit,
+            } = pending.pop_front().expect("bounded pending queue");
             if command.response.is_closed() {
                 continue;
             }
             if command.retry_at > Instant::now() || exchanges.len() >= MAX_CONNECTIONS {
-                pending.push_back(command);
+                pending.push_back(PendingCommand {
+                    command,
+                    admission: permit,
+                });
+                continue;
+            }
+            if let Err(error) = permit.recheck().await {
+                let _ = command.response.send(Err(error));
                 continue;
             }
             match tcp.connect(command.peer, now).await {
                 Ok(id) => {
                     statistics.requests_started.fetch_add(1, Ordering::Relaxed);
-                    let mut exchange = Exchange::server(command.peer);
+                    let mut exchange = Exchange::server(command.peer, permit);
                     exchange.outgoing = frame(command.body).expect("bounded at command entry");
                     exchange.client = Some(command.response);
                     exchanges.insert(id, exchange);
@@ -292,7 +316,10 @@ async fn run(
                     // The TCP stack rejects before creating a connection or
                     // sending SYN. Closing streams can temporarily occupy slots.
                     command.retry_at = Instant::now() + CONNECT_RETRY_INTERVAL;
-                    pending.push_back(command);
+                    pending.push_back(PendingCommand {
+                        command,
+                        admission: permit,
+                    });
                 }
                 Err(error) => {
                     let _ = command.response.send(Err(error.to_string()));
@@ -302,22 +329,10 @@ async fn run(
         while let Some(id) = tcp.accept() {
             if let Some(peer) = tcp.peer(id)
                 && exchanges.len() < MAX_CONNECTIONS
+                && let Ok(permit) = admission.admit(peer, false).await
             {
-                let known = neighbors.contains(peer.node_addr());
-                let allowed = if known {
-                    allow_request(&mut budgets, *peer.node_addr(), false)
-                } else if let Some(customers) = customers.as_mut() {
-                    let active = exchanges.values().filter(|e| e.customer).count();
-                    customers.allow(peer, active).await
-                } else {
-                    false
-                };
-                if allowed {
-                    let mut exchange = Exchange::server(peer);
-                    exchange.customer = !known;
-                    exchanges.insert(id, exchange);
-                    continue;
-                }
+                exchanges.insert(id, Exchange::server(peer, permit));
+                continue;
             }
             let _ = tcp.abort(id).await;
         }
@@ -405,6 +420,7 @@ async fn drive(
             let _ = response.send(Ok(body));
             return Ok(false);
         }
+        exchange.admission.recheck().await?;
         let (respond, receiver) = oneshot::channel();
         statistics.requests_received.fetch_add(1, Ordering::Relaxed);
         incoming
