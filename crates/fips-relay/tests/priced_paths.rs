@@ -129,7 +129,8 @@ fn errors(controllers: &[Arc<Controller>]) -> Vec<(usize, String)> {
 
 async fn run(root_index: usize, scenario: Scenario, seed: u64) {
     let exhaust_trial = matches!(scenario, Scenario::Exhaustion);
-    let mobile = matches!(scenario, Scenario::Mobility);
+    let interrupted = matches!(scenario, Scenario::InterruptedMobility);
+    let mobile = matches!(scenario, Scenario::Mobility | Scenario::InterruptedMobility);
     let selection = scenario.selection_policy();
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -277,6 +278,7 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
     let mut quote_servers = Vec::new();
     let mut quote_inputs = Vec::new();
     let mut payment_servers = Vec::new();
+    let mut interrupted_acceptance = None;
     for i in 0..4 {
         let receiver = FileSpilmanPaymentReceiver::load_with_keyset_refresh(
             &root.path().join(format!("receiver-{i}")),
@@ -372,6 +374,13 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
             )
             .unwrap(),
         );
+        let incoming = if interrupted && i == 2 {
+            let (incoming, gate) = mobility::pending::interpose(incoming, peers[0]);
+            interrupted_acceptance = Some(gate);
+            incoming
+        } else {
+            incoming
+        };
         tasks.push(ControllerTasks::start(controller.clone(), incoming));
         controllers.push(controller);
         services.push(service);
@@ -577,7 +586,20 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
             .unwrap();
         assert_eq!(quality.next_hop, Some(first.provider));
         assert!(quality.has_recent_delivery_feedback);
-        if mobile {
+        if interrupted {
+            mobility::pending::exercise(
+                &network,
+                &nodes,
+                &peers,
+                &controllers,
+                &services,
+                &mut receivers[3],
+                &upgraded,
+                root.path(),
+                interrupted_acceptance.as_mut().unwrap(),
+            )
+            .await;
+        } else if mobile {
             mobility::exercise(
                 &network,
                 &nodes,
@@ -790,6 +812,9 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
         total, 259,
         "all isolated test money is conserved after settlement"
     );
+    if let Some(gate) = interrupted_acceptance {
+        gate.stop().await;
+    }
     for task in tasks.drain(..) {
         task.stop().await;
     }

@@ -1,13 +1,26 @@
 //! Validate retained financial intent before resuming service.
 use super::*;
 
+// Authorization-format fence independent of the existing accounting checkpoints.
+pub(super) const RECOVERY_ONLY_VERSION: u16 = 0x100;
+
+impl Journal {
+    pub(super) fn history_version(&self) -> u16 {
+        self.version & !RECOVERY_ONLY_VERSION
+    }
+
+    pub(super) fn advance_history_version(&mut self, version: u16) {
+        self.version = (self.version & RECOVERY_ONLY_VERSION) | self.history_version().max(version);
+    }
+}
+
 impl Controller {
     pub(super) fn validate_journal(
         j: &Journal,
         policy: &ControllerPolicy,
         local: NodeAddr,
     ) -> Result<(), String> {
-        if !matches!(j.version, 2..=6)
+        if !matches!(j.history_version(), 2..=6)
             || &j.policy != policy
             || j.local != local
             || j.epoch.is_empty()
@@ -20,6 +33,7 @@ impl Controller {
         {
             return Err("invalid controller journal bindings".into());
         }
+        Self::validate_recovery_only(j)?;
         Self::validate_history(j)?;
         Self::validate_channel_history(j)?;
         Self::validate_seller_history(j)?;
@@ -37,7 +51,7 @@ impl Controller {
                 .filter(|n| *n > 0 && *n < j.next_funding);
             if id != &f.id
                 || sequence.is_none_or(|n| !sequences.insert(n))
-                || (j.version < 4 && channel_history::sequence(j, id).is_some())
+                || (j.history_version() < 4 && channel_history::sequence(j, id).is_some())
                 || id.len() > 128
                 || f.provider == local
                 || (!Self::funding_released(j, f) && !providers.insert(f.provider))
@@ -74,7 +88,8 @@ impl Controller {
                 || offer.buyer != local
                 || offer.provider == local
                 || offer.mint_url != policy.mint_url
-                || !requested.insert((offer.provider, *offer.destination.node_addr()))
+                || (!j.recovery_only.contains(id)
+                    && !requested.insert((offer.provider, *offer.destination.node_addr())))
             {
                 return Err("invalid requested route".into());
             }
@@ -101,7 +116,7 @@ impl Controller {
                         .buyer_settlements
                         .get(&o.purchase.channel.id)
                         .is_some_and(|s| s.refunded))
-                || (!o.retired
+                || (Self::routing_eligible(j, o)
                     && !outgoing.insert((o.purchase.provider, o.purchase.contract.destination)))
             {
                 return Err("invalid outgoing agreement".into());

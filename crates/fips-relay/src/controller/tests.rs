@@ -31,6 +31,7 @@ pub(super) fn unresolved_journal() -> Journal {
         selling_stopped: false,
         funding: [(funding.id.clone(), funding)].into(),
         requested: BTreeMap::new(),
+        recovery_only: Default::default(),
         outgoing: BTreeMap::new(),
         incoming: BTreeMap::new(),
         buyer_settlements: BTreeMap::new(),

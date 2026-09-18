@@ -55,7 +55,7 @@ impl Controller {
             && !snapshot.outgoing.values().any(|o| {
                 o.offer == *offer
                     && o.accepted
-                    && !o.retired
+                    && Self::routing_eligible(&snapshot, o)
                     && o.purchase.contract.expires_unix > timestamp
                     && !snapshot
                         .buyer_settlements

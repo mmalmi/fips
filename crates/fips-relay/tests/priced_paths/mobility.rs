@@ -5,6 +5,9 @@ use fips_relay::controller::{FundingBudget, Purchase};
 use std::{collections::BTreeMap, path::Path};
 use tokio::time::Instant;
 
+#[path = "mobility/pending.rs"]
+pub(super) mod pending;
+
 // Only these non-secret identities enter diagnostics; opening payment proofs do not.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FundingIdentity {

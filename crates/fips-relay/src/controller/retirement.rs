@@ -70,6 +70,7 @@ impl Retirement {
                     .insert(old.purchase.channel.id.clone());
             }
             j.requested.remove(&old.offer.id);
+            j.recovery_only.remove(&old.offer.id);
             for watch in j.watched_routes.values_mut() {
                 if watch.pending.as_ref().is_some_and(|o| o.id == old.offer.id) {
                     watch.pending = None;
@@ -95,7 +96,7 @@ impl Retirement {
             }
         }
         history.pending = None;
-        j.version = j.version.max(3);
+        j.advance_history_version(3);
         Ok(())
     }
 
@@ -212,11 +213,9 @@ impl Controller {
         j: &Journal,
         id: &str,
     ) -> Result<(NodeAddr, ChannelTerms), String> {
-        if let Some(o) = j
-            .outgoing
-            .values()
-            .find(|o| o.accepted && o.purchase.channel.id == id)
-        {
+        if let Some(o) = j.outgoing.values().find(|o| {
+            (o.accepted || j.recovery_only.contains(&o.offer.id)) && o.purchase.channel.id == id
+        }) {
             return Ok((o.purchase.provider, o.purchase.channel.clone()));
         }
         if j.history.as_ref().is_some_and(|h| h.buyers.contains(id))
@@ -240,13 +239,13 @@ impl Controller {
 
     pub(super) fn validate_history(j: &Journal) -> Result<(), String> {
         let Some(h) = &j.history else {
-            return if j.version == 2 {
+            return if j.history_version() == 2 {
                 Ok(())
             } else {
                 Err("missing controller history".into())
             };
         };
-        if !matches!(j.version, 3..=6)
+        if !matches!(j.history_version(), 3..=6)
             || h.sellers.len() > MAX_CHANNELS
             || h.buyers.len() > MAX_CHANNELS
         {
@@ -310,7 +309,7 @@ impl Store {
             return Ok(());
         };
         let mut candidate = self.journal.clone();
-        candidate.version = candidate.version.max(3);
+        candidate.advance_history_version(3);
         candidate
             .history
             .get_or_insert_with(History::default)

@@ -46,6 +46,7 @@ mod payments;
 pub use payment_progress::PaymentProgress;
 mod purchase_state;
 mod purchases;
+mod recovery_only;
 mod runtime;
 mod source_selection;
 pub use runtime::ControllerTasks;
@@ -178,6 +179,9 @@ struct Journal {
     /// Authorized offers retained before any wallet operation, including a
     /// source crash before a funded channel can be attached to its contract.
     requested: BTreeMap<String, RouteOffer>,
+    /// Routing has been withdrawn; financial recovery retains the original records.
+    #[serde(default)]
+    recovery_only: std::collections::BTreeSet<String>,
     outgoing: BTreeMap<String, Outgoing>,
     incoming: BTreeMap<String, Incoming>,
     buyer_settlements: BTreeMap<String, BuyerSettlement>,
@@ -204,15 +208,20 @@ impl Store {
         &mut self,
         job: impl FnOnce(&mut Journal) -> Result<T, String>,
     ) -> Result<T, String> {
-        if !self.ready || self.journal.history.as_ref().is_some_and(History::pending) {
-            return Err("controller journal suspended".into());
-        }
+        self.ensure_ready()?;
         let mut candidate = self.journal.clone();
         let result = job(&mut candidate)?;
         Controller::validate_capital(&candidate)?;
         self.journal = candidate;
         self.persist()?;
         Ok(result)
+    }
+
+    fn ensure_ready(&self) -> Result<(), String> {
+        if !self.ready || self.journal.history.as_ref().is_some_and(History::pending) {
+            return Err("controller journal suspended".into());
+        }
+        Ok(())
     }
 
     fn persist(&mut self) -> Result<(), String> {
@@ -341,6 +350,7 @@ impl Controller {
                 selling_stopped: false,
                 funding: BTreeMap::new(),
                 requested: BTreeMap::new(),
+                recovery_only: Default::default(),
                 outgoing: BTreeMap::new(),
                 incoming: BTreeMap::new(),
                 buyer_settlements: BTreeMap::new(),
@@ -474,15 +484,15 @@ impl Controller {
         let snapshot = self.snapshot().await?;
         Ok(snapshot
             .outgoing
-            .into_values()
+            .values()
             .filter(|o| {
                 o.accepted
-                    && !o.retired
+                    && Self::routing_eligible(&snapshot, o)
                     && !snapshot
                         .buyer_settlements
                         .contains_key(&o.purchase.channel.id)
             })
-            .map(|o| o.purchase)
+            .map(|o| o.purchase.clone())
             .collect())
     }
 

@@ -106,13 +106,25 @@ impl BuyerAuthorizer {
     }
 
     pub fn close_quote(&self, id: &str) -> Result<(), BuyerError> {
-        self.change(|s| {
-            s.quotes
+        // Withdrawal must stop packet admission even if a previous write failed.
+        // Keep writer -> state ordering, and retain the error for recovery.
+        let (mut ready, healthy) = match self.writer_ready.lock() {
+            Ok(ready) => (ready, true),
+            Err(poisoned) => (poisoned.into_inner(), false),
+        };
+        let snapshot = {
+            let mut state = self.state.lock().map_err(|_| DurableError::Suspended)?;
+            state
+                .quotes
                 .get_mut(id)
                 .ok_or(BuyerError::UnknownAgreement)?
                 .active = false;
-            Ok(())
-        })
+            if !healthy || !*ready {
+                return Err(DurableError::Suspended.into());
+            }
+            state.clone()
+        };
+        self.persist(&snapshot, &mut ready)
     }
 
     /// Stop new purchase evidence. Final claims can still be signed until expiry;

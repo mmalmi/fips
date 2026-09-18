@@ -49,13 +49,13 @@ impl Plan {
         self.after.receiver = Some(r.after.clone());
         self.receiver = Some(r);
         h.totals.receiver = self.before.receiver.clone();
-        j.version = 6;
+        j.advance_history_version(6);
         self.validate_receiver(j)
     }
 
     pub(super) fn validate_receiver(&self, j: &Journal) -> Result<(), String> {
         let Some(r) = &self.receiver else {
-            return if j.version < 6
+            return if j.history_version() < 6
                 && self.before.receiver.is_none()
                 && self.after.receiver.is_none()
             {
@@ -65,7 +65,7 @@ impl Plan {
             };
         };
         r.validate()?;
-        if j.version != 6
+        if j.history_version() != 6
             || self.before.receiver.as_ref() != Some(&r.before)
             || self.after.receiver.as_ref() != Some(&r.after)
             || r.channels.len() != self.ledger.channels.len()

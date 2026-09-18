@@ -146,15 +146,15 @@ impl Plan {
 impl Controller {
     pub(super) fn validate_seller_history(j: &Journal) -> Result<(), String> {
         let Some(h) = j.history.as_ref().and_then(|h| h.seller.as_ref()) else {
-            return if j.version < 5 {
+            return if j.history_version() < 5 {
                 Ok(())
             } else {
                 Err("missing seller history".into())
             };
         };
-        if !matches!(j.version, 5 | 6)
+        if !matches!(j.history_version(), 5 | 6)
             || !h.totals.valid(&j.policy.mint_url)
-            || (j.version == 6) != h.totals.receiver.is_some()
+            || (j.history_version() == 6) != h.totals.receiver.is_some()
         {
             return Err("invalid seller history".into());
         }

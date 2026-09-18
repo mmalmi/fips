@@ -66,3 +66,69 @@ fn packet_evidence_does_not_wait_for_the_disk_or_signer_worker() {
     drop(guard);
     thread.join().unwrap();
 }
+
+#[test]
+fn suspended_writer_still_closes_exact_packet_authority() {
+    let root = tempfile::tempdir().unwrap();
+    let local = NodeAddr::from_bytes([1; 16]);
+    let provider = NodeAddr::from_bytes([2; 16]);
+    let destination = NodeAddr::from_bytes([3; 16]);
+    let buyer =
+        BuyerAuthorizer::create(&root.path().join("buyer"), local, 10, Limits::default()).unwrap();
+    let expiry = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 600;
+    buyer
+        .accept_channel(
+            provider,
+            ChannelTerms {
+                id: "channel".into(),
+                buyer: local,
+                mint_url: "http://test.invalid".into(),
+                expires_unix: expiry,
+                capacity_sat: 10,
+                grace_msat: 100,
+            },
+            0,
+        )
+        .unwrap();
+    for (id, destination) in [
+        ("closed", destination),
+        ("retained", NodeAddr::from_bytes([4; 16])),
+    ] {
+        buyer
+            .accept_quote(Contract {
+                billing: BillingBasis::ForwardingData,
+                id: id.into(),
+                channel_id: "channel".into(),
+                destination,
+                next_hop: destination,
+                expires_unix: expiry,
+                price: crate::ledger::BytePrice {
+                    msat: 1,
+                    per_bytes: 1,
+                },
+                max_units: 100,
+            })
+            .unwrap();
+    }
+    *buyer.writer_ready.lock().unwrap() = false;
+    assert!(matches!(
+        buyer.close_quote("closed"),
+        Err(BuyerError::Journal(DurableError::Suspended))
+    ));
+    assert!(!buyer.has_active_route(provider, destination, expiry - 1));
+    assert!(buyer.has_active_route(provider, NodeAddr::from_bytes([4; 16]), expiry - 1));
+    assert_eq!(
+        buyer.prepare_intent(&OriginatedSessionIntent {
+            source: local,
+            destination,
+            next_hop: provider,
+            session_bytes: 20,
+        }),
+        OriginatedSessionAdmission::Reject
+    );
+    assert_eq!(buyer.remaining_budget_sat(), Some(10));
+}

@@ -201,7 +201,7 @@ impl Controller {
         let previous: Vec<_> = j
             .outgoing
             .values()
-            .filter(|o| !o.retired && o.purchase.channel.id == id)
+            .filter(|o| Self::routing_eligible(j, o) && o.purchase.channel.id == id)
             .cloned()
             .collect();
         if previous.is_empty()
@@ -246,7 +246,9 @@ impl Controller {
                 .filter(|p| {
                     !snapshot.renewals.contains_key(&p.channel.id)
                         && !snapshot.outgoing.values().any(|o| {
-                            o.purchase.channel.id == p.channel.id && !o.retired && o.offer.trial
+                            o.purchase.channel.id == p.channel.id
+                                && Self::routing_eligible(&snapshot, o)
+                                && o.offer.trial
                         })
                         && self.renewal_due(p, policy, timestamp)
                 })
