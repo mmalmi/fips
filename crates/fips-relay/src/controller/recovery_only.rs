@@ -2,9 +2,41 @@
 use super::*;
 
 #[cfg(test)]
+mod expiry_tests;
+#[cfg(test)]
 mod tests;
 
 impl Store {
+    /// Only a reservation which never reached a wallet intent can expire
+    /// without financial reconciliation. Select and remove under one lock.
+    fn retire_unfunded_reservations(&mut self, timestamp: u64) -> Result<usize, String> {
+        self.ensure_ready()?;
+        let expired: Vec<_> = self
+            .journal
+            .requested
+            .values()
+            .filter(|offer| {
+                Controller::expired_unfunded_reservation(&self.journal, offer, timestamp)
+            })
+            .map(|offer| (offer.id.clone(), offer.expires_unix))
+            .collect();
+        if expired.is_empty() {
+            return Ok(0);
+        }
+        self.change(move |j| {
+            for (id, expiry) in &expired {
+                j.requested.remove(id);
+                j.recovery_only.remove(id);
+                // This is an offer replay fence, not evidence of a refund or
+                // completed accounting. Preserve every financial history field.
+                let history = j.history.get_or_insert_with(History::default);
+                history.through_unix = history.through_unix.max(*expiry);
+            }
+            j.advance_history_version(3);
+            Ok(expired.len())
+        })
+    }
+
     /// Retain withdrawal before touching other journals. The caller holds the
     /// store mutex through reconciliation, also fencing local quote insertion.
     fn withdraw_purchase(
@@ -23,6 +55,53 @@ impl Store {
 }
 
 impl Controller {
+    fn expired_unfunded_reservation(j: &Journal, offer: &RouteOffer, timestamp: u64) -> bool {
+        j.recovery_only.contains(&offer.id)
+            && offer.expires_unix != 0
+            && offer.expires_unix <= timestamp
+            && !j.funding.values().any(|f| f.provider == offer.provider)
+            && !j
+                .outgoing
+                .values()
+                .any(|o| o.purchase.provider == offer.provider)
+            && !j.incoming.values().any(|i| {
+                i.downstream
+                    .as_ref()
+                    .is_some_and(|d| d.provider == offer.provider)
+            })
+            && !j.route_changes.values().any(|c| {
+                c.offer.provider == offer.provider
+                    || c.previous.iter().any(|p| p.provider == offer.provider)
+            })
+            && !j.renewals.values().any(|r| {
+                r.requests(&offer.id)
+                    || r.previous
+                        .iter()
+                        .any(|o| o.purchase.provider == offer.provider)
+            })
+            && !j.requested.values().any(|other| {
+                other.provider == offer.provider && !j.recovery_only.contains(&other.id)
+            })
+            && !j.watched_routes.values().any(|w| {
+                w.pending
+                    .as_ref()
+                    .is_some_and(|o| o.provider == offer.provider)
+            })
+    }
+
+    pub(super) async fn retire_unfunded_reservations(&self) -> Result<usize, String> {
+        let store = self.store.clone();
+        blocking(move || {
+            let mut store = store.lock().map_err(|_| "controller state poisoned")?;
+            // Existing cross-journal recovery must finish before local cleanup.
+            if store.journal.history.as_ref().is_some_and(History::pending) {
+                return Ok(0);
+            }
+            store.retire_unfunded_reservations(now()?)
+        })
+        .await
+    }
+
     pub(super) fn routing_eligible(j: &Journal, outgoing: &Outgoing) -> bool {
         !outgoing.retired && !j.recovery_only.contains(&outgoing.offer.id)
     }

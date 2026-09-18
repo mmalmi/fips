@@ -2,7 +2,7 @@
 use super::*;
 use crate::ledger::{BillingBasis, Limits};
 
-fn fixture(root: &Path) -> (Store, Outgoing, BuyerAuthorizer, DurableRelay) {
+pub(super) fn fixture(root: &Path) -> (Store, Outgoing, BuyerAuthorizer, DurableRelay) {
     let (mut store, mut old) = transition_tests::fixture(&root.join("controller"));
     old.offer.destination = PeerIdentity::from_npub(&old.offer.destination.npub()).unwrap();
     old.offer.expires_unix = now().unwrap() + 100;
@@ -33,7 +33,7 @@ fn fixture(root: &Path) -> (Store, Outgoing, BuyerAuthorizer, DurableRelay) {
     (store, old, buyer, seller)
 }
 
-fn replace(store: &mut Store, old: &Outgoing, buyer: &BuyerAuthorizer) -> Outgoing {
+pub(super) fn replace(store: &mut Store, old: &Outgoing, buyer: &BuyerAuthorizer) -> Outgoing {
     let mut next = old.clone();
     next.offer.id = format!("next-{}", old.offer.expires_unix);
     next.offer.expires_unix += 1;
