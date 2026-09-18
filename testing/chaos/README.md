@@ -241,6 +241,14 @@ leave supplicant's mesh state inconsistent with the kernel. The mesh-specific
 commands explicitly leave/rejoin the retained network. See the
 [hostap control implementation](https://w1.fi/cgit/hostap/tree/wpa_supplicant/ctrl_iface.c?id=ca266cc24d8705eb1a2a0857ad326e48b1408b20#n3321).
 
+For simultaneous streams, a runner can register auxiliary relay profiles on a
+router before preparing its guard. Each has fresh persistent accounts and its
+own launcher, PID and log, while sharing the staged executable and recovery
+lease. Cleanup signals all registered profiles before waiting under one shutdown
+deadline, retains their accounts, and refuses late or duplicate launches. This supports
+independent endpoints on the same three-router bench; it does not itself prove
+paid/free priority on the physical wireless links.
+
 ### Paid Wi-Fi recovery
 
 `sim.paid_wifi` reuses the same inventory, guard and radio lifecycle. It needs a

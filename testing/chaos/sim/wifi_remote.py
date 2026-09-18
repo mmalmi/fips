@@ -10,6 +10,7 @@ import shlex
 from pathlib import Path, PurePosixPath
 
 from .ssh_commands import SshCommands
+from .wifi_profiles import AuxiliaryProfile, RelayCommands, process_helpers
 from .wifi_mesh import helpers as mesh_helpers, profile as mesh_profile
 from .wifi_open import PEER_IDLE_SECONDS, PEER_LIMIT, helpers as open_helpers, snapshot as open_snapshot
 
@@ -56,7 +57,7 @@ def original_ethernet(config):
             for item in entries]
 
 
-class Router(SshCommands):
+class Router(RelayCommands, SshCommands):
     def __init__(self, spec, run, output, open_mesh=None):
         if not re.fullmatch(r"[0-9a-f]{12}", run):
             raise ValueError("invalid run identity")
@@ -87,19 +88,23 @@ class Router(SshCommands):
         self.mac = None
         self.mesh = None
         self.diagnostic_log_filter = None
+        self.auxiliary_profiles = {}
+
+    def add_profile(self, name):
+        if self.created:
+            raise RuntimeError("register auxiliary profiles before preparing the recovery guard")
+        name = checked_name(name)
+        if name in self.auxiliary_profiles:
+            raise ValueError("auxiliary profile already registered")
+        profile = AuxiliaryProfile(self, name)
+        self.auxiliary_profiles[name] = profile
+        return profile
+
+    def profiles(self):
+        return [self, *self.auxiliary_profiles.values()]
 
     def write(self, path, content):
         self.remote("umask 077; set -C; cat > " + shlex.quote(path), content)
-
-    def control(self, kind, original=False, action="ctl", **fields):
-        binary = self.original_binary if original else self.binary
-        config = self.original_config if original else self.config
-        return json.loads(self.remote([binary, action, config],
-                                     json.dumps({"type": kind, **fields}).encode(), timeout=45))
-
-    def native(self, command):
-        return json.loads(self.remote([self.binary, "native", self.config],
-                                     json.dumps(command).encode()))
 
     def baseline(self):
         board = json.loads(self.remote(["ubus", "call", "system", "board"]))
@@ -181,29 +186,7 @@ class Router(SshCommands):
 set -eu
 . {t}/mesh.sh
 {guard_helpers(t, self.table_owner)}
-owned_candidate() {{
-  [ -r /proc/$pid/cmdline ] || return 1
-  actual=$(tr '\\000' '\\n' </proc/$pid/cmdline)
-  expected=$(printf '%s\\n' {self.binary} run {shlex.quote(self.config)})
-  [ "$actual" = "$expected" ] && return 0
-  expected=$(printf '%s\\n' sh {t}/start.sh)
-  [ "$actual" = "$expected" ]
-}}
-stop_candidate() {{
-  if [ -f {t}/process.pid ]; then
-    pid=$(cat {t}/process.pid)
-    if owned_candidate; then
-      kill -TERM "$pid" || :
-      for attempt in $(seq 1 {CANDIDATE_STOP_SECONDS}); do owned_candidate || break; sleep 1; done
-      if owned_candidate; then
-        touch {t}/candidate-forced-stop
-        kill -KILL "$pid" || :
-        for attempt in $(seq 1 5); do owned_candidate || break; sleep 1; done
-      fi
-      if owned_candidate; then touch {t}/candidate-stop-failed; fi
-    fi
-  fi
-}}
+{process_helpers(self, CANDIDATE_STOP_SECONDS)}
 remove_owned_table() {{
   table=$1; marker=$2
   if [ -f "$marker" ]; then
@@ -246,6 +229,13 @@ esac
 [ "${{1:-}}" != cleanup ] || {{ cleanup; exit 0; }}
 # The caller holds operation.lock and checks the live lease for this path.
 [ "${{1:-}}" != stop ] || {{ stop_candidate; exit 0; }}
+[ "${{1:-}}" != stopped ] || {{ ! candidates_running; exit $?; }}
+if [ "${{1:-}}" = can-start ]; then
+  [ "$#" = 2 ] && [ -n "$2" ] || exit 1
+  if candidates_running "$2"; then exit 1; fi
+  [ "$candidate_known" = 1 ]
+  exit $?
+fi
 trap cleanup EXIT
 trap 'exit 0' TERM INT
 echo $$ >{t}/guard.pid
@@ -280,14 +270,18 @@ test "$age" -le 35
     def guarded(self, command, data=None, timeout=20):
         return self.remote(self.guarded_script(command), data, timeout=timeout)
 
-    def start_script(self):
+    def start_script(self, profile=None):
         # The child fences itself after dispatch, then records its PID before
         # unlocking. Cleanup recognizes both this launcher and the final binary.
-        t = self.temporary
+        profile = self if profile is None else profile
+        if profile not in self.profiles():
+            raise ValueError("launcher requires a registered profile")
+        t = profile.temporary
         logging = ("export RUST_LOG=" + shlex.quote(self.diagnostic_log_filter) + "\n"
                    if self.diagnostic_log_filter is not None else "")
-        command = (f"echo $$ > {t}/process.pid\nflock -u 9\nexec 9>&-\ntrap - EXIT\n"
-                   + logging + shlex.join(["exec", self.binary, "run", self.config]) + "\n")
+        command = (shlex.join(["sh", self.temporary + "/guard.sh", "can-start", profile.config]) + "\n"
+                   + f"echo $$ > {t}/process.pid\nflock -u 9\nexec 9>&-\ntrap - EXIT\n"
+                   + logging + shlex.join(["exec", self.binary, "run", profile.config]) + "\n")
         return ("#!/bin/sh\n" + self.guarded_script(command)).encode()
 
     def prepare(self, binary, config):
@@ -321,10 +315,6 @@ test "$age" -le 35
             raise RuntimeError("staged binary checksum differs")
         self.npub = self.remote([self.binary, "init", self.config], timeout=45).decode().strip()
         self.write(self.temporary + "/start.sh", self.start_script())
-
-    def start(self):
-        self.remote(f"setsid sh {self.temporary}/start.sh </dev/null "
-                    f">{self.temporary}/process.log 2>&1 &")
 
     def stop(self):
         # Preserve the guard, executable and profiles for offline wallet collection.
@@ -392,15 +382,6 @@ nft -f -
         self.guarded(f"test -f {self.temporary}/mesh-down; "
                      f"{restore}; rm -f {self.temporary}/mesh-down", timeout=60)
 
-    def monetary_journals(self):
-        result = {name: json.loads(self.remote(["cat", self.state + "/" + path]))
-                  for name, path in (("buyer", "buyer/buyer.json"),
-                                     ("seller", "seller/ledger.json"),
-                                     ("controller", "controller/controller.json"))}
-        for field in ("selling_stopped", "renewals_paused", "watched_routes"):
-            result["controller"].pop(field, None)
-        return result
-
     def cleanup(self):
         if not self.guard_ready:
             return
@@ -408,7 +389,7 @@ nft -f -
         self.remote(["sh", self.temporary + "/guard.sh", "cleanup"],
                     timeout=CLEANUP_TIMEOUT_SECONDS)
         t = self.temporary
-        # Wait for both owned processes, without killing any unrelated PID reuse.
+        # Wait for every registered profile and the guard without adopting PID reuse.
         self.remote(f"""set -eu
 owned() {{
   [ -f {t}/$1.pid ] || return 1
@@ -417,19 +398,21 @@ owned() {{
   tr '\\000' '\\n' </proc/$pid/cmdline | grep -Fxq "$2"
 }}
 for attempt in $(seq 1 35); do
-  if ! owned process {shlex.quote(self.config)} && ! owned guard {t}/guard.sh; then break; fi
+  if sh {t}/guard.sh stopped && ! owned guard {t}/guard.sh; then break; fi
   sleep 1
 done
-! owned process {shlex.quote(self.config)}
+sh {t}/guard.sh stopped
 ! owned guard {t}/guard.sh
 """, timeout=45)
         tables = json.loads(self.remote(["nft", "-j", "list", "tables"]))
         if any(row.get("table", {}).get("name") in (self.table, self.original_table)
                for row in tables["nftables"]):
             raise RuntimeError("owned test table remains after cleanup")
-        for name in ("process.log", "guard.log"):
-            data = self.remote(f"test ! -f {self.temporary}/{name} || cat {self.temporary}/{name}")
-            (self.output / name).write_bytes(data)
+        for profile in self.profiles():
+            names = ("process.log", "guard.log") if profile is self else ("process.log",)
+            for name in names:
+                data = self.remote(f"test ! -f {profile.temporary}/{name} || cat {profile.temporary}/{name}")
+                (profile.output / name).write_bytes(data)
         self.remote(["rm", "-f", self.binary])
         # Preserve failure markers and logs, but finish safe cleanup first.
         self.remote(f"test ! -f {t}/mesh-down && test ! -f {t}/table-created && "

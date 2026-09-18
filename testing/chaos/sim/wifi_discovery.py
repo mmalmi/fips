@@ -109,7 +109,7 @@ class WifiRun:
         self.evidence["radio_mode"] = "temporary_open_mesh" if self.open_mesh else "saved_sae"
         self.evidence["harness_sha256"] = {
             name: digest(Path(__file__).with_name(name).read_bytes())
-            for name in ("wifi_discovery.py", "wifi_remote.py", "wifi_mesh.py", "wifi_open.py",
+            for name in ("wifi_discovery.py", "wifi_remote.py", "wifi_profiles.py", "wifi_mesh.py", "wifi_open.py",
                          "paid_relay.py", "paid_faults.py")}
         self.original = {}
         self.financial = {}
