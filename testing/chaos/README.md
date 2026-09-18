@@ -331,9 +331,62 @@ saves an intent before tapping. An uncertain action blocks further actions;
 input without importing it. Use the matching explicit `billing` in the
 [customer profile](../../crates/fips-relay-app/README.md).
 
-These helpers have focused tests and host/phone startup checks. A complete paid
-phone-through-mesh acceptance run is still pending; the three-router acceptance
-above does not establish that result.
+The [physical phone acceptance](../../crates/fips-relay/READINESS.md#physical-phone-customer-across-the-wireless-mesh)
+using these composed helpers delivered eight packets, advanced all four paying
+hops, and recovered all 512 test sats after the recorded checker correction.
+The generic CLI wrapper below has focused tests; it has not been rerun on new
+accounts.
+
+`sim.paid_phone` composes these helpers for one acceptance phone and the same
+three-router inventory. Install the verified isolated acceptance APK first,
+leave it foreground and unlocked, and select the guest Wi-Fi yourself. The
+harness checks the installed APK hash and original app's private-file hashes;
+it neither installs apps nor changes the phone's Wi-Fi selection.
+
+```sh
+python3 -m sim.paid_phone \
+  --scenario /private/operator/phone-scenario.json \
+  --inventory /private/operator/wifi-inventory.json \
+  --binary /private/artifacts/fips-relay \
+  --mint-binary /private/artifacts/fips-relay-test-mint \
+  --output /private/results/new-paid-phone-run
+```
+
+The private scenario JSON has `version: 1` and these required objects:
+
+- `phone`: absolute `adb` path, exact `serial`, preserved private `evidence_dir`,
+  and the verified acceptance artifact's `apk_sha256`.
+- `customer`: existing guest `interface`, router address/prefix in `cidr`, unused
+  `entry_port`, exact `ssid`, and one to four `denied_tcp` objects containing
+  `label`, numeric IPv4 `address`, and `port`. Choose known reachable services
+  outside the permitted mint access. No target is inferred from the inventory.
+- `mint`: `address` assigned to the explicit Linux host, plus `ssh_spec` with
+  `host`, `state_parent`, and optional `ssh_config`, as used by `RemoteMint`.
+
+Add `--open-mesh` for the existing guarded temporary open profile and late third
+router join. Before issuance, the phone must reach the exact mint before and
+after the explicit denied TCP probes. A missing completion marker, ADB failure,
+or tool/bind error is an unknown outcome and fails the run, not proof of denial.
+These probes establish only the specified target/port observations.
+They do not prove that a denied target's service was listening or establish an
+exhaustive firewall policy.
+
+This fixed fixture issues 128 test sats to each of four fresh accounts, uses
+32-sat channels and 64-sat lifetime buyer budgets, and checks four fresh
+1,000-byte payloads in each direction along phone → entry → middle → leaf.
+Automatic payments must advance at all four paying hops before settlement.
+The separate journal validator matches original funding operations, buyer and
+seller terminal reports, retained authorization, per-wallet earnings/refunds,
+and all 512 sats before collection. Completion requires full collection, four
+empty wallets, terminal mint exit, and original phone/router restoration.
+Uncertain actions retain their one-shot intents, accounts and required mint
+access; the harness does not clear them or automatically resume the run.
+This phone fixture does not add a radio partition or prove general Internet
+access. Its reusable lifecycle/probe/financial tests are:
+
+```sh
+python3 -m unittest discover -s testing/chaos/tests -p 'test_paid_phone*.py' -v
+```
 
 ## Available Scenarios
 
