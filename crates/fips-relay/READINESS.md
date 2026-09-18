@@ -973,6 +973,24 @@ mobility and hostile-load acceptance remain separate work. Run the focused case
 with `cargo test -p fips-relay --all-features --test priced_paths
 automatic_quality::automatic_watch_leaves_impaired_routes_and_reuses_recovered_channel`.
 
+A combined case now keeps the same active watch while 35% forward loss first
+selects the better alternative, that neighbor departs, and the impaired original
+route regains delivery, fresh native feedback and automatic payment. The
+alternative then rejoins and is selected; repairing the cheap route returns to
+its original channel. Every later handover reuses the two original channels,
+without increasing lifetime allowance or releasing their capital. Reload and
+settlement conserve all 259 test sats. The existing automatic loss/delay cases
+and strict relay lint also pass with the shared helper changes.
+
+The combined case uses the production 32 KiB trial allowance. Its fallback
+consumes 21,358 billed trial bytes before promotion. An earlier 8 KiB fixture
+stopped at 8,178 bytes without fresh feedback; that failed evidence is retained.
+Trial capacity therefore constrains whether a working impaired path can be
+verified. This is one simulated topology/seed with sparse application traffic,
+not a general mobility or traffic-rate guarantee. Run it with `cargo test -p
+fips-relay --all-features --test priced_paths
+quality_failover_survives_alternative_departure_without_refunding_or_rebuying`.
+
 A watched paid offer now becomes pending in the same journal transaction that
 reserves its purchase or route change, after native neighbor admission. A peer
 that disconnects before this boundary cannot pin the watch to an unreserved
