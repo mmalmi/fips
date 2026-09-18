@@ -104,7 +104,7 @@ class PaidDiamondRun(DiamondRun):
     def source_config(self):
         config = super().source_config()
         config["price_selection"] = POLICY.copy()
-        config["terms"]["max_rate_msat_per_kib"] = PRICE_CEILING
+        config["terms"].update(fee_msat_per_kib=PRICE_CEILING, max_rate_msat_per_kib=PRICE_CEILING)
         return config
 
     def setup(self):
