@@ -33,9 +33,9 @@ def free_config(router):
     return config
 
 
-def validate_unfunded(status):
+def validate_unfunded(status, *, buyer_budget_sat=64):
     if (status["purchases"] or status["history"] or status["locked_sat"]
-            or status["remaining_budget_sat"] != 64
+            or status["remaining_budget_sat"] != buyer_budget_sat
             or any(status["funding_budget"].values())):
         raise RuntimeError("free hardware acceptance changed financial authority")
 
@@ -295,9 +295,9 @@ class WifiRun:
         eventually("automatic mesh rejoin", lambda: self.ready(line=True), 150)
         self.verify_open_profiles()
 
-    def verify_shortcuts(self):
+    def verify_shortcuts(self, names=("n01", "n03")):
         counters = {}
-        for name in ("n01", "n03"):
+        for name in names:
             node = self.nodes[name]
             table = json.loads(node.remote(["nft", "-j", "list", "table", "netdev", node.table]))
             packets = sum(expr["counter"]["packets"] for row in table["nftables"]
