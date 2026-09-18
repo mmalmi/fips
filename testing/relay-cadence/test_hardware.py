@@ -2,10 +2,12 @@
 import copy
 import json
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 
-from analyze import analyze, analyze_rows, markdown
+from analyze import analyze, analyze_rows, diagnose, diagnose_rows, markdown
 from test_analyze import complete_report, workload
 
 
@@ -83,6 +85,104 @@ IO_FIELDS = ("read_bytes", "write_bytes", "rchar", "wchar", "syscr", "syscw")
 
 def unavailable_io(node):
     node["host_process"].update(io_available=False, **{key: None for key in IO_FIELDS})
+
+
+def delivery_loss_report():
+    rows = hardware_report()
+    for trial, name, missing in ((4, "high_rate", 2), (5, "steady", 1)):
+        data = next(row["data"] for row in rows if row.get("trial") == trial
+                    and row.get("data", {}).get("workload") == name)
+        receiver = data["probes"][0]["receiver"]
+        receiver["unique_packets"] -= missing
+        receiver["unique_bytes"] -= missing * 1000
+        receiver["missing_packets"] = missing
+    return rows
+
+
+class DiagnosticTests(unittest.TestCase):
+    def test_loss_diagnostic_emits_all_costs_but_fails_acceptance(self):
+        rows = delivery_loss_report()
+        with self.assertRaises(ValueError):
+            analyze_rows(rows)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.jsonl"
+            path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+            result = subprocess.run([sys.executable, str(Path(__file__).with_name("analyze.py")),
+                                     str(path), "--diagnostics"], capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        diagnostic = json.loads(result.stdout)
+        self.assertIs(diagnostic["accepted"], False)
+        self.assertIs(diagnostic["diagnostic"], True)
+        self.assertEqual(len(diagnostic["trials"]), 32)
+        self.assertEqual([(r["trial"], r["workload"], r["missing_packets"])
+                          for r in diagnostic["rejections"]], [(4, "high_rate", 2), (5, "steady", 1)])
+        self.assertEqual(sum(r["submitted_packets"] for r in diagnostic["trials"]), 93696)
+        self.assertEqual(sum(r["delivered_packets"] for r in diagnostic["trials"]), 93693)
+        self.assertTrue(all(r["mean_latency_us"] is None for r in diagnostic["trials"]))
+        affected = next(r for r in diagnostic["trials"] if r["trial"] == 4 and r["workload"] == "high_rate")
+        self.assertEqual(affected["delivered_bytes"], 7998000)
+        self.assertGreater(affected["process_cpu_seconds_per_mib"], 0)
+        self.assertEqual(set(affected["nodes"]), {"n01", "n02", "n03"})
+
+    def test_clean_diagnostics_match_strict_costs_and_have_no_rejections(self):
+        rows = hardware_report()
+        metadata, trials, _ = analyze_rows(rows)
+        diagnostic = diagnose_rows(rows)
+        self.assertIs(diagnostic["accepted"], True)
+        self.assertEqual(diagnostic["rejections"], [])
+        self.assertEqual(diagnostic["metadata"], metadata)
+        self.assertEqual(diagnostic["trials"], trials)
+
+    def test_diagnostics_still_reject_invalid_loss_and_other_probe_failures(self):
+        for side, field, value in (
+            ("receiver", "missing_packets", 3), ("receiver", "missing_packets", True),
+            ("receiver", "unique_packets", 8001), ("receiver", "unique_bytes", 7997999),
+            ("receiver", "expected_packets", 7998), ("receiver", "duplicate_packets", 1),
+            ("receiver", "invalid_packets", 1), ("receiver", "latency", {}),
+            ("receiver", "stream_id", "other-stream"),
+            ("sender", "submitted_packets", 7998), ("sender", "submitted_bytes", 7998000),
+            ("sender", "stopped_reason", "no route"),
+        ):
+            with self.subTest(side=side, field=field, value=value):
+                rows = delivery_loss_report()
+                row = next(r for r in rows if r.get("trial") == 4
+                           and r.get("data", {}).get("workload") == "high_rate")
+                row["data"]["probes"][0][side][field] = value
+                with self.assertRaises(ValueError):
+                    diagnose_rows(rows)
+
+    def test_diagnostics_do_not_hide_invalid_process_payment_gap_or_finances(self):
+        def process(rows):
+            workload(rows)["after"][0]["host_process"]["start_ticks"] += 1
+        def counter(rows):
+            workload(rows)["after"][0]["measurements"]["process_cpu_ns"] = 0
+        def payment(rows):
+            workload(rows)["after"][0]["payment_progress"]["direction-0"]["in_flight"] = True
+        def gap(rows):
+            workload(rows)["after_guard"][0]["measurements"]["operations"]["payment_update"]["spans"] += 1
+        def durable(rows):
+            workload(rows)["after_guard"][0]["measurements"]["operations"]["other"]["journal_writes"] += 1
+        def finances(rows):
+            rows[-1]["collected_sat"] = 383
+        def schedule(rows):
+            workload(rows)["probes"][0]["packets_per_second"] = 401
+        for mutate in (process, counter, payment, gap, durable, finances, schedule):
+            with self.subTest(failure=mutate.__name__):
+                rows = delivery_loss_report()
+                mutate(rows)
+                with self.assertRaises(ValueError):
+                    diagnose_rows(rows)
+
+    def test_diagnostic_file_api_and_default_cli_preserve_strict_rejection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.jsonl"
+            path.write_text("\n".join(json.dumps(row) for row in delivery_loss_report()) + "\n")
+            self.assertIs(diagnose(path)["accepted"], False)
+            result = subprocess.run([sys.executable, str(Path(__file__).with_name("analyze.py")),
+                                     str(path)], capture_output=True, text=True, timeout=20)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, "")
+            self.assertIn("delivery loss", result.stderr)
 
 
 class HardwareTests(unittest.TestCase):

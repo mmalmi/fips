@@ -148,28 +148,39 @@ def validate_gap(previous, current, schema=2):
 
 
 def validate_probe(probe, count, schema=2):
+    if probe_delivery_loss(probe, count, schema):
+        raise ValueError("clean-link probe has delivery loss")
+
+
+def probe_delivery_loss(probe, count, schema=2):
+    """Return a proven missing count; reject every other malformed probe field."""
     sent, received = probe["sender"], probe["receiver"]
     if sent["stopped_reason"] is not None:
         raise ValueError("probe sender stopped")
     if sent["stream_id"] != received["stream_id"]:
         raise ValueError("probe stream identity changed")
     for value in (sent["requested_packets"], sent["submitted_packets"],
-                  received["expected_packets"], received["unique_packets"]):
+                  received["expected_packets"]):
         if unsigned(value) != count:
-            raise ValueError("clean-link probe has partial submission or delivery loss")
+            raise ValueError("probe has partial submission or changed expected count")
+    unique = unsigned(received["unique_packets"])
+    missing = unsigned(received["missing_packets"])
+    if unique + missing != count:
+        raise ValueError("unique and missing packets differ from expected count")
     if received["payload_bytes"] != 1000:
         raise ValueError("offered packet size changed")
-    for value in (sent["submitted_bytes"], received["unique_bytes"]):
-        if unsigned(value) != count * 1000:
-            raise ValueError("probe byte accounting differs from workload")
-    for key in ("missing_packets", "duplicate_packets", "invalid_packets"):
+    if (unsigned(sent["submitted_bytes"]) != count * 1000
+            or unsigned(received["unique_bytes"]) != unique * 1000):
+        raise ValueError("probe byte accounting differs from workload")
+    for key in ("duplicate_packets", "invalid_packets"):
         if unsigned(received[key]) != 0:
-            raise ValueError("clean-link probe is missing, duplicated or invalid")
+            raise ValueError("clean-link probe is duplicated or invalid")
     if schema == 3:
         if received["latency"] is not None:
             raise ValueError("hardware one-way latency must remain unmeasured")
     elif unsigned(received["latency"]["invalid_timestamps"]) != 0:
         raise ValueError("clean-link latency has invalid timestamps")
+    return missing
 
 
 def validate_idle(result):

@@ -6,7 +6,7 @@ from collections import defaultdict
 from pathlib import Path
 from statistics import mean
 from validation import (HARDWARE_SCHEDULE, HARDWARE_WORKLOADS, OS_IO_COUNTERS,
-                        PAYMENT_OPERATIONS, POLICIES, WORKLOADS, payment_counters,
+                        PAYMENT_OPERATIONS, POLICIES, WORKLOADS, payment_counters, probe_delivery_loss,
                         quiet_boundary, unsigned, validate_gap,
                         validate_hardware_schedule, validate_host_pair,
                         validate_idle, validate_measurements, validate_probe)
@@ -80,13 +80,23 @@ def normalize_cpu(result, delivered_bytes):
         )
 
 
-def summarize(row, schema=2):
+def summarize(row, schema=2, delivery_rejections=None):
     data = row["data"]
     counts = (HARDWARE_WORKLOADS if schema == 3 else WORKLOADS)[data["workload"]]
     if len(data["probes"]) != len(counts):
         raise ValueError("offered workload changed")
-    for probe, count in zip(data["probes"], counts):
-        validate_probe(probe, count, schema)
+    for index, (probe, count) in enumerate(zip(data["probes"], counts)):
+        if delivery_rejections is None:
+            validate_probe(probe, count, schema)
+        else:
+            missing = probe_delivery_loss(probe, count, schema)
+            if missing:
+                delivery_rejections.append({
+                    "trial": row["trial"], "max_delay_ms": row["max_delay_ms"],
+                    "workload": data["workload"], "probe_index": index,
+                    "submitted_packets": count, "delivered_packets": count - missing,
+                    "missing_packets": missing, "reason": "clean-link delivery loss",
+                })
     if schema == 3:
         validate_hardware_schedule(data)
     if quiet_boundary(data["before"], schema) != quiet_boundary(data["after"], schema):
@@ -186,8 +196,17 @@ def summarize(row, schema=2):
 
 
 def analyze(path, pilot=False):
+    return read_report(path, analyze_rows, pilot)
+
+
+def diagnose(path, pilot=False):
+    """Report valid measured costs without accepting a matrix with delivery loss."""
+    return read_report(path, diagnose_rows, pilot)
+
+
+def read_report(path, analyzer, pilot):
     try:
-        return analyze_rows(
+        return analyzer(
             [json.loads(line) for line in path.read_text().splitlines()], pilot=pilot,
         )
     except (KeyError, TypeError, IndexError) as error:
@@ -195,6 +214,17 @@ def analyze(path, pilot=False):
 
 
 def analyze_rows(rows, pilot=False):
+    return validated_rows(rows, pilot)
+
+
+def diagnose_rows(rows, pilot=False):
+    rejections = []
+    metadata, trials, _ = validated_rows(rows, pilot, rejections)
+    return {"diagnostic": True, "accepted": not rejections, "rejections": rejections,
+            "metadata": metadata, "trials": trials}
+
+
+def validated_rows(rows, pilot, delivery_rejections=None):
     metadata = rows[0]
     schema = metadata["schema"]
     if type(schema) is not int or schema not in (2, 3) or metadata["funded_directions"] != 2:
@@ -253,7 +283,7 @@ def analyze_rows(rows, pilot=False):
         for row in trial_records:
             if row["max_delay_ms"] != delay:
                 raise ValueError("unmatched policy order")
-            result = summarize(row, schema)
+            result = summarize(row, schema, delivery_rejections)
             if previous is not None:
                 validate_gap(previous, row["data"]["before_guard"], schema)
             previous = row["data"]["after_guard"]
@@ -310,6 +340,15 @@ if __name__ == "__main__":
     parser.add_argument("--markdown", action="store_true")
     parser.add_argument("--pilot", action="store_true",
                         help="validate only an explicitly marked schema-3 pilot trial")
+    parser.add_argument("--diagnostics", action="store_true",
+                        help="emit measured costs for valid delivery-loss evidence; rejection still exits nonzero")
     args = parser.parse_args()
-    metadata, trials, grouped = analyze(args.report, pilot=args.pilot)
-    print(markdown(metadata, grouped) if args.markdown else json.dumps({"metadata":metadata, "trials":trials}, indent=2))
+    if args.diagnostics:
+        if args.markdown:
+            parser.error("diagnostics require JSON, not a comparison table")
+        result = diagnose(args.report, pilot=args.pilot)
+        print(json.dumps(result, indent=2))
+        raise SystemExit(0 if result["accepted"] else 1)
+    else:
+        metadata, trials, grouped = analyze(args.report, pilot=args.pilot)
+        print(markdown(metadata, grouped) if args.markdown else json.dumps({"metadata":metadata, "trials":trials}, indent=2))
