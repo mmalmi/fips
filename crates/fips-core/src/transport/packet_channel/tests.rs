@@ -138,8 +138,8 @@ fn priority_queued_packets(tx: &PacketTx) -> usize {
     tx.priority_queued_packets.load(Relaxed)
 }
 
-fn bulk_queued_packets(tx: &PacketTx) -> usize {
-    tx.bulk_queued_packets.load(Relaxed)
+fn bulk_reserved_packets(tx: &PacketTx) -> usize {
+    tx.bulk_reserved_packets.load(Relaxed)
 }
 
 #[test]
@@ -530,7 +530,7 @@ fn packet_channel_keeps_single_lane_batches_grouped() {
         1,
         "bulk-only receive batch should occupy one channel item"
     );
-    match rx.priority.try_recv().expect("priority channel item") {
+    match rx.priority.try_recv().expect("priority channel item").item {
         PacketQueueItem::Batch(packets) => {
             assert_eq!(packets.packets.len(), 2);
             assert_eq!(packet_marker(&packets.packets[0]), 0x11);
@@ -538,7 +538,7 @@ fn packet_channel_keeps_single_lane_batches_grouped() {
         }
         item => panic!("expected grouped priority batch, got {item:?}"),
     }
-    match rx.bulk.try_recv().expect("bulk channel item") {
+    match rx.bulk.try_recv().expect("bulk channel item").item {
         PacketQueueItem::Batch(packets) => {
             assert_eq!(packets.packets.len(), 2);
             assert_eq!(packet_marker(&packets.packets[0]), 0xaa);
@@ -601,7 +601,7 @@ fn pending_packets_apply_rx_loop_owned_stamp_as_packets_are_taken() {
         received_packet(TransportId::new(1), addr.clone(), priority_msg1(0xaa)),
         received_packet(TransportId::new(1), addr, priority_msg2(0xbb)),
     ]);
-    let mut pending = Some(PendingPackets::new(packets, rx_loop_owned_at));
+    let mut pending = Some(PendingPackets::new(packets, rx_loop_owned_at, None));
 
     let first = PacketRx::take_pending(&mut pending).expect("first pending packet");
     assert_eq!(first.trace_rx_loop_owned_at, rx_loop_owned_at);
@@ -619,24 +619,13 @@ fn pending_packets_apply_rx_loop_owned_stamp_as_packets_are_taken() {
 }
 
 #[test]
-fn release_reserved_bulk_packets_subtracts_exact_count() {
+fn release_reserved_packets_subtracts_exact_count() {
     let counter = AtomicUsize::new(5);
 
-    release_reserved_bulk_packets(&counter, 0);
+    release_reserved_packets(&counter, 0);
     assert_eq!(counter.load(Relaxed), 5);
 
-    release_reserved_bulk_packets(&counter, 3);
-    assert_eq!(counter.load(Relaxed), 2);
-}
-
-#[test]
-fn release_priority_packets_subtracts_exact_count() {
-    let counter = AtomicUsize::new(5);
-
-    release_priority_packets(&counter, 0);
-    assert_eq!(counter.load(Relaxed), 5);
-
-    release_priority_packets(&counter, 3);
+    release_reserved_packets(&counter, 3);
     assert_eq!(counter.load(Relaxed), 2);
 }
 
@@ -651,7 +640,7 @@ fn packet_channel_priority_hint_counts_channel_owned_packets() {
     ]))
     .expect("priority batch send should succeed");
     assert_eq!(priority_queued_packets(&tx), 2);
-    assert_eq!(bulk_queued_packets(&tx), 0);
+    assert_eq!(bulk_reserved_packets(&tx), 0);
 
     assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0x11);
     assert_eq!(
@@ -675,3 +664,4 @@ fn packet_channel_priority_hint_counts_channel_owned_packets() {
 }
 
 include!("tests_io.rs");
+include!("tests_priority.rs");

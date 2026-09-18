@@ -272,6 +272,7 @@ pub enum Event {
     DataplaneLiveDropAdmissionOutboundPriorityFull = 267,
     DataplaneLiveDropAdmissionOutboundBulkFull = 268,
     DataplaneLiveDropSourcePolicy = 269,
+    TransportPriorityDropped = 270,
 }
 
 impl Event {
@@ -303,6 +304,7 @@ impl Event {
             Event::EndpointDataBatchDropped => "endpoint_data_batch_dropped",
             Event::TransportChannelBacklogHigh => "transport_channel_backlog_high",
             Event::TransportBulkDropped => "transport_bulk_dropped",
+            Event::TransportPriorityDropped => "transport_priority_dropped",
             Event::EndpointEventBulkDropped => "endpoint_event_bulk_dropped",
             Event::ReservedEvent26 => "reserved_event_26",
             Event::ReservedEvent27 => "reserved_event_27",
@@ -847,6 +849,7 @@ fn event_from_index(idx: usize) -> Event {
         267 => Event::DataplaneLiveDropAdmissionOutboundPriorityFull,
         268 => Event::DataplaneLiveDropAdmissionOutboundBulkFull,
         269 => Event::DataplaneLiveDropSourcePolicy,
+        270 => Event::TransportPriorityDropped,
         _ => unreachable!(),
     }
 }

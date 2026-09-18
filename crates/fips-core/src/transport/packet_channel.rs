@@ -7,7 +7,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering::Relaxed},
 };
 use tokio::sync::mpsc::{
-    Sender, UnboundedReceiver, UnboundedSender,
+    Sender,
     error::{TryRecvError, TrySendError},
 };
 
@@ -358,17 +358,21 @@ const PACKET_BUFFER_MAX_RETAINED_CAPACITY: usize = 16 * 1024;
 /// owner's drain budget rather than waiting behind the transport channel.
 const TRANSPORT_CHANNEL_BACKLOG_HIGH_WATER: usize = 16_384;
 
+/// Reserved capacity for untrusted control-shaped packets, independent of bulk.
+/// Even the largest accepted priority shape has at most 65,566 wire bytes, so
+/// this bounds queued wire payload to about 4 MiB. Allocator and receive-buffer
+/// capacity overhead are additional; this is not an exact heap-size bound.
+const TRANSPORT_PRIORITY_PACKET_CAPACITY: usize = 64;
+
 /// Channel sender for received packets.
 ///
-/// The priority lane stays unbounded because control-shaped datagrams must keep
-/// making progress even when bulk is saturated. The bulk lane is bounded by the
-/// configured packet-channel capacity in packets, not receive-batch items, and
-/// uses nonblocking `try_send`: overload sheds bulk explicitly instead of
-/// hiding unbounded latency behind the rx loop.
+/// Both lanes have packet-count bounds, including batch tails held by PacketRx.
+/// Priority retains its own reserve when bulk is full. Nonblocking overload
+/// drops packets without reporting that the transport has closed.
 #[derive(Clone, Debug)]
 pub struct PacketTx {
-    priority: UnboundedSender<PacketQueueItem>,
-    bulk: Sender<PacketQueueItem>,
+    priority: Sender<ReservedPacketQueueItem>,
+    bulk: Sender<ReservedPacketQueueItem>,
     fast_ingress: Option<Arc<dyn PacketFastIngressSink>>,
     batch_pool: PacketBatchPool,
     #[cfg(any(test, target_os = "linux", target_os = "macos"))]
@@ -376,20 +380,21 @@ pub struct PacketTx {
     /// Packet-count ready hint for priority lane probes. Bulk batch tails check
     /// this instead of touching an empty priority mpsc once per data packet.
     priority_queued_packets: Arc<AtomicUsize>,
+    // Reservations cover channel-owned packets and pending receive-batch tails.
+    priority_reserved_packets: Arc<AtomicUsize>,
     queued_packets: Arc<AtomicUsize>,
-    bulk_queued_packets: Arc<AtomicUsize>,
+    bulk_reserved_packets: Arc<AtomicUsize>,
     bulk_packet_capacity: usize,
     track_backlog: bool,
 }
 
 /// Channel receiver for received packets.
 pub struct PacketRx {
-    priority: UnboundedReceiver<PacketQueueItem>,
-    bulk: tokio::sync::mpsc::Receiver<PacketQueueItem>,
+    priority: tokio::sync::mpsc::Receiver<ReservedPacketQueueItem>,
+    bulk: tokio::sync::mpsc::Receiver<ReservedPacketQueueItem>,
     priority_queued_packets: Arc<AtomicUsize>,
+    #[cfg(test)]
     queued_packets: Arc<AtomicUsize>,
-    bulk_queued_packets: Arc<AtomicUsize>,
-    track_backlog: bool,
     pending_priority: Option<PendingPackets>,
     pending_bulk: Option<PendingPackets>,
     priority_closed: bool,
@@ -414,6 +419,23 @@ pub(crate) struct PacketBatch {
 }
 
 #[derive(Debug)]
+struct ReservedPacketQueueItem {
+    item: PacketQueueItem,
+    credits: PacketCredits,
+}
+
+/// Travels with the queued item and its pending tail. Dropping an item inside
+/// the channel (including concurrent receiver teardown) returns its credits.
+#[derive(Debug)]
+struct PacketCredits {
+    reserved: Arc<AtomicUsize>,
+    priority_queued: Option<Arc<AtomicUsize>>,
+    queued: Option<Arc<AtomicUsize>>,
+    remaining: usize,
+    channel_owned: bool,
+}
+
+#[derive(Debug)]
 enum PacketQueueItem {
     One(ReceivedPacket),
     Batch(PacketBatch),
@@ -433,11 +455,12 @@ enum PacketQueueTx {
 
 enum PacketSendFailure {
     Closed(PacketQueueItem),
-    DroppedBulk(usize),
+    Dropped(usize),
 }
 
 struct PendingPackets {
     batch: PacketBatch,
+    credits: Option<PacketCredits>,
     rx_loop_owned_at: Option<crate::perf_profile::TraceStamp>,
 }
 
@@ -449,23 +472,99 @@ struct PacketQueueDequeueCounts {
 }
 
 impl PacketQueueTx {
-    fn try_send(self, owner: &PacketTx, item: PacketQueueItem) -> Result<(), PacketSendFailure> {
+    fn sender(self, owner: &PacketTx) -> &Sender<ReservedPacketQueueItem> {
         match self {
-            PacketQueueTx::Priority => owner
-                .priority
-                .send(item)
-                .map_err(|error| PacketSendFailure::Closed(error.0)),
-            PacketQueueTx::Bulk => {
-                let packet_count = item.packet_count();
-                match owner.bulk.try_send(item) {
-                    Ok(()) => Ok(()),
-                    Err(TrySendError::Full(_item)) => {
-                        Err(PacketSendFailure::DroppedBulk(packet_count))
-                    }
-                    Err(TrySendError::Closed(item)) => Err(PacketSendFailure::Closed(item)),
-                }
+            Self::Priority => &owner.priority,
+            Self::Bulk => &owner.bulk,
+        }
+    }
+
+    fn reserved(self, owner: &PacketTx) -> &Arc<AtomicUsize> {
+        match self {
+            Self::Priority => &owner.priority_reserved_packets,
+            Self::Bulk => &owner.bulk_reserved_packets,
+        }
+    }
+
+    fn capacity(self, owner: &PacketTx) -> usize {
+        match self {
+            Self::Priority => TRANSPORT_PRIORITY_PACKET_CAPACITY,
+            Self::Bulk => owner.bulk_packet_capacity,
+        }
+    }
+
+    fn record_drop(self, count: usize) {
+        let event = match self {
+            Self::Priority => crate::perf_profile::Event::TransportPriorityDropped,
+            Self::Bulk => crate::perf_profile::Event::TransportBulkDropped,
+        };
+        crate::perf_profile::record_event_count(event, count as u64);
+    }
+
+    fn try_send(
+        self,
+        owner: &PacketTx,
+        item: ReservedPacketQueueItem,
+    ) -> Result<(), PacketSendFailure> {
+        let packet_count = item.item.packet_count();
+        match self.sender(owner).try_send(item) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_item)) => Err(PacketSendFailure::Dropped(packet_count)),
+            Err(TrySendError::Closed(item)) => Err(PacketSendFailure::Closed(item.item)),
+        }
+    }
+}
+
+impl PacketCredits {
+    fn new(tx: PacketQueueTx, owner: &PacketTx, count: usize) -> Self {
+        let priority_queued = matches!(tx, PacketQueueTx::Priority)
+            .then(|| Arc::clone(&owner.priority_queued_packets));
+        if let Some(counter) = &priority_queued {
+            counter.fetch_add(count, Relaxed);
+        }
+        let queued = owner
+            .track_backlog
+            .then(|| Arc::clone(&owner.queued_packets));
+        if let Some(counter) = &queued {
+            let previous = counter.fetch_add(count, Relaxed);
+            if previous < TRANSPORT_CHANNEL_BACKLOG_HIGH_WATER
+                && previous.saturating_add(count) >= TRANSPORT_CHANNEL_BACKLOG_HIGH_WATER
+            {
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::TransportChannelBacklogHigh,
+                );
             }
         }
+        Self {
+            reserved: Arc::clone(tx.reserved(owner)),
+            priority_queued,
+            queued,
+            remaining: count,
+            channel_owned: true,
+        }
+    }
+
+    fn leave_channel(&mut self) {
+        if !self.channel_owned {
+            return;
+        }
+        self.channel_owned = false;
+        for counter in [&self.priority_queued, &self.queued].into_iter().flatten() {
+            release_reserved_packets(counter, self.remaining);
+        }
+    }
+
+    fn consume(&mut self) {
+        debug_assert!(!self.channel_owned && self.remaining > 0);
+        self.remaining -= 1;
+        release_reserved_packets(&self.reserved, 1);
+    }
+}
+
+impl Drop for PacketCredits {
+    fn drop(&mut self) {
+        self.leave_channel();
+        release_reserved_packets(&self.reserved, self.remaining);
     }
 }
 
@@ -708,16 +807,21 @@ impl PendingPackets {
     fn new(
         mut batch: PacketBatch,
         rx_loop_owned_at: Option<crate::perf_profile::TraceStamp>,
+        credits: Option<PacketCredits>,
     ) -> Self {
         batch.packets.reverse();
         Self {
             batch,
+            credits,
             rx_loop_owned_at,
         }
     }
 
     fn next(&mut self) -> Option<ReceivedPacket> {
         let mut packet = self.batch.packets.pop()?;
+        if let Some(credits) = &mut self.credits {
+            credits.consume();
+        }
         if let Some(rx_loop_owned_at) = self.rx_loop_owned_at {
             packet.trace_rx_loop_owned_at = Some(rx_loop_owned_at);
         }

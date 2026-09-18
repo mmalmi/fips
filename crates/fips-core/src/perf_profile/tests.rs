@@ -33,7 +33,7 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_is_exhaustive() {
-    assert_eq!(N_EVENTS, 270);
+    assert_eq!(N_EVENTS, 271);
     for index in 0..N_EVENTS {
         let event = event_from_index(index);
         assert_eq!(event as usize, index);
@@ -177,6 +177,7 @@ fn live_event_counters_increment() {
         (Event::EndpointDataBatchDropped, 17),
         (Event::TransportChannelBacklogHigh, 19),
         (Event::TransportBulkDropped, 23),
+        (Event::TransportPriorityDropped, 24),
         (Event::PendingTunPacketDropped, 29),
         (Event::PendingEndpointPacketDropped, 31),
         (Event::UdpSendSendmmsgBatch, 37),

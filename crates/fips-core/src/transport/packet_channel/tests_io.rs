@@ -54,8 +54,9 @@ fn packet_rx_drain_ready_drains_bulk_batch_tail_in_one_call() {
         0,
         "dequeued batch tail should be rx-loop-owned, not channel-owned"
     );
-    assert_eq!(bulk_queued_packets(&tx), 0);
+    assert_eq!(bulk_reserved_packets(&tx), 1);
     assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0xcc);
+    assert_eq!(bulk_reserved_packets(&tx), 0);
 }
 
 #[test]
@@ -159,7 +160,7 @@ async fn packet_channel_bounded_bulk_drops_without_blocking_priority() {
     ))
     .expect("first bulk packet should fill bounded bulk lane");
     assert_eq!(queued_packets(&tx), 1);
-    assert_eq!(bulk_queued_packets(&tx), 1);
+    assert_eq!(bulk_reserved_packets(&tx), 1);
 
     tx.send(received_packet(
         TransportId::new(1),
@@ -172,7 +173,7 @@ async fn packet_channel_bounded_bulk_drops_without_blocking_priority() {
         1,
         "dropped bulk must roll back channel-owned backlog accounting"
     );
-    assert_eq!(bulk_queued_packets(&tx), 1);
+    assert_eq!(bulk_reserved_packets(&tx), 1);
     assert_eq!(rx.bulk.len(), 1);
 
     tx.send(received_packet(
@@ -183,17 +184,17 @@ async fn packet_channel_bounded_bulk_drops_without_blocking_priority() {
     .expect("priority packet should still enter reserve lane");
     assert_eq!(queued_packets(&tx), 2);
     assert_eq!(
-        bulk_queued_packets(&tx),
+        bulk_reserved_packets(&tx),
         1,
         "priority packets must not consume bulk packet capacity"
     );
 
     assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0x11);
     assert_eq!(queued_packets(&tx), 1);
-    assert_eq!(bulk_queued_packets(&tx), 1);
+    assert_eq!(bulk_reserved_packets(&tx), 1);
     assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0xaa);
     assert_eq!(queued_packets(&tx), 0);
-    assert_eq!(bulk_queued_packets(&tx), 0);
+    assert_eq!(bulk_reserved_packets(&tx), 0);
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
 }
 
@@ -208,7 +209,7 @@ async fn packet_channel_bounded_bulk_batch_drop_counts_packets_not_items() {
     ]))
     .expect("first bulk batch should fill bounded bulk lane");
     assert_eq!(queued_packets(&tx), 2);
-    assert_eq!(bulk_queued_packets(&tx), 2);
+    assert_eq!(bulk_reserved_packets(&tx), 2);
     assert_eq!(
         rx.bulk.len(),
         1,
@@ -226,7 +227,7 @@ async fn packet_channel_bounded_bulk_batch_drop_counts_packets_not_items() {
         "dropped bulk batch must roll back every packet it accounted"
     );
     assert_eq!(
-        bulk_queued_packets(&tx),
+        bulk_reserved_packets(&tx),
         2,
         "dropped bulk batch must not expand the packet-count backlog"
     );
@@ -234,8 +235,9 @@ async fn packet_channel_bounded_bulk_batch_drop_counts_packets_not_items() {
 
     assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0xaa);
     assert_eq!(queued_packets(&tx), 0);
-    assert_eq!(bulk_queued_packets(&tx), 0);
+    assert_eq!(bulk_reserved_packets(&tx), 1);
     assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0xab);
+    assert_eq!(bulk_reserved_packets(&tx), 0);
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
 }
 
@@ -251,7 +253,7 @@ async fn packet_channel_bounded_bulk_batch_admits_prefix_before_dropping_tail() 
     ))
     .expect("first bulk packet should consume one bulk packet credit");
     assert_eq!(queued_packets(&tx), 1);
-    assert_eq!(bulk_queued_packets(&tx), 1);
+    assert_eq!(bulk_reserved_packets(&tx), 1);
 
     tx.send_packet_batch(packet_batch(vec![
         received_packet(TransportId::new(1), addr.clone(), bulk_packet(0xbb)),
@@ -265,7 +267,7 @@ async fn packet_channel_bounded_bulk_batch_admits_prefix_before_dropping_tail() 
         "only the admitted prefix should count as channel-owned"
     );
     assert_eq!(
-        bulk_queued_packets(&tx),
+        bulk_reserved_packets(&tx),
         3,
         "bulk packet credits should be capped at channel capacity"
     );
@@ -282,18 +284,18 @@ async fn packet_channel_bounded_bulk_batch_admits_prefix_before_dropping_tail() 
     ))
     .expect("priority packets should still enter their reserve lane");
     assert_eq!(priority_queued_packets(&tx), 1);
-    assert_eq!(bulk_queued_packets(&tx), 3);
+    assert_eq!(bulk_reserved_packets(&tx), 3);
 
     assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0x11);
     assert_eq!(priority_queued_packets(&tx), 0);
-    assert_eq!(bulk_queued_packets(&tx), 3);
+    assert_eq!(bulk_reserved_packets(&tx), 3);
     assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0xaa);
-    assert_eq!(bulk_queued_packets(&tx), 2);
+    assert_eq!(bulk_reserved_packets(&tx), 2);
     assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0xbb);
     assert_eq!(
-        bulk_queued_packets(&tx),
-        0,
-        "dequeued bulk batch should release all admitted prefix credits"
+        bulk_reserved_packets(&tx),
+        1,
+        "the unconsumed batch tail must retain its packet credit"
     );
     assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0xbc);
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
@@ -359,7 +361,7 @@ fn packet_channel_counts_channel_owned_packet_backlog() {
     ]))
     .expect("bulk batch send should succeed");
     assert_eq!(queued_packets(&tx), 3);
-    assert_eq!(bulk_queued_packets(&tx), 3);
+    assert_eq!(bulk_reserved_packets(&tx), 3);
 
     assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0xaa);
     assert_eq!(
@@ -368,9 +370,9 @@ fn packet_channel_counts_channel_owned_packet_backlog() {
         "once a batch item is dequeued, its tail is rx-loop-owned, not channel-owned"
     );
     assert_eq!(
-        bulk_queued_packets(&tx),
-        0,
-        "bulk capacity is released when the rx loop owns the batch tail"
+        bulk_reserved_packets(&tx),
+        2,
+        "pending batch tails continue to reserve bulk capacity"
     );
 
     tx.send(received_packet(
@@ -380,15 +382,15 @@ fn packet_channel_counts_channel_owned_packet_backlog() {
     ))
     .expect("priority packet send should succeed");
     assert_eq!(queued_packets(&tx), 1);
-    assert_eq!(bulk_queued_packets(&tx), 0);
+    assert_eq!(bulk_reserved_packets(&tx), 2);
 
     assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0x11);
     assert_eq!(queued_packets(&tx), 0);
-    assert_eq!(bulk_queued_packets(&tx), 0);
+    assert_eq!(bulk_reserved_packets(&tx), 2);
     assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0xbb);
     assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0xcc);
     assert_eq!(queued_packets(&tx), 0);
-    assert_eq!(bulk_queued_packets(&tx), 0);
+    assert_eq!(bulk_reserved_packets(&tx), 0);
 }
 
 #[test]
@@ -416,5 +418,5 @@ fn packet_channel_send_failure_rolls_back_backlog() {
     ];
     assert!(tx.send_packet_batch(packet_batch(packets)).is_err());
     assert_eq!(queued_packets(&tx), 0);
-    assert_eq!(bulk_queued_packets(&tx), 0);
+    assert_eq!(bulk_reserved_packets(&tx), 0);
 }
