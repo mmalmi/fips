@@ -98,6 +98,7 @@ impl BuyerAuthorizer {
                     attempts: Vec::new(),
                     observed_units: 0,
                     submitted_units: 0,
+                    quota_blocked: false,
                     completed: CompletedEvidence::default(),
                 },
             );

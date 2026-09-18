@@ -59,7 +59,7 @@ impl BuyerAuthorizer {
             [0; 32]
         };
         let units = u64::try_from(request.session_payload.len()).ok()?;
-        Self::reserve_attempt(&mut s, id, digest, units, admit)
+        Self::reserve_attempt(&mut s, id, digest, units, local_only, admit)
     }
 
     pub(super) fn prepare_intent(
@@ -113,7 +113,7 @@ impl BuyerAuthorizer {
         let Ok(units) = u64::try_from(intent.session_bytes) else {
             return Reject;
         };
-        Self::reserve_attempt(&mut state, id, [0; 32], units, || Some(()))
+        Self::reserve_attempt(&mut state, id, [0; 32], units, true, || Some(()))
             .map_or(Reject, |(token, ())| Track(token))
     }
 
@@ -122,6 +122,7 @@ impl BuyerAuthorizer {
         id: String,
         digest: [u8; 32],
         units: u64,
+        source_admission: bool,
         admit: impl FnOnce() -> Option<T>,
     ) -> Option<(u64, T)> {
         if units == 0 || s.pending.len() >= s.limits.max_pending {
@@ -137,10 +138,17 @@ impl BuyerAuthorizer {
         let token = s.next_token;
         let next_token = token.checked_add(1)?;
         let q = s.quotes.get_mut(&id)?;
-        let observed = q.observed_units.checked_add(units)?;
-        if (legacy && q.attempts.len() >= limit) || observed > q.contract.max_units {
+        if legacy && q.attempts.len() >= limit {
             return None;
         }
+        let Some(observed) = q
+            .observed_units
+            .checked_add(units)
+            .filter(|n| *n <= q.contract.max_units)
+        else {
+            q.quota_blocked |= source_admission;
+            return None;
+        };
         let admitted = admit()?;
         q.observed_units = observed;
         let index = q.attempts.len();
@@ -158,3 +166,37 @@ impl BuyerAuthorizer {
         Some((token, admitted))
     }
 }
+
+impl BuyerAuthorizer {
+    pub(crate) fn is_local(&self, local: NodeAddr) -> Result<bool, String> {
+        Ok(self.state.lock().map_err(|_| "buyer state poisoned")?.local == local)
+    }
+
+    /// Read only actual local quota denial for the exact accepted offer. Quote
+    /// IDs bind to channel-specific contract IDs; a matching destination alone
+    /// cannot attribute denial to a new trial or changed agreement.
+    pub(crate) fn quota_blocked(
+        &self,
+        offer: &crate::route_quotes::RouteOffer,
+    ) -> Result<Option<bool>, String> {
+        let state = self.state.lock().map_err(|_| "buyer state poisoned")?;
+        if offer.buyer != state.local {
+            return Ok(None);
+        }
+        for quote in state.quotes.values().filter(|q| q.active) {
+            let channel = &state.channels[&quote.contract.channel_id];
+            if channel.active
+                && channel.provider == offer.provider
+                && crate::route_quotes::contract_from_offer(offer, &channel.terms)
+                    .is_ok_and(|contract| contract == quote.contract)
+            {
+                return Ok(Some(quote.quota_blocked));
+            }
+        }
+        Ok(None)
+    }
+}
+
+#[cfg(test)]
+#[path = "admission_tests.rs"]
+mod tests;

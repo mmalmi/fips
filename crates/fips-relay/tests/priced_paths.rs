@@ -1,4 +1,6 @@
 //! Real controllers, test-money channels, native FIPS/MMP and SimNetwork.
+#[path = "priced_paths/admission.rs"]
+mod admission;
 #[path = "priced_paths/automatic_quality.rs"]
 mod automatic_quality;
 #[path = "priced_paths/impairments.rs"]
@@ -224,6 +226,11 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
         let mut config = Config::new();
         config.node.identity.nsec = Some(fips_core::encode_nsec(&key.keypair().secret_key()));
         config.node.control.enabled = false;
+        if matches!(scenario, Scenario::AdmissionExhaustion) && i == 3 {
+            // Source keeps Full mode and its real feedback grace period; the
+            // receiver omits reports so delivery cannot qualify a trial.
+            config.node.session_mmp.mode = fips_core::mmp::MmpMode::Minimal;
+        }
         config.node.discovery.nostr.enabled = false;
         config.node.discovery.lan.enabled = false;
         config.node.discovery.local.enabled = false;
@@ -340,7 +347,9 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
         quote_inputs.push((transport.clone(), quote_policy.clone()));
         let quotes = RouteQuotes::new(nodes[i].clone(), transport, quote_policy).unwrap();
         let quotes = Arc::new(if i == 0 {
-            quotes.with_price_selection(selection.clone()).unwrap()
+            quotes
+                .with_price_selection(selection.clone(), buyers[0].clone())
+                .unwrap()
         } else {
             quotes
         });
@@ -445,7 +454,21 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
         vec![first.clone()],
         "discovery alone does not buy the new quote"
     );
-    if exhaust_trial {
+    let mut blocked_trial_usage = None;
+    if matches!(scenario, Scenario::AdmissionExhaustion) {
+        blocked_trial_usage = Some(
+            admission::exercise(
+                &nodes,
+                &peers,
+                &controllers,
+                &services,
+                &mut receivers[3],
+                &first,
+                root.path(),
+            )
+            .await,
+        );
+    } else if exhaust_trial {
         controllers[0].pause_route_refresh().await.unwrap();
         // Establish actual delivery before the saturation phase so setup timing
         // is not mistaken for an allowance result.
@@ -515,10 +538,26 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
             errors(&controllers)
         );
         let after_exhaustion = services[0].quotes.refresh_route(peers[3]).await.unwrap();
-        assert_eq!(
-            after_exhaustion.provider, first.provider,
-            "exhaustion cannot quarantine the healthy cheap provider"
-        );
+        if quality.has_recent_delivery_feedback
+            && quality
+                .loss_rate
+                .is_some_and(|loss| loss <= f64::from(selection.max_loss_percent) / 100.0)
+            && quality
+                .rtt_ms
+                .is_some_and(|rtt| rtt <= selection.max_rtt_ms as f64)
+        {
+            assert_eq!(
+                after_exhaustion.provider, first.provider,
+                "an exhausted qualified trial still promotes its healthy provider"
+            );
+        } else {
+            assert_eq!(
+                after_exhaustion.provider,
+                *peers[2].node_addr(),
+                "an exhausted unqualified trial must allow an alternative quote"
+            );
+            assert!(after_exhaustion.trial);
+        }
         assert!(
             observed >= first.contract.max_units * 90 / 100,
             "trial must really reach its cap: observed={observed} usage={usage:?} quality={quality:?} errors={:?}",
@@ -765,7 +804,7 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
     services[0].quotes = Arc::new(
         RouteQuotes::new(nodes[0].clone(), transport.clone(), quote_policy.clone())
             .unwrap()
-            .with_price_selection(selection.clone())
+            .with_price_selection(selection.clone(), buyers[0].clone())
             .unwrap(),
     );
     let restored = Arc::new(
@@ -820,6 +859,13 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
     );
     assert_eq!(controllers[0].purchase_history().await.unwrap(), history);
     assert_eq!(controllers[0].locked_capital_sat().await.unwrap(), locked);
+    if let Some(used) = blocked_trial_usage {
+        assert_eq!(
+            buyers[0].observed_units(&first.contract.id),
+            Some(used),
+            "alternative payload and controller reload cannot alter the exhausted original trial"
+        );
+    }
     controllers[0].pause_renewals().await.unwrap();
     // Settle both used neighbor channels, including the retired path. Their
     // accounting is retained across replacement; no source budget is reset.
