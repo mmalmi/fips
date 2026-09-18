@@ -23,4 +23,5 @@ mod tests {
     include!("session/tests/receive_dispatch_tun.rs");
     include!("session/tests/rekey_recovery.rs");
     include!("session/tests/report_epoch.rs");
+    include!("session/tests/link_report_epoch.rs");
 }

@@ -47,9 +47,7 @@ impl ReportEpochFixture {
     }
 
     async fn receive(&mut self, current: bool, kind: SessionMessageType, body: &[u8]) -> usize {
-        use crate::dataplane::{
-            DataplaneLiveOutboundFirsts, DataplaneLiveTurnIo, DataplaneRawIngress, PacketProtocol,
-        };
+        use crate::dataplane::{DataplaneRawIngress, PacketProtocol};
         use crate::node::session_wire::{FSP_FLAG_K, build_fsp_header};
         use crate::transport::{ReceivedPacket, TransportAddr, TransportId};
 
@@ -67,7 +65,7 @@ impl ReportEpochFixture {
         let ciphertext = sender.encrypt_with_aad(&plaintext, &header).unwrap();
         let mut wire = header.to_vec();
         wire.extend(ciphertext);
-        let mut raw = std::collections::VecDeque::from([DataplaneRawIngress::from_live_received(
+        let raw = DataplaneRawIngress::from_live_received(
             PacketProtocol::Fsp,
             ReceivedPacket::with_timestamp(
                 TransportId::new(1),
@@ -77,49 +75,58 @@ impl ReportEpochFixture {
             ),
         )
         .with_fsp_source(self.remote)
-        .with_previous_hop(self.remote)]);
-        let (endpoint_tx, _endpoint_rx) = crate::node::EndpointEventSender::channel(1);
-        let (_, mut endpoint_rx) = crate::node::endpoint_data_batch_channel(1);
-        let (_, mut tun_rx) = crate::upper::tun::tun_outbound_channel(1);
-        let deadline = Instant::now() + std::time::Duration::from_secs(2);
-        loop {
-            let mut turn = self
-                .node
-                .dataplane
-                .pump_turn_with_firsts_and_transport_batch(
-                    None,
-                    &mut raw,
-                    1,
-                    DataplaneLiveOutboundFirsts::default(),
-                    DataplaneLiveTurnIo {
-                        endpoint_data_rx: &mut endpoint_rx,
-                        endpoint_limit: 0,
-                        tun_outbound_rx: &mut tun_rx,
-                        tun_limit: 0,
-                        endpoint_tx: &endpoint_tx,
-                        transports: &self.node.transports,
-                        crypto_limit: 1,
-                        transport_send_batch_packets: 1,
-                    },
-                )
-                .await;
-            assert!(
-                turn.raw_ingress_drops().is_empty(),
-                "encrypted packet must route"
-            );
-            if turn.fsp_session_ingress_count() != 0 {
-                assert_eq!(turn.fsp_session_ingress_count(), 1);
-                return self
-                    .node
-                    .process_dataplane_authenticated_ingress(turn.take_fsp_authenticated_ingress())
-                    .await;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "encrypted packet must authenticate"
-            );
-            tokio::task::yield_now().await;
+        .with_previous_hop(self.remote);
+        receive_epoch_wire(&mut self.node, raw).await
+    }
+}
+
+async fn receive_epoch_wire(node: &mut Node, raw: crate::dataplane::DataplaneRawIngress) -> usize {
+    use crate::dataplane::{DataplaneLiveOutboundFirsts, DataplaneLiveTurnIo};
+    let mut raw = std::collections::VecDeque::from([raw]);
+    let (endpoint_tx, _endpoint_rx) = crate::node::EndpointEventSender::channel(1);
+    let (_, mut endpoint_rx) = crate::node::endpoint_data_batch_channel(1);
+    let (_, mut tun_rx) = crate::upper::tun::tun_outbound_channel(1);
+    let deadline = Instant::now() + std::time::Duration::from_secs(2);
+    let mut processed = 0;
+    loop {
+        let mut turn = node
+            .dataplane
+            .pump_turn_with_firsts_and_transport_batch(
+                None,
+                &mut raw,
+                1,
+                DataplaneLiveOutboundFirsts::default(),
+                DataplaneLiveTurnIo {
+                    endpoint_data_rx: &mut endpoint_rx,
+                    endpoint_limit: 0,
+                    tun_outbound_rx: &mut tun_rx,
+                    tun_limit: 0,
+                    endpoint_tx: &endpoint_tx,
+                    transports: &node.transports,
+                    crypto_limit: 8,
+                    transport_send_batch_packets: 1,
+                },
+            )
+            .await;
+        assert!(
+            turn.raw_ingress_drops().is_empty(),
+            "encrypted packet must route"
+        );
+        assert!(
+            turn.drops().is_empty(),
+            "encrypted packet must authenticate"
+        );
+        let delivered =
+            turn.fsp_session_ingress_count() != 0 || !turn.fmp_link_ingress().is_empty();
+        processed += node.process_dataplane_control_ingress(&mut turn).await;
+        if delivered {
+            return processed;
         }
+        assert!(
+            Instant::now() < deadline,
+            "encrypted packet must reach dispatch"
+        );
+        tokio::task::yield_now().await;
     }
 }
 
