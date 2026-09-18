@@ -13,6 +13,7 @@ use cashu_service::{
 use fips_core::{Identity, config::PeerConfig};
 use fips_relay::{
     customer::{CustomerClient, CustomerCommand as Action, CustomerProfile},
+    ledger::BillingBasis,
     service::{AdminRequest, RelayService, ServiceConfig, request},
 };
 use serde_json::{Value, json};
@@ -94,6 +95,15 @@ async fn deliver(client: &mut CustomerClient, destination: &ServiceConfig, epoch
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn customer_app_uses_real_accounts_and_preserves_them_across_reopen() {
+    exercise(BillingBasis::ForwardingAttempt).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn customer_app_uses_forwarding_data_mesh_and_preserves_terms_across_reopen() {
+    exercise(BillingBasis::ForwardingData).await;
+}
+
+async fn exercise(billing: BillingBasis) {
     tokio::time::timeout(Duration::from_secs(160), async {
         let root = tempfile::tempdir().unwrap();
         let now = SystemTime::now()
@@ -116,6 +126,7 @@ async fn customer_app_uses_real_accounts_and_preserves_them_across_reopen() {
         let mut sockets = Vec::new();
         let mut npubs = Vec::new();
         for cfg in &mut configs {
+            cfg.terms.billing = billing;
             let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
             cfg.transports = udp_transports(socket.local_addr().unwrap());
             sockets.push(socket);
@@ -150,12 +161,13 @@ async fn customer_app_uses_real_accounts_and_preserves_them_across_reopen() {
             ));
         }
         let directory = root.path().join("customer");
-        let profile = profile(
+        let mut profile = profile(
             &npubs[0],
             udp_bind(&configs[0]).to_string(),
             &npubs[1],
             mint.url(),
         );
+        profile.billing = billing;
         let mut client = CustomerClient::open(&directory).unwrap();
         assert!(
             CustomerClient::open(&directory).is_err(),
@@ -168,6 +180,10 @@ async fn customer_app_uses_real_accounts_and_preserves_them_across_reopen() {
             .await
             .unwrap();
         let customer_npub = setup["npub"].as_str().unwrap().to_string();
+        assert_eq!(
+            setup["profile"]["billing"],
+            serde_json::to_value(billing).unwrap()
+        );
         assert_eq!(
             client
                 .execute(Action::Setup {
@@ -184,6 +200,21 @@ async fn customer_app_uses_real_accounts_and_preserves_them_across_reopen() {
                 .execute(Action::Setup { profile: changed })
                 .await
                 .is_err()
+        );
+        let mut changed = profile.clone();
+        changed.billing = match billing {
+            BillingBasis::ForwardingAttempt => BillingBasis::ForwardingData,
+            BillingBasis::ForwardingData => BillingBasis::ForwardingAttempt,
+            BillingBasis::UniqueSessionEnvelope => unreachable!(),
+        };
+        assert!(
+            client
+                .execute(Action::Setup {
+                    profile: changed.clone()
+                })
+                .await
+                .is_err(),
+            "a saved tariff cannot be replaced"
         );
         let grant_wallet = root.path().join("grant");
         fund(&grant_wallet, mint.url(), &network, 128).await;
@@ -203,7 +234,9 @@ async fn customer_app_uses_real_accounts_and_preserves_them_across_reopen() {
             client.execute(Action::Balance).await.is_err(),
             "wallet operations must not race the running service"
         );
-        client.execute(Action::Buy).await.unwrap();
+        client.execute(Action::Buy).await.unwrap_or_else(|error| {
+            panic!("customer must accept the configured {billing:?} mesh tariff: {error}")
+        });
         // The destination explicitly funds its own return direction, including
         // FIPS session replies. A customer's purchase cannot authorize spending
         // by another endpoint or grant that endpoint free transit.
@@ -222,10 +255,33 @@ async fn customer_app_uses_real_accounts_and_preserves_them_across_reopen() {
                 let before = client.execute(Action::Status).await.unwrap();
                 client.execute(Action::Stop).await.unwrap();
                 drop(client);
+                if billing == BillingBasis::ForwardingAttempt {
+                    // A profile saved by the original phone app has no billing
+                    // field. Reopening it must keep its exact original tariff.
+                    let path = directory.join("profile.json");
+                    let mut saved: Value =
+                        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                    saved.as_object_mut().unwrap().remove("billing");
+                    std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+                }
                 client = CustomerClient::open(&directory).unwrap();
+                assert!(
+                    client
+                        .execute(Action::Setup {
+                            profile: changed.clone()
+                        })
+                        .await
+                        .is_err(),
+                    "reopen must preserve the immutable tariff"
+                );
                 client.execute(Action::Start).await.unwrap();
                 let after = client.execute(Action::Status).await.unwrap();
                 assert_eq!(before["npub"], after["npub"]);
+                assert_eq!(before["profile"], after["profile"]);
+                assert_eq!(
+                    after["profile"]["billing"],
+                    serde_json::to_value(billing).unwrap()
+                );
                 assert_eq!(before["relay"]["history"], after["relay"]["history"]);
             }
         }
@@ -320,6 +376,7 @@ fn customer_profiles_reject_unbounded_or_non_test_configuration() {
         ("mint_url", json!("https://mint.example.com")),
         ("entry_address", json!("0.0.0.0:0")),
         ("destination_npub", json!(a.npub())),
+        ("billing", json!("unique_session_envelope")),
     ] {
         let mut value_json = serde_json::to_value(&good).unwrap();
         value_json[field] = value;
