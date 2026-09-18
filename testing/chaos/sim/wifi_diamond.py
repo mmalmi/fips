@@ -83,11 +83,14 @@ class DiamondRun(WifiRun):
         return config
 
     def before_launch(self):
+        self.prepare_source()
+        self.offline_empty()
+        self.phase("four stopped accounts are unfunded; no mint is running")
+
+    def prepare_source(self):
         self.source.prepare(self.source_config())
         self.financial["source"] = self.source.monetary_journals()
-        self.offline_empty()
         self.evidence["auxiliary_identities"] = {"source": self.source.npub}
-        self.phase("four stopped accounts are unfunded; no mint is running")
 
     def offline_empty(self):
         balances = {}

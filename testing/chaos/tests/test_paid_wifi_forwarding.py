@@ -11,7 +11,8 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sim.paid_wifi import PaidWifiRun
-from sim.paid_wifi_forwarding import LOOPBACKS, MintForwards, listeners
+from sim.paid_wifi_forwarding import LOOPBACKS, MintForwards, finish_mint, listeners
+from sim.paid_wifi_mint import LocalMint
 from sim.wifi_remote import Router
 
 
@@ -261,6 +262,65 @@ class ForwardingTests(unittest.TestCase):
         with patch("sim.paid_wifi.WifiRun.finish"):
             run.finish()
         run.mint.finish.assert_called_once_with()
+
+    def test_shared_cleanup_before_mint_start_preserves_prior_failure(self):
+        binary = self.root / "unused-mint"
+        binary.write_bytes(b"not executed")
+        run = SimpleNamespace(mint=LocalMint(binary, "127.0.0.1", self.root),
+                              forwards=None, evidence={"passed": False}, save=Mock())
+        finish_mint(run)
+        self.assertEqual(run.evidence, {"passed": False, "mint_cleanup": {"started": False}})
+        self.popen.assert_not_called()
+        run.save.assert_called_once_with()
+
+    def test_shared_cleanup_keeps_uncollected_mint_without_forwards(self):
+        run = self.run_fixture()
+        run.mint.finish.return_value = {"retained_for_recovery": True, "issued_sat": 128,
+                                        "collected_sat": 0}
+        finish_mint(run)
+        self.assertFalse(run.evidence["passed"])
+        self.assertEqual(run.evidence["mint_cleanup"], run.mint.finish.return_value)
+        run.mint.request.assert_not_called()
+        run.save.assert_called_once_with()
+
+    def test_shared_cleanup_after_partial_forward_start_only_stops_owned_child(self):
+        def spawn_once(args, **kwargs):
+            if self.spawned:
+                raise OSError("cannot spawn")
+            return self.spawn(args, **kwargs)
+        run = self.run_fixture()
+        run.forwards = self.owner
+        self.popen.side_effect = spawn_once
+        with self.assertRaises(OSError):
+            self.owner.start()
+        run.evidence["passed"] = False
+        run.mint.request.return_value = {**COLLECTED, "issued_sat": 0, "collected_sat": 0}
+        finish_mint(run)
+        self.assertEqual(len(self.spawned), 1)
+        self.spawned[0].terminate.assert_called_once_with()
+        self.assertTrue(run.evidence["mint_forward_cleanup"]["stopped"])
+        self.assertFalse(run.evidence["passed"])
+        run.mint.finish.assert_called_once_with()
+        run.save.assert_called_once_with()
+
+    def test_router_cleanup_error_survives_mint_retention(self):
+        run = self.run_fixture()
+        run.forwards = self.owner
+        self.owner.start()
+        run.mint.request.side_effect = subprocess.TimeoutExpired("report", 90)
+        failure = OSError("original router cleanup error")
+        with patch("sim.paid_wifi.WifiRun.finish", side_effect=failure):
+            with self.assertRaises(OSError) as raised:
+                run.finish()
+        self.assertIs(raised.exception, failure)
+        self.assertEqual(run.evidence["mint_cleanup_error"], "TimeoutExpired")
+        self.assertFalse(run.evidence["passed"])
+        self.assertEqual(run.evidence["mint_retained_for_recovery"], run.mint.info)
+        self.assertTrue(self.owner.info["retained_for_recovery"])
+        run.mint.finish.assert_not_called()
+        run.save.assert_called_once_with()
+        for child in self.spawned:
+            child.terminate.assert_not_called()
 
     def test_lan_mode_uses_existing_reachability_and_mint_cleanup(self):
         run = self.run_fixture()

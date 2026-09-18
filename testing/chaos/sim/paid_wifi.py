@@ -16,7 +16,7 @@ from .paid_faults import paid_progress, validate_finances
 from .paid_relay import PaidRelayRun, eventually, relay_config
 from .paid_settlement import original_channels, require, settle_and_collect
 from .paid_wifi_mint import LocalMint
-from .paid_wifi_forwarding import MintForwards
+from .paid_wifi_forwarding import MintForwards, finish_mint
 from .remote_mint import RemoteMint
 from .wifi_active_outage import active_radio_outage
 from .wifi_discovery import WifiRun
@@ -214,24 +214,7 @@ class PaidWifiRun(WifiRun):
         try:
             super().finish()
         finally:
-            try:
-                if self.forwards is not None:
-                    report = self.mint.request({"type": "report"})
-                    result = self.forwards.finish(report)
-                    self.evidence["mint_forward_cleanup"] = result
-                    if result.get("retained_for_recovery"):
-                        raise RuntimeError("outstanding test funds require the original mint forwards")
-                result = self.mint.finish()
-                self.evidence["mint_cleanup"] = result
-                if result.get("retained_for_recovery"):
-                    self.evidence["passed"] = False
-            except Exception as error:
-                if self.forwards is not None:
-                    self.forwards.retain(type(error).__name__)
-                self.evidence["mint_cleanup_error"] = type(error).__name__
-                self.evidence["mint_retained_for_recovery"] = self.mint.info
-                self.evidence["passed"] = False
-            self.save()
+            finish_mint(self)
         if not self.evidence["passed"]:
             raise RuntimeError("paid Wi-Fi acceptance incomplete; preserve the recorded mint and accounts")
 
