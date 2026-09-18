@@ -3,6 +3,9 @@ use super::*;
 
 const REFRESH_SECONDS: u64 = 5;
 
+#[cfg(test)]
+mod tests;
+
 pub(super) struct RefreshCheck {
     checked: tokio::time::Instant,
     free: Option<RouteOffer>,
@@ -58,6 +61,43 @@ impl Controller {
             || j.watched_routes
                 .values()
                 .any(|w| w.paused && w.pending.as_ref().is_some_and(|o| o.id == offer_id))
+    }
+
+    /// Bind a source watch in the transaction that reserves its purchase. A
+    /// quote rejected before that boundary must leave fresh selection possible.
+    pub(super) fn reserve_watched_offer(
+        j: &mut Journal,
+        expected: Option<&WatchedRoute>,
+        offer: &RouteOffer,
+    ) -> Result<(), String> {
+        let Some(expected) = expected else {
+            return Ok(());
+        };
+        if Self::offer_paused(j, &offer.id) {
+            return Err("route change paused".into());
+        }
+        let watch = j
+            .watched_routes
+            .get_mut(&expected.destination)
+            .ok_or("source authorization missing")?;
+        if watch.paused
+            || expected.paused
+            || watch.destination != expected.destination
+            || watch.billing != expected.billing
+            || watch.max_rate_msat_per_kib != expected.max_rate_msat_per_kib
+            || !watch.accepts(offer)
+            || offer.buyer != j.local
+            || offer.mint_url != j.policy.mint_url
+        {
+            return Err("route exceeds source authorization".into());
+        }
+        if watch.pending.as_ref().is_some_and(|saved| saved != offer)
+            || (expected.pending.is_some() && watch.pending != expected.pending)
+        {
+            return Err("previous watched purchase unfinished or changed".into());
+        }
+        watch.pending = Some(offer.clone());
+        Ok(())
     }
 
     pub async fn watched_routes(&self) -> Result<Vec<WatchedRoute>, String> {
@@ -181,28 +221,14 @@ impl Controller {
             self.activate_source_route(&old.offer).await?;
             return Ok(RouteAccess::Paid(old.purchase.clone()));
         }
-        let key = id.to_string();
-        let saved = offer.clone();
-        self.change(move |j| {
-            let watch = j
-                .watched_routes
-                .get_mut(&key)
-                .ok_or("source authorization missing")?;
-            if watch.paused || !watch.accepts(&saved) {
-                return Err("route exceeds source authorization".into());
-            }
-            if watch.pending.as_ref().is_some_and(|o| o != &saved) {
-                return Err("previous watched purchase unfinished".into());
-            }
-            watch.pending = Some(saved);
-            Ok(())
-        })
-        .await?;
-        let purchase = self.purchase_offer(offer.clone()).await.inspect_err(|_| {
-            self.services
-                .quotes
-                .invalidate_price(offer.provider, *offer.destination.node_addr());
-        })?;
+        let purchase = self
+            .purchase_watched_offer(offer.clone(), watch.clone())
+            .await
+            .inspect_err(|_| {
+                self.services
+                    .quotes
+                    .invalidate_price(offer.provider, *offer.destination.node_addr());
+            })?;
         let key = id.to_string();
         self.change(move |j| {
             let watch = j

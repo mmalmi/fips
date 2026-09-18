@@ -136,12 +136,28 @@ impl Controller {
     }
 
     pub(super) async fn purchase_offer(&self, offer: RouteOffer) -> Result<Purchase, String> {
+        self.purchase(offer, None).await
+    }
+
+    pub(super) async fn purchase_watched_offer(
+        &self,
+        offer: RouteOffer,
+        watch: WatchedRoute,
+    ) -> Result<Purchase, String> {
+        self.purchase(offer, Some(watch)).await
+    }
+
+    async fn purchase(
+        &self,
+        offer: RouteOffer,
+        watch: Option<WatchedRoute>,
+    ) -> Result<Purchase, String> {
         if offer.price.msat == 0 {
             return Err("free route needs no payment channel; use open_route".into());
         }
         self.services.quotes.free.accept(&offer)?;
         let peer = self.neighbor(offer.provider).await?;
-        self.prepare_changed_route(&offer).await?;
+        self.prepare_changed_route(&offer, watch.as_ref()).await?;
         let existing = self
             .snapshot()
             .await?
@@ -161,8 +177,12 @@ impl Controller {
                 .contains_key(&existing.purchase.channel.id)
             {
                 let fresh = offer.clone();
-                self.change(move |j| Self::reopen_refunded_route(j, &existing, fresh))
-                    .await?;
+                let expected = watch.clone();
+                self.change(move |j| {
+                    Self::reopen_refunded_route(j, &existing, fresh.clone())?;
+                    Self::reserve_watched_offer(j, expected.as_ref(), &fresh)
+                })
+                .await?;
             } else {
                 Self::check_purchase(
                     &self.snapshot().await?,
@@ -179,6 +199,21 @@ impl Controller {
                 {
                     return Err("existing route needs explicit replacement".into());
                 }
+                if let Some(expected) = watch {
+                    let saved = existing.clone();
+                    self.change(move |j| {
+                        let current = j
+                            .outgoing
+                            .get(&saved.purchase.contract.id)
+                            .ok_or("purchase intent missing")?;
+                        if current.offer != saved.offer || current.purchase != saved.purchase {
+                            return Err("purchase intent changed".into());
+                        }
+                        Self::check_purchase(j, &saved.offer, Some(&saved.purchase.channel.id))?;
+                        Self::reserve_watched_offer(j, Some(&expected), &offer)
+                    })
+                    .await?;
+                }
                 if existing.accepted {
                     self.activate_source_route(&existing.offer).await?;
                     return Ok(existing.purchase);
@@ -188,7 +223,11 @@ impl Controller {
             }
         }
         let offer = self
-            .change(move |j| Self::reserve_purchase(j, offer))
+            .change(move |j| {
+                let reserved = Self::reserve_purchase(j, offer.clone())?;
+                Self::reserve_watched_offer(j, watch.as_ref(), &offer)?;
+                Ok(reserved)
+            })
             .await?;
         let (funding_id, funded) = self.fund(&offer).await?;
         let contract = contract_from_offer(&offer, &funded.terms)?;

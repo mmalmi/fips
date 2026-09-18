@@ -152,7 +152,11 @@ impl Controller {
         Ok(())
     }
 
-    pub(super) async fn prepare_changed_route(&self, offered: &RouteOffer) -> Result<(), String> {
+    pub(super) async fn prepare_changed_route(
+        &self,
+        offered: &RouteOffer,
+        watch: Option<&WatchedRoute>,
+    ) -> Result<(), String> {
         let _work = self.route_work.lock().await;
         let snapshot = self.snapshot().await?;
         if Self::retired_offer(&snapshot, offered) || Self::offer_paused(&snapshot, &offered.id) {
@@ -193,6 +197,11 @@ impl Controller {
             if Self::offer_paused(&snapshot, &offered.id) {
                 return Err("route change paused".into());
             }
+            if let Some(expected) = watch.cloned() {
+                let saved = offered.clone();
+                self.change(move |j| Self::reserve_watched_offer(j, Some(&expected), &saved))
+                    .await?;
+            }
             c
         } else {
             let intent = RouteChange {
@@ -203,8 +212,12 @@ impl Controller {
                 stopped_remotes: BTreeSet::new(),
             };
             let saved = intent.clone();
-            self.change(move |j| Self::reserve_route_change(j, saved))
-                .await?;
+            let expected = watch.cloned();
+            self.change(move |j| {
+                Self::reserve_route_change(j, saved.clone())?;
+                Self::reserve_watched_offer(j, expected.as_ref(), &saved.offer)
+            })
+            .await?;
             intent
         };
         if intent.prepared {
@@ -313,7 +326,7 @@ impl Controller {
             .values()
             .filter(|c| !c.prepared && !Self::offer_paused(&snapshot, &c.offer.id))
         {
-            if let Err(error) = self.prepare_changed_route(&change.offer).await {
+            if let Err(error) = self.prepare_changed_route(&change.offer, None).await {
                 first_error.get_or_insert(error);
             }
         }
