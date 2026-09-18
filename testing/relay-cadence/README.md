@@ -95,7 +95,10 @@ Schema 3 retains the same workload/boundary row structure, with these changes:
   not exact packet-by-packet pacing.
 - Every snapshot includes the service `npub` and `host_process`: `host` (`n01`,
   `n02` or `n03`), `pid`, `start_ticks`, `rss_kib`, `peak_rss_kib`, `read_bytes`,
-  `write_bytes`, `rchar`, `wchar`, `syscr`, and `syscw`. The PID must match the
+  `write_bytes`, `rchar`, `wchar`, `syscr`, `syscw`, and explicit `io_available`.
+  When `io_available` is false, all six I/O counters must be null; when true,
+  each must be a nonnegative integer. Availability must remain stable throughout
+  each trial. The PID must match the
   service's measurement PID. Host, node and process start identity must remain
   stable across all guards and workload windows. Equal PIDs on different hosts
   are valid; a duplicate host or node identity is not.
@@ -117,13 +120,34 @@ reported before and after each window. `process_lifetime_peak_rss_kib` is a
 cumulative process high-water mark, not a window peak; summed node peaks need not
 have occurred simultaneously.
 
-`os_io` contains separate process counter deltas. `read_bytes`/`write_bytes` are
+`os_io` contains separate process counter deltas when the kernel exposes them.
+If `/proc/PID/io` is absent, the node's `os_io` is null. The total is also null
+unless all three nodes provide I/O counters; `os_io_observed_nodes` records the
+coverage. Missing I/O is never replaced with zeros, and unreadable or malformed
+files are errors rather than evidence of unsupported counters. There is no OS
+I/O measurement claim for kernels without these counters. CPU, RSS and logical
+relay journal metrics remain independently available.
+
+When present, `read_bytes`/`write_bytes` are
 OS-accounted storage I/O; `rchar`/`wchar` are read/write character counts including
 other I/O; `syscr`/`syscw` count read/write system calls. They cover the whole relay
 process and **are not payment-attributed**. They are not the logical journal
 counters, physical media wear, or per-payment SQLite attribution. Counter resets
 and process replacement invalidate the comparison. OS I/O during status sampling
 can advance without becoming a payment/durability gap violation.
+
+A bounded pilot validates only trial 0 at 250 ms, with all four workloads and
+the same strict guards, schedule, delivery and 384-sat collection requirements.
+Both `metadata.pilot: true` and explicit analyzer opt-in are required:
+
+```sh
+python3 testing/relay-cadence/analyze.py /absolute/pilot.jsonl --pilot
+```
+
+A pilot is not a complete comparison (`comparison_complete` remains false in
+the runner's result). Full analysis rejects pilot reports; pilot mode rejects a
+full matrix, missing conservation or invalid boundaries. Pilot output is JSON
+only; Markdown comparison output is rejected.
 
 ## Measurement boundaries
 

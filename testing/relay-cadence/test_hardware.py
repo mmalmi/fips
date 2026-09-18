@@ -1,8 +1,11 @@
 """Hardware schema acceptance: host identity and measured-window boundaries."""
 import copy
+import json
+from pathlib import Path
+import tempfile
 import unittest
 
-from analyze import analyze_rows, markdown
+from analyze import analyze, analyze_rows, markdown
 from test_analyze import complete_report, workload
 
 
@@ -41,7 +44,8 @@ def hardware_report():
                 node["host_process"] = {
                     "host": f"n0{index + 1}", "pid": 100,
                     "start_ticks": 1000 + index, "rss_kib": 100 + tick,
-                    "peak_rss_kib": 200 + tick, "read_bytes": 10 * tick,
+                    "peak_rss_kib": 200 + tick, "io_available": True,
+                    "read_bytes": 10 * tick,
                     "write_bytes": 20 * tick, "rchar": 30 * tick,
                     "wchar": 40 * tick, "syscr": 2 * tick, "syscw": 3 * tick,
                 }
@@ -72,6 +76,13 @@ def nodes(rows):
         if "data" in row:
             for boundary in ("before_guard", "before", "after", "after_guard"):
                 yield from row["data"][boundary]
+
+
+IO_FIELDS = ("read_bytes", "write_bytes", "rchar", "wchar", "syscr", "syscw")
+
+
+def unavailable_io(node):
+    node["host_process"].update(io_available=False, **{key: None for key in IO_FIELDS})
 
 
 class HardwareTests(unittest.TestCase):
@@ -195,6 +206,56 @@ class HardwareTests(unittest.TestCase):
         self.reject(lambda rows: workload(rows)["after"][0]
                     ["payment_progress"]["direction-0"].__setitem__("in_flight", True))
 
+    def test_absent_os_io_is_null_instead_of_zero_or_partial_total(self):
+        for absent_hosts in ({"n01", "n02", "n03"}, {"n02"}):
+            with self.subTest(absent_hosts=absent_hosts):
+                rows = hardware_report()
+                for node in nodes(rows):
+                    if node["host_process"]["host"] in absent_hosts:
+                        unavailable_io(node)
+                _, _, grouped = analyze_rows(rows)
+                result = grouped[("steady", 250)][0]
+                self.assertIsNone(result["os_io"])
+                self.assertEqual(result["os_io_observed_nodes"], 3 - len(absent_hosts))
+                self.assertEqual(result["journal_commits"], 21)
+                self.assertGreater(result["process_cpu_ms"], 0)
+                for host, node in result["nodes"].items():
+                    if host in absent_hosts:
+                        self.assertIsNone(node["os_io"])
+                    else:
+                        self.assertEqual(node["os_io"]["write_bytes"], 20)
+                    self.assertEqual(node["rss_after_kib"], 113)
+
+    def test_io_availability_is_explicit_and_cannot_mask_malformed_counters(self):
+        for value in (None, 0, 1, "false"):
+            with self.subTest(io_available=value):
+                self.reject(lambda rows: workload(rows)["after"][0]
+                            ["host_process"].__setitem__("io_available", value))
+        self.reject(lambda rows: workload(rows)["after"][0]
+                    ["host_process"].pop("io_available"))
+        for key in IO_FIELDS:
+            with self.subTest(field=key):
+                def invented_zero(rows):
+                    for node in nodes(rows):
+                        unavailable_io(node)
+                    workload(rows)["after"][0]["host_process"][key] = 0
+                self.reject(invented_zero)
+                self.reject(lambda rows: workload(rows)["after"][0]
+                            ["host_process"].__setitem__(key, None))
+                self.reject(lambda rows: workload(rows)["after"][0]
+                            ["host_process"].__setitem__(key, True))
+
+    def test_io_availability_cannot_change_across_measurements_or_guards(self):
+        for boundary in ("before_guard", "before", "after", "after_guard"):
+            with self.subTest(boundary=boundary):
+                self.reject(lambda rows: unavailable_io(workload(rows)[boundary][0]))
+        def between_workloads(rows):
+            for row in rows:
+                if "data" in row and row["data"]["workload"] != "idle":
+                    for boundary in ("before_guard", "before", "after", "after_guard"):
+                        unavailable_io(row["data"][boundary][0])
+        self.reject(between_workloads)
+
     def test_schedule_and_all_eight_burst_sleeps_are_required(self):
         for field, value in (("packets_per_second", 999), ("after_sleep_ms", 0)):
             with self.subTest(field=field):
@@ -209,6 +270,60 @@ class HardwareTests(unittest.TestCase):
                     .__setitem__("offered_elapsed_ms", 3999))
         self.reject(lambda rows: workload(rows)
                     .__setitem__("observation_elapsed_ms", 10999))
+
+    def test_explicit_pilot_validates_one_complete_trial(self):
+        rows = hardware_report()[:6]
+        rows[0]["pilot"] = True
+        metadata, trials, grouped = analyze_rows(rows, pilot=True)
+        self.assertIs(metadata["pilot"], True)
+        self.assertEqual(len(trials), 4)
+        self.assertEqual({row["max_delay_ms"] for row in trials}, {250})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "pilot.jsonl"
+            path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+            self.assertEqual(analyze(path, pilot=True)[1], trials)
+        with self.assertRaises(ValueError):
+            markdown(metadata, grouped)
+
+    def test_pilot_requires_explicit_mode_and_cannot_claim_full_comparison(self):
+        rows = hardware_report()[:6]
+        rows[0]["pilot"] = True
+        with self.assertRaises(ValueError):
+            analyze_rows(rows)
+        for flag in (None, False, 1, "true"):
+            with self.subTest(pilot=flag):
+                rows[0]["pilot"] = flag
+                with self.assertRaises(ValueError):
+                    analyze_rows(rows, pilot=True)
+        with self.assertRaises(ValueError):
+            analyze_rows(complete_report(), pilot=True)
+        rows = hardware_report()
+        rows[0]["pilot"] = True
+        with self.assertRaises(ValueError):
+            analyze_rows(rows, pilot=True)
+        with self.assertRaises(ValueError):
+            analyze_rows(rows)
+
+    def test_pilot_reuses_payment_boundary_and_financial_acceptance(self):
+        for kind in ("missing_conservation", "partial_collection", "missing_guard",
+                     "unmeasured_work", "unknown_acknowledgment"):
+            with self.subTest(failure=kind):
+                rows = hardware_report()[:6]
+                rows[0]["pilot"] = True
+                if kind == "missing_conservation":
+                    rows.pop()
+                elif kind == "partial_collection":
+                    rows[-1]["collected_sat"] = 383
+                elif kind == "missing_guard":
+                    workload(rows).pop("after_guard")
+                elif kind == "unmeasured_work":
+                    operation = workload(rows)["after_guard"][0]
+                    operation["measurements"]["operations"]["payment_update"]["spans"] += 1
+                else:
+                    workload(rows)["after_guard"][0]["payment_progress"]["direction-0"][
+                        "acknowledged_msat"] = None
+                with self.assertRaises((ValueError, KeyError, TypeError)):
+                    analyze_rows(rows, pilot=True)
 
     def test_fixed_accounting_capacity_and_workload_cannot_drift(self):
         for field, value in (("channel_capacity_sat", 256), ("billing", "forwarding_attempt"),

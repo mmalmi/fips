@@ -50,8 +50,15 @@ def host_identity(node):
     host, npub = process["host"], node["npub"]
     if host not in ("n01", "n02", "n03") or not isinstance(npub, str) or not npub:
         raise ValueError("invalid hardware host or node identity")
-    for field in ("pid", "start_ticks", "rss_kib", "peak_rss_kib", *OS_IO_COUNTERS):
+    for field in ("pid", "start_ticks", "rss_kib", "peak_rss_kib"):
         unsigned(process[field])
+    if type(process["io_available"]) is not bool:
+        raise ValueError("hardware I/O availability must be explicit")
+    for field in OS_IO_COUNTERS:
+        if process["io_available"]:
+            unsigned(process[field])
+        elif process[field] is not None:
+            raise ValueError("unavailable hardware I/O must remain null")
     if (not process["pid"] or not process["start_ticks"]
             or process["pid"] != unsigned(node["measurements"]["process_id"])):
         raise ValueError("hardware process identity differs from measurement source")
@@ -63,8 +70,12 @@ def host_identity(node):
 def validate_host_pair(before, after):
     if host_identity(before) != host_identity(after):
         raise ValueError("hardware host, node or process epoch changed")
-    for field in (*OS_IO_COUNTERS, "peak_rss_kib"):
-        if after["host_process"][field] < before["host_process"][field]:
+    a, b = before["host_process"], after["host_process"]
+    if a["io_available"] != b["io_available"]:
+        raise ValueError("hardware I/O availability changed")
+    counters = (*OS_IO_COUNTERS, "peak_rss_kib") if a["io_available"] else ("peak_rss_kib",)
+    for field in counters:
+        if b[field] < a[field]:
             raise ValueError(f"hardware process counter reset: {field}")
 
 

@@ -111,10 +111,12 @@ def summarize(row, schema=2):
                 npub=after["npub"], pid=b["pid"], start_ticks=b["start_ticks"],
                 rss_before_kib=a["rss_kib"], rss_after_kib=b["rss_kib"],
                 process_lifetime_peak_rss_kib=b["peak_rss_kib"],
-                os_io={key: delta(a, b, key) for key in OS_IO_COUNTERS},
+                os_io=({key: delta(a, b, key) for key in OS_IO_COUNTERS}
+                       if b["io_available"] else None),
             )
-            for key in OS_IO_COUNTERS:
-                os_io[key] += measured["os_io"][key]
+            if measured["os_io"] is not None:
+                for key in OS_IO_COUNTERS:
+                    os_io[key] += measured["os_io"][key]
             node_results[b["host"]] = measured
     buckets = None
     bounds = None
@@ -171,7 +173,9 @@ def summarize(row, schema=2):
         for node in node_results.values():
             normalize_cpu(node, result["delivered_bytes"])
         result["nodes"] = node_results
-        result["os_io"] = os_io
+        observed = sum(node["os_io"] is not None for node in node_results.values())
+        result["os_io_observed_nodes"] = observed
+        result["os_io"] = os_io if observed == len(node_results) else None
         for key in ("rss_before_kib", "rss_after_kib", "process_lifetime_peak_rss_kib"):
             result[key] = sum(node[key] for node in node_results.values())
     if data["workload"] == "idle" and schema == 2:
@@ -181,18 +185,28 @@ def summarize(row, schema=2):
     return dict(result)
 
 
-def analyze(path):
+def analyze(path, pilot=False):
     try:
-        return analyze_rows([json.loads(line) for line in path.read_text().splitlines()])
+        return analyze_rows(
+            [json.loads(line) for line in path.read_text().splitlines()], pilot=pilot,
+        )
     except (KeyError, TypeError, IndexError) as error:
         raise ValueError(f"incomplete or invalid report: {error}") from error
 
 
-def analyze_rows(rows):
+def analyze_rows(rows, pilot=False):
     metadata = rows[0]
     schema = metadata["schema"]
     if type(schema) is not int or schema not in (2, 3) or metadata["funded_directions"] != 2:
         raise ValueError("unsupported experiment schema or funding setup")
+    if type(pilot) is not bool:
+        raise ValueError("pilot validation mode must be explicit")
+    if pilot:
+        if schema != 3 or metadata.get("pilot") is not True:
+            raise ValueError("pilot validation requires a schema-3 pilot report")
+    elif metadata.get("pilot", False) is not False:
+        raise ValueError("pilot report cannot establish a complete comparison")
+    expected_trials = 1 if pilot else 8
     if metadata["optimized"] is not True:
         raise ValueError("cadence comparison requires an optimized build")
     fixed = {"nodes": 5, "paid_relays": 3, "repeats": 2, "unpaid_percent": 50,
@@ -215,16 +229,17 @@ def analyze_rows(rows):
     records = [r for r in rows[1:] if "data" in r]
     accounting_rows = [r for r in rows[1:] if "conserved" in r]
     conserved = {r["trial"]: r for r in accounting_rows}
-    if len(records) != 32 or len(accounting_rows) != 8 or set(conserved) != set(range(8)):
+    if (len(records) != 4 * expected_trials or len(accounting_rows) != expected_trials
+            or set(conserved) != set(range(expected_trials))):
         raise ValueError("incomplete matrix or missing financial conservation evidence")
     if schema == 3 and (
-            [r["trial"] for r in records] != [trial for trial in range(8) for _ in range(4)]
-            or [r["trial"] for r in accounting_rows] != list(range(8))):
+            [r["trial"] for r in records] != [trial for trial in range(expected_trials) for _ in range(4)]
+            or [r["trial"] for r in accounting_rows] != list(range(expected_trials))):
         raise ValueError("hardware trial sequence changed")
     grouped = defaultdict(list)
     trials = []
     issued, channels = (384, 2) if schema == 3 else (5120, 6)
-    for trial_id, delay in enumerate(POLICIES):
+    for trial_id, delay in enumerate(POLICIES[:expected_trials]):
         accounting = conserved[trial_id]
         if (accounting["conserved"] is not True or accounting["max_delay_ms"] != delay
                 or unsigned(accounting["collected_sat"]) != issued
@@ -248,6 +263,8 @@ def analyze_rows(rows):
 
 
 def markdown(metadata, grouped):
+    if metadata.get("pilot") is True:
+        raise ValueError("pilot output is not a policy comparison; use JSON")
     lines = ["# Cadence measurements", "", f"Optimized build: **{metadata['optimized']}**. Two opposite-order repetitions; five real service processes and three paid relays over loopback UDP.", "",
         "All costs below sum the five service processes. CPU is measured CPU time. Payment CPU covers synchronous signing, usage handling and balance update handling; it excludes scheduler, control-envelope serialization outside those spans, and transport CPU. Storage is logical relay journal I/O, excluding Cashu SQLite and physical writes. Record bytes exclude TCP/FIPS/carrier overhead. These are offered workloads, not maximum throughput.", "",
         "| Workload | Limit ms | Delivered / submitted | Payment CPU ms | All CPU ms | Updates | Payment records KiB | Payment journal writes | Mean delay ms |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
@@ -265,7 +282,8 @@ def markdown(metadata, grouped):
         lines[4] = (
             "Costs sum the three service processes. Payment CPU covers only the existing "
             "synchronous spans; relay journal I/O is logical and excludes SDK/SQLite writes. "
-            "OS process I/O is reported separately and is not payment-attributed. "
+            "OS process I/O, when available, is separate and is not payment-attributed. "
+            "Unavailable I/O and incomplete aggregate I/O remain null, not zero. "
             "RSS is sampled at each boundary; high-water marks cover each process lifetime, "
             "not one window. Record bytes exclude TCP/FIPS/carrier overhead and radio airtime. "
             "One-way latency is unmeasured because router clocks are independent. "
@@ -290,6 +308,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("report", type=Path)
     parser.add_argument("--markdown", action="store_true")
+    parser.add_argument("--pilot", action="store_true",
+                        help="validate only an explicitly marked schema-3 pilot trial")
     args = parser.parse_args()
-    metadata, trials, grouped = analyze(args.report)
+    metadata, trials, grouped = analyze(args.report, pilot=args.pilot)
     print(markdown(metadata, grouped) if args.markdown else json.dumps({"metadata":metadata, "trials":trials}, indent=2))
