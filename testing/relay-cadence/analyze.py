@@ -5,6 +5,7 @@ import json
 from collections import defaultdict
 from pathlib import Path
 from statistics import mean
+from native_counters import record as record_native_counters
 from validation import (HARDWARE_SCHEDULE, HARDWARE_WORKLOADS, OS_IO_COUNTERS,
                         PAYMENT_OPERATIONS, POLICIES, WORKLOADS, payment_counters, probe_delivery_loss,
                         quiet_boundary, unsigned, validate_gap,
@@ -256,6 +257,17 @@ def validated_rows(rows, pilot, delivery_rejections=None):
     elif metadata.get("pilot", False) is not False:
         raise ValueError("pilot report cannot establish a complete comparison")
     expected_trials = 1 if pilot else 8
+    policy_order = POLICIES
+    if pilot:
+        delay = metadata.get("pilot_delay_ms", 250)
+        if type(delay) is not int or delay not in POLICIES:
+            raise ValueError("unsupported pilot policy")
+        policy_order = (delay,)
+    elif metadata.get("pilot_delay_ms") is not None:
+        raise ValueError("pilot policy cannot alter a full comparison")
+    native_counters = metadata.get("native_counters", False)
+    if type(native_counters) is not bool or (native_counters and schema != 3):
+        raise ValueError("native counters require explicit hardware metadata")
     if metadata["optimized"] is not True:
         raise ValueError("cadence comparison requires an optimized build")
     fixed = {"nodes": 5, "paid_relays": 3, "repeats": 2, "unpaid_percent": 50,
@@ -288,7 +300,7 @@ def validated_rows(rows, pilot, delivery_rejections=None):
     grouped = defaultdict(list)
     trials = []
     issued, channels = (384, 2) if schema == 3 else (5120, 6)
-    for trial_id, delay in enumerate(POLICIES[:expected_trials]):
+    for trial_id, delay in enumerate(policy_order[:expected_trials]):
         accounting = conserved[trial_id]
         if (accounting["conserved"] is not True or accounting["max_delay_ms"] != delay
                 or unsigned(accounting["collected_sat"]) != issued
@@ -307,6 +319,7 @@ def validated_rows(rows, pilot, delivery_rejections=None):
                 validate_gap(previous, row["data"]["before_guard"], schema)
             if schema == 3:
                 record_vmhwm(row["data"], result, previous)
+                record_native_counters(row["data"], result, previous, native_counters)
             previous = row["data"]["after_guard"]
             trials.append({"trial":trial_id, "max_delay_ms":delay, "workload":row["data"]["workload"], **result})
             grouped[(row["data"]["workload"], delay)].append(result)

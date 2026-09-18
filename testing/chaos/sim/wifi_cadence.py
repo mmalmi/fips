@@ -33,7 +33,15 @@ SCHEDULE = {
 }
 
 
+def policies(args):
+    delay = getattr(args, "pilot_delay_ms", None)
+    if delay is not None and (not args.pilot or type(delay) is not int or delay not in POLICIES):
+        raise ValueError("pilot delay requires --pilot and a supported policy")
+    return (delay or 250,) if args.pilot else POLICIES
+
+
 def metadata(args):
+    selected = policies(args)
     relay_sha = digest(args.binary.read_bytes())
     provenance = json.loads(args.provenance.read_text())
     verified = provenance["verification"]
@@ -52,7 +60,9 @@ def metadata(args):
         "billing": "forwarding_data", "quote_max_units": 16 * 1024 * 1024,
         "transport": "native Ethernet over 802.11s", "one_way_latency": False,
         "workload_schedule": SCHEDULE, "common_tail_ms": 3000,
-        "policy_order": list(POLICIES), "pilot": args.pilot,
+        "policy_order": list(selected), "pilot": args.pilot,
+        "pilot_delay_ms": selected[0] if args.pilot else None,
+        "native_counters": getattr(args, "native_counters", False),
         "relay_sha256": relay_sha,
         "mint_sha256": digest(args.mint_binary.read_bytes()),
         "provenance": provenance,
@@ -94,7 +104,8 @@ class CadenceRun(PaidWifiRun):
 
         self.monitor.check()
         with ThreadPoolExecutor(max_workers=3) as pool:
-            futures = [pool.submit(snapshot, node, name) for name, node in self.nodes.items()]
+            futures = [pool.submit(snapshot, node, name, getattr(self.args, "native_counters", False))
+                       for name, node in self.nodes.items()]
             return [future.result() for future in futures]
 
     def stream(self, count, rate, *, source="n01", destination="n03", drain_seconds=2):
@@ -190,6 +201,7 @@ class CadenceRun(PaidWifiRun):
 
 
 def run(args):
+    selected = policies(args)
     report = metadata(args)
     args.output.mkdir(mode=0o700)
     raw = args.output / "measurements.jsonl"
@@ -203,7 +215,7 @@ def run(args):
                 os.fsync(output.fileno())
 
             record(report)
-            for trial, delay in enumerate(POLICIES[:1] if args.pilot else POLICIES):
+            for trial, delay in enumerate(selected):
                 trial_args = argparse.Namespace(**vars(args))
                 trial_args.output = args.output / f"trial-{trial:02}-{delay}ms"
                 trial_args.mint_ssh_forward = False
@@ -232,7 +244,11 @@ def main():
     for name in ("inventory", "binary", "mint-binary", "mint-host", "provenance", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--mint-address", required=True)
-    parser.add_argument("--pilot", action="store_true", help="one full 250 ms trial; no policy comparison")
+    parser.add_argument("--pilot", action="store_true", help="one full trial; no policy comparison")
+    parser.add_argument("--pilot-delay-ms", type=int, choices=sorted(set(POLICIES)),
+                        help="pilot payment age limit; defaults to 250 ms")
+    parser.add_argument("--native-counters", action="store_true",
+                        help="capture existing native forwarding/drop counters at each boundary")
     args = parser.parse_args()
     os.umask(0o077)
 

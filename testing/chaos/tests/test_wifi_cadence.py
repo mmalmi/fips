@@ -7,10 +7,19 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from sim.wifi_cadence import CadenceRun, run
+from sim.wifi_cadence import CadenceRun, policies, run
 
 
 class CadenceTests(unittest.TestCase):
+    def test_pilot_policy_is_explicit_and_does_not_change_the_matrix(self):
+        self.assertEqual(policies(argparse.Namespace(pilot=True)), (250,))
+        self.assertEqual(policies(argparse.Namespace(pilot=True, pilot_delay_ms=2000)), (2000,))
+        self.assertEqual(policies(argparse.Namespace(pilot=False)),
+                         (250, 500, 1000, 2000, 2000, 1000, 500, 250))
+        for pilot, delay in ((False, 2000), (True, 10), (True, True), (True, "250")):
+            with self.subTest(pilot=pilot, delay=delay), self.assertRaises(ValueError):
+                policies(argparse.Namespace(pilot=pilot, pilot_delay_ms=delay))
+
     def service(self):
         service = object.__new__(CadenceRun)
         service.nodes = {name: Mock(npub=name) for name in ("n01", "n02", "n03")}

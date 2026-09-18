@@ -195,7 +195,7 @@ counters, physical media wear, or per-payment SQLite attribution. Counter resets
 and process replacement invalidate the comparison. OS I/O during status sampling
 can advance without becoming a payment/durability gap violation.
 
-A bounded pilot validates only trial 0 at 250 ms, with all four workloads and
+A bounded pilot validates only trial 0 (250 ms by default), with all four workloads and
 the same strict guards, schedule, delivery and 384-sat collection requirements.
 Both `metadata.pilot: true` and explicit analyzer opt-in are required:
 
@@ -207,6 +207,29 @@ A pilot is not a complete comparison (`comparison_complete` remains false in
 the runner's result). Full analysis rejects pilot reports; pilot mode rejects a
 full matrix, missing conservation or invalid boundaries. Pilot output is JSON
 only; Markdown comparison output is rejected.
+
+`sim.wifi_cadence --pilot --pilot-delay-ms 2000 --native-counters` runs the same
+four workloads at one explicitly selected supported age limit. It preserves
+the original spending caps, workload sizes, fixed tail and collection checks.
+It cannot establish a policy comparison or repair a previously rejected matrix.
+The metadata records `pilot_delay_ms`; a full matrix cannot override its schedule.
+
+The optional native observations use the existing private `show_status` and
+`show_routing` requests inside the same executable/command/PID/start-time guard
+as each resource sample. Native status must identify that same process and node.
+Both raw replies are retained in each snapshot's `native` field. Analyzer output
+reports forwarding/drop, congestion and error-signal counter deltas per node,
+plus separate `native_gap_counters` for guards and inter-window gaps. Missing or
+changed groups, a failed reply, an identity change or a counter reset invalidate
+both strict and diagnostic analysis. There are no invented zero counters.
+
+These counters cover native traffic in aggregate, including control traffic.
+They can identify recorded forwarding-policy, route, MTU or local-send failures;
+they do not identify a particular application packet or prove the cause of
+unrecorded radio/driver, cryptographic or endpoint loss. Native observations are
+sequential, not atomic with financial or process-cost samples. The additional
+queries cost CPU/time, so a diagnostic run with them is not a matched performance
+comparison against a run without them. No payment or routing messages are added.
 
 For a complete but rejected matrix, diagnostic JSON can retain cost observations
 and identify each missing-delivery window:

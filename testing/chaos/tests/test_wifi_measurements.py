@@ -42,6 +42,27 @@ def node(raw=None):
 
 
 class MeasurementTests(unittest.TestCase):
+    def test_native_observations_are_opt_in_and_bound_to_the_same_process(self):
+        native = {"status": "ok", "data": {"pid": 123, "npub": "test-node",
+                  "exe_path": "/tmp/owned/fips-relay", "forwarding": {"received_packets": 1}}}
+        routing = {"status": "ok", "data": {"forwarding": {"received_packets": 2}}}
+        raw = frame(native_status=json.dumps(native), native_routing=json.dumps(routing))
+        result = snapshot(node(raw), "n01", native_counters=True)
+        self.assertEqual(result["native"], {"status": native, "routing": routing})
+        for evidence in (raw, frame()):
+            with self.assertRaises(ValueError):
+                snapshot(node(evidence), "n01", native_counters=evidence != raw)
+        for field, value in (("pid", 124), ("pid", True), ("npub", "another"),
+                             ("exe_path", "/wrong/binary")):
+            changed = copy.deepcopy(native)
+            changed["data"][field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                snapshot(node(frame(native_status=json.dumps(changed),
+                                    native_routing=json.dumps(routing))), "n01", True)
+        with self.assertRaises(ValueError):
+            snapshot(node(frame(native_status=json.dumps(native),
+                                native_routing='{"status":"error"}')), "n01", True)
+
     def test_stat_parser_preserves_spaces_and_parentheses_in_comm(self):
         for name in ("fips relay", "fips (worker)", "fips ) (worker) name"):
             self.assertEqual(process_identity(stat(name=name)), (123, 456))
@@ -201,6 +222,27 @@ class ShellSamplerTests(unittest.TestCase):
             self.assertFalse((self.root / "called").exists())
             path.unlink()
             path.symlink_to(original) if field == "exe" else path.write_bytes(original)
+
+    def test_shell_native_queries_keep_ownership_guards_and_exact_command_order(self):
+        native = {"status": "ok", "data": {"pid": 123, "npub": "test-node",
+                  "exe_path": self.router.binary}}
+        (self.root / "native.json").write_text(json.dumps(native))
+        Path(self.router.binary).write_text(
+            '#!/bin/sh\nset -eu\ncommand=$(cat)\n'
+            f'printf \'%s:%s\\n\' "$1" "$command" >> \'{self.root}/calls\'\n'
+            f'test "$2" = \'{self.router.config}\'\n'
+            f'if test "$1" = native; then cat \'{self.root}/native.json\'; '
+            f'else cat \'{self.root}/response.json\'; fi\n')
+        result = snapshot(self.router, "n01", native_counters=True)
+        self.assertEqual(result["native"]["status"], native)
+        self.assertEqual((self.root / "calls").read_text().splitlines(), [
+            'native:{"command":"show_status"}', 'native:{"command":"show_routing"}',
+            'ctl:{"type":"status"}',
+        ])
+        (self.record / "cmdline").write_bytes(b"another process\0")
+        with self.assertRaises(subprocess.CalledProcessError):
+            snapshot(self.router, "n01", native_counters=True)
+        self.assertEqual(len((self.root / "calls").read_text().splitlines()), 3)
 
     def test_process_restart_during_control_is_rejected(self):
         self.write_binary(f"printf '%s' '{stat(start=999)}' > '{self.record}/stat'")

@@ -2,7 +2,7 @@
 
 OS I/O includes the whole relay process; it is not payment-attributed storage or
 physical-media accounting. Kernels without proc I/O report unavailable counters,
-never zeroes. RSS high-water marks cover the process lifetime.
+never zeroes. Kernel-reported RSS/high-water readings remain raw observations.
 """
 
 import json
@@ -78,11 +78,15 @@ def validate_measurements(status, pid):
             unsigned(counter)
 
 
-def command(node):
+def command(node, native_counters=False):
     temporary = shlex.quote(checked_path(node.temporary))
     binary = shlex.quote(checked_path(node.binary))
     config = shlex.quote(checked_path(node.config))
     proc = shlex.quote(checked_path(PROC))
+    native = (f"""native_status=$(printf '%s\\n' '{{"command":"show_status"}}' | {binary} native {config})
+native_routing=$(printf '%s\\n' '{{"command":"show_routing"}}' | {binary} native {config})
+""" if native_counters else "")
+    extra = ' "$native_status" "$native_routing"' if native_counters else ""
     # Do not acquire operation.lock: reads must not delay the independent guard.
     # Buffer output until both identity checks succeed; no proc/config data is
     # written remotely. NUL framing preserves spaces and parentheses in comm.
@@ -99,7 +103,7 @@ owned() {{
 }}
 before=$(cat {proc}/$pid/stat)
 owned
-relay=$(printf '%s\\n' '{{"type":"status"}}' | {binary} ctl {config})
+{native}relay=$(printf '%s\\n' '{{"type":"status"}}' | {binary} ctl {config})
 resources=$(cat {proc}/$pid/status)
 if test -e {proc}/$pid/io || test -L {proc}/$pid/io; then
   io=$(cat {proc}/$pid/io)
@@ -110,19 +114,19 @@ else
 fi
 owned
 after=$(cat {proc}/$pid/stat)
-printf '%s\\000' "$pid" "$before" "$after" "$resources" "$io" "$relay" "$availability"
+printf '%s\\000' "$pid" "$before" "$after" "$resources" "$io" "$relay" "$availability"{extra}
 """
 
 
-def snapshot(node, hostlabel):
+def snapshot(node, hostlabel, native_counters=False):
     """Return one normal status response with validated host/process evidence."""
-    if hostlabel not in ("n01", "n02", "n03"):
+    if hostlabel not in ("n01", "n02", "n03") or type(native_counters) is not bool:
         raise ValueError("invalid measurement host label")
     started = time.monotonic_ns()
-    raw = node.remote(command(node), timeout=45)
+    raw = node.remote(command(node, native_counters), timeout=45)
     finished = time.monotonic_ns()
     parts = raw.decode("utf-8").split("\0")
-    if len(parts) != 8 or parts[-1]:
+    if len(parts) != (10 if native_counters else 8) or parts[-1]:
         raise ValueError("invalid resource sample framing")
     pid = decimal(parts[0])
     before, after = process_identity(parts[1]), process_identity(parts[2])
@@ -143,6 +147,17 @@ def snapshot(node, hostlabel):
     validate_measurements(status, pid)
     if getattr(node, "npub", None) and status.get("npub") != node.npub:
         raise ValueError("relay status came from a different node")
+    if native_counters:
+        native = dict(zip(("status", "routing"), map(json.loads, parts[7:9])))
+        if any(not isinstance(v, dict) or v.get("status") != "ok"
+               or not isinstance(v.get("data"), dict) for v in native.values()):
+            raise ValueError("native diagnostic request failed")
+        identity = native["status"]["data"]
+        if (identity.get("npub") != status.get("npub")
+                or unsigned(identity.get("pid")) != pid
+                or identity.get("exe_path") != node.binary):
+            raise ValueError("native diagnostics came from a different process")
+        status["native"] = native
     status["host_process"] = {"host": hostlabel, "pid": pid, "start_ticks": before[1],
                               "rss_kib": memory["VmRSS"], "peak_rss_kib": memory["VmHWM"],
                               "io_available": parts[6] == "available", **io}
