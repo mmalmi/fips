@@ -315,7 +315,7 @@ mobility, arbitrary mesh merge/split, throughput or production readiness.
 
 ## Guarded cadence measurement
 
-The current optimized comparison covers 250/500/1000/2000-ms policies with two
+The optimized loopback comparison covers 250/500/1000/2000-ms policies with two
 opposite-order repetitions. All 285,696 packets arrived and all 40,960 test sats
 were conserved. Both sampling passes at every boundary show all six paying
 channels reconciled, with no pending payment or unmeasured payment/journal activity
@@ -326,7 +326,7 @@ At high rate, 1 s/2 s produced 40 updates versus 59 at 250 ms, but CPU varied
 substantially across repeats; the 500-ms default remains unchanged. These are
 loopback observations with partial synchronous CPU, logical relay journal and
 application-record attribution. SDK/receiver storage writes, full carrier cost,
-impaired links and current hardware measurements remain open. See
+sustained capacity and impaired hardware measurements remain open. See
 [the results and boundaries](CADENCE-RESULTS.md).
 
 The guarded hardware runner now has an accepted 250-ms pilot on three ARM64
@@ -354,9 +354,19 @@ passed and router baselines were restored. It did not reproduce the earlier loss
 It exposed incomplete native telemetry: the middle-router counters cover transit,
 but optimized endpoint traffic bypasses the legacy received/delivered counters.
 Ethernet also does not supply the kernel-drop signal used by the congestion API.
-Zero counters therefore cannot establish a clean endpoint/kernel path. Existing
-dataplane drop logging should cover those gaps in the next diagnostic; broader
-hardware acceptance remains incomplete.
+Zero counters therefore cannot establish a clean endpoint/kernel path.
+
+The subsequent full eight-trial matrix pinned existing dataplane drop logging
+and native counters to guarded process snapshots. Strict validation passed all
+93,696 packets, with 53 out of order and no duplicates, invalid packets or
+controller errors. All 3,072 test sats were recovered, all mints stopped, and
+router baselines were restored with 2,157 successful management observations.
+No native failure counters or log bytes advanced within measurement spans.
+Later drop events demonstrate active logging but do not explain the earlier
+loss. At high rate, 1 s/2 s used two updates versus four at 250 ms; total CPU
+ranges overlapped. The default remains 500 ms. See the results for exact costs
+and attribution limits. The earlier rejected matrix remains failed, and broader
+hardware acceptance and the intermittent loss cause remain open.
 
 ## Sequence and acceptance
 

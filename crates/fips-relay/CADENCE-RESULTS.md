@@ -156,12 +156,11 @@ saved diagnostic JSON retains per-node CPU per delivered MiB, goodput, raw
 memory readings and all individual window results.
 
 No production default or optimization is selected from this rejected matrix.
-A separate diagnostic should capture the existing native forwarding/drop
-counters at the same boundaries before another comparison. That can distinguish
-policy denial, local send failure, missing routes and other recorded drop classes;
-it will not automatically identify a radio or driver fault.
+The follow-ups below add native counters and existing dataplane drop logs to
+distinguish recorded failure classes. Neither automatically identifies a radio
+or driver fault.
 
-## Reproduction and remaining evidence
+## Hardware diagnostics
 
 ### Native-counter diagnostic follow-up
 
@@ -180,9 +179,64 @@ However, endpoint received/delivered counters remained zero despite successful
 application delivery, and source-originated counters omitted most application
 traffic. These native counters do not cover the optimized endpoint path. The
 Ethernet transport also provides no kernel receive-drop signal to the native
-congestion API. Neither zero can establish absence of loss. A subsequent
-diagnostic should enable existing dataplane drop events before repeating the
-matrix, to cover the observation paths these counters miss.
+congestion API. Neither zero can establish absence of loss. The following
+comparison enables existing dataplane drop events to observe failures on paths
+these counters miss.
+
+### Full comparison with pinned drop logs
+
+A separate eight-trial comparison passed strict validation with all **93,696 of
+93,696** submitted packets delivered. There were 53 out-of-order packets, no
+duplicates or invalid packets, and no controller errors. Every trial reconciled
+its two original channels and collected all 384 issued test sats: 3,072 in total.
+All mints stopped, all router baselines were restored, and all 2,157 management
+observations passed without cleanup errors.
+
+This retained the preceding matrix's optimized binary, topology, workloads,
+funding bounds, policy order and three-second tail. Every trial used the same
+native counter sampling and pinned dataplane debug filter. No compilation or
+other tests from this task ran during measurement. Process checks attested the filter;
+recorded byte offsets place each saved log relative to the measurement windows.
+All 112 recorded harness-file hashes matched the unchanged source after the run.
+
+No native drop, congestion or error counter advanced during the windows or
+their guarded gaps. No log bytes were added from each trial's first measurement
+guard to its last. After those spans, the saved logs contain 14 `SourcePolicy`
+packet-drop events and eight `Unrouted` raw-ingress events. They demonstrate
+active logging, but cannot explain the earlier matrix's missing packets. This
+clean run does not erase that rejected result or establish the cause of its
+intermittent loss. Unobserved radio/kernel loss remains outside these counters.
+
+High-rate costs below sum all three router processes. CPU values retain both
+repetitions; updates and logical payment-journal writes were identical across
+each pair. Every high-rate window delivered all 8,000 packets.
+
+| Maximum age | Payment CPU ms, two runs | All relay CPU ms, two runs | Updates per run | Payment records KiB per run | Payment journal writes per run |
+| --- | --- | --- | ---: | ---: | ---: |
+| 250 ms | 198.21 / 206.47 | 5,457.46 / 5,730.38 | 4 | 3.20 | 16 |
+| 500 ms | 156.98 / 157.10 | 5,712.79 / 5,446.54 | 3 | 2.41 | 12 |
+| 1,000 ms | 104.32 / 101.32 | 5,634.87 / 5,516.32 | 2 | 1.60 | 8 |
+| 2,000 ms | 101.24 / 103.24 | 5,562.07 / 5,712.76 | 2 | 1.60 | 8 |
+
+At high rate, 1 s and 2 s halve payment updates and their attributed journal
+writes relative to 250 ms. Attributed payment CPU is about 1.8% of all measured
+relay CPU, versus about 3.6% at 250 ms. Total CPU ranges overlap; this does not
+demonstrate a reduction in total forwarding cost. All measured CPU, including
+the common tail, ranges from 0.714 to 0.751 CPU seconds per delivered MiB across
+these high-rate windows. These are offered-load observations, not capacity.
+
+All steady windows used three payment updates. Idle and bursty windows recorded
+no payment CPU, updates, records or payment-journal writes; bursty traffic used
+existing prepaid credit. Record bytes still exclude TCP/FIPS/carrier framing,
+and journal counts exclude SDK/SQLite and physical storage writes. Separate
+router clocks still leave one-way application latency unmeasured. Two raw
+VmHWM decreases were retained without weakening process or counter checks.
+
+The 500-ms default remains unchanged. Two repetitions with diagnostic sampling
+establish this bounded comparison, not an optimal universal payment age or
+proof that the earlier packet loss is resolved.
+
+## Reproduction and remaining evidence
 
 See the [experiment instructions](../../testing/relay-cadence/README.md) for fixed
 terms, workloads, report validation and measurement boundaries. Setup and settlement
