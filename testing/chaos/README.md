@@ -264,6 +264,15 @@ python3 -m sim.paid_wifi \
   --output /private/results/new-paid-wifi-run
 ```
 
+Add `--open-mesh` to use the same guarded temporary open radio profile and late
+third-node join as the free acceptance. All three accounts are funded while the
+candidate services are stopped, before any temporary radio join. A radio failure
+restores the original profile when ownership and state are provable, while
+retaining funded accounts and the original mint/SSH forwards until the test funds
+are reconciled. Open radio admission does not change payment terms or authorize
+free transit. Combined paid/open physical acceptance remains separate from the
+individual paid SAE and free open-mesh results.
+
 After verifying unpaid forwarding is denied, each endpoint buys the route through
 the middle router. Fresh streams must cause matching buyer/provider usage and
 automatic signed payments before and after radio leave/rejoin. The original two
