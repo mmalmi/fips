@@ -47,7 +47,9 @@ pub(crate) mod wire;
 
 pub use endpoint_event::ExternalPacketIo;
 pub use error::NodeError;
-pub use forwarding_policy::{ForwardingOutcome, ForwardingPolicy, ForwardingRequest};
+pub use forwarding_policy::{
+    ForwardingAdmission, ForwardingClass, ForwardingOutcome, ForwardingPolicy, ForwardingRequest,
+};
 pub use identity_cache::NodeDeliveredPacket;
 pub use originated_observer::{
     OriginatedSessionAdmission, OriginatedSessionIntent, OriginatedSessionObserver,

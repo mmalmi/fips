@@ -2,6 +2,7 @@
 pub(crate) struct AdmissionConfig {
     priority_capacity: usize,
     bulk_capacity: usize,
+    background_capacity: usize,
 }
 
 impl AdmissionConfig {
@@ -9,25 +10,30 @@ impl AdmissionConfig {
         Self {
             priority_capacity,
             bulk_capacity,
+            background_capacity: bulk_capacity.min(64),
         }
     }
 
     pub(crate) fn total_capacity(self) -> usize {
-        self.priority_capacity.saturating_add(self.bulk_capacity)
+        self.priority_capacity
+            .saturating_add(self.bulk_capacity)
+            .saturating_add(self.background_capacity)
     }
 
     fn lane_capacity(self, lane: Lane) -> usize {
         match lane {
             Lane::Priority => self.priority_capacity,
             Lane::Bulk => self.bulk_capacity,
+            Lane::Background => self.background_capacity,
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AdmissionDropReason {
-    PriorityFull,
-    BulkFull,
+    Priority,
+    Bulk,
+    Background,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -117,6 +123,7 @@ where
 struct OwnerLaneQueues<T> {
     priority: VecDeque<T>,
     bulk: VecDeque<T>,
+    background: VecDeque<T>,
 }
 
 impl<T> Default for OwnerLaneQueues<T> {
@@ -124,6 +131,7 @@ impl<T> Default for OwnerLaneQueues<T> {
         Self {
             priority: VecDeque::new(),
             bulk: VecDeque::new(),
+            background: VecDeque::new(),
         }
     }
 }
@@ -133,11 +141,12 @@ impl<T> OwnerLaneQueues<T> {
         match lane {
             Lane::Priority => &mut self.priority,
             Lane::Bulk => &mut self.bulk,
+            Lane::Background => &mut self.background,
         }
     }
 
     fn is_empty(&self) -> bool {
-        self.priority.is_empty() && self.bulk.is_empty()
+        self.priority.is_empty() && self.bulk.is_empty() && self.background.is_empty()
     }
 }
 
@@ -145,8 +154,10 @@ impl<T> OwnerLaneQueues<T> {
 struct OwnerAdmissionQueues<T> {
     priority_len: usize,
     bulk_len: usize,
+    background_len: usize,
     priority_ready: VecDeque<OwnerId>,
     bulk_ready: VecDeque<OwnerId>,
+    background_ready: VecDeque<OwnerId>,
     bulk_cut_in_debt: u8,
     owners: HashMap<OwnerId, OwnerLaneQueues<T>>,
 }
@@ -172,19 +183,21 @@ where
         Self {
             priority_len: 0,
             bulk_len: 0,
+            background_len: 0,
             priority_ready: VecDeque::new(),
             bulk_ready: VecDeque::new(),
+            background_ready: VecDeque::new(),
             bulk_cut_in_debt: 0,
             owners: HashMap::new(),
         }
     }
 
-    fn lens(&self) -> (usize, usize) {
-        (self.priority_len, self.bulk_len)
+    fn lens(&self) -> (usize, usize, usize) {
+        (self.priority_len, self.bulk_len, self.background_len)
     }
 
     fn len(&self) -> usize {
-        self.priority_len.saturating_add(self.bulk_len)
+        self.priority_len.saturating_add(self.bulk_len).saturating_add(self.background_len)
     }
 
     fn push_run_back<I>(&mut self, owner: OwnerId, lane: Lane, items: I) -> bool
@@ -235,7 +248,7 @@ where
 
     fn pop_next_run_into(
         &mut self,
-        priority_only: bool,
+        lane: Lane,
         limit: usize,
         items: &mut Vec<T>,
     ) -> Option<OwnerAdmissionCursor> {
@@ -244,12 +257,7 @@ where
         }
         debug_assert!(items.is_empty());
 
-        let first = if priority_only {
-            self.pop_lane(Lane::Priority)
-        } else {
-            self.pop_lane(Lane::Priority)
-                .or_else(|| self.pop_lane(Lane::Bulk))
-        }?;
+        let first = self.pop_lane(lane)?;
         let mut cursor = first.cursor;
         items.reserve(limit.min(self.len().saturating_add(1)));
         items.push(first.item);
@@ -323,6 +331,7 @@ where
         match lane {
             Lane::Priority => self.priority_len = self.priority_len.saturating_add(count),
             Lane::Bulk => self.bulk_len = self.bulk_len.saturating_add(count),
+            Lane::Background => self.background_len = self.background_len.saturating_add(count),
         }
     }
 
@@ -330,6 +339,7 @@ where
         match lane {
             Lane::Priority => self.priority_len = self.priority_len.saturating_sub(1),
             Lane::Bulk => self.bulk_len = self.bulk_len.saturating_sub(1),
+            Lane::Background => self.background_len = self.background_len.saturating_sub(1),
         }
     }
 
@@ -337,6 +347,7 @@ where
         let owner = match lane {
             Lane::Priority => self.priority_ready.pop_front(),
             Lane::Bulk => self.bulk_ready.pop_front(),
+            Lane::Background => self.background_ready.pop_front(),
         }?;
         if lane == Lane::Bulk {
             self.bulk_cut_in_debt = self.bulk_cut_in_debt.saturating_sub(1);
@@ -348,6 +359,7 @@ where
         let ready = match lane {
             Lane::Priority => &mut self.priority_ready,
             Lane::Bulk => &mut self.bulk_ready,
+            Lane::Background => &mut self.background_ready,
         };
         if ready.contains(&owner) {
             return;
@@ -360,8 +372,8 @@ where
         }
     }
 
-    fn ready_lens(&self) -> (usize, usize) {
-        (self.priority_ready.len(), self.bulk_ready.len())
+    fn ready_lens(&self) -> (usize, usize, usize) {
+        (self.priority_ready.len(), self.bulk_ready.len(), self.background_ready.len())
     }
 
     fn continue_owner_lane(&mut self, cursor: OwnerAdmissionCursor) {
@@ -392,11 +404,15 @@ where
         };
         let priority_ready = !queues.priority.is_empty();
         let bulk_ready = !queues.bulk.is_empty();
+        let background_ready = !queues.background.is_empty();
         if priority_ready {
             self.push_ready(Lane::Priority, owner, false);
         }
         if bulk_ready {
             self.push_ready(Lane::Bulk, owner, dataplane_local_bulk(owner, Lane::Bulk));
+        }
+        if background_ready {
+            self.push_ready(Lane::Background, owner, false);
         }
     }
 }
@@ -446,12 +462,12 @@ where
 
     fn pop_next_run_into(
         &mut self,
-        priority_only: bool,
+        lane: Lane,
         limit: usize,
         items: &mut Vec<QueuedAdmission<P>>,
     ) -> Option<OwnerAdmissionCursor> {
         self.queues
-            .pop_next_run_into(priority_only, limit, items)
+            .pop_next_run_into(lane, limit, items)
     }
 
     fn continue_owner_lane(&mut self, cursor: OwnerAdmissionCursor) {
@@ -470,11 +486,11 @@ where
         self.queues.len()
     }
 
-    fn lens(&self) -> (usize, usize) {
+    fn lens(&self) -> (usize, usize, usize) {
         self.queues.lens()
     }
 
-    fn ready_lens(&self) -> (usize, usize) {
+    fn ready_lens(&self) -> (usize, usize, usize) {
         self.queues.ready_lens()
     }
 
@@ -485,7 +501,8 @@ where
 
 fn admission_drop_reason(lane: Lane) -> AdmissionDropReason {
     match lane {
-        Lane::Priority => AdmissionDropReason::PriorityFull,
-        Lane::Bulk => AdmissionDropReason::BulkFull,
+        Lane::Priority => AdmissionDropReason::Priority,
+        Lane::Bulk => AdmissionDropReason::Bulk,
+        Lane::Background => AdmissionDropReason::Background,
     }
 }

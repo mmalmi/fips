@@ -6,16 +6,22 @@ const FORWARDING_BULK_OWNER_IN_FLIGHT: usize = 256;
 const FORWARDING_PRIORITY_OWNER_IN_FLIGHT: usize = 8;
 const FORWARDING_BULK_SOURCE_IN_FLIGHT: usize = 256;
 const FORWARDING_PRIORITY_SOURCE_IN_FLIGHT: usize = 8;
+const FORWARDING_BACKGROUND_GLOBAL_IN_FLIGHT: usize = 32;
+// These include packets waiting for crypto. The crypto owner independently
+// limits already-dispatched background work to one packet.
+const FORWARDING_BACKGROUND_OWNER_IN_FLIGHT: usize = 16;
+const FORWARDING_BACKGROUND_SOURCE_IN_FLIGHT: usize = 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(usize)]
 enum ForwardingLane {
     Priority,
     Bulk,
+    Background,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct ForwardingLaneCounts([usize; 2]);
+struct ForwardingLaneCounts([usize; 3]);
 
 impl ForwardingLaneCounts {
     fn get(self, lane: ForwardingLane) -> usize {
@@ -33,7 +39,7 @@ impl ForwardingLaneCounts {
     }
 
     fn is_empty(self) -> bool {
-        self.0 == [0; 2]
+        self.0 == [0; 3]
     }
 }
 
@@ -57,10 +63,27 @@ impl ForwardingInFlightWindow {
                 FORWARDING_BULK_OWNER_IN_FLIGHT,
                 FORWARDING_BULK_SOURCE_IN_FLIGHT,
             ),
+            ForwardingLane::Background => (
+                FORWARDING_BACKGROUND_GLOBAL_IN_FLIGHT,
+                FORWARDING_BACKGROUND_OWNER_IN_FLIGHT,
+                FORWARDING_BACKGROUND_SOURCE_IN_FLIGHT,
+            ),
         };
         self.global.get(lane) < global_limit
-            && self.owners.get(&owner).copied().unwrap_or_default().get(lane) < owner_limit
-            && self.sources.get(&source).copied().unwrap_or_default().get(lane) < source_limit
+            && self
+                .owners
+                .get(&owner)
+                .copied()
+                .unwrap_or_default()
+                .get(lane)
+                < owner_limit
+            && self
+                .sources
+                .get(&source)
+                .copied()
+                .unwrap_or_default()
+                .get(lane)
+                < source_limit
     }
 
     fn reserve(&mut self, owner: NodeAddr, source: NodeAddr, lane: ForwardingLane) {
@@ -113,12 +136,7 @@ impl DeferredSessionForwards {
             .has_capacity(forward.next_hop_addr, forward.src_addr, lane)
     }
 
-    fn insert(
-        &mut self,
-        send_token: u64,
-        forward: PreparedSessionForward,
-        lane: ForwardingLane,
-    ) {
+    fn insert(&mut self, send_token: u64, forward: PreparedSessionForward, lane: ForwardingLane) {
         self.window
             .reserve(forward.next_hop_addr, forward.src_addr, lane);
         let replaced = self
@@ -137,8 +155,10 @@ impl DeferredSessionForwards {
         Some(pending.forward)
     }
 
-    fn abort_pending(&mut self, reason: &'static str) {
-        for (_, pending) in self.pending.drain() {
+    fn abort_pending(&mut self, reason: &'static str, include_background: bool) {
+        for (_, pending) in self.pending.extract_if(|_, pending| {
+            include_background || pending.lane != ForwardingLane::Background
+        }) {
             let next_hop_addr = pending.forward.next_hop_addr;
             self.window
                 .release(next_hop_addr, pending.forward.src_addr, pending.lane);
@@ -150,11 +170,20 @@ impl DeferredSessionForwards {
                 }),
             ));
         }
-        debug_assert!(self.window.is_empty());
+        debug_assert!(!include_background || self.window.is_empty());
     }
 
     fn pending_len(&self) -> usize {
         self.pending.len()
+    }
+
+    fn drain_pending_len(&self, include_background: bool) -> usize {
+        self.pending_len()
+            - if include_background {
+                0
+            } else {
+                self.window.global.get(ForwardingLane::Background)
+            }
     }
 
     fn push_completed(&mut self, forward: PreparedSessionForward, result: Result<(), NodeError>) {

@@ -184,6 +184,7 @@ async fn carrier_boundary_drains_leftover_dataplane_work() {
                     crate::transport::PacketBuffer::new(heartbeat.to_vec()),
                     false,
                     crate::dataplane::ActivityTick::new(Node::now_ms()),
+                    None,
                 )
                 .expect("prepare synthetic leftover")
                 .0
@@ -234,6 +235,7 @@ async fn discovery_control_send_survives_existing_priority_backlog() {
                     crate::transport::PacketBuffer::new(heartbeat.to_vec()),
                     false,
                     crate::dataplane::ActivityTick::new(Node::now_ms()),
+                    None,
                 )
                 .expect("prepare synthetic priority backlog")
                 .0
@@ -320,6 +322,7 @@ async fn queued_routed_endpoint_data_survives_existing_priority_backlog() {
                     crate::transport::PacketBuffer::new(heartbeat.to_vec()),
                     false,
                     crate::dataplane::ActivityTick::new(Node::now_ms()),
+                    None,
                 )
                 .expect("prepare synthetic priority backlog")
                 .0

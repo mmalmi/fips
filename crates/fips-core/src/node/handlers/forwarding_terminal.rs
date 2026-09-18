@@ -123,25 +123,40 @@ impl Node {
     }
 
     pub(in crate::node) async fn drain_deferred_session_forwards(&mut self) -> usize {
+        // Complimentary work may deliberately wait behind later paid traffic.
+        // Do not make local/control ingress wait for it or turn that wait into
+        // a false route failure. Normal RX completion turns still finish it.
+        self.drain_session_forwards(false).await
+    }
+
+    pub(in crate::node) async fn drain_all_deferred_session_forwards(&mut self) -> usize {
+        self.drain_session_forwards(true).await
+    }
+
+    async fn drain_session_forwards(&mut self, include_background: bool) -> usize {
         let mut processed = self.finish_completed_session_forwards().await;
         let mut turns = 0usize;
-        while self.deferred_session_forwards.pending_len() > 0
+        while self
+            .deferred_session_forwards
+            .drain_pending_len(include_background)
+            > 0
             && turns < DEFERRED_SESSION_FORWARD_DRAIN_TURN_LIMIT
         {
             processed =
                 processed.saturating_add(self.drain_one_deferred_session_forward_turn().await);
             turns = turns.saturating_add(1);
         }
-        let pending = self.deferred_session_forwards.pending_len();
+        let pending = self
+            .deferred_session_forwards
+            .drain_pending_len(include_background);
         if pending > 0 {
             warn!(
                 pending,
                 turns, "Aborting deferred session forwards after receipt drain budget expired"
             );
-            processed = processed.saturating_add(
-                self.abort_deferred_session_forwards("dataplane forwarding receipt timed out")
-                    .await,
-            );
+            self.deferred_session_forwards
+                .abort_pending("dataplane forwarding receipt timed out", include_background);
+            processed = processed.saturating_add(self.finish_completed_session_forwards().await);
         }
         processed
     }
@@ -150,7 +165,7 @@ impl Node {
         &mut self,
         reason: &'static str,
     ) -> usize {
-        self.deferred_session_forwards.abort_pending(reason);
+        self.deferred_session_forwards.abort_pending(reason, true);
         self.finish_completed_session_forwards().await
     }
 }

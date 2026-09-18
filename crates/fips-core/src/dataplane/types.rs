@@ -42,6 +42,7 @@ pub(crate) enum PacketClass {
     Mmp,
     Liveness,
     Bulk,
+    Background,
 }
 
 impl PacketClass {
@@ -49,6 +50,7 @@ impl PacketClass {
         match self {
             Self::Control | Self::Mmp | Self::Liveness => Lane::Priority,
             Self::Bulk => Lane::Bulk,
+            Self::Background => Lane::Background,
         }
     }
 }
@@ -67,6 +69,17 @@ fn dataplane_fsp_message_elicits_report(msg_type: u8) -> bool {
 pub(crate) enum Lane {
     Priority,
     Bulk,
+    Background,
+}
+
+impl Lane {
+    fn priority(self) -> u8 {
+        match self {
+            Self::Priority => 0,
+            Self::Bulk => 1,
+            Self::Background => 2,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

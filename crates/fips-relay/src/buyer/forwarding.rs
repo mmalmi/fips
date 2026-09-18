@@ -113,12 +113,18 @@ impl PaidForwarder {
 
 impl ForwardingPolicy for PaidForwarder {
     fn admit(&self, request: &ForwardingRequest<'_>) -> Option<u64> {
+        self.admit_classified(request)
+            .map(|admission| admission.token)
+    }
+
+    fn admit_classified(&self, request: &ForwardingRequest<'_>) -> Option<ForwardingAdmission> {
+        let handshake = crate::bootstrap::is_handshake(
+            request.session_payload,
+            request.source,
+            request.destination,
+        );
         if let Some(bootstrap) = &self.bootstrap
-            && crate::bootstrap::is_handshake(
-                request.session_payload,
-                request.source,
-                request.destination,
-            )
+            && handshake
         {
             // Seller tokens start at one and never wrap. Zero carries no paid
             // reservation; its completion is a no-op. The rate budget is spent
@@ -127,7 +133,10 @@ impl ForwardingPolicy for PaidForwarder {
                 .lock()
                 .unwrap()
                 .admit(*request.ingress.node_addr(), request.session_payload.len())
-                .then_some(0);
+                .then_some(ForwardingAdmission {
+                    token: 0,
+                    class: ForwardingClass::Control,
+                });
         }
         if let Some(returns) = &self.returns {
             let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
@@ -141,12 +150,18 @@ impl ForwardingPolicy for PaidForwarder {
                     .has_active_route(request.next_hop, request.destination, now)
                 && returns.lock().unwrap().admit(request)
             {
-                return Some(0);
+                return Some(ForwardingAdmission {
+                    token: 0,
+                    class: ForwardingClass::Background,
+                });
             }
         }
         if self.free.admit(request) {
             self.earn_return(request);
-            return Some(0);
+            return Some(ForwardingAdmission {
+                token: 0,
+                class: ForwardingClass::Background,
+            });
         }
         let (seller_token, buyer_token) = if request.next_hop == request.destination {
             (self.seller.admit(request)?, None)
@@ -175,7 +190,14 @@ impl ForwardingPolicy for PaidForwarder {
             .unwrap()
             .insert(seller_token, buyer_token);
         self.earn_return(request);
-        Some(seller_token)
+        Some(ForwardingAdmission {
+            token: seller_token,
+            class: if handshake {
+                ForwardingClass::Control
+            } else {
+                ForwardingClass::Normal
+            },
+        })
     }
     fn complete(&self, token: u64, outcome: ForwardingOutcome) {
         if token == 0 {

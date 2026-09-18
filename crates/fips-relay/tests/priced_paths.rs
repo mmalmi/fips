@@ -13,7 +13,7 @@ use cashu_service::{
 use fips_core::{
     Config, FipsEndpoint, Identity, PeerIdentity, SimLink, SimNetwork,
     config::{PeerConfig, SimTransportConfig, TransportInstances},
-    node::{ForwardingOutcome, ForwardingPolicy, ForwardingRequest},
+    node::{ForwardingAdmission, ForwardingOutcome, ForwardingPolicy, ForwardingRequest},
 };
 use fips_relay::{
     buyer::{BuyerAuthorizer, PaidForwarder},
@@ -45,11 +45,15 @@ struct Gate {
 }
 impl ForwardingPolicy for Gate {
     fn admit(&self, request: &ForwardingRequest<'_>) -> Option<u64> {
+        self.admit_classified(request)
+            .map(|admission| admission.token)
+    }
+    fn admit_classified(&self, request: &ForwardingRequest<'_>) -> Option<ForwardingAdmission> {
         if self.blackhole.load(Ordering::Relaxed) {
             self.dropped.fetch_add(1, Ordering::Relaxed);
             None
         } else {
-            let result = self.paid.admit(request);
+            let result = self.paid.admit_classified(request);
             if result.is_none() {
                 self.refused.fetch_add(1, Ordering::Relaxed);
             }

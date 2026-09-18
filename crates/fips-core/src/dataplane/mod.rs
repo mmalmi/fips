@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! UDP/socket drain
-//!   -> bounded priority/bulk admission
+//!   -> bounded priority/bulk/background admission
 //!   -> peer/session owner sequencer
 //!   -> stateless crypto workers
 //!   -> ordered owner retire
@@ -82,6 +82,7 @@ include!("runtime_io.rs");
 include!("live_node.rs");
 include!("crypto.rs");
 include!("engine.rs");
+include!("engine_dispatch.rs");
 include!("engine_support.rs");
 
 #[cfg(test)]

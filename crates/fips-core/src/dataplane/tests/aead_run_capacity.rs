@@ -50,7 +50,7 @@ fn check_prepared_run_capacity(outbound: bool, count: usize, continuation: bool)
             mover.shards[mover.owner_shard_index(owner)]
                 .outbound_admission
                 .ready_lens(),
-            (0, 2),
+            (0, 2, 0),
         );
     }
 

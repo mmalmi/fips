@@ -18,7 +18,7 @@ use fips_core::{
     Config, FipsEndpoint, Identity, PeerIdentity,
     config::{PeerConfig, TransportInstances, UdpConfig},
     encode_nsec,
-    node::{ForwardingOutcome, ForwardingPolicy, ForwardingRequest},
+    node::{ForwardingAdmission, ForwardingOutcome, ForwardingPolicy, ForwardingRequest},
 };
 use fips_relay::{
     buyer::{BuyerAuthorizer, BuyerError, PaidForwarder},
@@ -56,7 +56,11 @@ struct AuditedPolicy {
 
 impl ForwardingPolicy for AuditedPolicy {
     fn admit(&self, request: &ForwardingRequest<'_>) -> Option<u64> {
-        let token = self.forwarding.admit(request);
+        self.admit_classified(request)
+            .map(|admission| admission.token)
+    }
+    fn admit_classified(&self, request: &ForwardingRequest<'_>) -> Option<ForwardingAdmission> {
+        let token = self.forwarding.admit_classified(request);
         if token.is_none() {
             let mut denied = self.denied.lock().unwrap();
             if denied.len() < 8 {

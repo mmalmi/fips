@@ -1,4 +1,5 @@
 use super::*;
+use fips_core::node::{ForwardingClass, ForwardingOutcome, ForwardingPolicy};
 
 fn limited() -> FreeRoutes {
     FreeRoutes::default()
@@ -120,4 +121,37 @@ fn paid_prefix_does_not_spend_local_free_bandwidth_for_a_free_continuation() {
     );
     assert_eq!(routes.stats().bandwidth.unwrap().charged_units, 512);
     assert_eq!(routes.remaining_units(&onward), Some(3_328));
+}
+
+#[test]
+fn negotiated_free_class_is_bound_to_the_admission_and_rate_limit() {
+    let root = tempfile::tempdir().unwrap();
+    let seller = Arc::new(
+        DurableRelay::create(&root.path().join("seller"), Limits::default(), 100).unwrap(),
+    );
+    let buyer = Arc::new(
+        BuyerAuthorizer::create(
+            &root.path().join("buyer"),
+            *peer(2).node_addr(),
+            10,
+            Limits::default(),
+        )
+        .unwrap(),
+    );
+    let free = Arc::new(limited());
+    install(&free, 1, 9, "classification");
+    let forwarder = crate::buyer::PaidForwarder::with_free_routes(
+        seller,
+        buyer,
+        BillingBasis::ForwardingData,
+        free.clone(),
+    );
+    for _ in 0..2 {
+        let admission = forwarder.admit_classified(&request(&[7; 256])).unwrap();
+        assert_eq!(admission.class, ForwardingClass::Background);
+        assert_eq!(admission.token, 0);
+        forwarder.complete(admission.token, ForwardingOutcome::Submitted);
+    }
+    assert!(forwarder.admit_classified(&request(&[7; 256])).is_none());
+    assert_eq!(free.stats().bandwidth.unwrap().charged_units, 512);
 }

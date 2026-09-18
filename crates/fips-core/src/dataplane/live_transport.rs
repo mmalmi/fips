@@ -210,6 +210,13 @@ impl DataplaneTransportPlanGroup {
         self.lane == lane && self.transport_id == transport_id && &self.remote_addr == remote_addr
     }
 
+    fn may_precede(&self, earlier: &Self) -> bool {
+        self.lane.priority() < earlier.lane.priority()
+            && !self.outputs.iter().any(|output| {
+                earlier.outputs.iter().any(|other| output.owner() == other.owner())
+            })
+    }
+
     fn push(&mut self, output: PacketOutput) {
         debug_assert_eq!(self.lane, output.lane());
         self.outputs.push(output);
@@ -255,6 +262,13 @@ impl DataplaneTransportSendGroups {
         }
         self.groups
             .push(DataplaneTransportPlanGroup::new(transport_id, remote_addr, output));
+        // Move independent owners ahead of lower-priority groups. An owner’s
+        // already-sealed counters stay in order, including on byte streams.
+        let mut index = self.groups.len() - 1;
+        while index > 0 && self.groups[index].may_precede(&self.groups[index - 1]) {
+            self.groups.swap(index, index - 1);
+            index -= 1;
+        }
     }
 }
 

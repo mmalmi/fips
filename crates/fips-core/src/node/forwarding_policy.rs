@@ -34,6 +34,27 @@ pub enum ForwardingOutcome {
     Unconfirmed,
 }
 
+/// Local scheduling authority, chosen together with admission. This is never
+/// a peer-supplied preference or a claim about end-to-end payment or delivery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForwardingClass {
+    /// Preserve the core's existing protocol classification.
+    Unspecified,
+    /// Essential protocol traffic admitted under a separate bounded allowance.
+    Control,
+    /// Ordinary data, including locally authorized paid forwarding.
+    Normal,
+    /// Complimentary data, served after control and ordinary data.
+    Background,
+}
+
+/// One admission decision owns both accounting completion and scheduling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ForwardingAdmission {
+    pub token: u64,
+    pub class: ForwardingClass,
+}
+
 /// Application-owned transit admission. No policy preserves normal forwarding.
 ///
 /// Calls run synchronously on the node loop: do not block on disk, networking or
@@ -44,6 +65,12 @@ pub enum ForwardingOutcome {
 /// embedding service; this interface is not a durable or financial receipt.
 pub trait ForwardingPolicy: Debug + Send + Sync + 'static {
     fn admit(&self, request: &ForwardingRequest<'_>) -> Option<u64>;
+    fn admit_classified(&self, request: &ForwardingRequest<'_>) -> Option<ForwardingAdmission> {
+        self.admit(request).map(|token| ForwardingAdmission {
+            token,
+            class: ForwardingClass::Unspecified,
+        })
+    }
     fn complete(&self, token: u64, outcome: ForwardingOutcome);
 }
 
@@ -52,6 +79,7 @@ pub trait ForwardingPolicy: Debug + Send + Sync + 'static {
 pub(super) struct ForwardingPermit {
     policy: Arc<dyn ForwardingPolicy>,
     token: Option<u64>,
+    class: ForwardingClass,
 }
 
 impl ForwardingPermit {
@@ -59,10 +87,21 @@ impl ForwardingPermit {
         policy: &Arc<dyn ForwardingPolicy>,
         request: &ForwardingRequest<'_>,
     ) -> Option<Self> {
-        policy.admit(request).map(|token| Self {
+        policy.admit_classified(request).map(|admission| Self {
             policy: Arc::clone(policy),
-            token: Some(token),
+            token: Some(admission.token),
+            class: admission.class,
         })
+    }
+
+    pub(super) fn packet_class(&self) -> Option<crate::dataplane::PacketClass> {
+        use crate::dataplane::PacketClass;
+        match self.class {
+            ForwardingClass::Unspecified => None,
+            ForwardingClass::Control => Some(PacketClass::Control),
+            ForwardingClass::Normal => Some(PacketClass::Bulk),
+            ForwardingClass::Background => Some(PacketClass::Background),
+        }
     }
 
     pub(super) fn submitted(mut self) {

@@ -90,8 +90,11 @@ impl OwnerState {
 
             self.next_retire = self.next_retire.wrapping_add(drained as u64);
             self.in_flight = self.in_flight.saturating_sub(drained);
-            if slot.lane() == Lane::Bulk {
+            if slot.lane() != Lane::Priority {
                 self.bulk_in_flight = self.bulk_in_flight.saturating_sub(drained);
+            }
+            if slot.lane() == Lane::Background {
+                self.background_in_flight = self.background_in_flight.saturating_sub(drained);
             }
             retired_count = retired_count.saturating_add(drained);
             if !slot.is_empty() {
@@ -264,8 +267,11 @@ impl OwnerState {
 
     fn reserve_class(&mut self, class: PacketClass) {
         self.in_flight = self.in_flight.saturating_add(1);
-        if class.lane() == Lane::Bulk {
+        if class.lane() != Lane::Priority {
             self.bulk_in_flight = self.bulk_in_flight.saturating_add(1);
+        }
+        if class.lane() == Lane::Background {
+            self.background_in_flight = self.background_in_flight.saturating_add(1);
         }
     }
 }

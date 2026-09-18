@@ -788,6 +788,7 @@ pub(crate) struct OwnerState {
     in_flight_limit: usize,
     in_flight: usize,
     bulk_in_flight: usize,
+    background_in_flight: usize,
     next_order: u64,
     next_retire: u64,
     next_send_counter: u64,

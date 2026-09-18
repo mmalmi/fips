@@ -656,113 +656,6 @@ impl Dataplane {
         dispatched_total
     }
 
-    fn prepare_aead_available_into(
-        &mut self,
-        limit: usize,
-        prepared_work: &mut Vec<PreparedCryptoRun>,
-        ready_slots: &mut Vec<Arc<CryptoReadySlot>>,
-        worker_pool: &DataplaneAeadWorkerPool,
-    ) -> usize {
-        prepared_work.clear();
-        ready_slots.clear();
-        let _owner_dispatch_timer = crate::perf_profile::Timer::start(
-            crate::perf_profile::Stage::DataplaneOwnerDispatch,
-        );
-        let worker_capacity = worker_pool.available_capacity();
-        let total_limit = limit.min(worker_capacity);
-        if limit > 0 && worker_capacity == 0 {
-            crate::perf_profile::record_event(
-                crate::perf_profile::Event::DataplaneDispatchExecutorFull,
-            );
-        }
-        let priority_capacity =
-            total_limit.min(worker_pool.available_capacity_for_lane(Lane::Priority));
-        let mut priority_inbound_capacity = priority_capacity;
-        let bulk_capacity = total_limit.min(worker_pool.available_capacity_for_lane(Lane::Bulk));
-        let inbound_priority_pending = self.has_inbound_priority_pending();
-        let outbound_priority_reserve = outbound_priority_dispatch_limit(
-            priority_capacity,
-            self.has_outbound_priority_pending(),
-        );
-        let pre_priority_inbound_limit = inbound_before_outbound_priority_limit(
-            priority_capacity,
-            outbound_priority_reserve,
-        )
-        .min(priority_inbound_capacity);
-        let mut fsp_path_open = FspPathOpenDispatch::new(crate::perf_profile::enabled());
-
-        let mut dispatched_total = self.dispatch_prepared_ingress_shards_into(
-            pre_priority_inbound_limit,
-            prepared_work,
-            ready_slots,
-            false,
-            &mut fsp_path_open,
-        );
-        priority_inbound_capacity =
-            priority_inbound_capacity.saturating_sub(dispatched_total);
-
-        let priority_outbound_limit =
-            outbound_priority_reserve.min(total_limit.saturating_sub(dispatched_total));
-        dispatched_total = dispatched_total.saturating_add(
-            self.dispatch_outbound_prepared_shards_into(
-                priority_outbound_limit,
-                prepared_work,
-                ready_slots,
-                true,
-            ),
-        );
-
-        let priority_inbound_limit = if inbound_priority_pending {
-            priority_inbound_capacity.min(total_limit.saturating_sub(dispatched_total))
-        } else {
-            0
-        };
-        dispatched_total = dispatched_total.saturating_add(
-            self.dispatch_prepared_ingress_shards_into(
-                priority_inbound_limit,
-                prepared_work,
-                ready_slots,
-                true,
-                &mut fsp_path_open,
-            ),
-        );
-
-        let bulk_dispatch_capacity = total_limit
-            .saturating_sub(dispatched_total)
-            .min(bulk_capacity);
-        let bulk_inbound_start = prepared_work.len();
-        dispatched_total = dispatched_total.saturating_add(
-            self.dispatch_prepared_ingress_shards_into(
-                bulk_dispatch_capacity,
-                prepared_work,
-                ready_slots,
-                false,
-                &mut fsp_path_open,
-            ),
-        );
-        let outbound_start = prepared_work.len();
-        dispatched_total = dispatched_total.saturating_add(
-            self.dispatch_outbound_prepared_shards_into(
-                total_limit.saturating_sub(dispatched_total).min(bulk_capacity),
-                prepared_work,
-                ready_slots,
-                false,
-            ),
-        );
-        debug_assert!(dispatched_total <= total_limit);
-
-        let leading_priority_seals = prepared_work[outbound_start..]
-            .iter()
-            .take_while(|work| work.lane() == Lane::Priority)
-            .count();
-        if leading_priority_seals > 0 {
-            prepared_work[bulk_inbound_start..outbound_start + leading_priority_seals]
-                .rotate_right(leading_priority_seals);
-        }
-        fsp_path_open.record();
-        dispatched_total
-    }
-
     pub(crate) fn drain_drops(&mut self) -> Vec<PacketDrop> {
         std::mem::take(&mut self.drops)
     }
@@ -820,7 +713,7 @@ impl Dataplane {
         limit: usize,
         prepared: &mut Vec<PreparedCryptoRun>,
         ready_slots: &mut Vec<Arc<CryptoReadySlot>>,
-        priority_only: bool,
+        lane: Lane,
         fsp_path_open: &mut FspPathOpenDispatch,
     ) -> usize {
         if limit == 0 || self.shards.is_empty() {
@@ -828,24 +721,23 @@ impl Dataplane {
             return 0;
         }
 
-        let priority_only = priority_only || self.has_inbound_priority_pending();
         let mut dispatched = 0usize;
         while dispatched < limit {
-            let ready_lanes = self.ingress_ready_shards.ready_len(priority_only);
+            let ready_lanes = self.ingress_ready_shards.ready_len(lane);
             if ready_lanes == 0 {
                 break;
             }
             let shard_limit = dataplane_ingress_owner_shard_dispatch_limit(
                 limit.saturating_sub(dispatched),
                 ready_lanes,
-                priority_only,
+                lane == Lane::Priority,
             );
             let mut pass_dispatched = 0usize;
             for _ in 0..ready_lanes {
                 if dispatched >= limit {
                     break;
                 }
-                let Some(shard) = self.ingress_ready_shards.pop(priority_only) else {
+                let Some(shard) = self.ingress_ready_shards.pop_lane(lane) else {
                     break;
                 };
                 let before = LaneLens::from_tuple(self.shards[shard].admission_queue_lens());
@@ -853,7 +745,7 @@ impl Dataplane {
                     shard_limit.min(limit.saturating_sub(dispatched)),
                     prepared,
                     ready_slots,
-                    priority_only,
+                    lane,
                     fsp_path_open,
                     &mut self.drops,
                 );
@@ -878,17 +770,16 @@ impl Dataplane {
         limit: usize,
         prepared: &mut Vec<PreparedCryptoRun>,
         ready_slots: &mut Vec<Arc<CryptoReadySlot>>,
-        priority_only: bool,
+        lane: Lane,
     ) -> usize {
         if limit == 0 || self.shards.is_empty() {
             crate::perf_profile::record_dataplane_crypto_seal_batch(0);
             return 0;
         }
 
-        let priority_only = priority_only || self.has_outbound_priority_pending();
         let mut dispatched = 0usize;
         while dispatched < limit {
-            let ready_lanes = self.outbound_ready_shards.ready_len(priority_only);
+            let ready_lanes = self.outbound_ready_shards.ready_len(lane);
             if ready_lanes == 0 {
                 break;
             }
@@ -901,7 +792,7 @@ impl Dataplane {
                 if dispatched >= limit {
                     break;
                 }
-                let Some(shard) = self.outbound_ready_shards.pop(priority_only) else {
+                let Some(shard) = self.outbound_ready_shards.pop_lane(lane) else {
                     break;
                 };
                 let before = LaneLens::from_tuple(self.shards[shard].outbound_admission_queue_lens());
@@ -909,7 +800,7 @@ impl Dataplane {
                     shard_limit.min(limit.saturating_sub(dispatched)),
                     prepared,
                     ready_slots,
-                    priority_only,
+                    lane,
                     &mut self.drops,
                 );
                 let after = LaneLens::from_tuple(self.shards[shard].outbound_admission_queue_lens());

@@ -278,7 +278,7 @@ impl DataplaneOwnerShard {
         limit: usize,
         prepared: &mut Vec<PreparedCryptoRun>,
         ready_slots: &mut Vec<Arc<CryptoReadySlot>>,
-        priority_only: bool,
+        lane: Lane,
         fsp_path_open: &mut FspPathOpenDispatch,
         drops: &mut Vec<PacketDrop>,
     ) -> usize {
@@ -289,11 +289,11 @@ impl DataplaneOwnerShard {
         while dispatched < limit && attempts_remaining > 0 {
             let run_limit = limit.saturating_sub(dispatched);
             let Some(cursor) = self.admission.pop_next_run_into(
-                priority_only,
+                lane,
                 run_limit,
                 &mut self.admission_run,
             ) else {
-                if !priority_only && limit > 0 {
+                if lane != Lane::Priority && limit > 0 {
                     crate::perf_profile::record_event(
                         crate::perf_profile::Event::DataplaneDispatchNoIngress,
                     );
@@ -405,7 +405,7 @@ impl DataplaneOwnerShard {
             prepared.push(run);
         }
 
-        if !priority_only && limit > 0 && dispatched >= limit {
+        if lane != Lane::Priority && limit > 0 && dispatched >= limit {
             crate::perf_profile::record_event(
                 crate::perf_profile::Event::DataplaneDispatchLimitHit,
             );
@@ -418,7 +418,7 @@ impl DataplaneOwnerShard {
         limit: usize,
         prepared: &mut Vec<PreparedCryptoRun>,
         ready_slots: &mut Vec<Arc<CryptoReadySlot>>,
-        priority_only: bool,
+        lane: Lane,
         drops: &mut Vec<PacketDrop>,
     ) -> usize {
         let mut dispatched = 0usize;
@@ -427,18 +427,14 @@ impl DataplaneOwnerShard {
         while dispatched < limit && attempts_remaining > 0 {
             let remaining = limit.saturating_sub(dispatched);
             let ready_lens = self.outbound_admission.ready_lens();
-            let ready_owners = if priority_only {
-                ready_lens.0
-            } else {
-                ready_lens.0.saturating_add(ready_lens.1)
-            };
+            let ready_owners = LaneLens::from_tuple(ready_lens).lane(lane);
             let run_limit = if ready_owners > 1 {
                 remaining.min(DATAPLANE_OUTBOUND_OWNER_FAIRNESS_PACKETS)
             } else {
                 remaining
             };
             let Some(cursor) = self.outbound_admission.pop_next_run_into(
-                priority_only,
+                lane,
                 run_limit,
                 &mut self.outbound_admission_run,
             )
@@ -606,19 +602,19 @@ impl DataplaneOwnerShard {
         retired_count
     }
 
-    fn admission_queue_lens(&self) -> (usize, usize) {
+    fn admission_queue_lens(&self) -> (usize, usize, usize) {
         self.admission.lens()
     }
 
-    fn admission_ready_lens(&self) -> (usize, usize) {
+    fn admission_ready_lens(&self) -> (usize, usize, usize) {
         self.admission.ready_lens()
     }
 
-    fn outbound_admission_queue_lens(&self) -> (usize, usize) {
+    fn outbound_admission_queue_lens(&self) -> (usize, usize, usize) {
         self.outbound_admission.lens()
     }
 
-    fn outbound_admission_ready_lens(&self) -> (usize, usize) {
+    fn outbound_admission_ready_lens(&self) -> (usize, usize, usize) {
         self.outbound_admission.ready_lens()
     }
 

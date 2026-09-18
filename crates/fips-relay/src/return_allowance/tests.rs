@@ -158,11 +158,17 @@ fn rejected_forwarding_earns_nothing_and_paid_reverse_routes_keep_their_accounti
     assert!(forwarding.admit(&request(1, 3, 1, 3, &[9; 32])).is_none());
     assert_eq!(forwarding.return_stats().unwrap().tracked_paths, 0);
     open(1, 3, 100);
-    let token = forwarding.admit(&request(1, 3, 1, 3, &[9; 32])).unwrap();
-    forwarding.complete(token, ForwardingOutcome::Submitted);
-    let free = forwarding.admit(&request(3, 1, 3, 1, &[8; 20])).unwrap();
-    assert_eq!(free, 0);
-    forwarding.complete(free, ForwardingOutcome::Submitted);
+    let token = forwarding
+        .admit_classified(&request(1, 3, 1, 3, &[9; 32]))
+        .unwrap();
+    assert_eq!(token.class, fips_core::node::ForwardingClass::Normal);
+    forwarding.complete(token.token, ForwardingOutcome::Submitted);
+    let free = forwarding
+        .admit_classified(&request(3, 1, 3, 1, &[8; 20]))
+        .unwrap();
+    assert_eq!(free.token, 0);
+    assert_eq!(free.class, fips_core::node::ForwardingClass::Background);
+    forwarding.complete(free.token, ForwardingOutcome::Submitted);
     assert_eq!(
         forwarding.return_stats().unwrap().traffic.admitted_packets,
         1

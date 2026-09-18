@@ -6,6 +6,7 @@ impl OwnerState {
             in_flight_limit: config.in_flight_limit,
             in_flight: 0,
             bulk_in_flight: 0,
+            background_in_flight: 0,
             next_order: 0,
             next_retire: 0,
             next_send_counter: config.next_send_counter,
@@ -784,7 +785,12 @@ impl OwnerState {
         if self.in_flight >= self.in_flight_limit {
             return Some(OwnerReserveBlockReason::TotalInFlight);
         }
-        if class.lane() == Lane::Bulk && self.bulk_in_flight >= self.bulk_lane_in_flight_limit() {
+        // One already-dispatched free packet may precede a newly arrived paid
+        // packet for this owner. Preserve nonce/retirement order while bounding it.
+        if class.lane() == Lane::Background && self.background_in_flight >= 1 {
+            return Some(OwnerReserveBlockReason::BulkLane);
+        }
+        if class.lane() != Lane::Priority && self.bulk_in_flight >= self.bulk_lane_in_flight_limit() {
             return Some(OwnerReserveBlockReason::BulkLane);
         }
         None

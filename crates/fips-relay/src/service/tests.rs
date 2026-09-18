@@ -193,6 +193,7 @@ fn restored_allowance_is_inaccessible_until_service_startup_finishes() {
         session_payload: &handshake,
     };
     assert!(forwarding.admit(&request).is_none());
+    assert!(forwarding.admit_classified(&request).is_none());
     assert_eq!(
         forwarding.relay.bootstrap_stats().unwrap().admitted_packets,
         0
@@ -202,15 +203,17 @@ fn restored_allowance_is_inaccessible_until_service_startup_finishes() {
     assert_eq!(seller.channel_usage("channel").unwrap().reserved_msat, 0);
     forwarding.ready.store(true, Ordering::Release);
     let token = forwarding
-        .admit(&request)
+        .admit_classified(&request)
         .expect("validated startup exposes the existing allowance");
+    assert_eq!(token.class, fips_core::node::ForwardingClass::Normal);
     request.session_payload = &handshake;
-    let free = forwarding.admit(&request).unwrap();
-    assert_eq!(free, 0);
-    forwarding.complete(free, ForwardingOutcome::Submitted);
-    forwarding.complete(free, ForwardingOutcome::Unconfirmed);
+    let free = forwarding.admit_classified(&request).unwrap();
+    assert_eq!(free.token, 0);
+    assert_eq!(free.class, fips_core::node::ForwardingClass::Control);
+    forwarding.complete(free.token, ForwardingOutcome::Submitted);
+    forwarding.complete(free.token, ForwardingOutcome::Unconfirmed);
     assert_eq!(seller.channel_usage("channel").unwrap().submitted_msat, 0);
-    forwarding.complete(token, ForwardingOutcome::Submitted);
+    forwarding.complete(token.token, ForwardingOutcome::Submitted);
     assert_eq!(seller.channel_usage("channel").unwrap().submitted_msat, 4);
 }
 

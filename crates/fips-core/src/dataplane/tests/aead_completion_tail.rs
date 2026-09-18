@@ -184,7 +184,7 @@ fn runtime_turn_driver_reports_admission_and_crypto_drops() {
     let admission_drop = turn
         .drops()
         .iter()
-        .find(|drop| drop.reason() == PacketDropReason::Admission(AdmissionDropReason::BulkFull))
+        .find(|drop| drop.reason() == PacketDropReason::Admission(AdmissionDropReason::Bulk))
         .expect("admission drop");
     assert_eq!(admission_drop.owner(), owner);
     assert_eq!(admission_drop.counter(), Some(11));

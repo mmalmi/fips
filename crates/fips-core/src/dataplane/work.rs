@@ -107,17 +107,6 @@ impl CryptoOwnerRun {
         self.items.first().map(|item| &item.reservation)
     }
 
-    fn bulk_count(&self) -> usize {
-        if self
-            .first_reservation()
-            .is_some_and(|reservation| reservation.lane == Lane::Bulk)
-        {
-            self.len()
-        } else {
-            0
-        }
-    }
-
     fn is_open_fsp_session_payload_run(&self) -> bool {
         !self.is_empty()
             && self.is_open()

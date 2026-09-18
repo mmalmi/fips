@@ -145,50 +145,35 @@ impl Node {
         plaintext: &[u8],
         ce_flag: bool,
     ) -> Result<(), NodeError> {
-        if !self.dataplane_has_fmp_owner(node_addr) {
-            return if self.peers.get(node_addr).is_none() {
-                Err(NodeError::PeerNotFound(*node_addr))
-            } else {
-                Err(NodeError::SendFailed {
-                    node_addr: *node_addr,
-                    reason: "dataplane FMP owner not registered".into(),
-                })
-            };
-        }
+        self.send_dataplane_fmp_link_plaintext_with_class(node_addr, plaintext, ce_flag, None)
+            .await
+    }
 
-        let Some(send_context) = self.dataplane.fmp_owner_send_context(node_addr) else {
-            return Err(NodeError::SendFailed {
-                node_addr: *node_addr,
-                reason: "dataplane FMP send context unavailable".into(),
-            });
-        };
-
-        if self.peers.get(node_addr).is_none() {
-            return Err(NodeError::PeerNotFound(*node_addr));
-        }
-
-        let mut flags = send_context.flags();
-        if ce_flag {
-            flags |= FLAG_CE;
-        }
-        let send_token = DATAPLANE_SEND_TOKEN.fetch_add(1, Ordering::Relaxed);
-
-        let outbound = OutboundPacket::fmp(
-            OwnerId::fmp_node(*node_addr),
-            send_context.generation(),
-            dataplane_fmp_link_class(plaintext),
-            send_context.receiver_idx(),
-            flags,
+    pub(in crate::node) async fn send_dataplane_fmp_link_plaintext_with_class(
+        &mut self,
+        node_addr: &NodeAddr,
+        plaintext: &[u8],
+        ce_flag: bool,
+        class: Option<PacketClass>,
+    ) -> Result<(), NodeError> {
+        let (outbound, send_token) = self.prepare_dataplane_fmp_link_outbound(
+            *node_addr,
             crate::transport::PacketBuffer::new(plaintext.to_vec()),
-        )
-        .with_activity_tick(ActivityTick::new(Self::now_ms()))
-        .with_send_token(send_token);
+            ce_flag,
+            ActivityTick::new(Self::now_ms()),
+            class,
+        )?;
         let firsts = DataplaneLiveOutboundFirsts {
             initial_outbound: Some(outbound),
             collect_transport_sent_receipts: true,
             ..Default::default()
         };
-        let pending_policy = dataplane_fmp_link_pending_policy(plaintext);
+        let pending_policy = match class {
+            Some(PacketClass::Bulk | PacketClass::Background) => {
+                DATAPLANE_PENDING_OUTBOUND_FAST_POLICY
+            }
+            _ => dataplane_fmp_link_pending_policy(plaintext),
+        };
         let turn = self
             .pump_dataplane_pending_outbound_firsts(firsts, 0, 0, 1)
             .await;
@@ -253,6 +238,7 @@ impl Node {
         plaintext: crate::transport::PacketBuffer,
         ce_flag: bool,
         activity_tick: ActivityTick,
+        class: Option<PacketClass>,
     ) -> Result<(OutboundPacket, u64), NodeError> {
         if !self.dataplane_has_fmp_owner(&node_addr) {
             return if self.peers.get(&node_addr).is_none() {
@@ -282,7 +268,7 @@ impl Node {
         let packet = OutboundPacket::fmp(
             OwnerId::fmp_node(node_addr),
             send_context.generation(),
-            dataplane_fmp_link_class(plaintext.as_slice()),
+            class.unwrap_or_else(|| dataplane_fmp_link_class(plaintext.as_slice())),
             send_context.receiver_idx(),
             flags,
             plaintext,

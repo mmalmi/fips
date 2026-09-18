@@ -24,8 +24,9 @@ use cashu_service::{CashuSpilmanPayment, CashuSpilmanPaymentSigner};
 use fips_core::{
     NodeAddr,
     node::{
-        ForwardingOutcome, ForwardingPolicy, ForwardingRequest, OriginatedSessionAdmission,
-        OriginatedSessionIntent, OriginatedSessionObserver, OriginatedSessionRequest,
+        ForwardingAdmission, ForwardingClass, ForwardingOutcome, ForwardingPolicy,
+        ForwardingRequest, OriginatedSessionAdmission, OriginatedSessionIntent,
+        OriginatedSessionObserver, OriginatedSessionRequest,
     },
 };
 use serde::{Deserialize, Serialize};

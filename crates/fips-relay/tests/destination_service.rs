@@ -23,11 +23,11 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     process::Child,
 };
+#[path = "destination_service/bandwidth.rs"]
+mod bandwidth;
 mod process_support;
 #[path = "process_support/quality.rs"]
 mod quality;
-#[path = "destination_service/bandwidth.rs"]
-mod bandwidth;
 #[path = "destination_service/upkeep.rs"]
 mod upkeep;
 use process_support::*;

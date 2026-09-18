@@ -2,13 +2,15 @@
 struct LaneLens {
     priority: usize,
     bulk: usize,
+    background: usize,
 }
 
 impl LaneLens {
-    fn from_tuple(lens: (usize, usize)) -> Self {
+    fn from_tuple(lens: (usize, usize, usize)) -> Self {
         Self {
             priority: lens.0,
             bulk: lens.1,
+            background: lens.2,
         }
     }
 
@@ -16,6 +18,7 @@ impl LaneLens {
         match lane {
             Lane::Priority => self.priority,
             Lane::Bulk => self.bulk,
+            Lane::Background => self.background,
         }
     }
 
@@ -27,6 +30,7 @@ impl LaneLens {
         match lane {
             Lane::Priority => self.priority = self.priority.saturating_add(count),
             Lane::Bulk => self.bulk = self.bulk.saturating_add(count),
+            Lane::Background => self.background = self.background.saturating_add(count),
         }
     }
 
@@ -34,12 +38,14 @@ impl LaneLens {
         Self {
             priority: self.priority.saturating_sub(other.priority),
             bulk: self.bulk.saturating_sub(other.bulk),
+            background: self.background.saturating_sub(other.background),
         }
     }
 
     fn saturating_sub_assign(&mut self, other: Self) {
         self.priority = self.priority.saturating_sub(other.priority);
         self.bulk = self.bulk.saturating_sub(other.bulk);
+        self.background = self.background.saturating_sub(other.background);
     }
 }
 
@@ -107,6 +113,7 @@ impl ReadyShardQueue {
 struct ReadyShardQueues {
     priority: ReadyShardQueue,
     bulk: ReadyShardQueue,
+    background: ReadyShardQueue,
 }
 
 impl ReadyShardQueues {
@@ -114,6 +121,7 @@ impl ReadyShardQueues {
         Self {
             priority: ReadyShardQueue::new(shards),
             bulk: ReadyShardQueue::new(shards),
+            background: ReadyShardQueue::new(shards),
         }
     }
 
@@ -133,28 +141,17 @@ impl ReadyShardQueues {
         if lens.bulk > 0 {
             self.mark(shard, Lane::Bulk);
         }
-    }
-
-    fn pop(&mut self, priority_only: bool) -> Option<usize> {
-        self.pop_lane(Lane::Priority).or_else(|| {
-            if priority_only {
-                None
-            } else {
-                self.pop_lane(Lane::Bulk)
-            }
-        })
-    }
-
-    fn ready_len(&self, priority_only: bool) -> usize {
-        if priority_only {
-            self.priority.len()
-        } else {
-            self.priority.len().saturating_add(self.bulk.len())
+        if lens.background > 0 {
+            self.mark(shard, Lane::Background);
         }
     }
 
+    fn ready_len(&mut self, lane: Lane) -> usize {
+        self.lane_mut(lane).len()
+    }
+
     fn has_ready(&self) -> bool {
-        self.priority.has_ready() || self.bulk.has_ready()
+        self.priority.has_ready() || self.bulk.has_ready() || self.background.has_ready()
     }
 
     fn pop_lane(&mut self, lane: Lane) -> Option<usize> {
@@ -165,6 +162,7 @@ impl ReadyShardQueues {
         match lane {
             Lane::Priority => &mut self.priority,
             Lane::Bulk => &mut self.bulk,
+            Lane::Background => &mut self.background,
         }
     }
 }

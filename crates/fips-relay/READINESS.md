@@ -182,9 +182,29 @@ within elapsed refill bounds; all financial journals remain unchanged and the
 mint is never contacted. Strict all-target relay linting passes on the combined
 free-bandwidth and receive-queue changes. This does not establish radio congestion
 fairness or paid/free scheduling.
-Outgoing-link price selectors, choosing between free and paid tiers for the same
-destination, and paid traffic priority remain unfinished.
-Paid priority must derive from a valid local agreement.
+Outgoing-link price selectors and choosing between free and paid tiers for the
+same destination remain unfinished.
+
+Local admission now binds accounting and scheduling together. Negotiated free
+and earned-return traffic uses a bounded background lane; locally authorized
+paid data uses the normal lane, with strict handshakes retaining protocol
+priority. Both scalar and batched forwarding preserve that local decision over
+peer-supplied header shapes. Background queue overflow yields to new receive
+work, and foreground receipt drains preserve intentionally waiting background
+packets instead of recording false route failures. Shutdown still drains or
+cancels all lanes. See [local scheduling](DESTINATION-PRICING.md#local-traffic-scheduling)
+for bounds and ordering limits.
+
+Eight focused scheduler checks and all 124 dataplane tests pass. The overflow
+and control-drain regressions each fail before their fixes; all 17 forwarding
+tests, three policy tests and 197 relay library tests pass afterward. Existing
+five-process free-bandwidth acceptance and mixed UDP/TCP paid exhaustion,
+renewal, restart and settlement acceptance also pass with classification enabled.
+The automatic paid watch recovers through native loss and delay simulations while
+retaining channel evidence. Strict core and relay linting, project formatting and
+the 738-file source-length check pass.
+These do not establish concurrent paid/free congestion performance, radio
+airtime fairness, or the same-destination service tier feature.
 
 ### Physical Wi-Fi discovery and free recovery
 

@@ -94,10 +94,11 @@ impl Node {
                 };
                 let forward = route.with_plaintext(PacketBuffer::new(plaintext));
                 let result = self
-                    .send_dataplane_fmp_link_plaintext(
+                    .send_dataplane_fmp_link_plaintext_with_class(
                         &forward.next_hop_addr,
                         forward.plaintext.as_slice(),
                         forward.outgoing_ce,
+                        Some(forwarding_packet_class(&forward)),
                     )
                     .await;
                 self.finish_prepared_session_forward(forward, result, true)
@@ -248,8 +249,20 @@ impl Node {
             let activity_tick = crate::dataplane::ActivityTick::new(Self::now_ms());
             for mut forward in waiting {
                 let lane = forwarding_lane(&forward);
+                let class = forwarding_packet_class(&forward);
                 if !self.deferred_session_forwards.has_capacity(&forward, lane) {
-                    blocked.push(forward);
+                    if lane == ForwardingLane::Background {
+                        // Best-effort overflow must return to receive new paid
+                        // traffic instead of draining an entire free burst.
+                        let error = NodeError::SendFailed {
+                            node_addr: forward.next_hop_addr,
+                            reason: "background forwarding capacity".into(),
+                        };
+                        self.finish_prepared_session_forward(forward, Err(error), false)
+                            .await;
+                    } else {
+                        blocked.push(forward);
+                    }
                     continue;
                 }
                 let next_hop_addr = forward.next_hop_addr;
@@ -260,6 +273,7 @@ impl Node {
                     plaintext,
                     outgoing_ce,
                     activity_tick,
+                    Some(class),
                 ) {
                     Ok((packet, send_token)) => {
                         self.deferred_session_forwards

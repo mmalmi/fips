@@ -63,6 +63,7 @@ impl PreparedCryptoRun {
         Ok(())
     }
 
+    #[cfg(test)]
     fn lane(&self) -> Lane {
         self.run
             .first_reservation()
@@ -79,6 +80,7 @@ impl PreparedCryptoRun {
 struct DataplaneAeadWorkerCounters {
     in_flight: Arc<AtomicUsize>,
     bulk_in_flight: Arc<AtomicUsize>,
+    background_in_flight: Arc<AtomicUsize>,
     ready: Arc<AtomicUsize>,
 }
 
@@ -87,14 +89,18 @@ impl DataplaneAeadWorkerCounters {
         Self {
             in_flight: Arc::new(AtomicUsize::new(0)),
             bulk_in_flight: Arc::new(AtomicUsize::new(0)),
+            background_in_flight: Arc::new(AtomicUsize::new(0)),
             ready: Arc::new(AtomicUsize::new(0)),
         }
     }
 
-    fn add(&self, count: usize, bulk_count: usize) {
+    fn add(&self, count: usize, lane: Lane) {
         self.in_flight.fetch_add(count, Relaxed);
-        if bulk_count > 0 {
-            self.bulk_in_flight.fetch_add(bulk_count, Relaxed);
+        if lane != Lane::Priority {
+            self.bulk_in_flight.fetch_add(count, Relaxed);
+        }
+        if lane == Lane::Background {
+            self.background_in_flight.fetch_add(count, Relaxed);
         }
     }
 
@@ -102,11 +108,14 @@ impl DataplaneAeadWorkerCounters {
         self.ready.fetch_add(count, Relaxed);
     }
 
-    fn retire(&self, count: usize, bulk_count: usize) {
+    fn retire(&self, count: usize, lane: Lane) {
         self.in_flight.fetch_sub(count, Relaxed);
         self.ready.fetch_sub(count, Relaxed);
-        if bulk_count > 0 {
-            self.bulk_in_flight.fetch_sub(bulk_count, Relaxed);
+        if lane != Lane::Priority {
+            self.bulk_in_flight.fetch_sub(count, Relaxed);
+        }
+        if lane == Lane::Background {
+            self.background_in_flight.fetch_sub(count, Relaxed);
         }
     }
 }
@@ -249,8 +258,7 @@ impl CryptoReadySlot {
 
     fn retire(&self, count: usize) {
         if let Some(counters) = &self.counters {
-            let bulk_count = if self.lane == Lane::Bulk { count } else { 0 };
-            counters.retire(count, bulk_count);
+            counters.retire(count, self.lane);
         }
     }
 
@@ -292,6 +300,7 @@ struct PreparedCryptoOwnerRun {
 struct CryptoOwnerRunQueue {
     priority: VecDeque<PreparedCryptoOwnerRun>,
     bulk: VecDeque<PreparedCryptoOwnerRun>,
+    background: VecDeque<PreparedCryptoOwnerRun>,
     priority_packets_with_bulk_waiting: usize,
     closed: bool,
 }
@@ -317,6 +326,7 @@ impl CryptoWorkerQueue {
         match lane {
             Lane::Priority => runs.priority.push_back(run),
             Lane::Bulk => runs.bulk.push_back(run),
+            Lane::Background => runs.background.push_back(run),
         }
         drop(runs);
         self.available.notify_one();
@@ -342,8 +352,25 @@ impl CryptoWorkerQueue {
                         .saturating_add(run.slot.len());
                 }
                 run
-            };
+            }.or_else(|| runs.background.pop_front());
             if let Some(run) = run {
+                // Retirement is ordered per owner. Finish the one earlier free
+                // dependency before higher-class work, even under sustained load.
+                if run.slot.lane() != Lane::Background
+                    && let Some(index) = runs.background.iter().position(|earlier| {
+                        earlier.slot.owner() == run.slot.owner()
+                            && earlier.slot.generation() == run.slot.generation()
+                            && earlier.slot.first_order().0 < run.slot.first_order().0
+                    })
+                {
+                    let dependency = runs.background.remove(index);
+                    match run.slot.lane() {
+                        Lane::Priority => runs.priority.push_front(run),
+                        Lane::Bulk => runs.bulk.push_front(run),
+                        Lane::Background => unreachable!(),
+                    }
+                    return dependency;
+                }
                 return Some(run);
             }
             if runs.closed {
@@ -517,7 +544,16 @@ impl DataplaneAeadWorkerPool {
             .counters
             .bulk_in_flight
             .load(Relaxed);
-        bulk_limit.saturating_sub(bulk_in_flight).min(total_available)
+        let available = bulk_limit.saturating_sub(bulk_in_flight).min(total_available);
+        if lane == Lane::Background {
+            // Keep at most four free packets ahead of newly arriving paid work.
+            // Tiny configurations still make idle progress, one packet at a time.
+            available.min(bulk_limit.div_ceil(2).min(4).saturating_sub(
+                self.counters.background_in_flight.load(Relaxed),
+            ))
+        } else {
+            available
+        }
     }
 
     fn prepare_owner_run(
@@ -526,9 +562,9 @@ impl DataplaneAeadWorkerPool {
         cipher: AeadKey,
     ) -> PreparedCryptoOwnerRun {
         let len = run.len();
-        let bulk_count = run.bulk_count();
+        let lane = run.first_reservation().expect("nonempty crypto run").lane;
         let is_open = run.is_open();
-        self.counters.add(len, bulk_count);
+        self.counters.add(len, lane);
         let slot = Arc::new(CryptoReadySlot::new(run, self.counters.clone()));
         PreparedCryptoOwnerRun {
             slot,

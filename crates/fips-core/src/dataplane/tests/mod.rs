@@ -21,3 +21,4 @@ include!("live_node_runtime_continuation.rs");
 include!("live_node_runtime_tail.rs");
 include!("live_node_session_ingress.rs");
 include!("live_node_runtime_output.rs");
+include!("background.rs");

@@ -28,7 +28,7 @@ use cashu_service::{
 use fips_core::{
     FipsEndpoint, Identity, PeerIdentity,
     config::PeerConfig,
-    node::{ForwardingOutcome, ForwardingPolicy, ForwardingRequest},
+    node::{ForwardingAdmission, ForwardingOutcome, ForwardingPolicy, ForwardingRequest},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -69,10 +69,15 @@ struct ServiceForwarder {
 
 impl ForwardingPolicy for ServiceForwarder {
     fn admit(&self, request: &ForwardingRequest<'_>) -> Option<u64> {
+        self.admit_classified(request)
+            .map(|admission| admission.token)
+    }
+
+    fn admit_classified(&self, request: &ForwardingRequest<'_>) -> Option<ForwardingAdmission> {
         if !self.ready.load(Ordering::Acquire) {
             return None;
         }
-        self.relay.admit(request)
+        self.relay.admit_classified(request)
     }
 
     fn complete(&self, token: u64, outcome: ForwardingOutcome) {

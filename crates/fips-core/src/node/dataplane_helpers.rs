@@ -1,4 +1,4 @@
-fn dataplane_fmp_link_class(plaintext: &[u8]) -> PacketClass {
+pub(in crate::node) fn dataplane_fmp_link_class(plaintext: &[u8]) -> PacketClass {
     match plaintext
         .first()
         .and_then(|msg_type| LinkMessageType::from_byte(*msg_type))

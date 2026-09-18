@@ -58,13 +58,23 @@ fn forward_run_reached_limit(run_len: usize, configured_limit: usize) -> bool {
 }
 
 fn forwarding_lane(forward: &PreparedSessionForward) -> ForwardingLane {
-    if crate::node::endpoint_traffic::fmp_plaintext_is_bulk_session_datagram(
-        forward.plaintext.as_slice(),
-    ) {
-        ForwardingLane::Bulk
-    } else {
-        ForwardingLane::Priority
+    match forwarding_packet_class(forward) {
+        crate::dataplane::PacketClass::Bulk => ForwardingLane::Bulk,
+        crate::dataplane::PacketClass::Background => ForwardingLane::Background,
+        _ => ForwardingLane::Priority,
     }
+}
+
+fn forwarding_packet_class(forward: &PreparedSessionForward) -> crate::dataplane::PacketClass {
+    forward
+        .permit
+        .as_ref()
+        .and_then(|permit| permit.packet_class())
+        .unwrap_or_else(|| {
+            crate::node::dataplane_integration::dataplane_fmp_link_class(
+                forward.plaintext.as_slice(),
+            )
+        })
 }
 
 fn forwarding_submission_limit(transport_batch_packets: usize) -> usize {

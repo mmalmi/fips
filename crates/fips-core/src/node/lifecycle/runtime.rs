@@ -408,7 +408,7 @@ impl Node {
 
         if tokio::time::timeout(
             SHUTDOWN_FORWARDING_DRAIN_BUDGET,
-            self.drain_deferred_session_forwards(),
+            self.drain_all_deferred_session_forwards(),
         )
         .await
         .is_err()

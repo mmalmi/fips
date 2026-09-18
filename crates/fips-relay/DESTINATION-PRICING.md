@@ -77,8 +77,8 @@ paid admission with a free continuation does not use this free-data rate budget.
 Bootstrap and optional earned return allowances have separate existing limits.
 Budgets are volatile and restart with a full burst; they are not durable spending
 caps. Status exposes admissions, charged units, denials and tracked neighbors in
-`free_routes.bandwidth`. This setting neither offers a second service tier nor
-gives paid traffic scheduler priority; those remain separate work.
+`free_routes.bandwidth`. This setting does not offer a second service tier for
+the same destination. Local scheduling is described below.
 
 Transit admission reserves both free sides together. For a paid prefix with a
 free continuation, rejected upstream traffic consumes no onward free allowance.
@@ -93,6 +93,31 @@ incoming permission are mutually excluded. Financial history is retained.
 Optional source price selection can save a paused zero-ceiling authorization for
 an explicitly opened free route. This preserves the free-only limit on restart
 without authorizing automatic purchases.
+
+## Local traffic scheduling
+
+The relay assigns a scheduling class in the same admission decision that reserves
+accounting. Locally authorized paid data uses the ordinary data lane; negotiated
+free traffic and optional earned return traffic use a background lane. Strictly
+validated session handshakes retain protocol priority under their applicable
+admission limits. A peer cannot promote data by setting a packet header flag.
+No new wire message or payment receipt is required. Embeddings using the older
+admission hook retain the core's existing protocol classification.
+
+Background transit has separate waiting limits: 32 packets per node and 16 per
+outgoing neighbor or claimed source. Overflow returns immediately to the receive
+loop. Crypto work admits at most four background packets across its worker pool
+and one per owner, subject to the smaller configured capacity. Control and
+ordinary data run first; ordered work already in progress for that owner still
+finishes before later packets. Waiting free traffic does not make local/control
+ingress wait or count as a failed route. Shutdown still completes or cancels its
+pending accounting obligations.
+
+These are local queue and crypto bounds. They do not reserve Wi-Fi airtime,
+preempt bytes already sent to a socket/radio, or guarantee minimum free throughput
+under continuous paid load. Queue regressions, existing free service acceptance
+and mixed UDP/TCP paid acceptance cover separate parts of the implementation;
+combined paid/free congestion and physical-radio measurements remain outstanding.
 
 ## Automatic source watches
 
@@ -121,7 +146,8 @@ limits before their history expires. Upkeep then fails closed and backs off;
 it does not erase history or reset quotas. Several destinations and overlapping
 replacements share those bounds. Shared downstream traffic can exhaust a grant
 before an individual source does, so arbitrary fan-in has no uninterrupted-service
-guarantee. A rate-limited free tier and paid traffic priority remain separate work.
+guarantee. Choosing between free and paid tiers for the same destination remains
+separate work.
 
 ## Mint availability
 
@@ -188,9 +214,10 @@ checks, formatting and the 719-file source-size gate pass. The new free lifecycl
 test fails against the previous watch implementation at its initial zero-ceiling
 request. The preceding default-free milestone also passed both quote scenarios.
 
-This acceptance scope uses configured peers and explicit source authority. It
-does not establish a rate-limited free tier, traffic priority, mobile radio
-behavior or globally optimal routing. Optional
+This earlier acceptance scope uses configured peers and explicit source authority.
+It does not establish mobile radio behavior or globally optimal routing. The
+subsequent rate-limit and local scheduling checks have the narrower scope
+described above and in readiness. Optional
 [source price and quality selection](PRICE-SELECTION.md) has its own acceptance
 scope; without it, quotes follow the native FIPS-selected path. See
 [readiness](READINESS.md) for the wider deployment limits. The optional

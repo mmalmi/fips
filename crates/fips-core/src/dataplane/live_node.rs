@@ -935,10 +935,10 @@ fn record_dataplane_live_turn_perf(turn: &DataplaneLiveNodeTurn) {
             PacketDropReason::SourcePolicy => crate::perf_profile::Event::DataplaneLiveDropSourcePolicy,
             PacketDropReason::Admission(reason) => {
                 let reason_event = match reason {
-                    AdmissionDropReason::PriorityFull => {
+                    AdmissionDropReason::Priority => {
                         crate::perf_profile::Event::DataplaneLiveDropAdmissionPriorityFull
                     }
-                    AdmissionDropReason::BulkFull => {
+                    AdmissionDropReason::Bulk | AdmissionDropReason::Background => {
                         crate::perf_profile::Event::DataplaneLiveDropAdmissionBulkFull
                     }
                 };
@@ -981,16 +981,16 @@ fn dataplane_live_admission_source_event(
     reason: AdmissionDropReason,
 ) -> crate::perf_profile::Event {
     match (drop.counter().is_some(), reason) {
-        (true, AdmissionDropReason::PriorityFull) => {
+        (true, AdmissionDropReason::Priority) => {
             crate::perf_profile::Event::DataplaneLiveDropAdmissionInboundPriorityFull
         }
-        (true, AdmissionDropReason::BulkFull) => {
+        (true, AdmissionDropReason::Bulk | AdmissionDropReason::Background) => {
             crate::perf_profile::Event::DataplaneLiveDropAdmissionInboundBulkFull
         }
-        (false, AdmissionDropReason::PriorityFull) => {
+        (false, AdmissionDropReason::Priority) => {
             crate::perf_profile::Event::DataplaneLiveDropAdmissionOutboundPriorityFull
         }
-        (false, AdmissionDropReason::BulkFull) => {
+        (false, AdmissionDropReason::Bulk | AdmissionDropReason::Background) => {
             crate::perf_profile::Event::DataplaneLiveDropAdmissionOutboundBulkFull
         }
     }
