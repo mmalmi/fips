@@ -1,4 +1,9 @@
-"""Paid native Wi-Fi recovery with fresh test accounts and a capped local mint."""
+"""Paid native Wi-Fi recovery with fresh test accounts and a capped local mint.
+
+The optional open mesh uses the shared temporary-profile/restore guard. Funding
+still precedes every candidate start; a radio failure retains outstanding test
+funds and the original mint/forwards for deliberate recovery.
+"""
 
 import argparse
 import json
@@ -58,6 +63,8 @@ class PaidWifiRun(WifiRun):
         super().setup()
 
     def before_launch(self):
+        # The shared lifecycle calls this while all three candidates are stopped,
+        # before any temporary open join. Wallet commands must stay offline.
         # Establish reachability for all participants before issuing any grant.
         if self.args.mint_ssh_forward:
             self.forwards = MintForwards(self.nodes, self.mint_url, self.root)
@@ -200,6 +207,8 @@ def main():
                         help="assigned private controller address, or 127.0.0.1 with SSH forwarding")
     parser.add_argument("--mint-ssh-forward", action="store_true",
                         help="use dedicated inventory SSH forwards instead of controller LAN access")
+    parser.add_argument("--open-mesh", action="store_true",
+                        help="temporarily test paid forwarding over open 802.11s, restoring the saved SAE profile")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     os.umask(0o077)
