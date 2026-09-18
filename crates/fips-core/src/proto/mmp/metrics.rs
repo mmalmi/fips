@@ -49,10 +49,11 @@ pub struct MmpMetrics {
     last_srtt_update: Option<Instant>,
     /// Whether we have a previous ReceiverReport for delta computation.
     has_prev_rr: bool,
-    /// Counter span in the most recent ReceiverReport delta.
+    /// Most recent positive ReceiverReport counter span and its remaining gap.
     last_forward_counter_span: u64,
-    /// Loss rate in the most recent ReceiverReport delta.
-    last_forward_loss_rate: Option<f64>,
+    last_forward_lost_packets: u64,
+    /// Only a positive counter span starts a fresh loss observation.
+    last_forward_loss_at: Option<Instant>,
     /// Accumulated low-rate forward loss evidence since the last actionable
     /// route-quality sample was emitted.
     forward_loss_window_span: u64,
@@ -91,7 +92,8 @@ impl MmpMetrics {
         self.prev_rr_time = None;
         self.has_prev_rr = false;
         self.last_forward_counter_span = 0;
-        self.last_forward_loss_rate = None;
+        self.last_forward_lost_packets = 0;
+        self.last_forward_loss_at = None;
         self.forward_loss_window_span = 0;
         self.forward_loss_window_lost = 0;
         self.forward_loss_window_samples = 0;
@@ -132,7 +134,8 @@ impl MmpMetrics {
             last_srtt_update: None,
             has_prev_rr: false,
             last_forward_counter_span: 0,
-            last_forward_loss_rate: None,
+            last_forward_lost_packets: 0,
+            last_forward_loss_at: None,
             forward_loss_window_span: 0,
             forward_loss_window_lost: 0,
             forward_loss_window_samples: 0,
@@ -219,8 +222,6 @@ impl MmpMetrics {
 
         // --- Loss rate from cumulative counters ---
         // Delta: frames the peer should have received vs. actually received
-        self.last_forward_counter_span = 0;
-        self.last_forward_loss_rate = None;
         if self.has_prev_rr {
             let counter_span = rr
                 .highest_counter
@@ -234,7 +235,23 @@ impl MmpMetrics {
                 self.delivery_ratio_forward = delivery.clamp(0.0, 1.0);
                 let loss_rate = 1.0 - self.delivery_ratio_forward;
                 self.last_forward_counter_span = counter_span;
-                self.last_forward_loss_rate = Some(loss_rate);
+                self.last_forward_lost_packets = counter_span.saturating_sub(packets_delta);
+                self.last_forward_loss_at = Some(now);
+                self.loss_trend.update(loss_rate);
+                self.etx = compute_etx(self.delivery_ratio_forward, self.delivery_ratio_reverse);
+                self.etx_trend.update(self.etx);
+            } else if packets_delta > 0 && self.last_forward_loss_at.is_some() {
+                // A late receipt can fill the latest interval's gap without
+                // advancing its endpoint. It cannot renew that interval's age
+                // or bank excess credit against a future interval.
+                self.last_forward_lost_packets =
+                    self.last_forward_lost_packets.saturating_sub(packets_delta);
+                self.delivery_ratio_forward =
+                    (self.last_forward_counter_span - self.last_forward_lost_packets) as f64
+                        / self.last_forward_counter_span as f64;
+                self.etx = compute_etx(self.delivery_ratio_forward, self.delivery_ratio_reverse);
+            }
+            if counter_span > 0 || (packets_delta > 0 && self.forward_loss_window_span > 0) {
                 self.forward_loss_window_span =
                     self.forward_loss_window_span.saturating_add(counter_span);
                 // Parallel decrypt/output completion can make a report's
@@ -247,9 +264,6 @@ impl MmpMetrics {
                     .saturating_sub(packets_delta.saturating_sub(counter_span));
                 self.forward_loss_window_samples =
                     self.forward_loss_window_samples.saturating_add(1);
-                self.loss_trend.update(loss_rate);
-                self.etx = compute_etx(self.delivery_ratio_forward, self.delivery_ratio_reverse);
-                self.etx_trend.update(self.etx);
             }
         }
 
@@ -345,10 +359,24 @@ impl MmpMetrics {
         }
     }
 
-    /// Most recent forward-loss sample from a ReceiverReport delta.
+    /// Most recent positive-span sample, corrected by subsequent late receipts.
     pub fn last_forward_loss_sample(&self) -> Option<(u64, f64)> {
-        self.last_forward_loss_rate
-            .map(|loss| (self.last_forward_counter_span, loss))
+        self.last_forward_loss_at.map(|_| {
+            (
+                self.last_forward_counter_span,
+                1.0 - (self.last_forward_counter_span - self.last_forward_lost_packets) as f64
+                    / self.last_forward_counter_span as f64,
+            )
+        })
+    }
+
+    /// Age of positive counter progress; late receipts do not refresh it.
+    pub fn last_forward_loss_age_ms(&self, now: Instant) -> Option<u64> {
+        self.last_forward_loss_at.map(|sampled_at| {
+            now.saturating_duration_since(sampled_at)
+                .as_millis()
+                .min(u128::from(u64::MAX)) as u64
+        })
     }
 
     /// Return route-quality loss evidence once enough packets have been
@@ -535,6 +563,107 @@ mod tests {
             .expect("two reports provide settled route-loss evidence");
         assert_eq!(span, 200);
         assert_eq!(loss, 0.0, "late packets must compensate the apparent gap");
+    }
+
+    #[test]
+    fn forward_loss_late_receipt_corrects_sample_and_window_without_counter_progress() {
+        let mut m = MmpMetrics::new();
+        let t0 = Instant::now();
+        m.process_receiver_report(&make_rr(100, 100, 10_000, 0, 0, 0), 0, t0);
+        m.process_receiver_report(
+            &make_rr(116, 115, 11_500, 0, 0, 0),
+            0,
+            t0 + Duration::from_secs(1),
+        );
+        assert_eq!(m.last_forward_loss_sample(), Some((16, 1.0 / 16.0)));
+        assert_eq!(m.take_forward_loss_evidence(16), None);
+        m.process_receiver_report(
+            &make_rr(116, 116, 11_600, 0, 0, 0),
+            0,
+            t0 + Duration::from_secs(2),
+        );
+        assert_eq!(m.last_forward_loss_sample(), Some((16, 0.0)));
+        assert_eq!(m.take_forward_loss_evidence(16), Some((16, 0.0)));
+        assert_eq!(m.take_forward_loss_evidence(16), None);
+    }
+
+    #[test]
+    fn forward_loss_late_receipts_do_not_refresh_age_or_bank_future_credit() {
+        let mut m = MmpMetrics::new();
+        let t0 = Instant::now();
+        m.process_receiver_report(&make_rr(100, 50, 5_000, 0, 0, 0), 0, t0);
+        m.process_receiver_report(
+            &make_rr(116, 65, 6_500, 0, 0, 0),
+            0,
+            t0 + Duration::from_secs(1),
+        );
+        m.process_receiver_report(
+            &make_rr(116, 85, 8_500, 0, 0, 0),
+            0,
+            t0 + Duration::from_secs(3),
+        );
+        assert_eq!(m.last_forward_loss_sample(), Some((16, 0.0)));
+        assert_eq!(
+            m.last_forward_loss_age_ms(t0 + Duration::from_secs(3)),
+            Some(2_000)
+        );
+        assert_eq!(m.take_forward_loss_evidence(16), Some((16, 0.0)));
+        m.process_receiver_report(
+            &make_rr(116, 90, 9_000, 0, 0, 0),
+            0,
+            t0 + Duration::from_secs(4),
+        );
+        assert_eq!(
+            m.take_forward_loss_evidence(16),
+            None,
+            "the emitted window is closed"
+        );
+        m.process_receiver_report(
+            &make_rr(132, 105, 10_500, 0, 0, 0),
+            0,
+            t0 + Duration::from_secs(5),
+        );
+        assert_eq!(m.last_forward_loss_sample(), Some((16, 1.0 / 16.0)));
+        assert_eq!(m.loss_rate(), 1.0 / 16.0);
+        assert_eq!(m.take_forward_loss_evidence(16), None);
+    }
+
+    #[test]
+    fn forward_loss_baseline_and_rekey_never_infer_loss_from_late_receipts() {
+        for rekey in [false, true] {
+            let mut m = MmpMetrics::new();
+            let t0 = Instant::now();
+            m.process_receiver_report(&make_rr(100, 100, 10_000, 100, 0, 0), 105, t0);
+            m.process_receiver_report(&make_rr(116, 116, 11_600, 200, 0, 0), 205, t0);
+            if rekey {
+                m.reset_for_rekey();
+            } else {
+                m.reset_for_path_change();
+            }
+            assert_eq!(m.last_forward_loss_sample(), None);
+            assert_eq!(m.last_forward_loss_age_ms(t0), None);
+            assert_eq!(m.take_forward_loss_evidence(16), None);
+            m.process_receiver_report(&make_rr(100, 50, 5_000, 300, 0, 0), 305, t0);
+            m.process_receiver_report(
+                &make_rr(100, 60, 6_000, 400, 0, 0),
+                405,
+                t0 + Duration::from_secs(1),
+            );
+            assert!(m.srtt_ms().is_some() && m.goodput_bps() > 0.0);
+            assert_eq!(m.last_forward_loss_sample(), None);
+            assert_eq!(
+                m.last_forward_loss_age_ms(t0 + Duration::from_secs(1)),
+                None
+            );
+            assert_eq!(m.take_forward_loss_evidence(16), None);
+            m.process_receiver_report(
+                &make_rr(116, 75, 7_500, 500, 0, 0),
+                505,
+                t0 + Duration::from_secs(2),
+            );
+            assert_eq!(m.last_forward_loss_sample(), Some((16, 1.0 / 16.0)));
+            assert_eq!(m.take_forward_loss_evidence(16), None);
+        }
     }
 
     #[test]
