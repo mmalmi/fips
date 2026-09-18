@@ -11,6 +11,7 @@ from .paid_faults import paid_progress, validate_finances
 from .paid_relay import PaidRelayRun, eventually, relay_config
 from .paid_settlement import original_channels, require, settle_and_collect
 from .paid_wifi_mint import LocalMint
+from .paid_wifi_forwarding import MintForwards
 from .wifi_discovery import WifiRun
 from .wifi_remote import ETHERTYPE, digest
 
@@ -31,13 +32,17 @@ def reconciled_channels(prior, current):
 
 class PaidWifiRun(WifiRun):
     def __init__(self, args):
+        if args.mint_ssh_forward and args.mint_address != "127.0.0.1":
+            raise ValueError("--mint-ssh-forward requires --mint-address 127.0.0.1")
         super().__init__(args)
         self.mint = LocalMint(args.mint_binary, args.mint_address, self.root)
         self.mint_url = None
+        self.forwards = None
         self.channel_anchor = None
         self.evidence.update(test_funds_only=True, money_operations=True,
                              wallet_observation="offline before launch and after settlement")
-        for name in ("paid_wifi.py", "paid_wifi_mint.py", "paid_finances.py", "paid_settlement.py"):
+        for name in ("paid_wifi.py", "paid_wifi_mint.py", "paid_wifi_forwarding.py",
+                     "paid_finances.py", "paid_settlement.py"):
             self.evidence["harness_sha256"][name] = digest(Path(__file__).with_name(name).read_bytes())
 
     def profile_config(self, node):
@@ -54,19 +59,41 @@ class PaidWifiRun(WifiRun):
 
     def before_launch(self):
         # Establish reachability for all participants before issuing any grant.
-        for node in self.nodes.values():
-            node.remote(["uclient-fetch", "-q", "-T", "5", "-O", "/dev/null",
-                         self.mint_url + "/v1/info"], timeout=10)
+        if self.args.mint_ssh_forward:
+            self.forwards = MintForwards(self.nodes, self.mint_url, self.root)
+            self.evidence["mint_forwards"] = self.forwards.info
+            self.forwards.start()
+            self.phase("three private loopback mint forwards verified before issuance")
+        else:
+            for node in self.nodes.values():
+                node.remote(["uclient-fetch", "-q", "-T", "5", "-O", "/dev/null",
+                             self.mint_url + "/v1/info"], timeout=10)
         balances = {}
         for name, node in self.nodes.items():
-            node.control("import", action="wallet", token=self.mint.grant(name))
+            self.check_forwards()
+            token = self.mint.grant(name)
+            self.check_forwards()
+            node.control("import", action="wallet", token=token)
             balance = node.control("balance", action="wallet")
             require(balance["mint_url"] == self.mint_url and balance["unit"] == "sat"
                     and balance["balance_sat"] == 128, "initial test wallet funding differs")
             balances[name] = balance["balance_sat"]
         self.phase("three stopped fresh accounts funded with 128 test sats each", balances=balances)
 
+    def check_forwards(self):
+        if self.forwards is not None:
+            self.forwards.check()
+
+    def ctl(self, node, kind, **fields):
+        self.check_forwards()
+        return super().ctl(node, kind, **fields)
+
+    def phase(self, name, **evidence):
+        self.check_forwards()
+        return super().phase(name, **evidence)
+
     def state_json(self, name, relative):
+        self.check_forwards()
         node = self.nodes[name]
         return json.loads(node.remote(["cat", node.state + "/" + relative]))
 
@@ -85,6 +112,7 @@ class PaidWifiRun(WifiRun):
         return current
 
     def account_execute(self, name, binary, action, body):
+        self.check_forwards()
         self.monitor.check()
         if name == "mint":
             require(binary == "fips-relay-test-mint" and action == "ctl", "unexpected mint operation")
@@ -141,12 +169,21 @@ class PaidWifiRun(WifiRun):
             super().finish()
         finally:
             try:
+                if self.forwards is not None:
+                    report = self.mint.request({"type": "report"})
+                    result = self.forwards.finish(report)
+                    self.evidence["mint_forward_cleanup"] = result
+                    if result.get("retained_for_recovery"):
+                        raise RuntimeError("outstanding test funds require the original mint forwards")
                 result = self.mint.finish()
                 self.evidence["mint_cleanup"] = result
                 if result.get("retained_for_recovery"):
                     self.evidence["passed"] = False
             except Exception as error:
+                if self.forwards is not None:
+                    self.forwards.retain(type(error).__name__)
                 self.evidence["mint_cleanup_error"] = type(error).__name__
+                self.evidence["mint_retained_for_recovery"] = self.mint.info
                 self.evidence["passed"] = False
             self.save()
         if not self.evidence["passed"]:
@@ -160,7 +197,9 @@ def main():
     parser.add_argument("--mint-binary", type=Path, required=True,
                         help="test-mint executable for this controller host")
     parser.add_argument("--mint-address", required=True,
-                        help="assigned private controller address reachable from all routers")
+                        help="assigned private controller address, or 127.0.0.1 with SSH forwarding")
+    parser.add_argument("--mint-ssh-forward", action="store_true",
+                        help="use dedicated inventory SSH forwards instead of controller LAN access")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     os.umask(0o077)

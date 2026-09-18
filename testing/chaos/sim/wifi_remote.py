@@ -65,10 +65,15 @@ class Router:
         self.mac = None
         self.mesh = None
 
-    def remote(self, command, data=None, timeout=20):
+    def ssh_args(self):
+        """Use the same explicitly supplied inventory for commands and forwards."""
         args = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
         if self.spec.get("ssh_config"):
             args += ["-F", str(Path(self.spec["ssh_config"]).resolve(strict=True))]
+        return args
+
+    def remote(self, command, data=None, timeout=20):
+        args = self.ssh_args()
         args += [self.host, command if isinstance(command, str) else shlex.join(command)]
         result = subprocess.run(args, input=data, capture_output=True, timeout=timeout)
         if result.returncode:

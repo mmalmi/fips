@@ -228,6 +228,13 @@ native `fips-relay-test-mint` executable on the controller and an assigned priva
 controller address reachable from all three routers. The mint binds that address
 on an allocated port, caps issuance at 384 test sats, and checks reachability from
 every router before funding three fresh accounts with 128 sats each.
+If inbound controller LAN access is unavailable, use `--mint-address 127.0.0.1
+--mint-ssh-forward` instead. This uses the supplied inventory's SSH settings and
+one dedicated, non-multiplexed reverse tunnel per router; every router sees the
+same loopback mint URL. No host or router firewall setting changes are needed.
+The harness refuses occupied ports or additional configured forwarding rules,
+checks the actual listeners are exclusively IPv4/IPv6 loopback, and verifies
+`/v1/info` through all three tunnels before issuing any test funds.
 
 ```sh
 python3 -m sim.paid_wifi \
@@ -257,6 +264,11 @@ export records for deliberate reconciliation. Do not restart or replace that min
 its simulated Lightning state is in memory. Issuance, import, export and collection
 are never automatically retried. Keep the controller online until reconciliation
 is complete. The output path must fit the local Unix socket's length limit.
+SSH mode also preserves surviving owned tunnels when funds or cleanup are
+uncertain, with private process/configuration evidence in the run directory.
+It never replaces a failed tunnel during a funded run. Tunnels are stopped only
+after complete collection (or zero issuance), and their listener removal is
+checked before stopping the mint. A failed cleanup is reported as a failed run.
 
 Run the Wi-Fi, financial, fault and settlement tests on Linux before hardware use;
 include `tests` in `PYTHONPATH` for the existing payment-fault test imports.
