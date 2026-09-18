@@ -1,7 +1,28 @@
 """Isolated relay profiles sharing one router's executable and recovery lease."""
 
+import copy
 import json
 import shlex
+
+
+def patch_config(config, changes):
+    if not set(changes) <= {"neighbors", "destination_fees"}:
+        raise RuntimeError("profile setup cannot rewrite financial terms or transport bindings")
+    result = copy.deepcopy(config)
+    result.update(copy.deepcopy(changes))
+    return result
+
+
+def configure_stopped(profile, **changes):
+    """Change only discovery inputs while the exact guarded profile is stopped."""
+    owner = getattr(profile, "owner", profile)
+    current = json.loads(profile.remote(["cat", profile.config]))
+    changed = patch_config(current, changes)
+    new_path = profile.config + ".profile-new"
+    command = (shlex.join(["sh", owner.temporary + "/guard.sh", "can-start", profile.config])
+               + "\numask 077\nset -C\ncat > " + shlex.quote(new_path)
+               + "\n" + shlex.join(["mv", new_path, profile.config]))
+    owner.guarded(command, json.dumps(changed).encode())
 
 
 class RelayCommands:

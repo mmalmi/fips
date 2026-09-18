@@ -1,9 +1,9 @@
 """Fail-closed observations for one bounded mixed-class wireless experiment."""
 
-import copy
 from bisect import bisect_left
 
 from .paid_settlement import require
+from .wifi_profiles import patch_config
 
 
 def natural(value):
@@ -36,14 +36,6 @@ def free_policy(schedule):
             for scope in ("global", "peer")
             for suffix, field in (("_bytes_per_second", "free_bytes_per_second"),
                                   ("_burst_bytes", "free_burst_bytes"))}
-
-
-def patch_config(config, changes):
-    require(set(changes) <= {"neighbors", "destination_fees"},
-            "priority setup cannot rewrite financial terms or transport bindings")
-    result = copy.deepcopy(config)
-    result.update(copy.deepcopy(changes))
-    return result
 
 
 def loopback_address(value):

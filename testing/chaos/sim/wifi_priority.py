@@ -11,7 +11,6 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
-import shlex
 import signal
 import time
 
@@ -24,10 +23,11 @@ from .wifi_discovery import validate_free_offer, validate_unfunded
 from .wifi_measurements import snapshot
 from .wifi_priority_checks import (
     acknowledged, adjacency, bandwidth, bounded_free, free_policy, loopback_address,
-    patch_config, payment, pressure_pair, received, reconciled, round_trip_latency,
+    payment, pressure_pair, received, reconciled, round_trip_latency,
     running, submitted, workload,
 )
 from .wifi_remote import digest
+from .wifi_profiles import configure_stopped
 
 
 class PriorityRun(PaidWifiRun):
@@ -87,14 +87,7 @@ class PriorityRun(PaidWifiRun):
         return config
 
     def configure_stopped(self, profile, **changes):
-        owner = getattr(profile, "owner", profile)
-        current = json.loads(profile.remote(["cat", profile.config]))
-        changed = patch_config(current, changes)
-        new_path = profile.config + ".priority-new"
-        command = (shlex.join(["sh", owner.temporary + "/guard.sh", "can-start", profile.config])
-                   + "\numask 077\nset -C\ncat > " + shlex.quote(new_path)
-                   + "\n" + shlex.join(["mv", new_path, profile.config]))
-        owner.guarded(command, json.dumps(changed).encode())
+        configure_stopped(profile, **changes)
 
     def before_launch(self):
         for name, profile in self.auxiliary.items():
