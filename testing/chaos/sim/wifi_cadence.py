@@ -82,6 +82,13 @@ class CadenceRun(PaidWifiRun):
     def emit(self, **fields):
         self.record({"trial": self.trial, "max_delay_ms": self.delay, **fields})
 
+    def before_launch(self):
+        self.evidence["hardware_context"] = {
+            name: node.remote("uname -a; cat /proc/loadavg; cat /proc/meminfo; df -k /tmp").decode()
+            for name, node in self.nodes.items()
+        }
+        super().before_launch()
+
     def sample(self):
         from .wifi_measurements import snapshot
 
@@ -204,14 +211,13 @@ def run(args):
                 signal.alarm(900)
                 CadenceRun(trial_args, trial, delay, record).execute()
                 evidence["trials_completed"] += 1
-        if not args.pilot:
-            analyzer = Path(__file__).resolve().parents[2] / "relay-cadence" / "analyze.py"
-            checked = subprocess.run([sys.executable, str(analyzer), str(raw)],
-                                     capture_output=True, text=True, timeout=30, check=False)
-            (args.output / "analysis.stderr").write_text(checked.stderr)
-            require(checked.returncode == 0, "measurement validation failed; funds already collected")
-            (args.output / "summary.json").write_text(checked.stdout)
-            evidence["comparison_complete"] = True
+        analyzer = Path(__file__).resolve().parents[2] / "relay-cadence" / "analyze.py"
+        command = [sys.executable, str(analyzer), str(raw)] + (["--pilot"] if args.pilot else [])
+        checked = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+        (args.output / "analysis.stderr").write_text(checked.stderr)
+        require(checked.returncode == 0, "measurement validation failed; funds already collected")
+        (args.output / "summary.json").write_text(checked.stdout)
+        evidence["comparison_complete"] = not args.pilot
         evidence["passed"] = True
     except Exception as error:
         evidence["error"] = type(error).__name__

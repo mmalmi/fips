@@ -95,6 +95,8 @@ class CadenceTests(unittest.TestCase):
             args = argparse.Namespace(output=output, pilot=True)
             with patch("sim.wifi_cadence.metadata", return_value={"schema": 3}), \
                     patch("sim.wifi_cadence.CadenceRun") as service, \
+                    patch("sim.wifi_cadence.subprocess.run", return_value=Mock(
+                        returncode=0, stdout="{}", stderr="")) as analyzer, \
                     patch("sim.wifi_cadence.signal.alarm"):
                 run(args)
             result = json.loads((output / "result.json").read_text())
@@ -102,6 +104,7 @@ class CadenceTests(unittest.TestCase):
             self.assertFalse(result["comparison_complete"])
             self.assertEqual(result["trials_completed"], 1)
             self.assertEqual(service.call_count, 1)
+            self.assertIn("--pilot", analyzer.call_args.args[0])
             passed_args = service.call_args.args[0]
             self.assertFalse(passed_args.open_mesh)
             self.assertFalse(passed_args.mint_ssh_forward)
@@ -120,6 +123,21 @@ class CadenceTests(unittest.TestCase):
             self.assertFalse(result["comparison_complete"])
             self.assertEqual(result["trials_completed"], 0)
             self.assertEqual(service.call_count, 1)
+
+    def test_pilot_measurement_failure_does_not_claim_pass_after_fund_recovery(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "pilot"
+            args = argparse.Namespace(output=output, pilot=True)
+            with patch("sim.wifi_cadence.metadata", return_value={"schema": 3}), \
+                    patch("sim.wifi_cadence.CadenceRun"), \
+                    patch("sim.wifi_cadence.subprocess.run", return_value=Mock(
+                        returncode=1, stdout="", stderr="incomplete payment boundary")), \
+                    patch("sim.wifi_cadence.signal.alarm"), self.assertRaises(RuntimeError):
+                run(args)
+            result = json.loads((output / "result.json").read_text())
+            self.assertEqual(result["trials_completed"], 1)
+            self.assertFalse(result["passed"])
+            self.assertEqual((output / "analysis.stderr").read_text(), "incomplete payment boundary")
 
 
 if __name__ == "__main__":
