@@ -277,12 +277,52 @@ four accounts must retain empty wallets, unchanged financial journals and no
 source watches. No mint runs and no funds are imported or issued. The existing
 guard restores the radio profiles and stops both profiles on the third router.
 
-This fixture establishes a controlled physical topology, not paid provider
-selection, mobile failover or performance. Source/destination co-location shares
-CPU resources, and the source's first hops use the management LAN. A funded
-successor must independently verify automatic choice, native feedback, unchanged
-channel/spending limits and exact settlement before claiming paid multipath
-acceptance.
+This unfunded fixture establishes the physical topology. Source/destination
+co-location shares CPU resources, and the source's first hops use the management
+LAN. The funded extension below independently checks automatic provider choice.
+
+### Automatic paid selection between wireless providers
+
+`sim.paid_diamond` reuses that topology and its original-state restoration guard:
+
+```sh
+python3 -m sim.paid_diamond \
+  --inventory /private/operator/wifi-inventory.json \
+  --binary /private/artifacts/fips-relay \
+  --mint-binary /private/artifacts/fips-relay-test-mint \
+  --output /private/results/new-paid-diamond --open-mesh
+```
+
+Only the source receives 128 test sats, with at most two 64-sat channels and no
+renewal. The owned mint uses private SSH loopback forwards. A single watch
+compares provider tariffs of 128/160 msat per KiB under a 192-msat ceiling. The
+normal selector defaults remain intact, including the 32-KiB trial and 60-second
+retry cooldown. Each phase allows at most sixteen 16-packet, 256-byte bursts,
+spaced across a 180-second window. The harness never forces a route or payment.
+
+Acceptance requires a fresh trial, promotion, complete new payload delivery,
+carrier-specific native quality and an advancing acknowledged payment for the
+cheaper provider, the alternative after radio loss, and the recovered cheaper
+provider. Raw journal anchors retain the original funding operations across
+zero, one and two channels. Closure pauses purchases, settles once, stops all
+four profiles before wallet export, and verifies exact per-wallet conservation.
+Uncertain operations retain their original accounts and mint for recovery.
+
+The 2026-09-18 run passes all three stages with 2/5/2 bursts. Of 144 submitted
+packets, 96 arrive; the 48 missing packets occur during failover. Each accepted
+stage ends with a complete 16-packet burst and fresh healthy feedback. The same
+two channels settle 3/2 sats to the providers and refund 123 sats to the source;
+all 128 sats are collected and all four wallets end empty. All 486 management
+checks and original-state restoration pass. The focused Linux suite has 107
+passing checks. An earlier attempt rejected an inconsistent source tariff before
+issuing funds; all four corrected configs were then initialized with the actual
+ARM64 executable in isolated temporary accounts before this run.
+
+This is one controlled wireless provider-loss/rejoin test. The radio cut removes
+onward reachability and quotes as well as delivery quality, so it does not
+isolate quality ranking. Explicit peer-eviction waits and paced confirmation
+prevent interpreting its elapsed time as a failover latency measurement. Moving
+mesh merge/split, fast roaming, contention and sustained performance remain open.
 
 ### Paid Wi-Fi recovery
 

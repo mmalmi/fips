@@ -337,6 +337,26 @@ and process start time and rejects late reception. Shared Linux guard checks and
 focused regressions pass. This proves the controlled two-provider topology, not
 automatic paid selection on physical alternatives or mobile mesh behavior.
 
+The [funded extension](../../testing/chaos/README.md#automatic-paid-selection-between-wireless-providers)
+now also passes one controlled cheaper-provider → wireless alternative → recovered
+cheaper-provider cycle. One watch uses the normal selector defaults; each stage
+has a fresh trial, full-agreement payload delivery, native feedback on the selected
+carrier and an advancing acknowledged payment. The two original 64-sat channels
+remain intact. Of 144 packets submitted across the trials, 96 arrive; all 48
+missing packets occur during failover, and every accepted stage ends with a fresh
+16/16 burst. Settlement pays the providers 3/2 test sats and refunds 123 to the
+source. All 128 test sats are collected, all four wallets end empty, all 486
+management checks pass and original router baselines restore. The focused Linux
+suite passes 107 checks. A source-tariff configuration error in the earlier
+attempt stopped initialization before any funds were issued; the corrected four
+configs also pass initialization with the actual ARM64 artifact offline.
+
+This adds physical working-route selection and recovery evidence, not isolated
+quality-ranking causality: the radio cut also invalidates onward reachability and
+quotes. The source/destination share one router and first hops use management-LAN
+UDP. Explicit eviction waits and paced probes preclude a failover-latency claim.
+Arbitrary moving mesh merge/split, fast roaming and sustained capacity remain open.
+
 The current isolated Android package passes a fresh arm64 native build, Android
 lint and strict Android-target relay/app linting. Native-library provenance is
 verified through packaging, including the build tool's stripping step. Installation
