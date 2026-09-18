@@ -7,9 +7,9 @@ import json
 import re
 import secrets
 import shlex
-import subprocess
 from pathlib import Path, PurePosixPath
 
+from .ssh_commands import SshCommands
 from .wifi_mesh import helpers as mesh_helpers, profile as mesh_profile
 from .wifi_open import PEER_IDLE_SECONDS, PEER_LIMIT, helpers as open_helpers, snapshot as open_snapshot
 
@@ -56,7 +56,7 @@ def original_ethernet(config):
             for item in entries]
 
 
-class Router:
+class Router(SshCommands):
     def __init__(self, spec, run, output, open_mesh=None):
         if not re.fullmatch(r"[0-9a-f]{12}", run):
             raise ValueError("invalid run identity")
@@ -86,22 +86,6 @@ class Router:
         self.npub = None
         self.mac = None
         self.mesh = None
-
-    def ssh_args(self):
-        """Use the same explicitly supplied inventory for commands and forwards."""
-        args = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
-        if self.spec.get("ssh_config"):
-            args += ["-F", str(Path(self.spec["ssh_config"]).resolve(strict=True))]
-        return args
-
-    def remote(self, command, data=None, timeout=20):
-        args = self.ssh_args()
-        args += [self.host, command if isinstance(command, str) else shlex.join(command)]
-        result = subprocess.run(args, input=data, capture_output=True, timeout=timeout)
-        if result.returncode:
-            (self.output / "last-error.txt").write_bytes(result.stderr + b"\n" + result.stdout)
-            raise RuntimeError(f"{self.host}: remote operation failed; private error saved")
-        return result.stdout
 
     def write(self, path, content):
         self.remote("umask 077; set -C; cat > " + shlex.quote(path), content)
