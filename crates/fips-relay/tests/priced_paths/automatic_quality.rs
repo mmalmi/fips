@@ -65,6 +65,7 @@ impl Driver<'_> {
         before: &BTreeSet<String>,
     ) -> Purchase {
         let policy = self.scenario.selection_policy();
+        let mut received_count = 0_u64;
         let result = tokio::time::timeout(Duration::from_secs(55), async {
             let mut last_send = Instant::now() - Duration::from_secs(1);
             let mut delivering_on_selected = false;
@@ -104,6 +105,14 @@ impl Driver<'_> {
                 )
                 .await
                 {
+                    received_count += batch
+                        .iter()
+                        .filter(|message| {
+                            message.source_peer.node_addr() == self.peers[0].node_addr()
+                                && (message.data.as_slice() == [tag; 200]
+                                    || message.data.as_slice() == [tag + 32; 200])
+                        })
+                        .count() as u64;
                     delivered |= delivering_on_selected
                         && batch.iter().any(|message| {
                             message.source_peer.node_addr() == self.peers[0].node_addr()
@@ -187,7 +196,7 @@ impl Driver<'_> {
                     .await
                     .unwrap();
                 panic!(
-                    "automatic quality {:?} provider {provider} deadline: native_bad={} quality={quality:?} errors={:?}",
+                    "automatic quality {:?} provider {provider} deadline: received={received_count} native_bad={} quality={quality:?} errors={:?}",
                     self.scenario,
                     self.observed_degradation,
                     errors(self.controllers),

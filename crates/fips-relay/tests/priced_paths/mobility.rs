@@ -208,6 +208,15 @@ impl Driver<'_> {
         let mut received = [false; 3];
         let mut attempts = [0; 3];
         let mut target = None;
+        // Distinguish feedback expiring after this finite burst from feedback
+        // that never recovered while automatic payment caught up.
+        let mut last_delivered_ms = None;
+        let mut first_fresh_feedback_ms = None;
+        let mut last_fresh_feedback_ms = None;
+        let mut target_established_ms = None;
+        let mut payment_reached_ms = None;
+        let mut last_quality = None;
+        let mut last_quality_ms = None;
         let result = tokio::time::timeout(Duration::from_secs(20), async {
             loop {
                 for index in 0..3 {
@@ -236,6 +245,7 @@ impl Driver<'_> {
                             && let Some(found) = received.get_mut(payload[0] as usize)
                         {
                             *found = true;
+                            last_delivered_ms = Some(started.elapsed().as_millis());
                         }
                     }
                 }
@@ -259,21 +269,33 @@ impl Driver<'_> {
                         "fresh burst must need another cumulative payment"
                     );
                     target = Some(expected);
+                    target_established_ms = Some(started.elapsed().as_millis());
                 }
                 let quality = self.nodes[0]
                     .source_route_quality(self.peers[3], Duration::from_secs(2))
                     .await
                     .unwrap();
-                if target.is_some_and(|expected| {
+                let paid_target = target.is_some_and(|expected| {
                     seller
                         .channel_usage(&purchase.channel.id)
                         .unwrap()
                         .paid_msat
                         >= expected
-                }) && quality.next_hop == Some(purchase.provider)
+                });
+                let fresh_selected = quality.next_hop == Some(purchase.provider)
                     && quality.has_recent_delivery_feedback
-                    && !quality.delivery_feedback_timed_out
-                {
+                    && !quality.delivery_feedback_timed_out;
+                let observed_ms = started.elapsed().as_millis();
+                if paid_target {
+                    payment_reached_ms.get_or_insert(observed_ms);
+                }
+                if fresh_selected {
+                    first_fresh_feedback_ms.get_or_insert(observed_ms);
+                    last_fresh_feedback_ms = Some(observed_ms);
+                }
+                last_quality = Some(quality);
+                last_quality_ms = Some(observed_ms);
+                if paid_target && fresh_selected {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(300)).await;
@@ -282,7 +304,7 @@ impl Driver<'_> {
         .await;
         assert!(
             result.is_ok(),
-            "provider {provider}: delivery/feedback/payment deadline; received={received:?} attempts={attempts:?} paid={} target={target:?} errors={:?}",
+            "provider {provider}: delivery/feedback/payment deadline; received={received:?} attempts={attempts:?} paid={} target={target:?} last_delivered_ms={last_delivered_ms:?} first_fresh_feedback_ms={first_fresh_feedback_ms:?} last_fresh_feedback_ms={last_fresh_feedback_ms:?} target_established_ms={target_established_ms:?} payment_reached_ms={payment_reached_ms:?} last_quality_ms={last_quality_ms:?} last_quality={last_quality:?} errors={:?}",
             seller
                 .channel_usage(&purchase.channel.id)
                 .unwrap()
