@@ -245,6 +245,14 @@ acceptance on hardware, arbitrary physical mobility/mesh merge-split, updated
 Pixel acceptance and current hardware performance measurements still require
 verification.
 
+The current isolated Android package passes a fresh arm64 native build, Android
+lint and strict Android-target relay/app linting. Native-library provenance is
+verified through packaging, including the build tool's stripping step. Installation
+and native startup on the phone show an unconfigured, stopped test account; the
+existing app's private files are unchanged. This is startup verification only:
+the new account has no setup profile or funds, and its paid customer-network
+acceptance remains pending.
+
 ## Guarded cadence measurement
 
 The current optimized comparison covers 250/500/1000/2000-ms policies with two
