@@ -388,3 +388,48 @@ on the carrier. Complete carrier cost needs local attribution through actual
 submission or an isolated payment-only capture with a matched idle baseline.
 Subtracting that baseline estimates incremental cost; it does not establish exact
 per-payment attribution during mixed data traffic or measure radio airtime.
+
+### Separate storage syscall diagnostics
+
+`storage_trace.py` summarizes an isolated Linux `strace` capture by explicit file
+categories. Use a fresh private output directory and the options returned by
+`storage_trace.trace_options()`: follow threads, always show their IDs, suppress
+signals and buffer contents (`--string-limit=0`), decode descriptor paths, and
+trace only `write`, `writev`, `pwrite64`, `pwritev`, `pwritev2`, `fsync` and
+`fdatasync`. Never enable read/write data dumps. A Linux synthetic check covered
+scalar/vector writes, an invalid descriptor and real SQLite writes; buffer
+sentinels were absent while paths and successful byte counts remained available.
+
+Provide a private JSON object mapping labels to absolute file globs, including
+temporary snapshots and SQLite journal/WAL files as applicable. For example:
+
+```json
+{"sdk_snapshot": ["/private/run/wallet/client.json*"],
+ "receiver_sqlite": ["/private/run/receiver/*.sqlite*"]}
+```
+
+Use the actual paths from the owned workload. Overlapping categories fail;
+unmatched paths and operations without a file path retain separate totals.
+Directory syncs may need their own category. Raw traces and path maps remain
+private; the summary contains category labels and counts without raw paths.
+
+```sh
+python3 testing/relay-cadence/storage_trace.py /private/capture.trace \
+  --paths /private/paths.json > /private/storage-summary.json
+```
+
+Counts use successful returned bytes, separately record failed calls and syncs,
+and reassemble interleaved unfinished/resumed calls by thread. The analyzer
+rejects exposed buffers, unknown formats and dangling calls. A trace truncated
+after a completed line cannot be detected from its contents: `capture_complete`
+stays null. Record successful tracer exit, workload completion and the enclosing
+test's financial recovery independently before accepting the capture.
+
+`partial_scalar_writes` covers only `write` and `pwrite64`; suppressed vector
+arguments do not expose their total requested bytes. These observations exclude
+mapped/asynchronous I/O, filesystem metadata, physical-media amplification and
+SQLite committed-row counts. They do not identify which payment caused a write
+without an isolated, verified workload boundary. Run tracing separately from
+timing comparisons and retain the ordinary ownership and settlement guards.
+The production payment-storage trace is still required; the synthetic check
+establishes only the capture and analysis mechanism.
