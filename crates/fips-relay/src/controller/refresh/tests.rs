@@ -8,6 +8,14 @@ use fips_core::Config;
 use fips_core::config::{TransportInstances, UdpConfig};
 
 pub(in crate::controller) async fn disconnected_controller(root: &Path) -> Controller {
+    disconnected_controller_with_policy(root, super::super::tests::unresolved_journal().policy)
+        .await
+}
+
+pub(in crate::controller) async fn disconnected_controller_with_policy(
+    root: &Path,
+    policy: ControllerPolicy,
+) -> Controller {
     let mut config = Config::new();
     config.node.control.enabled = false;
     config.node.discovery.nostr.enabled = false;
@@ -26,7 +34,6 @@ pub(in crate::controller) async fn disconnected_controller(root: &Path) -> Contr
             .await
             .unwrap(),
     );
-    let policy = super::super::tests::unresolved_journal().policy;
     let seller =
         Arc::new(DurableRelay::create(&root.join("seller"), Limits::default(), 1000).unwrap());
     let buyer = Arc::new(

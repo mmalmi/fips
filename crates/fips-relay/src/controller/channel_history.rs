@@ -121,6 +121,12 @@ impl Plan {
         }) || after != self.after
             || terms.len() != self.funding.len()
             || self.buyer.terms().count() != terms.len()
+            || self.buyer.never_installed().any(|t| {
+                j.buyer_settlements
+                    .get(&t.id)
+                    .is_none_or(|s| s.kind != SettlementKind::Expiry || !s.terminal())
+                    || j.history.as_ref().is_some_and(|h| h.buyers.contains(&t.id))
+            })
             || self
                 .buyer
                 .terms()

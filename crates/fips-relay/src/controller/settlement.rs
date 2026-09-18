@@ -6,7 +6,7 @@ use cashu_service::{import_payment_proofs, restore_streaming_route_cashu_spilman
 
 mod state;
 pub use state::SettlementReport;
-pub(super) use state::{BuyerSettlement, SellerSettlement};
+pub(super) use state::{BuyerSettlement, SellerSettlement, SettlementKind};
 use state::{valid_report, valid_usage};
 
 impl Controller {
@@ -244,6 +244,9 @@ impl Controller {
         let mut purchase = self
             .change(move |j| {
                 if let Some(old) = j.buyer_settlements.get(&channel_id) {
+                    if old.kind == SettlementKind::Expiry {
+                        return Err("unilateral recovery has no provider settlement report".into());
+                    }
                     return Ok(old.clone());
                 }
                 if recovery_only {
@@ -254,6 +257,7 @@ impl Controller {
                 }
                 let (provider, channel) = Self::settlement_terms(j, &channel_id)?;
                 let settlement = BuyerSettlement {
+                    kind: SettlementKind::Cooperative,
                     provider,
                     channel,
                     usage: None,
@@ -414,7 +418,12 @@ impl Controller {
             .filter(|o| o.accepted || j.recovery_only.contains(&o.offer.id))
             .map(|o| o.purchase.channel.id.clone())
             .collect();
-        ids.extend(j.buyer_settlements.keys().cloned());
+        ids.extend(
+            j.buyer_settlements
+                .iter()
+                .filter(|(_, s)| s.kind == SettlementKind::Cooperative)
+                .map(|(id, _)| id.clone()),
+        );
         if let Some(history) = &j.history {
             ids.extend(history.buyers.iter().cloned());
         }
@@ -467,7 +476,8 @@ impl Controller {
             }
         }
         for (id, purchase) in snapshot.buyer_settlements {
-            if (!purchase.refunded || !purchase.released)
+            if purchase.kind == SettlementKind::Cooperative
+                && (!purchase.refunded || !purchase.released)
                 && (purchase.report.is_some() || self.neighbor(purchase.provider).await.is_ok())
                 && let Err(error) = self.settle_channel(&id).await
             {

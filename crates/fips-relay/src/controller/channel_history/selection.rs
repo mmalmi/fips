@@ -4,8 +4,7 @@ pub(super) fn completed<'a>(j: &'a Journal, f: &'a FundingIntent, now: u64) -> O
     let funded = f.funded.as_ref()?;
     let id = &funded.terms.id;
     if f.expires_unix.checked_add(60)? >= now
-        || !j.buyer_settlements.get(id)?.refunded
-        || !j.buyer_settlements.get(id)?.released
+        || !j.buyer_settlements.get(id)?.terminal()
         || j.outgoing.values().any(|o| o.purchase.channel.id == *id)
         || j.renewals
             .values()
@@ -74,19 +73,26 @@ pub(super) fn select(
     let mut after = before.clone();
     let mut funding = Vec::new();
     let mut channels = Vec::new();
+    let mut never_installed = Vec::new();
     for (_, f) in ordered {
         let Some(funded) = completed(j, f, now) else {
             break;
         };
         after = accumulate(j, after, f)?;
         funding.push(f.id.clone());
-        channels.push(funded.terms.id.clone());
+        if j.buyer_settlements[&funded.terms.id].kind == SettlementKind::Expiry
+            && buyer.authorized_sat(&funded.terms.id).is_none()
+        {
+            never_installed.push(funded.terms.clone());
+        } else {
+            channels.push(funded.terms.id.clone());
+        }
     }
     if funding.is_empty() {
         return Ok(None);
     }
     let buyer = buyer
-        .channel_retirement_plan(&channels, now)
+        .channel_retirement_plan(&channels, &never_installed, now)
         .map_err(|e| e.to_string())?;
     Ok(Some(Plan {
         before,

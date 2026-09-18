@@ -53,6 +53,7 @@ fn accepted_before_completion(directory: &Path) -> (Store, Outgoing, Outgoing) {
             journal.buyer_settlements.insert(
                 channel.id.clone(),
                 BuyerSettlement {
+                    kind: SettlementKind::Cooperative,
                     provider: old.purchase.provider,
                     channel: channel.clone(),
                     usage: Some(ChannelUsage {

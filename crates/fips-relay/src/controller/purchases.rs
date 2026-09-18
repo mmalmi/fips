@@ -125,14 +125,43 @@ impl Controller {
             funded
         };
         let buyer = self.services.buyer.clone();
-        let terms = funded.terms.clone();
+        let saved_offer = offer.clone();
+        let funding_id = f.id.clone();
+        let recorded = funded.clone();
+        let store = self.store.clone();
         blocking(move || {
-            buyer
-                .accept_channel(provider, terms, 0)
-                .map_err(|e| e.to_string())
+            let store = store.lock().map_err(|_| "controller state poisoned")?;
+            store.ensure_ready()?;
+            Self::install_funded_channel(
+                &store.journal,
+                &buyer,
+                &saved_offer,
+                &funding_id,
+                &recorded,
+            )
         })
         .await?;
         Ok((f.id, funded))
+    }
+
+    pub(super) fn install_funded_channel(
+        j: &Journal,
+        buyer: &BuyerAuthorizer,
+        offer: &RouteOffer,
+        funding_id: &str,
+        funded: &Funded,
+    ) -> Result<(), String> {
+        if j.requested.get(&offer.id) != Some(offer)
+            || j.funding
+                .get(funding_id)
+                .is_none_or(|f| f.provider != offer.provider || f.funded.as_ref() != Some(funded))
+        {
+            return Err("funded purchase changed".into());
+        }
+        Self::check_purchase(j, offer, Some(&funded.terms.id))?;
+        buyer
+            .accept_channel(offer.provider, funded.terms.clone(), 0)
+            .map_err(|e| e.to_string())
     }
 
     pub(super) async fn purchase_offer(&self, offer: RouteOffer) -> Result<Purchase, String> {
