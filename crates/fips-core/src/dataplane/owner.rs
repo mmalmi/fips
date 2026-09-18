@@ -825,6 +825,8 @@ pub(crate) struct OwnerState {
     fsp_coords_prefix: Vec<u8>,
     fsp_wrap_route: Option<DataplaneFspWrapRoute>,
     fsp_mmp: Option<crate::mmp::MmpSessionState>,
+    // None selects the current key; Some binds receiver metrics to this pending key instance.
+    fsp_mmp_pending_receive_epoch: Option<u64>,
     fsp_lifecycle_confirmed: bool,
     source_peer: Option<crate::PeerIdentity>,
     last_rx_activity: Option<ActivityTick>,
