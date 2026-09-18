@@ -95,7 +95,8 @@ class ForwardingTests(unittest.TestCase):
             args = call.args[0]
             for setting in ("BatchMode=yes", "ConnectTimeout=5", "ControlMaster=no",
                             "ControlPath=none", "ExitOnForwardFailure=yes", "ServerAliveInterval=5",
-                            "ServerAliveCountMax=3", "ForkAfterAuthentication=no"):
+                            "ServerAliveCountMax=3", "ForkAfterAuthentication=no",
+                            "ForwardAgent=no", "ForwardX11=no"):
                 self.assertIn(setting, args)
             self.assertEqual(args[args.index("-F") + 1], str(self.config.resolve()))
             self.assertEqual(args[args.index("-R") + 1], f"127.0.0.1:{PORT}:127.0.0.1:{PORT}")
@@ -113,9 +114,11 @@ class ForwardingTests(unittest.TestCase):
         self.assertEqual(self.nodes["n03"].preexisting, ["0100007F"])
 
     def test_refuses_additional_inventory_forwarding(self):
-        self.effective.stdout = b"hostname localhost\nremoteforward 99 localhost:99\n"
-        with self.assertRaisesRegex(RuntimeError, "another forwarding"):
-            self.owner.start()
+        for setting in ("localforward 99 localhost:99", "remoteforward 99 localhost:99",
+                        "dynamicforward [127.0.0.1]:49999"):
+            self.effective.stdout = f"hostname localhost\n{setting}\n".encode()
+            with self.subTest(setting=setting), self.assertRaisesRegex(RuntimeError, "another forwarding"):
+                self.owner.start()
         self.popen.assert_not_called()
 
     def test_rejects_wildcard_even_with_valid_loopback_listener(self):

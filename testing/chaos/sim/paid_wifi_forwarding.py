@@ -51,9 +51,10 @@ class MintForwards:
                 "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no",
                 "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=5",
                 "-o", "ServerAliveCountMax=3", "-o", "ConnectionAttempts=1",
-                "-o", "ForkAfterAuthentication=no", "-o", "PermitLocalCommand=no", "-N", "-T"]
+                "-o", "ForkAfterAuthentication=no", "-o", "PermitLocalCommand=no",
+                "-o", "ForwardAgent=no", "-o", "ForwardX11=no", "-N", "-T"]
             effective = subprocess.run([*args, "-G", node.host], capture_output=True, timeout=10)
-            if effective.returncode or any(row.split()[0] in ("localforward", "remoteforward")
+            if effective.returncode or any(row.split()[0] in ("localforward", "remoteforward", "dynamicforward")
                                            for row in effective.stdout.decode().splitlines() if row.split()):
                 raise RuntimeError("mint SSH inventory has another forwarding rule or cannot be resolved")
             args += ["-R", f"127.0.0.1:{self.port}:127.0.0.1:{self.port}", node.host]
