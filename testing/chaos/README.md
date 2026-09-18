@@ -249,6 +249,41 @@ deadline, retains their accounts, and refuses late or duplicate launches. This s
 independent endpoints on the same three-router bench; it does not itself prove
 paid/free priority on the physical wireless links.
 
+### Competing wireless provider topology
+
+`sim.wifi_diamond` checks the topology for a client with two relay choices before
+introducing funds. Inventory entries one and two are providers; entry three hosts
+the destination and a separate auxiliary source identity. The source uses UDP
+bound to entry three's existing management IPv4 address and reaches both providers
+on their observed ephemeral listeners. Providers reach the destination only over
+native Ethernet frames on Wi-Fi. Owned experimental-EtherType filters remove the
+provider-to-provider radio shortcut. The source has no Ethernet adapter, the
+destination has no UDP adapter, and exact peer sets exclude a same-host shortcut.
+
+```sh
+python3 -m sim.wifi_diamond \
+  --inventory /private/operator/wifi-inventory.json \
+  --binary /private/artifacts/fips-relay \
+  --output /private/results/new-wifi-diamond --open-mesh
+```
+
+The supplied ARM64 executable needs `measurements`. Each management interface must
+already have one unambiguous private IPv4 address; addresses and firewall policies
+are not changed. Direct diagnostic streams check both client-to-provider links
+and both provider-to-destination links. An unfunded end-to-end stream must remain
+undelivered while native application-send and provider policy-denial counters
+advance. These are bounded phase aggregates, not matched packet receipts. All
+four accounts must retain empty wallets, unchanged financial journals and no
+source watches. No mint runs and no funds are imported or issued. The existing
+guard restores the radio profiles and stops both profiles on the third router.
+
+This fixture establishes a controlled physical topology, not paid provider
+selection, mobile failover or performance. Source/destination co-location shares
+CPU resources, and the source's first hops use the management LAN. A funded
+successor must independently verify automatic choice, native feedback, unchanged
+channel/spending limits and exact settlement before claiming paid multipath
+acceptance.
+
 ### Paid Wi-Fi recovery
 
 `sim.paid_wifi` reuses the same inventory, guard and radio lifecycle. It needs a

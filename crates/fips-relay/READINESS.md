@@ -320,6 +320,23 @@ original radio settings are restored, and 312 management checks pass. The
 time; the test deliberately waits for eviction before requesting rejoin. It
 does not establish arbitrary mobility or interrupt a specific payment message.
 
+The [competing-provider topology fixture](../../testing/chaos/README.md#competing-wireless-provider-topology)
+also passes on the three routers without funding. A separate source identity on
+the destination's physical router reaches two providers over management-LAN UDP;
+each provider's only destination link uses native Wi-Fi. Exact adapters/peer sets
+and 24/23 observed shortcut drops exclude direct source-to-destination and
+provider-to-provider edges. All 32 direct-link diagnostic packets arrive. Eight
+unfunded source-to-destination data attempts advance native application counters;
+one provider records 11 policy denials, and the same receive stream remains empty
+after those observations. These counters are phase aggregates, not matched
+packet receipts. Four wallets remain empty, journals and source authority remain
+unchanged, all 234 management checks pass, and original router baselines restore.
+The initial run exposed a harness comparison that included mutable memory/I/O
+counters in process identity; the corrected check compares identity, host, PID
+and process start time and rejects late reception. Shared Linux guard checks and
+focused regressions pass. This proves the controlled two-provider topology, not
+automatic paid selection on physical alternatives or mobile mesh behavior.
+
 The current isolated Android package passes a fresh arm64 native build, Android
 lint and strict Android-target relay/app linting. Native-library provenance is
 verified through packaging, including the build tool's stripping step. Installation
