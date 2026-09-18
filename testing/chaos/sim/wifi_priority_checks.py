@@ -3,7 +3,6 @@
 from bisect import bisect_left
 
 from .paid_settlement import require
-from .wifi_profiles import patch_config
 
 
 def natural(value):

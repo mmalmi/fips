@@ -10,9 +10,10 @@ from unittest.mock import Mock, patch
 
 from sim.wifi_priority import PriorityRun, parser
 from sim.wifi_priority_checks import (
-    acknowledged, adjacency, bounded_free, free_policy, loopback_address, patch_config,
+    acknowledged, adjacency, bounded_free, free_policy, loopback_address,
     payment, pressure_pair, received, running, submitted, workload,
 )
+from sim.wifi_profiles import patch_config
 
 
 def arguments(**changes):

@@ -8,7 +8,6 @@ throughput or CPU efficiency. Optional round trips use the sender's clock.
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
-import json
 import os
 from pathlib import Path
 import signal
