@@ -5,9 +5,11 @@ import json
 from collections import defaultdict
 from pathlib import Path
 from statistics import mean
-from validation import (PAYMENT_OPERATIONS, POLICIES, WORKLOADS,
-                        payment_counters, quiet_boundary, unsigned,
-                        validate_gap, validate_idle, validate_measurements, validate_probe)
+from validation import (HARDWARE_SCHEDULE, HARDWARE_WORKLOADS, OS_IO_COUNTERS,
+                        PAYMENT_OPERATIONS, POLICIES, WORKLOADS, payment_counters,
+                        quiet_boundary, unsigned, validate_gap,
+                        validate_hardware_schedule, validate_host_pair,
+                        validate_idle, validate_measurements, validate_probe)
 
 
 def paired(before, after):
@@ -23,60 +25,97 @@ def delta(before, after, key):
     return b - a
 
 
-def summarize(row):
+def summarize_node(before, after):
+    result = defaultdict(float)
+    a, b = before["measurements"], after["measurements"]
+    validate_measurements(a, b)
+    result["process_cpu_ms"] += delta(a, b, "process_cpu_ns") / 1e6
+    for name, prior in a["operations"].items():
+        current = b["operations"][name]
+        spans = delta(prior, current, "spans")
+        if delta(prior, current, "cpu_samples") != spans:
+            raise ValueError(f"missing thread CPU samples: {name}")
+        result["journal_writes"] += delta(prior, current, "journal_writes")
+        result["journal_bytes"] += delta(prior, current, "journal_bytes_written")
+        result["journal_syncs"] += delta(prior, current, "journal_syncs")
+        result["journal_commits"] += delta(prior, current, "journal_commits")
+        if name in PAYMENT_OPERATIONS:
+            result["payment_cpu_ms"] += delta(prior, current, "thread_cpu_ns") / 1e6
+            result["payment_journal_bytes"] += delta(prior, current, "journal_bytes_written")
+            result["payment_journal_writes"] += delta(prior, current, "journal_writes")
+            result["payment_journal_syncs"] += delta(prior, current, "journal_syncs")
+            result["payment_journal_commits"] += delta(prior, current, "journal_commits")
+            result["payment_spans"] += spans
+        if name == "payment_sign":
+            result["signs"] += spans
+        if name == "payment_usage":
+            result["usage_polls"] += spans
+        if name == "payment_update":
+            result["updates"] += spans
+    prior, current = payment_counters(before), payment_counters(after)
+    result["payment_record_bytes"] += delta(prior, current, "stream_bytes_sent")
+    result["payment_requests"] += delta(prior, current, "requests_started")
+    result["payment_received_bytes"] += delta(prior, current, "stream_bytes_received")
+    result["payment_received_requests"] += delta(prior, current, "requests_received")
+    peers_before = {p["npub"]: p for p in before["peers"] if p["connected"]}
+    peers_after = {p["npub"]: p for p in after["peers"] if p["connected"]}
+    if peers_before.keys() != peers_after.keys():
+        raise ValueError("connected topology changed during a matched run")
+    for identity, current in peers_after.items():
+        prior = peers_before[identity]
+        if prior["link_id"] != current["link_id"]:
+            raise ValueError("link counters changed epoch")
+        result["aggregate_link_bytes"] += delta(prior, current, "sent_bytes")
+    if after["last_error"]:
+        result["nodes_with_error"] += 1
+    return dict(result)
+
+
+def normalize_cpu(result, delivered_bytes):
+    for category in ("process", "payment"):
+        seconds = result[category + "_cpu_ms"] / 1000
+        result[category + "_cpu_seconds"] = seconds
+        result[category + "_cpu_seconds_per_mib"] = (
+            seconds * 2**20 / delivered_bytes if delivered_bytes else None
+        )
+
+
+def summarize(row, schema=2):
     data = row["data"]
-    if len(data["before"]) != 5 or len(data["after"]) != 5:
-        raise ValueError("expected five measured service processes")
-    counts = WORKLOADS[data["workload"]]
+    counts = (HARDWARE_WORKLOADS if schema == 3 else WORKLOADS)[data["workload"]]
     if len(data["probes"]) != len(counts):
         raise ValueError("offered workload changed")
     for probe, count in zip(data["probes"], counts):
-        validate_probe(probe, count)
-    if quiet_boundary(data["before"]) != quiet_boundary(data["after"]):
+        validate_probe(probe, count, schema)
+    if schema == 3:
+        validate_hardware_schedule(data)
+    if quiet_boundary(data["before"], schema) != quiet_boundary(data["after"], schema):
         raise ValueError("paying channels changed during measurement")
-    validate_gap(data["before_guard"], data["before"])
-    validate_gap(data["after"], data["after_guard"])
+    validate_gap(data["before_guard"], data["before"], schema)
+    validate_gap(data["after"], data["after_guard"], schema)
     result = defaultdict(float)
     for key in ("submitted_packets", "unsubmitted_packets", "delivered_packets",
                 "delivered_bytes", "duplicates", "out_of_order_packets", "invalid_packets",
                 "latency_samples", "invalid_timestamps", "latency_sum_us", "nodes_with_error"):
         result[key] = 0
+    node_results = {}
+    os_io = {key: 0 for key in OS_IO_COUNTERS}
     for before, after in paired(data["before"], data["after"]):
-        a, b = before["measurements"], after["measurements"]
-        validate_measurements(a, b)
-        result["process_cpu_ms"] += delta(a, b, "process_cpu_ns") / 1e6
-        for name, prior in a["operations"].items():
-            current = b["operations"][name]
-            spans = delta(prior, current, "spans")
-            if delta(prior, current, "cpu_samples") != spans:
-                raise ValueError(f"missing thread CPU samples: {name}")
-            result["journal_writes"] += delta(prior, current, "journal_writes")
-            result["journal_bytes"] += delta(prior, current, "journal_bytes_written")
-            result["journal_syncs"] += delta(prior, current, "journal_syncs")
-            if name in PAYMENT_OPERATIONS:
-                result["payment_cpu_ms"] += delta(prior, current, "thread_cpu_ns") / 1e6
-                result["payment_journal_bytes"] += delta(prior, current, "journal_bytes_written")
-                result["payment_journal_writes"] += delta(prior, current, "journal_writes")
-            if name == "payment_sign":
-                result["signs"] += spans
-            if name == "payment_update":
-                result["updates"] += spans
-        prior, current = payment_counters(before), payment_counters(after)
-        result["payment_record_bytes"] += delta(prior, current, "stream_bytes_sent")
-        result["payment_requests"] += delta(prior, current, "requests_started")
-        result["payment_received_bytes"] += delta(prior, current, "stream_bytes_received")
-        result["payment_received_requests"] += delta(prior, current, "requests_received")
-        peers_before = {p["npub"]: p for p in before["peers"] if p["connected"]}
-        peers_after = {p["npub"]: p for p in after["peers"] if p["connected"]}
-        if peers_before.keys() != peers_after.keys():
-            raise ValueError("connected topology changed during a matched run")
-        for identity, current in peers_after.items():
-            prior = peers_before[identity]
-            if prior["link_id"] != current["link_id"]:
-                raise ValueError("link counters changed epoch")
-            result["aggregate_link_bytes"] += delta(prior, current, "sent_bytes")
-        if after["last_error"]:
-            result["nodes_with_error"] += 1
+        measured = summarize_node(before, after)
+        for key, value in measured.items():
+            result[key] += value
+        if schema == 3:
+            validate_host_pair(before, after)
+            a, b = before["host_process"], after["host_process"]
+            measured.update(
+                npub=after["npub"], pid=b["pid"], start_ticks=b["start_ticks"],
+                rss_before_kib=a["rss_kib"], rss_after_kib=b["rss_kib"],
+                process_lifetime_peak_rss_kib=b["peak_rss_kib"],
+                os_io={key: delta(a, b, key) for key in OS_IO_COUNTERS},
+            )
+            for key in OS_IO_COUNTERS:
+                os_io[key] += measured["os_io"][key]
+            node_results[b["host"]] = measured
     buckets = None
     bounds = None
     for probe in data["probes"]:
@@ -89,6 +128,8 @@ def summarize(row):
         result["out_of_order_packets"] += received["out_of_order_packets"]
         result["invalid_packets"] += received["invalid_packets"]
         latency = received["latency"]
+        if latency is None:
+            continue
         if latency["samples"] + latency["invalid_timestamps"] != received["unique_packets"]:
             raise ValueError("timing sample coverage differs from packet delivery")
         result["latency_samples"] += latency["samples"]
@@ -125,7 +166,15 @@ def summarize(row):
     result["payment_record_bytes_per_delivered_byte"] = result["payment_record_bytes"] / result["delivered_bytes"] if result["delivered_bytes"] else None
     result["payment_journal_bytes_per_delivered_byte"] = result["payment_journal_bytes"] / result["delivered_bytes"] if result["delivered_bytes"] else None
     result["payment_cpu_ms_per_update"] = result["payment_cpu_ms"] / result["updates"] if result["updates"] else None
-    if data["workload"] == "idle":
+    if schema == 3:
+        normalize_cpu(result, result["delivered_bytes"])
+        for node in node_results.values():
+            normalize_cpu(node, result["delivered_bytes"])
+        result["nodes"] = node_results
+        result["os_io"] = os_io
+        for key in ("rss_before_kib", "rss_after_kib", "process_lifetime_peak_rss_kib"):
+            result[key] = sum(node[key] for node in node_results.values())
+    if data["workload"] == "idle" and schema == 2:
         validate_idle(result)
         if result["payment_received_bytes"] or result["payment_received_requests"]:
             raise ValueError("idle payment traffic received")
@@ -141,7 +190,8 @@ def analyze(path):
 
 def analyze_rows(rows):
     metadata = rows[0]
-    if metadata["schema"] != 2 or metadata["funded_directions"] != 2:
+    schema = metadata["schema"]
+    if type(schema) is not int or schema not in (2, 3) or metadata["funded_directions"] != 2:
         raise ValueError("unsupported experiment schema or funding setup")
     if metadata["optimized"] is not True:
         raise ValueError("cadence comparison requires an optimized build")
@@ -149,20 +199,37 @@ def analyze_rows(rows):
              "window_msat": 4000, "grace_msat": 8000,
              "channel_capacity_sat": 256, "fee_msat_per_kib": 1,
              "transport": "UDP loopback"}
-    if any(metadata.get(key) != value for key, value in fixed.items()):
+    if schema == 3:
+        fixed.update(
+            nodes=3, paid_relays=1, active_channels=2, channel_capacity_sat=32,
+            billing="forwarding_data", quote_max_units=16777216,
+            transport="native Ethernet over 802.11s", one_way_latency=False,
+            common_tail_ms=3000,
+        )
+        if json.dumps(metadata.get("workload_schedule"), sort_keys=True) != json.dumps(
+                HARDWARE_SCHEDULE, sort_keys=True):
+            raise ValueError("fixed hardware workload schedule changed")
+    if any(metadata.get(key) != value or type(metadata.get(key)) is not type(value)
+           for key, value in fixed.items()):
         raise ValueError("fixed experiment configuration changed")
     records = [r for r in rows[1:] if "data" in r]
     accounting_rows = [r for r in rows[1:] if "conserved" in r]
     conserved = {r["trial"]: r for r in accounting_rows}
     if len(records) != 32 or len(accounting_rows) != 8 or set(conserved) != set(range(8)):
         raise ValueError("incomplete matrix or missing financial conservation evidence")
+    if schema == 3 and (
+            [r["trial"] for r in records] != [trial for trial in range(8) for _ in range(4)]
+            or [r["trial"] for r in accounting_rows] != list(range(8))):
+        raise ValueError("hardware trial sequence changed")
     grouped = defaultdict(list)
     trials = []
+    issued, channels = (384, 2) if schema == 3 else (5120, 6)
     for trial_id, delay in enumerate(POLICIES):
         accounting = conserved[trial_id]
         if (accounting["conserved"] is not True or accounting["max_delay_ms"] != delay
-                or accounting["collected_sat"] != 5120 or accounting["issued_sat"] != 5120
-                or accounting["settled_channels"] != 6):
+                or unsigned(accounting["collected_sat"]) != issued
+                or unsigned(accounting["issued_sat"]) != issued
+                or unsigned(accounting["settled_channels"]) != channels):
             raise ValueError("invalid trial conservation")
         trial_records = [r for r in records if r["trial"] == trial_id]
         if [r["data"]["workload"] for r in trial_records] != ["idle", "bursty", "steady", "high_rate"]:
@@ -171,9 +238,9 @@ def analyze_rows(rows):
         for row in trial_records:
             if row["max_delay_ms"] != delay:
                 raise ValueError("unmatched policy order")
-            result = summarize(row)
+            result = summarize(row, schema)
             if previous is not None:
-                validate_gap(previous, row["data"]["before_guard"])
+                validate_gap(previous, row["data"]["before_guard"], schema)
             previous = row["data"]["after_guard"]
             trials.append({"trial":trial_id, "max_delay_ms":delay, "workload":row["data"]["workload"], **result})
             grouped[(row["data"]["workload"], delay)].append(result)
@@ -190,6 +257,31 @@ def markdown(metadata, grouped):
             avg = lambda k: mean(v.get(k, 0) for v in values)
             latency = f"{avg('mean_latency_us') / 1000:.3f}" if all(v["mean_latency_us"] is not None for v in values) else "—"
             lines.append(f"| {workload} | {delay} | {int(sum(v['delivered_packets'] for v in values))} / {int(sum(v['submitted_packets'] for v in values))} | {avg('payment_cpu_ms'):.2f} | {avg('process_cpu_ms'):.2f} | {avg('updates'):.1f} | {avg('payment_record_bytes') / 1024:.2f} | {avg('payment_journal_writes'):.1f} | {latency} |")
+    if metadata["schema"] == 3:
+        lines[2] = (
+            "Optimized build: **True**. Two opposite-order repetitions; three real "
+            "router service processes and one paid relay over native Ethernet over 802.11s."
+        )
+        lines[4] = (
+            "Costs sum the three service processes. Payment CPU covers only the existing "
+            "synchronous spans; relay journal I/O is logical and excludes SDK/SQLite writes. "
+            "OS process I/O is reported separately and is not payment-attributed. "
+            "RSS is sampled at each boundary; high-water marks cover each process lifetime, "
+            "not one window. Record bytes exclude TCP/FIPS/carrier overhead and radio airtime. "
+            "One-way latency is unmeasured because router clocks are independent. "
+            "Radio idle payment activity inside the measured window is reported."
+        )
+        lines += [
+            "", "Per-trial JSON retains total and per-node CPU seconds/MiB, goodput, "
+            "RSS, process-lifetime high-water marks, OS I/O deltas, payment spans/records, "
+            "and logical journal commits/syncs. Per-node CPU uses the same end-to-end "
+            "delivered application bytes as the total; zero-delivery ratios are null. "
+            "Summed lifetime RSS peaks need not have occurred simultaneously. "
+            "Idle lasts four seconds; all eight bursts include their final 800 ms sleep. "
+            "High rate offers 8,000 packets. All windows include the same three-second tail. "
+            "These offered workloads do not establish maximum throughput or an optimal policy.",
+        ]
+        return "\n".join(lines) + "\n"
     lines += ["", "Delivery totals combine both repetitions; other values are arithmetic means per observation window. Idle includes 4 seconds plus the common 3-second tail. Other windows include traffic, a bounded receive drain and the same tail. Raw trial summaries retain loss, CPU/GiB, timing quality and aggregate link counters. Impaired links, complete payment wire attribution and physical device performance remain separate work."]
     return "\n".join(lines) + "\n"
 

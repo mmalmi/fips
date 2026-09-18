@@ -1,6 +1,10 @@
 # Paid-relay cadence experiment
 
-This experiment runs the production relay executable as five separate processes,
+The analyzer accepts the loopback experiment (schema 2) and the guarded
+three-router Wi-Fi experiment (schema 3) described below. Both use the same
+payment, delivery and financial acceptance checks.
+
+The loopback experiment runs the production relay executable as five separate processes,
 with three paid forwarding hops, loopback UDP links and an isolated simulated
 mint. It reuses the existing service test helpers and operator probe API. It does
 not alter live routers, home networking or saved accounts.
@@ -70,6 +74,57 @@ Two repetitions show variation but are not enough for statistical claims of an
 optimal policy. Historical schema-1 results lack the payment-boundary evidence
 and must be analyzed with their original analyzer revision.
 
+## Hardware report contract (schema 3)
+
+The hardware runner uses three router service processes, one paid relay, two
+funded directions, two active channels, and native Ethernet over 802.11s. Each
+trial uses fresh isolated accounts: 128 test sats per router, 32-sat channels,
+`forwarding_data` billing, and a 16,777,216-unit quote allowance. The value trigger,
+window, grace, tariff, two repetitions and policy order match schema 2. Every
+trial must settle both channels and collect all 384 issued test sats. Analyzer
+support and synthetic tests alone do not establish a physical benchmark result.
+
+Schema 3 retains the same workload/boundary row structure, with these changes:
+
+- High rate offers **8,000** packets at 4,000 packets/s. Idle, bursty and steady
+  counts and rates remain as above. Every one of the eight bursts includes its
+  final 800 ms sleep. Metadata records the exact `workload_schedule` and
+  `common_tail_ms: 3000`; each probe records its `packets_per_second` and
+  `after_sleep_ms`. Offered elapsed time must cover idle duration or sequential
+  sender durations plus sleeps. These records establish the declared schedule,
+  not exact packet-by-packet pacing.
+- Every snapshot includes the service `npub` and `host_process`: `host` (`n01`,
+  `n02` or `n03`), `pid`, `start_ticks`, `rss_kib`, `peak_rss_kib`, `read_bytes`,
+  `write_bytes`, `rchar`, `wchar`, `syscr`, and `syscw`. The PID must match the
+  service's measurement PID. Host, node and process start identity must remain
+  stable across all guards and workload windows. Equal PIDs on different hosts
+  are valid; a duplicate host or node identity is not.
+- Independent router clocks do not establish one-way latency. Metadata must
+  state `one_way_latency: false`, and every receiver's `latency` must be null.
+  Delivery counts, bytes, duplicates and reordering still use the existing probe
+  evidence. Mean and percentile one-way latency remain null in summaries.
+- Radio traffic can cause paid work during application-idle windows. Such work
+  is included and reported; it is not subtracted as a baseline. Both channels
+  must still be fully acknowledged with no job in flight at every boundary.
+  The same double guards and gap checks reject payment or relay-journal work
+  outside measured windows, including work after the final snapshot.
+
+JSON summaries retain total and per-node CPU seconds, CPU seconds/MiB, payment
+spans and control-record bytes, relay journal bytes/writes/commits/syncs, plus
+end-to-end goodput. Each node's normalized CPU uses the same delivered application
+bytes as the total, with null ratios when no data is delivered. Current RSS is
+reported before and after each window. `process_lifetime_peak_rss_kib` is a
+cumulative process high-water mark, not a window peak; summed node peaks need not
+have occurred simultaneously.
+
+`os_io` contains separate process counter deltas. `read_bytes`/`write_bytes` are
+OS-accounted storage I/O; `rchar`/`wchar` are read/write character counts including
+other I/O; `syscr`/`syscw` count read/write system calls. They cover the whole relay
+process and **are not payment-attributed**. They are not the logical journal
+counters, physical media wear, or per-payment SQLite attribution. Counter resets
+and process replacement invalidate the comparison. OS I/O during status sampling
+can advance without becoming a payment/durability gap violation.
+
 ## Measurement boundaries
 
 Build the relay with the optional `measurements` feature. The private local
@@ -124,7 +179,8 @@ This matrix provides the repeatable clean-link baseline. It does not fulfill
 the full production-readiness benchmark. Still required: impaired links using
 the existing FIPS simulation/chaos facilities, payment-specific complete carrier
 bytes, SDK snapshot and receiver SQLite storage measurements, profiler attribution outside
-the synchronous spans, and controlled ARM64/router/phone runs. Performance changes
+the synchronous spans, and accepted controlled ARM64/router/phone measurements (schema 3 only supplies
+the report/validation contract). Performance changes
 need a matched baseline with instrumentation cost held constant. No production
 default is selected solely from this loopback experiment.
 
