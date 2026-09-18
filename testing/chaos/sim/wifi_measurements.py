@@ -1,7 +1,8 @@
 """Read-only, process-bound resource samples for the three-router experiment.
 
 OS I/O includes the whole relay process; it is not payment-attributed storage or
-physical-media accounting. RSS high-water marks cover the process lifetime.
+physical-media accounting. Kernels without proc I/O report unavailable counters,
+never zeroes. RSS high-water marks cover the process lifetime.
 """
 
 import json
@@ -100,10 +101,16 @@ before=$(cat {proc}/$pid/stat)
 owned
 relay=$(printf '%s\\n' '{{"type":"status"}}' | {binary} ctl {config})
 resources=$(cat {proc}/$pid/status)
-io=$(cat {proc}/$pid/io)
+if test -e {proc}/$pid/io || test -L {proc}/$pid/io; then
+  io=$(cat {proc}/$pid/io)
+  availability=available
+else
+  io=''
+  availability=unsupported
+fi
 owned
 after=$(cat {proc}/$pid/stat)
-printf '%s\\000' "$pid" "$before" "$after" "$resources" "$io" "$relay"
+printf '%s\\000' "$pid" "$before" "$after" "$resources" "$io" "$relay" "$availability"
 """
 
 
@@ -115,14 +122,19 @@ def snapshot(node, hostlabel):
     raw = node.remote(command(node), timeout=45)
     finished = time.monotonic_ns()
     parts = raw.decode("utf-8").split("\0")
-    if len(parts) != 7 or parts[-1]:
+    if len(parts) != 8 or parts[-1]:
         raise ValueError("invalid resource sample framing")
     pid = decimal(parts[0])
     before, after = process_identity(parts[1]), process_identity(parts[2])
     if before != after or before[0] != pid:
         raise ValueError("relay process epoch changed during sampling")
     memory = resource_fields(parts[3], ("VmRSS", "VmHWM"), "kB")
-    io = resource_fields(parts[4], IO_COUNTERS)
+    if parts[6] == "available":
+        io = resource_fields(parts[4], IO_COUNTERS)
+    elif parts[6] == "unsupported" and not parts[4]:
+        io = dict.fromkeys(IO_COUNTERS, None)
+    else:
+        raise ValueError("invalid process I/O availability evidence")
     if memory["VmRSS"] > memory["VmHWM"]:
         raise ValueError("RSS exceeds process high-water mark")
     status = json.loads(parts[5])
@@ -132,6 +144,7 @@ def snapshot(node, hostlabel):
     if getattr(node, "npub", None) and status.get("npub") != node.npub:
         raise ValueError("relay status came from a different node")
     status["host_process"] = {"host": hostlabel, "pid": pid, "start_ticks": before[1],
-                              "rss_kib": memory["VmRSS"], "peak_rss_kib": memory["VmHWM"], **io}
+                              "rss_kib": memory["VmRSS"], "peak_rss_kib": memory["VmHWM"],
+                              "io_available": parts[6] == "available", **io}
     status["sample_timing"] = {"started_monotonic_ns": started, "finished_monotonic_ns": finished}
     return status

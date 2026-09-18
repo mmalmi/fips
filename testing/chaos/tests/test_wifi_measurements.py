@@ -30,7 +30,7 @@ def frame(**changes):
     values = {"pid": "123", "before": stat(), "after": stat(),
               "memory": "Name:\tfips-relay\nVmRSS:\t100 kB\nVmHWM:\t120 kB\n",
               "io": "\n".join(f"{name}: {index}" for index, name in enumerate(IO_COUNTERS)),
-              "relay": json.dumps(status())}
+              "relay": json.dumps(status()), "availability": "available"}
     values.update(changes)
     return ("\0".join(values.values()) + "\0").encode()
 
@@ -56,7 +56,7 @@ class MeasurementTests(unittest.TestCase):
         for key, original in status().items():
             self.assertEqual(value[key], original)
         self.assertEqual(value["host_process"], {"host": "n02", "pid": 123, "start_ticks": 456,
-                         "rss_kib": 100, "peak_rss_kib": 120,
+                         "rss_kib": 100, "peak_rss_kib": 120, "io_available": True,
                          **{name: index for index, name in enumerate(IO_COUNTERS)}})
         self.assertEqual(value["sample_timing"], {"started_monotonic_ns": 10, "finished_monotonic_ns": 20})
         router.remote.assert_called_once()
@@ -66,6 +66,18 @@ class MeasurementTests(unittest.TestCase):
         for changed in ({"after": stat(start=457)}, {"after": stat(pid=124)}, {"pid": "124"}):
             with self.subTest(changed=changed), self.assertRaises(ValueError):
                 snapshot(node(frame(**changed)), "n01")
+
+    def test_unavailable_requires_explicit_marker_and_empty_payload(self):
+        value = snapshot(node(frame(io="", availability="unsupported")), "n01")
+        self.assertIs(value["host_process"]["io_available"], False)
+        self.assertTrue(all(value["host_process"][name] is None for name in IO_COUNTERS))
+        for changed in ({"io": ""}, {"io": "", "availability": ""},
+                        {"availability": "unsupported"}, {"availability": "unknown"},
+                        {"io": "unsupported"}):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                snapshot(node(frame(**changed)), "n01")
+        with self.assertRaises(ValueError):
+            snapshot(node(frame(io="", availability="unsupported", after=stat(start=999))), "n01")
 
     def test_missing_duplicate_negative_or_wrong_unit_resources_fail(self):
         for name in IO_COUNTERS:
@@ -152,6 +164,28 @@ class ShellSamplerTests(unittest.TestCase):
         value = snapshot(self.router, "n01")
         self.assertEqual(value["host_process"]["start_ticks"], 456)
         self.assertEqual((self.root / "calls").read_text(), "called\n")
+
+    def test_kernel_without_io_keeps_other_measurements_and_reports_nulls(self):
+        (self.record / "io").unlink()
+        value = snapshot(self.router, "n01")
+        self.assertIs(value["host_process"]["io_available"], False)
+        self.assertTrue(all(value["host_process"][name] is None for name in IO_COUNTERS))
+        self.assertEqual(value["host_process"]["rss_kib"], 100)
+        self.assertEqual(value["measurements"], status()["measurements"])
+
+    def test_existing_empty_or_malformed_io_never_becomes_unavailable(self):
+        for content in ("", "unsupported", "read_bytes: 0\n", "read_bytes: invalid\n"):
+            (self.record / "io").write_text(content)
+            with self.subTest(content=content), self.assertRaises(ValueError):
+                snapshot(self.router, "n01")
+
+    def test_unreadable_io_is_an_error_not_absence(self):
+        # A dangling entry forces a read error even when the test runner is root.
+        path = self.record / "io"
+        path.unlink()
+        path.symlink_to(self.record / "unreadable-target")
+        with self.assertRaises(subprocess.CalledProcessError):
+            snapshot(self.router, "n01")
 
     def test_wrong_executable_or_additional_argument_fails_before_status(self):
         self.write_binary(f"touch '{self.root}/called'")
