@@ -338,6 +338,19 @@ controller polling and probe time, so it is not an exact first-packet convergenc
 time. This controlled cut does not guarantee interruption at a particular payment
 message, arbitrary physical movement or selection among competing paid routes.
 
+The first active-outage run on the temporary open mesh (2026-09-18) passed.
+The cut completed 1.72 seconds after dispatch, before the earliest final paced
+send at 11.5 seconds. The interrupted stream delivered three of 24 replies;
+21 were missing, and counts stayed unchanged during the isolated observation.
+Actual peer eviction was observed 30.82 seconds after the completed cut. After
+rejoin, all eight fresh round trips completed with a 6.31-ms mean RTT. The
+request-to-complete-recovery upper bound was 9.75 seconds. Subsequent ordinary
+streams delivered and advanced payments in both directions on the original
+channels, with all three process epochs unchanged. The middle router earned
+24 test sats; all 384 issued sats were collected. Original radio settings and
+router baselines were restored, the mint and its forwards stopped, and all
+312 management checks passed without cleanup errors.
+
 ### Paid/free Wi-Fi priority
 
 `sim.wifi_priority` reuses the paid Wi-Fi lifecycle and adds two unfunded

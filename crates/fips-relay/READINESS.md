@@ -298,8 +298,27 @@ including funding order and preservation after radio or financial uncertainty.
 These runs cover controlled departure/rejoin with reconciled, already funded
 routes on both SAE-protected and open radio meshes. Interrupted purchase
 acceptance on hardware, arbitrary physical mobility/mesh merge-split, phone
-outage recovery and current hardware performance measurements still require
-verification.
+outage recovery and sustained hardware capacity still require verification.
+
+The [paid/free priority and round-trip fixture](../../testing/chaos/README.md#paidfree-wi-fi-priority)
+also passes on these routers. With a 500-ms maximum payment age, all 72 paid
+round trips complete across three 24-packet phases. Mean application RTT is
+5.13 ms before free load, 24.30 ms during it and 4.60 ms afterward. Middle-router
+background drops increase during partial paid progress; payments advance in both
+directions while the free sender remains active. Fresh free traffic recovers,
+all 384 test sats are collected, and 279 management checks and restoration pass.
+This is one short stationary workload, not a latency guarantee, radio airtime
+fairness or evidence of mobile route selection.
+
+The [active radio-outage fixture](../../testing/chaos/README.md#paid-wi-fi-recovery)
+also passes on the temporary open mesh. The cut precedes the final scheduled
+send, interrupts 21 of 24 round trips, and is followed by observed peer eviction.
+After rejoin, all eight fresh round trips and subsequent bidirectional payments
+succeed on the same processes and channels. All 384 test sats are collected,
+original radio settings are restored, and 312 management checks pass. The
+9.75-second request-to-complete-recovery upper bound includes polling and probe
+time; the test deliberately waits for eviction before requesting rejoin. It
+does not establish arbitrary mobility or interrupt a specific payment message.
 
 The current isolated Android package passes a fresh arm64 native build, Android
 lint and strict Android-target relay/app linting. Native-library provenance is
@@ -423,6 +442,15 @@ loss. At high rate, 1 s/2 s used two updates versus four at 250 ms; total CPU
 ranges overlapped. The default remains 500 ms. See the results for exact costs
 and attribution limits. The earlier rejected matrix remains failed, and broader
 hardware acceptance and the intermittent loss cause remain open.
+
+The current priority-enabled build also passes a matched eight-trial matrix with
+the controller mint reached through dedicated SSH forwards: all 93,696 payloads
+arrive and all 3,072 test sats are collected. All 2,055 management checks and
+restoration pass. At high rate, the 1-second policy uses about 38% less measured
+payment CPU and 33% fewer payment-record bytes than 500 ms; idle windows perform
+no payment polling or writes. These partial costs and two stable-topology repeats
+do not establish an optimal cadence. The default remains 500 ms, and the earlier
+loss remains unexplained. See the [matched results and measurement limits](../../testing/relay-cadence/README.md#hardware-report-contract-schema-3).
 
 ## Sequence and acceptance
 
