@@ -393,6 +393,26 @@ unfunded wallets stayed empty, and original router baselines were restored with
 261 management checks and no errors. Throughput and long-running reliability
 still need separate measurement.
 
+The first round-trip run (2026-09-18) passed with a 500 ms maximum payment age
+and the default workload. All 24 paid requests and replies completed in each
+phase, with no missing, duplicate or invalid replies:
+
+| Free load | Mean RTT | Maximum RTT | p95 histogram upper bound |
+| --- | ---: | ---: | ---: |
+| Before | 5.13 ms | 15.61 ms | 20 ms |
+| During | 24.30 ms | 47.41 ms | 50 ms |
+| After | 4.60 ms | 10.10 ms | 10 ms |
+
+During partial paid round-trip progress, the middle router recorded 1,711
+additional background queue drops. Payments advanced and were acknowledged in
+both directions while the free sender remained active. The overloaded free
+stream delivered 29,086 of 64,000 packets; the fresh four-packet recovery stream
+delivered completely. Both original channels settled, all 384 test sats were
+collected, and both unfunded wallets remained empty. The original router baselines
+were restored, the mint and its forwards stopped, and 279 management checks
+recorded no errors. This is one short stationary run, not evidence of mobile
+route selection, sustained throughput or a latency guarantee.
+
 ### Phone acceptance helpers
 
 `sim.remote_mint.RemoteMint` gives routers and a phone one explicit private mint
