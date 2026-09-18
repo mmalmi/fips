@@ -82,6 +82,7 @@ impl Node {
             rtt_ms: metrics.as_ref().and_then(|m| m.rtt_ms),
             loss_rate: metrics
                 .as_ref()
+                .filter(|m| m.last_forward_loss_age_ms.is_some_and(|age| age <= window))
                 .and_then(|m| m.last_forward_loss_sample.map(|(_, loss)| loss)),
             goodput_bps: metrics.as_ref().map(|m| m.goodput_bps),
             sent_packets: activity.traffic_counters().0,

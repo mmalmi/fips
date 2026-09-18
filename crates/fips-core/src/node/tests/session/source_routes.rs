@@ -229,6 +229,125 @@ fn source_quality_keeps_an_unanswered_burst_failed_and_rebinding_invalidates_it(
     );
 }
 
+fn source_loss_report(
+    highest_counter: u64,
+    cumulative_packets_recv: u64,
+    age: u64,
+) -> SessionReceiverReport {
+    SessionReceiverReport {
+        highest_counter,
+        cumulative_packets_recv,
+        cumulative_bytes_recv: cumulative_packets_recv * 100,
+        timestamp_echo: session_timestamp_echo_for(age.try_into().unwrap()),
+        dwell_time: 0,
+        max_burst_loss: 0,
+        mean_burst_loss: 0,
+        jitter: 0,
+        ecn_ce_count: 0,
+        owd_trend: 0,
+        burst_loss_count: 0,
+        cumulative_reorder_count: 0,
+        interval_packets_recv: 0,
+        interval_bytes_recv: 0,
+    }
+}
+
+#[tokio::test]
+async fn source_forward_loss_survives_late_receipt_after_carrier_switch() {
+    let mut node = make_node();
+    let old = add_peer(&mut node, 1);
+    let next = add_peer(&mut node, 2);
+    let remote = Identity::generate();
+    let destination = PeerIdentity::from_pubkey_full(remote.pubkey_full());
+    let dest = *destination.node_addr();
+    install_established_session_with_mmp(&mut node, &remote);
+    let report = |highest, packets, age| source_loss_report(highest, packets, age).encode();
+    node.set_endpoint_source_route(destination, Some(old))
+        .unwrap();
+    seed_dataplane_fsp_data_sent_for_test(&mut node, dest, *old.node_addr(), Node::now_ms() - 100);
+    node.handle_session_receiver_report(&dest, &report(100, 100, 50))
+        .await;
+    node.handle_session_receiver_report(&dest, &report(116, 116, 50))
+        .await;
+    assert_eq!(
+        node.endpoint_source_route_quality(dest, 1_000).loss_rate,
+        Some(0.0)
+    );
+
+    node.set_endpoint_source_route(destination, Some(next))
+        .unwrap();
+    seed_dataplane_fsp_data_sent_for_test(&mut node, dest, *next.node_addr(), Node::now_ms() - 100);
+    node.handle_session_receiver_report(&dest, &report(120, 118, 200))
+        .await;
+    let old_echo = node.endpoint_source_route_quality(dest, 1_000);
+    assert!(!old_echo.has_recent_delivery_feedback);
+    assert_eq!(old_echo.loss_rate, None);
+    node.handle_session_receiver_report(&dest, &report(120, 118, 50))
+        .await;
+    let baseline = node.endpoint_source_route_quality(dest, 1_000);
+    assert!(baseline.has_recent_delivery_feedback && baseline.rtt_ms.is_some());
+    assert_eq!(
+        baseline.loss_rate, None,
+        "RTT alone must not imply zero loss"
+    );
+    node.handle_session_receiver_report(&dest, &report(136, 133, 50))
+        .await;
+    assert_eq!(
+        node.endpoint_source_route_quality(dest, 1_000).loss_rate,
+        Some(1.0 / 16.0)
+    );
+    node.handle_session_receiver_report(&dest, &report(136, 134, 50))
+        .await;
+    let corrected = node.endpoint_source_route_quality(dest, 1_000);
+    assert_eq!(corrected.next_hop, Some(*next.node_addr()));
+    assert!(corrected.has_recent_delivery_feedback && corrected.goodput_bps.unwrap() > 0.0);
+    assert_eq!(corrected.loss_rate, Some(0.0));
+}
+
+#[test]
+fn source_forward_loss_expires_despite_fresh_late_delivery_feedback() {
+    let mut node = make_node();
+    let next = add_peer(&mut node, 1);
+    let remote = Identity::generate();
+    let destination = PeerIdentity::from_pubkey_full(remote.pubkey_full());
+    let dest = *destination.node_addr();
+    install_established_session_with_mmp(&mut node, &remote);
+    node.set_endpoint_source_route(destination, Some(next))
+        .unwrap();
+    let now = std::time::Instant::now();
+    let now_ms = Node::now_ms();
+    for (highest, packets, age) in [(100, 90, 3_000), (116, 105, 2_000), (116, 106, 0)] {
+        seed_dataplane_fsp_data_sent_for_test(
+            &mut node,
+            dest,
+            *next.node_addr(),
+            now_ms - age - 100,
+        );
+        let report = source_loss_report(highest, packets, age + 50);
+        node.dataplane
+            .process_fsp_mmp_receiver_report(
+                dest,
+                &crate::mmp::report::ReceiverReport::from(&report),
+                Some(*next.node_addr()),
+                now_ms - age,
+                now - std::time::Duration::from_millis(age),
+                16,
+            )
+            .unwrap();
+    }
+    let expired = node.endpoint_source_route_quality(dest, 1_000);
+    assert!(expired.has_recent_delivery_feedback && expired.rtt_ms.is_some());
+    assert!(expired.goodput_bps.unwrap() > 0.0);
+    assert_eq!(
+        expired.loss_rate, None,
+        "late delivery cannot renew positive-span evidence"
+    );
+    assert_eq!(
+        node.endpoint_source_route_quality(dest, 10_000).loss_rate,
+        Some(0.0)
+    );
+}
+
 #[test]
 fn metadata_refresh_preserves_an_authenticated_reply_carrier() {
     let mut node = make_node();

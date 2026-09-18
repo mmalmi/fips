@@ -198,6 +198,7 @@ pub(crate) struct DataplaneFspMmpSnapshot {
     pub(crate) loss_rate: f64,
     pub(crate) smoothed_loss: Option<f64>,
     pub(crate) last_forward_loss_sample: Option<(u64, f64)>,
+    pub(crate) last_forward_loss_age_ms: Option<u64>,
     pub(crate) etx: f64,
     pub(crate) smoothed_etx: Option<f64>,
     pub(crate) goodput_bps: f64,
@@ -219,6 +220,7 @@ impl DataplaneFspMmpSnapshot {
         dest_addr: NodeAddr,
         fallback_session_name: String,
         mmp: &crate::mmp::MmpSessionState,
+        now: std::time::Instant,
     ) -> Self {
         let metrics = &mmp.metrics;
         Self {
@@ -229,6 +231,7 @@ impl DataplaneFspMmpSnapshot {
             loss_rate: metrics.loss_rate(),
             smoothed_loss: metrics.smoothed_loss(),
             last_forward_loss_sample: metrics.last_forward_loss_sample(),
+            last_forward_loss_age_ms: metrics.last_forward_loss_age_ms(now),
             etx: metrics.etx,
             smoothed_etx: metrics.smoothed_etx(),
             goodput_bps: metrics.goodput_bps(),

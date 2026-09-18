@@ -866,6 +866,7 @@ impl OwnerState {
             dest_addr,
             fallback_session_name,
             mmp,
+            std::time::Instant::now(),
         ))
     }
 

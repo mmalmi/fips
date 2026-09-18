@@ -562,7 +562,7 @@ impl OwnerState {
         }
 
         if mmp.should_log(now) {
-            let snapshot = DataplaneFspMmpSnapshot::from_mmp(dest_addr, fallback_session_name, mmp);
+            let snapshot = DataplaneFspMmpSnapshot::from_mmp(dest_addr, fallback_session_name, mmp, now);
             batch.metric_logs.push(snapshot);
             mmp.mark_logged(now);
         }
