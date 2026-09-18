@@ -185,20 +185,31 @@ races. The installed router services remain on their original build.
 
 This establishes one controlled free radio leave/rejoin, not arbitrary physical
 mobility or throughput. Radio admission still needs the existing shared SAE key.
-Current paid-channel recovery over Wi-Fi, mixed/mobile neighborhoods, open-radio
-admission and the updated Pixel regression remain unverified by this run.
+Mixed/mobile neighborhoods, permissionless radio admission and the updated
+Pixel regression remain separate checks.
 
-The [paid Wi-Fi harness](../../testing/chaos/README.md#paid-wi-fi-recovery) now reuses
-this radio lifecycle and the Ethernet financial/settlement checks. Its 92 focused
-Linux checks pass, including a reconciled payment checkpoint before departure,
-rejection of failed probe submissions as unpaid-denial evidence, retained mint
-state after uncertain financial operations, and offline wallet collection.
-The first physical attempt stopped at the controller mint's LAN reachability
-preflight, before any issuance or import. All 72 management checks and original
-router restoration checks passed, and the zero-issuance mint stopped cleanly.
-Paid forwarding, paid radio recovery and final collection are therefore still
-pending hardware verification. The controller must accept the routers' mint
-connections before the paid scenario can run.
+The [paid Wi-Fi harness](../../testing/chaos/README.md#paid-wi-fi-recovery) also
+passes all 22 phases on three ARM64 OpenWrt routers. Dedicated SSH connections
+make the same controller test mint available through each router's loopback;
+only the management connection carries mint HTTP, while FIPS payloads use the
+radio mesh. All three listeners and HTTP endpoints are verified before issuance.
+No firewall setting change is needed. The 109 Linux harness checks cover forwarding ownership,
+partial startup, uncertain collection, cleanup and the existing radio guards.
+
+The enforced two-hop path delivers all 32 paid packets in both directions before
+and after one radio departure/rejoin. Four submitted unpaid transit packets
+deliver none. Automatic payments resume with the original funding/channel
+identities and lifetime budgets. The middle router earns 14 test sats; final
+wallets contain 121, 142 and 121 sats before all 384 test sats are collected and
+every test wallet is empty. Both shortcut-drop counters corroborate the path.
+All 321 management checks pass, with a maximum sampling gap of 2.24 seconds.
+Original router baselines are restored, and candidate processes, temporary
+filters, mint forwards and the fully collected mint stop without cleanup errors.
+
+This covers one controlled departure/rejoin with reconciled, already funded
+routes. Interrupted purchase acceptance, arbitrary physical mobility/mesh
+merge-split, permissionless radio admission, updated Pixel acceptance and current
+hardware performance measurements still require verification.
 
 ## Guarded cadence measurement
 
