@@ -11,6 +11,7 @@ pub(super) enum Scenario {
     ReturnLoss,
     AutomaticLoss,
     AutomaticDelay,
+    QualityChurn,
     Mobility,
     InterruptedMobility,
 }
@@ -20,18 +21,24 @@ impl Scenario {
         let mut policy = super::selection_policy();
         match self {
             // Loss must change the delivered-cost ranking, not trip the ceiling.
-            Self::Loss | Self::AutomaticLoss => policy.max_loss_percent = 80,
+            Self::Loss | Self::AutomaticLoss | Self::QualityChurn => policy.max_loss_percent = 80,
             Self::Delay | Self::AutomaticDelay => policy.max_rtt_ms = 150,
             Self::Mobility | Self::InterruptedMobility => {
                 policy.retry_after_ms = policy.feedback_timeout_ms;
             }
             _ => {}
         }
-        if matches!(self, Self::AutomaticLoss | Self::AutomaticDelay) {
+        if matches!(
+            self,
+            Self::AutomaticLoss | Self::AutomaticDelay | Self::QualityChurn
+        ) {
             // Preserve observations through a five-second automatic refresh;
             // recovery still requires a fresh bounded trial after ten seconds.
             policy.feedback_timeout_ms = 10_000;
             policy.retry_after_ms = 10_000;
+        }
+        if matches!(self, Self::QualityChurn) {
+            policy.trial_max_units = PriceSelectionPolicy::default().trial_max_units;
         }
         policy
     }
@@ -41,7 +48,7 @@ impl Scenario {
             Self::Loss => 1126,
             // Both the loss-adjusted upgrade and healthy-price return exceed
             // the unchanged ten-percent switching margin.
-            Self::AutomaticLoss => 1280,
+            Self::AutomaticLoss | Self::QualityChurn => 1280,
             _ => 2048,
         }
     }
@@ -52,7 +59,7 @@ impl Scenario {
             ..Default::default()
         };
         match self {
-            Self::Loss | Self::AutomaticLoss => network.set_directed_link(
+            Self::Loss | Self::AutomaticLoss | Self::QualityChurn => network.set_directed_link(
                 "1",
                 "3",
                 Some(SimLink {
@@ -82,7 +89,7 @@ impl Scenario {
 
     pub(super) fn observed(self, q: &SourceRouteQuality) -> bool {
         match self {
-            Self::Loss | Self::AutomaticLoss => {
+            Self::Loss | Self::AutomaticLoss | Self::QualityChurn => {
                 q.has_recent_delivery_feedback
                     && !q.delivery_feedback_timed_out
                     && q.loss_rate.is_some_and(|v| (0.25..=0.8).contains(&v))
