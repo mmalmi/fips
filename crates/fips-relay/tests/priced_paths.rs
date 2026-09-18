@@ -137,6 +137,7 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
     let exhaust_trial = matches!(scenario, Scenario::Exhaustion);
     let interrupted = matches!(scenario, Scenario::InterruptedMobility);
     let mobile = matches!(scenario, Scenario::Mobility | Scenario::InterruptedMobility);
+    let changing_neighbors = mobile || matches!(scenario, Scenario::QualityChurn);
     let selection = scenario.selection_policy();
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -298,9 +299,13 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
             .collect();
         let admission = ControlAdmission::new(
             nodes[i].clone(),
-            if mobile { vec![] } else { neighbors },
+            if changing_neighbors {
+                vec![]
+            } else {
+                neighbors
+            },
             None,
-            if mobile {
+            if changing_neighbors {
                 NeighborAdmission::AuthenticatedAdjacent
             } else {
                 NeighborAdmission::ConfiguredOnly
@@ -424,7 +429,7 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
         "cheapest initial quote"
     );
     assert_eq!(
-        first.contract.max_units, 8192,
+        first.contract.max_units, selection.trial_max_units,
         "unknown path is quota limited"
     );
     let polled = services[0].quotes.refresh_route(peers[3]).await.unwrap();
@@ -556,7 +561,7 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
                     .await
                     .unwrap()
                     .into_iter()
-                    .find(|p| p.contract.max_units > 8192)
+                    .find(|p| p.contract.max_units > selection.trial_max_units)
                 {
                     break p;
                 }
@@ -605,7 +610,10 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
                 interrupted_acceptance.as_mut().unwrap(),
             )
             .await;
-        } else if matches!(scenario, Scenario::AutomaticLoss | Scenario::AutomaticDelay) {
+        } else if matches!(
+            scenario,
+            Scenario::AutomaticLoss | Scenario::AutomaticDelay | Scenario::QualityChurn
+        ) {
             automatic_quality::exercise(
                 scenario,
                 &network,
@@ -616,6 +624,7 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
                 &mut receivers[3],
                 &upgraded,
                 root.path(),
+                quote_inputs[0].0.statistics(),
             )
             .await;
         } else if mobile {
@@ -670,7 +679,7 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
                 replacement.contract.price.msat,
                 scenario.alternative_price()
             );
-            assert_eq!(replacement.contract.max_units, 8192);
+            assert_eq!(replacement.contract.max_units, selection.trial_max_units);
             if matches!(scenario, Scenario::Blackhole) {
                 assert!(gates[1].dropped.load(Ordering::Relaxed) > 0);
             }
