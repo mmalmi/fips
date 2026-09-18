@@ -73,12 +73,22 @@ permission and reports the persistence error; it does not certify durable cleanu
 If the provider returns, automatic settlement uses the existing Seal/Settle
 exchange. Its journal reservation rechecks that no eligible route, new request or
 renewal shares the channel. The ordinary verified refund and expiry-retirement
-workflow removes the exact offer marker. Pre-route reservations and permanently
-absent uncertain work remain retained; absence or expiry alone is not a refund.
+workflow removes the exact offer marker. Permanently absent uncertain financial
+work remains retained; absence or expiry alone is not a refund.
+
+Ordinary upkeep may remove an expired withdrawn reservation which never reached
+a funding intent, provided no retained funding, outgoing channel, incoming route,
+change, renewal, active request or pending watch shares that provider. Selection
+and removal use the same store lock as funding. The existing offer-expiry floor
+advances to the removed expiry, rejecting stale workers even after clock rollback.
+This releases metadata slots only: it creates no accepted-channel history, refund
+or retired financial totals. It preserves newer watches and funding sequence
+numbers, skips pending cross-journal retirement, and writes nothing when no
+reservation qualifies. Uncertain and funded pre-route requests remain retained.
 
 The journal keeps the `0x100` authorization-format bit after all markers retire,
-so older binaries reject the state instead of ignoring a withdrawal. The base
-history version and its required accounting evidence remain unchanged. Do not
+so older binaries reject the state instead of ignoring a withdrawal. Each base
+history version still requires its accounting evidence. Do not
 remove the bit or recovery records to reopen an account with an older executable.
 
 ## Completed outgoing channels

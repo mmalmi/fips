@@ -493,9 +493,17 @@ orphan channel, or renew expired route authorization. Funding lost before the
 wallet committed its channel and automatic expiry refunds remain work. Completed
 channel retirement is covered separately above; it cannot remove unresolved work.
 
-Pre-route recovery still has three distinct gaps. An expired request with no
-funding intent needs reference-checked removal without advancing unrelated replay
-floors. An intent with no recovered channel must retain its full reservation:
+Expired withdrawn requests which never reached funding now release their
+reservation slots through ordinary upkeep. Removal requires no funding intent
+or retained shared work for that provider, and occurs under the same lock as
+funding. The existing offer-expiry fence advances only to an actually removed
+offer's expiry; this keeps already-expired authorization invalid after clock
+rollback without implying any financial completion. Newer watches, funding
+sequences and financial totals remain unchanged. Regression checks cover delayed
+workers, reload, pending retirement, older uncertain funding, and reclaiming a
+full 32-slot book. All 179 library tests and strict all-target linting pass.
+
+Two pre-route financial gaps remain. An intent with no recovered channel must retain its full reservation:
 the SDK's empty lookup result also covers incomplete wallet operations, so it
 does not prove that no money was spent. A funded channel without an outgoing
 route needs a verified unilateral expiry refund. The SDK provides that operation,
@@ -774,9 +782,11 @@ source authorization before clearing it. All three production-path regressions,
 171 library tests, strict all-target linting, formatting and source-size checks
 pass. The complete five-case priced-path suite passed 16 deployments before this
 last narrow binding correction; the affected interrupted-mobility scenario passes
-again on the final source. Pre-route and permanently absent uncertain purchases
-still retain bounded slots and capital; the earlier funding-recovery gaps remain
-open. This does not establish arbitrary physical movement or power-loss recovery.
+again on the final source. The later expiry cleanup above reclaims never-funded,
+unreferenced reservations. Uncertain funding and permanently absent funded
+purchases still retain bounded slots and capital; their financial recovery gaps
+remain open. This does not establish arbitrary physical movement or power-loss
+recovery.
 
 Price-aware route selection is an explicit requirement, not proven by simply
 accumulating prices along the native planner's chosen next hops. Reuse FIPS's
