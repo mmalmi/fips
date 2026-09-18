@@ -11,6 +11,7 @@ import subprocess
 from pathlib import Path, PurePosixPath
 
 from .wifi_mesh import helpers as mesh_helpers, profile as mesh_profile
+from .wifi_open import PEER_IDLE_SECONDS, PEER_LIMIT, helpers as open_helpers, snapshot as open_snapshot
 
 
 ETHERTYPE = 0x88B5
@@ -38,8 +39,25 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def original_ethernet(config):
+    """Read original profiles only; the candidate always uses the current schema."""
+    if "ethernet_interfaces" in config:
+        # The r6 service (7538992d) constructs EthernetConfig::default for each
+        # listed interface; its ethertype() is exactly 0x2121, with no override.
+        interfaces = config["ethernet_interfaces"]
+        if "transports" in config or not isinstance(interfaces, list):
+            raise RuntimeError("ambiguous original Ethernet configuration")
+        return [{"interface": checked_name(name), "ethertype": 0x2121} for name in interfaces]
+    ethernet = config.get("transports", {}).get("ethernet", {})
+    entries = [ethernet] if "interface" in ethernet else list(ethernet.values())
+    if any(not isinstance(item, dict) or "interface" not in item for item in entries):
+        raise RuntimeError("invalid original Ethernet configuration")
+    return [{**item, "ethertype": 0x2121 if item.get("ethertype") is None else item["ethertype"]}
+            for item in entries]
+
+
 class Router:
-    def __init__(self, spec, run, output):
+    def __init__(self, spec, run, output, open_mesh=None):
         if not re.fullmatch(r"[0-9a-f]{12}", run):
             raise ValueError("invalid run identity")
         self.spec = spec
@@ -57,6 +75,10 @@ class Router:
         self.binary = self.temporary + "/fips-relay"
         self.table = "fips_wifi_" + run
         self.table_owner = "fips-wifi-owner-" + secrets.token_hex(16)
+        self.original_table = self.table + "_original"
+        self.original_ethertypes = []
+        self.open_mesh = open_mesh
+        self.open_owner = "fips-open-owner-" + secrets.token_hex(16)
         self.output = output / self.host
         self.output.mkdir(mode=0o700)
         self.created = False
@@ -102,10 +124,15 @@ class Router:
         if status["purchases"] or status["locked_sat"] or status["watched_routes"]:
             raise RuntimeError("original instance must have no active purchases or watches")
         config = json.loads(self.remote(["cat", self.original_config]))
-        ethernet = config.get("transports", {}).get("ethernet", {})
-        entries = [ethernet] if "interface" in ethernet else list(ethernet.values())
+        entries = original_ethernet(config)
         if any(item.get("ethertype", 0x2121) == ETHERTYPE for item in entries):
             raise RuntimeError("test EtherType is already used by the original instance")
+        self.original_ethertypes = sorted({item.get("ethertype", 0x2121) for item in entries
+                                          if item.get("interface") == self.interface})
+        if self.open_mesh and (not self.original_ethertypes or any(
+                type(value) is not int or not 1536 <= value <= 65535
+                for value in self.original_ethertypes)):
+            raise RuntimeError("open radio requires exact original mesh EtherTypes")
         state = checked_path(config["state_directory"])
         paths = [self.original_binary, self.original_config, "/etc/config/network",
                  "/etc/config/wireless", "/etc/config/fips-relay", state + "/identity.key",
@@ -132,6 +159,8 @@ class Router:
                 or mesh_radios[0]["interfaces"][0]["config"]["mode"] != "mesh"):
             raise RuntimeError("mesh recovery requires a dedicated radio without access points")
         self.mesh = mesh_profile(self.remote, self.interface)
+        if self.open_mesh:
+            self.mesh["open_limits"] = open_snapshot(self.remote, self.interface)
         aps = []
         for radio in wireless.values():
             interfaces = [item for item in radio.get("interfaces", []) if item["config"]["mode"] == "ap"]
@@ -188,18 +217,27 @@ stop_candidate() {{
     fi
   fi
 }}
+remove_owned_table() {{
+  table=$1; marker=$2
+  if [ -f "$marker" ]; then
+    owner=$(nft -j list table netdev "$table" 2>/dev/null | jsonfilter -e '@.nftables[*].table.comment' || :)
+    if [ "$owner" = "{self.table_owner}" ]; then
+      nft delete table netdev "$table" && rm -f "$marker" || echo 'table restore failed' >&2
+    fi
+  fi
+}}
 cleanup() {{
   exec 9>{t}/operation.lock
   flock -x 9
   rm -f {t}/active
-  if [ -f {t}/mesh-down ]; then
+  if [ -f {t}/open-armed ]; then
+    open_restore_original || echo 'open mesh restore failed; retaining isolation' >&2
+  elif [ -f {t}/mesh-down ]; then
     mesh_restore && rm -f {t}/mesh-down || echo 'mesh restore failed' >&2
   fi
-  if [ -f {t}/table-created ]; then
-    owner=$(nft -j list table netdev {self.table} 2>/dev/null | jsonfilter -e '@.nftables[*].table.comment' || :)
-    if [ "$owner" = "{self.table_owner}" ]; then
-      nft delete table netdev {self.table} && rm -f {t}/table-created || echo 'table restore failed' >&2
-    fi
+  remove_owned_table {self.table} {t}/table-created
+  if [ ! -f {t}/open-armed ]; then
+    remove_owned_table {self.original_table} {t}/original-isolated
   fi
   stop_candidate
   touch {t}/guard-cleaned
@@ -255,7 +293,12 @@ test "$age" -le 35
         # Persistent accounts and RAM-backed executable have distinct fresh owned paths.
         self.remote(["mkdir", "-m", "700", self.temporary])
         self.created = True
-        self.write(self.temporary + "/mesh.sh", mesh_helpers(self.interface, self.mesh).encode())
+        mesh_script = mesh_helpers(self.interface, self.mesh)
+        if self.open_mesh:
+            mesh_script += open_helpers(self.interface, self.mesh, self.temporary,
+                                        self.open_mesh, self.open_owner,
+                                        self.original_table, self.table_owner)
+        self.write(self.temporary + "/mesh.sh", mesh_script.encode())
         self.write(self.temporary + "/guard.sh", self.guard_script())
         self.remote(f"touch {self.temporary}/active; "
                     f"cut -d . -f 1 /proc/uptime >{self.temporary}/heartbeat; "
@@ -297,26 +340,56 @@ test "$age" -le 35
                  f'device "{self.interface}" priority -500; policy accept; }}\n'
                  f'add rule netdev {self.table} ingress ether type 0x{ETHERTYPE:x} '
                  f'ether saddr {excluded_mac} counter drop\n')
+        return self.install_owned_table(self.table, "table-created", rules)
+
+    def install_owned_table(self, table, marker, rules):
         # Reject any prior table before arming recovery. The independent token
         # also distinguishes uncertain creation from an unrelated same-name rule.
         t = self.temporary
         self.guarded(f"""nft -j list tables >{t}/tables-before.json
 names=$(jsonfilter -i {t}/tables-before.json -e '@.nftables[*].table.name' || :)
-if printf '%s\\n' "$names" | grep -Fxq {self.table}; then exit 1; fi
-touch {t}/table-created
+if printf '%s\\n' "$names" | grep -Fxq {table}; then exit 1; fi
+touch {t}/{marker}
 nft -f -
 """, rules.encode())
-        return json.loads(self.remote(["nft", "-j", "list", "table", "netdev", self.table]))
+        return json.loads(self.remote(["nft", "-j", "list", "table", "netdev", table]))
+
+    def begin_open_mesh(self):
+        if not self.open_mesh or not self.original_ethertypes:
+            raise RuntimeError("open radio was not explicitly prepared")
+        rules = (f'create table netdev {self.original_table} {{ comment "{self.table_owner}"; }}\n'
+                 f'add chain netdev {self.original_table} ingress {{ type filter hook ingress '
+                 f'device "{self.interface}" priority -501; policy accept; }}\n'
+                 f'add chain netdev {self.original_table} egress {{ type filter hook egress '
+                 f'device "{self.interface}" priority -501; policy accept; }}\n')
+        for ethertype in self.original_ethertypes:
+            for direction in ("ingress", "egress"):
+                rules += (f'add rule netdev {self.original_table} {direction} '
+                          f'ether type 0x{ethertype:x} counter drop\n')
+        isolation = self.install_owned_table(self.original_table, "original-isolated", rules)
+        self.guarded("original_isolated; open_begin", timeout=60)
+        return {"isolation": isolation, **self.verify_open_mesh()}
+
+    def verify_open_mesh(self):
+        self.guarded("original_isolated; open_profile; open_joined; open_limited")
+        limits = open_snapshot(self.remote, self.interface)
+        if any(limits[field] != expected for field, expected in (
+                ("max_peer_links", PEER_LIMIT), ("mesh_max_peer_links", PEER_LIMIT),
+                ("mesh_max_inactivity", PEER_IDLE_SECONDS), ("mesh_plink_timeout", PEER_IDLE_SECONDS))):
+            raise RuntimeError("open radio limits changed during observation")
+        return {"key_mgmt": "NONE", "limits": limits, "original_profile_retained": True}
 
     def mesh_down(self):
         # Keep the netdev and saved network; a raw link toggle leaves supplicant
         # believing it still owns a joined mesh after the kernel has left it.
-        self.guarded(f"mesh_profile; mesh_joined; touch {self.temporary}/mesh-down; "
+        check = "open_profile; open_joined; open_limited" if self.open_mesh else "mesh_profile; mesh_joined"
+        self.guarded(f"{check}; touch {self.temporary}/mesh-down; "
                      f"test \"$(mesh_control 'MESH_GROUP_REMOVE {self.interface}')\" = OK")
 
     def mesh_up(self):
+        restore = "open_resume" if self.open_mesh else "mesh_restore"
         self.guarded(f"test -f {self.temporary}/mesh-down; "
-                     f"mesh_restore; rm -f {self.temporary}/mesh-down", timeout=60)
+                     f"{restore}; rm -f {self.temporary}/mesh-down", timeout=60)
 
     def monetary_journals(self):
         result = {name: json.loads(self.remote(["cat", self.state + "/" + path]))
@@ -350,7 +423,8 @@ done
 ! owned guard {t}/guard.sh
 """, timeout=45)
         tables = json.loads(self.remote(["nft", "-j", "list", "tables"]))
-        if any(row.get("table", {}).get("name") == self.table for row in tables["nftables"]):
+        if any(row.get("table", {}).get("name") in (self.table, self.original_table)
+               for row in tables["nftables"]):
             raise RuntimeError("owned test table remains after cleanup")
         for name in ("process.log", "guard.log"):
             data = self.remote(f"test ! -f {self.temporary}/{name} || cat {self.temporary}/{name}")
@@ -358,4 +432,5 @@ done
         self.remote(["rm", "-f", self.binary])
         # Preserve failure markers and logs, but finish safe cleanup first.
         self.remote(f"test ! -f {t}/mesh-down && test ! -f {t}/table-created && "
+                    f"test ! -f {t}/open-armed && test ! -f {t}/original-isolated && "
                     f"test ! -f {t}/candidate-stop-failed && test ! -f {t}/candidate-forced-stop")

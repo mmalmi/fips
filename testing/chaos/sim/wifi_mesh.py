@@ -57,6 +57,10 @@ mesh_profile() {{
   printf '%s\\n' "$mesh_networks" | awk -F '\\t' '
     NR > 1 {{ rows++; if (NF != 4 || $1 != {network} || ($4 != "" && $4 != "[CURRENT]")) bad=1 }}
     END {{ exit bad || rows != 1 }}' || return 1
+  mesh_saved_profile
+}}
+mesh_saved_profile() {{
+  mesh_identity || return 1
   test "$(mesh_control 'GET_NETWORK {network} mode')" = 5 || return 1
   test "$(mesh_control 'GET_NETWORK {network} mesh_fwding')" = 0 || return 1
   test "$(mesh_control 'GET_NETWORK {network} key_mgmt')" = SAE || return 1
