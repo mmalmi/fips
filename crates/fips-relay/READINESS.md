@@ -44,6 +44,19 @@ the limits bound their resource use without promising Sybil-resistant fairness.
 Mobile Wi-Fi merge/split and router/Pixel acceptance remain separate checks from
 authenticated-link control admission and the Ethernet fixture below.
 
+Transport receive priority now has an independent 64-packet reserve. This early
+classification uses unauthenticated packet shape, so its queue must remain
+bounded even before identity validation. Both priority and ordinary receive
+limits include partially drained batch tails; owned credits release on consume,
+drop and concurrent receiver shutdown. Pressure drops do not close the transport,
+and `transport_priority_dropped` records priority overflow when measurements are
+enabled. Five regressions fail before the fix; 42 focused queue tests, eight
+counter tests, 362 transport tests, 116 dataplane tests and strict core all-target
+linting pass, with simulation transport enabled for the broader checks. Packet
+counts do not bound allocator overhead. An attacker can still compete with
+legitimate control within the reserve; this is neither per-source fairness nor
+paid/free scheduling. Radio and CPU effects of this change remain unmeasured.
+
 Focused checks cover rate/capacity limits, cancellation, disconnect/reconnect,
 customer restrictions and rejection of routed non-neighbors. A five-node paid
 controller scenario uses empty control rosters, verifies quotes do not authorize
