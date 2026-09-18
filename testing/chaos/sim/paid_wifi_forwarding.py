@@ -10,6 +10,28 @@ from .paid_relay import eventually
 LOOPBACKS = {"0100007F", "00000000000000000000000001000000"}
 
 
+def finish_mint(run):
+    """Clean up owned mint access, recording failure without masking router errors."""
+    try:
+        if run.forwards is not None:
+            report = run.mint.request({"type": "report"})
+            result = run.forwards.finish(report)
+            run.evidence["mint_forward_cleanup"] = result
+            if result.get("retained_for_recovery"):
+                raise RuntimeError("outstanding test funds require the original mint forwards")
+        result = run.mint.finish()
+        run.evidence["mint_cleanup"] = result
+        if result.get("retained_for_recovery"):
+            run.evidence["passed"] = False
+    except Exception as error:
+        if run.forwards is not None:
+            run.forwards.retain(type(error).__name__)
+        run.evidence["mint_cleanup_error"] = type(error).__name__
+        run.evidence["mint_retained_for_recovery"] = run.mint.info
+        run.evidence["passed"] = False
+    run.save()
+
+
 def listeners(node, port):
     """OpenWrt exposes both address families in the kernel's native hex form."""
     rows = node.remote(["cat", "/proc/net/tcp", "/proc/net/tcp6"]).decode().splitlines()
