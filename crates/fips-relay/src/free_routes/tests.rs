@@ -6,6 +6,9 @@ use crate::{
 };
 use fips_core::{Identity, PeerIdentity};
 
+#[path = "quota_tests.rs"]
+mod quota;
+
 #[path = "bandwidth_tests.rs"]
 mod bandwidth;
 
@@ -119,7 +122,7 @@ fn remaining_units_keeps_expiry_separate_from_consumption() {
                 .outgoing
                 .get_mut(&key)
                 .unwrap()
-                .reserve(40, 0, || Some(()))
+                .reserve(40, 0, false, || Some(()))
                 .is_some()
         );
     }
@@ -528,7 +531,7 @@ fn expired_replacement_history_releases_capacity_without_closing_live_grants() {
         leases
             .get_mut(&key)
             .unwrap()
-            .reserve(60, 9, || Some(()))
+            .reserve(60, 9, false, || Some(()))
             .is_some()
     );
     let old = grant.clone();

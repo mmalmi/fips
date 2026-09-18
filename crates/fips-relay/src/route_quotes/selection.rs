@@ -55,6 +55,7 @@ struct Destination {
     observations: BTreeMap<NodeAddr, Observation>,
     failed: BTreeMap<NodeAddr, Instant>,
     cursor: usize,
+    blocked_trial: Option<String>,
 }
 
 struct Observation {
@@ -158,25 +159,7 @@ impl Destination {
                 && (loss.is_some_and(|v| v * 100.0 > f64::from(policy.max_loss_percent))
                     || rtt.is_some_and(|v| v > policy.max_rtt_ms as f64)))
         {
-            if self.failed.len() >= MAX_FAILED_PROVIDERS
-                && !self.failed.contains_key(&active.provider)
-            {
-                if let Some(old) = self
-                    .failed
-                    .iter()
-                    .find(|(_, until)| **until <= now)
-                    .map(|(p, _)| *p)
-                {
-                    self.failed.remove(&old);
-                } else {
-                    return Err("failed-provider state capacity".into());
-                }
-            }
-            // Polling an already failed path must not push its retry time away.
-            self.failed
-                .entry(active.provider)
-                .or_insert(now + Duration::from_millis(policy.retry_after_ms));
-            self.observations.remove(&active.provider);
+            self.fail(active.provider, policy, now)?;
         } else if quality.has_recent_delivery_feedback
             && let (Some(loss), Some(_rtt)) = (loss, rtt)
         {
@@ -201,6 +184,58 @@ impl Destination {
             );
         } else {
             self.observations.remove(&active.provider);
+        }
+        Ok(())
+    }
+
+    fn fail(
+        &mut self,
+        provider: NodeAddr,
+        policy: &PriceSelectionPolicy,
+        now: Instant,
+    ) -> Result<(), String> {
+        if self.failed.len() >= MAX_FAILED_PROVIDERS && !self.failed.contains_key(&provider) {
+            if let Some(old) = self
+                .failed
+                .iter()
+                .find(|(_, until)| **until <= now)
+                .map(|(p, _)| *p)
+            {
+                self.failed.remove(&old);
+            } else {
+                return Err("failed-provider state capacity".into());
+            }
+        }
+        // Polling must not extend the retry delay. These are source-selection
+        // exclusions, never native carrier penalties or assumed loss samples.
+        self.failed
+            .entry(provider)
+            .or_insert(now + Duration::from_millis(policy.retry_after_ms));
+        self.observations.remove(&provider);
+        Ok(())
+    }
+
+    fn observe_admission(
+        &mut self,
+        blocked: bool,
+        policy: &PriceSelectionPolicy,
+        now: Instant,
+    ) -> Result<(), String> {
+        let Some(active) = &self.active else {
+            self.blocked_trial = None;
+            return Ok(());
+        };
+        if !active.trial || self.working_loss(active, policy, now).is_some() {
+            self.blocked_trial = None;
+        } else {
+            if blocked {
+                self.blocked_trial = Some(active.id.clone());
+            }
+            // Expired or missing admission evidence cannot erase a proven
+            // denial and grant the same unknown trial a fresh allowance.
+            if self.blocked_trial.as_ref() == Some(&active.id) {
+                self.fail(active.provider, policy, now)?;
+            }
         }
         Ok(())
     }
@@ -249,7 +284,12 @@ impl Destination {
         let mut eligible: Vec<_> = offers
             .into_iter()
             .filter(|o| {
-                self.failed
+                // An exhausted unknown trial cannot refill itself merely by
+                // outliving cooldown when no alternative has been activated.
+                !self.active.as_ref().is_some_and(|active| {
+                    self.blocked_trial.as_ref() == Some(&active.id) && active.provider == o.provider
+                }) && self
+                    .failed
                     .get(&o.provider)
                     .is_none_or(|until| *until <= now)
             })
@@ -272,6 +312,7 @@ impl Destination {
 
 pub(super) struct PriceSelection {
     policy: PriceSelectionPolicy,
+    buyer: Arc<crate::buyer::BuyerAuthorizer>,
     /// Bounds fanout across concurrent source calls, and serializes activation
     /// with sampling so a report cannot be paired with an uncommitted choice.
     work: tokio::sync::Mutex<()>,
@@ -289,13 +330,21 @@ impl RouteQuotes {
         self.selection.is_some()
     }
 
-    pub fn with_price_selection(mut self, policy: PriceSelectionPolicy) -> Result<Self, String> {
+    pub fn with_price_selection(
+        mut self,
+        policy: PriceSelectionPolicy,
+        buyer: Arc<crate::buyer::BuyerAuthorizer>,
+    ) -> Result<Self, String> {
         policy.validate()?;
+        if !buyer.is_local(*self.endpoint.node_addr())? {
+            return Err("source selection buyer identity mismatch".into());
+        }
         if !self.policy.billing.has_free_handshakes() {
             return Err("price selection requires forwarding-data billing".into());
         }
         self.selection = Some(PriceSelection {
             policy,
+            buyer,
             work: Default::default(),
             destinations: Default::default(),
         });
@@ -339,6 +388,13 @@ impl RouteQuotes {
         if changed {
             state.observations.remove(&offer.provider);
             state.failed.remove(&offer.provider);
+        }
+        if state
+            .active
+            .as_ref()
+            .is_none_or(|active| active.id != offer.id)
+        {
+            state.blocked_trial = None;
         }
         state.active = Some(offer.clone());
         Ok(())
@@ -392,7 +448,18 @@ impl RouteQuotes {
                 return Err("source selection capacity".into());
             }
             let state = states.entry(dest).or_default();
-            state.observe(quality, &selection.policy, Instant::now())?;
+            let now = Instant::now();
+            state.observe(quality, &selection.policy, now)?;
+            let blocked = if let Some(active) = &state.active {
+                if active.price.msat == 0 {
+                    self.free.quota_blocked(active)?
+                } else {
+                    selection.buyer.quota_blocked(active)?
+                }
+            } else {
+                None
+            };
+            state.observe_admission(blocked == Some(true), &selection.policy, now)?;
             let active = state.active.as_ref().map(|a| a.provider);
             if let Some(provider) = active.filter(|p| state.failed.contains_key(p)) {
                 self.client.invalidate(provider, dest);
@@ -480,3 +547,6 @@ impl RouteQuotes {
 mod free_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod admission_tests;

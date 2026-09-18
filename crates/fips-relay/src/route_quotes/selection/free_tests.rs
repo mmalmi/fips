@@ -56,7 +56,7 @@ fn expired_unknown_free_trial_carries_only_exact_remaining_quota() {
 }
 
 #[test]
-fn unexpired_unknown_free_trial_is_retained_even_when_exhausted() {
+fn unexpired_unknown_free_trial_is_retained_without_denied_demand() {
     let (mut state, selected) = unknown_trial();
     state.active.as_mut().unwrap().expires_unix = unix_now().unwrap() + 60;
     let result = state
@@ -209,6 +209,16 @@ async fn real_quote_promotion_with_injected_quality_installs_current_free_grant(
         })
         .await
         .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let buyer = Arc::new(
+            crate::buyer::BuyerAuthorizer::create(
+                &root.path().join("buyer"),
+                *peers[0].node_addr(),
+                1,
+                Default::default(),
+            )
+            .unwrap(),
+        );
         let mut quotes = Vec::new();
         let mut servers = Vec::new();
         let mut statistics = Vec::new();
@@ -227,9 +237,10 @@ async fn real_quote_promotion_with_injected_quality_installs_current_free_grant(
             .await
             .unwrap();
             statistics.push(control.statistics());
+            let control = Arc::new(control);
             let mut service = RouteQuotes::new(
                 node.clone(),
-                Arc::new(control),
+                control.clone(),
                 QuotePolicy {
                     destination_fees: Default::default(),
                     billing: BillingBasis::ForwardingData,
@@ -244,12 +255,20 @@ async fn real_quote_promotion_with_injected_quality_installs_current_free_grant(
                 },
             )
             .unwrap();
+            if i == 1 {
+                let mismatched = RouteQuotes::new(node.clone(), control, (*service.policy).clone())
+                    .unwrap().with_price_selection(PriceSelectionPolicy::default(), buyer.clone());
+                assert!(matches!(mismatched, Err(error) if error == "source selection buyer identity mismatch"));
+            }
             if i == 0 {
                 service = service
-                    .with_price_selection(PriceSelectionPolicy {
-                        trial_max_units: 4_096,
-                        ..Default::default()
-                    })
+                    .with_price_selection(
+                        PriceSelectionPolicy {
+                            trial_max_units: 4_096,
+                            ..Default::default()
+                        },
+                        buyer.clone(),
+                    )
                     .unwrap();
             }
             let service = Arc::new(service);
@@ -301,6 +320,32 @@ async fn real_quote_promotion_with_injected_quality_installs_current_free_grant(
             !provider.free.admit(&packet),
             "the old trial cannot admit this packet"
         );
+
+        assert_eq!(
+            source
+                .free
+                .prepare_onward(trial.provider, *destination.node_addr(), 3_100),
+            Some(false)
+        );
+        assert!(source.refresh_route(destination).await.is_err());
+        // Idempotent reactivation cannot erase the exact trial's denial. Only
+        // the qualifying feedback below permits its normal full promotion.
+        source.activate_source_route(&trial).await.unwrap();
+        assert_eq!(
+            source
+                .selection
+                .as_ref()
+                .unwrap()
+                .destinations
+                .lock()
+                .unwrap()
+                .get(destination.node_addr())
+                .unwrap()
+                .blocked_trial
+                .as_deref(),
+            Some(trial.id.as_str())
+        );
+        assert!(source.refresh_route(destination).await.is_err());
 
         // Quotes cross real authenticated TCP/FIPS control. Delivery feedback is
         // injected here; data checks below exercise production quota admission.

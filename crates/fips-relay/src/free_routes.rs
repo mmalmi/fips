@@ -21,10 +21,21 @@ type Key = (NodeAddr, NodeAddr);
 struct Lease {
     offer: RouteOffer,
     used: u64,
+    quota_blocked: bool,
 }
 impl Lease {
-    fn reserve<T>(&mut self, bytes: u64, now: u64, admit: impl FnOnce() -> Option<T>) -> Option<T> {
-        if bytes == 0 || !self.fits(bytes, now) {
+    fn reserve<T>(
+        &mut self,
+        bytes: u64,
+        now: u64,
+        source_admission: bool,
+        admit: impl FnOnce() -> Option<T>,
+    ) -> Option<T> {
+        if bytes == 0 || self.offer.expires_unix <= now {
+            return None;
+        }
+        if !self.fits(bytes, now) {
+            self.quota_blocked |= source_admission;
             return None;
         }
         let admitted = admit()?;
@@ -104,6 +115,7 @@ impl LeaseBook {
             Lease {
                 offer: offer.clone(),
                 used: 0,
+                quota_blocked: false,
             },
         );
         Ok(())
@@ -220,6 +232,17 @@ impl FreeRoutes {
         lease.offer.max_units.checked_sub(lease.used)
     }
 
+    /// A failed real reservation, rather than zero remaining bytes: a positive
+    /// remainder may still be too small for the source's next packet.
+    pub(crate) fn quota_blocked(&self, offer: &RouteOffer) -> Result<Option<bool>, String> {
+        let state = self.state.lock().map_err(|_| "free routes poisoned")?;
+        Ok(state
+            .outgoing
+            .get(&(offer.provider, *offer.destination.node_addr()))
+            .filter(|lease| lease.offer == *offer)
+            .map(|lease| lease.quota_blocked))
+    }
+
     /// Called only for a locally generated offer under explicit operator pricing.
     pub(crate) fn offer(&self, offer: &RouteOffer) -> Result<(), String> {
         let now = now().ok_or("invalid clock")?;
@@ -316,7 +339,7 @@ impl FreeRoutes {
         let now = now()?;
         let mut state = self.state.lock().ok()?;
         let lease = state.outgoing.get_mut(&(next, destination))?;
-        lease.reserve(bytes, now, admit)
+        lease.reserve(bytes, now, false, admit)
     }
 
     /// None means no free permission; Some(false) is a known local denial and
@@ -339,7 +362,7 @@ impl FreeRoutes {
         state
             .outgoing
             .get_mut(&(next, destination))
-            .map(|lease| lease.reserve(bytes, now, || Some(())).is_some())
+            .map(|lease| lease.reserve(bytes, now, true, || Some(())).is_some())
     }
 
     pub fn stats(&self) -> FreeRouteStats {

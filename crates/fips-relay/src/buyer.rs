@@ -102,6 +102,8 @@ struct PurchaseQuote {
     attempts: Vec<Attempt>,
     observed_units: u64,
     submitted_units: u64,
+    #[serde(skip)]
+    quota_blocked: bool,
     #[serde(default)]
     completed: CompletedEvidence,
 }

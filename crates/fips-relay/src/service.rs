@@ -312,7 +312,7 @@ impl RelayService {
             free.clone(),
         )?;
         let quotes = Arc::new(if let Some(policy) = &config.price_selection {
-            quotes.with_price_selection(policy.clone())?
+            quotes.with_price_selection(policy.clone(), buyer.clone())?
         } else {
             quotes
         });

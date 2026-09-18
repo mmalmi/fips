@@ -6,6 +6,7 @@ use fips_core::{FipsEndpointServiceReceiver, SourceRouteQuality};
 pub(super) enum Scenario {
     Blackhole,
     Exhaustion,
+    AdmissionExhaustion,
     Loss,
     Delay,
     ReturnLoss,
@@ -37,7 +38,11 @@ impl Scenario {
             policy.feedback_timeout_ms = 10_000;
             policy.retry_after_ms = 10_000;
         }
-        if matches!(self, Self::QualityChurn) {
+        if matches!(self, Self::AdmissionExhaustion) {
+            policy.feedback_timeout_ms = 60_000;
+            policy.retry_after_ms = 60_000;
+        }
+        if matches!(self, Self::QualityChurn | Self::AdmissionExhaustion) {
             policy.trial_max_units = PriceSelectionPolicy::default().trial_max_units;
         }
         policy
