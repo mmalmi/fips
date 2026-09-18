@@ -1,5 +1,10 @@
 //! Private local operator requests and bounded control framing.
 use super::*;
+use crate::route_quotes::PriceSelectionPolicy;
+
+#[cfg(test)]
+#[path = "route_quality_tests.rs"]
+mod route_quality_tests;
 
 impl RelayService {
     async fn handle(&self, request: AdminRequest) -> Result<Value, String> {
@@ -47,6 +52,14 @@ impl RelayService {
                     status
                 };
                 Ok(status)
+            }
+            AdminRequest::RouteQuality { destination } => {
+                route_quality(
+                    &self.endpoint,
+                    self.config.price_selection.as_ref(),
+                    &destination,
+                )
+                .await
             }
             AdminRequest::Buy { destination } => {
                 let peer = PeerIdentity::from_npub(&destination)
@@ -164,6 +177,9 @@ impl RelayService {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AdminRequest {
     Status,
+    RouteQuality {
+        destination: String,
+    },
     Buy {
         destination: String,
     },
@@ -185,6 +201,39 @@ pub enum AdminRequest {
     Settle,
     PauseRenewals,
     ResumeRenewals,
+}
+
+async fn route_quality(
+    endpoint: &FipsEndpoint,
+    policy: Option<&PriceSelectionPolicy>,
+    destination: &str,
+) -> Result<Value, String> {
+    let peer = PeerIdentity::from_npub(destination).map_err(|_| "invalid destination npub")?;
+    let feedback_window_ms = policy.map_or_else(
+        || PriceSelectionPolicy::default().feedback_timeout_ms,
+        |policy| policy.feedback_timeout_ms,
+    );
+    let quality = endpoint
+        .source_route_quality(peer, Duration::from_millis(feedback_window_ms))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(json!({
+        "destination": peer.npub(),
+        "price_selection": policy,
+        "feedback_window_ms": feedback_window_ms,
+        "quality": {
+            // Use the same address encoding as Purchase.provider.
+            "next_hop": quality.next_hop.map(|hop| *hop.as_bytes()),
+            "receiver_reports_enabled": quality.receiver_reports_enabled,
+            "has_recent_delivery_feedback": quality.has_recent_delivery_feedback,
+            "delivery_feedback_timed_out": quality.delivery_feedback_timed_out,
+            "rtt_ms": quality.rtt_ms,
+            "loss_rate": quality.loss_rate,
+            "goodput_bps": quality.goodput_bps,
+            "sent_packets": quality.sent_packets,
+            "sent_bytes": quality.sent_bytes,
+        },
+    }))
 }
 
 pub(crate) async fn read_record(stream: &mut UnixStream, limit: usize) -> Result<Vec<u8>, String> {

@@ -86,6 +86,23 @@ request rather than silently returning an uncapped trial. Omitted optional field
 preserve the default wire form, but saved trial offers require the newer reader.
 Do not downgrade an account containing them without reconciliation.
 
+## Local quality inspection
+
+The private relay admin request
+`{"type":"route_quality","destination":"<npub>"}` reads native source quality
+without buying, refreshing, or changing a route. Its response includes the
+configured `price_selection`, `feedback_window_ms`, and a `quality` object with
+the actual last outbound `next_hop`, whether receiver reports are enabled,
+feedback freshness and timeout, RTT, loss, goodput, and application send counters.
+`next_hop` uses the same 16-byte address array as `status` purchase providers.
+Missing metrics remain `null`; send counters are not billed-byte counters.
+
+The query uses the configured selector's feedback window. With selection
+disabled, `price_selection` is `null` and the reported window is the default
+15 seconds. Compare with `status` for accepted agreements and watch state;
+separate responses are not an atomic snapshot. Native quality remains aggregate
+routing evidence, not an individual delivery receipt.
+
 ## Bounds and recovery
 
 - [Quote caching](README.md#price-cache-and-request-bounds) reuses full validated
