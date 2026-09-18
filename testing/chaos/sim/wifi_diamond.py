@@ -12,10 +12,10 @@ from pathlib import Path
 import signal
 from types import SimpleNamespace
 
-from .paid_faults import capture_probe
+from .paid_faults import capture_probe, validate_probe
 from .paid_relay import eventually, relay_config
 from .paid_settlement import require
-from .wifi_diamond_checks import adjacency, denied_stream, listener, management_address
+from .wifi_diamond_checks import adjacency, denied_stream, listener, management_address, require_same_process
 from .wifi_discovery import WifiRun, validate_unfunded
 from .wifi_profiles import configure_stopped
 from .wifi_remote import ETHERTYPE, digest
@@ -176,8 +176,9 @@ class DiamondRun(WifiRun):
         prior = snapshot(self.source, "n03")
         reports["sessions"] = self.source.native({"command": "show_sessions"})
         reports["source"] = snapshot(self.source, "n03")
-        require(prior["host_process"] == reports["source"]["host_process"],
-                "source process changed during session query")
+        self.evidence.setdefault("denial_observations", []).append({"source_before": prior, **reports})
+        self.save()
+        require_same_process(prior, reports["source"])
         return reports
 
     def denied_stream(self):
@@ -188,6 +189,7 @@ class DiamondRun(WifiRun):
                                 probe["sent"]["submitted_packets"], probe["received"]["payload_bytes"])
         self.phase("unfunded native data attempts met provider policy denial",
                    before=before, after=after, probe=probe, summary=summary)
+        return probe
 
     def exercise(self):
         self.form_diamond()
@@ -197,9 +199,13 @@ class DiamondRun(WifiRun):
             self.diagnostic(provider, "n03")
         # With no watch or channel, the co-located destination must not receive
         # traffic through a local shortcut or an unpaid forwarding bypass.
-        self.denied_stream()
+        probe = self.denied_stream()
         self.assert_finances()
-        self.topology()
+        states = self.topology()
+        final = states["n03"]["probe"]
+        require(final["source"] == self.source.npub, "final receiver changed source")
+        validate_probe(probe["sent"], final, loss=True, measure_latency=False)
+        self.phase("unpaid stream remains undelivered after native denial observations", receiver=final)
         self.verify_shortcuts(names=("n01", "n02"))
         for name, node in self.nodes.items():
             self.management_address(name)

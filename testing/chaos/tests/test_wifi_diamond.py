@@ -89,19 +89,22 @@ class ObservationTests(unittest.TestCase):
                 listener(value, "192.168.1.13")
 
     def test_empty_reception_requires_native_sends_and_actual_provider_denials(self):
-        before = {name: {"host_process": {"host": name, "pid": 5, "start_ticks": 10},
+        before = {name: {"npub": name, "host_process": {"host": name, "pid": 5, "start_ticks": 10,
+                                                       "rss_kib": 100, "rchar": 1000},
                          "native": {"routing": {"data": {"forwarding": {
                              "drop_policy_denied_packets": 0, "drop_policy_denied_bytes": 0,
                          }}}}} for name in ("n01", "n02", "source")}
         before["sessions"] = {"status": "ok", "data": {"sessions": []}}
         after = copy.deepcopy(before)
+        for name in ("n01", "n02", "source"):
+            after[name]["host_process"].update(rss_kib=200, rchar=2000)
         after["n01"]["native"]["routing"]["data"]["forwarding"].update(
             drop_policy_denied_packets=8, drop_policy_denied_bytes=2800)
         after["sessions"]["data"]["sessions"] = [{"npub": "destination", "state": "established",
                                                    "stats": {"packets_sent": 8, "bytes_sent": 2080}}]
         result = denied_stream(before, after, "destination", 8, 256)
         self.assertEqual(result["source_application_data"]["packets"], 8)
-        for changed in ("no_session", "cold_session", "no_sends", "no_drops", "process_reset"):
+        for changed in ("no_session", "cold_session", "no_sends", "no_drops", "process_reset", "pid_reset"):
             candidate = copy.deepcopy(after)
             session = candidate["sessions"]["data"]["sessions"]
             if changed == "no_session":
@@ -112,6 +115,8 @@ class ObservationTests(unittest.TestCase):
                 session[0]["stats"]["packets_sent"] = 0
             elif changed == "no_drops":
                 candidate["n01"] = copy.deepcopy(before["n01"])
+            elif changed == "pid_reset":
+                candidate["source"]["host_process"]["pid"] = 99
             else:
                 candidate["source"]["host_process"]["start_ticks"] = 20
             with self.subTest(changed=changed), self.assertRaises(RuntimeError):
@@ -191,7 +196,7 @@ class FixtureTests(unittest.TestCase):
                 configure_stopped(profile, **changes)
         owner.guarded.assert_not_called()
 
-    def test_topology_pilot_uses_direct_probes_then_denies_unpurchased_end_to_end(self):
+    def exercise_service(self):
         run = self.service()
         for node in run.nodes.values():
             node.stop = Mock()
@@ -199,6 +204,18 @@ class FixtureTests(unittest.TestCase):
             setattr(run, name, Mock())
         run.diagnostic = Mock()
         run.offline_empty = Mock(return_value={name: 0 for name in run.participants()})
+        probe = {"sent": {"stream_id": "a" * 32, "requested_packets": 8, "submitted_packets": 8,
+                          "submitted_bytes": 2048, "stopped_reason": None},
+                 "received": {"stream_id": "a" * 32, "source": "source", "expected_packets": 8,
+                              "payload_bytes": 256, "unique_packets": 0, "unique_bytes": 0,
+                              "missing_packets": 8, "invalid_packets": 0, "duplicate_packets": 0,
+                              "latency": None}}
+        run.denied_stream.return_value = copy.deepcopy(probe)
+        run.topology.return_value = {"n03": {"probe": copy.deepcopy(probe["received"])}}
+        return run
+
+    def test_topology_pilot_uses_direct_probes_then_denies_unpurchased_end_to_end(self):
+        run = self.exercise_service()
         run.exercise()
         self.assertEqual(run.diagnostic.call_count, 4)
         run.denied_stream.assert_called_once_with()
@@ -208,6 +225,14 @@ class FixtureTests(unittest.TestCase):
         for node in run.nodes.values():
             node.stop.assert_called_once_with()
         run.offline_empty.assert_called_once_with()
+
+    def test_delayed_delivery_after_denial_snapshots_cannot_pass(self):
+        run = self.exercise_service()
+        run.topology.return_value["n03"]["probe"].update(unique_packets=1, unique_bytes=256,
+                                                      missing_packets=7)
+        with self.assertRaisesRegex(RuntimeError, "delivery differs"):
+            run.exercise()
+        run.offline_empty.assert_not_called()
 
 
 if __name__ == "__main__":

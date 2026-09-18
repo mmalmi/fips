@@ -72,6 +72,13 @@ def counter(value):
     return value
 
 
+def require_same_process(before, after):
+    def identity(state):
+        process = state["host_process"]
+        return (state["npub"], process["host"], counter(process["pid"]), counter(process["start_ticks"]))
+    require(identity(before) == identity(after), "diamond process changed during observation")
+
+
 def session_counters(report, destination, *, absent=False):
     require(report["status"] == "ok", "native session observation failed")
     sessions = [row for row in report["data"]["sessions"] if row["npub"] == destination]
@@ -87,8 +94,7 @@ def denied_stream(before, after, destination, packets, payload_bytes):
     """Require native data attempts and real policy drops, not just an empty queue."""
     drops = {}
     for name in ("n01", "n02", "source"):
-        require(before[name]["host_process"] == after[name]["host_process"],
-                "diamond process changed during denial observation")
+        require_same_process(before[name], after[name])
         if name == "source":
             continue
         first = before[name]["native"]["routing"]["data"]["forwarding"]
