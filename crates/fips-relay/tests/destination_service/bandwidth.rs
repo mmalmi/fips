@@ -48,6 +48,7 @@ async fn burst(bench: &Bench, source: usize, destination: usize, id: u128) -> Va
                 packet_count: BURST_PACKETS,
                 payload_bytes: 1_000,
                 measure_one_way_latency: false,
+                reflect: false,
             },
         },
     )
@@ -62,6 +63,7 @@ async fn burst(bench: &Bench, source: usize, destination: usize, id: u128) -> Va
                 packet_count: BURST_PACKETS,
                 payload_bytes: 1_000,
                 packets_per_second: 1_000,
+                measure_round_trip: false,
             },
         },
     )

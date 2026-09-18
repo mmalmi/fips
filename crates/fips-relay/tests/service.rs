@@ -140,6 +140,7 @@ async fn measured_paid_traffic(configs: &[ServiceConfig], npubs: &[String]) {
                     packet_count,
                     payload_bytes,
                     measure_one_way_latency: true,
+                    reflect: false,
                 },
             },
         )
@@ -152,6 +153,7 @@ async fn measured_paid_traffic(configs: &[ServiceConfig], npubs: &[String]) {
                 packet_count,
                 payload_bytes,
                 packets_per_second,
+                measure_round_trip: false,
             },
         };
         let concurrent = async {

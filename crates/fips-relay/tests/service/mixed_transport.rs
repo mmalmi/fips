@@ -18,6 +18,8 @@ use bench::MixedBench;
 #[cfg(feature = "measurements")]
 #[path = "mixed_transport/payment_progress.rs"]
 mod payment_progress;
+#[path = "mixed_transport/round_trip.rs"]
+mod round_trip;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mixed_udp_tcp_daemons_preserve_paid_limits_through_exhaustion_and_restart() {

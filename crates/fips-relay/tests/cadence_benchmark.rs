@@ -62,6 +62,7 @@ async fn stream(
                 packet_count: count,
                 payload_bytes: 1_000,
                 measure_one_way_latency: true,
+                reflect: false,
             },
         },
     )
@@ -76,6 +77,7 @@ async fn stream(
                 packet_count: count,
                 payload_bytes: 1_000,
                 packets_per_second: rate,
+                measure_round_trip: false,
             },
         },
     )

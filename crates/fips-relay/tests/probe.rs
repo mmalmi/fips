@@ -18,6 +18,7 @@ fn receiver_attributes_unique_packets_to_the_armed_source_and_stream() {
         packet_count: 4,
         payload_bytes: 80,
         measure_one_way_latency: true,
+        reflect: false,
     })
     .unwrap();
     let p0 = encode_packet(id, 0, 80, 1_000).unwrap();
@@ -61,6 +62,7 @@ fn measurements_require_explicit_clock_assumption_and_ignore_invalid_timestamps(
         packet_count: 2,
         payload_bytes: 64,
         measure_one_way_latency: false,
+        reflect: false,
     };
     let mut receiver = ProbeReceiver::new(args.clone()).unwrap();
     receiver.record(source, &encode_packet(id, 0, 64, 2_000).unwrap(), 1_000);
@@ -92,6 +94,7 @@ fn unbounded_or_malformed_probe_requests_are_rejected_before_sending() {
         packet_count: 100,
         payload_bytes: 1_000,
         packets_per_second: 100,
+        measure_round_trip: false,
     };
     assert!(request.validate().is_ok());
     request.packets_per_second = 0;

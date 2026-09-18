@@ -33,6 +33,7 @@ async fn arm_probe(
                 packet_count,
                 payload_bytes,
                 measure_one_way_latency: source == 1,
+                reflect: false,
             },
         },
     )
@@ -55,6 +56,7 @@ fn send_probe(
             packet_count,
             payload_bytes,
             packets_per_second,
+            measure_round_trip: false,
         },
     }
 }

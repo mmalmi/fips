@@ -364,6 +364,7 @@ impl RelayService {
         let destination = received.clone();
         let probe_receiver: Arc<Mutex<Option<ProbeReceiver>>> = Arc::new(Mutex::new(None));
         let diagnostic = probe_receiver.clone();
+        let diagnostic_endpoint = endpoint.clone();
         let input = endpoint
             .register_service_receiver(DATA_PORT)
             .await
@@ -371,18 +372,22 @@ impl RelayService {
         let receive_task = tokio::spawn(async move {
             let mut batch = Vec::new();
             while input.recv_batch_into(&mut batch, 32).await.is_some() {
-                let mut totals = destination.lock().unwrap();
-                for packet in &batch {
-                    totals.packets = totals.packets.saturating_add(1);
-                    totals.bytes = totals.bytes.saturating_add(packet.data.len() as u64);
-                    totals.last_sha256 = Some(format!("{:x}", Sha256::digest(&packet.data)));
-                    if let Some(probe) = diagnostic.lock().unwrap().as_mut() {
-                        probe.record(
-                            packet.source_peer,
-                            packet.data.as_ref(),
-                            probe::unix_micros(),
-                        );
+                {
+                    let mut totals = destination.lock().unwrap();
+                    for packet in &batch {
+                        totals.packets = totals.packets.saturating_add(1);
+                        totals.bytes = totals.bytes.saturating_add(packet.data.len() as u64);
+                        totals.last_sha256 = Some(format!("{:x}", Sha256::digest(&packet.data)));
                     }
+                }
+                for packet in &batch {
+                    probe::reflect(
+                        &diagnostic_endpoint,
+                        &diagnostic,
+                        packet.source_peer,
+                        packet.data.as_ref(),
+                    )
+                    .await;
                 }
             }
         });

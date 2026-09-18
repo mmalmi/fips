@@ -86,6 +86,10 @@ impl RelayService {
             }
             AdminRequest::Settle => Ok(json!({"settlements": self.controller.settle_all().await?})),
             AdminRequest::ReceiveProbe { probe } => {
+                let _permit = self
+                    .probe_sender
+                    .try_acquire()
+                    .map_err(|_| "a probe sender is already running")?;
                 let receiver = ProbeReceiver::new(probe)?;
                 let report = receiver.report();
                 *self.probe_receiver.lock().unwrap() = Some(receiver);
@@ -96,7 +100,9 @@ impl RelayService {
                     .probe_sender
                     .try_acquire()
                     .map_err(|_| "a probe sender is already running")?;
-                Ok(json!({"probe": probe::send(&self.endpoint, probe).await?}))
+                Ok(
+                    json!({"probe": probe::send(&self.endpoint, probe, &self.probe_receiver).await?}),
+                )
             }
             AdminRequest::PauseRenewals => {
                 self.controller.pause_renewals().await?;
