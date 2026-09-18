@@ -204,9 +204,9 @@ remain unchanged. All 285 management checks pass, with a maximum sampling gap
 of 2.30 seconds. Cleanup restores the exact original radio profile, limits and
 router baselines, and removes candidate processes and owned filters without
 errors. The 56 Linux guard checks pass without skips. This establishes controlled
-open joining and free recovery on one common radio channel; paid open joining,
-hostile-load tolerance, automatic channel selection and arbitrary physical
-mobility remain unverified.
+open joining and free recovery on one common radio channel. Hostile-load
+tolerance, automatic channel selection and arbitrary physical mobility remain
+unverified; combined paid/open acceptance is recorded below.
 
 The [paid Wi-Fi harness](../../testing/chaos/README.md#paid-wi-fi-recovery) also
 passes all 22 phases on three ARM64 OpenWrt routers. Dedicated SSH connections
@@ -226,11 +226,24 @@ All 321 management checks pass, with a maximum sampling gap of 2.24 seconds.
 Original router baselines are restored, and candidate processes, temporary
 filters, mint forwards and the fully collected mint stop without cleanup errors.
 
-This covers one controlled departure/rejoin with reconciled, already funded
-routes on the existing SAE-protected radio mesh. Combining paid recovery with
-open radio admission, interrupted purchase acceptance on hardware, arbitrary
-physical mobility/mesh merge-split, updated Pixel acceptance and current hardware
-performance measurements still require verification.
+The combined paid/open run also passes all 28 phases. Two nodes authenticate on
+the temporary open mesh before the third radio joins; all three use fresh funded
+accounts and discover neighbors without a preset FIPS roster. The enforced
+two-hop path delivers all 32 paid packets in both directions before and after
+one radio departure, peer eviction and rejoin. All four unpaid transit probes
+are denied. Automatic payments resume on the original channels; the middle
+router earns 14 test sats. All 384 issued sats are collected and every wallet is
+empty. All 372 management checks pass, with a maximum sampling gap of 2.63
+seconds. Original radio profiles, limits and router baselines are restored;
+candidate processes, owned filters, mint forwards and the fully collected mint
+stop without cleanup errors. The combined lifecycle has 89 passing Linux checks,
+including funding order and preservation after radio or financial uncertainty.
+
+These runs cover controlled departure/rejoin with reconciled, already funded
+routes on both SAE-protected and open radio meshes. Interrupted purchase
+acceptance on hardware, arbitrary physical mobility/mesh merge-split, updated
+Pixel acceptance and current hardware performance measurements still require
+verification.
 
 ## Guarded cadence measurement
 

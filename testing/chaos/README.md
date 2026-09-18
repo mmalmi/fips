@@ -227,8 +227,9 @@ Its zero-funded physical acceptance passes on three ARM64 OpenWrt routers:
 two-node discovery followed by a late third-node join, 40/40 fresh packets,
 two-hop delivery in both directions before and after leave/rejoin, unchanged
 financial journals and exact restoration. All 285 management checks pass, as do
-the 56 Linux guard tests. This does not establish paid open joining, arbitrary
-physical mobility, hostile-load tolerance or automatic channel choice.
+the 56 Linux guard tests. Paid open joining has separate acceptance below;
+arbitrary physical mobility, hostile-load tolerance and automatic channel choice
+remain unverified.
 
 Before hardware use, run `python3 -m unittest discover -s tests -p 'test_wifi_*.py' -v`
 from `testing/chaos` on Linux with `flock`. The guard tests use real process ownership and file locks,
@@ -270,8 +271,12 @@ candidate services are stopped, before any temporary radio join. A radio failure
 restores the original profile when ownership and state are provable, while
 retaining funded accounts and the original mint/SSH forwards until the test funds
 are reconciled. Open radio admission does not change payment terms or authorize
-free transit. Combined paid/open physical acceptance remains separate from the
-individual paid SAE and free open-mesh results.
+free transit. Combined paid/open physical acceptance passes all 28 phases on
+three ARM64 OpenWrt routers: 32/32 paid packets, zero of four unpaid probes,
+automatic payment recovery on the original channels after leave/rejoin, all
+384 test sats collected, and exact restoration without management or cleanup
+errors. See [readiness](../../crates/fips-relay/READINESS.md#physical-wi-fi-discovery-and-free-recovery)
+for scope and remaining checks.
 
 After verifying unpaid forwarding is denied, each endpoint buys the route through
 the middle router. Fresh streams must cause matching buyer/provider usage and
