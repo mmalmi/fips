@@ -105,6 +105,36 @@ impl BuyerAuthorizer {
         })
     }
 
+    /// Verify that this funded channel has never granted any traffic authority.
+    /// The controller holds its Store mutex across verification and withdrawal.
+    pub(crate) fn unused_channel(
+        &self,
+        provider: NodeAddr,
+        terms: &ChannelTerms,
+    ) -> Result<(), BuyerError> {
+        let ready = self.writer_ready.lock().map_err(|_| BuyerError::Format)?;
+        if !*ready {
+            return Err(DurableError::Suspended.into());
+        }
+        let state = self.state.lock().map_err(|_| BuyerError::Format)?;
+        if terms.buyer != state.local
+            || state
+                .quotes
+                .values()
+                .any(|q| q.contract.channel_id == terms.id)
+            || state.channels.get(&terms.id).is_some_and(|c| {
+                c.provider != provider
+                    || c.terms != *terms
+                    || c.authorized_sat != 0
+                    || c.advance_msat != 0
+                    || c.retired != Some(RetiredRouteEvidence::default())
+            })
+        {
+            return Err(BuyerError::InvalidAgreement);
+        }
+        Ok(())
+    }
+
     pub fn close_quote(&self, id: &str) -> Result<(), BuyerError> {
         // Withdrawal must stop packet admission even if a previous write failed.
         // Keep writer -> state ordering, and retain the error for recovery.

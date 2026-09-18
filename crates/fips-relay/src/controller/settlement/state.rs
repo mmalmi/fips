@@ -45,8 +45,18 @@ impl SettlementReport {
     }
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(in crate::controller) enum SettlementKind {
+    #[default]
+    Cooperative,
+    Expiry,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub(in crate::controller) struct BuyerSettlement {
+    #[serde(default)]
+    pub(in crate::controller) kind: SettlementKind,
     #[serde(with = "node_addr")]
     pub(in crate::controller) provider: NodeAddr,
     pub(in crate::controller) channel: ChannelTerms,
@@ -60,7 +70,14 @@ pub(in crate::controller) struct BuyerSettlement {
 }
 
 impl BuyerSettlement {
+    pub(in crate::controller) fn terminal(&self) -> bool {
+        self.refunded && (self.kind == SettlementKind::Expiry || self.released)
+    }
+
     pub(in crate::controller) fn final_signed_sat(&self) -> Result<u64, String> {
+        if self.kind == SettlementKind::Expiry {
+            return Ok(0);
+        }
         self.payment
             .as_ref()
             .map(|p| p.balance)
@@ -104,6 +121,10 @@ impl Controller {
             return Err("settlement history capacity".into());
         }
         for (id, s) in &j.buyer_settlements {
+            if s.kind == SettlementKind::Expiry {
+                Self::validate_expiry_settlement(j, id, s)?;
+                continue;
+            }
             if id != &s.channel.id
                 || !j.funding.values().any(|f| {
                     f.provider == s.provider

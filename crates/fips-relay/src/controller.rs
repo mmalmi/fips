@@ -49,6 +49,7 @@ mod purchases;
 mod recovery_only;
 mod runtime;
 mod source_selection;
+mod unilateral;
 pub use runtime::ControllerTasks;
 
 const MAX_CHANNELS: usize = 16;
@@ -58,7 +59,7 @@ mod seller_history;
 mod settlement;
 mod settlement_release;
 pub use settlement::SettlementReport;
-use settlement::{BuyerSettlement, SellerSettlement};
+use settlement::{BuyerSettlement, SellerSettlement, SettlementKind};
 
 mod renewal;
 use renewal::Renewal;

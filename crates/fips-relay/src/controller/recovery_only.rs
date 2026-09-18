@@ -4,6 +4,10 @@ use super::*;
 #[cfg(test)]
 mod expiry_tests;
 #[cfg(test)]
+mod funded_expiry_state_tests;
+#[cfg(test)]
+mod funded_expiry_tests;
+#[cfg(test)]
 mod tests;
 
 impl Store {
