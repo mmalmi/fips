@@ -128,6 +128,9 @@ class WifiRun:
         self.monitor.check()
         return self.nodes[node].control(kind, **fields)
 
+    def participants(self):
+        return self.nodes
+
     def ready(self, *, line=False, isolated=False):
         self.monitor.check()
         statuses = {name: self.ctl(name, "status") for name in self.nodes}

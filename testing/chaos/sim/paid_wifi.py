@@ -18,6 +18,7 @@ from .paid_settlement import original_channels, require, settle_and_collect
 from .paid_wifi_mint import LocalMint
 from .paid_wifi_forwarding import MintForwards
 from .remote_mint import RemoteMint
+from .wifi_active_outage import active_radio_outage
 from .wifi_discovery import WifiRun
 from .wifi_remote import ETHERTYPE, digest
 
@@ -47,10 +48,13 @@ class PaidWifiRun(WifiRun):
         self.mint_url = None
         self.forwards = None
         self.channel_anchor = None
-        self.evidence.update(test_funds_only=True, money_operations=True,
+        self.evidence.update(active_radio_outage=getattr(args, "active_outage", False),
+                             test_funds_only=True, money_operations=True,
                              wallet_observation="offline before launch and after settlement")
         for name in ("paid_wifi.py", "paid_wifi_mint.py", "paid_wifi_forwarding.py",
-                     "paid_finances.py", "paid_settlement.py", "remote_mint.py", "mint_host.py"):
+                     "paid_finances.py", "paid_settlement.py", "remote_mint.py", "mint_host.py",
+                     "wifi_active_outage.py", "wifi_probes.py", "wifi_priority_checks.py",
+                     "wifi_measurements.py"):
             self.evidence["harness_sha256"][name] = digest(Path(__file__).with_name(name).read_bytes())
 
     def create_mint(self, args):
@@ -62,6 +66,8 @@ class PaidWifiRun(WifiRun):
     def profile_config(self, node):
         config = relay_config([node.interface], self.mint_url)
         config["state_directory"] = node.state
+        if getattr(self.args, "active_outage", False):
+            config["return_allowance"] = False
         config["transports"]["ethernet"][node.interface]["ethertype"] = ETHERTYPE
         return config
 
@@ -159,26 +165,50 @@ class PaidWifiRun(WifiRun):
             self.ctl(source, "buy", destination=self.nodes[destination].npub)
         funded = eventually("initial funded channel observation", self.finances)
         original_channels(self.nodes, funded)
-        self.channel_anchor = self.paid_streams(funded, "paid two-hop wireless stream delivered")
-        original_channels(self.nodes, self.channel_anchor)
-        self.phase("original channels automatically paid before outage", financial=self.channel_anchor)
+        try:
+            self.channel_anchor = self.paid_streams(funded, "paid two-hop wireless stream delivered")
+            original_channels(self.nodes, self.channel_anchor)
+            self.phase("original channels automatically paid before outage", financial=self.channel_anchor)
+            if getattr(self.args, "active_outage", False):
+                active_radio_outage(self)
+            else:
+                self.mesh_outage()
+            rejoined = self.assert_finances()
+            paid = self.paid_streams(rejoined, "same paid route delivers after automatic radio rejoin")
+            retain_channels(self.channel_anchor, paid)
+            for name, node in self.nodes.items():
+                require(self.ctl(name, "status")["npub"] == node.npub, "radio rejoin changed identity")
+            self.phase("same funding and channels pay automatically after radio rejoin", financial=paid)
+            self.verify_shortcuts()
+        except Exception as error:
+            self.evidence["acceptance_failure"] = str(error)
+            self.save()
+            raise
+        finally:
+            # Known original channels must still close after a failed radio check.
+            signal.alarm(0)
+            try:
+                collection = self.collect()
+            except Exception as error:
+                self.evidence["collection_failure"] = str(error)
+                self.save()
+                raise
 
-        self.mesh_outage()
-        rejoined = self.assert_finances()
-        paid = self.paid_streams(rejoined, "same paid route delivers after automatic radio rejoin")
-        retain_channels(self.channel_anchor, paid)
-        for name, node in self.nodes.items():
-            require(self.ctl(name, "status")["npub"] == node.npub, "radio rejoin changed identity")
-        self.phase("same funding and channels pay automatically after radio rejoin", financial=paid)
-        self.verify_shortcuts()
-        settle_and_collect(self, paid, execute=self.account_execute,
-                           stop=lambda name: self.nodes[name].stop(),
-                           export_path=lambda name, relative: self.nodes[name].state + "/" + relative)
-        collection = self.evidence["phases"][-1]["settlement_collection"]
         balances = collection["settled_wallet_balances"]
         require(balances["n02"] > 128 and balances["n01"] < 128 and balances["n03"] < 128,
                 "the middle router did not earn both endpoints' payments")
+
+    def collect(self):
+        current = eventually("original financial accounts before collection", self.finances)
+        original_channels(self.nodes, current)
+        if self.channel_anchor is not None:
+            retain_channels(self.channel_anchor, current)
+        settle_and_collect(self, current, execute=self.account_execute,
+                           stop=lambda name: self.nodes[name].stop(),
+                           export_path=lambda name, relative: self.nodes[name].state + "/" + relative)
+        collection = self.evidence["phases"][-1]["settlement_collection"]
         self.phase("all 384 test sats collected; every test wallet empty")
+        return collection
 
     def finish(self):
         try:
@@ -218,6 +248,8 @@ def main():
                         help="use dedicated inventory SSH forwards instead of controller LAN access")
     parser.add_argument("--open-mesh", action="store_true",
                         help="temporarily test paid forwarding over open 802.11s, restoring the saved SAE profile")
+    parser.add_argument("--active-outage", action="store_true",
+                        help="interrupt live paid round trips before automatic radio recovery")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     os.umask(0o077)

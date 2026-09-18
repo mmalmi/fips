@@ -11,15 +11,15 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
-import secrets
 import shlex
 import signal
 import time
 
 from .paid_relay import eventually, relay_config
-from .paid_settlement import original_channels, require, settle_and_collect
-from .paid_wifi import PaidWifiRun, retain_channels
+from .paid_settlement import original_channels, require
+from .paid_wifi import PaidWifiRun
 from .paid_wifi_forwarding import MintForwards
+from . import wifi_probes as probes
 from .wifi_discovery import validate_free_offer, validate_unfunded
 from .wifi_measurements import snapshot
 from .wifi_priority_checks import (
@@ -176,20 +176,12 @@ class PriorityRun(PaidWifiRun):
                 validate_unfunded(self.ctl(name, "status"))
 
     def arm(self, source, destination, count, size):
-        shape = {"stream_id": secrets.token_hex(16), "packet_count": count, "payload_bytes": size}
-        reflection = {"reflect": True} if self.round_trip(source, destination) else {}
-        self.ctl(destination, "receive_probe", probe={
-            **shape, "source": self.participants()[source].npub, "measure_one_way_latency": False,
-            **reflection,
-        })
-        return shape
+        return probes.arm(self, source, destination, count, size,
+                          round_trip=self.round_trip(source, destination))
 
     def send(self, source, destination, shape, rate):
-        latency = {"measure_round_trip": True} if self.round_trip(source, destination) else {}
-        return self.ctl(source, "send_probe", probe={
-            **shape, "destination": self.participants()[destination].npub, "packets_per_second": rate,
-            **latency,
-        })["probe"]
+        return probes.send(self, source, destination, shape, rate,
+                           round_trip=self.round_trip(source, destination))
 
     def round_trip(self, source, destination):
         return self.args.round_trip and source == "n01" and destination == "n03"
@@ -198,11 +190,8 @@ class PriorityRun(PaidWifiRun):
         return self.participants()[destination if self.round_trip(source, destination) else source].npub
 
     def receive(self, source, destination, shape, *, complete=False):
-        round_trip = self.round_trip(source, destination)
-        report = self.ctl(source if round_trip else destination, "status")["probe"]
-        received(report, shape, self.receiver_identity(source, destination),
-                 complete=complete, round_trip=round_trip)
-        return report
+        return probes.receive(self, source, destination, shape, complete=complete,
+                              round_trip=self.round_trip(source, destination))
 
     def latency_phase(self, name):
         def quiet():
@@ -373,13 +362,7 @@ class PriorityRun(PaidWifiRun):
         self.phase("paid packets and automatic payment completed during observed wireless background pressure")
 
     def collect(self):
-        current = eventually("original financial accounts before collection", self.finances)
-        original_channels(self.nodes, current)
-        if self.channel_anchor is not None:
-            retain_channels(self.channel_anchor, current)
-        settle_and_collect(self, current, execute=self.account_execute,
-                           stop=lambda name: self.nodes[name].stop(),
-                           export_path=lambda name, relative: self.nodes[name].state + "/" + relative)
+        super().collect()
         self.verify_auxiliary(stopped=True)
         self.phase("all 384 test sats collected; both unfunded auxiliary wallets remain empty")
 

@@ -87,6 +87,7 @@ class CadenceTests(unittest.TestCase):
 
     def test_profile_keeps_spending_caps_and_binds_cadence_to_actual_config(self):
         service = self.service()
+        service.args = argparse.Namespace()
         service.delay, service.mint_url = 2000, "http://192.168.1.2:12345"
         config = service.profile_config(Mock(interface="mesh0", state="/test/state"))
         self.assertEqual(config["payment_cadence"], {"max_delay_ms": 2000, "unpaid_percent": 50})

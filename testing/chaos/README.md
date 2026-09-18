@@ -314,6 +314,30 @@ checked before stopping the mint. A failed cleanup is reported as a failed run.
 Run the Wi-Fi, financial, fault and settlement tests on Linux before hardware use;
 include `tests` in `PYTHONPATH` for the existing payment-fault test imports.
 
+Add `--active-outage` to `sim.paid_wifi` to leave the radio mesh while an
+explicitly funded round-trip stream is still sending. The fixture waits for
+partial replies, removes the leaf from the radio mesh, observes actual peer
+eviction, and requires missing replies from the original finite stream. It
+requires the cut to complete before the earliest final paced send, using a
+controller-side duration bound; a pending management response is insufficient.
+Reply counts must remain unchanged during a two-second isolated window.
+The radio then rejoins automatically; a distinct eight-packet round-trip stream
+must complete, followed by the existing bidirectional payment checks. Return
+allowances are disabled so both directions require the original paid channels.
+
+The test retains the original processes (including their start times), financial
+identities, funding operations, channels, route agreements and lifetime budgets.
+Once the two channels are known, a failed radio or delivery check still attempts
+ordinary settlement and collection; uncertain funding retains the original
+accounts and mint. The active stream is never resent. Radio restoration uses the
+existing ownership guard, including when an observation fails during the outage.
+
+The reported recovery upper bound runs from the rejoin request through observed
+peer convergence and completion of the fresh diagnostic stream. It includes
+controller polling and probe time, so it is not an exact first-packet convergence
+time. This controlled cut does not guarantee interruption at a particular payment
+message, arbitrary physical movement or selection among competing paid routes.
+
 ### Paid/free Wi-Fi priority
 
 `sim.wifi_priority` reuses the paid Wi-Fi lifecycle and adds two unfunded
