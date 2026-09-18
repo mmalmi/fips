@@ -208,11 +208,54 @@ class HardwareTests(unittest.TestCase):
         node = steady["nodes"]["n01"]
         self.assertEqual(node["rss_before_kib"], 112)
         self.assertEqual(node["rss_after_kib"], 113)
-        self.assertEqual(node["process_lifetime_peak_rss_kib"], 213)
+        self.assertEqual(node["reported_vmhwm_after_kib"], 213)
         self.assertEqual(node["os_io"]["write_bytes"], 20)
         self.assertEqual(steady["os_io"]["write_bytes"], 60)
         self.assertIn("not payment-attributed", markdown(metadata, grouped))
         self.assertEqual(grouped[("high_rate", 250)][0]["delivered_packets"], 8000)
+
+    def test_reported_vmhwm_decrease_is_preserved_with_exact_process_epoch(self):
+        rows = hardware_report()
+        for row in rows:
+            if row.get("trial") != 7 or "data" not in row:
+                continue
+            for boundary in ("before_guard", "before", "after", "after_guard"):
+                node = row["data"][boundary][1]
+                node["measurements"]["process_id"] = 15290
+                value = 24592 if row["data"]["workload"] == "idle" and boundary == "before_guard" else 24576
+                node["host_process"].update(pid=15290, start_ticks=20167614,
+                                            rss_kib=value, peak_rss_kib=value)
+        original = copy.deepcopy(rows)
+        _, trials, _ = analyze_rows(rows)
+        idle = next(row for row in trials if row["trial"] == 7 and row["workload"] == "idle")
+        self.assertEqual(idle["vmhwm_decreases"], [{
+            "host": "n02", "before_boundary": "before_guard", "after_boundary": "before",
+            "before_kib": 24592, "after_kib": 24576, "decrease_kib": 16,
+        }])
+        node = idle["nodes"]["n02"]
+        self.assertEqual(node["vmhwm_samples_kib"], {
+            "before_guard": 24592, "before": 24576, "after": 24576, "after_guard": 24576,
+        })
+        self.assertEqual(node["maximum_observed_vmhwm_kib"], 24592)
+        self.assertEqual(node["reported_vmhwm_after_kib"], 24576)
+        self.assertEqual(rows, original)
+
+    def test_vmhwm_decreases_are_recorded_inside_and_between_windows(self):
+        rows = hardware_report()
+        idle = workload(rows, "idle")
+        for boundary, value in zip(("before_guard", "before", "after", "after_guard"),
+                                   (500, 480, 470, 460)):
+            idle[boundary][1]["host_process"]["peak_rss_kib"] = value
+        bursty = workload(rows, "bursty")
+        for boundary in ("before_guard", "before", "after", "after_guard"):
+            bursty[boundary][1]["host_process"]["peak_rss_kib"] = 450
+        _, trials, _ = analyze_rows(rows)
+        self.assertEqual([event["decrease_kib"] for event in trials[0]["vmhwm_decreases"]], [20, 10, 10])
+        self.assertEqual(trials[1]["vmhwm_decreases"], [{
+            "host": "n02", "before_boundary": "previous_after_guard", "after_boundary": "before_guard",
+            "before_kib": 460, "after_kib": 450, "decrease_kib": 10,
+        }])
+        self.assertEqual(trials[1]["nodes"]["n02"]["maximum_observed_vmhwm_kib"], 460)
 
     def test_measured_radio_idle_payment_work_is_reported(self):
         rows = hardware_report()
@@ -250,7 +293,8 @@ class HardwareTests(unittest.TestCase):
     def test_hosts_are_exactly_three_distinct_scopes(self):
         for field, value in (("host", "n04"), ("host", "n02"),
                              ("pid", 0), ("start_ticks", True),
-                             ("rss_kib", -1), ("wchar", None)):
+                             ("rss_kib", -1), ("peak_rss_kib", -1),
+                             ("peak_rss_kib", True), ("peak_rss_kib", None), ("wchar", None)):
             with self.subTest(field=field, value=value):
                 self.reject(lambda rows: workload(rows)["before"][0]
                             ["host_process"].__setitem__(field, value))
@@ -267,9 +311,8 @@ class HardwareTests(unittest.TestCase):
         self.reject(lambda rows: workload(rows)["probes"][0]["receiver"].pop("latency"))
         self.reject(lambda rows: rows[0].__setitem__("one_way_latency", True))
 
-    def test_os_counters_and_lifetime_peak_cannot_reset(self):
-        for key in ("read_bytes", "write_bytes", "rchar", "wchar", "syscr", "syscw",
-                    "peak_rss_kib"):
+    def test_os_counters_cannot_reset(self):
+        for key in ("read_bytes", "write_bytes", "rchar", "wchar", "syscr", "syscw"):
             with self.subTest(counter=key):
                 self.reject(lambda rows: workload(rows)["after"][0]
                             ["host_process"].__setitem__(key, 0))

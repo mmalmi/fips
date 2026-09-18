@@ -120,7 +120,7 @@ def summarize(row, schema=2, delivery_rejections=None):
             measured.update(
                 npub=after["npub"], pid=b["pid"], start_ticks=b["start_ticks"],
                 rss_before_kib=a["rss_kib"], rss_after_kib=b["rss_kib"],
-                process_lifetime_peak_rss_kib=b["peak_rss_kib"],
+                reported_vmhwm_after_kib=b["peak_rss_kib"],
                 os_io=({key: delta(a, b, key) for key in OS_IO_COUNTERS}
                        if b["io_available"] else None),
             )
@@ -186,13 +186,32 @@ def summarize(row, schema=2, delivery_rejections=None):
         observed = sum(node["os_io"] is not None for node in node_results.values())
         result["os_io_observed_nodes"] = observed
         result["os_io"] = os_io if observed == len(node_results) else None
-        for key in ("rss_before_kib", "rss_after_kib", "process_lifetime_peak_rss_kib"):
+        for key in ("rss_before_kib", "rss_after_kib", "reported_vmhwm_after_kib"):
             result[key] = sum(node[key] for node in node_results.values())
     if data["workload"] == "idle" and schema == 2:
         validate_idle(result)
         if result["payment_received_bytes"] or result["payment_received_requests"]:
             raise ValueError("idle payment traffic received")
     return dict(result)
+
+
+def record_vmhwm(data, result, previous):
+    """Preserve raw boundary readings; an observed maximum is not a proven peak."""
+    boundaries = [(name, data[name]) for name in ("before_guard", "before", "after", "after_guard")]
+    if previous is not None:
+        boundaries.insert(0, ("previous_after_guard", previous))
+    result["vmhwm_decreases"] = []
+    for index, node in enumerate(data["before"]):
+        host = node["host_process"]["host"]
+        samples = {name: nodes[index]["host_process"]["peak_rss_kib"] for name, nodes in boundaries}
+        result["nodes"][host]["vmhwm_samples_kib"] = samples
+        result["nodes"][host]["maximum_observed_vmhwm_kib"] = max(samples.values())
+        for (before, a), (after, b) in zip(samples.items(), list(samples.items())[1:]):
+            if b < a:
+                result["vmhwm_decreases"].append({
+                    "host": host, "before_boundary": before, "after_boundary": after,
+                    "before_kib": a, "after_kib": b, "decrease_kib": a - b,
+                })
 
 
 def analyze(path, pilot=False):
@@ -286,6 +305,8 @@ def validated_rows(rows, pilot, delivery_rejections=None):
             result = summarize(row, schema, delivery_rejections)
             if previous is not None:
                 validate_gap(previous, row["data"]["before_guard"], schema)
+            if schema == 3:
+                record_vmhwm(row["data"], result, previous)
             previous = row["data"]["after_guard"]
             trials.append({"trial":trial_id, "max_delay_ms":delay, "workload":row["data"]["workload"], **result})
             grouped[(row["data"]["workload"], delay)].append(result)
@@ -314,17 +335,18 @@ def markdown(metadata, grouped):
             "synchronous spans; relay journal I/O is logical and excludes SDK/SQLite writes. "
             "OS process I/O, when available, is separate and is not payment-attributed. "
             "Unavailable I/O and incomplete aggregate I/O remain null, not zero. "
-            "RSS is sampled at each boundary; high-water marks cover each process lifetime, "
-            "not one window. Record bytes exclude TCP/FIPS/carrier overhead and radio airtime. "
+            "RSS and kernel-reported VmHWM are sampled at each boundary; raw VmHWM decreases "
+            "are retained. Record bytes exclude TCP/FIPS/carrier overhead and radio airtime. "
             "One-way latency is unmeasured because router clocks are independent. "
             "Radio idle payment activity inside the measured window is reported."
         )
         lines += [
             "", "Per-trial JSON retains total and per-node CPU seconds/MiB, goodput, "
-            "RSS, process-lifetime high-water marks, OS I/O deltas, payment spans/records, "
+            "RSS, raw VmHWM samples and decreases, OS I/O deltas, payment spans/records, "
             "and logical journal commits/syncs. Per-node CPU uses the same end-to-end "
             "delivered application bytes as the total; zero-delivery ratios are null. "
-            "Summed lifetime RSS peaks need not have occurred simultaneously. "
+            "Maximum observed VmHWM is not a proven window or lifetime peak; summed "
+            "end-sample readings need not be simultaneous. "
             "Idle lasts four seconds; all eight bursts include their final 800 ms sleep. "
             "High rate offers 8,000 packets. All windows include the same three-second tail. "
             "These offered workloads do not establish maximum throughput or an optimal policy.",

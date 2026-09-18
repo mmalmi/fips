@@ -63,7 +63,7 @@ def host_identity(node):
             or process["pid"] != unsigned(node["measurements"]["process_id"])):
         raise ValueError("hardware process identity differs from measurement source")
     if process["rss_kib"] > process["peak_rss_kib"]:
-        raise ValueError("current RSS exceeds the process-lifetime high-water mark")
+        raise ValueError("current RSS exceeds the reported VmHWM")
     return host, npub, process["pid"], process["start_ticks"]
 
 
@@ -73,7 +73,10 @@ def validate_host_pair(before, after):
     a, b = before["host_process"], after["host_process"]
     if a["io_available"] != b["io_available"]:
         raise ValueError("hardware I/O availability changed")
-    counters = (*OS_IO_COUNTERS, "peak_rss_kib") if a["io_available"] else ("peak_rss_kib",)
+    # task_mem reports max(saved hiwater, current RSS), without saving that max:
+    # https://github.com/gregkh/linux/blob/v6.12.94/fs/proc/task_mmu.c#L35-L68
+    # Keep VmHWM observations, including decreases, separate from I/O counters.
+    counters = OS_IO_COUNTERS if a["io_available"] else ()
     for field in counters:
         if b[field] < a[field]:
             raise ValueError(f"hardware process counter reset: {field}")
