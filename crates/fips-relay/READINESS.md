@@ -253,6 +253,16 @@ existing app's private files are unchanged. This is startup verification only:
 the new account has no setup profile or funds, and its paid customer-network
 acceptance remains pending.
 
+Customer profiles now select an explicit immutable per-attempt billing mode.
+The former hardcoded mode rejected quotes from a forwarding-data mesh; a real
+customer deployment reproduced that rejection before the fix. Both the original
+mode and forwarding-data mode now pass the same purchase, delivery, reopen,
+settlement and 384-test-sat collection checks. Missing billing in a saved profile
+retains its exact original forwarding-attempt meaning. Unsupported tariffs and
+later tariff replacement are rejected. Three profile checks, all three customer
+integration tests and strict all-target linting pass; physical phone acceptance
+with the selected mesh tariff remains a separate check.
+
 The phone-test infrastructure now has a shared, capped mint endpoint and three
 temporary customer firewall exceptions. The existing router lease owns the UDP
 entry rule; mint access remains until a fresh, fully collected report is followed

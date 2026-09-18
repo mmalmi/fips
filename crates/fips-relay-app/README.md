@@ -71,6 +71,7 @@ mint's backing. Example shape (replace identities and addresses before use):
 {
   "version": 1,
   "test_only": true,
+  "billing": "forwarding_data",
   "entry_npub": "<entry identity>",
   "entry_address": "192.168.77.1:39211",
   "destination_npub": "<test destination identity>",
@@ -85,6 +86,11 @@ The entry and mint require explicit numeric local addresses; the mint uses a
 root HTTP URL. Profile limits are 512 test sats lifetime spending, 8–128 sats per
 channel and at most 8,192 msat/KiB. A maximum of twice the channel capacity may be
 locked. Loading funds never resets spending history or those limits.
+
+`billing` must match the relay network: `forwarding_data` includes bounded free
+connection setup; `forwarding_attempt` uses the original per-attempt policy.
+Omitting it preserves `forwarding_attempt` for existing saved profiles. Both
+choices are immutable after setup; the legacy unique-envelope tariff is rejected.
 
 Provide the JSON through the `setup_profile` intent string extra or through
 `fipsbench://setup?profile=<base64url-encoded-JSON>`. An intent only previews a
