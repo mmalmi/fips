@@ -163,6 +163,27 @@ it will not automatically identify a radio or driver fault.
 
 ## Reproduction and remaining evidence
 
+### Native-counter diagnostic follow-up
+
+A separate 2,000-ms pilot retained the same four hardware workloads and captured
+the existing native status/routing counters inside every process-identity guard.
+All 11,712 submitted packets arrived and strict pilot validation passed. Its
+two channels settled, all 384 test sats were collected, the mint stopped and
+router baselines were restored. All 264 management observations passed with no
+cleanup errors. This single trial does not replace the rejected matrix or prove
+that its intermittent loss is resolved.
+
+The middle router counted 534, 3,222 and 8,011 forwarded native packets in the
+bursty, steady and high-rate windows respectively, including control traffic.
+No recorded forwarding-drop/error reason advanced in the windows or guard gaps.
+However, endpoint received/delivered counters remained zero despite successful
+application delivery, and source-originated counters omitted most application
+traffic. These native counters do not cover the optimized endpoint path. The
+Ethernet transport also provides no kernel receive-drop signal to the native
+congestion API. Neither zero can establish absence of loss. A subsequent
+diagnostic should enable existing dataplane drop events before repeating the
+matrix, to cover the observation paths these counters miss.
+
 See the [experiment instructions](../../testing/relay-cadence/README.md) for fixed
 terms, workloads, report validation and measurement boundaries. Setup and settlement
 are excluded; the identical three-second payment tail is included. Application

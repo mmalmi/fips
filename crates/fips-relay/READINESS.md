@@ -348,6 +348,16 @@ one-way latency unmeasured. These kernels lack process I/O counters, which stay
 explicitly null; process CPU, memory, logical relay journal and payment-record
 measurements remain available. See the [hardware experiment contract](../../testing/relay-cadence/README.md#hardware-report-contract-schema-3).
 
+A separate 2-second pilot with guarded native status/routing observations passed
+all 11,712 packets and recovered all 384 test sats. All 264 management observations
+passed and router baselines were restored. It did not reproduce the earlier loss.
+It exposed incomplete native telemetry: the middle-router counters cover transit,
+but optimized endpoint traffic bypasses the legacy received/delivered counters.
+Ethernet also does not supply the kernel-drop signal used by the congestion API.
+Zero counters therefore cannot establish a clean endpoint/kernel path. Existing
+dataplane drop logging should cover those gaps in the next diagnostic; broader
+hardware acceptance remains incomplete.
+
 ## Sequence and acceptance
 
 1. **Adaptive payment cadence.** Share one schedule per neighbor channel and

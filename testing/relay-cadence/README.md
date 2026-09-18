@@ -231,6 +231,16 @@ sequential, not atomic with financial or process-cost samples. The additional
 queries cost CPU/time, so a diagnostic run with them is not a matched performance
 comparison against a run without them. No payment or routing messages are added.
 
+The first native-counter pilot exposed a coverage limit: successful optimized
+endpoint traffic did not advance the node's legacy received/delivered counters.
+The middle router did count forwarded traffic. Consequently, zero endpoint
+counts or drop counters cannot rule out a failure on those optimized paths.
+Even the legacy delivered counter records session-layer handoff before full
+application delivery. Ethernet currently supplies no kernel receive-drop signal
+to `TransportHandle::congestion`, so zero `kernel_drop_events` does not establish
+zero Ethernet/kernel loss. Existing dataplane debug drop events provide a
+separate observation path for raw ingress, crypto, output and endpoint failures.
+
 For a complete but rejected matrix, diagnostic JSON can retain cost observations
 and identify each missing-delivery window:
 
