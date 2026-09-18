@@ -1,4 +1,6 @@
-# Clean-link cadence results — 17 September 2026
+# Paid-relay cadence measurements
+
+## Accepted loopback comparison — 17 September 2026
 
 Optimized build: **True**. Two opposite-order repetitions; five real service processes and three paid relays over loopback UDP.
 
@@ -73,6 +75,91 @@ build and measurement. Executable SHA-256:
 The matrix took 440.01 seconds including setup, warmup, observations and financial
 cleanup. Both directions were explicitly funded to keep the historical workload
 matched. Unfunded recipient bootstrap has separate acceptance coverage.
+
+## Hardware comparison — 18 September 2026
+
+The full three-router comparison **failed strict clean-link acceptance**. All
+eight trials and 32 workload windows were collected, but only 93,693 of 93,696
+submitted application packets arrived. The original failed result and raw
+measurements are retained; no packets were resent and no workload, allowance or
+settling window was enlarged to hide the loss.
+
+| Trial, zero-based | Maximum age | Workload | Submitted | Delivered | Missing |
+| --- | ---: | --- | ---: | ---: | ---: |
+| 4 | 2,000 ms | High rate | 8,000 | 7,998 | 2 |
+| 5 | 1,000 ms | Steady | 3,200 | 3,199 | 1 |
+
+All other workload payloads arrived. Across the matrix, 40 packets arrived out of
+order; there were no duplicate or invalid packets. The deficits persisted through
+the three-second tail and final guard. Payment acknowledgments covered recorded
+liability, and the failed windows had no controller error, process restart or
+measured-link epoch change. Existing logs and aggregate counters do not identify
+a precise loss cause. They do not establish that payment cadence caused the loss.
+
+Each trial settled both original 32-sat channels and collected all 384 issued
+test sats: 3,072 in total. Every test mint stopped and all original router
+baselines were restored. All 2,175 management observations passed; no cleanup
+error was recorded. The preceding single 250-ms pilot passed strict validation,
+delivered all 11,712 packets and collected its separate 384 test sats. That pilot
+does not replace the failed full comparison.
+
+The devices were three Cudy TR3000 v1 routers running OpenWrt 25.12.5 on ARM64.
+An optimized Rust 1.96.0 musl build with the measurements feature used native
+Ethernet over a forced two-hop 802.11s path. Both directions were funded, with
+one paid middle router. The fixed hardware workload offers 8,000 high-rate
+packets, rather than the loopback fixture's 32,000; results are not directly
+comparable across those topologies and workloads. Executable SHA-256:
+`bea373ae88988a04f4fa48607eefebb67b265c10546f41461571cf12c31fda79`.
+
+Separate router clocks leave application one-way latency unmeasured. Saved
+neighboring-link smoothed RTT estimates ranged from 3 to 6 ms across boundaries.
+They use local timestamp echoes, include earlier traffic, and lack sample-age
+information in these snapshots; they are not end-to-end latency or percentiles.
+These kernels omit `/proc/PID/io`, so OS process I/O is explicitly unavailable,
+not zero. Logical relay journal counts retain their narrower documented scope.
+Exposed source peer sent-byte counters also omit some application traffic in
+these observations; their aggregate cannot establish complete carrier bytes.
+
+One guard pair reported VmHWM and RSS falling from 24,592 to 24,576 KiB with the
+same process identity. Linux's RSS/high-water sampling permits such a decrease;
+the specific cause in this kernel build is unproven. The analyzer retains both
+raw values and the decrease rather than treating this gauge as a monotonic
+integrity counter. The three missing packets still reject the comparison.
+
+### Diagnostic costs from the rejected matrix
+
+Diagnostic replay retains all 32 workload windows and exits unsuccessfully with
+`accepted: false`. It permits reporting the measured costs of the two lossy
+windows while retaining every other validation requirement. These observations
+do not establish an accepted clean-link comparison or an optimal policy.
+
+The table shows high-rate observations, summing CPU across all three routers.
+Delivery totals combine both repetitions; paired CPU values retain the two
+observations in trial order. Update, record and payment-journal counts were the
+same in both repetitions of each policy.
+
+| Maximum age | Delivered / submitted | Payment CPU ms, two runs | All relay CPU ms, two runs | Updates per run | Payment records KiB per run | Payment journal writes per run |
+| --- | ---: | --- | --- | ---: | ---: | ---: |
+| 250 ms | 16,000 / 16,000 | 206.50 / 208.14 | 5,670.35 / 5,633.01 | 4 | 3.20 | 16 |
+| 500 ms | 16,000 / 16,000 | 159.50 / 158.71 | 5,507.53 / 5,669.84 | 3 | 2.41 | 12 |
+| 1,000 ms | 16,000 / 16,000 | 104.57 / 105.05 | 5,620.27 / 5,566.03 | 2 | 1.60 | 8 |
+| 2,000 ms | 15,998 / 16,000 | 103.28 / 101.76 | 5,681.32 / 5,661.20 | 2 | 1.60 | 8 |
+
+All eight steady windows used three payment updates and twelve payment-journal
+writes, with mean payment CPU between 154.25 and 154.89 ms across policy pairs.
+Idle and bursty windows recorded no payment updates, payment CPU or payment
+journal writes. Bursty traffic consumed existing prepaid credit from setup;
+these zero incremental payments do not mean free forwarding. Workload CPU
+includes the common three-second tail. Record bytes exclude transport/carrier
+framing; journal counts exclude SDK/SQLite and physical storage writes. The
+saved diagnostic JSON retains per-node CPU per delivered MiB, goodput, raw
+memory readings and all individual window results.
+
+No production default or optimization is selected from this rejected matrix.
+A separate diagnostic should capture the existing native forwarding/drop
+counters at the same boundaries before another comparison. That can distinguish
+policy denial, local send failure, missing routes and other recorded drop classes;
+it will not automatically identify a radio or driver fault.
 
 ## Reproduction and remaining evidence
 

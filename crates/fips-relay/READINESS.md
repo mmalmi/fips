@@ -335,8 +335,15 @@ path, both original paying channels reconciled at every measurement boundary,
 and all 384 issued test sats were collected. The test mint stopped, original
 router baselines were restored, and 258 management observations had no errors.
 The idle window recorded no payment messages, synchronous payment CPU or payment
-journal writes. This is one pilot, not a completed cadence comparison; the
-eight-trial hardware matrix remains pending. Separate router clocks leave
+journal writes. The subsequent eight-trial matrix collected all 32 workload
+windows and delivered 93,693 of 93,696 submitted packets. Two packets were missing
+in the second 2-second high-rate window and one in the second 1-second steady
+window. The strict clean-link validator rejected the matrix; its failed result
+is retained, with no cadence default or performance optimization selected from it.
+All 3,072 test sats were collected, every mint stopped, and original router
+baselines were restored with 2,175 management observations and no management or
+cleanup errors. Saved counters do not establish a precise loss cause. Separate
+router clocks leave
 one-way latency unmeasured. These kernels lack process I/O counters, which stay
 explicitly null; process CPU, memory, logical relay journal and payment-record
 measurements remain available. See the [hardware experiment contract](../../testing/relay-cadence/README.md#hardware-report-contract-schema-3).
@@ -840,6 +847,27 @@ physical movement, open-radio admission, or interruption before a replacement
 purchase is accepted. Run the focused case with `cargo test -p fips-relay
 --all-features --test priced_paths
 mobile_neighbors_reuse_channels_and_preserve_spending_authority`.
+
+A continuously active source watch now also passes separate real carrier-loss
+and delay cases. It leaves the impaired cheaper provider, promotes a working
+alternative, then retries and promotes the recovered cheaper path. No additional
+Buy, Watch, payment flush, forced source binding or injected quality observation
+drives these transitions. Fresh application payloads and native feedback verify
+each selected path. Both deployments reuse the original two channels, keep
+historical debit and locked capital at 128 sats with no early refund, preserve
+the lifetime spending bound through reload, and finally conserve all 259 test
+sats. This fixture uses ten-second feedback/cooldown and a 55-second deadline
+per transition; it does not establish production failover latency.
+
+The delay case first reproduced a stale cached full offer pinning the watch
+after a healthy recovery trial. Paid and free trial promotion now negotiate a
+fresh full offer; a still-active full agreement remains reusable. The selector
+regression failed before that change, and the unchanged automatic integration
+then passed both scenarios. This prevents the obsolete pending intent on the new
+path; it does not migrate a watch already stuck by older code. Broader physical
+mobility and hostile-load acceptance remain separate work. Run the focused case
+with `cargo test -p fips-relay --all-features --test priced_paths
+automatic_quality::automatic_watch_leaves_impaired_routes_and_reuses_recovered_channel`.
 
 A watched paid offer now becomes pending in the same journal transaction that
 reserves its purchase or route change, after native neighbor admission. A peer

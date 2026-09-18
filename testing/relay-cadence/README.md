@@ -153,9 +153,22 @@ JSON summaries retain total and per-node CPU seconds, CPU seconds/MiB, payment
 spans and control-record bytes, relay journal bytes/writes/commits/syncs, plus
 end-to-end goodput. Each node's normalized CPU uses the same delivered application
 bytes as the total, with null ratios when no data is delivered. Current RSS is
-reported before and after each window. `process_lifetime_peak_rss_kib` is a
-cumulative process high-water mark, not a window peak; summed node peaks need not
-have occurred simultaneously.
+reported before and after each window. `reported_vmhwm_after_kib` retains the
+kernel-reported VmHWM at the end snapshot. Each node's `vmhwm_samples_kib` preserves
+the named raw boundary samples; `maximum_observed_vmhwm_kib` is their maximum,
+not a proven lifetime or window peak. `vmhwm_decreases` records each observed
+decrease with its host, boundaries, raw values and amount. Summed node values
+need not have occurred simultaneously.
+
+Linux's reported VmHWM is not a strict monotonic counter: the reported current
+RSS can include per-CPU counts that were absent when the stored high-water mark
+was updated. Reading the report does not store that observed maximum. See the
+[Linux 6.12.94 proc reader](https://github.com/gregkh/linux/blob/v6.12.94/fs/proc/task_mmu.c#L35-L68)
+and [RSS/high-water helpers](https://github.com/gregkh/linux/blob/v6.12.94/include/linux/mm.h#L2645-L2727).
+A decrease alone therefore does not invalidate a run or prove a reset. Raw
+values remain unchanged, and each snapshot must still have nonnegative values
+and RSS no greater than VmHWM. Process identity and all actual CPU, I/O, payment
+and journal counter checks remain required.
 
 Goodput divides delivered application bits by `offered_elapsed_ms`, including
 controller/SSH probe setup, status polling, bounded receive drain, and burst
@@ -195,6 +208,21 @@ the runner's result). Full analysis rejects pilot reports; pilot mode rejects a
 full matrix, missing conservation or invalid boundaries. Pilot output is JSON
 only; Markdown comparison output is rejected.
 
+For a complete but rejected matrix, diagnostic JSON can retain cost observations
+and identify each missing-delivery window:
+
+```sh
+python3 testing/relay-cadence/analyze.py /absolute/measurements.jsonl --diagnostics
+```
+
+This mode emits `diagnostic: true` and `accepted: false`, and exits unsuccessfully
+when delivery is incomplete. It preserves every other validation requirement,
+including complete submission, packet identity/counts, duplicate/invalid rejection,
+financial conservation, process identity, quiet boundaries and durable counters.
+Malformed or unreconciled evidence still fails without a summary. Diagnostic
+output cannot be combined with Markdown comparison output, and must not replace
+the original rejected result or be presented as an accepted comparison.
+
 ## Measurement boundaries
 
 Build the relay with the optional `measurements` feature. The private local
@@ -226,7 +254,9 @@ forwarding, payments or spending.
   reported aggregate native link counters. Sum sent bytes once; summing sent
   and received double-counts them. Record bytes omit TCP/FIPS/carrier framing,
   acknowledgments and retries. Aggregate link counters include other native
-  traffic and do not isolate payments. Neither metric measures Wi-Fi airtime.
+  traffic and do not isolate payments. The hardware run also exposed source
+  peer sent-byte counters that omitted some application traffic; summing these
+  observations is not complete carrier accounting. Neither metric measures Wi-Fi airtime.
 
 Clock support is currently implemented for Linux, Android and macOS using the
 OS thread/process CPU clocks. Other targets expose missing CPU samples. The
@@ -251,7 +281,10 @@ the existing FIPS simulation/chaos facilities, payment-specific complete carrier
 bytes, SDK snapshot and receiver SQLite storage measurements, profiler attribution outside
 the synchronous spans, and complete controlled ARM64/router/phone comparisons.
 The guarded three-router 250-ms pilot passed all four workloads and financial
-recovery; the complete hardware cadence matrix remains pending. Performance changes
+recovery. The subsequent eight-trial hardware matrix collected all windows and
+recovered all funds, but its strict clean-link gate rejected three missing
+packets out of 93,696 submitted. The failed result remains failed; the saved
+evidence does not establish the loss cause. Performance changes
 need a matched baseline with instrumentation cost held constant. No production
 default is selected solely from this loopback experiment.
 
