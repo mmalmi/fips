@@ -36,6 +36,8 @@ class PhoneCustomerTests(unittest.TestCase):
         self.taps = []
         self.result = {"action": "buy", "ok": True}
         self.lose_tap_reply = False
+        self.lose_launch_reply = False
+        self.launches = []
         self.fail_archive = False
         self.after_archive_foreground = None
         self.button = {"text": "Buy forwarding", "enabled": "true", "clickable": "true",
@@ -119,9 +121,14 @@ class PhoneCustomerTests(unittest.TestCase):
                     raise subprocess.TimeoutExpired(command, 25)
                 data = b""
             elif shell[:2] == ["am", "start"]:
+                self.launches.append(shell)
+                already_top = self.foreground == PACKAGE + "/" + ACTIVITY
                 self.foreground = PACKAGE + "/" + ACTIVITY
-                self.marker = {"action": "preview", "ok": True}
+                if not already_top or "--activity-single-top" in shell:
+                    self.marker = {"action": "preview", "ok": True}
                 self.setup_command = shell
+                if self.lose_launch_reply:
+                    raise subprocess.TimeoutExpired(command, 25)
                 data = b"Status: ok"
             else:
                 self.fail("unexpected phone command")
@@ -233,9 +240,37 @@ class PhoneCustomerTests(unittest.TestCase):
         encoded = parse_qs(urlsplit(uri).query)["profile"][0]
         self.assertEqual(json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))), profile)
         self.assertIn(PACKAGE + "/" + ACTIVITY, self.setup_command)
+        self.assertIn("--activity-single-top", self.setup_command)
+        self.assertEqual(self.setup_command[self.setup_command.index("-a") + 1], "android.intent.action.VIEW")
         self.assertFalse(any("profile=" in item for command, _ in self.calls for item in command))
         self.assertFalse(any("bearer-fixture" in path.read_text()
                              for path in self.output.rglob("*.json")))
+
+    def test_launch_requests_a_fresh_preview_when_acceptance_is_already_top(self):
+        self.marker = {"action": "preview", "ok": True, "old": True}
+        old = dict(self.marker)
+        self.assertEqual(self.phone.launch(timeout=0), self.status_value)
+        self.assertEqual(self.archived, [old])
+        self.assertEqual(len(self.launches), 1)
+        command = self.launches[0]
+        self.assertIn("--activity-single-top", command)
+        self.assertEqual(command[command.index("-a") + 1], "android.intent.action.VIEW")
+        self.assertNotIn("-d", command)
+        self.assertEqual(self.taps, [])
+
+    def test_uncertain_launch_blocks_launch_and_setup_until_observed_without_replay(self):
+        self.lose_launch_reply = True
+        with self.assertRaisesRegex(RuntimeError, "uncertain"):
+            self.phone.launch(timeout=0)
+        pending = (self.output / "pending.json").read_bytes()
+        for action in (lambda: self.phone.launch(timeout=0),
+                       lambda: self.phone.open_setup({"billing": "forwarding_data"}, timeout=0)):
+            with self.assertRaisesRegex(RuntimeError, "unresolved"):
+                action()
+            self.assertEqual((self.output / "pending.json").read_bytes(), pending)
+        self.assertEqual(len(self.launches), 1)
+        self.assertEqual(self.phone.reconcile(timeout=0), self.status_value)
+        self.assertEqual(len(self.launches), 1)
 
     def test_evidence_cannot_be_reused_for_another_device(self):
         with self.assertRaisesRegex(RuntimeError, "another device"):

@@ -271,18 +271,28 @@ class PhoneCustomer:
                 raise RuntimeError("invalid pending phone identity")
             return self.wait(self.root / pending["id"], timeout)
 
-    def open_setup(self, profile, timeout=20):
+    def preview(self, arguments, details, timeout):
         timeout = checked_timeout(timeout)
+        with self.locked():
+            self.check(foreground=False)
+            directory = self.begin("preview", **details)
+            # Plain launcher starts may only bring an existing task forward.
+            # VIEW + SINGLE_TOP delivers onNewIntent to its current instance,
+            # which runs the app's read-only preview and writes a fresh marker.
+            self.shell("am", "start", "-W", "--activity-single-top", "-n", PACKAGE + "/" + ACTIVITY,
+                       "-a", "android.intent.action.VIEW", *arguments)
+            return self.wait(directory, timeout)
+
+    def launch(self, timeout=20):
+        """Open the acceptance app and observe its fresh read-only preview."""
+        return self.preview((), {"launch": True}, timeout)
+
+    def open_setup(self, profile, timeout=20):
         encoded = base64.urlsafe_b64encode(json.dumps(profile).encode()).decode().rstrip("=")
         if len(encoded) > 8192:
             raise ValueError("setup profile exceeds the app limit")
-        with self.locked():
-            self.check(foreground=False)
-            directory = self.begin("preview", profile_sha256=hashlib.sha256(encoded.encode()).hexdigest())
-            uri = SCHEME + "://setup?profile=" + encoded
-            self.shell("am", "start", "-W", "-n", PACKAGE + "/" + ACTIVITY,
-                       "-a", "android.intent.action.VIEW", "-d", uri)
-            return self.wait(directory, timeout)
+        uri = SCHEME + "://setup?profile=" + encoded
+        return self.preview(("-d", uri), {"profile_sha256": hashlib.sha256(encoded.encode()).hexdigest()}, timeout)
 
     def screenshot(self, label):
         if not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", label):
