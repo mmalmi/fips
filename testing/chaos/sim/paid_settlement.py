@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
+
 from .run_scope import docker, inspect_owned
 
 
@@ -43,6 +47,58 @@ def amount(value):
     return value
 
 
+@dataclass(frozen=True)
+class SettlementFixture:
+    """Explicit, acknowledged accounts and channels; never discover funding here.
+
+    The caller verifies raw funding terms and rejects unresolved intents before
+    freezing channel ownership; a financial summary alone cannot establish this.
+    Optional provider identities also require exact per-wallet conservation.
+    """
+
+    initial_balances: Mapping[str, int]
+    buyer_budgets: Mapping[str, int]
+    channel_capacity_sat: int
+    channel_owners: Mapping[str, str]
+    channel_providers: Mapping[str, str] | None = None
+
+    def __post_init__(self):
+        for field in ("initial_balances", "buyer_budgets", "channel_owners", "channel_providers"):
+            value = getattr(self, field)
+            if field == "channel_providers" and value is None:
+                continue
+            require(isinstance(value, Mapping), "fixture policy requires explicit mappings")
+            object.__setattr__(self, field, MappingProxyType(dict(value)))
+        accounts = set(self.initial_balances)
+        require(accounts and accounts == set(self.buyer_budgets)
+                and all(isinstance(name, str) and name for name in accounts),
+                "fixture account or buyer-budget set differs")
+        require(sum(amount(value) for value in self.initial_balances.values()) > 0
+                and all(amount(value) > 0 for value in self.buyer_budgets.values())
+                and amount(self.channel_capacity_sat) > 0, "invalid fixture amount or budget")
+        require(all(isinstance(channel, str) and channel
+                    and isinstance(owner, str) and owner in accounts
+                    for channel, owner in self.channel_owners.items()), "invalid original channel owner")
+        if self.channel_providers is not None:
+            require(set(self.channel_providers) == set(self.channel_owners)
+                    and all(isinstance(provider, str) and provider in accounts
+                            and provider != self.channel_owners[channel]
+                            for channel, provider in self.channel_providers.items()),
+                    "fixture provider graph differs from original channels")
+
+    @property
+    def issued_sat(self):
+        return sum(self.initial_balances.values())
+
+    def check_providers(self, finances):
+        if self.channel_providers is not None:
+            for node, state in finances.items():
+                expected = {channel for channel, provider in self.channel_providers.items()
+                            if provider == node}
+                require(set(state["credited"]) == expected,
+                        "provider accounts differ from original channels")
+
+
 def stop_relay(run, node):
     reference = run.containers[node]
     item = inspect_owned("container", reference, run.name)
@@ -52,21 +108,25 @@ def stop_relay(run, node):
     require(result == "stopped", "relay shutdown was not confirmed")
 
 
-def original_channels(nodes, finances):
-    require(set(nodes) == {"n01", "n02", "n03"} == set(finances),
-            "settlement requires the original three accounts")
+def original_channels(nodes, finances, *, fixture=None):
+    accounts = {"n01", "n02", "n03"} if fixture is None else set(fixture.initial_balances)
+    require(set(nodes) == accounts == set(finances),
+            "settlement requires the original accounts")
     owners, operations = {}, set()
     for node in nodes:
         state = finances[node]
         budget = state["budget"]
-        funded = 0 if node == "n02" else 32
+        funded = ((0 if node == "n02" else 32) if fixture is None else
+                  sum(owner == node for owner in fixture.channel_owners.values())
+                  * fixture.channel_capacity_sat)
         require(amount(budget["wallet_debited_sat"]) == amount(budget["locked_sat"])
                 == amount(budget["exposure_sat"]) == funded
                 and amount(budget["pending_reserved_sat"]) == 0
                 and amount(budget["wallet_refunded_sat"]) == 0,
                 "original funding budget differs from the fixed fixture")
         require(amount(state["authorized"]) == sum(amount(value) for value in state["signed"].values())
-                and amount(state["remaining"]) + state["authorized"] == 64,
+                and amount(state["remaining"]) + state["authorized"]
+                == (64 if fixture is None else fixture.buyer_budgets[node]),
                 "original buyer budget differs from retained authorization")
         for channel, operation in finances[node]["funding"].values():
             require(isinstance(channel, str) and bool(channel) and channel not in owners,
@@ -77,25 +137,29 @@ def original_channels(nodes, finances):
             operations.add(operation)
         require(set(state["signed"]) == {channel for channel, _ in state["funding"].values()},
                 "original authorization differs from funded channels")
-    require(len(owners) == 2 and set(owners.values()) == {"n01", "n03"},
-            "expected the original two endpoint-funded channels")
+    if fixture is None:
+        require(len(owners) == 2 and set(owners.values()) == {"n01", "n03"},
+                "expected the original two endpoint-funded channels")
+    else:
+        require(owners == fixture.channel_owners, "funding differs from frozen original channels")
+        fixture.check_providers(finances)
     return owners
 
 
-def validate_report(report):
+def validate_report(report, *, capacity_sat=32):
     fields = ("value_after_stage1_sat", "paid_sat", "receiver_fee_reserve_sat",
               "refunded_sat", "fee_sat")
     values = {key: amount(report[key]) for key in fields}
-    require(values["value_after_stage1_sat"] == 32,
+    require(values["value_after_stage1_sat"] == capacity_sat,
             "settlement changed original channel capacity")
     require(values["receiver_fee_reserve_sat"] == values["fee_sat"] == 0,
             "zero-fee fixture lost value to fees or reserves")
-    require(values["paid_sat"] + values["refunded_sat"] == 32,
+    require(values["paid_sat"] + values["refunded_sat"] == capacity_sat,
             "settlement does not return the full funded value")
     return {"channel_id": report["channel_id"], **values}
 
 
-def validate_finances(before, after, reports):
+def validate_finances(before, after, reports, *, fixture=None):
     require(set(before) == set(after), "settlement changed the account set")
     for node, prior in before.items():
         current = after[node]
@@ -114,31 +178,39 @@ def validate_finances(before, after, reports):
                 "settlement reset lifetime wallet spending")
         require(amount(current["remaining"]) <= amount(prior["remaining"])
                 and amount(current["authorized"]) >= amount(prior["authorized"])
-                and current["remaining"] + current["authorized"] == 64
+                and current["remaining"] + current["authorized"]
+                == (64 if fixture is None else fixture.buyer_budgets[node])
                 and set(current["signed"]) == set(prior["signed"])
                 and sum(amount(value) for value in current["signed"].values()) == current["authorized"],
                 "settlement reset the lifetime buyer budget")
         for channel, _ in prior["funding"].values():
             require(amount(current["signed"][channel]) == reports[channel]["paid_sat"],
                     "settled payment differs from retained authorization")
+    if fixture is not None:
+        fixture.check_providers(after)
+        for channel, provider in (fixture.channel_providers or {}).items():
+            require(amount(after[provider]["credited"][channel]) == reports[channel]["paid_sat"] * 1000,
+                    "settled provider credit differs from retained payment")
 
 
-def check_mint(report, collected):
+def check_mint(report, collected, *, issued_sat=384):
     require(report["test_only"] is True and report["conserved"] is True,
             "isolated mint accounting is not conserved")
     for field in ("issued_sat", "external_funding_sat", "total_accounted_sat"):
-        require(amount(report[field]) == 384, "test mint issuance or accounting changed")
+        require(amount(report[field]) == issued_sat, "test mint issuance or accounting changed")
     require(amount(report["collected_sat"]) == collected, "test collection is incomplete")
 
 
-def settle_and_collect(run, prior_finances, *, execute=None, stop=None, export_path=None):
+def settle_and_collect(run, prior_finances, *, execute=None, stop=None, export_path=None, fixture=None):
     """Settle once, stop relays, then export/collect once without new funding."""
     execute = execute or run.execute
     stop = stop or (lambda node: stop_relay(run, node))
     export_path = export_path or (lambda _node, relative: f"/tmp/bench-state/{relative}")
-    owners = original_channels(run.nodes, prior_finances)
+    owners = original_channels(run.nodes, prior_finances, fixture=fixture)
+    issued = 384 if fixture is None else fixture.issued_sat
+    capacity = 32 if fixture is None else fixture.channel_capacity_sat
     initial = execute("mint", "fips-relay-test-mint", "ctl", {"type": "report"})
-    check_mint(initial, 0)
+    check_mint(initial, 0, issued_sat=issued)
     mint = initial["url"]
     reports = {}
     for node in run.nodes:
@@ -147,10 +219,10 @@ def settle_and_collect(run, prior_finances, *, execute=None, stop=None, export_p
             channel = report["channel_id"]
             require(owners.get(channel) == node and channel not in reports,
                     "settlement returned an unexpected or duplicate channel")
-            reports[channel] = validate_report(report)
+            reports[channel] = validate_report(report, capacity_sat=capacity)
     require(set(reports) == set(owners), "settlement omitted an original channel")
     settled = run.finances()
-    validate_finances(prior_finances, settled, reports)
+    validate_finances(prior_finances, settled, reports, fixture=fixture)
     for node in run.nodes:
         stop(node)
 
@@ -160,7 +232,14 @@ def settle_and_collect(run, prior_finances, *, execute=None, stop=None, export_p
         require(balance["mint_url"] == mint and balance["unit"] == "sat",
                 "wallet balance has the wrong scope")
         balances[node] = amount(balance["balance_sat"])
-    require(sum(balances.values()) == 384, "settled wallets do not hold all issued money")
+    require(sum(balances.values()) == issued, "settled wallets do not hold all issued money")
+    if fixture is not None and fixture.channel_providers is not None:
+        expected = dict(fixture.initial_balances)
+        for channel, owner in owners.items():
+            paid = reports[channel]["paid_sat"]
+            expected[owner] -= paid
+            expected[fixture.channel_providers[channel]] += paid
+        require(balances == expected, "settled wallet distribution differs from verified payments")
     for node, balance in balances.items():
         if balance:
             export_id = f"collect-{node}"
@@ -189,7 +268,7 @@ def settle_and_collect(run, prior_finances, *, execute=None, stop=None, export_p
         require(empty["mint_url"] == mint and empty["unit"] == "sat"
                 and amount(empty["balance_sat"]) == 0, "node wallet is not empty")
     final = execute("mint", "fips-relay-test-mint", "ctl", {"type": "report"})
-    check_mint(final, 384)
+    check_mint(final, issued, issued_sat=issued)
     require(final["url"] == mint, "collector mint identity changed")
     # Evidence contains amounts and settlement terms, never bearer tokens.
     run.evidence["phases"].append({"settlement_collection": {
