@@ -1,3 +1,5 @@
+use crate::protocol::LinkMessageType;
+
 struct LinkReportEpochFixture {
     node: Node,
     remote: NodeAddr,
@@ -101,10 +103,13 @@ impl LinkReportEpochFixture {
 
 #[tokio::test]
 async fn pending_link_epoch_reports_promote_and_dispatch() {
-    for (kind, size) in [(0x01, 48), (0x02, 68)] {
+    for (kind, size) in [
+        (LinkMessageType::SenderReport, 48),
+        (LinkMessageType::ReceiverReport, 68),
+    ] {
         let mut fixture = LinkReportEpochFixture::new();
         let mut report = vec![0; size];
-        report[0] = kind;
+        report[0] = kind.to_byte();
         assert_eq!(fixture.receive(true, &report).await, 1);
         let peer = fixture.node.peers.get(&fixture.remote).unwrap();
         assert!(peer.current_k_bit());
@@ -116,10 +121,18 @@ async fn pending_link_epoch_reports_promote_and_dispatch() {
 #[tokio::test]
 async fn draining_link_epoch_reports_do_not_reach_current_handlers() {
     let mut fixture = LinkReportEpochFixture::new();
-    assert_eq!(fixture.receive(true, &[0x51]).await, 1);
-    for (kind, size) in [(0x01, 48), (0x02, 68)] {
+    assert_eq!(
+        fixture
+            .receive(true, &[LinkMessageType::Heartbeat.to_byte()])
+            .await,
+        1
+    );
+    for (kind, size) in [
+        (LinkMessageType::SenderReport, 48),
+        (LinkMessageType::ReceiverReport, 68),
+    ] {
         let mut report = vec![0; size];
-        report[0] = kind;
+        report[0] = kind.to_byte();
         assert_eq!(
             fixture.receive(false, &report).await,
             0,
@@ -132,11 +145,23 @@ async fn draining_link_epoch_reports_do_not_reach_current_handlers() {
 #[tokio::test]
 async fn draining_link_epoch_packets_do_not_enter_current_receiver_counters() {
     let mut fixture = LinkReportEpochFixture::new();
-    assert_eq!(fixture.receive(false, &[0x51]).await, 1);
-    assert_eq!(fixture.receive(true, &[0x51]).await, 1);
+    assert_eq!(
+        fixture
+            .receive(false, &[LinkMessageType::Heartbeat.to_byte()])
+            .await,
+        1
+    );
+    assert_eq!(
+        fixture
+            .receive(true, &[LinkMessageType::Heartbeat.to_byte()])
+            .await,
+        1
+    );
     let before = fixture.received_packets();
     assert_eq!(
-        fixture.receive(false, &[0x51]).await,
+        fixture
+            .receive(false, &[LinkMessageType::Heartbeat.to_byte()])
+            .await,
         1,
         "valid draining-epoch non-report traffic still dispatches"
     );
@@ -145,6 +170,65 @@ async fn draining_link_epoch_packets_do_not_enter_current_receiver_counters() {
         before,
         "old counters must not enter the new receiver epoch"
     );
-    assert_eq!(fixture.receive(true, &[0x51]).await, 1);
+    assert_eq!(
+        fixture
+            .receive(true, &[LinkMessageType::Heartbeat.to_byte()])
+            .await,
+        1
+    );
     assert_eq!(fixture.received_packets(), before + 1);
+}
+
+#[tokio::test]
+async fn draining_link_epoch_carries_late_application_data() {
+    use crate::node::session_wire::build_fsp_header;
+    let mut fixture = LinkReportEpochFixture::new();
+    assert_eq!(
+        fixture
+            .receive(true, &[LinkMessageType::Heartbeat.to_byte()])
+            .await,
+        1
+    );
+    let before = fixture.received_packets();
+    let application = Identity::generate();
+    let source = *application.node_addr();
+    let (mut sender, receiver) = make_xk_session_pair(&application, fixture.node.identity());
+    fixture.node.sessions.insert(
+        source,
+        SessionEntry::new(
+            source,
+            application.pubkey_full(),
+            EndToEndState::Established(receiver),
+            Node::now_ms(),
+            false,
+        ),
+    );
+    assert!(
+        fixture
+            .node
+            .sync_dataplane_fsp_owner_from_current_session(&source, 0)
+    );
+    let mut endpoint = fixture.node.attach_endpoint_data_io(8).unwrap();
+    let payload = b"valid application data carried by the draining link";
+    let plaintext =
+        fsp_prepend_inner_header(100, SessionMessageType::EndpointData.to_byte(), 0, payload);
+    let header = build_fsp_header(
+        sender.current_send_counter(),
+        0,
+        plaintext.len().try_into().unwrap(),
+    );
+    let ciphertext = sender.encrypt_with_aad(&plaintext, &header).unwrap();
+    let mut wire = header.to_vec();
+    wire.extend(ciphertext);
+    let datagram = SessionDatagram::new(source, *fixture.node.node_addr(), wire).encode();
+    assert!(fixture.receive(false, &datagram).await > 0);
+    let event = endpoint.event_rx.try_recv().unwrap();
+    assert_eq!(event.messages.len(), 1);
+    assert_eq!(event.messages[0].source_peer.node_addr(), &source);
+    assert_eq!(event.messages[0].payload.as_slice(), payload);
+    assert_eq!(
+        fixture.received_packets(),
+        before,
+        "delivered old-key application data must not contaminate current link counters"
+    );
 }
