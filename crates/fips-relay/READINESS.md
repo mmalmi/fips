@@ -368,6 +368,16 @@ all 600 management checks pass and original radio settings restore. The
 50.05-second cut-request-to-alternative-confirmation upper bound includes polling
 and confirmation traffic; it does not establish fast or seamless roaming.
 
+The follow-up software investigation reproduced key-rotation measurement bugs
+in both session and link traffic: authenticated packets and reports from draining
+keys could enter the new key's measurements, and the first pending session-key
+measurements could be discarded during promotion. The core now isolates these
+counter spaces while preserving delivery of valid late application data. Encrypted
+ingress regressions, 99 handler tests and strict core lint pass; the preceding
+session fixes also pass 87 key-rotation tests. These fixes have not yet passed the
+full paid recovery suite or been rerun on the routers, so the physical recovery
+blocker remains open.
+
 The current isolated Android package passes a fresh arm64 native build, Android
 lint and strict Android-target relay/app linting. Native-library provenance is
 verified through packaging, including the build tool's stripping step. Installation
