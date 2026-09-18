@@ -9,6 +9,7 @@ impl Controller {
     /// allocate a new funding identity or another channel. Expired/changed routes
     /// remain stopped until a separate replacement agreement is authorized.
     pub async fn resume_pending(&self) -> Result<(), String> {
+        self.retire_unfunded_reservations().await?;
         self.withdraw_disconnected_purchases().await?;
         self.retire_channels(false).await?;
         // Recover financial identity before applying quote expiry/pause gates.
