@@ -314,6 +314,59 @@ checked before stopping the mint. A failed cleanup is reported as a failed run.
 Run the Wi-Fi, financial, fault and settlement tests on Linux before hardware use;
 include `tests` in `PYTHONPATH` for the existing payment-fault test imports.
 
+### Paid/free Wi-Fi priority
+
+`sim.wifi_priority` reuses the paid Wi-Fi lifecycle and adds two unfunded
+loopback endpoints. The free source enters the middle router locally; paid
+traffic arrives from the first router. Both then leave the middle router toward
+the last router over the same wireless link. The free destination has an explicit
+zero fee, and return allowances are disabled. Auxiliary processes share their
+hosting router's ownership and recovery guard.
+
+From `testing/chaos`, first check the guarded topology without issuing funds:
+
+```sh
+python3 -m unittest tests.test_wifi_priority -v
+python3 -m sim.wifi_priority \
+  --inventory /private/routers.json --binary /private/fips-relay \
+  --mint-binary /private/fips-relay-test-mint \
+  --mint-address 127.0.0.1 --mint-ssh-forward \
+  --output /private/topology-run --topology-only
+```
+
+Use an optimized, measurement-enabled ARM64 router binary and a native controller
+test-mint binary. For the funded test, omit `--topology-only` and use a new output
+directory. It retains the ordinary three funded accounts, two paid channels and
+384-test-sat collection. Default traffic is 64,000 free packets of 1,000 bytes
+at 4,000 packets/s, with 24 paid packets of 128 bytes at 4 packets/s. The middle
+router limits free forwarding to 4 MiB/s with a 256 KiB burst; workload options
+remain bounded by the production diagnostic service.
+
+Acceptance requires middle-router background queue overflow between observations
+made while paid delivery is still incomplete, all paid packets delivered without
+duplicates or invalid data, and advancing automatic payment acknowledged while
+the free sender is active. Free admissions must advance after paid delivery, stay
+within the configured allowance, and recover for a fresh stream after congestion.
+All five identities, peer transports and loopback addresses are checked. The
+unfunded wallets and financial journals must remain unchanged.
+
+No pressure or insufficient overlap fails acceptance. Once both ordinary paid
+channels exist, failed load checks still attempt settlement and complete test-fund
+collection before reporting failure; uncertain financial operations retain the
+original mint and accounts for recovery. A topology-only pass does not count as
+paid-priority acceptance. This experiment does not measure relay CPU efficiency
+(the free source shares its CPU), synchronized one-way latency, or radio airtime
+fairness.
+
+The first three-router hardware run (2026-09-18) passed at the default workload:
+all 24 paid packets arrived while middle-router background overflow increased,
+and an automatic payment was acknowledged before the free sender finished.
+The overloaded free stream delivered 28,626 of 64,000 packets; a fresh four-packet
+free stream then delivered completely. All 384 test sats were collected, both
+unfunded wallets stayed empty, and original router baselines were restored with
+261 management checks and no errors. Throughput and long-running reliability
+still need separate measurement.
+
 ### Phone acceptance helpers
 
 `sim.remote_mint.RemoteMint` gives routers and a phone one explicit private mint
