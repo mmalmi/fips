@@ -7,9 +7,9 @@ use tokio::time::Instant;
 const MAX_PEERS: usize = 64;
 const PEER_RETENTION: Duration = Duration::from_secs(60);
 const GLOBAL_BURST: u32 = 65_536;
-const GLOBAL_RATE: f64 = 16_384.0;
+const GLOBAL_RATE: u32 = 16_384;
 const PEER_BURST: u32 = 16_384;
-const PEER_RATE: f64 = 4_096.0;
+const PEER_RATE: u32 = 4_096;
 // Bound packet processing as well as bytes for the smallest handshake frames.
 pub(crate) const MIN_CHARGE: u32 = 256;
 
@@ -34,24 +34,37 @@ pub(crate) struct UnpaidBudget {
     global: TokenBucket,
     peer_burst: u32,
     peer_rate: f64,
+    peer_retention: Duration,
     peers: HashMap<NodeAddr, PeerBudget>,
     stats: UnpaidStats,
 }
 
 impl UnpaidBudget {
+    pub(crate) fn for_free(policy: &crate::free_routes::FreeBandwidthPolicy) -> Self {
+        Self::with_rates(
+            policy.global_burst_bytes,
+            policy.global_bytes_per_second,
+            policy.peer_burst_bytes,
+            policy.peer_bytes_per_second,
+        )
+    }
+
     pub(crate) fn new() -> Self {
         Self::with_rates(GLOBAL_BURST, GLOBAL_RATE, PEER_BURST, PEER_RATE)
     }
 
     pub(crate) fn for_returns() -> Self {
-        Self::with_rates(8_192, 4_096.0, 2_048, 1_024.0)
+        Self::with_rates(8_192, 4_096, 2_048, 1_024)
     }
 
-    fn with_rates(global_burst: u32, global_rate: f64, peer_burst: u32, peer_rate: f64) -> Self {
+    fn with_rates(global_burst: u32, global_rate: u32, peer_burst: u32, peer_rate: u32) -> Self {
         Self {
-            global: TokenBucket::with_params(global_burst, global_rate),
+            global: TokenBucket::with_params(global_burst, f64::from(global_rate)),
             peer_burst,
-            peer_rate,
+            peer_rate: f64::from(peer_rate),
+            peer_retention: PEER_RETENTION.max(Duration::from_secs(u64::from(
+                peer_burst.div_ceil(peer_rate),
+            ))),
             peers: HashMap::new(),
             stats: UnpaidStats::default(),
         }
@@ -62,10 +75,10 @@ impl UnpaidBudget {
     }
 
     pub(crate) fn admit_at(&mut self, peer: NodeAddr, bytes: usize, now: Instant) -> bool {
-        // A retired peer would already have completely refilled (four seconds).
+        // A retired peer must already have had time to completely refill.
         // Disconnects and claimed source/destination changes do not erase debt.
         self.peers
-            .retain(|_, p| now.saturating_duration_since(p.last_used) < PEER_RETENTION);
+            .retain(|_, p| now.saturating_duration_since(p.last_used) < self.peer_retention);
         if !self.peers.contains_key(&peer) && self.peers.len() >= MAX_PEERS {
             self.stats.peer_capacity_denied = self.stats.peer_capacity_denied.saturating_add(1);
             return false;
@@ -118,6 +131,22 @@ mod tests {
         let mut bytes = [0; 16];
         bytes[..2].copy_from_slice(&n.to_be_bytes());
         NodeAddr::from_bytes(bytes)
+    }
+
+    #[test]
+    fn slow_free_budgets_cannot_reset_before_their_burst_has_refilled() {
+        let policy = crate::free_routes::FreeBandwidthPolicy {
+            global_bytes_per_second: 1,
+            global_burst_bytes: 4_096,
+            peer_bytes_per_second: 1,
+            peer_burst_bytes: 512,
+        };
+        let mut budget = UnpaidBudget::for_free(&policy);
+        let now = Instant::now();
+        assert!(budget.admit_at(peer(1), 512, now));
+        assert!(!budget.admit_at(peer(1), 512, now + PEER_RETENTION));
+        assert_eq!(budget.stats().charged_units, 512);
+        assert!(budget.admit_at(peer(1), 512, now + Duration::from_secs(512)));
     }
 
     #[test]

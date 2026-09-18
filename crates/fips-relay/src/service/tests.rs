@@ -98,6 +98,40 @@ fn return_allowance_is_explicit_and_cannot_change_legacy_tariffs() {
 }
 
 #[test]
+fn free_bandwidth_is_opt_in_and_rejects_invalid_or_legacy_configuration() {
+    let mut value: Value =
+        serde_json::from_str(include_str!("../../service.example.json")).unwrap();
+    let original: ServiceConfig = serde_json::from_value(value.clone()).unwrap();
+    assert!(original.free_bandwidth.is_none());
+    value["free_bandwidth"] = json!({
+        "global_bytes_per_second": 16_384,
+        "global_burst_bytes": 32_768,
+        "peer_bytes_per_second": 4_096,
+        "peer_burst_bytes": 8_192
+    });
+    let legacy: ServiceConfig = serde_json::from_value(value.clone()).unwrap();
+    assert!(legacy.validate().unwrap_err().contains("forwarding-data"));
+    value["terms"]["billing"] = json!("forwarding_data");
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("service.json");
+    std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+    let loaded = ServiceConfig::read(&path).unwrap();
+    assert_eq!(loaded.free_bandwidth.unwrap().peer_bytes_per_second, 4_096);
+    for (field, invalid) in [
+        ("global_bytes_per_second", 0),
+        ("peer_bytes_per_second", 0),
+        ("peer_bytes_per_second", 16_385),
+        ("peer_burst_bytes", 255),
+        ("peer_burst_bytes", 32_769),
+    ] {
+        let mut rejected = value.clone();
+        rejected["free_bandwidth"][field] = json!(invalid);
+        std::fs::write(&path, serde_json::to_vec(&rejected).unwrap()).unwrap();
+        assert!(ServiceConfig::read(&path).is_err(), "invalid {field}");
+    }
+}
+
+#[test]
 fn restored_allowance_is_inaccessible_until_service_startup_finishes() {
     use crate::ledger::{BytePrice, ChannelTerms, Contract};
     let directory = tempfile::tempdir().unwrap();

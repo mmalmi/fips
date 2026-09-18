@@ -56,6 +56,9 @@ pub struct ServiceConfig {
     /// Optional bounded opaque replies on the reverse of an admitted path.
     #[serde(default)]
     pub return_allowance: bool,
+    /// Optional local rate limits for already negotiated free-data forwarding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub free_bandwidth: Option<crate::free_routes::FreeBandwidthPolicy>,
     /// Opt-in source offer comparison and native quality-based path trials.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub price_selection: Option<crate::route_quotes::PriceSelectionPolicy>,
@@ -113,6 +116,12 @@ impl ServiceConfig {
         }
         self.validate_network()?;
         let t = &self.terms;
+        if let Some(policy) = &self.free_bandwidth {
+            policy.validate()?;
+            if !t.billing.has_free_handshakes() {
+                return Err("free bandwidth requires forwarding-data billing".into());
+            }
+        }
         if self.return_allowance && !t.billing.has_free_handshakes() {
             return Err("return allowance requires forwarding-data billing".into());
         }

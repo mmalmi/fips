@@ -11,6 +11,8 @@ use std::{
 
 const MAX_LEASES: usize = 128;
 const MAX_PER_PEER: usize = 16;
+mod bandwidth;
+pub use bandwidth::FreeBandwidthPolicy;
 #[cfg(test)]
 mod tests;
 type Key = (NodeAddr, NodeAddr);
@@ -115,6 +117,7 @@ struct State {
     free_packets: u64,
     free_bytes: u64,
     activating_paid: BTreeSet<Key>,
+    bandwidth: Option<crate::unpaid_budget::UnpaidBudget>,
 }
 
 #[derive(Debug, Default)]
@@ -149,6 +152,8 @@ pub struct FreeRouteStats {
     pub outgoing_leases: usize,
     pub admitted_packets: u64,
     pub admitted_session_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bandwidth: Option<crate::unpaid_budget::UnpaidStats>,
 }
 
 fn now() -> Option<u64> {
@@ -156,6 +161,16 @@ fn now() -> Option<u64> {
 }
 
 impl FreeRoutes {
+    /// Set runtime limits before publishing the shared free-route book.
+    pub fn with_bandwidth(mut self, policy: FreeBandwidthPolicy) -> Result<Self, String> {
+        policy.validate()?;
+        self.state
+            .get_mut()
+            .map_err(|_| "free routes poisoned")?
+            .bandwidth = Some(crate::unpaid_budget::UnpaidBudget::for_free(&policy));
+        Ok(self)
+    }
+
     pub(crate) fn for_accounts(
         seller: Arc<crate::durable::DurableRelay>,
         buyer: Arc<crate::buyer::BuyerAuthorizer>,
@@ -262,15 +277,25 @@ impl FreeRoutes {
         {
             return false;
         }
-        if request.next_hop != request.destination {
-            let Some(next) = state
+        if request.next_hop != request.destination
+            && state
                 .outgoing
-                .get_mut(&outgoing)
-                .filter(|l| l.fits(bytes, now))
-            else {
-                return false;
-            };
-            next.used += bytes;
+                .get(&outgoing)
+                .is_none_or(|l| !l.fits(bytes, now))
+        {
+            return false;
+        }
+        // Permissions, rate credit and both byte quotas commit under one lock.
+        // A missing continuation cannot consume a neighbor's free bandwidth.
+        if state
+            .bandwidth
+            .as_mut()
+            .is_some_and(|budget| !budget.admit(incoming.0, request.session_payload.len()))
+        {
+            return false;
+        }
+        if request.next_hop != request.destination {
+            state.outgoing.get_mut(&outgoing).unwrap().used += bytes;
         }
         state.incoming.get_mut(&incoming).unwrap().used += bytes;
         state.free_packets = state.free_packets.saturating_add(1);
@@ -324,6 +349,7 @@ impl FreeRoutes {
             outgoing_leases: state.outgoing.len(),
             admitted_packets: state.free_packets,
             admitted_session_bytes: state.free_bytes,
+            bandwidth: state.bandwidth.as_ref().map(|budget| budget.stats()),
         }
     }
 }

@@ -220,10 +220,11 @@ impl RelayService {
         if manifest.is_some_and(|m| m.receiver_pubkey != receiver_pubkey) {
             return Err("stored payment receiver identity changed".into());
         }
-        let free = Arc::new(crate::free_routes::FreeRoutes::for_accounts(
-            seller.clone(),
-            buyer.clone(),
-        ));
+        let mut free = crate::free_routes::FreeRoutes::for_accounts(seller.clone(), buyer.clone());
+        if let Some(policy) = &config.free_bandwidth {
+            free = free.with_bandwidth(policy.clone())?;
+        }
+        let free = Arc::new(free);
         let relay = PaidForwarder::with_free_routes(
             seller.clone(),
             buyer.clone(),

@@ -159,8 +159,13 @@ automatic purchase authority. An explicit free-only watch can instead authorize
 bounded automatic upkeep, without mint access or payment debt. Its normal grants
 renew through fresh recursive quotes, retaining replay history and capacity
 bounds; source quality trials keep their separate allowance rules. See the
-pricing document for the current acceptance evidence. Outgoing-link price
-selectors, a rate-limited free tier and paid traffic priority remain unfinished.
+pricing document for the current acceptance evidence. Optional local free-data
+rate limits now share global and authenticated-neighbor budgets across grants
+and destinations. Four regressions failed before enforcement and the slow-refill
+retention fix; all 196 relay library tests and strict all-target linting pass.
+These checks cover configuration and admission, not radio congestion fairness.
+Outgoing-link price selectors, choosing between free and paid tiers for the same
+destination, and paid traffic priority remain unfinished.
 Paid priority must derive from a valid local agreement.
 
 ### Physical Wi-Fi discovery and free recovery
