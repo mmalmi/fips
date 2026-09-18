@@ -23,6 +23,13 @@ pub struct CustomerProfile {
     pub budget_sat: u64,
     pub channel_capacity_sat: u64,
     pub max_rate_msat_per_kib: u64,
+    /// Immutable route tariff. Missing saved values retain the original mode.
+    #[serde(default = "original_billing")]
+    pub billing: BillingBasis,
+}
+
+fn original_billing() -> BillingBasis {
+    BillingBasis::ForwardingAttempt
 }
 
 fn local_address(ip: IpAddr) -> bool {
@@ -34,6 +41,12 @@ fn local_address(ip: IpAddr) -> bool {
 
 impl CustomerProfile {
     pub fn validate(&self) -> Result<(), String> {
+        if !matches!(
+            self.billing,
+            BillingBasis::ForwardingAttempt | BillingBasis::ForwardingData
+        ) {
+            return Err("test customer billing must use per-attempt accounting".into());
+        }
         let entry =
             PeerIdentity::from_npub(&self.entry_npub).map_err(|_| "invalid entry identity")?;
         let destination = PeerIdentity::from_npub(&self.destination_npub)
@@ -101,7 +114,7 @@ impl CustomerProfile {
                 self.entry_address.to_string(),
             )],
             terms: ServiceTerms {
-                billing: BillingBasis::ForwardingAttempt,
+                billing: self.billing,
                 controller: ControllerPolicy {
                     mint_url: self.mint_url.clone(),
                     channel_capacity_sat: self.channel_capacity_sat,
@@ -125,3 +138,6 @@ impl CustomerProfile {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
