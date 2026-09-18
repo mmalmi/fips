@@ -36,6 +36,7 @@ def runner():
     run.forwards = None
     run.monitor = Mock()
     run.watch_started = run.collection_attempted = False
+    run.active_failover = False
     run.fixture = None
     for name in ("save", "phase", "prepare_source", "offline_empty", "form_diamond",
                  "process_snapshots", "financial_checkpoint", "drive_route", "topology",

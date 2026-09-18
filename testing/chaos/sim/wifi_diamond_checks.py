@@ -72,6 +72,20 @@ def counter(value):
     return value
 
 
+def transitional_adjacency(states, identities, addresses):
+    """Only the cut n01/n03 edge may remain stale while forwarding recovers."""
+    retained = {}
+    for name, state in states.items():
+        other = {"n01": "n03", "n03": "n01"}.get(name)
+        departing = [p for p in state["peers"] if other and p["npub"] == identities[other]]
+        require(len(departing) <= 1 and all(p["transport"] == "ethernet"
+                and type(p["connected"]) is bool for p in departing),
+                "departing edge changed identity or transport")
+        retained[name] = {**state, "peers": [p for p in state["peers"] if p not in departing]}
+    adjacency(retained, identities, addresses, radio_down="n01")
+    return states
+
+
 def require_same_process(before, after):
     def identity(state):
         process = state["host_process"]

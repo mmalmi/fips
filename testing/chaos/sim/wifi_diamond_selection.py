@@ -1,6 +1,7 @@
 """Bounded evidence for automatic provider changes on real wireless links."""
 
 import math
+from dataclasses import dataclass
 
 from .paid_settlement import require
 from .wifi_diamond_checks import counter
@@ -12,13 +13,21 @@ POLICY = {"feedback_timeout_ms": 15_000, "retry_after_ms": 60_000,
 FEES = {"n01": 128, "n02": 160}
 PRICE_CEILING = 192
 FULL_QUOTA = 128 * 1024
-PACKETS = 16
 PAYLOAD_BYTES = 256
-RATE = 4
-MAX_PHASE_BATCHES = 16
-BATCH_INTERVAL_SECONDS = 10
 PHASE_SECONDS = 180
-RECEIVER_DRAIN_SECONDS = 5
+
+
+@dataclass(frozen=True)
+class Workload:
+    packets: int
+    rate: int
+    batches: int
+    spacing_seconds: float
+    drain_seconds: float
+
+
+NORMAL_WORKLOAD = Workload(16, 4, 16, 10, 5)
+ACTIVE_WORKLOAD = Workload(32, 2, 8, 0, 0.5)
 
 
 def watch(status, destination, *, paused=False):

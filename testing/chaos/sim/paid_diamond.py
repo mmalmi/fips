@@ -6,6 +6,7 @@ Whole-radio failure proves working-route failover, not isolated loss ranking.
 """
 
 import copy
+from dataclasses import asdict
 import json
 import os
 from pathlib import Path
@@ -18,11 +19,11 @@ from .paid_settlement import require, settle_and_collect
 from .paid_wifi_mint import LocalMint
 from .paid_wifi_forwarding import MintForwards, finish_mint
 from .wifi_diamond import DiamondRun, parser as topology_parser
-from .wifi_diamond_checks import require_same_process
+from .wifi_diamond_checks import require_same_process, transitional_adjacency
 from .wifi_diamond_finances import freeze_fixture
 from .wifi_diamond_selection import (
-    BATCH_INTERVAL_SECONDS, FEES, MAX_PHASE_BATCHES, PACKETS, PAYLOAD_BYTES, POLICY,
-    PHASE_SECONDS, PRICE_CEILING, RATE, RECEIVER_DRAIN_SECONDS,
+    ACTIVE_WORKLOAD, FEES, NORMAL_WORKLOAD, PAYLOAD_BYTES, POLICY,
+    PHASE_SECONDS, PRICE_CEILING,
     bounded_capital, current_purchase, paid_channel_progress,
     trial_ids, watch, working_route,
 )
@@ -78,6 +79,7 @@ class Accounts:
 class PaidDiamondRun(DiamondRun):
     def __init__(self, args):
         super().__init__(args)
+        self.active_failover = args.active_failover
         self.mint = LocalMint(args.mint_binary, "127.0.0.1", self.root)
         self.forwards = None
         self.accounts = Accounts(self)
@@ -89,6 +91,7 @@ class PaidDiamondRun(DiamondRun):
                              money_operations=True, paid_switching_accepted=False,
                              issued_sat=128, channel_capacity_sat=64, source_capital_limit_sat=128,
                              provider_fees_msat_per_kib=FEES, price_selection=POLICY)
+        self.evidence["active_failover_enabled"] = self.active_failover
         for name in ("paid_diamond.py", "wifi_diamond_finances.py", "wifi_diamond_selection.py",
                      "paid_finances.py", "paid_wifi_mint.py", "paid_wifi_forwarding.py",
                      "wifi_probes.py", "wifi_priority_checks.py"):
@@ -187,56 +190,94 @@ class PaidDiamondRun(DiamondRun):
             self.monitor.check()
             time.sleep(max(0, min(0.5, due - time.monotonic())))
 
-    def receive_batch(self, shape, record, deadline):
-        end = min(deadline, time.monotonic() + RECEIVER_DRAIN_SECONDS)
+    def receive_batch(self, shape, record, deadline, drain_seconds):
+        end = min(deadline, time.monotonic() + drain_seconds)
         samples = record.setdefault("receiver_samples", [])
         while True:
             # Drain this same stream before re-arming; a late last packet must
             # not turn a successful burst into a permanently incomplete one.
             report = probes.receive(self, "source", "n03", shape)
             samples.append(report)
+            record["receiver_observed_at"] = time.monotonic()
             self.save()
-            if report["unique_packets"] == PACKETS or time.monotonic() >= end:
+            if report["unique_packets"] == shape["packet_count"] or time.monotonic() >= end:
                 return report
             self.wait_until(min(end, time.monotonic() + 0.25), deadline)
 
-    def drive_route(self, provider, baseline, phase):
+    def confirm_pre_cut_route(self, initial):
+        destination, first = self.nodes["n03"], self.nodes["n01"]
+        observation = self.observe()
+        purchase = working_route(**observation, destination=destination.node_addr,
+                                 destination_npub=destination.npub, provider=first.node_addr, fee=FEES["n01"])
+        require(purchase is not None and current_purchase(initial, destination.node_addr) == purchase,
+                "partially delivered stream is no longer on the original cheaper agreement")
+        return observation
+
+    def record_active_recovery(self, record):
+        cut = self.evidence["active_failover"]
+        cut["accepted_at"] = time.monotonic()
+        cut["delivery_observed_at"] = record["receiver_observed_at"]
+        cut["quality_payment_observed_at"] = record["observation_finished_at"]
+        cut["working_route_upper_bound_seconds"] = cut["accepted_at"] - cut["cut_started"]
+        cut["accepted_stream_id"] = record["shape"]["stream_id"]
+        cut["membership_started_at"] = time.monotonic()
+        states = {name: self.ctl(name, "status") for name in self.accounts.nodes}
+        cut["membership_finished_at"] = time.monotonic()
+        cut["membership"] = states
+        self.save()
+        transitional_adjacency(states, {name: p.npub for name, p in self.accounts.nodes.items()},
+                               self.udp_addresses)
+
+    def drive_route(self, provider, baseline, phase, *, radio=None):
         destination = self.nodes["n03"]
         target = self.nodes[provider]
+        workload = ACTIVE_WORKLOAD if radio is not None else NORMAL_WORKLOAD
+        self.evidence.setdefault("workloads", {})[phase] = asdict(workload)
         previous_trials = trial_ids(baseline, target.node_addr)
         prior_signed = {key: value["authorized_sat"] for key, value in baseline["payment_progress"].items()}
         records = self.evidence.setdefault("route_phases", {}).setdefault(phase, [])
         started = time.monotonic()
         deadline = started + PHASE_SECONDS
-        for index in range(MAX_PHASE_BATCHES):
+        for index in range(workload.batches):
             # Preserve finite bytes but leave the normal 60-second cooldown
             # enough wall time for a fresh trial and confirmed full agreement.
-            self.wait_until(started + index * BATCH_INTERVAL_SECONDS, deadline)
+            self.wait_until(started + index * workload.spacing_seconds, deadline)
             require(time.monotonic() < deadline, "provider transition exceeded its bounded window")
             initial = self.ctl("source", "status")
             bounded_capital(initial)
             watch(initial, destination.npub)
-            shape = probes.arm(self, "source", "n03", PACKETS, PAYLOAD_BYTES)
+            shape = probes.arm(self, "source", "n03", workload.packets, PAYLOAD_BYTES)
             record = {"shape": shape, "initial": initial, "started_at": time.monotonic()}
             records.append(record)
             self.save()
-            sent = probes.send(self, "source", "n03", shape, RATE)
+            if radio is not None and index == 0:
+                cut = self.evidence.setdefault("active_failover", {})
+                cut["shape"] = shape
+                sent = probes.send_with_radio_cut(
+                    self, "source", "n03", shape, workload.rate, radio, cut,
+                    verify_route=lambda: self.confirm_pre_cut_route(initial))
+            else:
+                sent = probes.send(self, "source", "n03", shape, workload.rate)
+            record["send_finished_at"] = time.monotonic()
             record["sender"] = sent
             self.save()
             submitted(sent, shape)
-            received = self.receive_batch(shape, record, deadline)
+            received = self.receive_batch(shape, record, deadline, workload.drain_seconds)
             observation = self.observe()
-            record.update(receiver=received, observation=observation)
+            record.update(receiver=received, observation=observation, observation_finished_at=time.monotonic())
             self.save()
             require(time.monotonic() < deadline, "provider transition exceeded its bounded window")
             purchase = working_route(**observation, destination=destination.node_addr,
                                      destination_npub=destination.npub, provider=target.node_addr,
                                      fee=FEES[provider])
             if (purchase is not None and current_purchase(initial, destination.node_addr) == purchase
-                    and received["unique_packets"] == PACKETS
+                    and received["unique_packets"] == workload.packets
                     and trial_ids(observation["after"], target.node_addr) - previous_trials):
                 channel = purchase["channel"]["id"]
                 if paid_channel_progress(observation["after"], channel, prior_signed.get(channel, 0)):
+                    if radio is not None:
+                        require(index > 0, "interrupted stream cannot prove unchanged replacement agreement")
+                        self.record_active_recovery(record)
                     finances = eventually("reconciled original provider channels", lambda: self.reconciled())
                     self.phase("automatic route delivers with fresh quality and payment",
                                label=phase, provider=provider, purchase=purchase, quality=observation["quality"],
@@ -280,16 +321,23 @@ class PaidDiamondRun(DiamondRun):
             before_cut = self.ctl("source", "status")
             first = self.nodes["n01"]
             try:
-                first.mesh_down()
-                self.phase("cheaper provider left Wi-Fi; source UDP adjacency must remain")
+                if self.active_failover:
+                    self.drive_route("n02", before_cut, "wireless_failover", radio=first)
+                else:
+                    first.mesh_down()
+                    self.phase("cheaper provider left Wi-Fi; source UDP adjacency must remain")
                 states = eventually("only the cheaper provider wireless edge disappears",
                                     lambda: self.topology(radio_down="n01"), 100)
                 self.phase("provider radio loss observed with client adjacency intact", topology=states)
-                self.drive_route("n02", before_cut, "wireless_failover")
+                if self.active_failover:
+                    self.evidence["active_failover"]["eviction_observed_at"] = time.monotonic()
+                else:
+                    self.drive_route("n02", before_cut, "wireless_failover")
                 self.financial_checkpoint(2)
                 before_rejoin = self.ctl("source", "status")
             finally:
-                first.mesh_up()
+                if not self.active_failover or self.evidence.get("active_failover", {}).get("cut_attempted", False):
+                    first.mesh_up()
             eventually("original provider radio rejoins", self.topology, 150)
             self.verify_open_profiles()
             self.drive_route("n01", before_rejoin, "recovered_cheaper_provider")
@@ -323,6 +371,8 @@ def parser():
     result = topology_parser()
     result.description = __doc__
     result.add_argument("--mint-binary", type=Path, required=True)
+    result.add_argument("--active-failover", action="store_true",
+                        help="cut the selected provider during paid traffic and drive recovery before eviction")
     return result
 
 

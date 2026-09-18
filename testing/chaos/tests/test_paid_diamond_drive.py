@@ -6,9 +6,13 @@ import unittest
 from unittest.mock import Mock, patch
 
 from sim.paid_diamond import PaidDiamondRun
-from sim.wifi_diamond_selection import MAX_PHASE_BATCHES, PACKETS, PAYLOAD_BYTES, POLICY
+from sim.wifi_diamond_selection import NORMAL_WORKLOAD, PAYLOAD_BYTES, POLICY
 from sim.wifi_priority_checks import received
 from test_wifi_diamond_selection import DESTINATION, PROVIDER, observation
+
+
+PACKETS = NORMAL_WORKLOAD.packets
+MAX_PHASE_BATCHES = NORMAL_WORKLOAD.batches
 
 
 class Clock:
@@ -19,9 +23,10 @@ class Clock:
         self.now += seconds
 
 
-class DriveTests(unittest.TestCase):
+class DriveFixture:
     def setUp(self):
         self.clock = Clock()
+        self.packet_count = PACKETS
         self.ready_at = 0
         self.delay_last = False
         self.never_complete = False
@@ -68,25 +73,27 @@ class DriveTests(unittest.TestCase):
         return value
 
     def arm(self, _run, source, destination, count, size):
-        self.assertEqual((source, destination, count, size), ("source", "n03", PACKETS, PAYLOAD_BYTES))
+        self.assertEqual((source, destination, count, size), ("source", "n03", self.packet_count, PAYLOAD_BYTES))
         shape = {"stream_id": str(len(self.streams)), "packet_count": count, "payload_bytes": size}
         self.streams.append(shape)
         return shape
 
     def send(self, _run, _source, _destination, shape, rate):
-        self.clock.now += (PACKETS - 1) / rate
-        return {"stream_id": shape["stream_id"], "requested_packets": PACKETS,
-                "submitted_packets": PACKETS, "submitted_bytes": PACKETS * PAYLOAD_BYTES,
+        count = shape["packet_count"]
+        self.clock.now += (count - 1) / rate
+        return {"stream_id": shape["stream_id"], "requested_packets": count,
+                "submitted_packets": count, "submitted_bytes": count * PAYLOAD_BYTES,
                 "stopped_reason": "send failed" if self.bad_sender else None}
 
     def receive(self, _run, _source, _destination, shape):
         stream = shape["stream_id"]
         first = self.receptions.get(stream, 0) == 0
         self.receptions[stream] = self.receptions.get(stream, 0) + 1
-        count = PACKETS - int(self.never_complete or self.delay_last and first)
-        report = {"stream_id": stream, "source": "source", "expected_packets": PACKETS,
+        total = shape["packet_count"]
+        count = total - int(self.never_complete or self.delay_last and first)
+        report = {"stream_id": stream, "source": "source", "expected_packets": total,
                   "payload_bytes": PAYLOAD_BYTES, "unique_packets": count,
-                  "unique_bytes": count * PAYLOAD_BYTES, "missing_packets": PACKETS - count,
+                  "unique_bytes": count * PAYLOAD_BYTES, "missing_packets": total - count,
                   "duplicate_packets": int(self.bad_receiver), "invalid_packets": 0, "latency": None}
         received(report, shape, "source")
         return report
@@ -94,6 +101,8 @@ class DriveTests(unittest.TestCase):
     def drive(self):
         return self.run.drive_route("n01", self.baseline, "test")
 
+
+class DriveTests(DriveFixture, unittest.TestCase):
     def test_cooldown_then_trial_and_confirmation_fit_without_more_bytes(self):
         # No provider is eligible for 60s; its ordinary trial then takes 40s.
         self.ready_at = 100

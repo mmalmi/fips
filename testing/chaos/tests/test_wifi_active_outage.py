@@ -23,9 +23,12 @@ def probe_report(count, expected=24, stream="a" * 32):
 
 
 class ActiveOutageTests(unittest.TestCase):
-    def run_cut(self, *, completed=False, lost=False, observation_error=False, restart=False, late_cut=False):
+    def run_cut(self, *, completed=False, lost=False, observation_error=False, restart=False,
+                late_cut=False, cut_error=False):
         run = Mock()
         run.nodes = {name: Mock(npub=name) for name in ("n01", "n02", "n03")}
+        if cut_error:
+            run.nodes["n03"].mesh_down.side_effect = RuntimeError("radio command reply lost")
         run.evidence = {}
         run.assert_finances = Mock()
         shape, sent, partial = probe_report(2)
@@ -50,10 +53,11 @@ class ActiveOutageTests(unittest.TestCase):
         clock = iter([0, 1, 12, *range(13, 30)]) if late_cut else itertools.count()
         with patch("sim.wifi_active_outage.time.monotonic", side_effect=lambda: next(clock)), \
                 patch("sim.wifi_active_outage.snapshot", side_effect=snapshots), \
-                patch("sim.wifi_active_outage.ThreadPoolExecutor") as executor, \
+                patch("sim.wifi_probes.ThreadPoolExecutor") as executor, \
                 patch("sim.wifi_active_outage.probes.arm", side_effect=[shape, recovery_shape]), \
                 patch("sim.wifi_active_outage.probes.send", return_value=recovery_sent), \
                 patch("sim.wifi_active_outage.probes.receive", side_effect=results), \
+                patch("sim.wifi_probes.eventually", side_effect=lambda _d, f, _s: f()), \
                 patch("sim.wifi_active_outage.eventually", side_effect=lambda _d, f, _s: f()), \
                 patch("sim.wifi_active_outage.time.sleep"):
             executor.return_value.__enter__.return_value = pool
@@ -62,6 +66,8 @@ class ActiveOutageTests(unittest.TestCase):
                 active_radio_outage(run)
             except RuntimeError as value:
                 error = value
+        pool.submit.assert_called_once()
+        future.result.assert_called_once_with(timeout=35)
         return run, error
 
     def test_partial_live_stream_cut_rejoins_and_uses_fresh_recovery_probe(self):
@@ -89,6 +95,14 @@ class ActiveOutageTests(unittest.TestCase):
         run, error = self.run_cut(observation_error=True)
         self.assertIn("invalid reply", str(error))
         run.nodes["n03"].mesh_up.assert_called_once_with()
+        self.assertFalse(run.evidence["active_outage"]["passed"])
+
+    def test_uncertain_radio_departure_restores_after_draining_original_send(self):
+        run, error = self.run_cut(cut_error=True)
+        self.assertIn("radio command reply lost", str(error))
+        run.nodes["n03"].mesh_up.assert_called_once_with()
+        self.assertIn("sender", run.evidence["active_outage"])
+        self.assertNotIn("cut_completed", run.evidence["active_outage"])
         self.assertFalse(run.evidence["active_outage"]["passed"])
 
     def test_pending_control_response_cannot_prove_late_cut_interrupted_sending(self):
