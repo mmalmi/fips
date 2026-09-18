@@ -137,6 +137,18 @@ impl Node {
                 processed = processed.saturating_add(1);
                 continue;
             };
+            if matches!(
+                LinkMessageType::from_byte(msg_type),
+                Some(LinkMessageType::SenderReport | LinkMessageType::ReceiverReport)
+            ) && !self.authenticated_fmp_uses_current_epoch(fmp)
+            {
+                debug!(
+                    src = %self.peer_display_name(fmp.source_node_addr()),
+                    msg_type,
+                    "Ignoring link report from a draining key epoch"
+                );
+                continue;
+            }
             if msg_type == LinkMessageType::SessionDatagram.to_byte() {
                 let datagram = AuthenticatedSessionDatagram::new(
                     fmp.source_peer,
