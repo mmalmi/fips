@@ -362,6 +362,26 @@ impl Node {
             );
         }
 
+        // Reports describe counters and timestamps from their key epoch. The
+        // draining epoch still admits late application data, but its reports
+        // cannot update the newly promoted session's measurements.
+        if matches!(
+            SessionMessageType::from_byte(msg_type),
+            Some(SessionMessageType::SenderReport | SessionMessageType::ReceiverReport)
+        ) && !self
+            .sessions
+            .get(&source_addr)
+            .is_some_and(|session| session.current_k_bit() == received_k_bit)
+        {
+            debug!(
+                src = %self.peer_display_name(&source_addr),
+                received_k_bit,
+                msg_type,
+                "Ignoring session report from a draining key epoch"
+            );
+            return None;
+        }
+
         let message = AuthenticatedSessionMessage::new(source_peer, plaintext, msg_type);
         Some(AuthenticatedSessionDispatch::new(
             source_addr,
