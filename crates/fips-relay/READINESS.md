@@ -183,10 +183,30 @@ filters are removed without a forced stop. The 26 Wi-Fi harness checks and 17
 affected fault/probe checks also pass, including failed restoration and cleanup
 races. The installed router services remain on their original build.
 
-This establishes one controlled free radio leave/rejoin, not arbitrary physical
-mobility or throughput. Radio admission still needs the existing shared SAE key.
-Mixed/mobile neighborhoods, permissionless radio admission and the updated
-Pixel regression remain separate checks.
+This first run establishes one controlled free radio leave/rejoin using the
+existing shared SAE key. The separate open-radio acceptance below removes that
+shared-key requirement; mixed/mobile neighborhoods and the updated Pixel
+regression remain separate checks.
+
+The opt-in open-radio run passes all 20 phases on the same three ARM64 OpenWrt
+routers. Two nodes discover and authenticate each other before the third radio
+joins the temporary public mesh, without a shared mesh key or a configured FIPS
+peer roster. All 40 fresh packets arrive, including both directions through the
+middle router before and after a leaf leaves, its peers are evicted, and it
+rejoins. The existing free-only watches recover automatically. Middle-router
+admission and observed shortcut drops corroborate the two-hop path.
+
+The harness verifies open radio admission, an eight-peer limit, 60-second
+inactivity limits and disabled kernel mesh forwarding after convergence and
+rejoin. Original-service EtherTypes are isolated in both directions while the
+temporary radio profile is active. No funds are issued and financial journals
+remain unchanged. All 285 management checks pass, with a maximum sampling gap
+of 2.30 seconds. Cleanup restores the exact original radio profile, limits and
+router baselines, and removes candidate processes and owned filters without
+errors. The 56 Linux guard checks pass without skips. This establishes controlled
+open joining and free recovery on one common radio channel; paid open joining,
+hostile-load tolerance, automatic channel selection and arbitrary physical
+mobility remain unverified.
 
 The [paid Wi-Fi harness](../../testing/chaos/README.md#paid-wi-fi-recovery) also
 passes all 22 phases on three ARM64 OpenWrt routers. Dedicated SSH connections
@@ -207,9 +227,10 @@ Original router baselines are restored, and candidate processes, temporary
 filters, mint forwards and the fully collected mint stop without cleanup errors.
 
 This covers one controlled departure/rejoin with reconciled, already funded
-routes. Interrupted purchase acceptance, arbitrary physical mobility/mesh
-merge-split, permissionless radio admission, updated Pixel acceptance and current
-hardware performance measurements still require verification.
+routes on the existing SAE-protected radio mesh. Combining paid recovery with
+open radio admission, interrupted purchase acceptance on hardware, arbitrary
+physical mobility/mesh merge-split, updated Pixel acceptance and current hardware
+performance measurements still require verification.
 
 ## Guarded cadence measurement
 

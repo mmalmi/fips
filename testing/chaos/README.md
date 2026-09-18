@@ -223,8 +223,12 @@ Management and APs must remain separate. An ambiguous untagged network, changed
 owner or failed restoration leaves recovery markers and original-service
 isolation in place; cleanup fails rather than deleting an unowned profile or
 exposing original accounts. No shared SAE key is used by the temporary profile.
-This mode has guard-test coverage; its zero-funded physical acceptance remains
-pending. It does not establish hostile-load tolerance or automatic channel choice.
+Its zero-funded physical acceptance passes on three ARM64 OpenWrt routers:
+two-node discovery followed by a late third-node join, 40/40 fresh packets,
+two-hop delivery in both directions before and after leave/rejoin, unchanged
+financial journals and exact restoration. All 285 management checks pass, as do
+the 56 Linux guard tests. This does not establish paid open joining, arbitrary
+physical mobility, hostile-load tolerance or automatic channel choice.
 
 Before hardware use, run `python3 -m unittest discover -s tests -p 'test_wifi_*.py' -v`
 from `testing/chaos` on Linux with `flock`. The guard tests use real process ownership and file locks,
