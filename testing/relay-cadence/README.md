@@ -138,6 +138,29 @@ capacity, or mixed free/paid performance. Keep the 500-ms default until a matche
 comparison supports changing it. The earlier remote-mint matrix and this pilot
 use different mint connections and cannot isolate a scheduler optimization.
 
+The subsequent matched eight-trial comparison on the same priority-enabled
+router build and controller-SSH mint also passed. It delivered all 93,696
+payload packets (81 reordered, none missing, duplicated or invalid), collected
+all 3,072 test sats, and restored every original baseline with 2,055 successful
+management checks and no cleanup errors. The following high-rate results average
+two repetitions; payment totals cover all three processes:
+
+| Maximum payment age | Updates | Payment CPU (ms) | Payment record bytes | Payment journal bytes | Forwarding-router CPU s/MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 250 ms | 4 | 208.18 | 3,281 | 45,526 | 0.276 |
+| 500 ms | 3 | 163.94 | 2,463 | 31,919 | 0.277 |
+| 1 s | 2 | 102.11 | 1,642 | 22,247 | 0.261 |
+| 2 s | 2 | 105.70 | 1,642 | 20,370 | 0.269 |
+
+Idle windows did no payment polling, signing, updates or journal writes. Bursts
+fit within existing acknowledged credit; steady windows needed three updates
+at every policy. The 1-s policy reduced measured payment CPU by about 38% and
+record bytes by 33% versus 500 ms in this high-rate workload. These are partial
+payment costs, and the workload does not establish maximum throughput. Two
+repetitions on a stable topology, without competing free load or measured
+hardware latency, do not justify changing the 500-ms default. The earlier
+three-packet-loss matrix remains a failed result with an unresolved loss cause.
+
 Raw `measurements.jsonl` is written incrementally. Workload failure attempts
 settlement/collection while management and ownership guards remain healthy;
 uncertain funding or failed guards retain the original mint/accounts for
@@ -364,7 +387,7 @@ and checkpoint instrumentation uses non-overlapping spans.
 This matrix provides the repeatable clean-link baseline. It does not fulfill
 the full production-readiness benchmark. Still required: impaired links using
 the existing FIPS simulation/chaos facilities, payment-specific complete carrier
-bytes, SDK snapshot and receiver SQLite storage measurements, profiler attribution outside
+bytes, further SDK snapshot and receiver SQLite storage comparisons, profiler attribution outside
 the synchronous spans, and complete controlled ARM64/router/phone comparisons.
 The guarded three-router 250-ms pilot passed all four workloads and financial
 recovery. The subsequent eight-trial hardware matrix collected all windows and
@@ -390,6 +413,59 @@ Subtracting that baseline estimates incremental cost; it does not establish exac
 per-payment attribution during mixed data traffic or measure radio airtime.
 
 ### Separate storage syscall diagnostics
+
+For an isolated capture through the production payment path, run from
+`testing/chaos` with explicitly supplied Linux ARM64 binaries and an existing
+ARM64 image containing Python and `strace`:
+
+```sh
+python3 -m sim.paid_storage --binary-dir /absolute/linux-arm64 \
+  --image LOCAL_DIAGNOSTIC_IMAGE_ID --output /absolute/new-private-capture
+```
+
+This reuses the paid Ethernet fixture, with three relays, two original channels,
+and a private mint capped at 384 test sats. No image or binary is built or pulled.
+Both directions warm up before tracing. Stable double samples require the
+original paying channels' acknowledged credit to cover usage and signed
+liability, with no payment in flight. The capture covers six eight-packet probes
+(12,288 delivered application bytes), automatic payment reconciliation, and a
+second stable boundary. It excludes channel funding and settlement and must not
+be used for timing comparisons.
+
+Each owned container supervises its tracer, checks the exact relay executable
+and command line through a pidfd, verifies attachment to every current thread,
+and bounds the capture to 90 seconds and 64 MiB. Deliberate SIGINT detach may
+return zero or signal status; acceptance separately requires the relay to remain
+alive and untraced, with empty tracer stderr. The parser still validates all
+records. The run requires writes from both buyer SDKs and the receiver SQLite
+store, rejects failed file/directory syncs and funding-wallet writes, and retains
+unmatched and unattributed operations separately. SDK temporary-file attribution
+is scoped to this ordinary-payment workload, not inferred from arbitrary files.
+
+The same original channels are settled and all test money collected even if the
+capture is rejected. The workload alarm is disabled before financial closure;
+individual operations retain their own timeouts. If funding or collection is
+uncertain, the original containers and accounts remain available and the run
+fails. Never reset, replace, or repeat these accounts to hide incomplete recovery.
+
+An initial Linux ARM64 capture on 2026-09-18 delivered all 48 payload packets and
+reconciled 17 automatic payments. The separate syscall totals were:
+
+| Category | Successful write bytes | File syncs |
+| --- | ---: | ---: |
+| Buyer SDK private snapshots | 256,950 | 17 |
+| Receiver SQLite and journal | 287,708 | 51 |
+| Relay journals | 156,224 | 68 |
+
+There were another 102 parent-directory syncs, no failed file operations, no
+funding-wallet writes and no unmatched file paths. The SDKs performed 17 snapshot
+writes alongside 17 signing operations; the receiver recorded 17 update
+operations. All three tracers detached cleanly, all 384 test sats were collected,
+and owned resources were removed. These counts expose storage omitted by the
+relay journal counters. They are one workload's filesystem syscall costs, not
+flash wear, SQLite changed-row counts or a timing benchmark. Snapshot size also
+depends on retained account history; this small fresh-account result cannot
+establish long-running storage cost.
 
 `storage_trace.py` summarizes an isolated Linux `strace` capture by explicit file
 categories. Use a fresh private output directory and the options returned by

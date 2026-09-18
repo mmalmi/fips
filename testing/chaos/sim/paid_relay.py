@@ -81,6 +81,7 @@ class PaidRelayRun:
         self.veth = VethManager(self.topology)
         self.containers = {}
         self.output_created = False
+        self.funding_started = False
         self.evidence = {"run": self.name, "test_funds_only": True, "phases": [],
                          "payment_faults_requested": bool(getattr(args, "payment_faults", False))}
 
@@ -168,6 +169,9 @@ class PaidRelayRun:
         for node in self.nodes:
             write_json(self.root / node / "config.json", relay_config(self.topology.ethernet_interfaces(node), mint_url))
             self.nodes[node].npub = self.execute(node, "fips-relay", "init")
+            # A lost issue/import reply leaves financial state uncertain.
+            # Retain the original accounts unless collection is proven.
+            self.funding_started = True
             grant = self.execute("mint", "fips-relay-test-mint", "ctl", {"type": "issue", "id": node, "amount_sat": 128})
             token = self.state_json("mint", f"exports/{node}.json")["token"]
             self.execute(node, "fips-relay", "wallet", {"type": "import", "token": token})
@@ -297,16 +301,27 @@ class PaidRelayRun:
                 {"kind": kind, "id": identity} for kind, identity in self.resources.created
             ]
             errors = []
-            try:
-                self.veth.teardown_all()
-            except (RuntimeError, subprocess.TimeoutExpired) as error:
-                errors.append(str(error))
-            errors.extend(self.resources.cleanup())
+            collected = self.evidence.get("mint", {})
+            safe = not self.funding_started or (
+                collected.get("conserved") is True and collected.get("issued_sat") == 384
+                and collected.get("collected_sat") == 384
+            )
+            self.evidence["resources_retained"] = not safe
+            if not safe:
+                self.evidence["passed"] = False
+            if safe:
+                try:
+                    self.veth.teardown_all()
+                except (RuntimeError, subprocess.TimeoutExpired) as error:
+                    errors.append(str(error))
+                errors.extend(self.resources.cleanup())
             self.evidence["cleanup_errors"] = errors
             if errors:
                 self.evidence["passed"] = False
             if self.output_created:
                 write_json(self.root / "result.json", self.evidence)
+            if not safe:
+                raise RuntimeError("original funded resources retained; collection is unproven")
             if errors:
                 raise RuntimeError("owned resource cleanup incomplete; inspect result.json")
 

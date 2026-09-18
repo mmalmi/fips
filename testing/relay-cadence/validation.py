@@ -82,6 +82,15 @@ def validate_host_pair(before, after):
             raise ValueError(f"hardware process counter reset: {field}")
 
 
+def reconciled_payment(state):
+    """Local usage and signed liability must already have acknowledged credit."""
+    evidence = unsigned(state["evidence_msat"])
+    authorized = unsigned(state["authorized_sat"]) * 1000
+    acknowledged = unsigned(state["acknowledged_msat"])
+    if state["in_flight"] is not False or acknowledged < max(evidence, authorized):
+        raise ValueError("unreconciled payment work at measurement boundary")
+
+
 def quiet_boundary(nodes, schema=2):
     """Acknowledged credit must cover current local evidence and signed liability."""
     expected_nodes, expected_channels = (3, 2) if schema == 3 else (5, 6)
@@ -110,11 +119,7 @@ def quiet_boundary(nodes, schema=2):
         for channel, state in progress.items():
             if not isinstance(channel, str) or not channel or channel in channels:
                 raise ValueError("duplicate or invalid payment channel")
-            evidence = unsigned(state["evidence_msat"])
-            authorized = unsigned(state["authorized_sat"]) * 1000
-            acknowledged = unsigned(state["acknowledged_msat"])
-            if state["in_flight"] is not False or acknowledged < max(evidence, authorized):
-                raise ValueError("unreconciled payment work at measurement boundary")
+            reconciled_payment(state)
             channels[channel] = process if schema == 3 else index
     if len(channels) != expected_channels:
         raise ValueError(f"expected {expected_channels} reconciled paying channels")
