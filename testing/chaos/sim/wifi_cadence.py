@@ -1,7 +1,7 @@
 """Matched payment-cadence measurements on three guarded OpenWrt routers.
 
-Reuse the paid Wi-Fi lifecycle with a fresh capped mint on an explicit Linux
-host. Every trial settles and collects before the next can start. A pilot runs
+Reuse the paid Wi-Fi lifecycle with a fresh capped local or explicit remote
+mint. Every trial settles and collects before the next can start. A pilot runs
 one full workload sequence; it cannot establish a cadence comparison.
 """
 
@@ -19,7 +19,6 @@ import time
 from .paid_relay import eventually, write_json
 from .paid_settlement import original_channels, require, settle_and_collect
 from .paid_wifi import PaidWifiRun
-from .remote_mint import RemoteMint
 from .wifi_remote import digest
 from .wifi_measurements import DATAPLANE_DROP_LOG_FILTER
 
@@ -66,6 +65,7 @@ def metadata(args):
         "native_counters": getattr(args, "native_counters", False),
         "dataplane_drop_log_filter": (DATAPLANE_DROP_LOG_FILTER
                                       if getattr(args, "dataplane_drop_logs", False) else None),
+        "mint_connection": "controller_ssh" if args.mint_ssh_forward else "remote_lan",
         "relay_sha256": relay_sha,
         "mint_sha256": digest(args.mint_binary.read_bytes()),
         "provenance": provenance,
@@ -83,10 +83,6 @@ class CadenceRun(PaidWifiRun):
                              measurement_acceptance="not_analyzed")
         for name in ("wifi_cadence.py", "wifi_measurements.py", "remote_mint.py"):
             self.evidence["harness_sha256"][name] = digest(Path(__file__).with_name(name).read_bytes())
-
-    def create_mint(self, args):
-        return RemoteMint(json.loads(args.mint_host.read_text()), args.mint_binary,
-                          self.run, self.root, args.mint_address, max_issued_sat=384)
 
     def profile_config(self, node):
         config = super().profile_config(node)
@@ -225,7 +221,6 @@ def run(args):
             for trial, delay in enumerate(selected):
                 trial_args = argparse.Namespace(**vars(args))
                 trial_args.output = args.output / f"trial-{trial:02}-{delay}ms"
-                trial_args.mint_ssh_forward = False
                 trial_args.open_mesh = False
                 signal.alarm(900)
                 CadenceRun(trial_args, trial, delay, record).execute()
@@ -248,8 +243,12 @@ def run(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("inventory", "binary", "mint-binary", "mint-host", "provenance", "output"):
+    for name in ("inventory", "binary", "mint-binary", "provenance", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
+    mint = parser.add_mutually_exclusive_group(required=True)
+    mint.add_argument("--mint-host", type=Path, help="explicit private Linux mint-host inventory")
+    mint.add_argument("--mint-ssh-forward", action="store_true",
+                      help="use a native controller mint over private router loopback forwards")
     parser.add_argument("--mint-address", required=True)
     parser.add_argument("--pilot", action="store_true", help="one full trial; no policy comparison")
     parser.add_argument("--pilot-delay-ms", type=int, choices=sorted(set(POLICIES)),

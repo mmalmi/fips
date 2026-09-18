@@ -104,12 +104,39 @@ binary digest to a successful, unchanged-source ARM64 musl build with
 `--release` and the `measurements` feature. The runner retains this provenance,
 platform/load information and exact harness hashes beside private evidence.
 
+Alternatively, run the mint on the controller: replace `--mint-host` and its
+address with `--mint-ssh-forward --mint-address 127.0.0.1`, and supply a native
+controller `--mint-binary`. This reuses the paid Wi-Fi loopback forwards, checks
+all three connections before issuing funds, and preserves them if recovery is
+incomplete. Choose exactly one mint mode. Every trial keeps the selected mode;
+`mint_connection` records it in the measurement metadata. Keep the same mode
+throughout a matched comparison.
+
 Start with `--pilot`: one 250-ms trial runs all four workloads and the same
 strict measurement and financial checks. It always reports
 `comparison_complete: false`. Omit `--pilot` and select a new output directory
 for the complete eight-trial matrix. Each trial restores the original router
 baselines and stops its fully collected mint before the next starts. The saved
 radio profile, management LAN and original service accounts are preserved.
+
+The priority-enabled router build passed a 500-ms controller-SSH pilot on
+2026-09-18: all 11,712 payload packets arrived, all 384 test sats were collected,
+and original baselines were restored with 258 management checks and no errors.
+The forwarding router ran separately from the traffic-generating endpoint.
+Its observed cost, including sampling and the common three-second tail, was:
+
+| Workload | Forwarding-router CPU seconds | CPU seconds per delivered MiB |
+| --- | ---: | ---: |
+| Idle | 0.129 | — |
+| Bursty | 0.598 | 1.224 |
+| Steady | 2.624 | 0.860 |
+| High rate | 2.109 | 0.276 |
+
+Idle produced no payment updates, payment records or payment journal writes.
+This single-policy pilot does not establish a cadence winner, sustained link
+capacity, or mixed free/paid performance. Keep the 500-ms default until a matched
+comparison supports changing it. The earlier remote-mint matrix and this pilot
+use different mint connections and cannot isolate a scheduler optimization.
 
 Raw `measurements.jsonl` is written incrementally. Workload failure attempts
 settlement/collection while management and ownership guards remain healthy;
@@ -222,6 +249,12 @@ reports forwarding/drop, congestion and error-signal counter deltas per node,
 plus separate `native_gap_counters` for guards and inter-window gaps. Missing or
 changed groups, a failed reply, an identity change or a counter reset invalidate
 both strict and diagnostic analysis. There are no invented zero counters.
+
+The analyzer recognizes the historical forwarding layout and its extension with
+both `drop_background_full_packets` and `drop_background_full_bytes`. It preserves
+those counters when present and rejects partial or changing layouts between
+native queries, sample boundaries and inter-window gaps. Historical reports keep
+the counters absent.
 
 These counters cover native traffic in aggregate, including control traffic.
 They can identify recorded forwarding-policy, route, MTU or local-send failures;

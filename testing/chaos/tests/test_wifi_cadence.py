@@ -98,10 +98,10 @@ class CadenceTests(unittest.TestCase):
         self.assertIsNone(terms["controller"]["renewal"])
         self.assertEqual(terms["billing"], "forwarding_data")
 
-    def test_pilot_cannot_claim_completed_comparison(self):
+    def test_pilot_preserves_private_mint_forwards_without_claiming_comparison(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "pilot"
-            args = argparse.Namespace(output=output, pilot=True)
+            args = argparse.Namespace(output=output, pilot=True, mint_ssh_forward=True)
             with patch("sim.wifi_cadence.metadata", return_value={"schema": 3}), \
                     patch("sim.wifi_cadence.CadenceRun") as service, \
                     patch("sim.wifi_cadence.subprocess.run", return_value=Mock(
@@ -116,7 +116,7 @@ class CadenceTests(unittest.TestCase):
             self.assertIn("--pilot", analyzer.call_args.args[0])
             passed_args = service.call_args.args[0]
             self.assertFalse(passed_args.open_mesh)
-            self.assertFalse(passed_args.mint_ssh_forward)
+            self.assertTrue(passed_args.mint_ssh_forward)
 
     def test_failed_trial_stops_matrix_and_records_failure(self):
         with tempfile.TemporaryDirectory() as temporary:

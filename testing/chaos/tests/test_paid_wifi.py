@@ -5,12 +5,13 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sim.paid_settlement import settle_and_collect
-from sim.paid_wifi import reconciled_channels, retain_channels
+from sim.paid_wifi import PaidWifiRun, reconciled_channels, retain_channels
 from sim.paid_faults import validate_unpaid_probe
 from sim.paid_wifi_mint import LocalMint
 from tests.test_paid_faults import finances
@@ -30,6 +31,32 @@ def accounts():
 
 
 class PaidWifiTests(unittest.TestCase):
+    def test_mint_selection_keeps_the_existing_local_and_remote_adapters(self):
+        service = object.__new__(PaidWifiRun)
+        service.run, service.root = "a" * 12, Path("/private/output")
+        args = SimpleNamespace(mint_binary=Path("/mint"), mint_address="127.0.0.1",
+                               mint_host=None, mint_ssh_forward=True)
+        with patch("sim.paid_wifi.LocalMint") as local, patch("sim.paid_wifi.RemoteMint") as remote:
+            self.assertIs(service.create_mint(args), local.return_value)
+            local.assert_called_once_with(args.mint_binary, args.mint_address, service.root)
+            remote.assert_not_called()
+            args.mint_host = Mock()
+            args.mint_host.read_text.return_value = '{"host":"private-mint"}'
+            args.mint_address, args.mint_ssh_forward = "192.0.2.1", False
+            self.assertIs(service.create_mint(args), remote.return_value)
+            remote.assert_called_once_with({"host": "private-mint"}, args.mint_binary,
+                                           service.run, service.root, args.mint_address,
+                                           max_issued_sat=384)
+            self.assertEqual(local.call_count, 1)
+
+    def test_conflicting_mint_modes_fail_before_creating_any_run(self):
+        args = SimpleNamespace(mint_host=Path("/remote.json"), mint_ssh_forward=True,
+                               mint_address="127.0.0.1")
+        with patch("sim.paid_wifi.WifiRun.__init__") as setup, \
+                self.assertRaisesRegex(ValueError, "separate choices"):
+            PaidWifiRun(args)
+        setup.assert_not_called()
+
     def test_partition_anchor_waits_for_pending_signature_to_be_credited(self):
         prior, pending = accounts(), accounts()
         pending["n01"].update(remaining=60, authorized=4, signed={"n01": 4}, signed_after={"n01": 4})

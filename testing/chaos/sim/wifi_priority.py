@@ -20,7 +20,6 @@ from .paid_relay import eventually, relay_config
 from .paid_settlement import original_channels, require, settle_and_collect
 from .paid_wifi import PaidWifiRun, retain_channels
 from .paid_wifi_forwarding import MintForwards
-from .remote_mint import RemoteMint
 from .wifi_discovery import validate_free_offer, validate_unfunded
 from .wifi_measurements import snapshot
 from .wifi_priority_checks import (
@@ -33,8 +32,6 @@ from .wifi_remote import digest
 class PriorityRun(PaidWifiRun):
     def __init__(self, args):
         self.schedule = workload(args)
-        if args.mint_host and args.mint_ssh_forward:
-            raise ValueError("remote mint and controller SSH forwards are separate choices")
         super().__init__(args)
         self.auxiliary = {
             "free-source": self.nodes["n02"].add_profile("free-source"),
@@ -51,12 +48,6 @@ class PriorityRun(PaidWifiRun):
         )
         for name in ("wifi_priority.py", "wifi_priority_checks.py", "wifi_profiles.py", "wifi_measurements.py"):
             self.evidence["harness_sha256"][name] = digest(Path(__file__).with_name(name).read_bytes())
-
-    def create_mint(self, args):
-        if args.mint_host:
-            return RemoteMint(json.loads(args.mint_host.read_text()), args.mint_binary,
-                              self.run, self.root, args.mint_address, max_issued_sat=384)
-        return super().create_mint(args)
 
     def participants(self):
         return {**self.nodes, **self.auxiliary}

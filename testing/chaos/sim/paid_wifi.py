@@ -17,6 +17,7 @@ from .paid_relay import PaidRelayRun, eventually, relay_config
 from .paid_settlement import original_channels, require, settle_and_collect
 from .paid_wifi_mint import LocalMint
 from .paid_wifi_forwarding import MintForwards
+from .remote_mint import RemoteMint
 from .wifi_discovery import WifiRun
 from .wifi_remote import ETHERTYPE, digest
 
@@ -37,6 +38,8 @@ def reconciled_channels(prior, current):
 
 class PaidWifiRun(WifiRun):
     def __init__(self, args):
+        if getattr(args, "mint_host", None) and args.mint_ssh_forward:
+            raise ValueError("remote mint and controller SSH forwards are separate choices")
         if args.mint_ssh_forward and args.mint_address != "127.0.0.1":
             raise ValueError("--mint-ssh-forward requires --mint-address 127.0.0.1")
         super().__init__(args)
@@ -47,10 +50,13 @@ class PaidWifiRun(WifiRun):
         self.evidence.update(test_funds_only=True, money_operations=True,
                              wallet_observation="offline before launch and after settlement")
         for name in ("paid_wifi.py", "paid_wifi_mint.py", "paid_wifi_forwarding.py",
-                     "paid_finances.py", "paid_settlement.py"):
+                     "paid_finances.py", "paid_settlement.py", "remote_mint.py", "mint_host.py"):
             self.evidence["harness_sha256"][name] = digest(Path(__file__).with_name(name).read_bytes())
 
     def create_mint(self, args):
+        if getattr(args, "mint_host", None):
+            return RemoteMint(json.loads(args.mint_host.read_text()), args.mint_binary,
+                              self.run, self.root, args.mint_address, max_issued_sat=384)
         return LocalMint(args.mint_binary, args.mint_address, self.root)
 
     def profile_config(self, node):

@@ -17,12 +17,17 @@ GROUPS = {
         "path_mtu_notification_below_floor", "lookup_resp_mtu_below_floor",
     },
 }
+BACKGROUND = {"drop_background_full_packets", "drop_background_full_bytes"}
 
 
 def groups(data, expected=GROUPS):
     for group in expected:
         values = data[group]
-        if not isinstance(values, dict) or set(values) != GROUPS[group]:
+        layouts = (GROUPS[group],)
+        if group == "forwarding":
+            # Preserve historical reports without inventing absent queue counters.
+            layouts += (GROUPS[group] | BACKGROUND,)
+        if not isinstance(values, dict) or set(values) not in layouts:
             raise ValueError(f"missing or changed native counter group: {group}")
         for value in values.values():
             unsigned(value)
@@ -32,6 +37,8 @@ def groups(data, expected=GROUPS):
 def difference(before, after):
     result = {}
     for group, values in before.items():
+        if set(values) != set(after[group]):
+            raise ValueError(f"native counter layout changed: {group}")
         result[group] = {}
         for field, value in values.items():
             current = after[group][field]
