@@ -40,7 +40,7 @@ Each trial records bounded setup/warmup attempts separately, followed by:
 | Workload | Offered application traffic |
 | --- | --- |
 | Idle | Four seconds with no diagnostic traffic |
-| Bursty | Eight bursts of 64 × 1,000-byte packets at 1,000 packets/s, 800 ms between bursts |
+| Bursty | Eight bursts of 64 × 1,000-byte packets at 1,000 packets/s, 800 ms after every burst |
 | Steady | 3,200 × 1,000-byte packets at 400 packets/s (3.2 Mbps) |
 | High rate | 32,000 × 1,000-byte packets at 4,000 packets/s (32 Mbps) |
 
@@ -84,6 +84,43 @@ window, grace, tariff, two repetitions and policy order match schema 2. Every
 trial must settle both channels and collect all 384 issued test sats. Analyzer
 support and synthetic tests alone do not establish a physical benchmark result.
 
+Run the existing guarded Wi-Fi lifecycle from `testing/chaos`:
+
+```sh
+python3 -m sim.wifi_cadence \
+  --inventory /absolute/router-inventory.json \
+  --binary /absolute/measurement-release/fips-relay \
+  --provenance /absolute/measurement-release/provenance.json \
+  --mint-binary /absolute/linux-arm64/fips-relay-test-mint \
+  --mint-host /absolute/mint-host.json --mint-address PRIVATE_MINT_IPV4 \
+  --output /absolute/new-pilot-directory --pilot
+```
+
+The router inventory is the same explicit inventory used by `sim.paid_wifi`.
+The mint-host JSON supplies `host`, `state_parent`, and optional `ssh_config` for
+the existing guarded `RemoteMint` adapter. Its assigned LAN address must be
+reachable from every router. The release provenance must bind the supplied
+binary digest to a successful, unchanged-source ARM64 musl build with
+`--release` and the `measurements` feature. The runner retains this provenance,
+platform/load information and exact harness hashes beside private evidence.
+
+Start with `--pilot`: one 250-ms trial runs all four workloads and the same
+strict measurement and financial checks. It always reports
+`comparison_complete: false`. Omit `--pilot` and select a new output directory
+for the complete eight-trial matrix. Each trial restores the original router
+baselines and stops its fully collected mint before the next starts. The saved
+radio profile, management LAN and original service accounts are preserved.
+
+Raw `measurements.jsonl` is written incrementally. Workload failure attempts
+settlement/collection while management and ownership guards remain healthy;
+uncertain funding or failed guards retain the original mint/accounts for
+deliberate recovery. The trial deadline is canceled before collection, whose
+remote operations retain individual timeouts. Failed measurements never trigger
+payload retries, selective tail extension or replacement of snapshots. Analysis
+runs after collection, so rejected measurements still retain financial evidence.
+`summary.json` is emitted only after validation; `result.json` distinguishes
+completed trials, accepted measurements and a completed policy comparison.
+
 Schema 3 retains the same workload/boundary row structure, with these changes:
 
 - High rate offers **8,000** packets at 4,000 packets/s. Idle, bursty and steady
@@ -119,6 +156,15 @@ bytes as the total, with null ratios when no data is delivered. Current RSS is
 reported before and after each window. `process_lifetime_peak_rss_kib` is a
 cumulative process high-water mark, not a window peak; summed node peaks need not
 have occurred simultaneously.
+
+Goodput divides delivered application bits by `offered_elapsed_ms`, including
+controller/SSH probe setup, status polling, bounded receive drain, and burst
+sleeps; it excludes the common three-second tail. It is not sender-only pacing
+or a link-capacity measurement. CPU and overhead include the common tail.
+Workloads within one trial share the original channel and prepaid credit.
+Earlier payments can cover later traffic: zero payment updates in a workload
+does not mean forwarding was free or unbilled. Setup/warmup is recorded separately
+and excluded from workload cost windows; the sequence is fixed for every trial.
 
 `os_io` contains separate process counter deltas when the kernel exposes them.
 If `/proc/PID/io` is absent, the node's `os_io` is null. The total is also null
@@ -203,8 +249,9 @@ This matrix provides the repeatable clean-link baseline. It does not fulfill
 the full production-readiness benchmark. Still required: impaired links using
 the existing FIPS simulation/chaos facilities, payment-specific complete carrier
 bytes, SDK snapshot and receiver SQLite storage measurements, profiler attribution outside
-the synchronous spans, and accepted controlled ARM64/router/phone measurements (schema 3 only supplies
-the report/validation contract). Performance changes
+the synchronous spans, and complete controlled ARM64/router/phone comparisons.
+The guarded three-router 250-ms pilot passed all four workloads and financial
+recovery; the complete hardware cadence matrix remains pending. Performance changes
 need a matched baseline with instrumentation cost held constant. No production
 default is selected solely from this loopback experiment.
 

@@ -329,6 +329,18 @@ application-record attribution. SDK/receiver storage writes, full carrier cost,
 impaired links and current hardware measurements remain open. See
 [the results and boundaries](CADENCE-RESULTS.md).
 
+The guarded hardware runner now has an accepted 250-ms pilot on three ARM64
+OpenWrt routers. All 11,712 workload payloads crossed the forced two-hop wireless
+path, both original paying channels reconciled at every measurement boundary,
+and all 384 issued test sats were collected. The test mint stopped, original
+router baselines were restored, and 258 management observations had no errors.
+The idle window recorded no payment messages, synchronous payment CPU or payment
+journal writes. This is one pilot, not a completed cadence comparison; the
+eight-trial hardware matrix remains pending. Separate router clocks leave
+one-way latency unmeasured. These kernels lack process I/O counters, which stay
+explicitly null; process CPU, memory, logical relay journal and payment-record
+measurements remain available. See the [hardware experiment contract](../../testing/relay-cadence/README.md#hardware-report-contract-schema-3).
+
 ## Sequence and acceptance
 
 1. **Adaptive payment cadence.** Share one schedule per neighbor channel and
