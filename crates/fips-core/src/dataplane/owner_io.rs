@@ -261,7 +261,9 @@ impl OwnerState {
             now,
             ..
         } = session;
-        if let Some(mmp) = &mut self.fsp_mmp {
+        if self.select_fsp_mmp_receive_epoch(sync.received_k_bit, now)
+            && let Some(mmp) = &mut self.fsp_mmp
+        {
             mmp.receiver_report_pending |= dataplane_fsp_message_elicits_report(msg_type);
             mmp.receiver.record_recv(
                 sync.counter,
@@ -303,6 +305,22 @@ impl OwnerState {
             self.fsp_lifecycle_confirmed = true;
         }
         Some(newly_confirmed_current_epoch)
+    }
+
+    fn select_fsp_mmp_receive_epoch(&mut self, received_k_bit: bool, now: std::time::Instant) -> bool {
+        if received_k_bit == self.fsp_current_k_bit {
+            return self.fsp_mmp_pending_receive_epoch.is_none();
+        }
+        if !self.has_fsp_pending_receive_epoch(received_k_bit) {
+            return false;
+        }
+        if self.fsp_mmp_pending_receive_epoch != Some(self.pending_receive_epoch_instance) {
+            if let Some(mmp) = &mut self.fsp_mmp {
+                mmp.reset_receiver_for_rekey(now);
+            }
+            self.fsp_mmp_pending_receive_epoch = Some(self.pending_receive_epoch_instance);
+        }
+        true
     }
 
     pub(crate) fn record_authenticated_fmp_receive(
@@ -534,6 +552,7 @@ impl OwnerState {
         }
 
         if mode != crate::mmp::MmpMode::Minimal
+            && self.fsp_mmp_pending_receive_epoch.is_none()
             && mmp.receiver_report_pending
             && mmp.receiver.should_send_report(now)
             && let Some(rr) = mmp.receiver.build_report(now)

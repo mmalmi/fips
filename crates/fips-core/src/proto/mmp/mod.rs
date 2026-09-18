@@ -285,10 +285,19 @@ impl MmpSessionState {
 
     /// Reset counter-dependent state for rekey cutover.
     pub fn reset_for_rekey(&mut self, now: Instant) {
+        self.reset_sender_for_rekey();
+        self.reset_receiver_for_rekey(now);
+    }
+
+    pub(crate) fn reset_sender_for_rekey(&mut self) {
         self.sender.reset_for_rekey();
-        self.receiver.reset_for_rekey(now);
         self.metrics.reset_for_rekey();
         self.sender_report_pending = false;
+    }
+
+    pub(crate) fn reset_receiver_for_rekey(&mut self, now: Instant) {
+        self.receiver.reset_for_rekey(now);
+        self.spin_bit = SpinBitState::new(self.spin_bit.is_initiator());
         self.receiver_report_pending = false;
     }
 
