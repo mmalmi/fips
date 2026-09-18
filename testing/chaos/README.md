@@ -358,6 +358,32 @@ paid-priority acceptance. This experiment does not measure relay CPU efficiency
 (the free source shares its CPU), synchronized one-way latency, or radio airtime
 fairness.
 
+Add `--round-trip --payment-delay-ms 500` to measure paid application round trips
+before, during and after the free load. The sender records monotonic send times
+and measures matching replies on its own clock; router clock synchronization is
+unnecessary. Both directions use ordinary paid forwarding with the original two
+channels. Both endpoints must acknowledge advancing payments while free traffic
+is active. The three-phase fixture accepts at most 24 packets of 128 bytes per
+phase, leaving the original 32-sat channels room for warmup and control traffic.
+Larger RTT workloads fail before setup rather than enlarging financial terms.
+
+The receiver is explicitly armed with `receive_probe.reflect=true`; the source
+uses `send_probe.measure_round_trip=true`. Defaults remain disabled. Reflection
+accepts only a matching authenticated source, fresh stream and unseen valid
+sequence, and the arm expires after 60 seconds. Replies have a distinct
+application marker and never cause more replies. No route is purchased by the
+diagnostic. Re-arming a receiver while a probe sender runs is rejected.
+
+`round_trip_latency` contains samples, extrema, a sum and histogram counts;
+the existing `latency` field remains exclusive to one-way measurements. Summary
+percentiles are histogram upper bounds, with null for an unbounded tail or empty
+sample set. `reflected_submitted_packets` and `reflection_failed_packets` describe
+local enqueue outcomes; only validated replies prove round-trip completion.
+This includes application processing and both network directions. It does not
+measure radio airtime, one-way delay or a maximum sustainable traffic rate, and
+one small before/during/after sequence does not establish a production latency
+guarantee.
+
 The first three-router hardware run (2026-09-18) passed at the default workload:
 all 24 paid packets arrived while middle-router background overflow increased,
 and an automatic payment was acknowledged before the free sender finished.

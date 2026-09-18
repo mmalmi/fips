@@ -3,7 +3,7 @@
 The unfunded source enters n02 over loopback; both classes leave n02 toward
 n03 over the same wireless neighbor. Two auxiliary accounts remain unfunded.
 This verifies delivery, actual background overflow and automatic payment, not
-throughput, CPU efficiency or latency between unsynchronized router clocks.
+throughput or CPU efficiency. Optional round trips use the sender's clock.
 """
 
 import argparse
@@ -24,7 +24,8 @@ from .wifi_discovery import validate_free_offer, validate_unfunded
 from .wifi_measurements import snapshot
 from .wifi_priority_checks import (
     acknowledged, adjacency, bandwidth, bounded_free, free_policy, loopback_address,
-    patch_config, payment, pressure_pair, received, running, submitted, workload,
+    patch_config, payment, pressure_pair, received, reconciled, round_trip_latency,
+    running, submitted, workload,
 )
 from .wifi_remote import digest
 
@@ -32,6 +33,10 @@ from .wifi_remote import digest
 class PriorityRun(PaidWifiRun):
     def __init__(self, args):
         self.schedule = workload(args)
+        if args.round_trip and args.topology_only:
+            raise ValueError("round-trip latency requires the paid experiment")
+        if args.round_trip and (args.paid_packets > 24 or args.paid_bytes > 128):
+            raise ValueError("three RTT phases require at most 24 packets of 128 bytes with the fixed funding")
         super().__init__(args)
         self.auxiliary = {
             "free-source": self.nodes["n02"].add_profile("free-source"),
@@ -40,11 +45,13 @@ class PriorityRun(PaidWifiRun):
         self.auxiliary_initial = {}
         self.udp_addresses = {}
         self.evidence.update(
-            acceptance_kind="unfunded_topology_only" if args.topology_only else "mixed_wifi_priority",
+            acceptance_kind=("unfunded_topology_only" if args.topology_only else
+                             "mixed_wifi_round_trip" if args.round_trip else "mixed_wifi_priority"),
             mixed_priority_accepted=False, workload=self.schedule,
             money_operations=not args.topology_only,
             free_bandwidth_policy=free_policy(self.schedule), one_way_latency=False,
             free_source_host="n02", shared_wireless_egress=["n02", "n03"],
+            round_trip_latency=args.round_trip, max_payment_delay_ms=args.payment_delay_ms,
         )
         for name in ("wifi_priority.py", "wifi_priority_checks.py", "wifi_profiles.py", "wifi_measurements.py"):
             self.evidence["harness_sha256"][name] = digest(Path(__file__).with_name(name).read_bytes())
@@ -63,7 +70,7 @@ class PriorityRun(PaidWifiRun):
         config = super().profile_config(node)
         config["return_allowance"] = False
         config["terms"]["quote_max_units"] = 96 * 1024 * 1024
-        config["payment_cadence"] = {"max_delay_ms": 250, "unpaid_percent": 50}
+        config["payment_cadence"] = {"max_delay_ms": self.args.payment_delay_ms, "unpaid_percent": 50}
         if node in (self.nodes["n02"], self.nodes["n03"]):
             config["transports"]["udp"] = {"bind_addr": "127.0.0.1:0", "advertise_on_nostr": False}
         if node is self.nodes["n02"]:
@@ -170,20 +177,68 @@ class PriorityRun(PaidWifiRun):
 
     def arm(self, source, destination, count, size):
         shape = {"stream_id": secrets.token_hex(16), "packet_count": count, "payload_bytes": size}
+        reflection = {"reflect": True} if self.round_trip(source, destination) else {}
         self.ctl(destination, "receive_probe", probe={
             **shape, "source": self.participants()[source].npub, "measure_one_way_latency": False,
+            **reflection,
         })
         return shape
 
     def send(self, source, destination, shape, rate):
+        latency = {"measure_round_trip": True} if self.round_trip(source, destination) else {}
         return self.ctl(source, "send_probe", probe={
             **shape, "destination": self.participants()[destination].npub, "packets_per_second": rate,
+            **latency,
         })["probe"]
 
+    def round_trip(self, source, destination):
+        return self.args.round_trip and source == "n01" and destination == "n03"
+
+    def receiver_identity(self, source, destination):
+        return self.participants()[destination if self.round_trip(source, destination) else source].npub
+
     def receive(self, source, destination, shape, *, complete=False):
-        report = self.ctl(destination, "status")["probe"]
-        received(report, shape, self.participants()[source].npub, complete=complete)
+        round_trip = self.round_trip(source, destination)
+        report = self.ctl(source if round_trip else destination, "status")["probe"]
+        received(report, shape, self.receiver_identity(source, destination),
+                 complete=complete, round_trip=round_trip)
         return report
+
+    def latency_phase(self, name):
+        def quiet():
+            progress = {node: payment(self.ctl(node, "status")) for node in ("n01", "n03")}
+            return progress if all(reconciled(value) for value in progress.values()) else None
+
+        before = eventually("paid directions reconciled before timing", quiet, 15)
+        schedule = self.schedule
+        shape = self.arm("n01", "n03", schedule["paid_packets"], schedule["paid_bytes"])
+        sent = self.send("n01", "n03", shape, schedule["paid_rate"])
+        submitted(sent, shape)
+
+        def complete():
+            report = self.receive("n01", "n03", shape)
+            return report if report["unique_packets"] == shape["packet_count"] else None
+
+        report = eventually("complete same-clock paid round trips", complete, 30)
+        after = eventually("paid directions reconciled after timing", quiet, 15)
+        self.evidence.setdefault("latency_phases", {})[name] = {
+            "shape": shape, "sender": sent, "receiver": report,
+            "summary": round_trip_latency(report), "clock": "sender_monotonic",
+            "payment_before": before, "payment_after": after,
+        }
+        self.phase("paid round-trip latency recorded", workload=name)
+
+    def wait_paid_armed(self, future, shape):
+        if not self.args.round_trip:
+            return
+
+        def armed():
+            running(future)
+            report = self.ctl("n01", "status")["probe"]
+            running(future)
+            return report if report and report["stream_id"] == shape["stream_id"] else None
+
+        eventually("local round-trip receiver armed", armed, 10)
 
     def free_probe(self, label):
         shape = self.arm("free-source", "free-sink", 4, 128)
@@ -229,6 +284,9 @@ class PriorityRun(PaidWifiRun):
         self.evidence["mixed_priority"] = evidence
         evidence["before"] = self.middle()
         evidence["payment_before"] = payment(self.ctl("n01", "status"))
+        if self.args.round_trip:
+            evidence["reverse_payment_before"] = payment(self.ctl("n03", "status"))
+            evidence["reverse_payment_observations"] = []
         self.save()
         deadline = time.monotonic() + schedule["overlap_seconds"]
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -238,6 +296,7 @@ class PriorityRun(PaidWifiRun):
                 active = self.wait_free_progress(free_future, evidence["before"], deadline)
                 evidence["free_active_before_paid"] = active
                 paid_future = pool.submit(self.send, "n01", "n03", paid, schedule["paid_rate"])
+                self.wait_paid_armed(free_future, paid)
                 while time.monotonic() < deadline:
                     running(free_future)
                     item = {"receiver_before": self.receive("n01", "n03", paid), "middle": self.middle()}
@@ -260,7 +319,10 @@ class PriorityRun(PaidWifiRun):
                 require("paid_receiver" in evidence, "paid delivery did not complete within the overlap window")
                 require(evidence["pressure"] is not None,
                         "no observed n02 background overflow during partial paid delivery")
-                received(evidence["paid_receiver"], paid, self.nodes["n01"].npub, complete=True)
+                received(evidence["paid_receiver"], paid, self.receiver_identity("n01", "n03"),
+                         complete=True, round_trip=self.args.round_trip)
+                if self.args.round_trip:
+                    evidence["round_trip_summary"] = round_trip_latency(evidence["paid_receiver"])
                 evidence["free_after_paid_baseline"] = self.middle()
                 evidence["free_active_after_paid"] = self.wait_free_progress(
                     free_future, evidence["free_after_paid_baseline"], deadline)
@@ -269,9 +331,17 @@ class PriorityRun(PaidWifiRun):
                     current = payment(self.ctl("n01", "status"))
                     running(free_future)
                     evidence["payment_observations"].append(current)
+                    reverse_ready = True
+                    if self.args.round_trip:
+                        reverse = payment(self.ctl("n03", "status"))
+                        running(free_future)
+                        evidence["reverse_payment_observations"].append(reverse)
+                        reverse_ready = acknowledged(evidence["reverse_payment_before"], reverse)
                     self.save()
-                    if acknowledged(evidence["payment_before"], current):
+                    if acknowledged(evidence["payment_before"], current) and reverse_ready:
                         evidence["payment_during_free"] = current
+                        if self.args.round_trip:
+                            evidence["reverse_payment_during_free"] = reverse
                         break
                     time.sleep(.05)
                 require("payment_during_free" in evidence,
@@ -335,7 +405,11 @@ class PriorityRun(PaidWifiRun):
         try:
             self.channel_anchor = self.paid_streams(funded, "original paid channel warmed")
             self.open_free()
+            if self.args.round_trip:
+                self.latency_phase("before_free_load")
             self.mixed()
+            if self.args.round_trip:
+                self.latency_phase("after_free_load")
             self.verify_shortcuts()
         except Exception as error:
             self.evidence["acceptance_failure"] = str(error)
@@ -362,6 +436,8 @@ def parser():
     result.add_argument("--mint-address", required=True)
     result.add_argument("--mint-ssh-forward", action="store_true")
     result.add_argument("--topology-only", action="store_true", help="issue zero sats and verify only topology/free delivery")
+    result.add_argument("--round-trip", action="store_true", help="measure paid round trips before, during and after free load")
+    result.add_argument("--payment-delay-ms", type=int, choices=(250, 500, 1000, 2000), default=250)
     for name, value in (("free-packets", 64000), ("free-rate", 4000), ("free-bytes", 1000),
                         ("paid-packets", 24), ("paid-rate", 4), ("paid-bytes", 128),
                         ("free-bytes-per-second", 4 * 1024 * 1024),

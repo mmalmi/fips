@@ -1,6 +1,7 @@
 """Fail-closed observations for one bounded mixed-class wireless experiment."""
 
 import copy
+from bisect import bisect_left
 
 from .paid_settlement import require
 
@@ -87,7 +88,7 @@ def submitted(report, shape):
             and report["stopped_reason"] is None, "priority probe was not fully submitted")
 
 
-def received(report, shape, source, *, complete=False):
+def received(report, shape, source, *, complete=False, round_trip=False):
     require(report["stream_id"] == shape["stream_id"] and report["source"] == source
             and report["expected_packets"] == shape["packet_count"]
             and report["payload_bytes"] == shape["payload_bytes"], "priority probe identity or shape changed")
@@ -97,9 +98,62 @@ def received(report, shape, source, *, complete=False):
             and natural(report["missing_packets"]) + count == shape["packet_count"]
             and natural(report["duplicate_packets"]) == natural(report["invalid_packets"]) == 0
             and report["latency"] is None, "priority receiver has invalid, duplicate or inconsistent data")
+    if round_trip:
+        round_trip_latency(report)
+    else:
+        require(report.get("round_trip_latency") is None, "unexpected round-trip measurement")
     if complete:
         require(count == shape["packet_count"], "paid or recovery probe delivery is incomplete")
     return count
+
+
+def round_trip_latency(report):
+    """Validate a same-clock histogram; percentile results are bucket bounds."""
+    latency = report.get("round_trip_latency")
+    require(isinstance(latency, dict) and report["latency"] is None,
+            "explicit round-trip timing required")
+    samples = natural(latency["samples"])
+    require(samples == natural(report["unique_packets"])
+            and natural(latency["invalid_timestamps"]) == 0,
+            "round-trip delivery lacks valid local timestamps")
+    bounds, counts = latency["bucket_upper_bounds_us"], latency["bucket_counts"]
+    require(isinstance(bounds, list) and 1 <= len(bounds) <= 64
+            and all(natural(value) > 0 for value in bounds)
+            and bounds == sorted(set(bounds)) and isinstance(counts, list)
+            and len(counts) == len(bounds) + 1 and sum(map(natural, counts)) == samples,
+            "invalid round-trip histogram")
+    total = natural(latency["sum_us"])
+    low, high = latency["min_us"], latency["max_us"]
+    if samples:
+        require(natural(low) <= natural(high) and low * samples <= total <= high * samples,
+                "round-trip extrema or sum disagree")
+        occupied = [index for index, count in enumerate(counts) if count]
+        first, last = bisect_left(bounds, low), bisect_left(bounds, high)
+        require(occupied[0] == first and occupied[-1] == last,
+                "round-trip extrema lie outside occupied histogram buckets")
+        minimum = [max(low, bounds[index - 1] + 1 if index else 0) for index in occupied]
+        maximum = [min(high, bounds[index] if index < len(bounds) else high) for index in occupied]
+        min_sum = sum(counts[index] * limit for index, limit in zip(occupied, minimum))
+        max_sum = sum(counts[index] * limit for index, limit in zip(occupied, maximum))
+        # The reported extrema must each occur at least once, not merely fit a bin.
+        min_sum += high - minimum[-1]
+        max_sum -= maximum[0] - low
+        require(min_sum <= total <= max_sum, "round-trip sum contradicts its histogram")
+    else:
+        require(low is None and high is None and total == 0, "empty timing invented samples")
+
+    def percentile_bound(percent):
+        rank = (samples * percent + 99) // 100
+        cumulative = 0
+        for index, count in enumerate(counts):
+            cumulative += count
+            if cumulative >= rank:
+                return bounds[index] if samples and index < len(bounds) else None
+        return None
+
+    return {"samples": samples, "mean_us": total / samples if samples else None,
+            "min_us": low, "max_us": high, "p50_upper_bound_us": percentile_bound(50),
+            "p95_upper_bound_us": percentile_bound(95)}
 
 
 def running(future):
@@ -166,10 +220,15 @@ def acknowledged(before, after):
     ack = after["acknowledged_msat"]
     if ack is not None and before["acknowledged_msat"] is not None:
         require(ack >= before["acknowledged_msat"], "automatic acknowledgment decreased")
-    target = max(after["evidence_msat"], after["authorized_sat"] * 1000)
     return (after["evidence_msat"] > before["evidence_msat"]
             and after["authorized_sat"] > before["authorized_sat"]
-            and after["in_flight"] is False and ack is not None and ack >= target)
+            and reconciled(after))
+
+
+def reconciled(current):
+    target = max(current["evidence_msat"], current["authorized_sat"] * 1000)
+    ack = current["acknowledged_msat"]
+    return current["in_flight"] is False and ack is not None and ack >= target
 
 
 def bounded_free(before, after, policy):
