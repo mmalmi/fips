@@ -211,8 +211,23 @@ fairness or permissionless radio joining: an existing SAE-protected mesh still
 requires its shared key. It runs the service directly; OpenWrt's package startup
 wrapper and power-loss recovery have separate acceptance scopes.
 
-Before hardware use, run `python3 -m unittest tests.test_wifi_discovery -v` on
-Linux with `flock`. The guard tests use real process ownership and file locks,
+The optional `--open-mesh` mode prepares an owned, temporary open 802.11s profile
+on the same dedicated interface; it leaves the saved SAE network and UCI settings
+intact. Two nodes must discover each other before the third radio joins. The
+candidate still authenticates FIPS neighbors and requires explicit free-route
+authority. This mode needs both nft netdev ingress and egress support: it isolates
+the original service's EtherTypes in both directions before changing the radio.
+It caps radio peers at eight and inactivity at 60 seconds, verifies those actual
+limits after convergence/rejoin, and restores the exact saved limits/profile.
+Management and APs must remain separate. An ambiguous untagged network, changed
+owner or failed restoration leaves recovery markers and original-service
+isolation in place; cleanup fails rather than deleting an unowned profile or
+exposing original accounts. No shared SAE key is used by the temporary profile.
+This mode has guard-test coverage; its zero-funded physical acceptance remains
+pending. It does not establish hostile-load tolerance or automatic channel choice.
+
+Before hardware use, run `python3 -m unittest discover -s tests -p 'test_wifi_*.py' -v`
+from `testing/chaos` on Linux with `flock`. The guard tests use real process ownership and file locks,
 with isolated fake interface/firewall commands; Linux-only tests explicitly skip
 on other hosts. They cover expired leases, late commands, table collisions,
 concurrent cleanup, exact candidate termination, changed mesh profiles and

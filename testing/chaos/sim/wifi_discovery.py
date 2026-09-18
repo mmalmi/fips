@@ -1,9 +1,11 @@
 """Physical, roster-free Wi-Fi discovery and free forwarding on three OpenWrt routers.
 
 Run from testing/chaos with an explicit private inventory, verified ARM64 binary
-and new output directory. Original accounts/services remain running on their
-original EtherType. No mint, money, package, radio or firewall configuration is
-changed. A temporary nft netdev table filters only the experimental EtherType.
+and new output directory. Original accounts/services remain running. No mint,
+money, package or persisted network configuration changes. Default mode uses
+the saved SAE profile and filters only the experimental EtherType. Explicit
+--open-mesh temporarily isolates original EtherTypes in both directions and
+joins an owned open radio profile; the guard restores the original profile.
 """
 
 from __future__ import annotations
@@ -97,15 +99,18 @@ class WifiRun:
         self.root = args.output.resolve()
         self.root.mkdir(mode=0o700)
         self.run = secrets.token_hex(6)
-        self.nodes = {f"n{i + 1:02}": Router(spec, self.run, self.root)
+        self.open_mesh = "fips-open-" + self.run if getattr(args, "open_mesh", False) else None
+        self.nodes = {f"n{i + 1:02}": Router(spec, self.run, self.root, self.open_mesh)
                       for i, spec in enumerate(specs)}
         self.monitor = ManagementMonitor(self.nodes)
         self.evidence = {"run": self.run, "phases": [], "passed": False,
                          "test_ethertype": ETHERTYPE, "money_operations": False,
                          "original_services_replaced": False}
+        self.evidence["radio_mode"] = "temporary_open_mesh" if self.open_mesh else "saved_sae"
         self.evidence["harness_sha256"] = {
             name: digest(Path(__file__).with_name(name).read_bytes())
-            for name in ("wifi_discovery.py", "wifi_remote.py", "wifi_mesh.py", "paid_relay.py", "paid_faults.py")}
+            for name in ("wifi_discovery.py", "wifi_remote.py", "wifi_mesh.py", "wifi_open.py",
+                         "paid_relay.py", "paid_faults.py")}
         self.original = {}
         self.financial = {}
 
@@ -168,6 +173,8 @@ class WifiRun:
         self.evidence["binary_sha256"] = digest(binary)
         for name, node in self.nodes.items():
             self.original[name] = node.baseline()
+        if self.open_mesh and len({node.mesh["frequency"] for node in self.nodes.values()}) != 1:
+            raise RuntimeError("open radio test requires the same original frequency on every router")
         if len({node.mac for node in self.nodes.values()}) != 3:
             raise RuntimeError("inventory aliases do not identify three distinct mesh interfaces")
         self.evidence["original_baselines"] = self.original
@@ -175,13 +182,36 @@ class WifiRun:
         self.monitor.start()
         for node in self.nodes.values():
             node.prepare(binary, self.profile_config(node))
+        self.launch_profiles()
+        self.evidence["test_identities"] = {name: node.npub for name, node in self.nodes.items()}
+        self.phase("isolated profiles started beside original instances")
+
+    def launch_profiles(self):
         self.before_launch()
         for name, node in self.nodes.items():
+            if self.open_mesh:
+                if name == "n03":
+                    def pair_ready():
+                        for first, second in (("n01", "n02"), ("n02", "n01")):
+                            peers = self.ctl(first, "status")["peers"]
+                            if (len(peers) != 1 or not peers[0]["connected"]
+                                    or peers[0]["transport"] != "ethernet"
+                                    or peers[0]["npub"] != self.nodes[second].npub):
+                                return False
+                        return True
+                    eventually("two open-radio peers discovered before late join", pair_ready, 150)
+                    self.phase("two open-radio nodes authenticated before the third radio joined",
+                               profiles={key: self.nodes[key].verify_open_mesh() for key in ("n01", "n02")})
+                opened = node.begin_open_mesh()
+                self.phase("owned radio joined the public test mesh", node=name, profile=opened)
             node.start()
             eventually("new service control", lambda: self.ctl(name, "status"), 60)
             self.financial[name] = node.monetary_journals()
-        self.evidence["test_identities"] = {name: node.npub for name, node in self.nodes.items()}
-        self.phase("isolated profiles started beside original instances")
+
+    def verify_open_profiles(self):
+        if self.open_mesh:
+            self.phase("open radio policy and limits verified after convergence",
+                       profiles={name: node.verify_open_mesh() for name, node in self.nodes.items()})
 
     def beacon_evidence(self):
         transports = {name: node.native({"command": "show_transports"})
@@ -200,6 +230,7 @@ class WifiRun:
 
     def form_line(self):
         eventually("automatic radio triangle discovery", self.ready, 150)
+        self.verify_open_profiles()
         # A late starter can authenticate incoming peers before hearing their
         # next periodic beacon. Observe the unmodified announcement cadence.
         transports = eventually("sent and received beacon evidence", self.beacon_evidence, 60)
@@ -259,6 +290,7 @@ class WifiRun:
         self.phase("leaf peers evicted; financial invariants hold")
         last.mesh_up()
         eventually("automatic mesh rejoin", lambda: self.ready(line=True), 150)
+        self.verify_open_profiles()
 
     def verify_shortcuts(self):
         counters = {}
@@ -319,6 +351,8 @@ def main():
     parser.add_argument("--inventory", type=Path, required=True)
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--open-mesh", action="store_true",
+                        help="temporarily test open 802.11s joining, restoring the saved SAE profile")
     args = parser.parse_args()
     os.umask(0o077)
 
