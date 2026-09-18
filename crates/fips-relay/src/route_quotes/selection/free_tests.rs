@@ -91,7 +91,10 @@ fn measured_free_trial_promotion_requires_a_fresh_current_grant() {
         state
             .selection_step(&selected, &policy, true, |_| Some(100))
             .unwrap(),
-        SelectionStep::Accept
+        SelectionStep::Request {
+            max_units: None,
+            reuse_unchanged: false,
+        }
     ));
 }
 
@@ -114,7 +117,7 @@ fn explicit_or_failed_provider_retry_retains_fresh_trial_policy() {
 }
 
 #[test]
-fn paid_trial_expiry_and_promotion_keep_existing_selection_rules() {
+fn paid_trial_expiry_retains_quota_and_promotion_requires_a_fresh_agreement() {
     let (mut state, mut selected) = unknown_trial();
     selected.price.msat = 1_024;
     state.active.as_mut().unwrap().price = selected.price;
@@ -136,7 +139,10 @@ fn paid_trial_expiry_and_promotion_keep_existing_selection_rules() {
         state
             .selection_step(&selected, &policy, true, |_| panic!("paid quota"))
             .unwrap(),
-        SelectionStep::Accept
+        SelectionStep::Request {
+            max_units: None,
+            reuse_unchanged: false,
+        }
     ));
 }
 

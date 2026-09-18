@@ -117,16 +117,19 @@ impl Destination {
                     .map_or(policy.trial_max_units, |a| a.max_units),
             )
         };
-        // A cached full offer may predate the active trial. Negotiate a fresh
-        // grant at both peers instead of restoring an obsolete provider quota.
+        // A full offer cached before this trial may already be retired. Fresh
+        // promotion avoids pinning a watch to that obsolete agreement.
+        let promotion = working && self.active.as_ref().is_some_and(|active| active.trial);
+        // Free quotas are ephemeral and may also have been replaced at either peer.
         let fresh_free = selected.price.msat == 0 && remaining(selected).is_none();
         if !reuse_unchanged
+            || promotion
             || fresh_free
             || cap.is_some_and(|limit| selected.max_units > limit || new_trial)
         {
             Ok(SelectionStep::Request {
                 max_units: cap,
-                reuse_unchanged: reuse_unchanged && !new_trial && !fresh_free,
+                reuse_unchanged: reuse_unchanged && !new_trial && !promotion && !fresh_free,
             })
         } else {
             Ok(SelectionStep::Accept)

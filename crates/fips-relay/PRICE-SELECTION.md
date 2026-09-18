@@ -74,8 +74,10 @@ agreements; direct-neighbor transitions are not automatic.
 For an unfunded receiver, enable [return allowance](RETURN-ALLOWANCE.md) on the
 corresponding forwarding-data relays if native reports need earned reverse credit.
 The selector itself does not grant reverse service. Its 15-second default window
-allows for native session-report intervals up to 10 seconds. The integration test
-uses a shorter 2-second window to exercise failover; it is not a deployment default.
+allows for native session-report intervals up to 10 seconds. The older impairment
+fixture uses a 2-second feedback window. The continuously watched recovery fixture
+uses 10-second feedback and retry windows across the 5-second automatic scans.
+These are test settings, not deployment defaults.
 
 Wire peers on the quote path must support `requested_max_units` and the `trial`
 offer marker. A capped request propagates downstream; oversized caps or an
@@ -108,8 +110,10 @@ Do not downgrade an account containing them without reconciliation.
   unused allowance into the replacement. Missing or exhausted local allowance
   fails closed; expiry cannot refill it. Explicit fresh requests and the existing
   failed-provider retry policy remain distinct authorization decisions.
-  Free promotion negotiates a fresh full grant at the provider, rather than
-  accepting a cached offer superseded by the trial.
+  Paid and free trial promotion negotiate a fresh full offer at the provider.
+  A cached full offer may belong to an already retired agreement; accepting it
+  can pin a watch to an obsolete transition. This prevents new stale promotion
+  intents; it does not rewrite previously saved pending work.
   Explicit fresh requests obtain fresh offer IDs. Ordinary renewal requests a
   fresh quote from the same provider and validates the complete previous service;
   it does not run source discovery for a transit purchase.
@@ -181,6 +185,20 @@ or an alternate routing model. They do not prove unattended convergence during
 arbitrary concurrent churn. A native regression reproduces inherited RTT and late
 old-path reports; filtering existing timestamp echoes fixes both without adding
 financial receipts or resetting traffic/accounting counters.
+
+A continuously watched acceptance adds two deployments with real loss and delay.
+The original watch remains active throughout impairment and recovery, with no
+manual Buy/Watch, paused refresh or forced source binding. Native feedback drives
+selection of the working alternative; after the link recovers, a fresh capped
+trial returns to the cheaper provider and promotes within its original channel.
+The loss case uses a 1280-msat/KiB alternative versus the recovered
+1024-msat/KiB route, so both changes exceed the unchanged 10% switching margin.
+The delay case keeps the 150-ms RTT ceiling. Both retain the original two 64-sat
+channels and 128-sat lifetime budget, reload the controller/selector, and settle
+all 259 test sats.
+The cached-full-offer regression fails before the fresh-promotion fix and passes
+afterward. This is bounded automatic recovery in the simulated diamond, not
+unattended convergence under arbitrary churn or a physical routing measurement.
 
 A separate exhaustion case repeats three fresh deployments and leaves automatic
 renewal enabled beyond its configured threshold. An exhausted trial stays capped before and after controller/selector

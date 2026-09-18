@@ -40,6 +40,47 @@ pub(super) fn working(offer: &RouteOffer, loss: f64) -> SourceRouteQuality {
 }
 
 #[test]
+fn healthy_recovered_trial_never_reuses_an_obsolete_full_offer() {
+    let policy = PriceSelectionPolicy::default();
+    for price in [0, 1_024] {
+        let full = offer(2, price);
+        let mut trial = full.clone();
+        trial.id = "recovered-trial".into();
+        trial.trial = true;
+        trial.max_units = policy.trial_max_units;
+        trial.expires_unix = unix_now().unwrap() + 60;
+        let mut state = Destination {
+            active: Some(trial.clone()),
+            ..Default::default()
+        };
+        state
+            .observe(&working(&trial, 0.0), &policy, Instant::now())
+            .unwrap();
+        // The quote cache can still contain a full offer from before the
+        // provider failed. Its agreement may already have been retired.
+        for selected in [&full, &trial] {
+            assert!(matches!(
+                state
+                    .selection_step(selected, &policy, true, |_| Some(100))
+                    .unwrap(),
+                SelectionStep::Request {
+                    max_units: None,
+                    reuse_unchanged: false
+                }
+            ));
+        }
+        // An active full agreement remains reusable on subsequent healthy polls.
+        state.active = Some(full.clone());
+        assert!(matches!(
+            state
+                .selection_step(&full, &policy, true, |_| Some(100))
+                .unwrap(),
+            SelectionStep::Accept
+        ));
+    }
+}
+
+#[test]
 fn selection_ranks_estimated_delivered_cost_and_enforces_quality_limits() {
     let cheap = offer(2, 1_000);
     let premium = offer(3, 1_500);

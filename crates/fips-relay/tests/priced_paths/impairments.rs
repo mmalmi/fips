@@ -9,6 +9,8 @@ pub(super) enum Scenario {
     Loss,
     Delay,
     ReturnLoss,
+    AutomaticLoss,
+    AutomaticDelay,
     Mobility,
     InterruptedMobility,
 }
@@ -18,31 +20,39 @@ impl Scenario {
         let mut policy = super::selection_policy();
         match self {
             // Loss must change the delivered-cost ranking, not trip the ceiling.
-            Self::Loss => policy.max_loss_percent = 80,
-            Self::Delay => policy.max_rtt_ms = 150,
+            Self::Loss | Self::AutomaticLoss => policy.max_loss_percent = 80,
+            Self::Delay | Self::AutomaticDelay => policy.max_rtt_ms = 150,
             Self::Mobility | Self::InterruptedMobility => {
                 policy.retry_after_ms = policy.feedback_timeout_ms;
             }
             _ => {}
         }
+        if matches!(self, Self::AutomaticLoss | Self::AutomaticDelay) {
+            // Preserve observations through a five-second automatic refresh;
+            // recovery still requires a fresh bounded trial after ten seconds.
+            policy.feedback_timeout_ms = 10_000;
+            policy.retry_after_ms = 10_000;
+        }
         policy
     }
 
     pub(super) fn alternative_price(self) -> u64 {
-        if matches!(self, Self::Loss) {
-            1126
-        } else {
-            2048
+        match self {
+            Self::Loss => 1126,
+            // Both the loss-adjusted upgrade and healthy-price return exceed
+            // the unchanged ten-percent switching margin.
+            Self::AutomaticLoss => 1280,
+            _ => 2048,
         }
     }
 
-    fn apply(self, network: &SimNetwork) {
+    pub(super) fn apply(self, network: &SimNetwork) {
         let ordinary = SimLink {
             latency_ms: 2,
             ..Default::default()
         };
         match self {
-            Self::Loss => network.set_directed_link(
+            Self::Loss | Self::AutomaticLoss => network.set_directed_link(
                 "1",
                 "3",
                 Some(SimLink {
@@ -50,7 +60,7 @@ impl Scenario {
                     ..ordinary
                 }),
             ),
-            Self::Delay => network.set_link(
+            Self::Delay | Self::AutomaticDelay => network.set_link(
                 "1",
                 "3",
                 SimLink {
@@ -70,14 +80,14 @@ impl Scenario {
         }
     }
 
-    fn observed(self, q: &SourceRouteQuality) -> bool {
+    pub(super) fn observed(self, q: &SourceRouteQuality) -> bool {
         match self {
-            Self::Loss => {
+            Self::Loss | Self::AutomaticLoss => {
                 q.has_recent_delivery_feedback
                     && !q.delivery_feedback_timed_out
                     && q.loss_rate.is_some_and(|v| (0.25..=0.8).contains(&v))
             }
-            Self::Delay => {
+            Self::Delay | Self::AutomaticDelay => {
                 q.has_recent_delivery_feedback
                     && !q.delivery_feedback_timed_out
                     && q.rtt_ms.is_some_and(|v| v > 150.0)

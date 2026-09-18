@@ -15,14 +15,14 @@ struct FundingIdentity {
     operation: String,
 }
 
-struct Evidence {
+pub(super) struct Evidence {
     funding: BTreeMap<String, FundingIdentity>,
     budget: FundingBudget,
     remaining: u64,
 }
 
 impl Evidence {
-    async fn read(root: &Path, controller: &Controller) -> Self {
+    pub(super) async fn read(root: &Path, controller: &Controller) -> Self {
         let saved: serde_json::Value = serde_json::from_slice(
             &std::fs::read(root.join("controller-0/controller.json")).unwrap(),
         )
@@ -80,7 +80,7 @@ impl Evidence {
         }
     }
 
-    fn follows(&self, previous: &Self) {
+    pub(super) fn follows(&self, previous: &Self) {
         for (id, identity) in &previous.funding {
             assert_eq!(
                 self.funding.get(id),

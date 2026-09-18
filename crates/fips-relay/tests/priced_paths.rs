@@ -1,4 +1,6 @@
 //! Real controllers, test-money channels, native FIPS/MMP and SimNetwork.
+#[path = "priced_paths/automatic_quality.rs"]
+mod automatic_quality;
 #[path = "priced_paths/impairments.rs"]
 mod impairments;
 #[path = "priced_paths/mobility.rs"]
@@ -597,6 +599,19 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
                 &upgraded,
                 root.path(),
                 interrupted_acceptance.as_mut().unwrap(),
+            )
+            .await;
+        } else if matches!(scenario, Scenario::AutomaticLoss | Scenario::AutomaticDelay) {
+            automatic_quality::exercise(
+                scenario,
+                &network,
+                &nodes,
+                &peers,
+                &controllers,
+                &services,
+                &mut receivers[3],
+                &upgraded,
+                root.path(),
             )
             .await;
         } else if mobile {
