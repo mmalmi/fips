@@ -357,6 +357,17 @@ quotes. The source/destination share one router and first hops use management-LA
 UDP. Explicit eviction waits and paced probes preclude a failover-latency claim.
 Arbitrary moving mesh merge/split, fast roaming and sustained capacity remain open.
 
+The subsequent [active-cut variant](../../testing/chaos/README.md#failover-with-traffic-during-the-radio-cut)
+fails the complete cycle. It successfully delivers and pays through the
+alternative after a cut during traffic, but recovery to the cheaper provider
+stalls. That returning trial delivers 100 packets while its loss estimate remains
+unknown, then cannot fit another payload into its remaining 16-byte allowance;
+selection does not fall back. Loss-evidence continuity and exhausted-trial
+liveness therefore remain release blockers. All 128 test sats are recovered,
+all 600 management checks pass and original radio settings restore. The
+50.05-second cut-request-to-alternative-confirmation upper bound includes polling
+and confirmation traffic; it does not establish fast or seamless roaming.
+
 The current isolated Android package passes a fresh arm64 native build, Android
 lint and strict Android-target relay/app linting. Native-library provenance is
 verified through packaging, including the build tool's stripping step. Installation

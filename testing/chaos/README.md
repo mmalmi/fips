@@ -324,6 +324,35 @@ isolate quality ranking. Explicit peer-eviction waits and paced confirmation
 prevent interpreting its elapsed time as a failover latency measurement. Moving
 mesh merge/split, fast roaming, contention and sustained performance remain open.
 
+#### Failover with traffic during the radio cut
+
+Add `--active-failover` to cut the cheaper provider's radio during an in-flight
+paid burst, after verifying payload arrival and its unchanged full agreement.
+The alternative phase uses up to eight 32-packet bursts at two packets per second,
+with a half-second receive drain and no deliberate inter-burst spacing. It keeps
+the same 180-second deadline, total payload allowance and financial limits. The
+sender is drained exactly once, including failures; the interrupted burst cannot
+satisfy the replacement route's complete-burst acceptance check. Exact peer
+eviction is checked after working-route confirmation. Saved membership at that
+confirmation distinguishes connected, disconnected and absent departing edges.
+
+The first active-cut run on 2026-09-18 did **not** pass the complete cycle. Initial
+delivery passed 32/32. The alternative delivered 60/96 during the transition and
+ended with a complete 32/32 burst, native quality and automatic payment. That
+confirmation occurred 50.05 seconds after the cut request; this is a controller
+confirmation upper bound, not a measured packet outage. The departing wireless
+edge was already absent at acceptance, so the result does not isolate quality
+detection from peer removal.
+
+After rejoin, the cheaper provider delivered 100/256 attempts, but its loss
+estimate remained unknown despite fresh RTT and delivery feedback. Its trial
+stalled at 32,752/32,768 billed bytes, with too little allowance for another
+payload, and selection did not fall back. This exposes separate loss-evidence
+and exhausted-trial recovery gaps. All 128 test sats were collected, all wallets
+ended empty, all 600 management checks passed, and original router settings were
+restored. The combined Linux harness suite passes 164 checks; that software
+coverage does not turn the failed hardware cycle into acceptance.
+
 ### Paid Wi-Fi recovery
 
 `sim.paid_wifi` reuses the same inventory, guard and radio lifecycle. It needs a
