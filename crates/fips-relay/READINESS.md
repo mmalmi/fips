@@ -456,8 +456,20 @@ forces a payment nor changes production credit limits.
 This covers the wallet-committed/controller-unrecorded boundary. It does not
 establish recovery after every mint-response or power-loss boundary, refund an
 orphan channel, or renew expired route authorization. Funding lost before the
-wallet committed its channel, automatic expiry refunds, and bounded financial
-history retirement remain work.
+wallet committed its channel and automatic expiry refunds remain work. Completed
+channel retirement is covered separately above; it cannot remove unresolved work.
+
+Pre-route recovery still has three distinct gaps. An expired request with no
+funding intent needs reference-checked removal without advancing unrelated replay
+floors. An intent with no recovered channel must retain its full reservation:
+the SDK's empty lookup result also covers incomplete wallet operations, so it
+does not prove that no money was spent. A funded channel without an outgoing
+route needs a verified unilateral expiry refund. The SDK provides that operation,
+but the relay does not yet invoke it or retain its distinct terminal evidence;
+ordinary provider settlement records must not be invented to stand in for it.
+These retained records can exhaust bounded slots, and an early unresolved funding
+sequence can block retirement of later completed channels. Safe retention alone
+does not establish indefinitely reusable accounts.
 
 Run `cargo test -p fips-relay --lib controller::funding::tests` and
 `cargo test -p fips-relay --test controller`.
