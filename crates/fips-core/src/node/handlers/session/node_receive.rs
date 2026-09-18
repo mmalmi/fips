@@ -427,6 +427,16 @@ impl Node {
         }
     }
 
+    pub(in crate::node) fn authenticated_fmp_uses_current_epoch(
+        &self,
+        fmp: crate::node::AuthenticatedFmpReceiveFacts<'_>,
+    ) -> bool {
+        let received_k_bit = fmp.fmp_flags & crate::node::wire::FLAG_KEY_EPOCH != 0;
+        self.peers
+            .get(fmp.source_node_addr())
+            .is_some_and(|peer| peer.current_k_bit() == received_k_bit)
+    }
+
     pub(in crate::node) fn record_authenticated_fmp_receive_facts(
         &mut self,
         fmp: crate::node::AuthenticatedFmpReceiveFacts<'_>,
@@ -452,7 +462,9 @@ impl Node {
         let liveness_bookkeeping_allowed = arrived_from_source;
         let received_k_bit = fmp.fmp_flags & crate::node::wire::FLAG_KEY_EPOCH != 0;
         let _ = self.promote_dataplane_authenticated_pending_fmp_epoch(source_addr, received_k_bit);
-        if liveness_bookkeeping_allowed {
+        // Old-key packets remain valid during drain, but their counters and
+        // timestamps belong to the previous receiver measurement epoch.
+        if liveness_bookkeeping_allowed && self.authenticated_fmp_uses_current_epoch(fmp) {
             let _ = self.dataplane.record_authenticated_fmp_mmp_receive(
                 crate::dataplane::DataplaneAuthenticatedFmpMmpReceive::new(
                     *source_addr,
