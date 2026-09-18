@@ -13,6 +13,7 @@ from .wifi_remote import checked_path
 
 
 PROC = "/proc"
+DATAPLANE_DROP_LOG_FILTER = "warn,fips_core::node::handlers::rx_loop::dataplane=debug"
 OPERATIONS = {"other", "payment_sign", "payment_usage", "payment_update",
               "payment_open", "payment_stop", "window_checkpoint"}
 COUNTERS = {"spans", "cpu_samples", "thread_cpu_ns", "elapsed_ns",
@@ -78,7 +79,7 @@ def validate_measurements(status, pid):
             unsigned(counter)
 
 
-def command(node, native_counters=False):
+def command(node, native_counters=False, drop_logs=False):
     temporary = shlex.quote(checked_path(node.temporary))
     binary = shlex.quote(checked_path(node.binary))
     config = shlex.quote(checked_path(node.config))
@@ -87,6 +88,13 @@ def command(node, native_counters=False):
 native_routing=$(printf '%s\\n' '{{"command":"show_routing"}}' | {binary} native {config})
 """ if native_counters else "")
     extra = ' "$native_status" "$native_routing"' if native_counters else ""
+    log_check = (f"""log_filter=$(tr '\\000' '\\n' <{proc}/$pid/environ | sed -n 's/^RUST_LOG=//p')
+  test "$log_filter" = {shlex.quote(DATAPLANE_DROP_LOG_FILTER)}
+""" if drop_logs else "")
+    log_sample = (f"log_bytes=$(wc -c <{temporary}/process.log | tr -d '[:space:]')\n"
+                  if drop_logs else "")
+    if drop_logs:
+        extra += ' "$log_filter" "$log_bytes"'
     # Do not acquire operation.lock: reads must not delay the independent guard.
     # Buffer output until both identity checks succeed; no proc/config data is
     # written remotely. NUL framing preserves spaces and parentheses in comm.
@@ -100,6 +108,7 @@ owned() {{
   actual=$(sha256sum <{proc}/$pid/cmdline)
   expected=$(printf '%s\\000' {binary} run {config} | sha256sum)
   test "$actual" = "$expected"
+  {log_check}
 }}
 before=$(cat {proc}/$pid/stat)
 owned
@@ -112,21 +121,22 @@ else
   io=''
   availability=unsupported
 fi
-owned
+{log_sample}owned
 after=$(cat {proc}/$pid/stat)
 printf '%s\\000' "$pid" "$before" "$after" "$resources" "$io" "$relay" "$availability"{extra}
 """
 
 
-def snapshot(node, hostlabel, native_counters=False):
+def snapshot(node, hostlabel, native_counters=False, drop_logs=False):
     """Return one normal status response with validated host/process evidence."""
-    if hostlabel not in ("n01", "n02", "n03") or type(native_counters) is not bool:
+    if (hostlabel not in ("n01", "n02", "n03") or type(native_counters) is not bool
+            or type(drop_logs) is not bool):
         raise ValueError("invalid measurement host label")
     started = time.monotonic_ns()
-    raw = node.remote(command(node, native_counters), timeout=45)
+    raw = node.remote(command(node, native_counters, drop_logs), timeout=45)
     finished = time.monotonic_ns()
     parts = raw.decode("utf-8").split("\0")
-    if len(parts) != (10 if native_counters else 8) or parts[-1]:
+    if len(parts) != 8 + 2 * native_counters + 2 * drop_logs or parts[-1]:
         raise ValueError("invalid resource sample framing")
     pid = decimal(parts[0])
     before, after = process_identity(parts[1]), process_identity(parts[2])
@@ -158,6 +168,12 @@ def snapshot(node, hostlabel, native_counters=False):
                 or identity.get("exe_path") != node.binary):
             raise ValueError("native diagnostics came from a different process")
         status["native"] = native
+    if drop_logs:
+        start = 7 + 2 * native_counters
+        log_filter, log_bytes = parts[start:start + 2]
+        if log_filter != DATAPLANE_DROP_LOG_FILTER:
+            raise ValueError("dataplane drop log filter differs from the pinned diagnostic")
+        status["dataplane_log"] = {"filter": log_filter, "bytes": decimal(log_bytes)}
     status["host_process"] = {"host": hostlabel, "pid": pid, "start_ticks": before[1],
                               "rss_kib": memory["VmRSS"], "peak_rss_kib": memory["VmHWM"],
                               "io_available": parts[6] == "available", **io}

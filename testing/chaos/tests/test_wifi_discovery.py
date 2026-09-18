@@ -143,6 +143,33 @@ class GuardTests(unittest.TestCase):
             time.sleep(0.02)
         self.fail("guard did not acknowledge readiness")
 
+    def test_pinned_diagnostic_filter_reaches_the_owned_candidate(self):
+        self.start_guard()
+        expected = "warn,fips_core::node::handlers::rx_loop::dataplane=debug"
+        self.node.diagnostic_log_filter = expected
+        self.env["RUST_LOG"] = "warn"
+        (self.remote / "run").write_text(
+            "from pathlib import Path\nimport json,os,time\n"
+            "Path('observed.json').write_text(json.dumps({'filter':os.environ.get('RUST_LOG'),"
+            "'pid':os.getpid()}))\ntime.sleep(30)\n")
+        start = self.remote / "start.sh"
+        start.write_bytes(self.node.start_script())
+        process = subprocess.Popen(["sh", str(start)], cwd=self.remote, env=self.env,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.children.append(process)
+        observed = self.remote / "observed.json"
+        for _ in range(100):
+            if observed.exists():
+                break
+            time.sleep(0.02)
+        value = json.loads(observed.read_text())
+        self.assertEqual(value, {"filter": expected, "pid": process.pid})
+        self.assertEqual(int((self.remote / "process.pid").read_text()), process.pid)
+        self.assertEqual(self.env["RUST_LOG"], "warn")
+        self.local(["sh", str(self.guard), "stop"])
+        process.wait(timeout=8)
+        self.assertFalse((self.remote / "candidate-forced-stop").exists())
+
     def mutations(self):
         return [line for line in self.mesh_log.read_text().splitlines()
                 if line.startswith("MESH_GROUP_")] if self.mesh_log.exists() else []

@@ -25,6 +25,34 @@ def native_report():
 
 
 class NativeTests(unittest.TestCase):
+    def test_log_offsets_require_the_declared_filter_and_monotonic_process_history(self):
+        rows = native_report()
+        expected = "warn,fips_core::node::handlers::rx_loop::dataplane=debug"
+        rows[0]["dataplane_drop_log_filter"] = expected
+        for node in nodes(rows):
+            node["dataplane_log"] = {"filter": expected,
+                                     "bytes": node["measurements"]["process_cpu_ns"] // 100000}
+        original = copy.deepcopy(rows)
+        _, trials, _ = analyze_rows(rows)
+        self.assertEqual(trials[0]["dataplane_log_ranges"]["n01"], {
+            "before_guard": 10, "before": 10, "after": 11, "after_guard": 11,
+        })
+        self.assertEqual(trials[1]["dataplane_log_ranges"]["n01"]["previous_after_guard"], 11)
+        for field, value in (("filter", "warn"), ("bytes", 0), ("bytes", True), ("bytes", None)):
+            changed = copy.deepcopy(original)
+            workload(changed)["after_guard"][0]["dataplane_log"][field] = value
+            with self.subTest(field=field, value=value), self.assertRaises((ValueError, TypeError)):
+                diagnose_rows(changed)
+        changed = copy.deepcopy(original)
+        workload(changed)["before"][0].pop("dataplane_log")
+        with self.assertRaises(ValueError):
+            analyze_rows(changed)
+        changed = copy.deepcopy(original)
+        changed[0].pop("dataplane_drop_log_filter")
+        with self.assertRaises(ValueError):
+            analyze_rows(changed)
+        self.assertEqual(rows, original)
+
     def reject(self, change):
         rows = native_report()
         change(rows)

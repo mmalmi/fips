@@ -268,6 +268,10 @@ def validated_rows(rows, pilot, delivery_rejections=None):
     native_counters = metadata.get("native_counters", False)
     if type(native_counters) is not bool or (native_counters and schema != 3):
         raise ValueError("native counters require explicit hardware metadata")
+    log_filter = metadata.get("dataplane_drop_log_filter")
+    if log_filter is not None and (schema != 3 or not isinstance(log_filter, str)
+                                   or not 1 <= len(log_filter) <= 256):
+        raise ValueError("drop log observations require an explicit bounded hardware filter")
     if metadata["optimized"] is not True:
         raise ValueError("cadence comparison requires an optimized build")
     fixed = {"nodes": 5, "paid_relays": 3, "repeats": 2, "unpaid_percent": 50,
@@ -319,7 +323,7 @@ def validated_rows(rows, pilot, delivery_rejections=None):
                 validate_gap(previous, row["data"]["before_guard"], schema)
             if schema == 3:
                 record_vmhwm(row["data"], result, previous)
-                record_native_counters(row["data"], result, previous, native_counters)
+                record_native_counters(row["data"], result, previous, native_counters, log_filter)
             previous = row["data"]["after_guard"]
             trials.append({"trial":trial_id, "max_delay_ms":delay, "workload":row["data"]["workload"], **result})
             grouped[(row["data"]["workload"], delay)].append(result)

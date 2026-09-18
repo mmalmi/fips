@@ -86,6 +86,7 @@ class Router(SshCommands):
         self.npub = None
         self.mac = None
         self.mesh = None
+        self.diagnostic_log_filter = None
 
     def write(self, path, content):
         self.remote("umask 077; set -C; cat > " + shlex.quote(path), content)
@@ -283,8 +284,10 @@ test "$age" -le 35
         # The child fences itself after dispatch, then records its PID before
         # unlocking. Cleanup recognizes both this launcher and the final binary.
         t = self.temporary
+        logging = ("export RUST_LOG=" + shlex.quote(self.diagnostic_log_filter) + "\n"
+                   if self.diagnostic_log_filter is not None else "")
         command = (f"echo $$ > {t}/process.pid\nflock -u 9\nexec 9>&-\ntrap - EXIT\n"
-                   + shlex.join(["exec", self.binary, "run", self.config]) + "\n")
+                   + logging + shlex.join(["exec", self.binary, "run", self.config]) + "\n")
         return ("#!/bin/sh\n" + self.guarded_script(command)).encode()
 
     def prepare(self, binary, config):

@@ -21,6 +21,7 @@ from .paid_settlement import original_channels, require, settle_and_collect
 from .paid_wifi import PaidWifiRun
 from .remote_mint import RemoteMint
 from .wifi_remote import digest
+from .wifi_measurements import DATAPLANE_DROP_LOG_FILTER
 
 
 POLICIES = (250, 500, 1000, 2000, 2000, 1000, 500, 250)
@@ -63,6 +64,8 @@ def metadata(args):
         "policy_order": list(selected), "pilot": args.pilot,
         "pilot_delay_ms": selected[0] if args.pilot else None,
         "native_counters": getattr(args, "native_counters", False),
+        "dataplane_drop_log_filter": (DATAPLANE_DROP_LOG_FILTER
+                                      if getattr(args, "dataplane_drop_logs", False) else None),
         "relay_sha256": relay_sha,
         "mint_sha256": digest(args.mint_binary.read_bytes()),
         "provenance": provenance,
@@ -73,6 +76,9 @@ class CadenceRun(PaidWifiRun):
     def __init__(self, args, trial, delay, record):
         self.trial, self.delay, self.record = trial, delay, record
         super().__init__(args)
+        if getattr(args, "dataplane_drop_logs", False):
+            for node in self.nodes.values():
+                node.diagnostic_log_filter = DATAPLANE_DROP_LOG_FILTER
         self.evidence.update(trial=trial, max_delay_ms=delay,
                              measurement_acceptance="not_analyzed")
         for name in ("wifi_cadence.py", "wifi_measurements.py", "remote_mint.py"):
@@ -104,7 +110,8 @@ class CadenceRun(PaidWifiRun):
 
         self.monitor.check()
         with ThreadPoolExecutor(max_workers=3) as pool:
-            futures = [pool.submit(snapshot, node, name, getattr(self.args, "native_counters", False))
+            futures = [pool.submit(snapshot, node, name, getattr(self.args, "native_counters", False),
+                                   getattr(self.args, "dataplane_drop_logs", False))
                        for name, node in self.nodes.items()]
             return [future.result() for future in futures]
 
@@ -249,6 +256,8 @@ def main():
                         help="pilot payment age limit; defaults to 250 ms")
     parser.add_argument("--native-counters", action="store_true",
                         help="capture existing native forwarding/drop counters at each boundary")
+    parser.add_argument("--dataplane-drop-logs", action="store_true",
+                        help="pin existing dataplane drop logging and capture per-window byte offsets")
     args = parser.parse_args()
     os.umask(0o077)
 

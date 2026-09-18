@@ -70,7 +70,7 @@ def sample_pair(before, after):
     return difference(first, last)
 
 
-def record(data, result, previous, enabled):
+def record(data, result, previous, enabled, log_filter=None):
     boundaries = [(name, data[name]) for name in ("before_guard", "before", "after", "after_guard")]
     if previous is not None:
         boundaries.insert(0, ("previous_after_guard", previous))
@@ -78,6 +78,21 @@ def record(data, result, previous, enabled):
         for node in nodes:
             if ("native" in node) != enabled:
                 raise ValueError("native observations differ from explicit metadata")
+            if ("dataplane_log" in node) != (log_filter is not None):
+                raise ValueError("drop log observations differ from explicit metadata")
+    if log_filter is not None:
+        result["dataplane_log_ranges"] = {}
+        for index, node in enumerate(data["before"]):
+            samples = {}
+            for name, nodes in boundaries:
+                sample = nodes[index]["dataplane_log"]
+                if sample["filter"] != log_filter:
+                    raise ValueError("dataplane drop log filter changed")
+                size = unsigned(sample["bytes"])
+                if samples and size < next(reversed(samples.values())):
+                    raise ValueError("dataplane drop log shrank within the process epoch")
+                samples[name] = size
+            result["dataplane_log_ranges"][node["host_process"]["host"]] = samples
     if not enabled:
         return
     result["native_gap_counters"] = {}

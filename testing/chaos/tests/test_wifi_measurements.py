@@ -186,6 +186,18 @@ class ShellSamplerTests(unittest.TestCase):
         self.assertEqual(value["host_process"]["start_ticks"], 456)
         self.assertEqual((self.root / "calls").read_text(), "called\n")
 
+    def test_pinned_drop_log_filter_and_byte_offset_are_observed_without_environment_leaks(self):
+        expected = "warn,fips_core::node::handlers::rx_loop::dataplane=debug"
+        (self.record / "environ").write_bytes(f"PRIVATE_TEST_VALUE=hidden\0RUST_LOG={expected}\0".encode())
+        (self.root / "process.log").write_bytes(b"first record\n")
+        value = snapshot(self.router, "n01", drop_logs=True)
+        self.assertEqual(value["dataplane_log"], {"filter": expected, "bytes": 13})
+        self.assertNotIn("hidden", json.dumps(value))
+        for env in (b"RUST_LOG=debug\0", b"UNRELATED=value\0", b"RUST_LOG=warn\0RUST_LOG=debug\0"):
+            (self.record / "environ").write_bytes(env)
+            with self.subTest(env=env), self.assertRaises((ValueError, subprocess.CalledProcessError)):
+                snapshot(self.router, "n01", drop_logs=True)
+
     def test_kernel_without_io_keeps_other_measurements_and_reports_nulls(self):
         (self.record / "io").unlink()
         value = snapshot(self.router, "n01")
@@ -224,6 +236,9 @@ class ShellSamplerTests(unittest.TestCase):
             path.symlink_to(original) if field == "exe" else path.write_bytes(original)
 
     def test_shell_native_queries_keep_ownership_guards_and_exact_command_order(self):
+        from sim.wifi_measurements import DATAPLANE_DROP_LOG_FILTER
+        (self.record / "environ").write_bytes(f"RUST_LOG={DATAPLANE_DROP_LOG_FILTER}\0".encode())
+        (self.root / "process.log").write_bytes(b"")
         native = {"status": "ok", "data": {"pid": 123, "npub": "test-node",
                   "exe_path": self.router.binary}}
         (self.root / "native.json").write_text(json.dumps(native))
@@ -233,15 +248,16 @@ class ShellSamplerTests(unittest.TestCase):
             f'test "$2" = \'{self.router.config}\'\n'
             f'if test "$1" = native; then cat \'{self.root}/native.json\'; '
             f'else cat \'{self.root}/response.json\'; fi\n')
-        result = snapshot(self.router, "n01", native_counters=True)
+        result = snapshot(self.router, "n01", native_counters=True, drop_logs=True)
         self.assertEqual(result["native"]["status"], native)
+        self.assertEqual(result["dataplane_log"], {"filter": DATAPLANE_DROP_LOG_FILTER, "bytes": 0})
         self.assertEqual((self.root / "calls").read_text().splitlines(), [
             'native:{"command":"show_status"}', 'native:{"command":"show_routing"}',
             'ctl:{"type":"status"}',
         ])
         (self.record / "cmdline").write_bytes(b"another process\0")
         with self.assertRaises(subprocess.CalledProcessError):
-            snapshot(self.router, "n01", native_counters=True)
+            snapshot(self.router, "n01", native_counters=True, drop_logs=True)
         self.assertEqual(len((self.root / "calls").read_text().splitlines()), 3)
 
     def test_process_restart_during_control_is_rejected(self):

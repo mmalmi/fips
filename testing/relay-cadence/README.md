@@ -241,6 +241,26 @@ to `TransportHandle::congestion`, so zero `kernel_drop_events` does not establis
 zero Ethernet/kernel loss. Existing dataplane debug drop events provide a
 separate observation path for raw ingress, crypto, output and endpoint failures.
 
+Add `--dataplane-drop-logs` to enable those existing debug events for the isolated
+candidate. Its exact filter is
+`warn,fips_core::node::handlers::rx_loop::dataplane=debug`; other targets retain
+warning-level logging. The launcher exports it only to the candidate. Every
+guarded sample verifies the candidate's `RUST_LOG` value without returning its
+other environment variables, then records the cumulative `process.log` byte
+length. Missing or changed filters and shrinking logs invalidate analysis.
+Metadata declares `dataplane_drop_log_filter`, raw snapshots retain
+`dataplane_log`, and per-window summaries expose `dataplane_log_ranges` for all
+boundaries and the preceding guard. Normal cleanup preserves the full log
+under each router's private output directory.
+
+Use the recorded byte offsets to distinguish workload, guard-gap, setup and
+cleanup events. A record spanning a byte boundary has uncertain window
+attribution and should be retained as such. Logs describe local drop reasons;
+they are not per-packet delivery receipts. Logging adds work when an event is
+emitted, so comparisons need the same filter and counter sampling on every
+trial. Empty matching logs cannot establish absence of losses that have no
+event at these observation points.
+
 For a complete but rejected matrix, diagnostic JSON can retain cost observations
 and identify each missing-delivery window:
 
