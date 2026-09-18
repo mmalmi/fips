@@ -40,7 +40,7 @@ class PaidWifiRun(WifiRun):
         if args.mint_ssh_forward and args.mint_address != "127.0.0.1":
             raise ValueError("--mint-ssh-forward requires --mint-address 127.0.0.1")
         super().__init__(args)
-        self.mint = LocalMint(args.mint_binary, args.mint_address, self.root)
+        self.mint = self.create_mint(args)
         self.mint_url = None
         self.forwards = None
         self.channel_anchor = None
@@ -49,6 +49,9 @@ class PaidWifiRun(WifiRun):
         for name in ("paid_wifi.py", "paid_wifi_mint.py", "paid_wifi_forwarding.py",
                      "paid_finances.py", "paid_settlement.py"):
             self.evidence["harness_sha256"][name] = digest(Path(__file__).with_name(name).read_bytes())
+
+    def create_mint(self, args):
+        return LocalMint(args.mint_binary, args.mint_address, self.root)
 
     def profile_config(self, node):
         config = relay_config([node.interface], self.mint_url)
