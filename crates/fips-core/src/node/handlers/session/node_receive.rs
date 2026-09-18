@@ -368,10 +368,10 @@ impl Node {
         if matches!(
             SessionMessageType::from_byte(msg_type),
             Some(SessionMessageType::SenderReport | SessionMessageType::ReceiverReport)
-        ) && !self
+        ) && self
             .sessions
             .get(&source_addr)
-            .is_some_and(|session| session.current_k_bit() == received_k_bit)
+            .is_none_or(|session| session.current_k_bit() != received_k_bit)
         {
             debug!(
                 src = %self.peer_display_name(&source_addr),
