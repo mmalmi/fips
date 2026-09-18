@@ -241,17 +241,16 @@ including funding order and preservation after radio or financial uncertainty.
 
 These runs cover controlled departure/rejoin with reconciled, already funded
 routes on both SAE-protected and open radio meshes. Interrupted purchase
-acceptance on hardware, arbitrary physical mobility/mesh merge-split, updated
-Pixel acceptance and current hardware performance measurements still require
+acceptance on hardware, arbitrary physical mobility/mesh merge-split, phone
+outage recovery and current hardware performance measurements still require
 verification.
 
 The current isolated Android package passes a fresh arm64 native build, Android
 lint and strict Android-target relay/app linting. Native-library provenance is
 verified through packaging, including the build tool's stripping step. Installation
-and native startup on the phone show an unconfigured, stopped test account; the
-existing app's private files are unchanged. This is startup verification only:
-the new account has no setup profile or funds, and its paid customer-network
-acceptance remains pending.
+and native startup on the phone first verified an unconfigured, stopped test
+account with the existing app's private files unchanged. The subsequent physical
+customer-network acceptance is described below.
 
 Customer profiles now select an explicit immutable per-attempt billing mode.
 The former hardcoded mode rejected quotes from a forwarding-data mesh; a real
@@ -260,8 +259,8 @@ mode and forwarding-data mode now pass the same purchase, delivery, reopen,
 settlement and 384-test-sat collection checks. Missing billing in a saved profile
 retains its exact original forwarding-attempt meaning. Unsupported tariffs and
 later tariff replacement are rejected. Three profile checks, all three customer
-integration tests and strict all-target linting pass; physical phone acceptance
-with the selected mesh tariff remains a separate check.
+integration tests and strict all-target linting pass. The physical phone run
+below uses the explicit forwarding-data tariff.
 
 The phone-test infrastructure now has a shared, capped mint endpoint and three
 temporary customer firewall exceptions. The existing router lease owns the UDP
@@ -275,8 +274,44 @@ reconciliation; it is not proof of safe shutdown.
 An ARM64 host passes a zero-funded start/report/stop check and a separate capped
 128-test-sat issue/collection check. Cleanup preserves the live mint while those
 funds are outstanding, then verifies 128 issued equals 128 collected before stop.
-The host's existing mint processes and web service remain healthy. These are mint
-and harness checks, not a completed paid phone session or a router throughput test.
+The host's existing mint processes and web service remain healthy. These initial
+checks cover mint ownership and cleanup; they do not measure router throughput.
+
+### Physical phone customer across the wireless mesh
+
+The current isolated Pixel app also completes a paid session through all three
+ARM64 OpenWrt routers. The phone joins the existing customer AP and authenticates
+at its UDP entry. Native Ethernet discovery forms the temporary open 802.11s mesh
+without a router peer roster; owned shortcut filters force the remaining two
+wireless hops. Exact connected peer sets and observed shortcut drops corroborate
+this mixed UDP/wireless path. Return allowance is disabled, and both endpoints
+explicitly authorize their own sending direction.
+
+All eight fresh 1,000-byte application payloads arrive: four from the phone to the
+far router and four in reverse. Forward delivery checks exact packet/byte growth
+and fresh payload hashes; reverse delivery additionally matches known sent hashes.
+All four original 32-sat channels advance automatically and reconcile with the
+providers' credited balances. Before funding, source-bound phone TCP probes reach
+the shared mint, reject three explicit LAN/Internet targets, and reach the mint
+again. This establishes those scoped isolation checks, not unrestricted firewall
+coverage or paid Internet browsing.
+
+Cooperative settlement leaves the entry and middle routers with 146 test sats
+each and the phone and far router with 110 each, from initial grants of 128 each.
+Both relays therefore earn 18 test sats net. An initial checker incorrectly
+expected textual node addresses instead of the stored 16-byte arrays and stopped
+collection after settlement. The corrected checker passes the exact retained
+buyer/seller journals, immutable funding, terminal reports, signed balances,
+refunds and all four wallet equations. Deliberate collection then redeems the
+same settled wallets, without repeating funding, payments or settlement.
+
+All 512 issued test sats are collected and all four wallets are empty. The mint
+has a verified clean stop, and its temporary customer UDP/TCP/SNAT rules are gone.
+All 633 management samples pass, with a maximum sampling gap of 2.34 seconds.
+Original router baselines and the original phone app's files are unchanged; the
+phone returns to its previously selected saved Wi-Fi. This completes the bounded
+phone session with recorded checker recovery. It does not establish phone
+mobility, arbitrary mesh merge/split, throughput or production readiness.
 
 ## Guarded cadence measurement
 
