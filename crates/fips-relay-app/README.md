@@ -27,6 +27,14 @@ access are intentional for this isolated, test-funded bench. Do not distribute
 this artifact as a production wallet. Ordinary Gradle packaging alone is not the
 supported build entry point: it could reuse an old native library.
 
+For fresh-account acceptance alongside an existing installation, build with
+`crates/fips-relay-app/build-android.sh --isolated`. This uses the same code with
+package `org.fips.relaybench.acceptance`, label **FIPS Bench Acceptance** and setup
+scheme `fipsbench-acceptance`. Its private account storage is separate. Use that
+package for installation, explicit activity intents and `run-as` transfers; the
+activity class remains `org.fips.relaybench.MainActivity`. Reinstalling either
+package retains its own account. Never clear its data to retry a pending payment.
+
 The existing `scripts/check-rust-file-lines.sh` gate also checks Java. Paid-relay
 Rust and Android source files have a 600-line limit. Integration scenarios retain
 the workspace's 1,000-line limit. Android lint treats warnings as errors, with
