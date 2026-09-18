@@ -49,6 +49,37 @@ expired entries until then. New offers may explicitly grant a fresh allowance
 within those limits; cycling offer IDs cannot bypass the retained-record caps.
 There is no lifetime free-byte cap; discovery/control rate limits remain separate.
 
+Optional `free_bandwidth` service configuration limits negotiated free-data
+admission across all destinations and grant renewals:
+
+```json
+"free_bandwidth": {
+  "global_bytes_per_second": 16384,
+  "global_burst_bytes": 32768,
+  "peer_bytes_per_second": 4096,
+  "peer_burst_bytes": 8192
+}
+```
+
+Omitting this setting preserves the existing grant quotas without adding a rate
+limit. Rates must be positive; peer rates and bursts cannot exceed their global
+limits, and the peer burst must be at least 256 bytes. Every admitted packet
+consumes its session-envelope length or 256 units, whichever is larger, to bound
+small-packet processing. Oversized packets and exhausted budgets are dropped;
+the limiter does not queue them. Choose bursts large enough for the intended
+packet size. These are admission units, not measured radio airtime or wire bytes.
+
+The global bucket covers all neighbors; a neighbor bucket binds its authenticated
+identity, not claimed source/destination addresses. At most 64 neighbor buckets
+are retained, and an idle bucket cannot retire before its full refill time.
+Rejected permissions consume neither bandwidth nor onward grant quota. Local
+paid admission with a free continuation does not use this free-data rate budget.
+Bootstrap and optional earned return allowances have separate existing limits.
+Budgets are volatile and restart with a full burst; they are not durable spending
+caps. Status exposes admissions, charged units, denials and tracked neighbors in
+`free_routes.bandwidth`. This setting neither offers a second service tier nor
+gives paid traffic scheduler priority; those remain separate work.
+
 Transit admission reserves both free sides together. For a paid prefix with a
 free continuation, rejected upstream traffic consumes no onward free allowance.
 Admitted bytes consume quota even if transport submission later fails. No free

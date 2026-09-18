@@ -6,6 +6,9 @@ use crate::{
 };
 use fips_core::{Identity, PeerIdentity};
 
+#[path = "bandwidth_tests.rs"]
+mod bandwidth;
+
 fn peer(n: u8) -> PeerIdentity {
     PeerIdentity::from_pubkey_full(Identity::from_secret_bytes(&[n; 32]).unwrap().pubkey_full())
 }

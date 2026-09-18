@@ -20,6 +20,7 @@ pub fn config(root: &Path, mint: &str) -> ServiceConfig {
         neighbor_admission: Default::default(),
         destination_fees: Default::default(),
         return_allowance: false,
+        free_bandwidth: None,
         price_selection: None,
         payment_cadence: Default::default(),
         neighbors: vec![],
