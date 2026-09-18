@@ -176,7 +176,12 @@ pricing document for the current acceptance evidence. Optional local free-data
 rate limits now share global and authenticated-neighbor budgets across grants
 and destinations. Four regressions failed before enforcement and the slow-refill
 retention fix; all 196 relay library tests and strict all-target linting pass.
-These checks cover configuration and admission, not radio congestion fairness.
+A five-process UDP check also verifies bidirectional free delivery, per-neighbor
+denial and the shared node cap with two neighbors. It observes admission counters
+within elapsed refill bounds; all financial journals remain unchanged and the
+mint is never contacted. Strict all-target relay linting passes on the combined
+free-bandwidth and receive-queue changes. This does not establish radio congestion
+fairness or paid/free scheduling.
 Outgoing-link price selectors, choosing between free and paid tiers for the same
 destination, and paid traffic priority remain unfinished.
 Paid priority must derive from a valid local agreement.
