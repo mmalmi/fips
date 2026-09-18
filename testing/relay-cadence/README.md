@@ -1,6 +1,10 @@
 # Paid-relay cadence experiment
 
-This experiment runs the production relay executable as five separate processes,
+The analyzer accepts the loopback experiment (schema 2) and the guarded
+three-router Wi-Fi experiment (schema 3) described below. Both use the same
+payment, delivery and financial acceptance checks.
+
+The loopback experiment runs the production relay executable as five separate processes,
 with three paid forwarding hops, loopback UDP links and an isolated simulated
 mint. It reuses the existing service test helpers and operator probe API. It does
 not alter live routers, home networking or saved accounts.
@@ -36,7 +40,7 @@ Each trial records bounded setup/warmup attempts separately, followed by:
 | Workload | Offered application traffic |
 | --- | --- |
 | Idle | Four seconds with no diagnostic traffic |
-| Bursty | Eight bursts of 64 × 1,000-byte packets at 1,000 packets/s, 800 ms between bursts |
+| Bursty | Eight bursts of 64 × 1,000-byte packets at 1,000 packets/s, 800 ms after every burst |
 | Steady | 3,200 × 1,000-byte packets at 400 packets/s (3.2 Mbps) |
 | High rate | 32,000 × 1,000-byte packets at 4,000 packets/s (32 Mbps) |
 
@@ -70,6 +74,155 @@ Two repetitions show variation but are not enough for statistical claims of an
 optimal policy. Historical schema-1 results lack the payment-boundary evidence
 and must be analyzed with their original analyzer revision.
 
+## Hardware report contract (schema 3)
+
+The hardware runner uses three router service processes, one paid relay, two
+funded directions, two active channels, and native Ethernet over 802.11s. Each
+trial uses fresh isolated accounts: 128 test sats per router, 32-sat channels,
+`forwarding_data` billing, and a 16,777,216-unit quote allowance. The value trigger,
+window, grace, tariff, two repetitions and policy order match schema 2. Every
+trial must settle both channels and collect all 384 issued test sats. Analyzer
+support and synthetic tests alone do not establish a physical benchmark result.
+
+Run the existing guarded Wi-Fi lifecycle from `testing/chaos`:
+
+```sh
+python3 -m sim.wifi_cadence \
+  --inventory /absolute/router-inventory.json \
+  --binary /absolute/measurement-release/fips-relay \
+  --provenance /absolute/measurement-release/provenance.json \
+  --mint-binary /absolute/linux-arm64/fips-relay-test-mint \
+  --mint-host /absolute/mint-host.json --mint-address PRIVATE_MINT_IPV4 \
+  --output /absolute/new-pilot-directory --pilot
+```
+
+The router inventory is the same explicit inventory used by `sim.paid_wifi`.
+The mint-host JSON supplies `host`, `state_parent`, and optional `ssh_config` for
+the existing guarded `RemoteMint` adapter. Its assigned LAN address must be
+reachable from every router. The release provenance must bind the supplied
+binary digest to a successful, unchanged-source ARM64 musl build with
+`--release` and the `measurements` feature. The runner retains this provenance,
+platform/load information and exact harness hashes beside private evidence.
+
+Start with `--pilot`: one 250-ms trial runs all four workloads and the same
+strict measurement and financial checks. It always reports
+`comparison_complete: false`. Omit `--pilot` and select a new output directory
+for the complete eight-trial matrix. Each trial restores the original router
+baselines and stops its fully collected mint before the next starts. The saved
+radio profile, management LAN and original service accounts are preserved.
+
+Raw `measurements.jsonl` is written incrementally. Workload failure attempts
+settlement/collection while management and ownership guards remain healthy;
+uncertain funding or failed guards retain the original mint/accounts for
+deliberate recovery. The trial deadline is canceled before collection, whose
+remote operations retain individual timeouts. Failed measurements never trigger
+payload retries, selective tail extension or replacement of snapshots. Analysis
+runs after collection, so rejected measurements still retain financial evidence.
+`summary.json` is emitted only after validation; `result.json` distinguishes
+completed trials, accepted measurements and a completed policy comparison.
+
+Schema 3 retains the same workload/boundary row structure, with these changes:
+
+- High rate offers **8,000** packets at 4,000 packets/s. Idle, bursty and steady
+  counts and rates remain as above. Every one of the eight bursts includes its
+  final 800 ms sleep. Metadata records the exact `workload_schedule` and
+  `common_tail_ms: 3000`; each probe records its `packets_per_second` and
+  `after_sleep_ms`. Offered elapsed time must cover idle duration or sequential
+  sender durations plus sleeps. These records establish the declared schedule,
+  not exact packet-by-packet pacing.
+- Every snapshot includes the service `npub` and `host_process`: `host` (`n01`,
+  `n02` or `n03`), `pid`, `start_ticks`, `rss_kib`, `peak_rss_kib`, `read_bytes`,
+  `write_bytes`, `rchar`, `wchar`, `syscr`, `syscw`, and explicit `io_available`.
+  When `io_available` is false, all six I/O counters must be null; when true,
+  each must be a nonnegative integer. Availability must remain stable throughout
+  each trial. The PID must match the
+  service's measurement PID. Host, node and process start identity must remain
+  stable across all guards and workload windows. Equal PIDs on different hosts
+  are valid; a duplicate host or node identity is not.
+- Independent router clocks do not establish one-way latency. Metadata must
+  state `one_way_latency: false`, and every receiver's `latency` must be null.
+  Delivery counts, bytes, duplicates and reordering still use the existing probe
+  evidence. Mean and percentile one-way latency remain null in summaries.
+- Radio traffic can cause paid work during application-idle windows. Such work
+  is included and reported; it is not subtracted as a baseline. Both channels
+  must still be fully acknowledged with no job in flight at every boundary.
+  The same double guards and gap checks reject payment or relay-journal work
+  outside measured windows, including work after the final snapshot.
+
+JSON summaries retain total and per-node CPU seconds, CPU seconds/MiB, payment
+spans and control-record bytes, relay journal bytes/writes/commits/syncs, plus
+end-to-end goodput. Each node's normalized CPU uses the same delivered application
+bytes as the total, with null ratios when no data is delivered. Current RSS is
+reported before and after each window. `reported_vmhwm_after_kib` retains the
+kernel-reported VmHWM at the end snapshot. Each node's `vmhwm_samples_kib` preserves
+the named raw boundary samples; `maximum_observed_vmhwm_kib` is their maximum,
+not a proven lifetime or window peak. `vmhwm_decreases` records each observed
+decrease with its host, boundaries, raw values and amount. Summed node values
+need not have occurred simultaneously.
+
+Linux's reported VmHWM is not a strict monotonic counter: the reported current
+RSS can include per-CPU counts that were absent when the stored high-water mark
+was updated. Reading the report does not store that observed maximum. See the
+[Linux 6.12.94 proc reader](https://github.com/gregkh/linux/blob/v6.12.94/fs/proc/task_mmu.c#L35-L68)
+and [RSS/high-water helpers](https://github.com/gregkh/linux/blob/v6.12.94/include/linux/mm.h#L2645-L2727).
+A decrease alone therefore does not invalidate a run or prove a reset. Raw
+values remain unchanged, and each snapshot must still have nonnegative values
+and RSS no greater than VmHWM. Process identity and all actual CPU, I/O, payment
+and journal counter checks remain required.
+
+Goodput divides delivered application bits by `offered_elapsed_ms`, including
+controller/SSH probe setup, status polling, bounded receive drain, and burst
+sleeps; it excludes the common three-second tail. It is not sender-only pacing
+or a link-capacity measurement. CPU and overhead include the common tail.
+Workloads within one trial share the original channel and prepaid credit.
+Earlier payments can cover later traffic: zero payment updates in a workload
+does not mean forwarding was free or unbilled. Setup/warmup is recorded separately
+and excluded from workload cost windows; the sequence is fixed for every trial.
+
+`os_io` contains separate process counter deltas when the kernel exposes them.
+If `/proc/PID/io` is absent, the node's `os_io` is null. The total is also null
+unless all three nodes provide I/O counters; `os_io_observed_nodes` records the
+coverage. Missing I/O is never replaced with zeros, and unreadable or malformed
+files are errors rather than evidence of unsupported counters. There is no OS
+I/O measurement claim for kernels without these counters. CPU, RSS and logical
+relay journal metrics remain independently available.
+
+When present, `read_bytes`/`write_bytes` are
+OS-accounted storage I/O; `rchar`/`wchar` are read/write character counts including
+other I/O; `syscr`/`syscw` count read/write system calls. They cover the whole relay
+process and **are not payment-attributed**. They are not the logical journal
+counters, physical media wear, or per-payment SQLite attribution. Counter resets
+and process replacement invalidate the comparison. OS I/O during status sampling
+can advance without becoming a payment/durability gap violation.
+
+A bounded pilot validates only trial 0 at 250 ms, with all four workloads and
+the same strict guards, schedule, delivery and 384-sat collection requirements.
+Both `metadata.pilot: true` and explicit analyzer opt-in are required:
+
+```sh
+python3 testing/relay-cadence/analyze.py /absolute/pilot.jsonl --pilot
+```
+
+A pilot is not a complete comparison (`comparison_complete` remains false in
+the runner's result). Full analysis rejects pilot reports; pilot mode rejects a
+full matrix, missing conservation or invalid boundaries. Pilot output is JSON
+only; Markdown comparison output is rejected.
+
+For a complete but rejected matrix, diagnostic JSON can retain cost observations
+and identify each missing-delivery window:
+
+```sh
+python3 testing/relay-cadence/analyze.py /absolute/measurements.jsonl --diagnostics
+```
+
+This mode emits `diagnostic: true` and `accepted: false`, and exits unsuccessfully
+when delivery is incomplete. It preserves every other validation requirement,
+including complete submission, packet identity/counts, duplicate/invalid rejection,
+financial conservation, process identity, quiet boundaries and durable counters.
+Malformed or unreconciled evidence still fails without a summary. Diagnostic
+output cannot be combined with Markdown comparison output, and must not replace
+the original rejected result or be presented as an accepted comparison.
+
 ## Measurement boundaries
 
 Build the relay with the optional `measurements` feature. The private local
@@ -101,7 +254,9 @@ forwarding, payments or spending.
   reported aggregate native link counters. Sum sent bytes once; summing sent
   and received double-counts them. Record bytes omit TCP/FIPS/carrier framing,
   acknowledgments and retries. Aggregate link counters include other native
-  traffic and do not isolate payments. Neither metric measures Wi-Fi airtime.
+  traffic and do not isolate payments. The hardware run also exposed source
+  peer sent-byte counters that omitted some application traffic; summing these
+  observations is not complete carrier accounting. Neither metric measures Wi-Fi airtime.
 
 Clock support is currently implemented for Linux, Android and macOS using the
 OS thread/process CPU clocks. Other targets expose missing CPU samples. The
@@ -124,7 +279,12 @@ This matrix provides the repeatable clean-link baseline. It does not fulfill
 the full production-readiness benchmark. Still required: impaired links using
 the existing FIPS simulation/chaos facilities, payment-specific complete carrier
 bytes, SDK snapshot and receiver SQLite storage measurements, profiler attribution outside
-the synchronous spans, and controlled ARM64/router/phone runs. Performance changes
+the synchronous spans, and complete controlled ARM64/router/phone comparisons.
+The guarded three-router 250-ms pilot passed all four workloads and financial
+recovery. The subsequent eight-trial hardware matrix collected all windows and
+recovered all funds, but its strict clean-link gate rejected three missing
+packets out of 93,696 submitted. The failed result remains failed; the saved
+evidence does not establish the loss cause. Performance changes
 need a matched baseline with instrumentation cost held constant. No production
 default is selected solely from this loopback experiment.
 
