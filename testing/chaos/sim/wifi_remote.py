@@ -190,10 +190,12 @@ class Router:
 
     def guard_script(self):
         # Independent remote expiry restores an owned outage even if SSH/the runner dies.
+        from .wifi_customer import guard_helpers
         t = self.temporary
         return f"""#!/bin/sh
 set -eu
 . {t}/mesh.sh
+{guard_helpers(t, self.table_owner)}
 owned_candidate() {{
   [ -r /proc/$pid/cmdline ] || return 1
   actual=$(tr '\\000' '\\n' </proc/$pid/cmdline)
@@ -230,6 +232,7 @@ cleanup() {{
   exec 9>{t}/operation.lock
   flock -x 9
   rm -f {t}/active
+  customer_cleanup || echo 'customer exception cleanup incomplete' >&2
   if [ -f {t}/open-armed ]; then
     open_restore_original || echo 'open mesh restore failed; retaining isolation' >&2
   elif [ -f {t}/mesh-down ]; then
@@ -244,6 +247,17 @@ cleanup() {{
   flock -u 9
   exec 9>&-
 }}
+case "${{1:-}}" in
+  customer-cleanup|customer-status|customer-bind)
+    exec 9>{t}/operation.lock
+    flock -x 9
+    case "$1" in
+      customer-cleanup) customer_cleanup;;
+      customer-status) customer_status;;
+      customer-bind) customer_bind;;
+    esac
+    exit $?;;
+esac
 [ "${{1:-}}" != cleanup ] || {{ cleanup; exit 0; }}
 # The caller holds operation.lock and checks the live lease for this path.
 [ "${{1:-}}" != stop ] || {{ stop_candidate; exit 0; }}
@@ -433,4 +447,5 @@ done
         # Preserve failure markers and logs, but finish safe cleanup first.
         self.remote(f"test ! -f {t}/mesh-down && test ! -f {t}/table-created && "
                     f"test ! -f {t}/open-armed && test ! -f {t}/original-isolated && "
+                    f"test ! -f {t}/customer-udp.rule && test ! -f {t}/customer-cleanup-failed && "
                     f"test ! -f {t}/candidate-stop-failed && test ! -f {t}/candidate-forced-stop")
