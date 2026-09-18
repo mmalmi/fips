@@ -374,9 +374,13 @@ keys could enter the new key's measurements, and the first pending session-key
 measurements could be discarded during promotion. The core now isolates these
 counter spaces while preserving delivery of valid late application data. Encrypted
 ingress regressions, 99 handler tests and strict core lint pass; the preceding
-session fixes also pass 87 key-rotation tests. These fixes have not yet passed the
-full paid recovery suite or been rerun on the routers, so the physical recovery
-blocker remains open.
+session fixes also pass 87 key-rotation tests. Together with the source trial
+quota-refusal fallback, the combined code passes all eight paid-path scenarios,
+including loss with neighbor departure, four leave/rejoin cycles and interrupted
+acceptance; the preceding combined run failed the first two of those scenarios.
+The same source passes 212 relay library tests and strict relay lint. These are
+simulated-carrier results with native routing and payment code. The updated
+build has not yet been rerun on the routers, so physical recovery remains open.
 
 The current isolated Android package passes a fresh arm64 native build, Android
 lint and strict Android-target relay/app linting. Native-library provenance is
