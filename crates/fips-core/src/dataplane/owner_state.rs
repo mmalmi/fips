@@ -48,6 +48,7 @@ impl OwnerState {
             fsp_mmp: config
                 .fsp_mmp
                 .map(|mmp| crate::mmp::MmpSessionState::new(&mmp.config, mmp.is_initiator)),
+            fsp_mmp_pending_receive_epoch: None,
             fsp_lifecycle_confirmed: false,
             source_peer: config.source_peer,
             last_rx_activity: None,
@@ -120,6 +121,7 @@ impl OwnerState {
         if let Some(mmp) = &mut self.fsp_mmp {
             mmp.reset_for_rekey(std::time::Instant::now());
         }
+        self.fsp_mmp_pending_receive_epoch = None;
         self.fsp_lifecycle_confirmed = false;
         self.source_peer = None;
         self.last_rx_activity = None;
@@ -496,10 +498,20 @@ impl OwnerState {
         if config.generation != self.generation {
             let staged_fsp_cutover = self.owner.protocol() == PacketProtocol::Fsp
                 && self.is_pending_session(config.send_counter_authority.as_ref());
+            // Authenticated pending packets can retire before Node commits the
+            // cutover. Their receiver interval already belongs to the new key.
+            let pending_mmp = (staged_fsp_cutover
+                && self.fsp_mmp_pending_receive_epoch == Some(self.pending_receive_epoch_instance))
+                .then(|| self.fsp_mmp.take())
+                .flatten();
             if staged_fsp_cutover {
                 self.rekey_preserving_fsp_path_activity(config.generation);
             } else {
                 self.rekey(config.generation);
+            }
+            if let Some(mut mmp) = pending_mmp {
+                mmp.reset_sender_for_rekey();
+                self.fsp_mmp = Some(mmp);
             }
         }
         if let Some(authority) = config.send_counter_authority {
@@ -654,6 +666,13 @@ impl OwnerState {
     }
 
     fn advance_pending_receive_epoch(&mut self) {
+        if self.fsp_mmp_pending_receive_epoch.take().is_some()
+            && let Some(mmp) = &mut self.fsp_mmp
+        {
+            // Replacement/cancellation must not reuse a prior pending key's
+            // counter space, even when the replacement has the same K bit.
+            mmp.reset_receiver_for_rekey(std::time::Instant::now());
+        }
         self.pending_receive_epoch_instance = self.pending_receive_epoch_instance.wrapping_add(1);
         self.pending_replay_counters
             .retain(|((epoch, _), _)| *epoch != DataplaneReceiveEpoch::Pending);
