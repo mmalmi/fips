@@ -306,6 +306,35 @@ checked before stopping the mint. A failed cleanup is reported as a failed run.
 Run the Wi-Fi, financial, fault and settlement tests on Linux before hardware use;
 include `tests` in `PYTHONPATH` for the existing payment-fault test imports.
 
+### Phone acceptance helpers
+
+`sim.remote_mint.RemoteMint` gives routers and a phone one explicit private mint
+URL. The mint host requires Linux, Python with pidfd support, and the supplied
+static ARM64 test-mint binary; the routers do not need Python. Every run uses
+fresh persistent state and an issuance cap of at most 512 test sats. Money
+requests are recorded before submission and never automatically replayed. The
+mint stays running while funds are outstanding; terminal cleanup needs a fresh
+conserved collection report and the exact child process's clean exit. Missing
+supervisor evidence requires deliberate reconciliation with all state retained.
+
+`sim.wifi_customer.CustomerAccess` adds three narrowly scoped rules under the
+existing router lease. Lease expiry removes the customer UDP entry; access to
+the pinned mint remains until `release_mint` receives that terminal proof. No
+persistent network configuration, host route or proxy is introduced.
+
+`sim.phone_customer.PhoneCustomer` drives only the separate acceptance app on an
+explicit device. Keep one operator and its private evidence directory throughout
+the run. `launch` and `open_setup` preview only; setup, import, purchase and export
+still use the app buttons. Every click archives its old completion marker and
+saves an intent before tapping. An uncertain action blocks further actions;
+`reconcile` observes it without tapping again. `stage_funds` creates one private
+input without importing it. Use the matching explicit `billing` in the
+[customer profile](../../crates/fips-relay-app/README.md).
+
+These helpers have focused tests and host/phone startup checks. A complete paid
+phone-through-mesh acceptance run is still pending; the three-router acceptance
+above does not establish that result.
+
 ## Available Scenarios
 
 ### General stress tests
