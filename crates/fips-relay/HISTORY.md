@@ -57,6 +57,30 @@ The lower-level `retire_closed_routes` APIs are trusted local operations, not
 network requests or operator cleanup commands. Use the controller workflow for a
 controller-owned profile; calling only an accounting API leaves stale references.
 
+## Withdrawn routing and retained recovery
+
+When a watched purchase loses its native neighbor, the controller may mark its
+exact offer as `recovery_only` and let source selection consider another provider.
+This withdraws routing permission, not financial liability: original funding IDs,
+pending wallet operations, channel terms, debits and lifetime limits remain.
+An eventual successful acceptance is retained without restoring that permission.
+
+The controller persists this disposition before closing local quote authority.
+Quote installation shares the same lock, and startup repairs an interrupted
+cross-journal close. A failed close still removes the affected in-memory packet
+permission and reports the persistence error; it does not certify durable cleanup.
+
+If the provider returns, automatic settlement uses the existing Seal/Settle
+exchange. Its journal reservation rechecks that no eligible route, new request or
+renewal shares the channel. The ordinary verified refund and expiry-retirement
+workflow removes the exact offer marker. Pre-route reservations and permanently
+absent uncertain work remain retained; absence or expiry alone is not a refund.
+
+The journal keeps the `0x100` authorization-format bit after all markers retire,
+so older binaries reject the state instead of ignoring a withdrawal. The base
+history version and its required accounting evidence remain unchanged. Do not
+remove the bit or recovery records to reopen an account with an older executable.
+
 ## Completed outgoing channels
 
 New controller funding uses the SDK's numbered request IDs in one stable scope

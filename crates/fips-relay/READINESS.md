@@ -713,8 +713,36 @@ controller. Four focused tests, all 156 relay library tests and the existing
 automatic paid-watch integration pass, including reload and retained-intent
 checks. The combined four-test priced-path suite also passes all 15 deployments
 with this change: quota exhaustion, loss, delay, asymmetric feedback, blackholes
-and mobile neighbor changes. Already-reserved work is deliberately preserved:
-recovery and selection of another provider after an interrupted reserved purchase remain unfinished.
+and mobile neighbor changes.
+
+For an already-reserved watched purchase, observed neighbor loss now withdraws
+routing authority while retaining the original financial intent. The withdrawal
+is durable before local quotes close, and quote installation uses the same lock.
+Failed accounting writes still stop the affected local packet authority; startup
+reconciles a crash between the journals. Late success cannot reactivate the old
+route. A returning neighbor's detached channel uses ordinary automatic settlement,
+with an atomic check that no other eligible route or reservation still needs it.
+No new payment messages are introduced. See [retained recovery authority](HISTORY.md#withdrawn-routing-and-retained-recovery).
+
+The real-mint diamond holds a successful provider acceptance after the provider
+commits it, then removes that neighbor before the source receives the reply. The
+original provider resumes with its existing channel and automatic payments while
+the interrupted channel remains fully reserved. On the final run, its automatic
+refund appears 2.44 seconds after authenticated rejoin, before any manual settlement
+call; reload and final collection conserve all 259 test sats. The held response is
+canceled by disconnection, so a consumed late success is covered separately by
+deterministic journal tests, not claimed for this network run.
+
+Review also reproduced two branches where equivalent concurrent source/transit
+offers could bind a watch to an unsaved offer ID. Both now bind the retained
+purchase; successful completion rechecks that exact purchase and the captured
+source authorization before clearing it. All three production-path regressions,
+171 library tests, strict all-target linting, formatting and source-size checks
+pass. The complete five-case priced-path suite passed 16 deployments before this
+last narrow binding correction; the affected interrupted-mobility scenario passes
+again on the final source. Pre-route and permanently absent uncertain purchases
+still retain bounded slots and capital; the earlier funding-recovery gaps remain
+open. This does not establish arbitrary physical movement or power-loss recovery.
 
 Price-aware route selection is an explicit requirement, not proven by simply
 accumulating prices along the native planner's chosen next hops. Reuse FIPS's
