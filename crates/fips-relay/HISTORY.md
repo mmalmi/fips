@@ -84,12 +84,31 @@ advances to the removed expiry, rejecting stale workers even after clock rollbac
 This releases metadata slots only: it creates no accepted-channel history, refund
 or retired financial totals. It preserves newer watches and funding sequence
 numbers, skips pending cross-journal retirement, and writes nothing when no
-reservation qualifies. Uncertain and funded pre-route requests remain retained.
+reservation qualifies. Financial requests need their own verified terminal result.
+
+For a fully identified, never-used withdrawn channel, upkeep saves a typed expiry
+settlement intent and asks the SDK to verify the refund after immutable wallet
+expiry. Initial admission excludes shared routes, renewals, changed or retired
+usage, and any signed authorization. Once saved, the exact funding and expiry
+intent govern recovery; unrelated new provider selection cannot prevent recording
+an already verified refund. Its actual amount is immutable across retries.
+No provider usage, payment, report or release acknowledgment is manufactured.
+
+Funding installation checks the original offer and funding under the controller
+lock. When a channel never reached the local buyer, coordinated retirement uses
+an explicit never-installed entry instead of pretending it was accepted. The
+buyer rechecks absence and saves an expiry floor to reject delayed installation.
+Its rollup includes the known funded capacity and channel count, with zero signed
+authorization, advance and route use. Controller and SDK totals must still match
+exactly. Uncertain funding and used/shared-channel unilateral recovery remain
+retained; absence of an outgoing route alone never establishes zero use.
 
 The journal keeps the `0x100` authorization-format bit after all markers retire,
 so older binaries reject the state instead of ignoring a withdrawal. Each base
 history version still requires its accounting evidence. Do not
 remove the bit or recovery records to reopen an account with an older executable.
+Expiry intents also persist the `0x200` format bit before recording their new
+semantics, so older readers reject them instead of attempting provider settlement.
 
 ## Completed outgoing channels
 
@@ -98,8 +117,10 @@ per controller journal. Existing issued IDs are never renamed: interrupted legac
 funding must recover its original wallet operation, not send again under a new ID.
 
 After route compaction, the recovery worker retires a completed numbered funding
-prefix when every member has a final payment, verified refund, acknowledged report
-release, no remaining route or renewal references, and has passed the immutable
+prefix when every cooperative member has a final payment, verified refund and
+acknowledged report release. A zero-use expiry member instead needs its verified
+SDK refund and exact retained expiry intent. Every member must have no remaining
+route or renewal references and must have passed the immutable
 wallet expiry (service expiry plus 60 seconds). An unfinished earlier numbered
 request stops the prefix. Funding and buyer limits apply to retained records; eligible completed records recycle
 slots. Opaque legacy channels and legacy duplicate-evidence routes remain retained.

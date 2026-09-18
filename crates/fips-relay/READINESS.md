@@ -253,6 +253,21 @@ existing app's private files are unchanged. This is startup verification only:
 the new account has no setup profile or funds, and its paid customer-network
 acceptance remains pending.
 
+The phone-test infrastructure now has a shared, capped mint endpoint and three
+temporary customer firewall exceptions. The existing router lease owns the UDP
+entry rule; mint access remains until a fresh, fully collected report is followed
+by verified clean process exit. Fixed process identity, persistent money-operation
+intents and a closing fence prevent automatic resubmission or unsafe cleanup after
+lost replies. An interrupted completion checkpoint can recover from the exact
+supervisor exit record. Missing supervisor evidence retains the run for deliberate
+reconciliation; it is not proof of safe shutdown.
+
+An ARM64 host passes a zero-funded start/report/stop check and a separate capped
+128-test-sat issue/collection check. Cleanup preserves the live mint while those
+funds are outstanding, then verifies 128 issued equals 128 collected before stop.
+The host's existing mint processes and web service remain healthy. These are mint
+and harness checks, not a completed paid phone session or a router throughput test.
+
 ## Guarded cadence measurement
 
 The current optimized comparison covers 250/500/1000/2000-ms policies with two
@@ -497,9 +512,10 @@ forces a payment nor changes production credit limits.
 
 This covers the wallet-committed/controller-unrecorded boundary. It does not
 establish recovery after every mint-response or power-loss boundary, refund an
-orphan channel, or renew expired route authorization. Funding lost before the
-wallet committed its channel and automatic expiry refunds remain work. Completed
-channel retirement is covered separately above; it cannot remove unresolved work.
+orphan channel, or renew expired route authorization. The later bounded expiry
+recovery below covers fully identified, never-used withdrawn funding. Funding lost
+before the wallet committed its channel remains unresolved. Completed channel
+retirement cannot remove unresolved work.
 
 Expired withdrawn requests which never reached funding now release their
 reservation slots through ordinary upkeep. Removal requires no funding intent
@@ -511,12 +527,27 @@ sequences and financial totals remain unchanged. Regression checks cover delayed
 workers, reload, pending retirement, older uncertain funding, and reclaiming a
 full 32-slot book. All 179 library tests and strict all-target linting pass.
 
-Two pre-route financial gaps remain. An intent with no recovered channel must retain its full reservation:
+Fully identified, never-used withdrawn channels now recover their verified refund
+after immutable wallet expiry. The controller saves a distinct expiry intent;
+it does not invent provider usage, payment, settlement reports or acknowledgments.
+The SDK's actual recovered amount remains authoritative. Recovery fences delayed
+channel installation and uses the existing coordinated retirement path, including
+an explicit never-installed buyer entry and a durable expiry floor. Initial
+eligibility rejects shared or previously used channels; later unrelated provider
+selection cannot strand completion of an already saved exact refund intent.
+
+Three real-mint checks cover expiry enforcement, a locally installed but unused
+channel, and SDK completion lost before controller recording. In the last case,
+all recovered funds are spent into another wallet before reload; replay preserves
+the exact refund without importing it twice. This exercises the SDK-to-controller
+boundary, not an additional HTTP response-loss injection. All 186 library tests,
+strict all-target linting, formatting and the 730-file size gate pass. Hardware
+power-loss and used/shared-channel unilateral refunds remain unverified.
+
+An intent with no recovered channel must retain its full reservation:
 the SDK's empty lookup result also covers incomplete wallet operations, so it
-does not prove that no money was spent. A funded channel without an outgoing
-route needs a verified unilateral expiry refund. The SDK provides that operation,
-but the relay does not yet invoke it or retain its distinct terminal evidence;
-ordinary provider settlement records must not be invented to stand in for it.
+does not prove that no money was spent. Used/shared-channel unilateral recovery
+also remains outside the verified zero-use path.
 These retained records can exhaust bounded slots, and an early unresolved funding
 sequence can block retirement of later completed channels. Safe retention alone
 does not establish indefinitely reusable accounts.
@@ -791,10 +822,9 @@ source authorization before clearing it. All three production-path regressions,
 pass. The complete five-case priced-path suite passed 16 deployments before this
 last narrow binding correction; the affected interrupted-mobility scenario passes
 again on the final source. The later expiry cleanup above reclaims never-funded,
-unreferenced reservations. Uncertain funding and permanently absent funded
-purchases still retain bounded slots and capital; their financial recovery gaps
-remain open. This does not establish arbitrary physical movement or power-loss
-recovery.
+unreferenced reservations and verified expired, never-used funding. Uncertain
+funding and used/shared-channel recovery still retain bounded slots and capital.
+This does not establish arbitrary physical movement or power-loss recovery.
 
 Price-aware route selection is an explicit requirement, not proven by simply
 accumulating prices along the native planner's chosen next hops. Reuse FIPS's
