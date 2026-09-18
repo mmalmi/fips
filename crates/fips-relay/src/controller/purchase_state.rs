@@ -45,7 +45,8 @@ impl Controller {
     ) -> Result<RouteOffer, String> {
         Self::check_purchase(j, &offer, None)?;
         if let Some(old) = j.requested.values().find(|old| {
-            old.provider == offer.provider
+            !j.recovery_only.contains(&old.id)
+                && old.provider == offer.provider
                 && old.destination.node_addr() == offer.destination.node_addr()
         }) {
             if old.price != offer.price
@@ -72,7 +73,7 @@ impl Controller {
     pub(super) fn record_purchase(j: &mut Journal, saved: Outgoing) -> Result<Outgoing, String> {
         Self::check_purchase(j, &saved.offer, Some(&saved.purchase.channel.id))?;
         if let Some(old) = j.outgoing.values().find(|o| {
-            !o.retired
+            Self::routing_eligible(j, o)
                 && o.purchase.provider == saved.purchase.provider
                 && o.purchase.contract.destination == saved.purchase.contract.destination
         }) {
@@ -96,9 +97,9 @@ impl Controller {
         Ok(saved)
     }
 
-    /// Closing the channel wins over a late Accept response. Keep the request
-    /// as unacknowledged locally until its confirmed refund retires it. No
-    /// channel lock spans the provider's multi-hop acceptance work.
+    /// Closing the channel wins over a late Accept response. A withdrawn offer
+    /// may retain a successful response as financial knowledge, but cannot gain
+    /// routing authority. No lock spans the provider's acceptance work.
     pub(super) fn finish_acceptance(j: &mut Journal, id: &str) -> Result<bool, String> {
         let outgoing = j.outgoing.get_mut(id).ok_or("purchase intent missing")?;
         if outgoing.retired
@@ -108,7 +109,7 @@ impl Controller {
             return Ok(false);
         }
         outgoing.accepted = true;
-        Ok(true)
+        Ok(!j.recovery_only.contains(&outgoing.offer.id))
     }
 
     /// A confirmed refund closes any interrupted acceptance on that channel.

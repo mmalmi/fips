@@ -152,13 +152,13 @@ impl Controller {
     pub(super) fn validate_channel_history(j: &Journal) -> Result<(), String> {
         let history = j.history.as_ref().and_then(|h| h.channels.as_ref());
         let Some(h) = history else {
-            return if j.version < 4 {
+            return if j.history_version() < 4 {
                 Ok(())
             } else {
                 Err("missing channel history".into())
             };
         };
-        if !matches!(j.version, 4..=6)
+        if !matches!(j.history_version(), 4..=6)
             || !h.totals.valid()
             || h.totals.through >= j.next_funding
             || j.funding
@@ -242,7 +242,7 @@ impl Store {
             return Ok(());
         };
         let mut j = self.journal.clone();
-        j.version = j.version.max(4);
+        j.advance_history_version(4);
         j.history
             .get_or_insert_with(History::default)
             .channels

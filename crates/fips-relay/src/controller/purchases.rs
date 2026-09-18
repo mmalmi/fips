@@ -67,7 +67,7 @@ impl Controller {
                 )
                 .map_err(|e| e.to_string())?
                 .request_id();
-                j.version = j.version.max(4);
+                j.advance_history_version(4);
                 j.history
                     .get_or_insert_with(History::default)
                     .channels
@@ -158,13 +158,12 @@ impl Controller {
         self.services.quotes.free.accept(&offer)?;
         let peer = self.neighbor(offer.provider).await?;
         self.prepare_changed_route(&offer, watch.as_ref()).await?;
-        let existing = self
-            .snapshot()
-            .await?
+        let snapshot = self.snapshot().await?;
+        let existing = snapshot
             .outgoing
             .values()
             .find(|o| {
-                !o.retired
+                Self::routing_eligible(&snapshot, o)
                     && o.purchase.provider == offer.provider
                     && o.purchase.contract.destination == *offer.destination.node_addr()
             })
@@ -210,7 +209,7 @@ impl Controller {
                             return Err("purchase intent changed".into());
                         }
                         Self::check_purchase(j, &saved.offer, Some(&saved.purchase.channel.id))?;
-                        Self::reserve_watched_offer(j, Some(&expected), &offer)
+                        Self::reserve_watched_offer(j, Some(&expected), &saved.offer)
                     })
                     .await?;
                 }
@@ -225,7 +224,7 @@ impl Controller {
         let offer = self
             .change(move |j| {
                 let reserved = Self::reserve_purchase(j, offer.clone())?;
-                Self::reserve_watched_offer(j, watch.as_ref(), &offer)?;
+                Self::reserve_watched_offer(j, watch.as_ref(), &reserved)?;
                 Ok(reserved)
             })
             .await?;
@@ -309,16 +308,35 @@ impl Controller {
         Ok(())
     }
 
+    pub(super) fn install_buyer_purchase(
+        j: &Journal,
+        buyer: &BuyerAuthorizer,
+        purchase: &Purchase,
+    ) -> Result<(), String> {
+        let saved = j
+            .outgoing
+            .get(&purchase.contract.id)
+            .ok_or("purchase intent missing")?;
+        if saved.purchase != *purchase {
+            return Err("purchase intent changed".into());
+        }
+        Self::check_purchase(j, &saved.offer, Some(&purchase.channel.id))?;
+        buyer
+            .accept_channel(purchase.provider, purchase.channel.clone(), 0)
+            .map_err(|e| e.to_string())?;
+        buyer
+            .accept_quote(purchase.contract.clone())
+            .map_err(|e| e.to_string())
+    }
+
     pub(super) async fn ensure_buyer_purchase(&self, purchase: &Purchase) -> Result<(), String> {
         let buyer = self.services.buyer.clone();
         let purchase = purchase.clone();
+        let store = self.store.clone();
         blocking(move || {
-            buyer
-                .accept_channel(purchase.provider, purchase.channel, 0)
-                .map_err(|e| e.to_string())?;
-            buyer
-                .accept_quote(purchase.contract)
-                .map_err(|e| e.to_string())
+            let store = store.lock().map_err(|_| "controller state poisoned")?;
+            store.ensure_ready()?;
+            Self::install_buyer_purchase(&store.journal, &buyer, &purchase)
         })
         .await
     }
@@ -365,6 +383,11 @@ impl Controller {
             if tokio::time::Instant::now() >= deadline {
                 return Err("acceptance deadline; durable request retained".into());
             }
+            Self::check_purchase(
+                &self.snapshot().await?,
+                &record.offer,
+                Some(&record.purchase.channel.id),
+            )?;
             let bytes = self.services.acceptance.request(peer, body.clone()).await?;
             match serde_json::from_slice::<ControllerResponse>(&bytes)
                 .map_err(|_| "invalid acceptance response")?

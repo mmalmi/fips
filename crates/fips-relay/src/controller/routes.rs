@@ -36,6 +36,7 @@ impl Controller {
         j.route_changes.values().any(|c| {
             (c.previous.iter().any(|p| p.channel.id == channel)
                 || provider == Some(c.offer.provider))
+                && !j.recovery_only.contains(&c.offer.id)
                 && !c.is_finished(j)
         })
     }
@@ -47,7 +48,7 @@ impl Controller {
             .outgoing
             .values()
             .filter(|o| {
-                !o.retired
+                Self::routing_eligible(j, o)
                     && o.purchase.contract.destination == *saved.offer.destination.node_addr()
             })
             .collect();
@@ -76,6 +77,7 @@ impl Controller {
             || j.route_changes.contains_key(&saved.offer.id)
             || j.route_changes.values().any(|c| {
                 c.offer.destination.node_addr() == saved.offer.destination.node_addr()
+                    && !j.recovery_only.contains(&c.offer.id)
                     && !c.is_finished(j)
             })
         {
@@ -132,24 +134,27 @@ impl Controller {
         j: &Journal,
         services: &ControllerServices,
     ) -> Result<(), String> {
+        // Attempt every local fence before returning an error. Cache or seller
+        // failures must not leave a withdrawn buyer authorization active.
+        let mut first_error = Self::reconcile_withdrawn_routes(j, &services.buyer).err();
         for i in j.incoming.values().filter(|i| i.phase == Phase::Stopped) {
-            services.quotes.stop_reusing(&i.offer.id)?;
-            if services.seller.usage(&i.contract.id).is_some() {
-                services
-                    .seller
-                    .close_contract(&i.contract.id)
-                    .map_err(|e| e.to_string())?;
+            if let Err(error) = services.quotes.stop_reusing(&i.offer.id) {
+                first_error.get_or_insert(error);
+            }
+            if services.seller.usage(&i.contract.id).is_some()
+                && let Err(error) = services.seller.close_contract(&i.contract.id)
+            {
+                first_error.get_or_insert(error.to_string());
             }
         }
         for c in j.route_changes.values() {
             for old in &c.previous {
-                services
-                    .buyer
-                    .close_quote(&old.contract.id)
-                    .map_err(|e| e.to_string())?;
+                if let Err(error) = services.buyer.close_quote(&old.contract.id) {
+                    first_error.get_or_insert(error.to_string());
+                }
             }
         }
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 
     pub(super) async fn prepare_changed_route(
@@ -167,7 +172,8 @@ impl Controller {
             .outgoing
             .values()
             .filter(|o| {
-                !o.retired && o.purchase.contract.destination == *offered.destination.node_addr()
+                Self::routing_eligible(&snapshot, o)
+                    && o.purchase.contract.destination == *offered.destination.node_addr()
             })
             .cloned()
             .collect();
@@ -258,7 +264,8 @@ impl Controller {
             }
             if j.requested.len() >= MAX_ROUTES
                 || j.requested.values().any(|o| {
-                    o.provider == intent.offer.provider
+                    !j.recovery_only.contains(&o.id)
+                        && o.provider == intent.offer.provider
                         && o.destination.node_addr() == intent.offer.destination.node_addr()
                 })
             {

@@ -1,3 +1,5 @@
+mod coalescing;
+
 use super::*;
 use crate::ledger::{BillingBasis, Limits};
 use crate::route_quotes::QuotePolicy;
@@ -5,7 +7,7 @@ use cashu_service::FileSpilmanPaymentReceiverConfig;
 use fips_core::Config;
 use fips_core::config::{TransportInstances, UdpConfig};
 
-async fn disconnected_controller(root: &Path) -> Controller {
+pub(in crate::controller) async fn disconnected_controller(root: &Path) -> Controller {
     let mut config = Config::new();
     config.node.control.enabled = false;
     config.node.discovery.nostr.enabled = false;

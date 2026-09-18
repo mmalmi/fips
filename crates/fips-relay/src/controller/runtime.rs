@@ -9,6 +9,7 @@ impl Controller {
     /// allocate a new funding identity or another channel. Expired/changed routes
     /// remain stopped until a separate replacement agreement is authorized.
     pub async fn resume_pending(&self) -> Result<(), String> {
+        self.withdraw_disconnected_purchases().await?;
         self.retire_channels(false).await?;
         // Recover financial identity before applying quote expiry/pause gates.
         // Recovering a committed channel never authorizes route activation.
@@ -32,7 +33,7 @@ impl Controller {
         let mut routes = Vec::new();
         for outgoing in snapshot.outgoing.values().filter(|o| {
             o.accepted
-                && !o.retired
+                && Self::routing_eligible(&snapshot, o)
                 && o.purchase.contract.expires_unix > timestamp
                 && !snapshot
                     .buyer_settlements
@@ -97,6 +98,9 @@ impl Controller {
             if let Err(error) = self.purchase_offer(offer).await {
                 first_error.get_or_insert(error);
             }
+        }
+        if let Err(error) = self.recover_withdrawn_channels().await {
+            first_error.get_or_insert(error);
         }
         if let Err(error) = self.resume_settlements().await {
             first_error.get_or_insert(error);

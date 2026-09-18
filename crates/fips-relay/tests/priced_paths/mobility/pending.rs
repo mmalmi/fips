@@ -76,6 +76,23 @@ fn assert_captured_boundary(root: &Path, accepted: &gate::Accepted, first: &Purc
     assert_eq!(incoming["contract"]["id"], accepted.purchase.contract.id);
 }
 
+fn interrupted_refunded(root: &Path, accepted: &gate::Accepted) -> bool {
+    let saved = journal(root, 0);
+    let settlement = &saved["buyer_settlements"][&accepted.purchase.channel.id];
+    if settlement["refunded"] != true {
+        return false;
+    }
+    assert!(
+        settlement["channel"] == serde_json::to_value(&accepted.purchase.channel).unwrap(),
+        "automatic recovery changed the interrupted channel terms"
+    );
+    assert_eq!(
+        settlement["report"]["channel_id"],
+        accepted.purchase.channel.id
+    );
+    true
+}
+
 async fn recovery_finances(
     driver: &Driver<'_>,
     accepted: &gate::Accepted,
@@ -206,6 +223,8 @@ pub(crate) async fn exercise(
     })
     .await
     .expect("interrupted provider returns for financial recovery");
+    let rejoined = Instant::now();
+    let mut automatic_refund_observed = None;
     let released = gate.release().await;
     assert!(
         released.attempted > 0,
@@ -258,12 +277,33 @@ pub(crate) async fn exercise(
             );
         }
         recovery_finances(&driver, &accepted, &exact_funding, remaining_before_return).await;
+        if interrupted_refunded(root, &accepted) {
+            automatic_refund_observed.get_or_insert_with(|| rejoined.elapsed());
+        }
         tokio::time::sleep(Duration::from_millis(800)).await;
     }
     assert!(
         delivered,
         "fresh original-path data must still arrive after late-response release"
     );
+    tokio::time::timeout_at(rejoined + Duration::from_secs(30), async {
+        while automatic_refund_observed.is_none() {
+            recovery_finances(&driver, &accepted, &exact_funding, remaining_before_return).await;
+            if interrupted_refunded(root, &accepted) {
+                automatic_refund_observed = Some(rejoined.elapsed());
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("automatic interrupted-channel refund must complete without a manual settle call");
+    eprintln!(
+        "interrupted mobility: automatic refund observed {:.2}s after authenticated rejoin",
+        automatic_refund_observed.unwrap().as_secs_f64()
+    );
+    // Only after automatic completion, verify that an explicit replay returns
+    // the same final report without another debit or refund.
     let report = tokio::time::timeout(
         Duration::from_secs(30),
         controllers[0].settle_channel(&accepted.purchase.channel.id),

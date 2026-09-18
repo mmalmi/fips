@@ -232,15 +232,22 @@ impl Controller {
     /// redeem the seller's payout and recover the buyer's unused funding.
     pub async fn settle_channel(&self, id: &str) -> Result<SettlementReport, String> {
         let _channel = self.channel_work(id)?.lock_owned().await;
-        self.settle_purchase(id).await
+        self.settle_purchase(id, false).await
     }
 
-    async fn settle_purchase(&self, id: &str) -> Result<SettlementReport, String> {
+    pub(super) async fn settle_purchase(
+        &self,
+        id: &str,
+        recovery_only: bool,
+    ) -> Result<SettlementReport, String> {
         let channel_id = id.to_string();
         let mut purchase = self
             .change(move |j| {
                 if let Some(old) = j.buyer_settlements.get(&channel_id) {
                     return Ok(old.clone());
+                }
+                if recovery_only {
+                    Self::check_recovery_settlement(j, &channel_id)?;
                 }
                 if j.buyer_settlements.len() >= MAX_CHANNELS {
                     return Err("buyer settlement history full".into());
@@ -404,7 +411,7 @@ impl Controller {
         let mut ids: HashSet<_> = j
             .outgoing
             .values()
-            .filter(|o| o.accepted)
+            .filter(|o| o.accepted || j.recovery_only.contains(&o.offer.id))
             .map(|o| o.purchase.channel.id.clone())
             .collect();
         ids.extend(j.buyer_settlements.keys().cloned());
@@ -461,6 +468,7 @@ impl Controller {
         }
         for (id, purchase) in snapshot.buyer_settlements {
             if (!purchase.refunded || !purchase.released)
+                && (purchase.report.is_some() || self.neighbor(purchase.provider).await.is_ok())
                 && let Err(error) = self.settle_channel(&id).await
             {
                 first_error.get_or_insert(error);

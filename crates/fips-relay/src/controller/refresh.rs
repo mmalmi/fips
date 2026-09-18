@@ -4,14 +4,14 @@ use super::*;
 const REFRESH_SECONDS: u64 = 5;
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 
 pub(super) struct RefreshCheck {
     checked: tokio::time::Instant,
     free: Option<RouteOffer>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatchedRoute {
     #[serde(
         default,
@@ -57,7 +57,8 @@ impl Controller {
     }
 
     pub(super) fn offer_paused(j: &Journal, offer_id: &str) -> bool {
-        j.route_changes.get(offer_id).is_some_and(|c| c.paused)
+        j.recovery_only.contains(offer_id)
+            || j.route_changes.get(offer_id).is_some_and(|c| c.paused)
             || j.watched_routes
                 .values()
                 .any(|w| w.paused && w.pending.as_ref().is_some_and(|o| o.id == offer_id))
@@ -210,7 +211,7 @@ impl Controller {
         if watch.pending.is_none()
             && let Some(old) = snapshot.outgoing.values().find(|o| {
                 o.accepted
-                    && !o.retired
+                    && Self::routing_eligible(&snapshot, o)
                     && o.offer == offer
                     && o.purchase.contract.expires_unix > timestamp
                     && !snapshot
@@ -230,12 +231,26 @@ impl Controller {
                     .invalidate_price(offer.provider, *offer.destination.node_addr());
             })?;
         let key = id.to_string();
+        let mut expected = watch.clone();
+        let completed = purchase.clone();
         self.change(move |j| {
+            let outgoing = j
+                .outgoing
+                .get(&completed.contract.id)
+                .ok_or("purchase intent missing")?;
+            if outgoing.purchase != completed
+                || !outgoing.accepted
+                || !Self::routing_eligible(j, outgoing)
+                || j.buyer_settlements.contains_key(&completed.channel.id)
+            {
+                return Err("watched purchase changed".into());
+            }
+            expected.pending = Some(outgoing.offer.clone());
             let watch = j
                 .watched_routes
                 .get_mut(&key)
                 .ok_or("source authorization missing")?;
-            if watch.pending.as_ref() != Some(&offer) {
+            if *watch != expected || !watch.accepts(&outgoing.offer) {
                 return Err("watched purchase changed".into());
             }
             watch.pending = None;
@@ -266,10 +281,11 @@ impl Controller {
 
     pub(super) async fn refresh_watched_routes(&self) -> Result<(), String> {
         let _work = self.refresh_work.lock().await;
+        self.withdraw_disconnected_purchases().await?;
         let snapshot = self.snapshot().await?;
         let timestamp = now()?;
         let mut first_error = None;
-        for (id, watch) in snapshot.watched_routes {
+        for (id, watch) in snapshot.watched_routes.clone() {
             if watch.paused {
                 continue;
             }
@@ -279,7 +295,7 @@ impl Controller {
             if watch.pending.is_none()
                 && snapshot.outgoing.values().any(|o| {
                     o.accepted
-                        && !o.retired
+                        && Self::routing_eligible(&snapshot, o)
                         && !o.offer.trial
                         && o.offer.destination.npub() == watch.destination
                         && (snapshot
