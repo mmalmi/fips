@@ -680,6 +680,19 @@ purchase is accepted. Run the focused case with `cargo test -p fips-relay
 --all-features --test priced_paths
 mobile_neighbors_reuse_channels_and_preserve_spending_authority`.
 
+A watched paid offer now becomes pending in the same journal transaction that
+reserves its purchase or route change, after native neighbor admission. A peer
+that disconnects before this boundary cannot pin the watch to an unreserved
+quote. The transaction rechecks the captured watch's price ceiling, billing,
+pause state and pending intent; stale authority leaves no partial reservation.
+The regression first reproduced the old failure through a real endpoint and
+controller. Four focused tests, all 156 relay library tests and the existing
+automatic paid-watch integration pass, including reload and retained-intent
+checks. The combined four-test priced-path suite also passes all 15 deployments
+with this change: quota exhaustion, loss, delay, asymmetric feedback, blackholes
+and mobile neighbor changes. Already-reserved work is deliberately preserved:
+recovery and selection of another provider after an interrupted reserved purchase remain unfinished.
+
 Price-aware route selection is an explicit requirement, not proven by simply
 accumulating prices along the native planner's chosen next hops. Reuse FIPS's
 existing MMP link/session receiver reports, RTT/loss/goodput/ETX estimates,
