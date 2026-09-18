@@ -248,6 +248,9 @@ async fn background_overflow_returns_to_receive_loop_without_draining_free_backl
         vec![crate::node::ForwardingOutcome::Unconfirmed]
     );
     assert_eq!(node.stats().forwarding.drop_send_error_packets, 1);
+    let snapshot = node.stats().forwarding.snapshot();
+    assert_eq!(snapshot.drop_background_full_packets, 1);
+    assert_eq!(snapshot.drop_background_full_bytes, 100);
 }
 
 #[test]

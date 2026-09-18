@@ -254,6 +254,9 @@ impl Node {
                     if lane == ForwardingLane::Background {
                         // Best-effort overflow must return to receive new paid
                         // traffic instead of draining an entire free burst.
+                        let stats = &mut self.stats_mut().forwarding;
+                        stats.drop_background_full_packets += 1;
+                        stats.drop_background_full_bytes += forward.received_len as u64;
                         let error = NodeError::SendFailed {
                             node_addr: forward.next_hop_addr,
                             reason: "background forwarding capacity".into(),

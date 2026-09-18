@@ -25,6 +25,8 @@ use tokio::{
 };
 #[path = "destination_service/bandwidth.rs"]
 mod bandwidth;
+#[path = "destination_service/concurrency.rs"]
+mod concurrency;
 mod process_support;
 #[path = "process_support/quality.rs"]
 mod quality;

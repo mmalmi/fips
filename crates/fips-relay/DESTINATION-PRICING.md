@@ -115,9 +115,32 @@ pending accounting obligations.
 
 These are local queue and crypto bounds. They do not reserve Wi-Fi airtime,
 preempt bytes already sent to a socket/radio, or guarantee minimum free throughput
-under continuous paid load. Queue regressions, existing free service acceptance
-and mixed UDP/TCP paid acceptance cover separate parts of the implementation;
-combined paid/free congestion and physical-radio measurements remain outstanding.
+under continuous paid load. Native `show_status`/`show_routing` now expose
+`forwarding.drop_background_full_packets` and `drop_background_full_bytes` for
+this waiting-window overflow. These are subsets of the existing send-error totals;
+bytes count the received session datagram, not radio airtime.
+
+A five-process loopback test sends 64,000 free packets at 16,000 packets/s alongside
+24 paid packets through the same outgoing neighbor. The strict acceptance run
+observes background queue overflow during paid delivery, delivers every paid
+packet without corruption or duplication, and reconciles automatic payments
+before the free stream ends. Free admission stays within the configured bucket,
+a fresh free stream succeeds after refill, and settlement conserves all 256 test
+sats without changing the free source's financial journals. This is bounded local
+congestion evidence; physical-radio and wider load measurements remain outstanding.
+
+With the development dependencies from [funding costs](FUNDING-COSTS.md), run:
+
+```sh
+FIPS_RELAY_REQUIRE_BACKGROUND_PRESSURE=1 cargo test -p fips-relay \
+  --all-features --test destination_service \
+  concurrency::paid_delivery_progresses_during_free_traffic_and_free_resumes_idle \
+  -- --exact --test-threads=1 --nocapture
+```
+
+Without the environment flag, the test verifies concurrency and reports whether
+queue pressure occurred. The strict mode rejects a run with no observed overflow
+during paid delivery; offered rate alone is insufficient evidence of congestion.
 
 ## Automatic source watches
 
@@ -165,7 +188,7 @@ startup evidence below concerns running the service directly.
 
 ## Evidence and remaining work
 
-`tests/destination_service.rs` and its `upkeep` module run nine scenarios, each
+`tests/destination_service.rs` and its modules define eleven scenarios, each
 using five real service processes over loopback UDP:
 
 - Two default-free scenarios deliver to multiple destinations without destination
@@ -177,6 +200,9 @@ using five real service processes over loopback UDP:
 - A zero-ceiling source rejects a paid prefix without funding or data delivery.
 - A default paid prefix followed by free relays opens exactly one payment channel,
   leaves the free suffix unfunded, and settles with all 256 test sats conserved.
+- Configured free limits bound two authenticated neighbors and their shared node
+  budget without contacting a mint. The separate concurrency case above checks
+  paid and free delivery, local queue pressure and automatic payment progress.
 - The original destination-specific scenarios cover free destination isolation,
   restart, differing paid prices, zero local markup over a paid continuation and
   policy changes. The mixed-price case settles two channels and conserves all

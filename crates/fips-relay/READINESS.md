@@ -203,8 +203,21 @@ renewal, restart and settlement acceptance also pass with classification enabled
 The automatic paid watch recovers through native loss and delay simulations while
 retaining channel evidence. Strict core and relay linting, project formatting and
 the 738-file source-length check pass.
-These do not establish concurrent paid/free congestion performance, radio
-airtime fairness, or the same-destination service tier feature.
+
+The subsequent five-process mixed free/paid acceptance passes with an explicit
+requirement to observe background queue overflow during paid delivery. In the
+accepted run, 4,591 background packets overflow that window while all 24 paid
+packets arrive without duplicates or invalid payloads. The paid balance is
+acknowledged before the free stream ends. Free admissions remain bounded and a
+fresh free stream succeeds after refill; settlement conserves all 256 test sats,
+and the unfunded source's financial journals remain unchanged. A native counter
+regression verifies that window overflow is observable separately within send
+errors; all 17 forwarding and 22 operator-query checks pass. Earlier lower-rate
+runs proved concurrency but did not establish queue pressure during paid delivery.
+This covers loopback UDP and local scheduling. It does not establish radio airtime
+fairness, a throughput/latency guarantee, or the same-destination service tier
+feature. The [strict reproduction command](DESTINATION-PRICING.md#local-traffic-scheduling)
+fails if the host never develops the required pressure.
 
 ### Physical Wi-Fi discovery and free recovery
 
