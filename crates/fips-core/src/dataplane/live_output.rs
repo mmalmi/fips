@@ -393,6 +393,7 @@ pub(crate) struct DataplaneOutputDrop {
 }
 
 impl DataplaneOutputDrop {
+    /// Records an actual discarded output, including its optional service diagnostics.
     pub(crate) fn from_output(output: &PacketOutput, reason: DataplaneOutputError) -> Self {
         if let Some(counters) = &output.service_carrier {
             counters.discarded();
@@ -459,36 +460,21 @@ impl DataplaneOutputSink for DataplaneLiveOutputSink<'_> {
     {
         let mut sent = 0usize;
         for output in outputs {
-            let mut drop =
-                DataplaneOutputDrop::from_output(&output, DataplaneOutputError::Unavailable);
-            match self.queue_transport_output(output) {
-                Ok(()) => sent = sent.saturating_add(1),
-                Err(reason) => {
-                    drop.reason = reason;
-                    drops.push(drop);
+            match (&output.target, &output.path) {
+                (OutputTarget::Transport, Some(path)) => {
+                    let transport_id = path.transport_id;
+                    let remote_addr = path.remote_addr.clone();
+                    self.transport
+                        .push_transport(transport_id, remote_addr, output);
+                    sent = sent.saturating_add(1);
                 }
+                _ => drops.push(DataplaneOutputDrop::from_output(
+                    &output,
+                    DataplaneOutputError::NoRoute,
+                )),
             }
         }
         sent
-    }
-}
-
-impl DataplaneLiveOutputSink<'_> {
-    fn queue_transport_output(&mut self, output: PacketOutput) -> Result<(), DataplaneOutputError> {
-        match output.target {
-            OutputTarget::Transport => {
-                let Some(path) = output.path.as_ref() else {
-                    return Err(DataplaneOutputError::NoRoute);
-                };
-                let transport_id = path.transport_id;
-                let remote_addr = path.remote_addr.clone();
-                self.transport
-                    .push_transport(transport_id, remote_addr, output);
-                Ok(())
-            }
-            OutputTarget::SessionIngress { .. }
-            | OutputTarget::SessionPayload { .. } => Err(DataplaneOutputError::NoRoute),
-        }
     }
 }
 
