@@ -16,6 +16,8 @@ CALL = re.compile(
     r'(?: ([A-Z][A-Z0-9_]+)(?: \([^\n]*\))?)?$'
 )
 BUFFER = r'(?:""(?:\.\.\.)?|0x[0-9a-f]+|NULL)'
+DETACHED_EVENTFD = re.compile(r"^write\([0-9]+<anon_inode:\[eventfd\]>, " + BUFFER
+                             + r", 8 <detached \.\.\.>$")
 WRITE_ARGS = re.compile(r", " + BUFFER + r", (\d+)$")
 PWRITE_ARGS = re.compile(r", " + BUFFER + r", (\d+), -?\d+$")
 VECTOR_ARGS = re.compile(r", \[(?:\.\.\.)?\], \d+$")
@@ -81,13 +83,15 @@ def parse(body):
     return kind, path, result, requested
 
 
-def analyze(lines, paths, *, allow_empty=False):
+def analyze(lines, paths, *, allow_empty=False, allow_detached_eventfd=False):
+    """Detached eventfd records require a caller-verified tracer lifecycle."""
     paths = categories(paths)
     counters = {name: dict(write_calls=0, write_bytes=0, write_errors=0, partial_scalar_writes=0,
                            sync_calls=0, sync_errors=0)
                 for name in (*paths, "unmatched", "unattributed")}
     files = {name: set() for name in counters}
     pending, count = {}, 0
+    detached = set()
     for number, line in enumerate(lines, 1):
         if len(line) > 65536 or number > 10_000_000:
             raise ValueError("trace exceeds bounded analyzer capacity")
@@ -96,6 +100,9 @@ def analyze(lines, paths, *, allow_empty=False):
         if not match or int(match[1]) == 0:
             raise ValueError(f"missing thread identity at trace line {number}")
         tid, body = match.groups()
+        tid = int(tid)
+        if tid in detached:
+            raise ValueError("thread has records after tracer detachment")
         resumed = RESUMED.fullmatch(body)
         if resumed:
             prior = pending.pop(tid, None)
@@ -108,6 +115,11 @@ def analyze(lines, paths, *, allow_empty=False):
             if resumed or len(pending) >= 4096:
                 raise ValueError("invalid unfinished syscall history")
             pending[tid] = body.removesuffix(" <unfinished ...>")
+            continue
+        if allow_detached_eventfd and DETACHED_EVENTFD.fullmatch(body):
+            if len(detached) >= 4096:
+                raise ValueError("too many detached eventfd records")
+            detached.add(tid)
             continue
         kind, path, result, requested = parse(body)
         category = classify(path, paths)
@@ -126,12 +138,12 @@ def analyze(lines, paths, *, allow_empty=False):
                 current["partial_scalar_writes"] += int(requested is not None and result < requested)
         else:
             current["sync_errors" if result < 0 else "sync_calls"] += 1
-    if pending or (not count and not allow_empty):
+    if pending or (not count and not detached and not allow_empty):
         raise ValueError("trace is incomplete or contains no observed syscalls")
     for name, value in counters.items():
         value["files_observed"] = len(files[name])
     return {"schema": 1, "scope": "observed write-like syscalls and syncs",
-            "syscalls_observed": count, "categories": counters,
+            "syscalls_observed": count, "detached_eventfd_calls": len(detached), "categories": counters,
             "capture_complete": None, "physical_media_bytes": None,
             "sqlite_committed_changes": None}
 

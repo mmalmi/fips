@@ -499,6 +499,9 @@ work; zero-write traces still require verified attachment and clean detachment.
 Idle metered usage can advance without an application probe or another payment;
 that background usage remains reported and is never subtracted from other windows.
 Unmatched file operations, including failed operations, reject the window.
+An explicitly detached eight-byte event-counter write may lack a return value;
+after verified tracer shutdown, it is counted separately without inventing
+successful bytes. Incomplete file writes and unknown descriptors still reject.
 
 Summaries separate SDK snapshots, receiver SQLite, funding-wallet files, relay
 journals and directory syncs. CPU counters collected under tracing are labeled

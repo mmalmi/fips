@@ -174,7 +174,8 @@ class StorageRun(PaidRelayRun):
                         with path.open() as stream:
                             record["storage"][node] = analyze(
                                 stream, storage_paths(),
-                                allow_empty=capture is not None and not require_activity)
+                                allow_empty=capture is not None and not require_activity,
+                                allow_detached_eventfd=True)
                     validate_storage(record["storage"], record["trace_lifecycle"], require_activity)
                     record["storage_accepted"] = True
             finally:

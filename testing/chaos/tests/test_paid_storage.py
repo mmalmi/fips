@@ -205,7 +205,7 @@ class PaymentBoundaryTests(unittest.TestCase):
 
 class TraceContextTests(unittest.TestCase):
     @contextmanager
-    def fixture(self, empty=False, fail_attach=None):
+    def fixture(self, empty=False, fail_attach=None, failed_lifecycle=None):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             run = StorageRun.__new__(StorageRun)
             run.root = Path(directory)
@@ -234,7 +234,8 @@ class TraceContextTests(unittest.TestCase):
                 if description == "bounded tracer detach":
                     self.assertTrue(all((output / "storage.stop").exists() for output in launched))
                     for output in launched:
-                        (output / "storage.done.json").write_text(json.dumps({"accepted": True}))
+                        accepted = output.relative_to(run.root).parts[0] != failed_lifecycle
+                        (output / "storage.done.json").write_text(json.dumps({"accepted": accepted}))
                 return condition()
 
             stack.enter_context(patch("sim.paid_storage.inspect_owned", side_effect=
@@ -272,6 +273,29 @@ class TraceContextTests(unittest.TestCase):
         with self.fixture(empty=True) as (run, _), self.assertRaises(ValueError):
             with run.trace({}, require_activity=False):
                 pass
+
+    def test_eventfd_detach_is_allowed_only_after_every_worker_lifecycle_passes(self):
+        for failed in (None, "n02"):
+            with self.subTest(failed=failed), self.fixture(failed_lifecycle=failed) as (run, launched):
+                record = {}
+                with patch("sim.paid_storage.analyze", wraps=analyze) as parser:
+                    def workload():
+                        with run.trace(record, capture="steady"):
+                            for output in launched:
+                                with (output / "storage.trace").open("a") as stream:
+                                    stream.write('20 write(4<anon_inode:[eventfd]>, ""..., 8 <detached ...>\n')
+                    if failed:
+                        with self.assertRaisesRegex(RuntimeError, "tracer lifecycle failed"):
+                            workload()
+                        parser.assert_not_called()
+                        self.assertFalse(record["storage_accepted"])
+                    else:
+                        workload()
+                        self.assertEqual(parser.call_count, 3)
+                        self.assertTrue(record["storage_accepted"])
+                        for value in record["storage"].values():
+                            self.assertEqual(value["detached_eventfd_calls"], 1)
+                            self.assertEqual(value["syscalls_observed"], 1)
 
     def test_uncertain_attachment_still_requests_stop_for_every_started_worker(self):
         with self.fixture(fail_attach="n02") as (run, launched):

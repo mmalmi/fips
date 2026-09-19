@@ -175,6 +175,15 @@ class StorageWindowTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "idle payment/storage work"):
             summarize_window(record)
 
+    def test_detached_event_counter_is_reported_without_fabricated_bytes(self):
+        record = window()
+        record["storage"]["n01"] = analyze(
+            ['10 write(4<anon_inode:[eventfd]>, ""..., 8 <detached ...>\n'],
+            storage_paths(), allow_detached_eventfd=True)
+        result = summarize_window(record)
+        self.assertEqual(result["detached_eventfd_calls"], 1)
+        self.assertEqual(result["file_write_bytes"], 0)
+
 
 class StorageMatrixTests(unittest.TestCase):
     def test_configuration_changes_only_cadence_and_matched_tariff(self):

@@ -131,6 +131,8 @@ def summarize_window(record):
             "payment_record_bytes": record_bytes, "partial_payment_cpu_ns_under_trace": partial_cpu_ns,
             "file_write_bytes": writes, "file_write_calls": sum(categories[k]["write_calls"] for k in FILES),
             "file_and_directory_sync_calls": syncs, "categories": categories,
+            "detached_eventfd_calls": sum(unsigned(record["storage"][node]["detached_eventfd_calls"])
+                                           for node in NODES),
             "file_write_bytes_per_delivered_byte": writes / delivered if delivered else None,
             "timing_comparison": False, "physical_media_bytes": None}
 
