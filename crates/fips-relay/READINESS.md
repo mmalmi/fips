@@ -455,6 +455,16 @@ one maintenance tick later: about 33 seconds after rekey initiation. Active reke
 temporarily defers link-dead removal until its retry budget is exhausted. Reducing
 the discovery interval does not shorten that separate grace period.
 
+A separate local-send failure found during this investigation is fixed: FMP rekey
+retries previously advanced their budget only after a successful send, allowing
+persistent local errors to defer dead-peer removal indefinitely. Each due attempt
+now advances the existing budget and backoff before awaiting transport submission,
+so cancellation cannot erase the attempt either. Eleven focused core tests pass,
+including real UDP initiation followed by a stopped transport, unanswered-packet
+grace, success-only byte accounting, and peer/session-index cleanup. Strict core
+Clippy passes. The hardware runs above used the earlier binary; this failure-path
+fix still needs the next device regression.
+
 The [competing-provider topology fixture](../../testing/chaos/README.md#competing-wireless-provider-topology)
 also passes on the three routers without funding. A separate source identity on
 the destination's physical router reaches two providers over management-LAN UDP;
