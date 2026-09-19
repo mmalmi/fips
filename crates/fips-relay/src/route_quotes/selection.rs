@@ -275,10 +275,22 @@ impl Destination {
         u128::from(offer.price.msat) * 1_000_000_000_000 / u128::from(1_000_000 - loss.min(999_999))
     }
 
-    fn candidate_indices(&mut self, peers: &[NodeAddr], _now: Instant) -> Vec<usize> {
+    fn provider_eligible(&self, provider: NodeAddr, now: Instant) -> bool {
+        // An exhausted unknown trial cannot refill itself merely by
+        // outliving cooldown when no alternative has been activated.
+        !self.active.as_ref().is_some_and(|active| {
+            self.blocked_trial.as_ref() == Some(&active.id) && active.provider == provider
+        }) && self.failed.get(&provider).is_none_or(|until| *until <= now)
+    }
+
+    fn candidate_indices(&mut self, peers: &[NodeAddr], now: Instant) -> Vec<usize> {
+        // Excluded providers cannot win this round; do not await their quotes.
         let active = self.active.as_ref().map(|a| a.provider);
         let mut selected = Vec::new();
-        if let Some(index) = peers.iter().position(|peer| Some(*peer) == active) {
+        if let Some(index) = peers
+            .iter()
+            .position(|peer| Some(*peer) == active && self.provider_eligible(*peer, now))
+        {
             selected.push(index);
         }
         if !peers.is_empty() {
@@ -287,10 +299,11 @@ impl Destination {
                 if selected.len() == MAX_CANDIDATES {
                     break;
                 }
-                if Some(peers[index]) != active {
+                if Some(peers[index]) != active && self.provider_eligible(peers[index], now) {
                     selected.push(index);
                 }
             }
+            // Keep rotation over the original peer list as exclusions change.
             self.cursor = (self.cursor + MAX_CANDIDATES - 1) % peers.len();
         }
         selected
@@ -304,16 +317,7 @@ impl Destination {
     ) -> Result<RouteOffer, String> {
         let mut eligible: Vec<_> = offers
             .into_iter()
-            .filter(|o| {
-                // An exhausted unknown trial cannot refill itself merely by
-                // outliving cooldown when no alternative has been activated.
-                !self.active.as_ref().is_some_and(|active| {
-                    self.blocked_trial.as_ref() == Some(&active.id) && active.provider == o.provider
-                }) && self
-                    .failed
-                    .get(&o.provider)
-                    .is_none_or(|until| *until <= now)
-            })
+            .filter(|o| self.provider_eligible(o.provider, now))
             .collect();
         eligible.sort_by_key(|o| (self.cost(o, policy, now), o.provider));
         let best = eligible.first().ok_or("no eligible priced route")?;
