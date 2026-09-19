@@ -422,10 +422,12 @@ including radio limits and Internet access. The recorded mint and three forwardi
 processes are absent after cleanup.
 
 The 27.01-second rejoin-to-probe upper bound separates into 1.56 seconds for the
-radio command, 19.16 seconds until exact FIPS topology observation, and about
-6.29 seconds for profile/process checks, probe setup, paced sending and observation.
-The first post-command station sample already shows established Wi-Fi peers while
-all FIPS peer lists remain empty. Native logs confirm 30-second beacon intervals;
+radio command, 18.83 seconds until the successful FIPS peer-roster read completes,
+0.33 seconds of subsequent diagnostics, and about 6.29 seconds for profile/process
+checks, probe setup, paced sending and observation. The first post-command station
+read, bracketed 0.73–0.90 seconds after the command returns, shows established Wi-Fi
+peers; the preceding FIPS peer reads were empty. These serial observations do not
+establish simultaneous topology. Native logs confirm 30-second beacon intervals;
 parsed beacons and discovery connection attempts appear about 13 and 18 seconds
 after the radio command returns. Consistent clock anchors bound log alignment to
 roughly 1.16 seconds, assuming no unobserved clock step. This supports testing a
