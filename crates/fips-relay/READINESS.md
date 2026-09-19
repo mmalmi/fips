@@ -432,8 +432,28 @@ parsed beacons and discovery connection attempts appear about 13 and 18 seconds
 after the radio command returns. Consistent clock anchors bound log alignment to
 roughly 1.16 seconds, assuming no unobserved clock step. This supports testing a
 shorter discovery interval. Full peer eviction is separately observed 62.44 seconds
-after the cut; its delay remains unexplained. Scoped trace logging and serial
-diagnostics make this a recovery investigation, not a matched speed comparison.
+after the cut; this run did not capture rekey retransmissions. Scoped trace logging
+and serial diagnostics make this a recovery investigation, not a matched speed
+comparison.
+
+A follow-up with the existing 10-second beacon option on temporary profiles passes
+the same middle-radio outage, channel continuity and settlement checks. Native logs
+confirm the effective interval on every router, with consecutive beacon gaps of
+9.998–10.002 seconds. The successful peer-roster read completes 1.91 seconds after
+the radio command returns; the full rejoin-to-probe upper bound is 10.24 seconds.
+All eight fresh replies arrive, both directions advance signed payments and seller
+credit, and all 384 test sats are collected. All 384 management checks pass;
+independent live reads confirm the original radio limits, accounts and Internet
+access after cleanup. The default interval remains unchanged. Beacon phase and
+serial diagnostics prevent treating these two runs as a latency guarantee or a
+matched performance comparison.
+
+The follow-up also records the cause of the extended peer-removal grace. Full
+eviction is observed 63.17 seconds after the cut. For the two lingering direct
+peers, same-router logs show all five FMP rekey retries, followed by stale removal
+one maintenance tick later: about 33 seconds after rekey initiation. Active rekey
+temporarily defers link-dead removal until its retry budget is exhausted. Reducing
+the discovery interval does not shorten that separate grace period.
 
 The [competing-provider topology fixture](../../testing/chaos/README.md#competing-wireless-provider-topology)
 also passes on the three routers without funding. A separate source identity on
