@@ -393,7 +393,12 @@ match all original router baselines, including account/configuration hashes,
 mesh settings, access points and Internet/DNS checks; owned processes and filters
 are absent. The 49.84-second cut-request-to-alternative-confirmation bound is
 controller-observed confirmation time, not packet outage duration. This single
-guarded cycle does not establish seamless roaming, arbitrary mobile merge/split,
+guarded cycle already observes a full alternative agreement, fresh native
+feedback and credited payment at 33.06 seconds after the cut request. The next
+16.78 seconds include a fresh 32-packet confirmation burst at two packets per
+second; they do not establish another 16.78 seconds of network outage. Exact
+first-delivery and carrier-transition timestamps were not captured. The cycle
+does not establish seamless roaming, arbitrary mobile merge/split,
 isolated quality-ranking causality or sustained capacity.
 
 The current isolated Android package passes a fresh arm64 native build, Android
