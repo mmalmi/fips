@@ -404,6 +404,16 @@ emulated endpoint range limit; it does not prove physical movement, merging two
 multi-router meshes or seamless roaming. The extended harness passes all 451
 Linux checks across the main suite and an isolated native firewall check.
 
+Native route selection also retains a single unanswered Full-MMP request as
+failure evidence after its existing feedback deadline (10.5 seconds by default).
+Heartbeat maintenance can select a known alternate even after the sender goes
+quiet, while retaining the authenticated direct peer and end-to-end session.
+Deterministic regressions cover fresh control traffic, the deadline boundary,
+Minimal-mode inactivity, changed carriers and the absence of an alternate.
+This prepares fallback for subsequent traffic; retransmitting the lost request
+remains the caller's responsibility. The hardware recovery timings above have
+not been remeasured with this software change.
+
 The [competing-provider topology fixture](../../testing/chaos/README.md#competing-wireless-provider-topology)
 also passes on the three routers without funding. A separate source identity on
 the destination's physical router reaches two providers over management-LAN UDP;

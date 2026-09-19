@@ -71,7 +71,7 @@ fn staged_fsp_rekey_preserves_established_path_delivery_activity() {
         !mover
             .owner_fsp_activity(owner)
             .unwrap()
-            .has_recent_outbound_without_delivery_feedback_from(&owner.node_addr(), 1_300, 2_500,),
+            .has_unacknowledged_outbound_from(&owner.node_addr(), 1_300, 2_500,),
         "a staged key cutover must retain recent delivery proof for the unchanged direct path"
     );
 }

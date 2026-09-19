@@ -121,19 +121,11 @@ fn fsp_owner_tracks_data_return_without_registry_side_channel() {
         "authenticated application data should still count as general session activity"
     );
     assert!(
-        activity.has_recent_outbound_without_delivery_feedback_from(
-            &next_hop.node_addr(),
-            115,
-            20,
-        ),
+        activity.has_unacknowledged_outbound_from(&next_hop.node_addr(), 115, 20,),
         "direct inbound data must not masquerade as return traffic for a routed fallback send"
     );
     assert!(
-        !activity.has_recent_outbound_without_delivery_feedback_from(
-            &owner.node_addr(),
-            115,
-            20,
-        ),
+        !activity.has_unacknowledged_outbound_from(&owner.node_addr(), 115, 20,),
         "fallback traffic must not be misclassified as an unreturned direct send"
     );
     assert!(!activity.has_recent_outbound_without_inbound(115, 20));
@@ -255,10 +247,7 @@ fn fsp_owner_records_direct_transport_as_the_destination_next_hop() {
         "direct FSP transport must replace any previously recorded fallback next hop"
     );
     assert_eq!(
-        mover
-            .owner_fsp_activity(owner)
-            .unwrap()
-            .max_sent_wire_len(),
+        mover.owner_fsp_activity(owner).unwrap().max_sent_wire_len(),
         0,
         "direct transport errors are local and must not corroborate plaintext routing signals"
     );
@@ -656,13 +645,11 @@ fn fsp_owner_owns_session_receiver_reports_and_path_mtu_signals() {
         interval_packets_recv: 0,
         interval_bytes_recv: 0,
     };
-    assert!(
-        mover.owner_mut(owner).unwrap().record_fsp_data_sent(
-            owner.node_addr(),
-            1200,
-            ActivityTick::new(1_050),
-        )
-    );
+    assert!(mover.owner_mut(owner).unwrap().record_fsp_data_sent(
+        owner.node_addr(),
+        1200,
+        ActivityTick::new(1_050),
+    ));
     let report = mover
         .process_fsp_mmp_receiver_report(
             owner,
@@ -676,22 +663,16 @@ fn fsp_owner_owns_session_receiver_reports_and_path_mtu_signals() {
     assert!(report.used_direct_next_hop);
     assert_eq!(report.mode, crate::mmp::MmpMode::Full);
 
-    assert!(
-        mover.owner_mut(owner).unwrap().record_fsp_data_sent(
-            owner.node_addr(),
-            1200,
-            ActivityTick::new(1_200),
-        )
-    );
+    assert!(mover.owner_mut(owner).unwrap().record_fsp_data_sent(
+        owner.node_addr(),
+        1200,
+        ActivityTick::new(1_200),
+    ));
     assert!(
         !mover
             .owner_fsp_activity(owner)
             .unwrap()
-            .has_recent_outbound_without_delivery_feedback_from(
-                &owner.node_addr(),
-                1_300,
-                2_500,
-            ),
+            .has_unacknowledged_outbound_from(&owner.node_addr(), 1_300, 2_500,),
         "a fresh delivery report should validate recent direct-path sends"
     );
     assert!(
@@ -715,13 +696,11 @@ fn fsp_owner_owns_session_receiver_reports_and_path_mtu_signals() {
             ),)
             .is_some()
     );
-    assert!(
-        mover.owner_mut(owner).unwrap().record_fsp_data_sent(
-            owner.node_addr(),
-            1200,
-            ActivityTick::new(3_950),
-        )
-    );
+    assert!(mover.owner_mut(owner).unwrap().record_fsp_data_sent(
+        owner.node_addr(),
+        1200,
+        ActivityTick::new(3_950),
+    ));
     mover
         .process_fsp_mmp_receiver_report(
             owner,
@@ -736,11 +715,7 @@ fn fsp_owner_owns_session_receiver_reports_and_path_mtu_signals() {
         mover
             .owner_fsp_activity(owner)
             .unwrap()
-            .has_recent_outbound_without_delivery_feedback_from(
-                &owner.node_addr(),
-                4_000,
-                2_500,
-        ),
+            .has_unacknowledged_outbound_from(&owner.node_addr(), 4_000, 2_500,),
         "fresh reverse traffic and duplicate receiver reports must not hide frozen delivery counters for the outbound direct path"
     );
 
@@ -789,11 +764,7 @@ fn authenticated_direct_validation_waits_one_report_window_before_delivery_is_st
         !mover
             .owner_fsp_activity(owner)
             .unwrap()
-            .has_recent_outbound_without_delivery_feedback_from(
-                &owner.node_addr(),
-                1_100,
-                2_500,
-            ),
+            .has_unacknowledged_outbound_from(&owner.node_addr(), 1_100, 2_500,),
         "initial data must allow a report window before delivery feedback is declared absent"
     );
     assert!(
@@ -806,11 +777,7 @@ fn authenticated_direct_validation_waits_one_report_window_before_delivery_is_st
         !mover
             .owner_fsp_activity(owner)
             .unwrap()
-            .has_recent_outbound_without_delivery_feedback_from(
-                &owner.node_addr(),
-                1_200,
-                2_500,
-            ),
+            .has_unacknowledged_outbound_from(&owner.node_addr(), 1_200, 2_500,),
         "sustained authenticated direct payload must get one report window before missing feedback degrades it"
     );
     assert!(mover.owner_mut(owner).unwrap().record_fsp_data_sent(
@@ -822,11 +789,7 @@ fn authenticated_direct_validation_waits_one_report_window_before_delivery_is_st
         mover
             .owner_fsp_activity(owner)
             .unwrap()
-            .has_recent_outbound_without_delivery_feedback_from(
-                &owner.node_addr(),
-                3_700,
-                2_500,
-            ),
+            .has_unacknowledged_outbound_from(&owner.node_addr(), 3_700, 2_500,),
         "continuous sends without a receiver report must still expose a one-way failure"
     );
 }
@@ -839,7 +802,10 @@ fn runtime_turn_driver_runs_classified_inbound_and_outbound_once() {
     let path = live_path(7800);
     let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
     driver.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(300));
-    driver.owner_mut(owner).unwrap().set_active_path(path.clone());
+    driver
+        .owner_mut(owner)
+        .unwrap()
+        .set_active_path(path.clone());
     driver
         .owner_mut(owner)
         .unwrap()

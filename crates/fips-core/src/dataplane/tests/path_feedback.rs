@@ -110,7 +110,7 @@ fn delivery_feedback_waits_one_report_window_before_degrading_a_new_burst() {
         mover
             .owner_fsp_activity(owner)
             .unwrap()
-            .has_recent_outbound_without_delivery_feedback_from(&owner.node_addr(), now, 2_500)
+            .has_unacknowledged_outbound_from(&owner.node_addr(), now, 2_500)
     };
     send(&mut mover, 1_050);
     assert!(

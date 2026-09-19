@@ -248,7 +248,6 @@ impl DataplaneFspMmpSnapshot {
             ecn_ce_count: metrics.last_ecn_ce_count(),
         }
     }
-
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -347,7 +346,11 @@ impl OwnerConfig {
         self
     }
 
-    pub(crate) fn with_fmp_mmp(mut self, config: crate::mmp::MmpConfig, is_initiator: bool) -> Self {
+    pub(crate) fn with_fmp_mmp(
+        mut self,
+        config: crate::mmp::MmpConfig,
+        is_initiator: bool,
+    ) -> Self {
         self.fmp_mmp = Some(DataplaneFmpMmpConfig {
             config,
             is_initiator,
@@ -360,11 +363,7 @@ impl OwnerConfig {
         self
     }
 
-    pub(crate) fn with_fsp_send_headers(
-        mut self,
-        fsp_flags: u8,
-        inner_flags: u8,
-    ) -> Self {
+    pub(crate) fn with_fsp_send_headers(mut self, fsp_flags: u8, inner_flags: u8) -> Self {
         self.fsp_send_headers = Some(DataplaneFspSendHeaders::new(fsp_flags, inner_flags));
         self
     }
@@ -516,11 +515,7 @@ impl OwnerRetireSlot {
         self.slot.may_be_open_fsp_session_payload_run()
     }
 
-    fn drain_results(
-        &mut self,
-        limit: usize,
-        mut consume: impl FnMut(CryptoCompletion),
-    ) -> usize {
+    fn drain_results(&mut self, limit: usize, mut consume: impl FnMut(CryptoCompletion)) -> usize {
         let drained = limit.min(self.remaining());
         for item in self.results().take(drained) {
             consume(item.into_completion());
@@ -642,8 +637,7 @@ impl DataplaneFspOwnerActivity {
     }
 
     pub(crate) fn should_ignore_stale_epoch_decrypt_failure(self, received_k_bit: bool) -> bool {
-        self.previous_draining_k_bit == Some(received_k_bit)
-            && received_k_bit != self.current_k_bit
+        self.previous_draining_k_bit == Some(received_k_bit) && received_k_bit != self.current_k_bit
     }
 
     pub(crate) fn send_counter(self) -> u64 {
@@ -690,11 +684,7 @@ impl DataplaneFspOwnerActivity {
             && last_inbound_ms.is_some_and(|last_ms| now_ms.saturating_sub(last_ms) > timeout_ms)
     }
 
-    pub(crate) fn has_recent_outbound_without_inbound(
-        self,
-        now_ms: u64,
-        timeout_ms: u64,
-    ) -> bool {
+    pub(crate) fn has_recent_outbound_without_inbound(self, now_ms: u64, timeout_ms: u64) -> bool {
         let inbound_data_stale = self
             .last_rx_data_age_ms(now_ms)
             .is_none_or(|age_ms| age_ms > timeout_ms);
@@ -725,16 +715,6 @@ impl DataplaneFspOwnerActivity {
         } else {
             self.has_recent_data_return_from(next_hop, now_ms, timeout_ms)
         }
-    }
-
-    pub(crate) fn has_recent_outbound_without_delivery_feedback_from(
-        self,
-        next_hop: &NodeAddr,
-        now_ms: u64,
-        timeout_ms: u64,
-    ) -> bool {
-        self.has_recent_outbound_activity(now_ms, timeout_ms)
-            && self.has_unacknowledged_outbound_from(next_hop, now_ms, timeout_ms)
     }
 
     pub(crate) fn has_unacknowledged_outbound_from(

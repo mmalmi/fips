@@ -13,6 +13,7 @@ mod endpoint_events;
 mod link_registry_rx;
 mod liveness_fallback;
 mod liveness_reconnect;
+mod liveness_sparse;
 mod liveness_window;
 mod node_lifecycle;
 mod path_mtu;
