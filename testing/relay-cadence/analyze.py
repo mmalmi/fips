@@ -323,7 +323,8 @@ def validated_rows(rows, pilot, delivery_rejections=None):
             if row["max_delay_ms"] != delay:
                 raise ValueError("unmatched policy order")
             result = summarize(row, schema, delivery_rejections)
-            record_service_carrier(row["data"], result, previous, service_carrier)
+            record_service_carrier(row["data"], result, previous, service_carrier,
+                                   native_ethernet=schema == 3)
             if previous is not None:
                 validate_gap(previous, row["data"]["before_guard"], schema)
             if schema == 3:
