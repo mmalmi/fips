@@ -35,8 +35,10 @@ impl WatchedRoute {
 }
 
 impl Controller {
-    pub(super) fn next_refresh_delay(&self, _scan_started: tokio::time::Instant) -> Duration {
+    pub(super) fn next_refresh_delay(&self, scan_started: tokio::time::Instant) -> Duration {
         let now = tokio::time::Instant::now();
+        // Work already spent this interval must not be followed by a new wait.
+        let recheck = REFRESH_RECHECK.saturating_sub(now.duration_since(scan_started));
         self.refresh_checks
             .lock()
             .ok()
@@ -52,8 +54,8 @@ impl Controller {
             })
             // Expired checks may belong to paused watches or ongoing renewals.
             // They must not cause a busy loop; refresh reports any poisoned lock.
-            .unwrap_or(REFRESH_RECHECK)
-            .min(REFRESH_RECHECK)
+            .unwrap_or(recheck)
+            .min(recheck)
     }
 
     pub(super) fn validate_watched_routes(j: &Journal) -> Result<(), String> {
