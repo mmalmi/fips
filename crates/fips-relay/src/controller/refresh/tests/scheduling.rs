@@ -21,7 +21,13 @@ async fn refresh_wakeup_preserves_deadlines_without_busy_retries() {
             ("later", now),
             ("retained", now - Duration::from_secs(10)),
         ] {
-            checks.insert(id.into(), RefreshCheck { checked, free: None });
+            checks.insert(
+                id.into(),
+                RefreshCheck {
+                    checked,
+                    free: None,
+                },
+            );
         }
     }
     assert_eq!(delay(&controller), Duration::from_secs(2));
@@ -55,7 +61,10 @@ async fn slow_refresh_keeps_the_existing_ready_tick_without_busy_followups() {
     let started = tokio::time::Instant::now();
     controller.refresh_checks.lock().unwrap().insert(
         "slow-quote".into(),
-        RefreshCheck { checked: started, free: None },
+        RefreshCheck {
+            checked: started,
+            free: None,
+        },
     );
     tokio::time::advance(Duration::from_millis(5_200)).await;
     assert_eq!(

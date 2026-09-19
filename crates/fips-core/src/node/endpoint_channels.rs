@@ -173,7 +173,9 @@ impl EndpointDataPayload {
         self
     }
 
-    pub(crate) fn into_fsp_payload(self) -> (
+    pub(crate) fn into_fsp_payload(
+        self,
+    ) -> (
         u8,
         crate::transport::PacketBuffer,
         Option<crate::endpoint::ServiceCarrierDiagnostics>,

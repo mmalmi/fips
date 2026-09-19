@@ -46,8 +46,10 @@ pub(super) async fn assert_status(bench: &MixedBench, active: bool) {
                 if !possible {
                     assert_eq!((packets, bytes), (0, 0));
                 } else if active {
-                    assert!(packets > 0 && bytes > 0,
-                        "each funded endpoint and both middle-router carriers submit measured segments");
+                    assert!(
+                        packets > 0 && bytes > 0,
+                        "each funded endpoint and both middle-router carriers submit measured segments"
+                    );
                 }
             }
         }

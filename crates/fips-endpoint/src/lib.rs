@@ -18,10 +18,10 @@ pub use fips_core::endpoint::{
     FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun, FipsEndpointDirectReceiver,
     FipsEndpointDirectSink, FipsEndpointError, FipsEndpointMessage, FipsEndpointPeer,
     FipsEndpointRelayStatus, FipsEndpointServiceDatagram, FipsEndpointServiceReceiver,
-    SERVICE_CARRIER_DIAGNOSTICS_MAX_SERVICES, ServiceCarrierDiagnostics,
-    ServiceCarrierSnapshot, ServiceCarrierTransportSnapshot,
     RECENT_PEERS_MAX_ENDPOINTS_PER_PEER, RECENT_PEERS_MAX_PEERS, RECENT_PEERS_VERSION, RecentPeer,
-    RecentPeerEndpoint, RecentPeerTransport, RecentPeers, RecentPeersError, UpdatePeersOutcome,
+    RecentPeerEndpoint, RecentPeerTransport, RecentPeers, RecentPeersError,
+    SERVICE_CARRIER_DIAGNOSTICS_MAX_SERVICES, ServiceCarrierDiagnostics, ServiceCarrierSnapshot,
+    ServiceCarrierTransportSnapshot, UpdatePeersOutcome,
 };
 pub use fips_core::identity::{
     FipsAddress, Identity, IdentityError, NodeAddr, PeerIdentity, decode_npub, decode_nsec,

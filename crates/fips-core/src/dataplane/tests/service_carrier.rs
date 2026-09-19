@@ -173,15 +173,18 @@ fn service_carrier_live_sink_counts_only_actual_queue_rejection() {
     rejected.path = None;
     let mut groups = DataplaneTransportSendGroups::new();
     let mut drops = Vec::new();
-    let queued = DataplaneLiveOutputSink::new(&mut groups)
-        .send_batch([accepted, rejected], &mut drops);
+    let queued =
+        DataplaneLiveOutputSink::new(&mut groups).send_batch([accepted, rejected], &mut drops);
     assert_eq!(queued, 1);
     assert_eq!(groups.groups.len(), 1);
     assert_eq!(drops.len(), 1);
     assert_eq!(drops[0].reason(), DataplaneOutputError::NoRoute);
     assert_eq!(counters.snapshot().discarded_outputs, 1);
-    assert_eq!(udp_counters(&counters).submitted_packets, 0,
-        "a queued output has not yet reached the transport");
+    assert_eq!(
+        udp_counters(&counters).submitted_packets,
+        0,
+        "a queued output has not yet reached the transport"
+    );
 }
 
 #[test]
