@@ -401,6 +401,35 @@ first-delivery and carrier-transition timestamps were not captured. The cycle
 does not establish seamless roaming, arbitrary mobile merge/split,
 isolated quality-ranking causality or sustained capacity.
 
+A default-policy simulated diamond now separates delivery from controller
+confirmation. One uninterrupted 128-packet numbered stream runs at two packets
+per second; the cheaper provider's onward edge is cut after an actual delivery,
+while both source adjacencies remain connected. Independent 250-ms observations
+record native quality, trial/full agreement identity and acknowledged provider
+credit. In the combined run, the first newly submitted payload arrives 18.50
+seconds after the cut, a full paid replacement with fresh quality is observed at
+23.99 seconds, and a complete 32-packet batch confirms that same agreement at
+47.75 seconds. All 92 received packets match their original submissions; the
+other 36 are lost during the cut. This distinguishes confirmation overhead from
+packet outage without attributing the trigger to one specific timeout. Both
+original channels remain intact and final settlement conserves all 259 test sats.
+The focused preceding run produced essentially the same timing; neither run
+establishes a hardware latency guarantee or an optimization speedup. Reproduce
+with the `recovery_timing::` filter of the `priced_paths` integration target.
+
+Source selection now excludes currently ineligible providers before requesting
+quotes, using the same predicate as final offer selection. A failed provider
+cannot consume one of the four candidate slots or delay a round while its quote
+is awaited. Cursor rotation, fixed cooldown expiry, exhausted-trial latching and
+fresh bounded retry rules are preserved. Three candidate regressions and the
+actual TCP/FIPS quote-request regression fail on the preceding code and pass with
+the fix; all 20 selector tests pass. The combined source also passes all 14
+priced-path tests, 216 relay library tests, 128 dataplane tests, the ten optional
+carrier diagnostic tests, endpoint compilation and strict core/endpoint/relay
+lint. Carrier diagnostics measure local transport submissions only; a complete
+payment-overhead benchmark still needs the service/harness integration and a
+matching measured run.
+
 The current isolated Android package passes a fresh arm64 native build, Android
 lint and strict Android-target relay/app linting. Native-library provenance is
 verified through packaging, including the build tool's stripping step. Installation
