@@ -7,6 +7,8 @@ mod automatic_quality;
 mod impairments;
 #[path = "priced_paths/mobility.rs"]
 mod mobility;
+#[path = "priced_paths/recovery_timing.rs"]
+mod recovery_timing;
 use cashu_service::{
     FileSpilmanPaymentReceiver, FileSpilmanPaymentReceiverConfig, create_topup_quote,
     load_mint_balance, load_wallet_overview,
@@ -136,6 +138,7 @@ fn errors(controllers: &[Arc<Controller>]) -> Vec<(usize, String)> {
 }
 
 async fn run(root_index: usize, scenario: Scenario, seed: u64) {
+    let recovery_timing = matches!(scenario, Scenario::RecoveryTiming);
     let exhaust_trial = matches!(scenario, Scenario::Exhaustion);
     let interrupted = matches!(scenario, Scenario::InterruptedMobility);
     let mobile = matches!(scenario, Scenario::Mobility | Scenario::InterruptedMobility);
@@ -159,6 +162,11 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
     )
     .await
     .unwrap();
+    let mut controller_policy = policy(mint.url());
+    if recovery_timing {
+        controller_policy.max_wallet_spend_sat = 128;
+        controller_policy.renewal = None;
+    }
     let network_name = format!("priced-{}", Identity::generate().node_addr());
     let network = SimNetwork::new(seed);
     network.set_default_link(SimLink {
@@ -335,12 +343,18 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
             receiver_pubkey_hex: receiver.receiver_pubkey_hex().into(),
             fee_msat_per_kib: if i == 2 {
                 scenario.alternative_price()
+            } else if recovery_timing {
+                128
             } else {
                 1024
             },
             max_rate_msat_per_kib: 8192,
             lifetime_secs: 300,
-            max_units: 1_000_000,
+            max_units: if recovery_timing {
+                128 * 1024
+            } else {
+                1_000_000
+            },
             capacity_sat: 64,
             grace_msat: 8_000,
         };
@@ -389,7 +403,7 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
         let controller = Arc::new(
             Controller::create(
                 &root.path().join(format!("controller-{i}")),
-                policy(mint.url()),
+                controller_policy.clone(),
                 service.clone(),
             )
             .unwrap(),
@@ -426,7 +440,7 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
     .await
     .unwrap();
     let RouteAccess::Paid(first) = controllers[0]
-        .watch_route(peers[3], 4096)
+        .watch_route(peers[3], if recovery_timing { 192 } else { 4096 })
         .await
         .unwrap_or_else(|e| panic!("first purchase: {e}; {:?}", errors(&controllers)))
     else {
@@ -636,7 +650,20 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
             .unwrap();
         assert_eq!(quality.next_hop, Some(first.provider));
         assert!(quality.has_recent_delivery_feedback);
-        if interrupted {
+        if recovery_timing {
+            recovery_timing::exercise(
+                &network,
+                &nodes,
+                &peers,
+                &controllers,
+                &services,
+                &mut receivers[3],
+                &upgraded,
+                root.path(),
+                quote_inputs[0].0.statistics(),
+            )
+            .await;
+        } else if interrupted {
             mobility::pending::exercise(
                 &network,
                 &nodes,
@@ -810,7 +837,7 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
     let restored = Arc::new(
         Controller::load(
             &root.path().join("controller-0"),
-            policy(mint.url()),
+            controller_policy,
             services[0].clone(),
         )
         .unwrap(),

@@ -15,10 +15,14 @@ pub(super) enum Scenario {
     QualityChurn,
     Mobility,
     InterruptedMobility,
+    RecoveryTiming,
 }
 
 impl Scenario {
     pub(super) fn selection_policy(self) -> PriceSelectionPolicy {
+        if matches!(self, Self::RecoveryTiming) {
+            return PriceSelectionPolicy::default();
+        }
         let mut policy = super::selection_policy();
         match self {
             // Loss must change the delivered-cost ranking, not trip the ceiling.
@@ -50,6 +54,7 @@ impl Scenario {
 
     pub(super) fn alternative_price(self) -> u64 {
         match self {
+            Self::RecoveryTiming => 160,
             Self::Loss => 1126,
             // Both the loss-adjusted upgrade and healthy-price return exceed
             // the unchanged ten-percent switching margin.
