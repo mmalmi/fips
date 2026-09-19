@@ -497,6 +497,30 @@ class AcceptanceTests(unittest.TestCase):
         statuses["n03"]["peers"].pop()
         self.assertTrue(run.ready(line=True))
 
+    def test_bridge_isolation_requires_every_full_roster_empty(self):
+        run = object.__new__(WifiRun)
+        run.monitor, run.save = Mock(), Mock()
+        run.evidence = {}
+        run.nodes = {name: SimpleNamespace(npub=name) for name in ("n01", "n02", "n03")}
+        statuses = {name: {"peers": []} for name in run.nodes}
+        run.ctl = lambda name, _: statuses[name]
+        self.assertEqual(run.ready(line=True, isolated=True, outage_node="n02"), statuses)
+        for name, other in (("n01", "n02"), ("n02", "n01"), ("n03", "n02"), ("n01", "n03")):
+            for connected in (True, False):
+                with self.subTest(node=name, other=other, connected=connected):
+                    statuses[name]["peers"] = [
+                        {"npub": other, "connected": connected, "transport": "ethernet"}]
+                    self.assertFalse(run.ready(line=True, isolated=True, outage_node="n02"))
+                    self.assertEqual(run.evidence["last_peer_observation"][name], statuses[name]["peers"])
+                    statuses[name]["peers"] = []
+
+    def test_unknown_isolation_target_fails_before_observation(self):
+        run = object.__new__(WifiRun)
+        run.ctl = Mock()
+        with self.assertRaisesRegex(ValueError, "outage node"):
+            run.ready(line=True, isolated=True, outage_node="n01")
+        run.ctl.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

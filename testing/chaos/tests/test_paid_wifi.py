@@ -57,6 +57,15 @@ class PaidWifiTests(unittest.TestCase):
             PaidWifiRun(args)
         setup.assert_not_called()
 
+    def test_outage_selection_is_validated_before_creating_any_run(self):
+        for active, target in ((False, "n02"), (False, "n03"), (True, "n01")):
+            args = SimpleNamespace(active_outage=active, outage_node=target)
+            with self.subTest(active=active, target=target), \
+                    patch("sim.paid_wifi.WifiRun.__init__") as setup, \
+                    self.assertRaisesRegex(ValueError, "outage"):
+                PaidWifiRun(args)
+            setup.assert_not_called()
+
     def test_partition_anchor_waits_for_pending_signature_to_be_credited(self):
         prior, pending = accounts(), accounts()
         pending["n01"].update(remaining=60, authorized=4, signed={"n01": 4}, signed_after={"n01": 4})
