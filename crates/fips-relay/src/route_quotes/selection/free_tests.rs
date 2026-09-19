@@ -327,7 +327,12 @@ async fn real_quote_promotion_with_injected_quality_installs_current_free_grant(
                 .prepare_onward(trial.provider, *destination.node_addr(), 3_100),
             Some(false)
         );
+        let rejected_requests = statistics[0].snapshot().requests_started;
+        let rejected_received = statistics[1].snapshot().requests_received;
         assert!(source.refresh_route(destination).await.is_err());
+        assert_eq!(statistics[0].snapshot().requests_started, rejected_requests,
+            "an excluded trial must not start another quote request");
+        assert_eq!(statistics[1].snapshot().requests_received, rejected_received);
         // Idempotent reactivation cannot erase the exact trial's denial. Only
         // the qualifying feedback below permits its normal full promotion.
         source.activate_source_route(&trial).await.unwrap();
@@ -346,6 +351,8 @@ async fn real_quote_promotion_with_injected_quality_installs_current_free_grant(
             Some(trial.id.as_str())
         );
         assert!(source.refresh_route(destination).await.is_err());
+        assert_eq!(statistics[0].snapshot().requests_started, rejected_requests,
+            "repeated refresh cannot query the latched exhausted trial");
 
         // Quotes cross real authenticated TCP/FIPS control. Delivery feedback is
         // injected here; data checks below exercise production quota admission.

@@ -275,6 +275,27 @@ impl Destination {
         u128::from(offer.price.msat) * 1_000_000_000_000 / u128::from(1_000_000 - loss.min(999_999))
     }
 
+    fn candidate_indices(&mut self, peers: &[NodeAddr], _now: Instant) -> Vec<usize> {
+        let active = self.active.as_ref().map(|a| a.provider);
+        let mut selected = Vec::new();
+        if let Some(index) = peers.iter().position(|peer| Some(*peer) == active) {
+            selected.push(index);
+        }
+        if !peers.is_empty() {
+            for offset in 0..peers.len() {
+                let index = (self.cursor + offset) % peers.len();
+                if selected.len() == MAX_CANDIDATES {
+                    break;
+                }
+                if Some(peers[index]) != active {
+                    selected.push(index);
+                }
+            }
+            self.cursor = (self.cursor + MAX_CANDIDATES - 1) % peers.len();
+        }
+        selected
+    }
+
     fn choose(
         &self,
         offers: Vec<RouteOffer>,
@@ -464,23 +485,7 @@ impl RouteQuotes {
             if let Some(provider) = active.filter(|p| state.failed.contains_key(p)) {
                 self.client.invalidate(provider, dest);
             }
-            let mut selected = Vec::new();
-            if let Some(peer) = peers.iter().find(|p| Some(p.node_addr) == active) {
-                selected.push(peer.clone());
-            }
-            if !peers.is_empty() {
-                for offset in 0..peers.len() {
-                    let peer = &peers[(state.cursor + offset) % peers.len()];
-                    if selected.len() == MAX_CANDIDATES {
-                        break;
-                    }
-                    if Some(peer.node_addr) != active {
-                        selected.push(peer.clone());
-                    }
-                }
-                state.cursor = (state.cursor + MAX_CANDIDATES - 1) % peers.len();
-            }
-            selected
+            state.candidate_indices(&peers.iter().map(|p| p.node_addr).collect::<Vec<_>>(), now)
         };
         let request = QuoteRequest {
             destination,
@@ -492,7 +497,8 @@ impl RouteQuotes {
             requested_max_units: None,
         };
         let mut pending = JoinSet::new();
-        for peer in candidates {
+        for index in candidates {
+            let peer = &peers[index];
             let identity = PeerIdentity::from_npub(&peer.npub).map_err(|e| e.to_string())?;
             let client = self.client.clone();
             let request = request.clone();
@@ -550,3 +556,6 @@ mod tests;
 
 #[cfg(test)]
 mod admission_tests;
+
+#[cfg(test)]
+mod candidate_tests;
