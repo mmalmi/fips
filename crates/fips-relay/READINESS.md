@@ -320,6 +320,19 @@ original radio settings are restored, and 312 management checks pass. The
 time; the test deliberately waits for eviction before requesting rejoin. It
 does not establish arbitrary mobility or interrupt a specific payment message.
 
+The same fixture also passes a middle-router departure during live paid traffic
+(2026-09-19). All three full FIPS peer lists become empty; rejoin restores the
+exact two-hop line with the original processes, identities, funding and channels.
+The interrupted stream loses 22 of 24 replies. All eight fresh round trips and
+subsequent bidirectional payments succeed; all 384 test sats are collected,
+original router baselines restore, and 417 management checks pass. Full peer
+eviction is observed 57.47 seconds after the completed cut, before rejoin is
+requested. The separate 26.70-second rejoin-to-complete-recovery upper bound
+includes polling and the fresh probe. This is a real radio departure with an
+emulated endpoint range limit; it does not prove physical movement, merging two
+multi-router meshes or seamless roaming. The extended harness passes all 451
+Linux checks across the main suite and an isolated native firewall check.
+
 The [competing-provider topology fixture](../../testing/chaos/README.md#competing-wireless-provider-topology)
 also passes on the three routers without funding. A separate source identity on
 the destination's physical router reaches two providers over management-LAN UDP;

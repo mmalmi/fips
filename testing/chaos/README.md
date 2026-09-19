@@ -441,8 +441,7 @@ with `--active-outage`; `n03` explicitly selects the default leaf case.
 The bridge case exercises an actual radio departure and FIPS graph partition with
 emulated range constraints: the existing experimental-EtherType filter excludes
 the n01↔n03 shortcut, while management Ethernet remains available. It does not
-exercise physical movement or merge two multi-router networks. The bridge variant
-has not yet been accepted on hardware.
+exercise physical movement or merge two multi-router networks.
 
 The test retains the original processes (including their start times), financial
 identities, funding operations, channels, route agreements and lifetime budgets.
@@ -469,6 +468,22 @@ channels, with all three process epochs unchanged. The middle router earned
 24 test sats; all 384 issued sats were collected. Original radio settings and
 router baselines were restored, the mint and its forwards stopped, and all
 312 management checks passed without cleanup errors.
+
+The first middle-router active-outage run on the temporary open mesh
+(2026-09-19) also passed. The cut completed 1.16 seconds after dispatch, before
+the earliest final paced send at 11.5 seconds. Two of 24 replies arrived; 22
+were missing, and counts stayed unchanged during the isolated observation.
+All three full FIPS peer lists were empty 57.47 seconds after the completed
+cut. Rejoin restored exactly n01↔n02↔n03 on the original processes and payment
+channels. All eight fresh round trips completed with an 11.10-ms mean RTT;
+the request-to-complete-recovery upper bound was 26.70 seconds. Subsequent
+streams delivered and advanced payments in both directions. The middle router
+earned 20 test sats, all 384 issued sats were collected, and every test wallet
+ended empty. All 417 management checks passed, original router baselines and
+radio profiles restored, and the mint and its forwards stopped without cleanup
+errors. This recovery bound starts at the rejoin request, after the deliberate
+wait for full peer eviction; it excludes that wait and is not an exact packet
+outage duration.
 
 ### Paid/free Wi-Fi priority
 
