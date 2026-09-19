@@ -17,6 +17,7 @@ pub(super) enum Scenario {
     InterruptedMobility,
     RecoveryTiming,
     MergeSplit,
+    ControlSaturation,
 }
 
 impl Scenario {

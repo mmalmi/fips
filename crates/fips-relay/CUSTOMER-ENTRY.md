@@ -47,13 +47,13 @@ acceptance/settlement and payment updates. They are carried inside authenticated
 FIPS over the configured UDP listener; they are not host TCP listeners. Private
 operator and native-management sockets remain inside the protected state directory.
 
-Each control service admits at most eight simultaneous customer exchanges within
-its existing 32-connection application limit. Customer requests share a token
-bucket with a burst of 16 and refill of one per 100 ms, as well as individual
-identity buckets. Identity churn cannot grow the 64-entry customer bucket map or
-reset the shared bucket. Records remain capped at 64 KiB with 30-second exchange
-deadlines and bounded queues. These are resource bounds, not a denial-of-service
-availability guarantee.
+All three control services share the [bounded admission pools and identity
+budgets](READINESS.md#authenticated-adjacent-neighbors). Verified, retained
+financial relationships receive reserved capacity for incoming control while
+remaining inbound-only. Funded status never authorizes purchases from a customer.
+Each service retains its 32-connection TCP limit; records remain capped at
+64 KiB with 30-second exchange deadlines and bounded queues. These are resource
+bounds, not a denial-of-service availability guarantee.
 
 Customer-mode native limits are also finite: the configured neighbor count plus
 16 authenticated peers, twice that number of links/handshake connections, 16

@@ -50,6 +50,7 @@ struct Command {
 }
 
 pub struct ControlTransport {
+    admission: Arc<ControlAdmission>,
     commands: mpsc::Sender<Command>,
     task: JoinHandle<()>,
     statistics: Arc<ControlStatistics>,
@@ -140,13 +141,14 @@ impl ControlTransport {
         let statistics = Arc::new(ControlStatistics::default());
         let task = tokio::spawn(run(
             tcp,
-            admission,
+            admission.clone(),
             receive_commands,
             incoming,
             statistics.clone(),
         ));
         Ok((
             Self {
+                admission,
                 commands,
                 task,
                 statistics,
@@ -158,6 +160,10 @@ impl ControlTransport {
 
     pub fn statistics(&self) -> Arc<ControlStatistics> {
         self.statistics.clone()
+    }
+
+    pub(crate) fn control_admission(&self) -> &Arc<ControlAdmission> {
+        &self.admission
     }
 
     pub async fn request(&self, peer: PeerIdentity, body: Vec<u8>) -> Result<Vec<u8>, String> {

@@ -21,12 +21,25 @@ not enable transport discovery. Account initialization still uses loopback.
 Other discovery mechanisms remain disabled.
 
 Quote, acceptance and payment ports share one admission object. Unconfigured
-peers share eight active exchanges, with at most four per identity across ports
-and directions. The node-wide bucket allows a burst of 80 requests and refills
-at 320 requests/second; existing per-peer directional and quote-service limits
-remain 16 requests with 10/second refill. The identity table holds at most 64
-entries and reclaims only idle, fully refilled entries. Reconnection cannot
-reset a retained bucket. Core peer, link, handshake and session limits also apply.
+peers have eight ordinary active exchanges and eight reserved for locally verified
+financial counterparties. Each pool has its own burst of 80 requests and refills
+at 320 requests/second. The per-identity limit remains four exchanges across both
+pools, all ports and both directions; directional request buckets and existing
+quote-service limits remain 16 requests with 10/second refill. Each pool has
+64 identity-budget slots, for a combined bound of 128. Only idle, fully refilled
+records may be reclaimed. Reconnection, financial eligibility changes and
+controller reload cannot reset a retained bucket. Core peer, link, handshake,
+session and TCP connection limits also apply.
+
+Reserved capacity follows funded outgoing intents, verified incoming agreements
+(including prepared/stopped routes), and retained seller channel terms. The
+controller publishes this bounded membership view after a successful journal
+write and reconstructs it on validated reload. It remains available for payment
+and settlement retries until existing financial-history retirement removes the
+records. Unfunded requests, watches, free grants, advertisements and request
+contents cannot grant it. Automatic binding covers all three control ports and
+rejects a service belonging to another endpoint. No wire messages, configuration
+switches or spending permissions are added.
 
 An advertised identity or a routed session does not establish adjacency.
 Membership is checked again before an unsent request connects and before an
@@ -39,10 +52,32 @@ explicitly listed as neighbors.
 The aggregate rate accommodates the request count of 16 neighbors paying in
 both directions at 250-ms intervals, with bounded additional control traffic.
 This is a capacity calculation, not a latency or hardware throughput guarantee.
-Multiple hostile identities can still compete for the shared slots and budget;
-the limits bound their resource use without promising Sybil-resistant fairness.
+Multiple hostile identities can still compete within each pool; funded or
+recently retired counterparties can occupy reserved resources. These limits do
+not promise Sybil-resistant fairness, newcomer progress, or protection from
+TCP handshake saturation, native session overload, radio contention or CPU load.
 Mobile Wi-Fi merge/split and router/Pixel acceptance remain separate checks from
 authenticated-link control admission and the Ethernet fixture below.
+
+The `priced_paths::control_saturation` regression uses three automatically
+discovered SimNetwork routers and two additional authenticated neighbors with no
+wallets or controllers. Each attacker holds four incomplete TCP/FIPS records.
+Before the reservation fix, all 12 fresh data payloads arrived but the automatic
+payment stalled for the five-second observation window; it recovered after the
+streams were aborted. With the fix, three batches deliver all 36 fresh payloads
+and advance cumulative credit while all eight attack permits remain held. The
+original channel also settles under that load. Every wallet receives its exact
+purchase/earnings balance and all 768 test sats are collected. Fresh stream checks,
+active permit counts and a hold age below 25 seconds prevent the 30-second
+exchange timeout from satisfying the test. Explicit aborts release every permit
+before attacker shutdown. All 231 relay library tests, 12 control-transport tests
+and 16 priced-path scenarios pass with this change. Strict all-target relay lint,
+formatting and the 767-file size check also pass. This is a bounded
+incomplete-record attack in software,
+not a hardware flooding or fairness result. Reproduce with `cargo test -p
+fips-relay --all-features --test priced_paths control_saturation:: --
+--test-threads=1 --nocapture` using the dependencies in
+[FUNDING-COSTS.md](FUNDING-COSTS.md).
 
 Transport receive priority now has an independent 64-packet reserve. This early
 classification uses unauthenticated packet shape, so its queue must remain

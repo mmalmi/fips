@@ -5,6 +5,8 @@ mod admission;
 mod automatic_quality;
 #[path = "priced_paths/bench.rs"]
 mod bench;
+#[path = "priced_paths/control_saturation.rs"]
+mod control_saturation;
 #[path = "priced_paths/impairments.rs"]
 mod impairments;
 #[cfg(unix)]
@@ -168,6 +170,7 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
         quote_inputs,
         payment_servers,
         mut interrupted_acceptance,
+        admissions: _,
     } = bench::start(root_index, scenario, seed).await;
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {

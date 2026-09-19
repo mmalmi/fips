@@ -151,6 +151,7 @@ fn unresolved_funding_survives_storage_and_still_consumes_capital() {
     let mut store = Store {
         _owner: acquire_owner(&directory).unwrap(),
         directory: directory.clone(),
+        control_obligations: ControlObligations::from_journal(&journal).unwrap(),
         journal,
         ready: true,
     };

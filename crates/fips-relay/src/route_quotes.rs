@@ -92,6 +92,10 @@ fn valid_key(key: &str) -> bool {
 }
 
 impl RouteQuotes {
+    pub(crate) fn control_admission(&self) -> &Arc<crate::control_transport::ControlAdmission> {
+        self.client.control_admission()
+    }
+
     pub fn new(
         endpoint: Arc<FipsEndpoint>,
         control: Arc<ControlTransport>,

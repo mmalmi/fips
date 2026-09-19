@@ -508,6 +508,7 @@ fn failed_controller_writes_keep_the_intent_and_never_double_count_accounting() 
         let mut store = Store {
             _owner: acquire_owner(&directory).unwrap(),
             directory,
+            control_obligations: ControlObligations::from_journal(&journal).unwrap(),
             journal,
             ready: true,
         };

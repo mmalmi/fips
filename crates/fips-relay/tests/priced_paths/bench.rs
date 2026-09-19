@@ -22,11 +22,13 @@ pub(super) struct Bench {
     pub quote_servers: Vec<QuoteServer>,
     pub quote_inputs: Vec<(Arc<ControlTransport>, QuotePolicy)>,
     pub payment_servers: Vec<PaymentServer>,
+    pub admissions: Vec<Arc<ControlAdmission>>,
     pub interrupted_acceptance: Option<mobility::pending::ResponseGate>,
 }
 
 pub(super) async fn start(root_index: usize, scenario: Scenario, seed: u64) -> Bench {
-    let mesh = matches!(scenario, Scenario::MergeSplit);
+    let saturation = matches!(scenario, Scenario::ControlSaturation);
+    let mesh = matches!(scenario, Scenario::MergeSplit | Scenario::ControlSaturation);
     let recovery_timing = matches!(scenario, Scenario::RecoveryTiming);
     let interrupted = matches!(scenario, Scenario::InterruptedMobility);
     let mobile = matches!(scenario, Scenario::Mobility | Scenario::InterruptedMobility);
@@ -61,8 +63,16 @@ pub(super) async fn start(root_index: usize, scenario: Scenario, seed: u64) -> B
         up: false,
         ..Default::default()
     });
-    let count = if mesh { 6 } else { 4 };
-    let edges = if mesh {
+    let count = if saturation {
+        3
+    } else if mesh {
+        6
+    } else {
+        4
+    };
+    let edges = if saturation {
+        vec![(0, 1), (1, 2)]
+    } else if mesh {
         vec![(0, 1), (1, 2), (3, 4), (4, 5)]
     } else {
         vec![(0, 1), (0, 2), (1, 3), (2, 3)]
@@ -134,7 +144,7 @@ pub(super) async fn start(root_index: usize, scenario: Scenario, seed: u64) -> B
                 .to_str()
                 .unwrap()
                 .into();
-            config.node.limits.max_peers = 2;
+            config.node.limits.max_peers = if saturation { 4 } else { 2 };
             config.node.limits.max_connections = 4;
             config.node.limits.max_links = 4;
             config.node.limits.max_pending_inbound = 4;
@@ -207,6 +217,7 @@ pub(super) async fn start(root_index: usize, scenario: Scenario, seed: u64) -> B
     let mut quote_servers = Vec::new();
     let mut quote_inputs = Vec::new();
     let mut payment_servers = Vec::new();
+    let mut admissions = Vec::new();
     let mut interrupted_acceptance = None;
     for i in 0..count {
         let receiver = FileSpilmanPaymentReceiver::load_with_keyset_refresh(
@@ -234,6 +245,7 @@ pub(super) async fn start(root_index: usize, scenario: Scenario, seed: u64) -> B
             },
         )
         .unwrap();
+        admissions.push(admission.clone());
         let (transport, incoming) = ControlTransport::start_with_admission(
             nodes[i].clone(),
             44_741,
@@ -347,6 +359,7 @@ pub(super) async fn start(root_index: usize, scenario: Scenario, seed: u64) -> B
         quote_servers,
         quote_inputs,
         payment_servers,
+        admissions,
         interrupted_acceptance,
     }
 }

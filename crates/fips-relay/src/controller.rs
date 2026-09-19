@@ -34,6 +34,8 @@ pub use cadence::PaymentCadence;
 mod acceptance;
 mod capital;
 mod channel_history;
+mod control_obligations;
+pub(crate) use control_obligations::{ControlObligations, MAX_CONTROL_OBLIGATIONS};
 mod funding;
 pub use capital::FundingBudget;
 mod journal;
@@ -200,6 +202,7 @@ struct Journal {
 struct Store {
     directory: PathBuf,
     journal: Journal,
+    control_obligations: ControlObligations,
     ready: bool,
     _owner: File,
 }
@@ -227,9 +230,11 @@ impl Store {
 
     fn persist(&mut self) -> Result<(), String> {
         self.ready = false;
+        let obligations = self.control_obligations.prepare(&self.journal)?;
         let bytes = serde_json::to_vec(&self.journal).map_err(|e| e.to_string())?;
         write_private_journal(&self.directory, "controller.json", &bytes)
             .map_err(|e| e.to_string())?;
+        self.control_obligations.publish(obligations)?;
         self.ready = true;
         Ok(())
     }
@@ -287,6 +292,7 @@ pub struct Controller {
     services: ControllerServices,
     policy: ControllerPolicy,
     store: Arc<Mutex<Store>>,
+    control_obligations: ControlObligations,
     wallet: Arc<AsyncMutex<()>>,
     channel_work: Mutex<BTreeMap<String, Weak<AsyncMutex<()>>>>,
     #[cfg(feature = "measurements")]
@@ -342,6 +348,7 @@ impl Controller {
         }
         let mut store = Store {
             directory: directory.into(),
+            control_obligations: ControlObligations::new(*services.endpoint.node_addr()),
             journal: Journal {
                 version: 3,
                 local: *services.endpoint.node_addr(),
@@ -366,7 +373,7 @@ impl Controller {
             _owner: owner,
         };
         store.persist()?;
-        Ok(Self::with_store(policy, services, store))
+        Self::with_store(policy, services, store)
     }
 
     pub fn load(
@@ -391,19 +398,25 @@ impl Controller {
         Self::validate_journal(&journal, &policy, *services.endpoint.node_addr())?;
         let mut store = Store {
             directory: directory.into(),
+            control_obligations: ControlObligations::from_journal(&journal)?,
             journal,
             ready: true,
             _owner: owner,
         };
         store.resume_retirement(&services.buyer, &services.seller)?;
         Self::reconcile_route_stops(&store.journal, &services)?;
-        Ok(Self::with_store(policy, services, store))
+        Self::with_store(policy, services, store)
     }
 
-    fn with_store(policy: ControllerPolicy, services: ControllerServices, store: Store) -> Self {
-        Self {
+    fn with_store(
+        policy: ControllerPolicy,
+        services: ControllerServices,
+        store: Store,
+    ) -> Result<Self, String> {
+        let controller = Self {
             services,
             policy,
+            control_obligations: store.control_obligations.clone(),
             store: Arc::new(Mutex::new(store)),
             wallet: Arc::new(AsyncMutex::new(())),
             channel_work: Mutex::new(BTreeMap::new()),
@@ -415,7 +428,9 @@ impl Controller {
             refresh_checks: Mutex::new(BTreeMap::new()),
             accepting: Mutex::new(HashSet::new()),
             last_error: Mutex::new(None),
-        }
+        };
+        controller.bind_control_obligations()?;
+        Ok(controller)
     }
 
     pub(crate) fn validate_policy(policy: &ControllerPolicy) -> Result<(), String> {

@@ -128,6 +128,10 @@ pub(super) struct QuoteClient {
 }
 
 impl QuoteClient {
+    pub(super) fn control_admission(&self) -> &Arc<crate::control_transport::ControlAdmission> {
+        self.control.control_admission()
+    }
+
     pub(super) fn new(
         control: Arc<ControlTransport>,
         policy: Arc<QuotePolicy>,

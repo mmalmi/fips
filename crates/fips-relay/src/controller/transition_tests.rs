@@ -70,6 +70,7 @@ pub(super) fn fixture(directory: &Path) -> (Store, Outgoing) {
     let mut store = Store {
         _owner: acquire_owner(directory).unwrap(),
         directory: directory.into(),
+        control_obligations: ControlObligations::from_journal(&j).unwrap(),
         journal: j,
         ready: true,
     };
@@ -99,6 +100,7 @@ pub(super) fn reload(store: Store) -> Store {
     Store {
         _owner: acquire_owner(&directory).unwrap(),
         directory,
+        control_obligations: ControlObligations::from_journal(&journal).unwrap(),
         journal,
         ready: true,
     }

@@ -1,10 +1,11 @@
 //! Bounded control admission; authenticated adjacency is not spending authority.
+use crate::controller::{ControlObligations, MAX_CONTROL_OBLIGATIONS};
 use fips_core::{FipsEndpoint, NodeAddr, PeerIdentity};
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
     time::{Duration, Instant},
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -12,10 +13,12 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 const ADMISSION_BURST: u32 = 16;
 const ADMISSION_INTERVAL: Duration = Duration::from_millis(100);
 const UNCONFIGURED_CONNECTIONS: usize = 8;
+const OBLIGATION_CONNECTIONS: usize = 8;
 const UNCONFIGURED_PEER_CONNECTIONS: usize = 4;
 const AGGREGATE_BURST: u32 = 80;
 const AGGREGATE_INTERVAL: Duration = Duration::from_micros(3125);
 const UNCONFIGURED_IDENTITIES: usize = 64;
+const OBLIGATION_IDENTITIES: usize = MAX_CONTROL_OBLIGATIONS;
 const MEMBERSHIP_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Whether bounded control also admits current authenticated adjacent peers.
@@ -78,6 +81,9 @@ struct PeerBudget {
     incoming: AdmissionBudget,
     outgoing: AdmissionBudget,
     active: usize,
+    // Storage reservation only; current verified financial state selects the
+    // request lane. Moving between storage pools never resets this budget.
+    reserved: bool,
 }
 
 impl PeerBudget {
@@ -91,6 +97,7 @@ impl PeerBudget {
 struct AdmissionState {
     configured: HashMap<(NodeAddr, bool), AdmissionBudget>,
     aggregate: AdmissionBudget,
+    obligation_aggregate: AdmissionBudget,
     peers: HashMap<NodeAddr, PeerBudget>,
 }
 
@@ -99,17 +106,30 @@ impl AdmissionState {
         Self {
             configured: HashMap::new(),
             aggregate: AdmissionBudget::with_limits(now, AGGREGATE_BURST, AGGREGATE_INTERVAL),
+            obligation_aggregate: AdmissionBudget::with_limits(
+                now,
+                AGGREGATE_BURST,
+                AGGREGATE_INTERVAL,
+            ),
             peers: HashMap::new(),
         }
     }
 
-    fn admit_peer(&mut self, peer: NodeAddr, outbound: bool, now: Instant) -> bool {
-        if !self.peers.contains_key(&peer) && self.peers.len() >= UNCONFIGURED_IDENTITIES {
-            let Some(expired) = self
-                .peers
-                .iter()
-                .find_map(|(id, budget)| budget.idle_and_refilled(now).then_some(*id))
-            else {
+    fn admit_peer(&mut self, peer: NodeAddr, outbound: bool, now: Instant, reserved: bool) -> bool {
+        let limit = if reserved {
+            OBLIGATION_IDENTITIES
+        } else {
+            UNCONFIGURED_IDENTITIES
+        };
+        let occupied = self
+            .peers
+            .values()
+            .filter(|budget| budget.reserved == reserved)
+            .count();
+        if !self.peers.contains_key(&peer) && occupied >= limit {
+            let Some(expired) = self.peers.iter().find_map(|(id, budget)| {
+                (budget.reserved == reserved && budget.idle_and_refilled(now)).then_some(*id)
+            }) else {
                 return false;
             };
             self.peers.remove(&expired);
@@ -118,7 +138,14 @@ impl AdmissionState {
             incoming: AdmissionBudget::new(now),
             outgoing: AdmissionBudget::new(now),
             active: 0,
+            reserved,
         });
+        // Preserve a demoted/promoted identity's tokens and active permits even
+        // if its destination storage pool is full. Idle, refilled records can
+        // later be reclaimed by the same bounded eviction rule.
+        if occupied < limit {
+            budget.reserved = reserved;
+        }
         if budget.active >= UNCONFIGURED_PEER_CONNECTIONS {
             return false;
         }
@@ -150,6 +177,8 @@ pub struct ControlAdmission {
     mode: NeighborAdmission,
     state: Mutex<AdmissionState>,
     unconfigured: Arc<Semaphore>,
+    obligations: RwLock<Option<ControlObligations>>,
+    obligation_slots: Arc<Semaphore>,
 }
 
 impl ControlAdmission {
@@ -169,11 +198,35 @@ impl ControlAdmission {
             mode,
             state: Mutex::new(AdmissionState::new(Instant::now())),
             unconfigured: Arc::new(Semaphore::new(UNCONFIGURED_CONNECTIONS)),
+            obligations: RwLock::new(None),
+            obligation_slots: Arc::new(Semaphore::new(OBLIGATION_CONNECTIONS)),
         }))
     }
 
-    pub(super) fn owns_endpoint(&self, endpoint: &Arc<FipsEndpoint>) -> bool {
+    pub(crate) fn owns_endpoint(&self, endpoint: &Arc<FipsEndpoint>) -> bool {
         Arc::ptr_eq(&self.endpoint, endpoint)
+    }
+
+    pub(crate) fn bind_obligations(&self, obligations: ControlObligations) -> Result<(), String> {
+        if obligations.local() != *self.endpoint.node_addr() {
+            return Err("control obligations belong to another endpoint".into());
+        }
+        *self
+            .obligations
+            .write()
+            .map_err(|_| "control obligations poisoned")? = Some(obligations);
+        Ok(())
+    }
+
+    /// Current shared exchanges for an unconfigured identity, across all ports.
+    /// This observation does not reserve capacity or grant control authority.
+    pub fn active_unconfigured_exchanges(&self, peer: NodeAddr) -> usize {
+        self.state
+            .lock()
+            .expect("control admission lock")
+            .peers
+            .get(&peer)
+            .map_or(0, |budget| budget.active)
     }
 
     async fn classify(&self, peer: NodeAddr, outbound: bool) -> Result<PeerKind, String> {
@@ -233,28 +286,43 @@ impl ControlAdmission {
                 _slot: None,
             });
         }
-        let slot = self
-            .unconfigured
+        let reserved = self
+            .obligations
+            .read()
+            .map_err(|_| "control obligations poisoned")?
+            .as_ref()
+            .is_some_and(|obligations| obligations.contains(peer));
+        let pool = if reserved {
+            &self.obligation_slots
+        } else {
+            &self.unconfigured
+        };
+        let slot = pool
             .clone()
             .try_acquire_owned()
             .map_err(|_| "unconfigured control capacity exhausted")?;
         // Charge before the local peer lookup so rotating remote identities also
         // cannot multiply snapshot work. This bucket spans ports and directions.
-        if !self
-            .state
-            .lock()
-            .map_err(|_| "control admission poisoned")?
-            .aggregate
-            .allow(Instant::now())
         {
-            return Err("unconfigured control request budget exhausted".into());
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| "control admission poisoned")?;
+            let aggregate = if reserved {
+                &mut state.obligation_aggregate
+            } else {
+                &mut state.aggregate
+            };
+            if !aggregate.allow(Instant::now()) {
+                return Err("unconfigured control request budget exhausted".into());
+            }
         }
         let kind = self.classify(peer, outbound).await?;
         if !self
             .state
             .lock()
             .map_err(|_| "control admission poisoned")?
-            .admit_peer(peer, outbound, Instant::now())
+            .admit_peer(peer, outbound, Instant::now(), reserved)
         {
             return Err("control peer request budget or identity capacity exhausted".into());
         }

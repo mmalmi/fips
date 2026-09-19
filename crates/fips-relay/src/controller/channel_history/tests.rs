@@ -291,6 +291,7 @@ fn disk_reload(store: Store) -> Store {
     Store {
         _owner: acquire_owner(&directory).unwrap(),
         directory,
+        control_obligations: ControlObligations::from_journal(&journal).unwrap(),
         journal,
         ready: true,
     }

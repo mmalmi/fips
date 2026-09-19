@@ -365,8 +365,15 @@ fn live_shared_work_and_unmarked_requests_do_not_expire() {
             "incoming" => {
                 // A retained upstream contract must never lose its onward evidence,
                 // including a stopped contract still awaiting settlement.
-                let (_, old) =
+                let (_, mut old) =
                     crate::controller::transition_tests::fixture(&root.path().join("upstream"));
+                let customer = NodeAddr::from_bytes([3; 16]);
+                old.offer.buyer = customer;
+                old.offer.provider = store.journal.local;
+                old.offer.path[0] = store.journal.local;
+                old.purchase.channel.buyer = customer;
+                old.purchase.contract =
+                    contract_from_offer(&old.offer, &old.purchase.channel).unwrap();
                 let incoming: Incoming = serde_json::from_value(serde_json::json!({
                     "offer":old.offer,"channel":old.purchase.channel,
                     "contract":old.purchase.contract,"downstream":offer,
