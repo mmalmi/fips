@@ -88,6 +88,17 @@ class StorageTraceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             analyze([], PATHS)
 
+    def test_explicit_empty_trace_has_zero_counters_but_no_lifecycle_claim(self):
+        result = analyze([], PATHS, allow_empty=True)
+        self.assertEqual(result["syscalls_observed"], 0)
+        self.assertTrue(all(value == 0 for category in result["categories"].values()
+                            for value in category.values()))
+        self.assertIsNone(result["capture_complete"])
+        for trace in ([""], ['11 write(3</owned/file>, ""..., 5 <unfinished ...>'],
+                      ['11 write(3</owned/file>, "SECRET", 6) = 6']):
+            with self.subTest(trace=trace), self.assertRaises(ValueError):
+                analyze(trace, PATHS, allow_empty=True)
+
     def test_capture_options_suppress_payloads_signals_and_ambiguous_thread_prefixes(self):
         options = trace_options()
         self.assertIn("--string-limit=0", options)

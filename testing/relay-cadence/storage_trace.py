@@ -81,7 +81,7 @@ def parse(body):
     return kind, path, result, requested
 
 
-def analyze(lines, paths):
+def analyze(lines, paths, *, allow_empty=False):
     paths = categories(paths)
     counters = {name: dict(write_calls=0, write_bytes=0, write_errors=0, partial_scalar_writes=0,
                            sync_calls=0, sync_errors=0)
@@ -126,7 +126,7 @@ def analyze(lines, paths):
                 current["partial_scalar_writes"] += int(requested is not None and result < requested)
         else:
             current["sync_errors" if result < 0 else "sync_calls"] += 1
-    if pending or not count:
+    if pending or (not count and not allow_empty):
         raise ValueError("trace is incomplete or contains no observed syscalls")
     for name, value in counters.items():
         value["files_observed"] = len(files[name])

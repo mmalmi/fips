@@ -467,6 +467,43 @@ flash wear, SQLite changed-row counts or a timing benchmark. Snapshot size also
 depends on retained account history; this small fresh-account result cannot
 establish long-running storage cost.
 
+### Matched storage cadence capture
+
+The separate storage driver reuses the hardware comparison's finite idle,
+bursty, steady and high-rate workloads. Run one pilot before the eight-trial
+policy sequence; each trial funds fresh accounts and collects its complete
+384-test-sat issuance before the next can start:
+
+```sh
+python3 -m sim.storage_cadence --binary-dir /absolute/linux-arm64 \
+  --image LOCAL_DIAGNOSTIC_IMAGE_ID --output /absolute/new-private-pilot \
+  --pilot --pilot-delay-ms 500
+```
+
+Omit both pilot options for the 250/500/1000/2000 ms sequence and its reverse.
+The tariff is 1 msat/KiB and the quote allowance is 16 MiB; channel capacity,
+wallet limits and disabled renewal remain those of the paid Ethernet fixture.
+Both directions use that fixture's existing warmup before tracing. This is a
+within-fixture storage comparison: its virtual Ethernet carrier, platform and
+warmup differ from the physical Wi-Fi experiment.
+
+Each workload has its own named trace and a three-second payment tail. Evidence
+records scheduling slack and boundary sampling separately, rejecting more than
+250 ms of tail slack or two seconds of sampling. Strict double samples never
+retry an unfinished payment. Payment counters and all operation buckets'
+durability counters must remain unchanged across tracer attachment/detachment
+gaps. Every payload must arrive, and source usage must cover at least its
+payload-derived tariff. Prepaid traffic need not cause another signature, but
+must still advance usage. Idle windows require no payment or tracked storage
+work; zero-write traces still require verified attachment and clean detachment.
+Unmatched file operations, including failed operations, reject the window.
+
+Summaries separate SDK snapshots, receiver SQLite, funding-wallet files, relay
+journals and directory syncs. CPU counters collected under tracing are labeled
+partial and unsuitable for timing comparisons. Successful syscall bytes are
+not physical media writes. A pilot validates one policy only; it cannot establish
+which payment cadence is preferable.
+
 `storage_trace.py` summarizes an isolated Linux `strace` capture by explicit file
 categories. Use a fresh private output directory and the options returned by
 `storage_trace.trace_options()`: follow threads, always show their IDs, suppress

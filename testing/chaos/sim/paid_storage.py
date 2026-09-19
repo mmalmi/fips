@@ -1,6 +1,7 @@
 """Measure payment storage syscalls in a separate, isolated paid Ethernet run."""
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -18,7 +19,21 @@ from .run_scope import docker, inspect_owned
 DIAGNOSTICS = Path(__file__).resolve().parents[2] / "relay-cadence"
 sys.path.insert(0, str(DIAGNOSTICS))
 from storage_trace import analyze
-from validation import reconciled_payment
+from storage_worker import trace_directory
+from validation import OPERATIONS, reconciled_payment, unsigned
+
+DURABILITY_COUNTERS = ("journal_bytes_written", "journal_writes", "journal_syncs", "journal_commits")
+
+
+def durability_counters(measurements):
+    try:
+        operations = measurements["operations"]
+        if not isinstance(operations, dict) or set(operations) != OPERATIONS:
+            raise ValueError("storage boundary requires every measurement operation")
+        return {name: {key: unsigned(counters[key]) for key in DURABILITY_COUNTERS}
+                for name, counters in operations.items()}
+    except (KeyError, TypeError):
+        raise ValueError("storage boundary has missing durability counters") from None
 
 
 def storage_paths():
@@ -34,7 +49,7 @@ def storage_paths():
     }
 
 
-def validate_storage(summaries, lifecycles):
+def validate_storage(summaries, lifecycles, require_activity=True):
     if set(summaries) != {"n01", "n02", "n03"} or set(lifecycles) != set(summaries):
         raise RuntimeError("storage capture changed the original node set")
     for node, summary in summaries.items():
@@ -47,11 +62,12 @@ def validate_storage(summaries, lifecycles):
                 raise RuntimeError("storage capture observed a failed file operation")
         if summary["categories"]["wallet_sqlite"]["write_calls"]:
             raise RuntimeError("ordinary payment window wrote to the funding wallet")
-    for node in ("n01", "n03"):
-        if summaries[node]["categories"]["sdk_private_snapshot"]["write_bytes"] <= 0:
-            raise RuntimeError("capture did not observe the buyer SDK snapshot writes")
-    if summaries["n02"]["categories"]["receiver_sqlite"]["write_bytes"] <= 0:
-        raise RuntimeError("capture did not observe receiver SQLite writes")
+    if require_activity:
+        for node in ("n01", "n03"):
+            if summaries[node]["categories"]["sdk_private_snapshot"]["write_bytes"] <= 0:
+                raise RuntimeError("capture did not observe the buyer SDK snapshot writes")
+        if summaries["n02"]["categories"]["receiver_sqlite"]["write_bytes"] <= 0:
+            raise RuntimeError("capture did not observe receiver SQLite writes")
 
 
 class StorageRun(PaidRelayRun):
@@ -61,37 +77,48 @@ class StorageRun(PaidRelayRun):
         version = docker(["exec", item["Id"], "strace", "--version"]).splitlines()[0]
         self.evidence.setdefault("strace_versions", {})[node] = version
 
-    def boundary(self, finances):
+    def boundary(self, finances, wait=True):
         def snapshot():
             result = {}
+            reconciled = True
             for node in self.nodes:
                 status = self.ctl(node, "status")
                 channels = finances[node]["signed"]
                 if status["last_error"] is not None or set(status["payment_progress"]) != set(channels):
                     raise RuntimeError("payment boundary changed original channels or has an error")
                 result[node] = diagnostics(status, next(iter(channels), None))
+                result[node]["durability"] = durability_counters(status["measurements"])
                 if channels:
                     try:
                         reconciled_payment(result[node]["progress"])
                     except ValueError:
-                        return None
-            return result
+                        reconciled = False
+            return result if reconciled else None
 
         def stable():
             first = snapshot()
-            second = snapshot() if first else None
+            second = snapshot() if first is not None or not wait else None
             return {"guard": first, "sample": second} if first is not None and first == second else None
 
-        return eventually("quiet original payment boundary", stable, 15)
+        if wait:
+            return eventually("quiet original payment boundary", stable, 15)
+        result = stable()
+        if result is None:
+            raise RuntimeError("payment boundary is not reconciled and stable")
+        return result
 
-    def start_trace(self, node):
+    def start_trace(self, node, record, capture):
         item = inspect_owned("container", self.containers[node], self.name)
-        directory = self.root / node
+        node_root = self.root / node
+        directory = trace_directory(node_root, capture)
+        if capture is not None:
+            directory.mkdir(mode=0o700)
         for name in ("storage_trace.py", "storage_worker.py"):
-            shutil.copyfile(DIAGNOSTICS / name, directory / name)
+            shutil.copyfile(DIAGNOSTICS / name, node_root / name)
         write_json(directory / "storage-paths.json", storage_paths())
         self.trace_nodes.append(node)
-        docker(["exec", "-d", item["Id"], "python3", "/run/bench/storage_worker.py"])
+        command = ["exec", "-d", item["Id"], "python3", "/run/bench/storage_worker.py"]
+        docker(command + ([] if capture is None else [capture]))
 
         def ready():
             done = directory / "storage.done.json"
@@ -100,17 +127,20 @@ class StorageRun(PaidRelayRun):
             value = json.loads((directory / "storage.ready.json").read_text())
             return value if value.get("threads_attached", 0) > 0 else None
 
-        self.evidence["trace_ready"][node] = eventually("storage tracer attachment", ready, 15)
+        record["trace_ready"][node] = eventually("storage tracer attachment", ready, 15)
 
-    def stop_traces(self):
+    def stop_traces(self, record, capture):
         errors = []
         for node in self.trace_nodes:
-            (self.root / node / "storage.stop").touch(exist_ok=False)
+            try:
+                (trace_directory(self.root / node, capture) / "storage.stop").touch(exist_ok=False)
+            except OSError as error:
+                errors.append(f"{node}:{type(error).__name__}")
         for node in self.trace_nodes:
             try:
                 value = eventually("bounded tracer detach", lambda: json.loads(
-                    (self.root / node / "storage.done.json").read_text()), 25)
-                self.evidence["trace_lifecycle"][node] = value
+                    (trace_directory(self.root / node, capture) / "storage.done.json").read_text()), 25)
+                record["trace_lifecycle"][node] = value
                 if value.get("accepted") is not True:
                     errors.append(node)
             except (RuntimeError, OSError) as error:
@@ -118,16 +148,41 @@ class StorageRun(PaidRelayRun):
         if errors:
             raise RuntimeError("tracer lifecycle failed: " + ",".join(errors))
 
-    def capture(self, before):
+    @contextmanager
+    def trace(self, record, capture=None, require_activity=True):
+        trace_directory(self.root, capture)
+        if getattr(self, "trace_nodes", None):
+            raise RuntimeError("storage capture is already active")
         self.trace_nodes = []
-        self.evidence.update(trace_ready={}, trace_lifecycle={}, timing_comparison=False)
-        self.evidence["trace_source_sha256"] = {
+        record.update(trace_ready={}, trace_lifecycle={}, timing_comparison=False,
+                      storage={}, storage_accepted=False)
+        record["trace_source_sha256"] = {
             name: hashlib.sha256((DIAGNOSTICS / name).read_bytes()).hexdigest()
             for name in ("storage_trace.py", "storage_worker.py")}
-        warm = self.boundary(before)
+        attached = False
         try:
             for node in self.nodes:
-                self.start_trace(node)
+                self.start_trace(node, record, capture)
+            attached = True
+            yield
+        finally:
+            try:
+                self.stop_traces(record, capture)
+                if attached:
+                    for node in self.nodes:
+                        path = trace_directory(self.root / node, capture) / "storage.trace"
+                        with path.open() as stream:
+                            record["storage"][node] = analyze(
+                                stream, storage_paths(),
+                                allow_empty=capture is not None and not require_activity)
+                    validate_storage(record["storage"], record["trace_lifecycle"], require_activity)
+                    record["storage_accepted"] = True
+            finally:
+                self.trace_nodes = []
+
+    def capture(self, before):
+        warm = self.boundary(before)
+        with self.trace(self.evidence):
             self.evidence["payment_before"] = self.boundary(before)
             if self.evidence["payment_before"] != warm:
                 raise RuntimeError("warmup payment work escaped into the trace")
@@ -141,16 +196,6 @@ class StorageRun(PaidRelayRun):
                 "delivered_packets": 48, "delivered_bytes": 12288,
                 "automatic_payments_credited": True, "financial": after,
             }
-        finally:
-            self.stop_traces()
-        summaries = {}
-        for node in self.nodes:
-            path = self.root / node / "storage.trace"
-            with path.open() as stream:
-                summaries[node] = analyze(stream, storage_paths())
-        validate_storage(summaries, self.evidence["trace_lifecycle"])
-        self.evidence["storage"] = summaries
-        self.evidence["storage_accepted"] = True
 
     def exercise(self):
         eventually("native Ethernet line", self.line_ready, 150)

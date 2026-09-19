@@ -128,6 +128,9 @@ class PaidRelayRun:
         self.containers[node] = identity
         docker(["container", "start", identity])
 
+    def profile_config(self, node, mint_url):
+        return relay_config(self.topology.ethernet_interfaces(node), mint_url)
+
     def setup(self):
         # Preflight is read-only. Refuse an existing evidence directory.
         if self.root.exists():
@@ -167,7 +170,7 @@ class PaidRelayRun:
         eventually("private mint startup", lambda: self.execute("mint", "fips-relay-test-mint", "ctl", {"type": "report"}))
         self.veth.setup_all()
         for node in self.nodes:
-            write_json(self.root / node / "config.json", relay_config(self.topology.ethernet_interfaces(node), mint_url))
+            write_json(self.root / node / "config.json", self.profile_config(node, mint_url))
             self.nodes[node].npub = self.execute(node, "fips-relay", "init")
             # A lost issue/import reply leaves financial state uncertain.
             # Retain the original accounts unless collection is proven.
