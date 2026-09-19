@@ -13,12 +13,15 @@ use super::{
 use crate::config::SimTransportConfig;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
+use secp256k1::XOnlyPublicKey;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
+
+pub(crate) const MAX_DISCOVERED_PEERS_PER_POLL: usize = 64;
 
 /// Default in-memory link used when no per-link override is configured.
 pub const DEFAULT_SIM_LINK: SimLink = SimLink {
@@ -114,6 +117,7 @@ impl SimNetworkStats {
 struct EndpointEntry {
     transport_id: TransportId,
     packet_tx: PacketTx,
+    pubkey_hint: Option<XOnlyPublicKey>,
 }
 
 struct SimNetworkInner {
@@ -234,6 +238,7 @@ impl SimNetwork {
         addr: String,
         transport_id: TransportId,
         packet_tx: PacketTx,
+        pubkey_hint: Option<XOnlyPublicKey>,
     ) -> Result<(), TransportError> {
         let mut inner = self.inner.lock().expect("sim network lock");
         if inner.endpoints.contains_key(&addr) {
@@ -247,6 +252,7 @@ impl SimNetwork {
             EndpointEntry {
                 transport_id,
                 packet_tx,
+                pubkey_hint,
             },
         );
         Ok(())
@@ -420,6 +426,7 @@ pub struct SimTransport {
     packet_tx: PacketTx,
     network: Option<SimNetwork>,
     local_addr: Option<String>,
+    local_pubkey: Option<XOnlyPublicKey>,
     delivery_tasks: Vec<JoinHandle<()>>,
 }
 
@@ -438,6 +445,7 @@ impl SimTransport {
             packet_tx,
             network: None,
             local_addr: None,
+            local_pubkey: None,
             delivery_tasks: Vec::new(),
         }
     }
@@ -448,6 +456,12 @@ impl SimTransport {
 
     pub fn stats(&self) -> Option<SimNetworkStats> {
         self.network.as_ref().map(SimNetwork::stats)
+    }
+
+    /// Set the real local identity hint before starting this transport.
+    /// Discovery hints still require the ordinary authenticated handshake.
+    pub fn set_local_pubkey(&mut self, pubkey: XOnlyPublicKey) {
+        self.local_pubkey = Some(pubkey);
     }
 
     pub async fn start_async(&mut self) -> Result<(), TransportError> {
@@ -471,9 +485,12 @@ impl SimTransport {
                 )
             })?;
 
-        if let Err(error) =
-            network.register_endpoint(addr.clone(), self.transport_id, self.packet_tx.clone())
-        {
+        if let Err(error) = network.register_endpoint(
+            addr.clone(),
+            self.transport_id,
+            self.packet_tx.clone(),
+            self.local_pubkey,
+        ) {
             self.state = TransportState::Failed;
             return Err(error);
         }

@@ -437,12 +437,13 @@ impl Node {
 
             for (name, sim_config) in sim_instances {
                 let transport_id = self.allocate_transport_id();
-                let sim = crate::transport::sim::SimTransport::new(
+                let mut sim = crate::transport::sim::SimTransport::new(
                     transport_id,
                     name,
                     sim_config,
                     packet_tx.clone(),
                 );
+                sim.set_local_pubkey(self.identity.pubkey());
                 transports.push(TransportHandle::Sim(sim));
             }
         }

@@ -20,6 +20,8 @@ mod handshake;
 mod public_udp;
 mod routing;
 mod session;
+#[cfg(feature = "sim-transport")]
+mod sim_discovery;
 mod spanning_tree;
 mod tcp;
 mod unit;
