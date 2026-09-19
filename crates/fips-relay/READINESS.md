@@ -426,9 +426,21 @@ actual TCP/FIPS quote-request regression fail on the preceding code and pass wit
 the fix; all 20 selector tests pass. The combined source also passes all 14
 priced-path tests, 216 relay library tests, 128 dataplane tests, the ten optional
 carrier diagnostic tests, endpoint compilation and strict core/endpoint/relay
-lint. Carrier diagnostics measure local transport submissions only; a complete
-payment-overhead benchmark still needs the service/harness integration and a
-matching measured run.
+lint.
+
+Optional carrier diagnostics now reach the payment service's private status
+and the cadence analyzer. A real TCP/FIPS test over SimTransport loses an
+encrypted segment, triggers TCP's retransmission timer and verifies both
+submissions, receiver ACKs and exclusion of unrelated service traffic. It caught
+and now covers a diagnostic bug that counted successfully queued outputs as
+discarded. The mixed UDP/TCP daemon test verifies each funded endpoint's carrier
+activity through the status interface; ordinary builds report unavailable
+instrumentation as null. Both integration cases pass with measurements enabled
+and disabled, together with 11 core carrier cases, 129 dataplane cases, strict
+core/endpoint/relay lint and the source-length check. The analyzer has 90 passing
+tests and retains guard-gap traffic separately. These counters measure local
+transport submissions, excluding opaque transit and physical radio overhead;
+a matching measured run is still required before reporting the new overhead.
 
 The current isolated Android package passes a fresh arm64 native build, Android
 lint and strict Android-target relay/app linting. Native-library provenance is
