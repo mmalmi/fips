@@ -67,11 +67,33 @@ async fn sim_discovery_authenticates_without_roster_and_respects_admission() {
     for node in &mut nodes {
         node.node.poll_transport_discovery().await;
     }
-    assert_eq!(nodes[0].node.pending_connects.len(), 1);
+    // Sim is connectionless: discovery starts Noise immediately, without the
+    // socket/DNS preparation represented by pending_connects.
+    assert!(
+        nodes
+            .iter()
+            .all(|node| node.node.pending_connects.is_empty())
+    );
+    assert_eq!(nodes[0].node.connection_count(), 1);
+    assert_eq!(nodes[0].node.pending_outbound.len(), 1);
+    assert_eq!(
+        nodes[0]
+            .node
+            .peers
+            .connection_values()
+            .next()
+            .unwrap()
+            .expected_identity()
+            .unwrap()
+            .node_addr(),
+        nodes[1].node.node_addr(),
+        "the bounded discovery pass must start only the first neighbor's handshake"
+    );
+    assert!(nodes.iter().all(|node| node.node.peer_count() == 0));
     assert!(
         nodes[1..]
             .iter()
-            .all(|node| node.node.pending_connects.is_empty())
+            .all(|node| node.node.connection_count() == 0 && node.node.pending_outbound.is_empty())
     );
     drain_all_packets(&mut nodes, false).await;
     assert!(nodes[0].node.get_peer(nodes[1].node.node_addr()).is_some());
@@ -80,6 +102,8 @@ async fn sim_discovery_authenticates_without_roster_and_respects_admission() {
 
     nodes[0].node.poll_transport_discovery().await;
     assert!(nodes[0].node.pending_connects.is_empty());
+    assert_eq!(nodes[0].node.connection_count(), 0);
+    assert!(nodes[0].node.pending_outbound.is_empty());
     assert!(nodes.iter().all(|node| node.node.config.peers.is_empty()
         && node.node.peer_count() <= 1
         && node.node.connection_count() <= 1
