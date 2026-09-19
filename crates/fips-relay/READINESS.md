@@ -1330,7 +1330,9 @@ operation. No new Watch, Buy, explicit payment flush, peer roster update or sess
 reset drives that recovery. Stable checkpoints reject pending funding and retain
 all capital limits and lifetime spending. Both placements of the combined tree
 root pass, with eight original directional channels per case and all 1,536 test
-sats settled and collected into the isolated collector wallet.
+sats settled and collected into the isolated collector wallet. Each settlement
+redeems at least the acknowledged payment; each wallet must equal its initial
+balance minus purchases plus that router's relay earnings before collection.
 
 This uses the existing SimNetwork, real Noise authentication, native tree/session
 routing and production relay controllers. Sim discovery supplies at most 64
@@ -1340,6 +1342,9 @@ including asymmetric reachability, rather than radio beacons or airtime. The
 fixture uses a two-peer cap per node and no configured native or control peers.
 The focused discovery tests cover cut/rejoin, absent/down endpoints, directed
 visibility, bounded rotation, actual authentication and admission at capacity.
+All 15 priced-path tests pass after sharing the existing fixture setup. The
+stronger per-router settlement assertions also pass in both focused mesh cases;
+strict core/relay linting, formatting and the source-size check pass.
 
 The traffic check allows three finite attempts per payload at 0, 7 and 14 seconds
 inside a 20-second window. In the focused run, one rejoin needed the second round:

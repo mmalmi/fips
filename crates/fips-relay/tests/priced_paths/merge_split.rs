@@ -512,6 +512,16 @@ async fn exercise(root: usize, seed: u64) {
         controller.pause_renewals().await.unwrap();
     }
     let final_accounts = anchor.unwrap();
+    let mut unsettled: BTreeMap<_, _> = hop_usage(&bench)
+        .await
+        .into_iter()
+        .map(|(pair, usage)| (usage.channel, pair))
+        .collect();
+    assert_eq!(
+        unsettled.keys().collect::<Vec<_>>(),
+        credited.keys().collect::<Vec<_>>()
+    );
+    let mut expected_balances = vec![256u64; bench.wallets.len()];
     for (i, controller) in bench.controllers.iter().enumerate() {
         let reports = controller.settle_all().await.unwrap();
         let expected: std::collections::BTreeSet<_> = final_accounts[i]
@@ -526,10 +536,19 @@ async fn exercise(root: usize, seed: u64) {
                 .collect::<std::collections::BTreeSet<_>>(),
             expected
         );
+        assert_eq!(reports.len(), expected.len());
         for report in reports {
+            let (buyer, seller) = unsettled.remove(&report.channel_id).unwrap();
+            assert_eq!(buyer, i);
             assert_eq!(report.value_after_stage1_sat, 64);
             assert_eq!(report.paid_sat + report.refunded_sat, 64);
             assert_eq!(report.fee_sat + report.receiver_fee_reserve_sat, 0);
+            assert!(
+                report.paid_sat * 1000 >= credited[&report.channel_id],
+                "settlement must redeem at least the acknowledged payment"
+            );
+            expected_balances[buyer] -= report.paid_sat;
+            expected_balances[seller] += report.paid_sat;
         }
         let budget = controller.funding_budget().await.unwrap();
         assert_eq!(budget.locked_sat, 0);
@@ -544,12 +563,17 @@ async fn exercise(root: usize, seed: u64) {
         );
         assert!(bench.buyers[i].remaining_budget_sat().unwrap() <= final_accounts[i].remaining);
     }
+    assert!(unsettled.is_empty());
     let mut total = 0;
-    for wallet in &bench.wallets {
+    for (i, wallet) in bench.wallets.iter().enumerate() {
         let balance = load_mint_balance(wallet, bench.mint.url())
             .await
             .unwrap()
             .balance_sat;
+        assert_eq!(
+            balance, expected_balances[i],
+            "wallet {i} must contain its initial funds minus purchases plus relay earnings"
+        );
         total += balance;
         if balance > 0 {
             let token = send_payment_token(wallet, bench.mint.url(), balance as u64)
