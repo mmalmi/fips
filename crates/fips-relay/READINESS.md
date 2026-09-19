@@ -357,14 +357,14 @@ quotes. The source/destination share one router and first hops use management-LA
 UDP. Explicit eviction waits and paced probes preclude a failover-latency claim.
 Arbitrary moving mesh merge/split, fast roaming and sustained capacity remain open.
 
-The subsequent [active-cut variant](../../testing/chaos/README.md#failover-with-traffic-during-the-radio-cut)
-fails the complete cycle. It successfully delivers and pays through the
-alternative after a cut during traffic, but recovery to the cheaper provider
-stalls. That returning trial delivers 100 packets while its loss estimate remains
-unknown, then cannot fit another payload into its remaining 16-byte allowance;
-selection does not fall back. Loss-evidence continuity and exhausted-trial
-liveness therefore remain release blockers. All 128 test sats are recovered,
-all 600 management checks pass and original radio settings restore. The
+The first [active-cut run](../../testing/chaos/README.md#failover-with-traffic-during-the-radio-cut)
+failed the complete cycle. It delivered and paid through the alternative after a
+cut during traffic, but recovery to the cheaper provider stalled. That returning
+trial delivered 100 packets while its loss estimate remained
+unknown, then could not fit another payload into its remaining 16-byte allowance;
+selection did not fall back. This exposed loss-evidence continuity and exhausted
+trial liveness failures. All 128 test sats were recovered,
+all 600 management checks passed and original radio settings restored. The
 50.05-second cut-request-to-alternative-confirmation upper bound includes polling
 and confirmation traffic; it does not establish fast or seamless roaming.
 
@@ -379,8 +379,22 @@ quota-refusal fallback, the combined code passes all eight paid-path scenarios,
 including loss with neighbor departure, four leave/rejoin cycles and interrupted
 acceptance; the preceding combined run failed the first two of those scenarios.
 The same source passes 212 relay library tests and strict relay lint. These are
-simulated-carrier results with native routing and payment code. The updated
-build has not yet been rerun on the routers, so physical recovery remains open.
+simulated-carrier results with native routing and payment code.
+
+A matching router build now passes the complete active-cut cycle, including
+return to the cheaper provider. Across trials and accepted streams, 122 of 160
+submitted packets arrive; all 38 missing packets occur during failover. The
+return phase delivers 32/32 packets, ending with a fresh 16/16 full-agreement
+burst, native quality feedback and an advancing acknowledged payment. The two
+original 64-sat channels remain intact. Settlement pays providers 5/4 test sats
+and refunds 119 to the source; all 128 sats are collected and all four wallets
+end empty. All 402 sampled management checks pass. Independent post-run reads
+match all original router baselines, including account/configuration hashes,
+mesh settings, access points and Internet/DNS checks; owned processes and filters
+are absent. The 49.84-second cut-request-to-alternative-confirmation bound is
+controller-observed confirmation time, not packet outage duration. This single
+guarded cycle does not establish seamless roaming, arbitrary mobile merge/split,
+isolated quality-ranking causality or sustained capacity.
 
 The current isolated Android package passes a fresh arm64 native build, Android
 lint and strict Android-target relay/app linting. Native-library provenance is
