@@ -13,7 +13,7 @@ MAX_SAMPLES = 512
 MAX_STATION_BYTES = 65536
 LOG_FILTER = ("warn,fips_core::transport::ethernet=trace,"
               "fips_core::node::handlers::mmp=debug,"
-              "fips_core::node::handlers::rekey=debug,"
+              "fips_core::node::handlers::rekey=trace,"
               "fips_core::node::handlers::session=debug,"
               "fips_core::node::lifecycle=debug")
 

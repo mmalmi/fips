@@ -87,6 +87,29 @@ class RecoveryTimingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "requires --active-outage"):
             PaidWifiRun(SimpleNamespace(recovery_timing=True, active_outage=False))
 
+    def test_beacon_trial_is_validated_before_any_hardware_or_account_setup(self):
+        for interval, timing in ((9, True), (True, True), (10.0, True), (60, True), (10, False)):
+            with self.subTest(interval=interval, timing=timing), \
+                    patch("sim.paid_wifi.WifiRun.__init__") as setup, \
+                    self.assertRaisesRegex(ValueError, "beacon"):
+                PaidWifiRun(SimpleNamespace(beacon_interval_secs=interval,
+                                           recovery_timing=timing, active_outage=True))
+            setup.assert_not_called()
+
+    def test_beacon_trial_changes_only_the_existing_native_interval(self):
+        run = object.__new__(PaidWifiRun)
+        run.mint_url = "http://127.0.0.1:9"
+        run.args = SimpleNamespace(active_outage=True)
+        node = SimpleNamespace(interface="mesh0", state="/private/state")
+        baseline = run.profile_config(node)
+        self.assertNotIn("beacon_interval_secs", baseline["transports"]["ethernet"][node.interface])
+        for interval in (10, 30):
+            run.args.beacon_interval_secs = interval
+            config = run.profile_config(node)
+            actual = config["transports"]["ethernet"][node.interface].pop("beacon_interval_secs")
+            self.assertEqual(actual, interval)
+            self.assertEqual(config, baseline)
+
 
 if __name__ == "__main__":
     unittest.main()

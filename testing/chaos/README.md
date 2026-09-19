@@ -450,6 +450,14 @@ alignment requires consistent anchors and must retain their resolution and read
 uncertainty. These observations bound recovery; the final eight-packet probe
 does not measure the instant of the first usable route or first reply.
 
+With `--recovery-timing`, `--beacon-interval-secs 10` or `30` selects the existing
+native Ethernet discovery interval on each temporary profile. Omission preserves
+the native default. The result records the requested interval; check each native
+startup log for the effective value. Scoped rekey trace logs retain resend events
+needed to distinguish discovery delay from the separate peer-removal grace.
+These diagnostic runs do not establish a latency guarantee or a performance win
+from a single favorable position within the periodic beacon schedule.
+
 The bridge case exercises an actual radio departure and FIPS graph partition with
 emulated range constraints: the existing experimental-EtherType filter excludes
 the n01↔n03 shortcut, while management Ethernet remains available. It does not

@@ -49,6 +49,10 @@ class PaidWifiRun(WifiRun):
         self.outage_node = requested_outage or "n03"
         if getattr(args, "recovery_timing", False) and not getattr(args, "active_outage", False):
             raise ValueError("--recovery-timing requires --active-outage")
+        beacon = getattr(args, "beacon_interval_secs", None)
+        if beacon is not None and (type(beacon) is not int or beacon not in (10, 30)
+                                   or not getattr(args, "recovery_timing", False)):
+            raise ValueError("beacon trials require --recovery-timing and a 10 or 30 second interval")
         if getattr(args, "mint_host", None) and args.mint_ssh_forward:
             raise ValueError("remote mint and controller SSH forwards are separate choices")
         if args.mint_ssh_forward and args.mint_address != "127.0.0.1":
@@ -63,6 +67,7 @@ class PaidWifiRun(WifiRun):
         self.channel_anchor = None
         self.evidence.update(active_radio_outage=getattr(args, "active_outage", False),
                              outage_node=self.outage_node if getattr(args, "active_outage", False) else None,
+                             beacon_interval_secs=beacon,
                              test_funds_only=True, money_operations=True,
                              wallet_observation="offline before launch and after settlement")
         for name in ("paid_wifi.py", "paid_wifi_mint.py", "paid_wifi_forwarding.py",
@@ -83,6 +88,9 @@ class PaidWifiRun(WifiRun):
         if getattr(self.args, "active_outage", False):
             config["return_allowance"] = False
         config["transports"]["ethernet"][node.interface]["ethertype"] = ETHERTYPE
+        beacon = getattr(self.args, "beacon_interval_secs", None)
+        if beacon is not None:
+            config["transports"]["ethernet"][node.interface]["beacon_interval_secs"] = beacon
         return config
 
     def setup(self):
@@ -249,6 +257,8 @@ def main():
                         help="interrupt live paid round trips before automatic radio recovery")
     parser.add_argument("--recovery-timing", action="store_true",
                         help="record bounded recovery observations and scoped native logs")
+    parser.add_argument("--beacon-interval-secs", type=int, choices=(10, 30),
+                        help="compare native discovery intervals with --recovery-timing; default unchanged")
     parser.add_argument("--outage-node", choices=("n02", "n03"),
                         help="radio to remove with --active-outage: n02 bridge or n03 leaf (default)")
     parser.add_argument("--output", type=Path, required=True)
