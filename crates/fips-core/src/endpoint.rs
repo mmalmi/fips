@@ -52,6 +52,7 @@ pub use recent_peers::{
     RECENT_PEERS_MAX_ENDPOINTS_PER_PEER, RECENT_PEERS_MAX_PEERS, RECENT_PEERS_VERSION, RecentPeer,
     RecentPeerEndpoint, RecentPeerTransport, RecentPeers, RecentPeersError,
 };
+use service_carrier::service_datagram_payloads;
 pub use service_carrier::{
     SERVICE_CARRIER_DIAGNOSTICS_MAX_SERVICES, ServiceCarrierDiagnostics, ServiceCarrierSnapshot,
     ServiceCarrierTransportSnapshot,
@@ -227,28 +228,6 @@ fn endpoint_data_payloads_from_vecs(
         converted.push(payload);
     }
     Ok(converted)
-}
-
-fn service_datagram_payloads(
-    datagrams: Vec<FipsEndpointOutboundDatagram>,
-    carrier: &service_carrier::ServiceCarrierRegistry,
-) -> Result<Vec<EndpointDataPayload>, FipsEndpointError> {
-    let max = crate::node::session_wire::fsp_service_datagram_max_body_len();
-    let mut payloads = Vec::with_capacity(datagrams.len());
-    for datagram in datagrams {
-        let len = datagram.data.len();
-        let Some(payload) = EndpointDataPayload::from_service_datagram(
-            datagram.source_port,
-            datagram.destination_port,
-            datagram.data,
-        ) else {
-            return Err(FipsEndpointError::ServiceDatagramTooLarge { len, max });
-        };
-        payloads.push(payload.with_service_carrier(
-            carrier.for_ports(datagram.source_port, datagram.destination_port),
-        ));
-    }
-    Ok(payloads)
 }
 
 fn spawn_node_task(

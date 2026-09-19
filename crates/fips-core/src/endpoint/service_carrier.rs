@@ -1,6 +1,7 @@
 //! Optional local submission diagnostics, never routing or payment authority.
 
-use super::{FipsEndpoint, FipsEndpointError};
+use super::{FipsEndpoint, FipsEndpointError, FipsEndpointOutboundDatagram};
+use crate::node::EndpointDataPayload;
 use portable_atomic::AtomicU64;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -174,6 +175,28 @@ impl ServiceCarrierRegistry {
         }
         Some(selected.clone())
     }
+}
+
+pub(super) fn service_datagram_payloads(
+    datagrams: Vec<FipsEndpointOutboundDatagram>,
+    carrier: &ServiceCarrierRegistry,
+) -> Result<Vec<EndpointDataPayload>, FipsEndpointError> {
+    let max = crate::node::session_wire::fsp_service_datagram_max_body_len();
+    let mut payloads = Vec::with_capacity(datagrams.len());
+    for datagram in datagrams {
+        let len = datagram.data.len();
+        let Some(payload) = EndpointDataPayload::from_service_datagram(
+            datagram.source_port,
+            datagram.destination_port,
+            datagram.data,
+        ) else {
+            return Err(FipsEndpointError::ServiceDatagramTooLarge { len, max });
+        };
+        payloads.push(payload.with_service_carrier(
+            carrier.for_ports(datagram.source_port, datagram.destination_port),
+        ));
+    }
+    Ok(payloads)
 }
 
 impl FipsEndpoint {
