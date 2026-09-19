@@ -5,6 +5,10 @@
 //! decides whether and when a packet reaches the destination. This lets
 //! simulations exercise the real FIPS handshakes, sessions, tree routing, and
 //! forwarding code without binding OS sockets.
+//!
+//! Discovery exposes registered identity hints over usable incoming direct
+//! carriers. It models eventual visibility rather than beacon airtime; the
+//! ordinary node auto-connect, admission, and authentication paths still run.
 
 use super::{
     DiscoveredPeer, PacketBuffer, PacketTx, ReceivedPacket, Transport, TransportAddr,
@@ -15,12 +19,14 @@ use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use secp256k1::XOnlyPublicKey;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::ops::Bound::{Excluded, Included, Unbounded};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
+// Discovery must not allocate an unbounded result for a dense simulated LAN.
 pub(crate) const MAX_DISCOVERED_PEERS_PER_POLL: usize = 64;
 
 /// Default in-memory link used when no per-link override is configured.
@@ -121,7 +127,7 @@ struct EndpointEntry {
 }
 
 struct SimNetworkInner {
-    endpoints: HashMap<String, EndpointEntry>,
+    endpoints: BTreeMap<String, EndpointEntry>,
     links: HashMap<(String, String), SimLink>,
     directed_links: HashMap<(String, String), SimLink>,
     node_behaviors: HashMap<String, SimNodeBehavior>,
@@ -129,6 +135,19 @@ struct SimNetworkInner {
     default_link: SimLink,
     rng: StdRng,
     stats: SimNetworkStats,
+}
+
+impl SimNetworkInner {
+    fn link(&self, source: &str, dest: &str) -> SimLink {
+        self.directed_links
+            .get(&(source.to_string(), dest.to_string()))
+            .or_else(|| {
+                self.links
+                    .get(&link_key(source.to_string(), dest.to_string()))
+            })
+            .copied()
+            .unwrap_or(self.default_link)
+    }
 }
 
 /// Shared in-memory packet network.
@@ -142,7 +161,7 @@ impl SimNetwork {
     pub fn new(seed: u64) -> Self {
         Self {
             inner: Arc::new(Mutex::new(SimNetworkInner {
-                endpoints: HashMap::new(),
+                endpoints: BTreeMap::new(),
                 links: HashMap::new(),
                 directed_links: HashMap::new(),
                 node_behaviors: HashMap::new(),
@@ -266,6 +285,60 @@ impl SimNetwork {
             .remove(addr);
     }
 
+    fn discover(
+        &self,
+        local_addr: &str,
+        transport_id: TransportId,
+        after: Option<&str>,
+    ) -> Vec<DiscoveredPeer> {
+        let inner = self.inner.lock().expect("sim network lock");
+        if !inner.endpoints.contains_key(local_addr)
+            || !inner
+                .node_behaviors
+                .get(local_addr)
+                .copied()
+                .unwrap_or_default()
+                .up
+        {
+            return Vec::new();
+        }
+        let visible = |(addr, endpoint): (&String, &EndpointEntry)| {
+            let advertiser = inner.node_behaviors.get(addr).copied().unwrap_or_default();
+            let incoming = inner.link(addr, local_addr);
+            if addr == local_addr
+                || !advertiser.up
+                || advertiser.egress_loss_probability >= 1.0
+                || !incoming.up
+                || incoming.loss_probability >= 1.0
+            {
+                return None;
+            }
+            endpoint.pubkey_hint.map(|pubkey| {
+                DiscoveredPeer::with_hint(transport_id, TransportAddr::from_string(addr), pubkey)
+            })
+        };
+        if let Some(after) = after {
+            inner
+                .endpoints
+                .range::<str, _>((Excluded(after), Unbounded))
+                .chain(
+                    inner
+                        .endpoints
+                        .range::<str, _>((Unbounded, Included(after))),
+                )
+                .filter_map(visible)
+                .take(MAX_DISCOVERED_PEERS_PER_POLL)
+                .collect()
+        } else {
+            inner
+                .endpoints
+                .iter()
+                .filter_map(visible)
+                .take(MAX_DISCOVERED_PEERS_PER_POLL)
+                .collect()
+        }
+    }
+
     async fn send(
         &self,
         source: &str,
@@ -321,12 +394,7 @@ impl SimNetwork {
             }
 
             let key = link_key(source.to_string(), dest.clone());
-            let link = inner
-                .directed_links
-                .get(&(source.to_string(), dest.clone()))
-                .or_else(|| inner.links.get(&key))
-                .copied()
-                .unwrap_or(inner.default_link);
+            let link = inner.link(source, &dest);
             if !link.up {
                 inner.stats.packets_dropped_down += 1;
                 return Ok(bytes);
@@ -427,6 +495,7 @@ pub struct SimTransport {
     network: Option<SimNetwork>,
     local_addr: Option<String>,
     local_pubkey: Option<XOnlyPublicKey>,
+    discovery_cursor: Mutex<Option<String>>,
     delivery_tasks: Vec<JoinHandle<()>>,
 }
 
@@ -446,6 +515,7 @@ impl SimTransport {
             network: None,
             local_addr: None,
             local_pubkey: None,
+            discovery_cursor: Mutex::new(None),
             delivery_tasks: Vec::new(),
         }
     }
@@ -496,6 +566,7 @@ impl SimTransport {
         }
         self.network = Some(network);
         self.local_addr = Some(addr);
+        *self.discovery_cursor.get_mut().expect("sim discovery lock") = None;
         self.state = TransportState::Up;
         Ok(())
     }
@@ -577,7 +648,20 @@ impl Transport for SimTransport {
     }
 
     fn discover(&self) -> Result<Vec<DiscoveredPeer>, TransportError> {
-        Ok(Vec::new())
+        let (Some(network), Some(addr)) = (&self.network, &self.local_addr) else {
+            return Ok(Vec::new());
+        };
+        // Model eventual incoming visibility, not beacon airtime: fractional
+        // loss consumes no RNG draws or packet accounting. A heard neighbor
+        // can still have a broken return path; the real handshake decides.
+        let mut cursor = self.discovery_cursor.lock().expect("sim discovery lock");
+        let peers = network.discover(addr, self.transport_id, cursor.as_deref());
+        if let Some(last) = peers.last() {
+            // Rotate so repeatedly visible low addresses cannot starve the
+            // rest of a dense neighborhood behind the bounded result size.
+            *cursor = Some(last.addr.as_str().expect("sim address").to_string());
+        }
+        Ok(peers)
     }
 
     fn auto_connect(&self) -> bool {
