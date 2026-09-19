@@ -411,8 +411,27 @@ quiet, while retaining the authenticated direct peer and end-to-end session.
 Deterministic regressions cover fresh control traffic, the deadline boundary,
 Minimal-mode inactivity, changed carriers and the absence of an alternate.
 This prepares fallback for subsequent traffic; retransmitting the lost request
-remains the caller's responsibility. The hardware recovery timings above have
-not been remeasured with this software change.
+remains the caller's responsibility.
+
+An instrumented middle-router trial on the updated software (2026-09-20) passes
+with the same processes, original funding and channels, and advancing payments
+in both directions. The interrupted stream loses 21 of 24 replies; all eight
+fresh recovery round trips arrive. All 384 test sats are collected, 387 management
+checks pass, and independent live reads confirm every original baseline field,
+including radio limits and Internet access. The recorded mint and three forwarding
+processes are absent after cleanup.
+
+The 27.01-second rejoin-to-probe upper bound separates into 1.56 seconds for the
+radio command, 19.16 seconds until exact FIPS topology observation, and about
+6.29 seconds for profile/process checks, probe setup, paced sending and observation.
+The first post-command station sample already shows established Wi-Fi peers while
+all FIPS peer lists remain empty. Native logs confirm 30-second beacon intervals;
+parsed beacons and discovery connection attempts appear about 13 and 18 seconds
+after the radio command returns. Consistent clock anchors bound log alignment to
+roughly 1.16 seconds, assuming no unobserved clock step. This supports testing a
+shorter discovery interval. Full peer eviction is separately observed 62.44 seconds
+after the cut; its delay remains unexplained. Scoped trace logging and serial
+diagnostics make this a recovery investigation, not a matched speed comparison.
 
 The [competing-provider topology fixture](../../testing/chaos/README.md#competing-wireless-provider-topology)
 also passes on the three routers without funding. A separate source identity on
