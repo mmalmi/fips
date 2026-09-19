@@ -313,6 +313,133 @@ async fn link_dead_heartbeat_suppressed_while_fmp_rekey_has_budget() {
     );
 }
 
+#[tokio::test]
+async fn fmp_rekey_local_send_errors_exhaust_budget_and_allow_peer_cleanup() {
+    assert_fmp_rekey_retry_budget(true).await;
+}
+
+#[tokio::test]
+async fn fmp_rekey_packet_loss_exhausts_same_budget_and_allows_peer_cleanup() {
+    assert_fmp_rekey_retry_budget(false).await;
+}
+
+async fn assert_fmp_rekey_retry_budget(stop_before_retry: bool) {
+    let mut node = make_node();
+    node.config.node.link_dead_timeout_secs = 0;
+    node.config.node.rate_limit.handshake_resend_interval_ms = 1_000;
+    node.config.node.rate_limit.handshake_resend_backoff = 2.0;
+    node.config.node.rate_limit.handshake_max_resends = 5;
+
+    // A bound receiver accepts packets locally but never answers the rekey.
+    let receiver = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let remote_addr = TransportAddr::from_string(&receiver.local_addr().unwrap().to_string());
+    let transport_id = TransportId::new(1);
+    let transport = make_udp_transport_with_mtu(1, 1_400).await;
+    let TransportHandle::Udp(udp) = &transport else {
+        unreachable!("test helper constructs UDP")
+    };
+    let stats = udp.stats().clone();
+    node.transports.insert(transport_id, transport);
+
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_addr = *peer_identity.node_addr();
+    let link_id = node.allocate_link_id();
+    let current_index = node.index_allocator.allocate().unwrap();
+    let active = make_active_test_peer(
+        &node,
+        &peer_full,
+        transport_id,
+        link_id,
+        remote_addr.clone(),
+        current_index,
+        SessionIndex::new(20),
+    );
+    node.peers
+        .insert_with_current_session_index(peer_addr, active);
+    node.links.insert(
+        link_id,
+        Link::connectionless(
+            link_id,
+            transport_id,
+            remote_addr,
+            LinkDirection::Outbound,
+            Duration::from_millis(1),
+        ),
+    );
+    assert!(node.sync_dataplane_fmp_owner(&peer_addr));
+    assert!(node.initiate_rekey(&peer_addr).await);
+    assert_eq!(stats.snapshot().packets_sent, 1);
+    assert_eq!(node.index_allocator.count(), 2);
+    let peer = node.peers.get_mut(&peer_addr).unwrap();
+    let rekey_index = peer.rekey_our_index().unwrap();
+    let msg1_bytes = peer.rekey_msg1().unwrap().len() as u64;
+    // Only the retry clock is controlled; handshake and sends use production code.
+    peer.set_msg1_next_resend(1_000);
+    assert!(
+        node.pending_outbound
+            .contains_key(&(transport_id, rekey_index.as_u32()))
+    );
+    if stop_before_retry {
+        node.transports
+            .get_mut(&transport_id)
+            .unwrap()
+            .stop()
+            .await
+            .unwrap();
+    }
+
+    for (index, due_ms) in [1_000, 3_000, 7_000, 15_000, 31_000]
+        .into_iter()
+        .enumerate()
+    {
+        // Expired liveness still permits the original, finite rekey grace.
+        node.check_link_heartbeats().await;
+        assert!(node.get_peer(&peer_addr).unwrap().is_healthy());
+        node.resend_pending_rekeys(due_ms - 1).await;
+        let peer = node.get_peer(&peer_addr).unwrap();
+        assert_eq!(peer.rekey_msg1_resend_count(), index as u32);
+        assert!(peer.needs_msg1_resend(due_ms));
+
+        let before = stats.snapshot();
+        node.resend_pending_rekeys(due_ms).await;
+        let peer = node.get_peer(&peer_addr).unwrap();
+        assert_eq!(peer.rekey_msg1_resend_count(), index as u32 + 1);
+        assert!(!peer.needs_msg1_resend(due_ms));
+        let after = stats.snapshot();
+        let sent = u64::from(!stop_before_retry);
+        assert_eq!(after.packets_sent - before.packets_sent, sent);
+        assert_eq!(after.bytes_sent - before.bytes_sent, sent * msg1_bytes);
+    }
+
+    // Production checks liveness before retransmissions on the next tick.
+    node.check_link_heartbeats().await;
+    assert!(node.get_peer(&peer_addr).is_none());
+    assert!(node.pending_outbound.is_empty());
+    assert_eq!(node.index_allocator.count(), 0);
+    assert!(
+        !node
+            .peers
+            .contains_session_index(&(transport_id, current_index.as_u32()))
+    );
+    assert!(
+        !node
+            .peers
+            .contains_session_index(&(transport_id, rekey_index.as_u32()))
+    );
+    assert!(!node.links.contains_key(&link_id));
+    assert!(!node.dataplane_has_fmp_owner(&peer_addr));
+    node.resend_pending_rekeys(63_000).await;
+    if !stop_before_retry {
+        node.transports
+            .get_mut(&transport_id)
+            .unwrap()
+            .stop()
+            .await
+            .unwrap();
+    }
+}
+
 /// `deregister_session_index` is used both when a peer is going away
 /// and during rekey drain. Retiring an old receiver index must not
 /// remove the active peer or its newer receiver index.
