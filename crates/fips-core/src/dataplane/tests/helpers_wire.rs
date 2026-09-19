@@ -121,6 +121,7 @@
     ) -> PacketOutput {
         PacketOutput {
             originated_observation: None,
+            service_carrier: None,
             owner,
             counter,
             ingress_seq,

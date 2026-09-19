@@ -394,6 +394,9 @@ pub(crate) struct DataplaneOutputDrop {
 
 impl DataplaneOutputDrop {
     pub(crate) fn from_output(output: &PacketOutput, reason: DataplaneOutputError) -> Self {
+        if let Some(counters) = &output.service_carrier {
+            counters.discarded();
+        }
         Self {
             send_token: output.send_token,
             payload_len: output.payload.len(),

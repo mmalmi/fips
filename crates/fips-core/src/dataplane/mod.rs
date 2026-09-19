@@ -75,6 +75,7 @@ include!("endpoint_data.rs");
 include!("session_handoff.rs");
 include!("live_output.rs");
 include!("live_transport.rs");
+include!("service_carrier.rs");
 include!("turn.rs");
 include!("turn_extract.rs");
 include!("runtime.rs");

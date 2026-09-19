@@ -738,6 +738,7 @@ fn execute_open_crypto_work(
     packet.payload.truncate(ciphertext_offset + plaintext_len);
     CryptoResult::Opened(PacketOutput {
         originated_observation: None,
+        service_carrier: None,
         owner: reservation.owner,
         counter: reservation.counter,
         ingress_seq: reservation.ingress_seq,
@@ -861,6 +862,7 @@ fn execute_seal_crypto_work(
     match packet.post_seal {
         OutboundPostSeal::Transport => CryptoResult::Sealed(PacketOutput {
             originated_observation: packet.originated_observation,
+            service_carrier: packet.service_carrier,
             owner: reservation.owner,
             counter: reservation.counter,
             ingress_seq: reservation.ingress_seq,
@@ -889,6 +891,7 @@ fn execute_seal_crypto_work(
                     counter: reservation.counter,
                 });
             output.originated_observation = packet.originated_observation;
+            output.service_carrier = packet.service_carrier;
             output.originated_prepared = packet.originated_prepared;
             if let Some(send_token) = packet.send_token {
                 output = output.with_send_token(send_token);

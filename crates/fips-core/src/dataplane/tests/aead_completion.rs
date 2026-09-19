@@ -281,6 +281,7 @@ fn session_ingress_raw_handoff_defers_unrouted_fsp() {
     let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
     driver.outputs.push(PacketOutput {
         originated_observation: None,
+        service_carrier: None,
         owner: fmp_owner,
         counter: 921,
         ingress_seq: 0,

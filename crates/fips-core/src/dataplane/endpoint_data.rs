@@ -76,10 +76,11 @@ impl DataplaneEndpointDataRoute {
     ) -> DataplaneEndpointDataBatchRoute {
         let mut result = DataplaneEndpointDataBatchRoute::with_capacity(payloads.len());
         for payload in payloads {
-            let (msg_type, body) = payload.into_fsp_payload();
+            let (msg_type, body, service_carrier) = payload.into_fsp_payload();
             let mut packet = self
                 .build_packet(msg_type, body)
                 .with_activity_tick(activity_tick);
+            packet.service_carrier = service_carrier;
             if let Some(send_token) = send_token {
                 packet = packet.with_send_token(send_token);
             }
