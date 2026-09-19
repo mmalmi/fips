@@ -599,6 +599,18 @@ funding-wallet writes are zero within the windows. This measures successful
 syscall bytes, not physical media wear, and traced CPU is not a timing benchmark.
 The default remains unchanged. See the [storage results and boundaries](CADENCE-RESULTS.md#matched-storage-syscall-comparison--19-september-2026).
 
+The subsequent router capture adds local payment-service TCP/FIPS submissions,
+including acknowledgments and retransmissions. Independent replay verifies all
+32 workload windows and their separate guard gaps. It delivers 93,694 of 93,696
+packets: two are missing from one burst that has no payment activity or recorded
+native drop/error increment. Strict clean-link acceptance therefore fails, and
+the rejection is retained. All 3,072 test sats are collected, 2,064 management
+checks pass, original profiles are identical across trials and restored, and all
+32 owned local mint/forwarding processes are absent. At high rate, local payment
+connection bytes are 7,317 per 8,000,000 delivered bytes at 500 ms and 4,878 at
+1 second; these exclude physical radio overhead. The 500-ms default is unchanged.
+See [the costs, loss evidence and attribution limits](CADENCE-RESULTS.md#payment-connection-costs-on-wi-fi--19-september-2026).
+
 ## Sequence and acceptance
 
 1. **Adaptive payment cadence.** Share one schedule per neighbor channel and

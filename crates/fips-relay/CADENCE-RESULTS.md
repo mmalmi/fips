@@ -291,6 +291,73 @@ collected. The corrected guard permits only monotonic covered usage, preserving
 all payment, credit and durability checks. A fresh pilot and this complete matrix
 pass that guard. See the [capture contract](../../testing/relay-cadence/README.md#matched-storage-cadence-capture).
 
+## Payment connection costs on Wi-Fi — 19 September 2026
+
+The new eight-trial capture retains **93,694 of 93,696** delivered application
+packets. It fails strict clean-link acceptance: the first 64-packet burst in the
+first 1-second trial delivers 62 packets. All other workload packets arrive,
+with 50 reordered packets and no duplicates, invalid packets or controller
+errors. Diagnostic analysis preserves this rejection while checking the other
+measurement and financial requirements; it does not convert the matrix into a
+passing comparison. No measured packet is retried.
+
+All 3,072 test sats are collected, all original router baselines are restored,
+and all 2,064 management observations pass. The original profiles match across
+all eight trials. All 32 owned local mint/forwarding processes are absent after
+cleanup. Independent replay matches every local payment-carrier total and guard
+gap, as well as the delivery rejection and terminal financial evidence. The
+preceding 500-ms pilot separately delivers all 11,712 packets, collects its 384
+test sats and passes 258 management observations.
+
+This uses the same three-router native Ethernet/802.11s fixture, workload sizes,
+opposite-order repetitions and fixed three-second tail. The optimized ARM64 musl
+relay is built from `6024f980` with Rust 1.96.0 and `measurements`; executable
+SHA-256 is `36fb95e2200eb5aaf45b0b343d7cd11f16e9338df7ec2d88dd62c77a2b902583`.
+Matching relay/mint inputs and artifacts remain unchanged during the run. No
+task compilation or tests run concurrently with the measurement.
+
+The new counters attribute local submissions to payment service 44743. They
+include its TCP/FIPS segments, connection setup/close, acknowledgments and
+retransmissions, with the three-byte Ethernet transport prefix added separately.
+They exclude opaque transit, shared native handshakes/MMP/rekeys, kernel/link
+encapsulation and retries, and radio airtime. These are local payment-connection
+bytes, not complete physical wire bytes. The analyzer requires positive
+cumulative Ethernet evidence for each node with recorded payment-service sends;
+zero activity within an idle window remains valid.
+
+Each high-rate window delivers 8,000,000 application bytes. Costs sum the three
+service processes; paired values retain both repetitions in trial order.
+
+| Maximum age | Updates | Payment CPU ms | All relay CPU ms | Local payment packets | Local payment bytes | Payment journal bytes |
+| --- | ---: | --- | --- | ---: | --- | --- |
+| 250 ms | 4 | 200.41 / 213.60 | 5,476.88 / 5,737.63 | 104 | 9,753 / 9,755 | 46,543 / 49,732 |
+| 500 ms | 3 | 160.85 / 156.86 | 5,789.39 / 5,721.32 | 78 | 7,317 / 7,317 | 32,658 / 29,345 |
+| 1,000 ms | 2 | 108.64 / 109.26 | 5,875.55 / 5,603.02 | 52 | 4,878 / 4,878 | 21,630 / 21,047 |
+| 2,000 ms | 2 | 101.31 / 104.23 | 5,605.90 / 5,693.97 | 52 | 4,878 / 4,878 | 20,348 / 19,485 |
+
+At high rate, 1 second uses one-third fewer payment-connection bytes and about
+31% less synchronous payment CPU than 500 ms in these observations. Total relay
+CPU ranges overlap. Local payment bytes equal about 0.0915% of delivered bytes
+at 500 ms and 0.0610% at 1 second; application records alone are only 2,463 and
+1,642 bytes respectively. Logical payment-journal writes are 16/12/8/8 per
+window across the four ages, with twice as many attributed syncs. They exclude
+SDK/SQLite and physical writes; payment CPU retains its synchronous-span limits.
+
+Every steady window uses three updates, 2,454 payment-record bytes and 7,308
+local payment-connection bytes. Idle and bursty windows have zero payment
+requests, records, carrier submissions and payment-journal writes. Bursts consume
+existing acknowledged credit. No payment-carrier discards or carrier activity
+appear in the guarded gaps.
+
+The lost burst has no payment activity, native drop/error increment or new drop
+log bytes. These observations do not identify the loss cause: optimized endpoint
+and kernel/radio loss remain outside the legacy native counters. A separate,
+fully delivered burst in the second 500-ms trial records 129 congestion marks
+at the middle router. Neither observation establishes payment cadence as the
+cause of the missing packets. The 500-ms default remains unchanged. This rejected
+matrix, two stable-topology repetitions and unmeasured hardware one-way latency
+do not establish an optimal policy, maximum capacity or seamless mobility.
+
 ## Reproduction and remaining evidence
 
 See the [experiment instructions](../../testing/relay-cadence/README.md) for fixed
@@ -304,10 +371,12 @@ Synchronous payment CPU includes signing and synchronous SDK/receiver persistenc
 but excludes scheduling, control-envelope serialization outside the spans and
 transport work. Logical journal counters exclude SDK JSON snapshots and
 receiver/wallet SQLite; the separate syscall comparison above measures those
-file operations, still excluding physical storage writes. Framed payment records exclude TCP/FIPS/carrier
-headers, acknowledgments and retransmissions. Aggregate link bytes cannot establish
-payment-specific wire overhead. Impairment, physical devices, actual radio airtime
-and complete CPU/storage/wire attribution remain work for production readiness.
+file operations, still excluding physical storage writes. Framed payment records
+exclude TCP/FIPS/carrier headers, acknowledgments and retransmissions; the local
+payment-service counters above add those submissions within their stated scope.
+Aggregate link bytes cannot establish payment-specific wire overhead. Broader
+impairment/device acceptance, actual radio airtime and complete CPU/storage/wire
+attribution remain work for production readiness.
 
 The earlier 16 September schema-1 result remains in repository history. It reported
 complete delivery and conservation but did not verify payment boundaries; it must
