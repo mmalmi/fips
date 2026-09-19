@@ -13,7 +13,7 @@ import sys
 from .paid_faults import validate_finances
 from .paid_payment_faults import diagnostics
 from .paid_relay import PaidRelayRun, eventually, write_json
-from .paid_settlement import original_channels, settle_and_collect
+from .paid_settlement import original_channels, require, settle_and_collect
 from .run_scope import docker, inspect_owned
 
 DIAGNOSTICS = Path(__file__).resolve().parents[2] / "relay-cadence"
@@ -23,6 +23,30 @@ from storage_worker import trace_directory
 from validation import OPERATIONS, reconciled_payment, unsigned
 
 DURABILITY_COUNTERS = ("journal_bytes_written", "journal_writes", "journal_syncs", "journal_commits")
+
+
+def quiet_usage(before, after):
+    """Report covered background usage without allowing payment or durable work."""
+    require(set(before) == set(after), "payment boundary changed its node set")
+    usage = {}
+    for node, old in before.items():
+        new = after[node]
+        require({k: v for k, v in old.items() if k != "progress"}
+                == {k: v for k, v in new.items() if k != "progress"},
+                "payment work crossed a quiet boundary")
+        left, right = old["progress"], new["progress"]
+        if left is None or right is None:
+            require(left == right, "payment boundary changed its buyer authority")
+            usage[node] = 0
+            continue
+        reconciled_payment(left)
+        reconciled_payment(right)
+        require({k: v for k, v in left.items() if k != "evidence_msat"}
+                == {k: v for k, v in right.items() if k != "evidence_msat"},
+                "authorization or acknowledgment crossed a quiet boundary")
+        usage[node] = right["evidence_msat"] - left["evidence_msat"]
+        require(usage[node] >= 0, "usage counter reset at a quiet boundary")
+    return usage
 
 
 def durability_counters(measurements):
@@ -98,7 +122,13 @@ class StorageRun(PaidRelayRun):
         def stable():
             first = snapshot()
             second = snapshot() if first is not None or not wait else None
-            return {"guard": first, "sample": second} if first is not None and first == second else None
+            if first is not None and second is not None:
+                try:
+                    quiet_usage(first, second)
+                    return {"guard": first, "sample": second}
+                except (RuntimeError, ValueError):
+                    pass
+            return None
 
         if wait:
             return eventually("quiet original payment boundary", stable, 15)
@@ -185,8 +215,7 @@ class StorageRun(PaidRelayRun):
         warm = self.boundary(before)
         with self.trace(self.evidence):
             self.evidence["payment_before"] = self.boundary(before)
-            if self.evidence["payment_before"] != warm:
-                raise RuntimeError("warmup payment work escaped into the trace")
+            quiet_usage(warm["sample"], self.evidence["payment_before"]["sample"])
             for _ in range(3):
                 for source, destination in (("n01", "n03"), ("n03", "n01")):
                     self.probe(source, destination)

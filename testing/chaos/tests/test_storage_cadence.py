@@ -56,6 +56,7 @@ def window(name="idle"):
         "observation_elapsed_ms": 11000 if probes else 7000,
         "tail_elapsed_ms": 3000, "sampling_elapsed_ms": 0,
         "payment_before": before, "payment_after": after,
+        "payment_previous": copy.deepcopy(before),
         "payment_after_detach": copy.deepcopy(after),
         "trace_lifecycle": {node: {"accepted": True} for node in before["sample"]},
         "storage": {node: copy.deepcopy(empty) for node in before["sample"]},
@@ -136,7 +137,7 @@ class StorageWindowTests(unittest.TestCase):
         record = window("steady")
         for key in ("guard", "sample"):
             record["payment_after_detach"][key]["n01"]["durability"]["other"]["journal_writes"] = 1
-        with self.assertRaisesRegex(RuntimeError, "escaped"):
+        with self.assertRaisesRegex(RuntimeError, "quiet boundary"):
             summarize_window(record)
 
     def test_cpu_sample_and_counter_resets_are_rejected(self):
@@ -151,8 +152,37 @@ class StorageWindowTests(unittest.TestCase):
         record = window("steady")
         for copy_name in ("guard", "sample"):
             record["payment_before"][copy_name]["n01"]["durability"]["other"]["journal_writes"] = 1
+        record["payment_previous"] = copy.deepcopy(record["payment_before"])
         with self.assertRaisesRegex(RuntimeError, "counter reset"):
             summarize_window(record)
+
+    def test_background_usage_between_windows_is_counted_once(self):
+        first, second = window(), window()
+        def set_usage(record, section, value):
+            for key in ("guard", "sample"):
+                record[section][key]["n01"]["progress"]["evidence_msat"] = value
+        for section, value in (("payment_before", 102), ("payment_after", 103),
+                               ("payment_after_detach", 106)):
+            set_usage(first, section, value)
+        second["payment_previous"] = copy.deepcopy(first["payment_after_detach"])
+        for section, value in (("payment_before", 108), ("payment_after", 109),
+                               ("payment_after_detach", 110)):
+            set_usage(second, section, value)
+        a, b = summarize_window(first), summarize_window(second)
+        self.assertEqual(a["outside_workload_usage_msat"]["n01"], 5)
+        self.assertEqual(b["outside_workload_usage_msat"]["n01"], 3)
+        self.assertEqual(sum(s["source_usage_msat"] + s["outside_workload_usage_msat"]["n01"]
+                             for s in (a, b)), 10)
+
+    def test_quiet_gaps_reject_changed_credit_even_without_payment_counters(self):
+        for change in ({"authorized_sat": 33, "acknowledged_msat": 33000},
+                       {"acknowledged_msat": 33000}, {"evidence_msat": 32001},
+                       {"evidence_msat": 99}, {"in_flight": True}):
+            record = window()
+            for key in ("guard", "sample"):
+                record["payment_after_detach"][key]["n01"]["progress"].update(change)
+            with self.subTest(change=change), self.assertRaises((RuntimeError, ValueError)):
+                summarize_window(record)
 
     def test_idle_file_writes_cannot_be_subtracted_as_background(self):
         record = window()

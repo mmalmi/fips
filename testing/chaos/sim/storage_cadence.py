@@ -11,7 +11,7 @@ import time
 from .cadence_workloads import POLICIES, SCHEDULE, perform, policies, stream
 from .paid_relay import write_json
 from .paid_settlement import require
-from .paid_storage import DURABILITY_COUNTERS as DURABILITY, StorageRun, validate_storage
+from .paid_storage import DURABILITY_COUNTERS as DURABILITY, StorageRun, quiet_usage, validate_storage
 from .wifi_remote import digest
 from validation import (COUNTERS, OPERATIONS, PAYMENT_OPERATIONS, reconciled_payment, unsigned,
                         validate_hardware_schedule, validate_probe)
@@ -23,7 +23,7 @@ MAX_SAMPLING_MS = 2000
 
 
 def boundary_sample(record):
-    require(record["guard"] == record["sample"], "payment work crossed a sampling boundary")
+    quiet_usage(record["guard"], record["sample"])
     result = record["sample"]
     require(set(result) == NODES, "measurement node set changed")
     for node, value in result.items():
@@ -78,8 +78,10 @@ def summarize_window(record):
                 "measured stream source or identity changed")
         seen.add(receiver["stream_id"])
     before, after = (boundary_sample(record[key]) for key in ("payment_before", "payment_after"))
-    require(record["payment_after_detach"] == record["payment_after"],
-            "payment work escaped the final measurement boundary")
+    previous = boundary_sample(record["payment_previous"])
+    detached = boundary_sample(record["payment_after_detach"])
+    preceding_usage = quiet_usage(previous, before)
+    following_usage = quiet_usage(after, detached)
     validate_storage(record["storage"], record["trace_lifecycle"], require_activity=False)
     updates = signs = usage = record_bytes = partial_cpu_ns = 0
     changed = False
@@ -127,6 +129,8 @@ def summarize_window(record):
     return {"workload": name, "delivered_packets": sum(expected), "delivered_bytes": delivered,
             "source_usage_msat": usage_msat, "tail_elapsed_ms": tail,
             "sampling_elapsed_ms": sampling,
+            "outside_workload_usage_msat": {node: preceding_usage[node] + following_usage[node]
+                                             for node in sorted(NODES)},
             "payment_updates": updates, "payment_signs": signs, "usage_polls": usage,
             "payment_record_bytes": record_bytes, "partial_payment_cpu_ns_under_trace": partial_cpu_ns,
             "file_write_bytes": writes, "file_write_calls": sum(categories[k]["write_calls"] for k in FILES),
@@ -161,11 +165,12 @@ class StorageCadenceRun(StorageRun):
         previous = self.boundary(before)
         for name in SCHEDULE:
             require(self.line_ready(), "measured Ethernet path changed")
-            record = {"workload": name, "source": self.nodes["n01"].npub}
+            record = {"workload": name, "source": self.nodes["n01"].npub,
+                      "payment_previous": previous}
             windows.append(record)
             with self.trace(record, capture=name, require_activity=False):
                 record["payment_before"] = self.boundary(before, wait=False)
-                require(record["payment_before"] == previous, "payment work occurred between windows")
+                quiet_usage(previous["sample"], record["payment_before"]["sample"])
                 started = time.monotonic()
                 record.update(perform(self.stream, name, started=started))
                 tail_started = time.monotonic()
@@ -177,7 +182,7 @@ class StorageCadenceRun(StorageRun):
                 record["observation_elapsed_ms"] = int((time.monotonic() - started) * 1000)
             record["payment_after_detach"] = self.boundary(before, wait=False)
             record["summary"] = summarize_window(record)
-            previous = record["payment_after"]
+            previous = record["payment_after_detach"]
             require(self.line_ready(), "measured Ethernet path changed")
             print(f"storage cadence {self.delay} ms: {name} captured", flush=True)
         self.evidence["storage_accepted"] = True
@@ -201,6 +206,9 @@ def run(args):
                     and result["mint"]["collected_sat"] == 384, "trial money is not conserved")
             windows = result["storage_windows"]
             require([window["workload"] for window in windows] == list(SCHEDULE), "trial schedule changed")
+            for previous, current in zip(windows, windows[1:]):
+                require(current["payment_previous"] == previous["payment_after_detach"],
+                        "workload boundary evidence is not contiguous")
             summaries = [summarize_window(window) for window in windows]
             if evidence["trials"]:
                 require(result["binaries"] == evidence["binaries"] and result["image"] == evidence["image"],

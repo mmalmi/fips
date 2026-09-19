@@ -492,8 +492,12 @@ records scheduling slack and boundary sampling separately, rejecting more than
 250 ms of tail slack or two seconds of sampling. Strict double samples never
 retry an unfinished payment. Payment counters and all operation buckets'
 durability counters must remain unchanged across tracer attachment/detachment
-gaps. Every payload must arrive, and source usage must cover at least its
-payload-derived tariff. Prepaid traffic need not cause another signature, but
+gaps. Already-credited metered usage may increase across a quiet boundary, but
+authorization and acknowledged credit must stay fixed. Each window separately
+reports usage before its workload and after its final sample; the next window
+starts from the post-detachment sample to avoid counting the same gap twice.
+No payment or storage cost is subtracted. Every payload must arrive, and source
+usage must cover at least its payload-derived tariff. Prepaid traffic need not cause another signature, but
 must still advance usage. Idle windows require no payment or tracked storage
 work; zero-write traces still require verified attachment and clean detachment.
 Idle metered usage can advance without an application probe or another payment;

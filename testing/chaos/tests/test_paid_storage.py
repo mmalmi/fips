@@ -140,6 +140,21 @@ class PaymentBoundaryTests(unittest.TestCase):
         self.assertEqual(run.ctl.call_count, 6)
         self.assertEqual(result["guard"], result["sample"])
 
+    def test_strict_boundary_retains_background_usage_with_unchanged_credit(self):
+        run, statuses, finances = self.fixture()
+        calls = []
+        def status(node, _kind):
+            calls.append(node)
+            result = copy.deepcopy(statuses[node])
+            if len(calls) > 3 and node == "n01":
+                result["payment_progress"][node]["evidence_msat"] += 1
+            return result
+        run.ctl = status
+        result = run.boundary(finances, wait=False)
+        self.assertEqual(result["guard"]["n01"]["progress"]["evidence_msat"], 999)
+        self.assertEqual(result["sample"]["n01"]["progress"]["evidence_msat"], 1000)
+        self.assertEqual(calls, list(run.nodes) * 2)
+
     def test_strict_boundary_rejects_unreconciled_or_changed_double_sample(self):
         for pending in (False, True):
             with self.subTest(pending=pending):
