@@ -387,7 +387,7 @@ and checkpoint instrumentation uses non-overlapping spans.
 This matrix provides the repeatable clean-link baseline. It does not fulfill
 the full production-readiness benchmark. Still required: impaired links using
 the existing FIPS simulation/chaos facilities, payment-specific complete carrier
-bytes, further SDK snapshot and receiver SQLite storage comparisons, profiler attribution outside
+bytes, impaired-link and long-running storage comparisons, profiler attribution outside
 the synchronous spans, and complete controlled ARM64/router/phone comparisons.
 The guarded three-router 250-ms pilot passed all four workloads and financial
 recovery. The subsequent eight-trial hardware matrix collected all windows and
@@ -466,6 +466,59 @@ relay journal counters. They are one workload's filesystem syscall costs, not
 flash wear, SQLite changed-row counts or a timing benchmark. Snapshot size also
 depends on retained account history; this small fresh-account result cannot
 establish long-running storage cost.
+
+### Matched storage cadence capture
+
+The separate storage driver reuses the hardware comparison's finite idle,
+bursty, steady and high-rate workloads. Run one pilot before the eight-trial
+policy sequence; each trial funds fresh accounts and collects its complete
+384-test-sat issuance before the next can start:
+
+```sh
+python3 -m sim.storage_cadence --binary-dir /absolute/linux-arm64 \
+  --image LOCAL_DIAGNOSTIC_IMAGE_ID --output /absolute/new-private-pilot \
+  --pilot --pilot-delay-ms 500
+```
+
+Omit both pilot options for the 250/500/1000/2000 ms sequence and its reverse.
+The tariff is 1 msat/KiB and the quote allowance is 16 MiB; channel capacity,
+wallet limits and disabled renewal remain those of the paid Ethernet fixture.
+Both directions use that fixture's existing warmup before tracing. This is a
+within-fixture storage comparison: its virtual Ethernet carrier, platform and
+warmup differ from the physical Wi-Fi experiment.
+
+Each workload has its own named trace and a three-second payment tail. Evidence
+records scheduling slack and boundary sampling separately, rejecting more than
+250 ms of tail slack or two seconds of sampling. Strict double samples never
+retry an unfinished payment. Payment counters and all operation buckets'
+durability counters must remain unchanged across tracer attachment/detachment
+gaps. Already-credited metered usage may increase across a quiet boundary, but
+authorization and acknowledged credit must stay fixed. Each window separately
+reports usage before its workload and after its final sample; the next window
+starts from the post-detachment sample to avoid counting the same gap twice.
+No payment or storage cost is subtracted. Every payload must arrive, and source
+usage must cover at least its payload-derived tariff. Prepaid traffic need not cause another signature, but
+must still advance usage. Idle windows require no payment or tracked storage
+work; zero-write traces still require verified attachment and clean detachment.
+Idle metered usage can advance without an application probe or another payment;
+that background usage remains reported and is never subtracted from other windows.
+Unmatched file operations, including failed operations, reject the window.
+An explicitly detached eight-byte event-counter write may lack a return value;
+after verified tracer shutdown, it is counted separately without inventing
+successful bytes. Incomplete file writes and unknown descriptors still reject.
+
+Summaries separate SDK snapshots, receiver SQLite, funding-wallet files, relay
+journals and directory syncs. CPU counters collected under tracing are labeled
+partial and unsuitable for timing comparisons. Successful syscall bytes are
+not physical media writes. A pilot validates one policy only; it cannot establish
+which payment cadence is preferable.
+
+The accepted eight-trial comparison delivers all 93,696 packets, collects all
+3,072 test sats and independently reproduces all raw trace summaries. At high
+rate the 1-second pair performs two updates versus three at 500 ms, reducing
+SDK snapshot and receiver SQLite writes. Independent checkpoint costs remain
+separate; neither this comparison nor its traced CPU values establishes a best
+default. See the [paired results and limits](../../crates/fips-relay/CADENCE-RESULTS.md#matched-storage-syscall-comparison--19-september-2026).
 
 `storage_trace.py` summarizes an isolated Linux `strace` capture by explicit file
 categories. Use a fresh private output directory and the options returned by

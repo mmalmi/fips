@@ -88,6 +88,87 @@ class StorageTraceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             analyze([], PATHS)
 
+    def test_explicit_empty_trace_has_zero_counters_but_no_lifecycle_claim(self):
+        result = analyze([], PATHS, allow_empty=True)
+        self.assertEqual(result["syscalls_observed"], 0)
+        self.assertTrue(all(value == 0 for category in result["categories"].values()
+                            for value in category.values()))
+        self.assertIsNone(result["capture_complete"])
+        for trace in ([""], ['11 write(3</owned/file>, ""..., 5 <unfinished ...>'],
+                      ['11 write(3</owned/file>, "SECRET", 6) = 6']):
+            with self.subTest(trace=trace), self.assertRaises(ValueError):
+                analyze(trace, PATHS, allow_empty=True)
+
+    def test_explicit_eventfd_detach_is_separate_from_completed_write_accounting(self):
+        trace = [row('write(3</owned/wallet/client.json>, ""..., 5) = 5'),
+                 row('write(4<anon_inode:[eventfd]>, ""..., 8 <detached ...>')]
+        with self.assertRaises(ValueError):
+            analyze(trace, PATHS)
+        result = analyze(trace, PATHS, allow_detached_eventfd=True)
+        self.assertEqual(result["detached_eventfd_calls"], 1)
+        self.assertEqual(result["syscalls_observed"], 1)
+        self.assertEqual(result["categories"]["snapshot"]["write_bytes"], 5)
+        self.assertEqual(result["categories"]["snapshot"]["write_calls"], 1)
+        self.assertTrue(all(value == 0 for value in result["categories"]["unattributed"].values()))
+        self.assertIsNone(result["capture_complete"])
+
+    def test_detach_only_capture_does_not_invent_a_return_value(self):
+        result = analyze([row('write(4<anon_inode:[eventfd]>, ""..., 8 <detached ...>')],
+                         PATHS, allow_detached_eventfd=True)
+        self.assertEqual(result["detached_eventfd_calls"], 1)
+        self.assertEqual(result["syscalls_observed"], 0)
+        self.assertTrue(all(value == 0 for category in result["categories"].values()
+                            for value in category.values()))
+        with self.assertRaises(ValueError):
+            analyze([], PATHS, allow_detached_eventfd=True)
+
+    def test_eventfd_detach_permission_does_not_accept_other_incomplete_or_exposed_calls(self):
+        cases = [
+            'write(3</owned/wallet/client.json>, ""..., 8 <detached ...>',
+            'write(3<anon_inode:[timerfd]>, ""..., 8 <detached ...>',
+            'write(3<socket:[42]>, ""..., 8 <detached ...>',
+            'write(3, ""..., 8 <detached ...>',
+            'write(-1<anon_inode:[eventfd]>, ""..., 8 <detached ...>',
+            'write(3<anon_inode:[eventfd]>, "SECRET", 8 <detached ...>',
+            'write(3<anon_inode:[eventfd]>, "\\001", 8 <detached ...>',
+            'write(3<anon_inode:[eventfd]>, ""..., 0 <detached ...>',
+            'write(3<anon_inode:[eventfd]>, ""..., 7 <detached ...>',
+            'write(3<anon_inode:[eventfd]>, ""..., 9 <detached ...>',
+            'write(3<anon_inode:[eventfd]>, ""..., 08 <detached ...>',
+            'write(3<anon_inode:[eventfd]>, ""..., 8) <detached ...>',
+            'write(3<anon_inode:[eventfd]>, ""..., 8 <detached ...> trailing',
+            'write(3<anon_inode:[eventfd]>, ""..., 8 <unfinished ...>',
+            'write(3<anon_inode:[eventfd]>, ""..., 8',
+            'writev(3<anon_inode:[eventfd]>, [...], 8 <detached ...>',
+            'fsync(3<anon_inode:[eventfd]> <detached ...>',
+        ]
+        for body in cases:
+            with self.subTest(body=body), self.assertRaises(ValueError):
+                analyze([row(body)], PATHS, allow_empty=True, allow_detached_eventfd=True)
+
+    def test_detached_thread_cannot_produce_later_records_or_conceal_other_pending_calls(self):
+        detached = row('write(4<anon_inode:[eventfd]>, ""..., 8 <detached ...>')
+        for later in (row('write(4<anon_inode:[eventfd]>, ""..., 8) = 8'),
+                      row('<... write resumed>) = 8'), detached,
+                      '011 write(4<anon_inode:[eventfd]>, ""..., 8) = 8\n'):
+            with self.subTest(later=later), self.assertRaises(ValueError):
+                analyze([detached, later], PATHS, allow_detached_eventfd=True)
+        pending = row('write(3</owned/wallet/client.json>, ""..., 5 <unfinished ...>', tid=12)
+        with self.assertRaises(ValueError):
+            analyze([pending, detached], PATHS, allow_detached_eventfd=True)
+        other = row('write(3</owned/wallet/client.json>, ""..., 5) = 5', tid=12)
+        result = analyze([detached, other], PATHS, allow_detached_eventfd=True)
+        self.assertEqual(result["detached_eventfd_calls"], 1)
+        self.assertEqual(result["syscalls_observed"], 1)
+
+    def test_detached_thread_history_remains_bounded(self):
+        trace = [row('write(4<anon_inode:[eventfd]>, ""..., 8 <detached ...>', tid=tid)
+                 for tid in range(1, 4098)]
+        self.assertEqual(analyze(trace[:-1], PATHS, allow_detached_eventfd=True)
+                         ["detached_eventfd_calls"], 4096)
+        with self.assertRaises(ValueError):
+            analyze(trace, PATHS, allow_detached_eventfd=True)
+
     def test_capture_options_suppress_payloads_signals_and_ambiguous_thread_prefixes(self):
         options = trace_options()
         self.assertIn("--string-limit=0", options)

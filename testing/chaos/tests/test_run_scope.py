@@ -223,10 +223,13 @@ class RunScopeTests(unittest.TestCase):
             root = Path(directory)
             run = PaidRelayRun(argparse.Namespace(output=root, binary_dir=root, image="unused"))
             before = {"wallet": "unchanged"}
-            replies = [{}, {"probe": {"requested_packets": 4, "submitted_packets": 4}},
+            replies = [{}, {"probe": {"stream_id": "a" * 32, "requested_packets": 4,
+                                     "submitted_packets": 4, "submitted_bytes": 1024,
+                                     "stopped_reason": None}},
                        {"probe": {"unique_packets": 0, "invalid_packets": 0}},
                        {"probe": {"unique_packets": 0, "invalid_packets": 0}}]
             with patch.object(run, "ctl", side_effect=replies) as ctl, \
+                    patch("sim.paid_relay.secrets.token_hex", return_value="a" * 32), \
                     patch.object(run, "finances", return_value=before), \
                     patch("sim.paid_relay.time.monotonic", side_effect=[0, 1, 3, 4, 4]), \
                     patch("sim.paid_relay.time.sleep") as sleep:
@@ -235,6 +238,7 @@ class RunScopeTests(unittest.TestCase):
                 sleep.assert_called_once_with(0.25)
             replies[2] = {"probe": {"unique_packets": 1, "invalid_packets": 0}}
             with patch.object(run, "ctl", side_effect=replies), \
+                    patch("sim.paid_relay.secrets.token_hex", return_value="a" * 32), \
                     patch("sim.paid_relay.time.monotonic", return_value=0):
                 with self.assertRaisesRegex(RuntimeError, "unpaid traffic reached"):
                     run.unpaid_probe(before)

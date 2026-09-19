@@ -10,7 +10,6 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
-import secrets
 import signal
 import subprocess
 import sys
@@ -23,21 +22,7 @@ from .wifi_remote import digest
 from .wifi_measurements import DATAPLANE_DROP_LOG_FILTER
 
 
-POLICIES = (250, 500, 1000, 2000, 2000, 1000, 500, 250)
-SCHEDULE = {
-    "idle": {"duration_ms": 4000},
-    "bursty": {"packet_counts": [64] * 8, "payload_bytes": 1000,
-               "packets_per_second": 1000, "after_each_sleep_ms": 800},
-    "steady": {"packet_counts": [3200], "payload_bytes": 1000, "packets_per_second": 400},
-    "high_rate": {"packet_counts": [8000], "payload_bytes": 1000, "packets_per_second": 4000},
-}
-
-
-def policies(args):
-    delay = getattr(args, "pilot_delay_ms", None)
-    if delay is not None and (not args.pilot or type(delay) is not int or delay not in POLICIES):
-        raise ValueError("pilot delay requires --pilot and a supported policy")
-    return (delay or 250,) if args.pilot else POLICIES
+from .cadence_workloads import POLICIES, SCHEDULE, perform, policies, stream
 
 
 def metadata(args):
@@ -81,7 +66,7 @@ class CadenceRun(PaidWifiRun):
                 node.diagnostic_log_filter = DATAPLANE_DROP_LOG_FILTER
         self.evidence.update(trial=trial, max_delay_ms=delay,
                              measurement_acceptance="not_analyzed")
-        for name in ("wifi_cadence.py", "wifi_measurements.py", "remote_mint.py"):
+        for name in ("wifi_cadence.py", "cadence_workloads.py", "wifi_measurements.py", "remote_mint.py"):
             self.evidence["harness_sha256"][name] = digest(Path(__file__).with_name(name).read_bytes())
 
     def profile_config(self, node):
@@ -111,27 +96,7 @@ class CadenceRun(PaidWifiRun):
                        for name, node in self.nodes.items()]
             return [future.result() for future in futures]
 
-    def stream(self, count, rate, *, source="n01", destination="n03", drain_seconds=2):
-        shape = {"stream_id": secrets.token_hex(16), "packet_count": count, "payload_bytes": 1000}
-        self.ctl(destination, "receive_probe", probe={
-            **shape, "source": self.nodes[source].npub, "measure_one_way_latency": False,
-        })
-        sent = self.ctl(source, "send_probe", probe={
-            **shape, "destination": self.nodes[destination].npub, "packets_per_second": rate,
-        })["probe"]
-        deadline = time.monotonic() + drain_seconds
-        while True:
-            received = self.ctl(destination, "status")["probe"]
-            require(received["source"] == self.nodes[source].npub
-                    and received["stream_id"] == shape["stream_id"]
-                    and sent["stream_id"] == shape["stream_id"],
-                    "measurement probe identity changed")
-            if received["unique_packets"] == count or time.monotonic() >= deadline:
-                break
-            time.sleep(0.02)
-        # Record partial submission and loss. Never resend measured payloads.
-        return {"sender": sent, "receiver": received, "packets_per_second": rate,
-                "after_sleep_ms": 0}
+    stream = stream
 
     def warmup(self):
         results = []
@@ -148,19 +113,8 @@ class CadenceRun(PaidWifiRun):
     def workload(self, name):
         before_guard, before = self.sample(), self.sample()
         started = time.monotonic()
-        probes = []
-        schedule = SCHEDULE[name]
-        if name == "idle":
-            time.sleep(schedule["duration_ms"] / 1000)
-        else:
-            for count in schedule["packet_counts"]:
-                probe = self.stream(count, schedule["packets_per_second"])
-                sleep_ms = schedule.get("after_each_sleep_ms", 0)
-                if sleep_ms:
-                    time.sleep(sleep_ms / 1000)
-                probe["after_sleep_ms"] = sleep_ms
-                probes.append(probe)
-        offered = int((time.monotonic() - started) * 1000)
+        workload = perform(self.stream, name, started=started)
+        offered, probes = workload["offered_elapsed_ms"], workload["probes"]
         time.sleep(3)
         # Preserve the fixed tail even if payment reconciliation is incomplete.
         # Quiet-boundary validation runs on this evidence after funds collection.

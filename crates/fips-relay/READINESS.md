@@ -393,7 +393,12 @@ match all original router baselines, including account/configuration hashes,
 mesh settings, access points and Internet/DNS checks; owned processes and filters
 are absent. The 49.84-second cut-request-to-alternative-confirmation bound is
 controller-observed confirmation time, not packet outage duration. This single
-guarded cycle does not establish seamless roaming, arbitrary mobile merge/split,
+guarded cycle already observes a full alternative agreement, fresh native
+feedback and credited payment at 33.06 seconds after the cut request. The next
+16.78 seconds include a fresh 32-packet confirmation burst at two packets per
+second; they do not establish another 16.78 seconds of network outage. Exact
+first-delivery and carrier-transition timestamps were not captured. The cycle
+does not establish seamless roaming, arbitrary mobile merge/split,
 isolated quality-ranking causality or sustained capacity.
 
 The current isolated Android package passes a fresh arm64 native build, Android
@@ -476,7 +481,7 @@ errors and unexpected idle work. Optional diagnostics add no financial authority
 At high rate, 1 s/2 s produced 40 updates versus 59 at 250 ms, but CPU varied
 substantially across repeats; the 500-ms default remains unchanged. These are
 loopback observations with partial synchronous CPU, logical relay journal and
-application-record attribution. SDK/receiver storage writes, full carrier cost,
+application-record attribution. Full carrier cost,
 sustained capacity and impaired hardware measurements remain open. See
 [the results and boundaries](CADENCE-RESULTS.md).
 
@@ -527,6 +532,18 @@ payment CPU and 33% fewer payment-record bytes than 500 ms; idle windows perform
 no payment polling or writes. These partial costs and two stable-topology repeats
 do not establish an optimal cadence. The default remains 500 ms, and the earlier
 loss remains unexplained. See the [matched results and measurement limits](../../testing/relay-cadence/README.md#hardware-report-contract-schema-3).
+
+A separate ARM64 Linux syscall comparison now covers all four ages in both
+orders with the same finite workload sizes on virtual Ethernet. All 93,696
+packets arrive and all 3,072 test sats are collected. Independent raw-trace replay
+and terminal wallet checks pass, and all owned resources are absent. Idle and
+bursty windows perform no payment/storage work; prepaid bursty usage remains
+metered. At high rate, the 1-second pair records two updates and about 95 KB of
+file writes, versus three updates and 142–149 KB at 500 ms. SDK snapshots,
+receiver SQLite, relay journals and directory syncs are reported separately;
+funding-wallet writes are zero within the windows. This measures successful
+syscall bytes, not physical media wear, and traced CPU is not a timing benchmark.
+The default remains unchanged. See the [storage results and boundaries](CADENCE-RESULTS.md#matched-storage-syscall-comparison--19-september-2026).
 
 ## Sequence and acceptance
 

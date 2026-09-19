@@ -1,5 +1,6 @@
 """Bounded tracer supervisor, run only inside an owned diagnostic container."""
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -13,10 +14,19 @@ from storage_trace import trace_options
 
 ROOT = Path("/run/bench")
 EXPECTED = b"/opt/bench/fips-relay\0run\0/run/bench/config.json\0"
+CAPTURES = ("idle", "bursty", "steady", "high_rate")
 
 
-def save(name, value):
-    with (ROOT / name).open("x") as stream:
+def trace_directory(root, capture):
+    if capture is None:
+        return root
+    if capture not in CAPTURES:
+        raise ValueError("unknown storage capture")
+    return root / ("storage-" + capture)
+
+
+def save(directory, name, value):
+    with (directory / name).open("x") as stream:
         json.dump(value, stream)
 
 
@@ -39,7 +49,11 @@ def target_alive(pid, descriptor):
             and (proc / "cmdline").read_bytes() == EXPECTED)
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("capture", nargs="?", choices=CAPTURES)
+    args = parser.parse_args(argv)
+    directory = trace_directory(ROOT, args.capture)
     os.umask(0o077)
     result = {"accepted": False, "requested_stop": False}
     tracer = descriptor = None
@@ -50,11 +64,11 @@ def main():
         descriptor = os.pidfd_open(pid)
         if not target_alive(pid, descriptor) or any(tracers(pid)):
             raise RuntimeError("target identity or initial tracing state differs")
-        trace = ROOT / "storage.trace"
+        trace = directory / "storage.trace"
         # Refuse reuse before strace opens its output with truncation semantics.
         with trace.open("x"):
             pass
-        with (ROOT / "storage.stderr").open("x") as errors:
+        with (directory / "storage.stderr").open("x") as errors:
             tracer = subprocess.Popen(["strace", *trace_options(), "-o", str(trace),
                                        "-p", str(pid)], stderr=errors)
             deadline = time.monotonic() + 10
@@ -65,10 +79,10 @@ def main():
                 if tracer.poll() is not None or time.monotonic() >= deadline:
                     raise RuntimeError("tracer did not attach to every thread")
                 time.sleep(0.05)
-            save("storage.ready.json", {"target_pid": pid, "tracer_pid": tracer.pid,
-                                        "threads_attached": len(attached)})
+            save(directory, "storage.ready.json", {"target_pid": pid, "tracer_pid": tracer.pid,
+                                                   "threads_attached": len(attached)})
             deadline = time.monotonic() + 90
-            while not (ROOT / "storage.stop").exists():
+            while not (directory / "storage.stop").exists():
                 if (tracer.poll() is not None or not target_alive(pid, descriptor)
                         or time.monotonic() >= deadline or trace.stat().st_size > 64 * 1024 * 1024):
                     raise RuntimeError("capture exceeded lifecycle or size bounds")
@@ -79,12 +93,13 @@ def main():
         attached = tracers(pid)
         result.update(target_alive=target_alive(pid, descriptor),
                       detached=bool(attached) and not any(attached),
-                      stderr_empty=(ROOT / "storage.stderr").stat().st_size == 0,
+                      stderr_empty=(directory / "storage.stderr").stat().st_size == 0,
                       trace_bytes=trace.stat().st_size)
         result["accepted"] = (result["tracer_exit"] in (0, -signal.SIGINT)
                               and result["target_alive"] and result["detached"]
                               and result["stderr_empty"]
-                              and 0 < result["trace_bytes"] <= 64 * 1024 * 1024)
+                              and (result["trace_bytes"] > 0 or args.capture is not None)
+                              and result["trace_bytes"] <= 64 * 1024 * 1024)
     except Exception as error:
         result["failure"] = type(error).__name__
     finally:
@@ -97,7 +112,7 @@ def main():
                 tracer.wait(timeout=5)
         if descriptor is not None:
             os.close(descriptor)
-        save("storage.done.json", result)
+        save(directory, "storage.done.json", result)
     return 0 if result["accepted"] else 1
 
 

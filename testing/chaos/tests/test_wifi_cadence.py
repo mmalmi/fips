@@ -58,7 +58,7 @@ class CadenceTests(unittest.TestCase):
         sent = {"stream_id": "a" * 32, "requested_packets": 8000, "submitted_packets": 7900}
         received = {"stream_id": "a" * 32, "source": "n01", "unique_packets": 7800}
         service.ctl = Mock(side_effect=[{}, {"probe": sent}, {"probe": received}])
-        with patch("sim.wifi_cadence.secrets.token_hex", return_value="a" * 32), \
+        with patch("sim.cadence_workloads.secrets.token_hex", return_value="a" * 32), \
                 patch("sim.wifi_cadence.time.monotonic", side_effect=[0, 3]):
             result = service.stream(8000, 4000)
         self.assertIs(result["sender"], sent)
