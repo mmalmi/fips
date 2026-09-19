@@ -1,6 +1,6 @@
 """Local payment-service submissions, including separately retained guard gaps."""
 
-from validation import PAYMENT_PORT, host_identity, unsigned
+from validation import PAYMENT_PORT, host_identity, payment_counters, unsigned
 
 TRANSPORTS = {'udp', 'ethernet', 'tcp', 'tor', 'websocket', 'webrtc', 'ble', 'sim', 'other'}
 FIELDS = {'submitted_packets', 'fips_payload_bytes', 'ethernet_framing_bytes'}
@@ -13,7 +13,7 @@ def counter(value):
     return value
 
 
-def snapshot(node, enabled):
+def snapshot(node, enabled, *, native_ethernet=False):
     services = [s for s in node['control_traffic'] if s['service_port'] == PAYMENT_PORT]
     if len(services) != 1:
         raise ValueError('missing or duplicate payment carrier service')
@@ -41,6 +41,12 @@ def snapshot(node, enabled):
             raise ValueError('Ethernet framing attributed to a different transport')
     if set(transports) != TRANSPORTS:
         raise ValueError('carrier transport observations are incomplete')
+    # The hardware contract names Ethernet. Prior application sends need
+    # cumulative carrier evidence, even when the current idle delta is zero.
+    if native_ethernet and unsigned(payment_counters(node)['stream_bytes_sent']):
+        ethernet = transports['ethernet']
+        if not ethernet['submitted_packets'] or not ethernet['fips_payload_bytes']:
+            raise ValueError('missing Ethernet carrier activity after application sends')
     return {'discarded_outputs': counter(value['discarded_outputs']), 'transports': transports}
 
 
@@ -71,7 +77,7 @@ def aggregate(nodes):
     return {'nodes': nodes, 'total': total}
 
 
-def record(data, result, previous, enabled):
+def record(data, result, previous, enabled, *, native_ethernet=False):
     if type(enabled) is not bool:
         raise ValueError('payment carrier measurement must be explicit')
     boundaries = [(name, data[name]) for name in ('before_guard', 'before', 'after', 'after_guard')]
@@ -80,7 +86,8 @@ def record(data, result, previous, enabled):
     samples = []
     expected = None
     for name, nodes in boundaries:
-        identified = {identity(node): snapshot(node, enabled) for node in nodes}
+        identified = {identity(node): snapshot(node, enabled, native_ethernet=native_ethernet)
+                      for node in nodes}
         if len(identified) != len(nodes) or (expected is not None and set(identified) != expected):
             raise ValueError('carrier node or process identities changed')
         expected = set(identified)

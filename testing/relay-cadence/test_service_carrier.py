@@ -3,7 +3,7 @@ import copy
 import unittest
 
 from analyze import analyze_rows, diagnose_rows, markdown
-from test_analyze import workload
+from test_analyze import complete_report, workload
 from test_hardware import hardware_report, nodes
 
 
@@ -19,8 +19,8 @@ def carrier(tick):
                            for transport in TRANSPORTS]}
 
 
-def report():
-    rows = hardware_report()
+def report(rows=None):
+    rows = hardware_report() if rows is None else rows
     rows[0]['payment_service_carrier'] = True
     for index, row in enumerate(r for r in rows if 'data' in r):
         for offset, boundary in enumerate(('before_guard', 'before', 'after', 'after_guard')):
@@ -77,6 +77,80 @@ class ServiceCarrierTests(unittest.TestCase):
                 service['service_carrier'] = None
         _, trials, _ = analyze_rows(rows)
         self.assertTrue(all(r['payment_service_carrier'] is None for r in trials))
+
+    def test_hardware_known_sends_require_both_ethernet_packets_and_bytes(self):
+        for field in ('submitted_packets', 'fips_payload_bytes'):
+            rows = report()
+            for node in nodes(rows):
+                service = next(s for s in node['control_traffic'] if s['service_port'] == 44743)
+                self.assertGreater(service['counters']['stream_bytes_sent'], 0)
+                service['service_carrier']['transports'][1][field] = 0
+            original = copy.deepcopy(rows)
+            for analyzer in (analyze_rows, diagnose_rows):
+                with self.subTest(field=field, analyzer=analyzer.__name__), \
+                        self.assertRaisesRegex(ValueError, 'missing Ethernet carrier activity'):
+                    analyzer(rows)
+            self.assertEqual(rows, original)
+
+    def test_other_nodes_or_carriers_cannot_hide_one_missing_hardware_node(self):
+        for host in ('n01', 'n02', 'n03'):
+            rows = report()
+            for node in nodes(rows):
+                if node['host_process']['host'] != host:
+                    continue
+                service = next(s for s in node['control_traffic'] if s['service_port'] == 44743)
+                value = service['service_carrier']
+                value['transports'][0].update(submitted_packets=10, fips_payload_bytes=2000)
+                value['transports'][1].update(submitted_packets=0, fips_payload_bytes=0,
+                                              ethernet_framing_bytes=0)
+            for analyzer in (analyze_rows, diagnose_rows):
+                with self.subTest(host=host, analyzer=analyzer.__name__), \
+                        self.assertRaisesRegex(ValueError, 'missing Ethernet carrier activity'):
+                    analyzer(rows)
+
+    def test_hardware_idle_needs_no_new_carrier_submissions(self):
+        rows = report()
+        idle = workload(rows, 'idle')
+        for boundary in ('before_guard', 'before', 'after', 'after_guard'):
+            for node in idle[boundary]:
+                service = next(s for s in node['control_traffic'] if s['service_port'] == 44743)
+                service['service_carrier'] = carrier(100)
+        original = copy.deepcopy(rows)
+        _, trials, _ = analyze_rows(rows)
+        measured = trials[0]['payment_service_carrier']
+        self.assertEqual(trials[0]['payment_record_bytes'], 0)
+        self.assertEqual(measured['total']['submitted_packets'], 0)
+        self.assertEqual(measured['total']['fips_payload_bytes'], 0)
+        self.assertIsNone(measured['bytes_per_delivered_byte'])
+        self.assertEqual(rows, original)
+
+    def test_node_without_application_sends_needs_no_ethernet_activity(self):
+        rows = report()
+        for node in nodes(rows):
+            if node['host_process']['host'] == 'n02':
+                service = next(s for s in node['control_traffic'] if s['service_port'] == 44743)
+                service['counters']['stream_bytes_sent'] = 0
+                service['service_carrier'] = carrier(0)
+        original = copy.deepcopy(rows)
+        _, trials, _ = analyze_rows(rows)
+        for result in trials:
+            measured = result['payment_service_carrier']['nodes']['n02']
+            self.assertTrue(all(t['submitted_packets'] == 0 for t in measured['transports'].values()))
+        self.assertEqual(rows, original)
+
+    def test_schema_two_keeps_non_ethernet_carrier_accounting(self):
+        rows = report(complete_report())
+        for node in nodes(rows):
+            service = next(s for s in node['control_traffic'] if s['service_port'] == 44743)
+            value = service['service_carrier']
+            for name in ('submitted_packets', 'fips_payload_bytes'):
+                value['transports'][0][name] = value['transports'][1][name]
+                value['transports'][1][name] = 0
+            value['transports'][1]['ethernet_framing_bytes'] = 0
+        original = copy.deepcopy(rows)
+        _, trials, _ = analyze_rows(rows)
+        self.assertGreater(trials[0]['payment_service_carrier']['total']['fips_payload_bytes'], 0)
+        self.assertEqual(rows, original)
 
     def test_presence_matches_explicit_metadata(self):
         for value in (False, None, 1, 'true'):
@@ -140,4 +214,3 @@ class ServiceCarrierTests(unittest.TestCase):
             analyze_rows(rows)
         diagnostic = diagnose_rows(rows)
         self.assertIs(diagnostic['accepted'], False)
-
