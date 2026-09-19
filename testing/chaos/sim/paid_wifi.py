@@ -39,6 +39,13 @@ def reconciled_channels(prior, current):
 
 class PaidWifiRun(WifiRun):
     def __init__(self, args):
+        requested_outage = getattr(args, "outage_node", None)
+        if requested_outage is not None:
+            if not getattr(args, "active_outage", False):
+                raise ValueError("--outage-node requires --active-outage")
+            if requested_outage not in ("n02", "n03"):
+                raise ValueError("outage node must be n02 or n03")
+        self.outage_node = requested_outage or "n03"
         if getattr(args, "mint_host", None) and args.mint_ssh_forward:
             raise ValueError("remote mint and controller SSH forwards are separate choices")
         if args.mint_ssh_forward and args.mint_address != "127.0.0.1":
@@ -49,6 +56,7 @@ class PaidWifiRun(WifiRun):
         self.forwards = None
         self.channel_anchor = None
         self.evidence.update(active_radio_outage=getattr(args, "active_outage", False),
+                             outage_node=self.outage_node if getattr(args, "active_outage", False) else None,
                              test_funds_only=True, money_operations=True,
                              wallet_observation="offline before launch and after settlement")
         for name in ("paid_wifi.py", "paid_wifi_mint.py", "paid_wifi_forwarding.py",
@@ -170,7 +178,7 @@ class PaidWifiRun(WifiRun):
             original_channels(self.nodes, self.channel_anchor)
             self.phase("original channels automatically paid before outage", financial=self.channel_anchor)
             if getattr(self.args, "active_outage", False):
-                active_radio_outage(self)
+                active_radio_outage(self, outage_node=self.outage_node)
             else:
                 self.mesh_outage()
             rejoined = self.assert_finances()
@@ -233,8 +241,12 @@ def main():
                         help="temporarily test paid forwarding over open 802.11s, restoring the saved SAE profile")
     parser.add_argument("--active-outage", action="store_true",
                         help="interrupt live paid round trips before automatic radio recovery")
+    parser.add_argument("--outage-node", choices=("n02", "n03"),
+                        help="radio to remove with --active-outage: n02 bridge or n03 leaf (default)")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.outage_node is not None and not args.active_outage:
+        parser.error("--outage-node requires --active-outage")
     os.umask(0o077)
 
     def deadline(_signum, _frame):

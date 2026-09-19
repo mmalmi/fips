@@ -21,17 +21,19 @@ def processes(run):
     return result
 
 
-def active_radio_outage(run):
-    evidence = {"passed": False, "processes_before": processes(run)}
+def active_radio_outage(run, *, outage_node="n03"):
+    require(outage_node in ("n02", "n03"), "unsupported active outage node")
+    evidence = {"passed": False, "outage_node": outage_node, "processes_before": processes(run)}
     run.evidence["active_outage"] = evidence
     shape = probes.arm(run, "n01", "n03", 24, 128, round_trip=True)
     evidence["shape"] = shape
-    leaf = run.nodes["n03"]
+    radio = run.nodes[outage_node]
     try:
-        probes.send_with_radio_cut(run, "n01", "n03", shape, 2, leaf, evidence, round_trip=True)
+        probes.send_with_radio_cut(run, "n01", "n03", shape, 2, radio, evidence, round_trip=True)
         run.phase("radio left during partially delivered paid round trips")
         evidence["isolated_peers"] = eventually(
-            "active radio departure evicts the leaf", lambda: run.ready(line=True, isolated=True), 100)
+            "active radio departure establishes the partition", lambda: run.ready(
+                line=True, isolated=True, outage_node=outage_node), 100)
         evidence["eviction_observed"] = time.monotonic()
         first = probes.receive(run, "n01", "n03", shape, round_trip=True)
         require(0 < evidence["before_cut"]["unique_packets"] <= first["unique_packets"]
@@ -47,7 +49,7 @@ def active_radio_outage(run):
         if evidence.get("cut_attempted", False):
             evidence["rejoin_started"] = time.monotonic()
             run.save()
-            leaf.mesh_up()
+            radio.mesh_up()
             evidence["rejoin_completed"] = time.monotonic()
             evidence["rejoined_peers"] = eventually(
                 "same paid processes rejoin automatically", lambda: run.ready(line=True), 150)

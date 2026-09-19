@@ -420,7 +420,7 @@ include `tests` in `PYTHONPATH` for the existing payment-fault test imports.
 
 Add `--active-outage` to `sim.paid_wifi` to leave the radio mesh while an
 explicitly funded round-trip stream is still sending. The fixture waits for
-partial replies, removes the leaf from the radio mesh, observes actual peer
+partial replies, removes leaf n03 from the radio mesh by default, observes actual peer
 eviction, and requires missing replies from the original finite stream. It
 requires the cut to complete before the earliest final paced send, using a
 controller-side duration bound; a pending management response is insufficient.
@@ -428,6 +428,21 @@ Reply counts must remain unchanged during a two-second isolated window.
 The radio then rejoins automatically; a distinct eight-packet round-trip stream
 must complete, followed by the existing bidirectional payment checks. Return
 allowances are disabled so both directions require the original paid channels.
+
+Use `--active-outage --outage-node n02` to remove the middle router instead;
+add `--open-mesh` to use the existing temporary open-radio lifecycle. This bridge
+case requires every router's full FIPS peer list to become empty, including removal
+of stale disconnected entries. Rejoin must restore exactly n01↔n02↔n03. The
+result records the selected radio and all three rosters, retains the same process
+epochs and financial authority, then requires fresh replies, both-direction paid
+progress, and the existing 384-test-sat collection. `--outage-node` is valid only
+with `--active-outage`; `n03` explicitly selects the default leaf case.
+
+The bridge case exercises an actual radio departure and FIPS graph partition with
+emulated range constraints: the existing experimental-EtherType filter excludes
+the n01↔n03 shortcut, while management Ethernet remains available. It does not
+exercise physical movement or merge two multi-router networks. The bridge variant
+has not yet been accepted on hardware.
 
 The test retains the original processes (including their start times), financial
 identities, funding operations, channels, route agreements and lifetime budgets.
@@ -442,7 +457,7 @@ controller polling and probe time, so it is not an exact first-packet convergenc
 time. This controlled cut does not guarantee interruption at a particular payment
 message, arbitrary physical movement or selection among competing paid routes.
 
-The first active-outage run on the temporary open mesh (2026-09-18) passed.
+The first leaf active-outage run on the temporary open mesh (2026-09-18) passed.
 The cut completed 1.72 seconds after dispatch, before the earliest final paced
 send at 11.5 seconds. The interrupted stream delivered three of 24 replies;
 21 were missing, and counts stayed unchanged during the isolated observation.

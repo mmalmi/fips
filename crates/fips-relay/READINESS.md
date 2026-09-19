@@ -452,8 +452,9 @@ core/endpoint/relay lint and the source-length check. The analyzer has 95 passin
 tests and retains guard-gap traffic separately. Instrumented hardware reports
 must include positive cumulative Ethernet submissions for each node with recorded
 payment-service sends; an idle window need not add any new submissions. These counters measure local
-transport submissions, excluding opaque transit and physical radio overhead;
-a matching measured run is still required before reporting the new overhead.
+transport submissions, excluding opaque transit and physical radio overhead.
+The router capture below exercises these counters and retains its clean-link
+delivery rejection alongside the diagnostic costs.
 
 The current isolated Android package passes a fresh arm64 native build, Android
 lint and strict Android-target relay/app linting. Native-library provenance is

@@ -146,6 +146,30 @@ class PaidOpenTests(unittest.TestCase):
                 self.assertEqual(runner.call_args.args[0].open_mesh, expected)
                 runner.return_value.execute.assert_called_once_with()
 
+    def test_outage_target_requires_active_mode_before_starting_any_run(self):
+        base = ["paid_wifi", "--inventory", "inventory", "--binary", "binary", "--mint-binary", "mint",
+                "--mint-address", "127.0.0.1", "--mint-ssh-forward", "--output", "output"]
+        for node in ("n02", "n03"):
+            with self.subTest(node=node), patch.object(sys, "argv", base + ["--outage-node", node]), \
+                    patch("sim.paid_wifi.PaidWifiRun") as runner, \
+                    patch("sim.paid_wifi.signal.alarm") as alarm, patch("sys.stderr"), \
+                    self.assertRaises(SystemExit) as error:
+                main()
+            self.assertEqual(error.exception.code, 2)
+            runner.assert_not_called()
+            alarm.assert_not_called()
+        for node in (None, "n02", "n03"):
+            extra = ["--active-outage"] + (["--outage-node", node] if node else [])
+            with self.subTest(node=node), patch.object(sys, "argv", base + extra), \
+                    patch("sim.paid_wifi.PaidWifiRun") as runner, \
+                    patch("sim.paid_wifi.signal.signal"), patch("sim.paid_wifi.signal.alarm"), \
+                    patch("sim.paid_wifi.os.umask"):
+                main()
+                args = runner.call_args.args[0]
+                self.assertTrue(args.active_outage)
+                self.assertEqual(args.outage_node, node)
+                runner.return_value.execute.assert_called_once_with()
+
     def test_paid_open_launch_funds_stopped_accounts_then_late_joins_third_radio(self):
         run = self.fixture()
         run.setup()
