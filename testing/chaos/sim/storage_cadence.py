@@ -104,9 +104,9 @@ def summarize_window(record):
             else:
                 usage += delta["spans"]
         if old["progress"] is not None:
-            changed |= any(difference(
+            difference(
                 {k: v for k, v in old["progress"].items() if k != "in_flight"},
-                {k: v for k, v in new["progress"].items() if k != "in_flight"}).values())
+                {k: v for k, v in new["progress"].items() if k != "in_flight"})
     categories = {kind: {key: sum(unsigned(record["storage"][node]["categories"][kind][key])
                                   for node in NODES)
                          for key in ("write_bytes", "write_calls", "sync_calls")}

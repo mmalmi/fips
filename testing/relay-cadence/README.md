@@ -496,6 +496,8 @@ gaps. Every payload must arrive, and source usage must cover at least its
 payload-derived tariff. Prepaid traffic need not cause another signature, but
 must still advance usage. Idle windows require no payment or tracked storage
 work; zero-write traces still require verified attachment and clean detachment.
+Idle metered usage can advance without an application probe or another payment;
+that background usage remains reported and is never subtracted from other windows.
 Unmatched file operations, including failed operations, reject the window.
 
 Summaries separate SDK snapshots, receiver SQLite, funding-wallet files, relay

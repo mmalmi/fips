@@ -160,6 +160,21 @@ class StorageWindowTests(unittest.TestCase):
         with self.assertRaises((RuntimeError, ValueError)):
             summarize_window(record)
 
+    def test_idle_usage_is_reported_without_payment_or_storage_subtraction(self):
+        record = window()
+        for section in ("payment_after", "payment_after_detach"):
+            for key in ("guard", "sample"):
+                record[section][key]["n01"]["progress"]["evidence_msat"] += 1
+        result = summarize_window(record)
+        self.assertEqual(result["source_usage_msat"], 1)
+        self.assertEqual(result["payment_updates"], 0)
+        self.assertEqual(result["file_write_bytes"], 0)
+        for section in ("payment_after", "payment_after_detach"):
+            for key in ("guard", "sample"):
+                record[section][key]["n01"]["control"]["requests_started"] = 1
+        with self.assertRaisesRegex(RuntimeError, "idle payment/storage work"):
+            summarize_window(record)
+
 
 class StorageMatrixTests(unittest.TestCase):
     def test_configuration_changes_only_cadence_and_matched_tariff(self):
