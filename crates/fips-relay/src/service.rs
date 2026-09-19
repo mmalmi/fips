@@ -28,6 +28,7 @@ use cashu_service::{
 use fips_core::{
     FipsEndpoint, Identity, PeerIdentity,
     config::PeerConfig,
+    endpoint::ServiceCarrierDiagnostics,
     node::{ForwardingAdmission, ForwardingOutcome, ForwardingPolicy, ForwardingRequest},
 };
 use serde::{Deserialize, Serialize};
@@ -54,6 +55,7 @@ use tokio::{
 const MAX_CONFIG: u64 = 64 * 1024;
 const MAX_REQUEST: usize = 16 * 1024;
 const DATA_PORT: u16 = 44_740;
+const PAYMENT_CONTROL_PORT: u16 = 44_743;
 #[derive(Default, Clone, Serialize)]
 struct Received {
     packets: u64,
@@ -98,6 +100,7 @@ pub struct RelayService {
     probe_receiver: Arc<Mutex<Option<ProbeReceiver>>>,
     probe_sender: tokio::sync::Semaphore,
     control_statistics: Vec<(u16, Arc<ControlStatistics>)>,
+    control_carrier: Option<ServiceCarrierDiagnostics>,
     receive_task: tokio::task::JoinHandle<()>,
     receiver_pubkey: String,
     forwarding: Arc<ServiceForwarder>,
@@ -283,6 +286,16 @@ impl RelayService {
             config.customer_network,
             config.neighbor_admission,
         )?;
+        // Register once, before any service traffic; status only samples this
+        // stable handle. Normal builds leave endpoint diagnostics disabled.
+        #[cfg(feature = "measurements")]
+        let control_carrier = Some(
+            endpoint
+                .enable_service_carrier_diagnostics(PAYMENT_CONTROL_PORT)
+                .map_err(|error| error.to_string())?,
+        );
+        #[cfg(not(feature = "measurements"))]
+        let control_carrier = None;
         let (quote_transport, quote_incoming) = ControlTransport::start_with_admission(
             endpoint.clone(),
             44_741,
@@ -326,13 +339,13 @@ impl RelayService {
         .await?;
         let (payments, payment_incoming) = ControlTransport::start_with_admission(
             endpoint.clone(),
-            44_743,
+            PAYMENT_CONTROL_PORT,
             admission,
             seed.wrapping_add(2),
         )
         .await?;
         control_statistics.push((44_742, acceptance.statistics()));
-        control_statistics.push((44_743, payments.statistics()));
+        control_statistics.push((PAYMENT_CONTROL_PORT, payments.statistics()));
         let payment_control = Arc::new(
             PaymentControl::new(receiver, seller.clone(), vec![])?.with_keyset_refresh(
                 root.join("receiver"),
@@ -408,6 +421,7 @@ impl RelayService {
             probe_receiver,
             probe_sender: tokio::sync::Semaphore::new(1),
             control_statistics,
+            control_carrier,
             receive_task,
             receiver_pubkey,
             forwarding,
