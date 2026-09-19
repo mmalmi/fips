@@ -35,7 +35,7 @@ impl WatchedRoute {
 }
 
 impl Controller {
-    pub(super) fn next_refresh_delay(&self) -> Duration {
+    pub(super) fn next_refresh_delay(&self, _scan_started: tokio::time::Instant) -> Duration {
         let now = tokio::time::Instant::now();
         self.refresh_checks
             .lock()

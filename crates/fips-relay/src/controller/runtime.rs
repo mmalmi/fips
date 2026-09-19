@@ -228,12 +228,13 @@ impl ControllerTasks {
                 tokio::select! {
                     _ = stop_refresh.changed() => break,
                     _ = tokio::time::sleep(delay) => {
+                        let scan_started = tokio::time::Instant::now();
                         if let Err(error) = watcher.refresh_watched_routes().await {
                             *watcher.last_error.lock().unwrap() = Some(error);
                         }
                         // Wake at an existing quote deadline instead of rounding
                         // five-second refreshes up to the next two-second tick.
-                        delay = watcher.next_refresh_delay();
+                        delay = watcher.next_refresh_delay(scan_started);
                     }
                 }
             }
