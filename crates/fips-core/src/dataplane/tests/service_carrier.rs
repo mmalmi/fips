@@ -165,6 +165,26 @@ fn service_carrier_failed_submission_has_no_invented_carrier_bytes() {
 }
 
 #[test]
+fn service_carrier_live_sink_counts_only_actual_queue_rejection() {
+    let counters = ServiceCarrierDiagnostics::new(44743);
+    let mut accepted = sealed_service_packet(Some(counters.clone()), false);
+    accepted.path = Some(live_path(812));
+    let mut rejected = accepted.clone();
+    rejected.path = None;
+    let mut groups = DataplaneTransportSendGroups::new();
+    let mut drops = Vec::new();
+    let queued = DataplaneLiveOutputSink::new(&mut groups)
+        .send_batch([accepted, rejected], &mut drops);
+    assert_eq!(queued, 1);
+    assert_eq!(groups.groups.len(), 1);
+    assert_eq!(drops.len(), 1);
+    assert_eq!(drops[0].reason(), DataplaneOutputError::NoRoute);
+    assert_eq!(counters.snapshot().discarded_outputs, 1);
+    assert_eq!(udp_counters(&counters).submitted_packets, 0,
+        "a queued output has not yet reached the transport");
+}
+
+#[test]
 fn service_carrier_partial_batch_counts_only_the_submitted_prefix_of_each_record() {
     let counters = ServiceCarrierDiagnostics::new(44743);
     let mut output = sealed_service_packet(Some(counters.clone()), false);
