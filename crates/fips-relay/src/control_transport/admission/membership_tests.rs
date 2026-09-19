@@ -272,3 +272,55 @@ async fn financial_protection_does_not_authorize_outbound_customer_control() {
     remote.shutdown().await.unwrap();
     entry.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn connection_priority_tracks_current_local_authority_without_authorizing_requests() {
+    let entry = Arc::new(
+        FipsEndpoint::builder()
+            .config(config())
+            .without_system_tun()
+            .bind()
+            .await
+            .unwrap(),
+    );
+    let configured = PeerIdentity::from_pubkey_full(fips_core::Identity::generate().pubkey_full());
+    let unconfigured =
+        PeerIdentity::from_pubkey_full(fips_core::Identity::generate().pubkey_full());
+    let admission = ControlAdmission::new(
+        entry.clone(),
+        vec![configured],
+        None,
+        NeighborAdmission::AuthenticatedAdjacent,
+    )
+    .unwrap();
+    assert!(admission.reserves_connection(&configured));
+    assert!(!admission.reserves_connection(&unconfigured));
+    admission
+        .bind_obligations(ControlObligations::for_test(
+            *entry.node_addr(),
+            [*unconfigured.node_addr()],
+        ))
+        .unwrap();
+    assert!(admission.reserves_connection(&unconfigured));
+    // A financial counterparty without a live adjacent link still cannot use
+    // request admission, even though its TCP tuples receive resource priority.
+    assert!(admission.admit(unconfigured, false).await.is_err());
+    assert!(admission.admit(unconfigured, true).await.is_err());
+    admission
+        .bind_obligations(ControlObligations::for_test(*entry.node_addr(), []))
+        .unwrap();
+    assert!(!admission.reserves_connection(&unconfigured));
+    assert!(admission.reserves_connection(&configured));
+    let poisoned = admission.clone();
+    assert!(
+        std::thread::spawn(move || {
+            let _guard = poisoned.obligations.write().unwrap();
+            panic!("test poisoned authority projection");
+        })
+        .join()
+        .is_err()
+    );
+    assert!(!admission.reserves_connection(&unconfigured));
+    assert!(admission.reserves_connection(&configured));
+    entry.shutdown().await.unwrap();
+}

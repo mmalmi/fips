@@ -218,6 +218,22 @@ impl ControlAdmission {
         Ok(())
     }
 
+    fn has_obligation(&self, peer: NodeAddr) -> Result<bool, String> {
+        Ok(self
+            .obligations
+            .read()
+            .map_err(|_| "control obligations poisoned")?
+            .as_ref()
+            .is_some_and(|obligations| obligations.contains(peer)))
+    }
+
+    // Resource priority only. The completed connection must still pass admit
+    // and recheck before any request reaches a financial handler.
+    pub(super) fn reserves_connection(&self, peer: &PeerIdentity) -> bool {
+        self.configured.contains(peer.node_addr())
+            || self.has_obligation(*peer.node_addr()).unwrap_or(false)
+    }
+
     /// Current shared exchanges for an unconfigured identity, across all ports.
     /// This observation does not reserve capacity or grant control authority.
     pub fn active_unconfigured_exchanges(&self, peer: NodeAddr) -> usize {
@@ -286,12 +302,7 @@ impl ControlAdmission {
                 _slot: None,
             });
         }
-        let reserved = self
-            .obligations
-            .read()
-            .map_err(|_| "control obligations poisoned")?
-            .as_ref()
-            .is_some_and(|obligations| obligations.contains(peer));
+        let reserved = self.has_obligation(peer)?;
         let pool = if reserved {
             &self.obligation_slots
         } else {

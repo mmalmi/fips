@@ -27,8 +27,12 @@ pub(super) struct Bench {
 }
 
 pub(super) async fn start(root_index: usize, scenario: Scenario, seed: u64) -> Bench {
-    let saturation = matches!(scenario, Scenario::ControlSaturation);
-    let mesh = matches!(scenario, Scenario::MergeSplit | Scenario::ControlSaturation);
+    let handshakes = matches!(scenario, Scenario::HandshakeSaturation);
+    let saturation = matches!(
+        scenario,
+        Scenario::ControlSaturation | Scenario::HandshakeSaturation
+    );
+    let mesh = saturation || matches!(scenario, Scenario::MergeSplit);
     let recovery_timing = matches!(scenario, Scenario::RecoveryTiming);
     let interrupted = matches!(scenario, Scenario::InterruptedMobility);
     let mobile = matches!(scenario, Scenario::Mobility | Scenario::InterruptedMobility);
@@ -144,10 +148,16 @@ pub(super) async fn start(root_index: usize, scenario: Scenario, seed: u64) -> B
                 .to_str()
                 .unwrap()
                 .into();
-            config.node.limits.max_peers = if saturation { 4 } else { 2 };
-            config.node.limits.max_connections = 4;
-            config.node.limits.max_links = 4;
-            config.node.limits.max_pending_inbound = 4;
+            config.node.limits.max_peers = if handshakes {
+                10
+            } else if saturation {
+                4
+            } else {
+                2
+            };
+            config.node.limits.max_connections = if handshakes { 10 } else { 4 };
+            config.node.limits.max_links = if handshakes { 10 } else { 4 };
+            config.node.limits.max_pending_inbound = if handshakes { 10 } else { 4 };
             config.node.limits.max_sessions = 128;
         }
         if matches!(scenario, Scenario::AdmissionExhaustion) && i == 3 {

@@ -18,6 +18,7 @@ pub(super) enum Scenario {
     RecoveryTiming,
     MergeSplit,
     ControlSaturation,
+    HandshakeSaturation,
 }
 
 impl Scenario {

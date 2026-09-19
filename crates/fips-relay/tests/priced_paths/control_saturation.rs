@@ -8,6 +8,10 @@ use tokio::time::Instant;
 
 #[path = "control_saturation/attack.rs"]
 mod attack;
+#[path = "control_saturation/half_open.rs"]
+mod half_open;
+#[path = "control_saturation/load.rs"]
+mod load;
 
 #[derive(PartialEq, Eq)]
 struct Authority {
@@ -184,8 +188,22 @@ async fn settle(bench: &Bench, channel: &str, credited: u64) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn established_paid_route_progresses_during_incomplete_neighbor_requests() {
+    run(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn established_paid_route_progresses_during_incomplete_neighbor_handshakes() {
+    run(true).await;
+}
+
+async fn run(handshakes: bool) {
     tokio::time::timeout(Duration::from_secs(120), async {
-        let mut bench = bench::start(0, Scenario::ControlSaturation, 118).await;
+        let scenario = if handshakes {
+            Scenario::HandshakeSaturation
+        } else {
+            Scenario::ControlSaturation
+        };
+        let mut bench = bench::start(0, scenario, 118).await;
         tokio::time::timeout(Duration::from_secs(12), async {
             while bench.nodes[1]
                 .peers()
@@ -218,27 +236,12 @@ async fn established_paid_route_progresses_during_incomplete_neighbor_requests()
             .unwrap();
         let before = authority(&bench).await;
         let remaining = bench.buyers[0].remaining_budget_sat().unwrap();
-        let attack = attack::start(&bench).await;
+        let attack = load::Load::start(&bench, handshakes).await;
         let attackers = attack.peers();
-        tokio::time::timeout(Duration::from_secs(3), async {
-            while attackers.iter().any(|peer| {
-                bench.admissions[1].active_unconfigured_exchanges(*peer.node_addr()) != 4
-            }) {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("each attacker must really hold four shared admission permits");
-        eprintln!("two newly discovered identities hold all eight ordinary control permits");
+        attack.assert_held(&bench).await;
         let mut progress = Ok(());
         for tag in 20..23 {
-            attack.assert_live().await;
-            for peer in attackers {
-                assert_eq!(
-                    bench.admissions[1].active_unconfigured_exchanges(*peer.node_addr()),
-                    4
-                );
-            }
+            attack.assert_held(&bench).await;
             match paid_batch(&mut bench, &purchase.channel.id, tag).await {
                 Ok(paid) => credited = paid,
                 Err(error) => {
@@ -254,6 +257,7 @@ async fn established_paid_route_progresses_during_incomplete_neighbor_requests()
             assert!(bench.buyers[0].remaining_budget_sat().unwrap() <= remaining);
         }
         if progress.is_ok() {
+            attack.assert_reserved_capacity();
             tokio::time::timeout(
                 Duration::from_secs(8),
                 settle(&bench, &purchase.channel.id, credited),
@@ -261,13 +265,7 @@ async fn established_paid_route_progresses_during_incomplete_neighbor_requests()
             .await
             .expect("cooperative settlement must also progress during control saturation");
         }
-        attack.assert_live().await;
-        for peer in attackers {
-            assert_eq!(
-                bench.admissions[1].active_unconfigured_exchanges(*peer.node_addr()),
-                4
-            );
-        }
+        attack.assert_held(&bench).await;
         assert!(
             attack.hold_age() < Duration::from_secs(25),
             "payments cannot pass by waiting for the 30-second control expiry"

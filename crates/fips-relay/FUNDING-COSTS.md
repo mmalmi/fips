@@ -81,12 +81,22 @@ the journal or supply invented zero fees. Automated reconciliation/migration is
 still a release blocker. Fresh test profiles must explicitly configure the two
 new policy fields. Settlement peers need the same updated report format.
 
-This source requires the unreleased local cashu-service, CDK and Spilman changes;
+This source requires the unreleased local cashu-service, CDK, Spilman and TCP/FIPS changes;
 the published dependency pins cannot build the funding adapter yet. Use the
 cashu-service development override example, adding the local `cashu-service`
 crate path to `[patch.crates-io]`. Keep machine-specific overrides outside the
 repository and record exact revisions. Dependency release/version updates remain
 necessary before distribution. No device deployment is implied by these tests.
+
+The TCP stack and endpoint override must include `set_connection_reservation`.
+Override both `nvpn-fips-tcp` and `nvpn-fips-tcp-endpoint`; this workspace still
+pins stack 0.2.2 and endpoint 0.2.16, whose FIPS core requirement is 0.4.81. Use
+the matching development checkout with the reservation change (verified TCP/FIPS
+revision `491b11209aba`). Endpoint 0.2.17
+requires core 0.4.82 and cannot silently replace this graph. Shared Rust/TypeScript
+admission vectors and live interoperability checks cover the new local policy;
+the wire encoding is unchanged. Dependency version alignment remains a distribution
+requirement, separate from these matching-graph development tests.
 
 Run with those overrides:
 

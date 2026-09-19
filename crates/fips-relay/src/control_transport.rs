@@ -29,6 +29,7 @@ use tokio::{
 
 pub const MAX_RECORD_BYTES: usize = 64 * 1024;
 const MAX_CONNECTIONS: usize = 32;
+const RESERVED_CONNECTIONS: usize = 8;
 const QUEUE_SIZE: usize = 16;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const DRIVE_INTERVAL: Duration = Duration::from_millis(10);
@@ -133,9 +134,15 @@ impl ControlTransport {
             time_wait_ms: 250,
             ..Config::default()
         };
-        let tcp = FipsTcpEndpoint::bind(endpoint, service_port, config, isn_seed)
+        let mut tcp = FipsTcpEndpoint::bind(endpoint, service_port, config, isn_seed)
             .await
             .map_err(|e| e.to_string())?;
+        let connection_admission = admission.clone();
+        tcp.set_connection_reservation(
+            RESERVED_CONNECTIONS,
+            Arc::new(move |peer| connection_admission.reserves_connection(peer)),
+        )
+        .map_err(|e| e.to_string())?;
         let (commands, receive_commands) = mpsc::channel(QUEUE_SIZE);
         let (incoming, receive_incoming) = mpsc::channel(QUEUE_SIZE);
         let statistics = Arc::new(ControlStatistics::default());

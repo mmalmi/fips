@@ -55,7 +55,7 @@ This is a capacity calculation, not a latency or hardware throughput guarantee.
 Multiple hostile identities can still compete within each pool; funded or
 recently retired counterparties can occupy reserved resources. These limits do
 not promise Sybil-resistant fairness, newcomer progress, or protection from
-TCP handshake saturation, native session overload, radio contention or CPU load.
+exhaustion by eligible TCP peers, native session overload, radio contention or CPU load.
 Mobile Wi-Fi merge/split and router/Pixel acceptance remain separate checks from
 authenticated-link control admission and the Ethernet fixture below.
 
@@ -70,14 +70,50 @@ original channel also settles under that load. Every wallet receives its exact
 purchase/earnings balance and all 768 test sats are collected. Fresh stream checks,
 active permit counts and a hold age below 25 seconds prevent the 30-second
 exchange timeout from satisfying the test. Explicit aborts release every permit
-before attacker shutdown. All 231 relay library tests, 12 control-transport tests
-and 16 priced-path scenarios pass with this change. Strict all-target relay lint,
-formatting and the 767-file size check also pass. This is a bounded
+before attacker shutdown. All 232 relay library tests, 12 control-transport tests
+and 17 priced-path scenarios pass with both reservation boundaries. Strict
+all-target relay lint, formatting and the 769-file size check also pass. This is a bounded
 incomplete-record attack in software,
 not a hardware flooding or fairness result. Reproduce with `cargo test -p
 fips-relay --all-features --test priced_paths control_saturation:: --
 --test-threads=1 --nocapture` using the dependencies in
 [FUNDING-COSTS.md](FUNDING-COSTS.md).
+
+The TCP/FIPS connection table also reserves eight of its existing 32 slots per
+control port for configured neighbors or counterparties in that same current
+financial projection. Ordinary new tuples require fewer than 24 retained
+connections; eligible peers may use the full 32, and every identity still has a
+four-connection cap. The generic stack applies this rule before allocating an
+incoming half-open handshake or an outgoing connection. Existing tuples continue
+normally after eligibility changes. It adds no messages, priority claims on the
+wire, eviction policy or connection-state migration. The reservation is installed
+before driving traffic; application adjacency and request checks still follow.
+
+The companion SYN-only regression offers 32 handshakes from eight newly
+authenticated neighbors without wallets or payment records. Before this fix,
+all 32 receive SYN-ACKs and retain their tuples, all 12 fresh data payloads arrive,
+and automatic payment stalls for five seconds. Resetting the tuples restores
+payment and permits exact settlement and collection of all 768 test sats. With
+the fix, only 24 tuples remain held, all three fresh 12-packet batches deliver
+and advance credit, and settlement completes while that load remains active.
+The existing incomplete-record case passes as well. This checks retained
+connection capacity, not handshake processing throughput or fairness among
+eligible peers. Native peer/session admission and radio contention remain
+separate boundaries.
+
+Both cases use the same funding, credit and settlement assertions. The SYN-only
+driver never sends an ACK, repeatedly observes unchanged server sequence numbers,
+and requires fresh SYN-ACKs from every previously confirmed tuple. Cleanup sends
+exact resets and requires a distinct absent-tuple response for all 32 offers
+before shutting down their transports. Failed financial progress is checked
+after cleanup and test-fund recovery. These software results do not establish
+hardware availability under hostile load. Reproduce both with the command above;
+the TCP reservation currently requires the local dependency changes described in
+[FUNDING-COSTS.md](FUNDING-COSTS.md). That matching dependency passes 43 Rust
+workspace tests and 48 TypeScript tests, including shared admission vectors and
+live interoperability in both directions. Typechecking, the generated TypeScript
+build and strict dependency lint also pass. These gates preserve the source and
+dependency fingerprints used for each run.
 
 Transport receive priority now has an independent 64-packet reserve. This early
 classification uses unauthenticated packet shape, so its queue must remain

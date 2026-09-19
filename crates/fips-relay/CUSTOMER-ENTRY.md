@@ -51,8 +51,11 @@ All three control services share the [bounded admission pools and identity
 budgets](READINESS.md#authenticated-adjacent-neighbors). Verified, retained
 financial relationships receive reserved capacity for incoming control while
 remaining inbound-only. Funded status never authorizes purchases from a customer.
-Each service retains its 32-connection TCP limit; records remain capped at
-64 KiB with 30-second exchange deadlines and bounded queues. These are resource
+Each service retains its 32-connection TCP limit, including eight slots reserved
+for configured neighbors and verified financial counterparties before handshake
+allocation. Ordinary peers can allocate only below 24 retained connections, and
+the per-peer cap remains four. Priority never replaces request admission. Records
+remain capped at 64 KiB with 30-second exchange deadlines and bounded queues. These are resource
 bounds, not a denial-of-service availability guarantee.
 
 Customer-mode native limits are also finite: the configured neighbor count plus
