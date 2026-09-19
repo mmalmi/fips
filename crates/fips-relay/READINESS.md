@@ -1320,6 +1320,39 @@ unknown neighbor, short overlap, repeated link flaps and more candidates than
 available admission slots. Demonstrate useful progress for healthy peers while
 other peers are absent or slow, and measure join/rejoin time and bounded state.
 
+The six-node `priced_paths::merge_split` simulation now exercises two independently
+formed three-node components, each carrying paid traffic before contact. A new
+bridge link joins them; both directions then pay all four forwarding hops. The
+bridge disappears, both components regain their own tree roots and continue local
+paid delivery, and fresh cross-component probes cannot cross the partition. On
+meeting again, every paying neighbor pair retains its original channel and funding
+operation. No new Watch, Buy, explicit payment flush, peer roster update or session
+reset drives that recovery. Stable checkpoints reject pending funding and retain
+all capital limits and lifetime spending. Both placements of the combined tree
+root pass, with eight original directional channels per case and all 1,536 test
+sats settled and collected into the isolated collector wallet.
+
+This uses the existing SimNetwork, real Noise authentication, native tree/session
+routing and production relay controllers. Sim discovery supplies at most 64
+rotating direct-neighbor identity hints per poll; the existing node admission
+limits still govern connections. It models eventual incoming-link visibility,
+including asymmetric reachability, rather than radio beacons or airtime. The
+fixture uses a two-peer cap per node and no configured native or control peers.
+The focused discovery tests cover cut/rejoin, absent/down endpoints, directed
+visibility, bounded rotation, actual authentication and admission at capacity.
+
+The traffic check allows three finite attempts per payload at 0, 7 and 14 seconds
+inside a 20-second window. In the focused run, one rejoin needed the second round:
+all 12 fresh payloads were observed after 7.45 seconds, with 24 attempts. This is
+an observation bound from the start of probing, not exact network convergence or
+lossless handover. The earlier test exhausted its three attempts within about
+1.4 seconds and then only waited; its failed observation is retained and does not
+establish a 20-second production recovery failure. Physical moving meshes,
+interrupted funding/settlement during encounters and hostile discovery load remain
+separate acceptance cases. Run the scenario with `cargo test -p fips-relay
+--all-features --test priced_paths merge_split:: -- --test-threads=1 --nocapture`,
+using the development dependencies described in [FUNDING-COSTS.md](FUNDING-COSTS.md).
+
 The initial radio profile uses direct 802.11s links with kernel mesh forwarding
 disabled; FIPS owns the routed hops and their accounting. Isolate this interface
 from the management LAN. Neither a wired uplink nor an Internet gateway is needed

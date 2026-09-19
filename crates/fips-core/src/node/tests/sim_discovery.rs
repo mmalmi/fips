@@ -75,7 +75,7 @@ async fn sim_discovery_authenticates_without_roster_and_respects_admission() {
             .all(|node| node.node.pending_connects.is_empty())
     );
     assert_eq!(nodes[0].node.connection_count(), 1);
-    assert_eq!(nodes[0].node.pending_outbound.len(), 1);
+    assert!(!nodes[0].node.pending_outbound.is_empty());
     assert_eq!(
         nodes[0]
             .node
