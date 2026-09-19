@@ -406,16 +406,27 @@ confirmation. One uninterrupted 128-packet numbered stream runs at two packets
 per second; the cheaper provider's onward edge is cut after an actual delivery,
 while both source adjacencies remain connected. Independent 250-ms observations
 record native quality, trial/full agreement identity and acknowledged provider
-credit. In the combined run, the first newly submitted payload arrives 18.50
-seconds after the cut, a full paid replacement with fresh quality is observed at
-23.99 seconds, and a complete 32-packet batch confirms that same agreement at
-47.75 seconds. All 92 received packets match their original submissions; the
-other 36 are lost during the cut. This distinguishes confirmation overhead from
-packet outage without attributing the trigger to one specific timeout. Both
-original channels remain intact and final settlement conserves all 259 test sats.
-The focused preceding run produced essentially the same timing; neither run
-establishes a hardware latency guarantee or an optimization speedup. Reproduce
-with the `recovery_timing::` filter of the `priced_paths` integration target.
+credit. A matched baseline delivers the first new payload 18.504 seconds after
+the cut and observes a full paid replacement with fresh quality at 24.248 seconds.
+The refresh worker now wakes at the existing five-second per-watch deadline,
+instead of rounding that deadline up to its independent two-second scan. Time
+spent refreshing counts toward the next scan; expired retained checks alone do
+not cause busy retries. The 15-second native feedback window, quote guard,
+authorization and spending bounds are unchanged.
+
+The corrected run delivers the first new payload at 15.501 seconds and observes
+the full working replacement at 19.994 seconds; the full-suite repeat records
+15.504 and 19.995 seconds. All 98 received packets match their original
+submissions, compared with 92 in the baseline; 30 of 128 are still lost during
+the cut. Both versions start three new source quotes. A complete 32-packet batch
+confirms the replacement at about 47.75 seconds, which includes the confirmation
+workload and is not the outage duration. Both original channels remain intact
+and final settlement conserves all 259 test sats. The slow-scan regression,
+218 relay library tests, all 14 priced-path scenarios, strict relay lint,
+workspace formatting and source-length checks pass. This is one matched seeded
+simulation, not a hardware recovery bound or evidence of seamless roaming.
+Reproduce with the `recovery_timing::` filter of the `priced_paths` integration
+target.
 
 Source selection now excludes currently ineligible providers before requesting
 quotes, using the same predicate as final offer selection. A failed provider
