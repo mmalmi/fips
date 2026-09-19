@@ -694,11 +694,20 @@ impl Node {
             }
             debug!(
                 peer = %self.peer_display_name(&exhausted.node_addr),
-                "FMP rekey aborted: msg1 unconfirmed after max retransmissions"
+                "FMP rekey aborted: msg1 retry budget exhausted"
             );
         }
 
         for resend in self.peers.due_fmp_rekey_msg1_resends(now_ms, max_resends) {
+            // Bound rekey grace even if the local send fails or is cancelled.
+            let Some(count) = self.peers.record_scheduled_fmp_rekey_msg1_resend(
+                &resend.node_addr,
+                now_ms,
+                interval_ms,
+                backoff,
+            ) else {
+                continue;
+            };
             let sent = if let Some(transport) = self.transports.get(&resend.transport_id) {
                 transport
                     .send(&resend.remote_addr, &resend.payload)
@@ -708,18 +717,17 @@ impl Node {
                 false
             };
 
-            if sent
-                && let Some(count) = self.peers.record_scheduled_fmp_rekey_msg1_resend(
-                    &resend.node_addr,
-                    now_ms,
-                    interval_ms,
-                    backoff,
-                )
-            {
+            if sent {
                 trace!(
                     peer = %self.peer_display_name(&resend.node_addr),
                     resend = count,
                     "Resent rekey msg1"
+                );
+            } else {
+                debug!(
+                    peer = %self.peer_display_name(&resend.node_addr),
+                    resend = count,
+                    "Failed to resend rekey msg1"
                 );
             }
         }

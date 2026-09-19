@@ -308,12 +308,12 @@ impl ActivePeer {
         self.rekey_msg1_next_resend = next_ms;
     }
 
-    /// Number of rekey msg1 retransmissions performed so far.
+    /// Number of rekey msg1 retransmission attempts, including failed or cancelled sends.
     pub fn rekey_msg1_resend_count(&self) -> u32 {
         self.rekey_msg1_resend_count
     }
 
-    /// Record a rekey msg1 retransmission and schedule the next one.
+    /// Record a rekey msg1 retransmission attempt and schedule the next one.
     pub fn record_rekey_msg1_resend(&mut self, next_ms: u64) {
         self.rekey_msg1_resend_count = self.rekey_msg1_resend_count.saturating_add(1);
         self.rekey_msg1_next_resend = next_ms;
