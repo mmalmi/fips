@@ -387,7 +387,7 @@ and checkpoint instrumentation uses non-overlapping spans.
 This matrix provides the repeatable clean-link baseline. It does not fulfill
 the full production-readiness benchmark. Still required: impaired links using
 the existing FIPS simulation/chaos facilities, payment-specific complete carrier
-bytes, further SDK snapshot and receiver SQLite storage comparisons, profiler attribution outside
+bytes, impaired-link and long-running storage comparisons, profiler attribution outside
 the synchronous spans, and complete controlled ARM64/router/phone comparisons.
 The guarded three-router 250-ms pilot passed all four workloads and financial
 recovery. The subsequent eight-trial hardware matrix collected all windows and
@@ -512,6 +512,13 @@ journals and directory syncs. CPU counters collected under tracing are labeled
 partial and unsuitable for timing comparisons. Successful syscall bytes are
 not physical media writes. A pilot validates one policy only; it cannot establish
 which payment cadence is preferable.
+
+The accepted eight-trial comparison delivers all 93,696 packets, collects all
+3,072 test sats and independently reproduces all raw trace summaries. At high
+rate the 1-second pair performs two updates versus three at 500 ms, reducing
+SDK snapshot and receiver SQLite writes. Independent checkpoint costs remain
+separate; neither this comparison nor its traced CPU values establishes a best
+default. See the [paired results and limits](../../crates/fips-relay/CADENCE-RESULTS.md#matched-storage-syscall-comparison--19-september-2026).
 
 `storage_trace.py` summarizes an isolated Linux `strace` capture by explicit file
 categories. Use a fresh private output directory and the options returned by

@@ -236,6 +236,61 @@ The 500-ms default remains unchanged. Two repetitions with diagnostic sampling
 establish this bounded comparison, not an optimal universal payment age or
 proof that the earlier packet loss is resolved.
 
+## Matched storage syscall comparison — 19 September 2026
+
+The separate Linux ARM64 storage comparison passes all eight trials: maximum
+payment ages of 250/500/1000/2000 ms followed by the reverse order. All 93,696
+application packets arrive, with 101 out of order and no duplicates or invalid
+packets. Each trial settles its original two 32-sat channels and collects all
+384 test sats; the complete matrix conserves 3,072 sats. Independent replay of
+all 96 raw traces matches the saved summaries, settlement and wallet equations
+reconcile, and all 40 owned containers/networks are absent after cleanup.
+
+The fixture uses three relay processes and native Ethernet over virtual links,
+with the same finite workloads as the hardware comparison and a fixed three-second
+tail. The tariff is 1 msat/KiB. The optimized relay executable is unchanged during
+measurement (SHA-256 `9a17f2df6a147028ad894724e2d0dcd89a39ab8deb93e4c214f39a7e89ca1ce2`).
+No task builds or tests run concurrently. These are successful syscall write
+lengths and sync calls, not physical media writes or flash wear. Tracing changes
+execution cost; its CPU/timing observations are not compared with the untraced
+Wi-Fi experiment. The virtual carrier, platform and warmup also differ.
+
+All eight idle and all eight bursty windows have zero payment updates, file
+writes and syncs. Bursty traffic consumes already-paid credit; its metered usage
+still increases. Every steady window delivers 3,200,000 bytes, performs three
+updates and 42 syncs, and writes between 140,225 and 140,655 bytes. Each high-rate
+window delivers 8,000,000 bytes. The pairs below retain both repetitions in trial
+order; file writes include independent allowance checkpoints as well as payments.
+
+| Maximum age | Updates | SDK snapshot bytes | Receiver SQLite bytes | Relay journal bytes | Total file bytes | File/directory sync calls |
+| --- | --- | --- | --- | --- | --- | --- |
+| 250 ms | 3 / 4 | 45,344 / 60,459 | 50,772 / 67,696 | 51,606 / 53,154 | 147,722 / 181,309 | 46 / 58 |
+| 500 ms | 3 / 3 | 45,344 / 45,344 | 50,772 / 50,772 | 45,444 / 52,439 | 141,560 / 148,555 | 46 / 46 |
+| 1,000 ms | 2 / 2 | 30,229 / 30,229 | 33,848 / 33,848 | 30,952 / 31,434 | 95,029 / 95,511 | 34 / 34 |
+| 2,000 ms | 2 / 2 | 30,229 / 30,230 | 33,848 / 33,848 | 36,557 / 55,105 | 100,634 / 119,183 | 34 / 44 |
+
+Funding-wallet SQLite files have zero writes or syncs in every workload window.
+The 1-second high-rate pair writes about 0.0119 file bytes per delivered application
+byte, versus 0.0177–0.0186 at 500 ms. Fewer updates reduce SDK/receiver writes;
+independent checkpoints and snapshot lengths also affect the total. Two seconds
+does not consistently reduce total writes further. These two traced repetitions
+do not establish an optimal policy; the production default remains 500 ms.
+
+Every boundary verifies unchanged authorization, acknowledged credit, payment
+activity and all durable-operation counters. Already-covered usage may advance
+without another payment: six msat of such usage appear outside the workload
+windows and are reported separately, never subtracted from workload cost. Five
+explicit tracer detach events interrupt event-counter writes; they are counted
+separately without inventing successful bytes. All file operations are complete
+and attributed, and all traced processes survive clean detachment.
+
+The preceding matrix attempt stopped on its fourth trial because its guard
+incorrectly required already-covered usage to remain fixed between windows.
+It remains an incomplete result; all 1,536 test sats from its four trials were
+collected. The corrected guard permits only monotonic covered usage, preserving
+all payment, credit and durability checks. A fresh pilot and this complete matrix
+pass that guard. See the [capture contract](../../testing/relay-cadence/README.md#matched-storage-cadence-capture).
+
 ## Reproduction and remaining evidence
 
 See the [experiment instructions](../../testing/relay-cadence/README.md) for fixed
@@ -247,8 +302,9 @@ bytes per delivered byte, plus CPU per completed update within each window.
 
 Synchronous payment CPU includes signing and synchronous SDK/receiver persistence,
 but excludes scheduling, control-envelope serialization outside the spans and
-transport work. Journal counters exclude SDK JSON snapshots, receiver/wallet
-SQLite and physical storage writes. Framed payment records exclude TCP/FIPS/carrier
+transport work. Logical journal counters exclude SDK JSON snapshots and
+receiver/wallet SQLite; the separate syscall comparison above measures those
+file operations, still excluding physical storage writes. Framed payment records exclude TCP/FIPS/carrier
 headers, acknowledgments and retransmissions. Aggregate link bytes cannot establish
 payment-specific wire overhead. Impairment, physical devices, actual radio airtime
 and complete CPU/storage/wire attribution remain work for production readiness.
