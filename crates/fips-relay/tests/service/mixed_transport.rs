@@ -20,6 +20,8 @@ use bench::MixedBench;
 mod payment_progress;
 #[path = "mixed_transport/round_trip.rs"]
 mod round_trip;
+#[path = "mixed_transport/service_carrier.rs"]
+mod service_carrier;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mixed_udp_tcp_daemons_preserve_paid_limits_through_exhaustion_and_restart() {
@@ -40,6 +42,7 @@ async fn mixed_udp_tcp_daemons_preserve_paid_limits_through_exhaustion_and_resta
         .unwrap();
         let mut bench = MixedBench::start(mint.url(), &network).await;
         bench.assert_carriers().await;
+        service_carrier::assert_status(&bench, false).await;
         #[cfg(feature = "measurements")]
         payment_progress::assert_empty(&bench).await;
 
@@ -82,6 +85,7 @@ async fn mixed_udp_tcp_daemons_preserve_paid_limits_through_exhaustion_and_resta
         }
         #[cfg(feature = "measurements")]
         payment_progress::assert_reconciled(&bench, &original_channels).await;
+        service_carrier::assert_status(&bench, true).await;
 
         // Fill a small channel with renewals explicitly paused. This tests a
         // financial denial, not an inference from a lost TCP connection.

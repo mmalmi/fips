@@ -95,6 +95,38 @@ Measure setup, steady traffic and settlement separately. Peer byte-counter
 deltas provide an additional aggregate transport measurement, with their own
 framing boundary; they do not isolate payment messages or Wi-Fi airtime.
 
+With `measurements`, the port 44743 entry also exposes `service_carrier`, a
+separate snapshot of locally originated TCP/FIPS service submissions. The
+handle is registered once before service startup and retained for that endpoint
+lifetime. Ports 44741/44742, and every entry in ordinary builds, report `null`:
+instrumentation is unavailable, not a measured zero. No additional services are
+registered by status requests; the endpoint's registry is bounded to 16 ports.
+
+The snapshot contains `service_port`, `ambiguous_port_datagrams`,
+`discarded_outputs`, and nine fixed `transports` buckets (`udp`, `ethernet`, `tcp`,
+`tor`, `websocket`, `webrtc`, `ble`, `sim`, `other`). Each bucket contains
+`submitted_packets`, `fips_payload_bytes` and `ethernet_framing_bytes`. Counts
+include TCP/FIPS SYN, ACK, FIN and retransmitted segments, FIPS encryption and
+fragment headers, and individually submitted fragments even when a later
+fragment fails. `discarded_outputs` counts sealed outputs not completely
+submitted; it does not include earlier admission or encryption failures.
+Ambiguous matches between different registered source/destination ports are
+attributed once to the source and explicitly counted. Treat such samples as
+ambiguous rather than exclusively payment traffic. Port 44743 can also carry
+quotes, so its totals describe that service, not a payment-only message class.
+
+These are local transport-API submissions, not delivery receipts, financial
+authority, all-hop totals or radio airtime. Opaque transit and shared FIPS
+handshake/MMP/rekey traffic are excluded; loopback has no carrier submissions.
+UDP bytes stop at its payload boundary. Ethernet's proprietary three-byte
+prefix is separate; OS headers, padding and radio overhead are excluded. Outer
+TCP excludes kernel ACKs/retransmissions, independently of the measured inner
+TCP/FIPS segments. Peer counters remain the separate aggregate observation;
+do not subtract these differently framed totals to infer unclassified bytes.
+Count each node's sends once. Snapshots read separate cumulative atomics: sample
+after quiescence, retain guard-gap traffic, and reject unavailable, reset,
+saturated or ambiguous evidence when claiming attributed overhead.
+
 Record process CPU and memory, host load and interface counters alongside each
 run. Check process identity/start time when comparing counters across samples;
 a respawn starts a new measurement epoch. Record endpoint CPU too, so a small

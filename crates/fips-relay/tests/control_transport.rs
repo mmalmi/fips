@@ -477,3 +477,6 @@ async fn customer_connection_limit_leaves_room_for_configured_neighbor_control()
 
 #[path = "control_transport/dynamic.rs"]
 mod dynamic;
+
+#[path = "control_transport/service_carrier.rs"]
+mod service_carrier;
