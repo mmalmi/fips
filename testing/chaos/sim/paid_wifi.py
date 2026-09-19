@@ -19,6 +19,7 @@ from .paid_wifi_mint import LocalMint
 from .paid_wifi_forwarding import MintForwards, finish_mint
 from .remote_mint import RemoteMint
 from .wifi_active_outage import active_radio_outage
+from .wifi_recovery_timing import LOG_FILTER
 from .wifi_discovery import WifiRun
 from .wifi_remote import ETHERTYPE, digest
 
@@ -46,11 +47,16 @@ class PaidWifiRun(WifiRun):
             if requested_outage not in ("n02", "n03"):
                 raise ValueError("outage node must be n02 or n03")
         self.outage_node = requested_outage or "n03"
+        if getattr(args, "recovery_timing", False) and not getattr(args, "active_outage", False):
+            raise ValueError("--recovery-timing requires --active-outage")
         if getattr(args, "mint_host", None) and args.mint_ssh_forward:
             raise ValueError("remote mint and controller SSH forwards are separate choices")
         if args.mint_ssh_forward and args.mint_address != "127.0.0.1":
             raise ValueError("--mint-ssh-forward requires --mint-address 127.0.0.1")
         super().__init__(args)
+        if getattr(args, "recovery_timing", False):
+            for node in self.nodes.values():
+                node.diagnostic_log_filter = LOG_FILTER
         self.mint = self.create_mint(args)
         self.mint_url = None
         self.forwards = None
@@ -62,7 +68,7 @@ class PaidWifiRun(WifiRun):
         for name in ("paid_wifi.py", "paid_wifi_mint.py", "paid_wifi_forwarding.py",
                      "paid_finances.py", "paid_settlement.py", "remote_mint.py", "mint_host.py",
                      "wifi_active_outage.py", "wifi_probes.py", "wifi_priority_checks.py",
-                     "wifi_measurements.py"):
+                     "wifi_measurements.py", "wifi_recovery_timing.py"):
             self.evidence["harness_sha256"][name] = digest(Path(__file__).with_name(name).read_bytes())
 
     def create_mint(self, args):
@@ -241,12 +247,16 @@ def main():
                         help="temporarily test paid forwarding over open 802.11s, restoring the saved SAE profile")
     parser.add_argument("--active-outage", action="store_true",
                         help="interrupt live paid round trips before automatic radio recovery")
+    parser.add_argument("--recovery-timing", action="store_true",
+                        help="record bounded recovery observations and scoped native logs")
     parser.add_argument("--outage-node", choices=("n02", "n03"),
                         help="radio to remove with --active-outage: n02 bridge or n03 leaf (default)")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.outage_node is not None and not args.active_outage:
         parser.error("--outage-node requires --active-outage")
+    if args.recovery_timing and not args.active_outage:
+        parser.error("--recovery-timing requires --active-outage")
     os.umask(0o077)
 
     def deadline(_signum, _frame):

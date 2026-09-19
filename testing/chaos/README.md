@@ -438,6 +438,18 @@ epochs and financial authority, then requires fresh replies, both-direction paid
 progress, and the existing 384-test-sat collection. `--outage-node` is valid only
 with `--active-outage`; `n03` explicitly selects the default leaf case.
 
+Add `--recovery-timing` to retain bounded controller-clock observation intervals,
+the departing router's native Ethernet adapter counters and Wi-Fi station dumps,
+and per-router wall-clock/uptime anchors for the scoped native logs. The result
+separately times profile checks, process checks, probe arming and paced sending.
+The original partition, recovery, accounting and restoration checks still apply.
+Sequential reads are not a simultaneous topology snapshot. Received beacon
+counters include frames before parsing and do not prove neighbor authentication;
+radio station membership may also include the filtered FIPS shortcut. Clock
+alignment requires consistent anchors and must retain their resolution and read
+uncertainty. These observations bound recovery; the final eight-packet probe
+does not measure the instant of the first usable route or first reply.
+
 The bridge case exercises an actual radio departure and FIPS graph partition with
 emulated range constraints: the existing experimental-EtherType filter excludes
 the n01↔n03 shortcut, while management Ethernet remains available. It does not

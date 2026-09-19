@@ -7,6 +7,7 @@ from .paid_relay import eventually
 from .paid_settlement import require
 from .wifi_measurements import snapshot
 from .wifi_priority_checks import round_trip_latency, submitted
+from .wifi_recovery_timing import RecoveryTiming
 
 
 def processes(run):
@@ -25,6 +26,11 @@ def active_radio_outage(run, *, outage_node="n03"):
     require(outage_node in ("n02", "n03"), "unsupported active outage node")
     evidence = {"passed": False, "outage_node": outage_node, "processes_before": processes(run)}
     run.evidence["active_outage"] = evidence
+    timing = (RecoveryTiming(run, evidence, outage_node)
+              if getattr(getattr(run, "args", None), "recovery_timing", False) is True else None)
+    if timing:
+        timing.anchor("before_cut")
+    ready = timing.ready if timing else lambda _phase, **kwargs: run.ready(**kwargs)
     shape = probes.arm(run, "n01", "n03", 24, 128, round_trip=True)
     evidence["shape"] = shape
     radio = run.nodes[outage_node]
@@ -32,8 +38,8 @@ def active_radio_outage(run, *, outage_node="n03"):
         probes.send_with_radio_cut(run, "n01", "n03", shape, 2, radio, evidence, round_trip=True)
         run.phase("radio left during partially delivered paid round trips")
         evidence["isolated_peers"] = eventually(
-            "active radio departure establishes the partition", lambda: run.ready(
-                line=True, isolated=True, outage_node=outage_node), 100)
+            "active radio departure establishes the partition", lambda: ready(
+                "partition", line=True, isolated=True, outage_node=outage_node), 100)
         evidence["eviction_observed"] = time.monotonic()
         first = probes.receive(run, "n01", "n03", shape, round_trip=True)
         require(0 < evidence["before_cut"]["unique_packets"] <= first["unique_packets"]
@@ -52,18 +58,26 @@ def active_radio_outage(run, *, outage_node="n03"):
             radio.mesh_up()
             evidence["rejoin_completed"] = time.monotonic()
             evidence["rejoined_peers"] = eventually(
-                "same paid processes rejoin automatically", lambda: run.ready(line=True), 150)
+                "same paid processes rejoin automatically", lambda: ready("rejoin", line=True), 150)
             evidence["rejoin_observed"] = time.monotonic()
+            evidence["profile_check_started"] = time.monotonic()
             run.verify_open_profiles()
+            evidence["profile_check_completed"] = time.monotonic()
         run.save()
 
+    evidence["process_check_started"] = time.monotonic()
     evidence["processes_after"] = processes(run)
+    evidence["process_check_completed"] = time.monotonic()
     require(evidence["processes_before"] == evidence["processes_after"],
             "radio recovery restarted a relay or replaced its identity")
+    evidence["recovery_arm_started"] = time.monotonic()
     recovery = probes.arm(run, "n01", "n03", 8, 128, round_trip=True)
+    evidence["recovery_arm_completed"] = time.monotonic()
     require(recovery["stream_id"] != shape["stream_id"], "recovery reused the interrupted stream")
     evidence["recovery_shape"] = recovery
+    evidence["recovery_send_started"] = time.monotonic()
     evidence["recovery_sender"] = probes.send(run, "n01", "n03", recovery, 4, round_trip=True)
+    evidence["recovery_send_completed"] = time.monotonic()
     submitted(evidence["recovery_sender"], recovery)
 
     def recovered():
@@ -74,5 +88,7 @@ def active_radio_outage(run, *, outage_node="n03"):
     evidence["recovery_observed"] = time.monotonic()
     evidence["recovery_upper_bound_seconds"] = evidence["recovery_observed"] - evidence["rejoin_started"]
     evidence["recovery_latency"] = round_trip_latency(evidence["recovery_receiver"])
+    if timing:
+        timing.anchor("after_recovery")
     evidence["passed"] = True
     run.phase("same processes deliver fresh paid round trips after automatic radio rejoin")

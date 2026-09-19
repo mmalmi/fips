@@ -28,9 +28,21 @@ def probe_report(count, expected=24, stream="a" * 32):
 
 class ActiveOutageTests(unittest.TestCase):
     def run_cut(self, *, completed=False, lost=False, observation_error=False, restart=False,
-                late_cut=False, cut_error=False, outage_node="n03", stale_peer=None):
+                late_cut=False, cut_error=False, outage_node="n03", stale_peer=None, timing=False,
+                diagnostic_error=False):
         run = Mock()
+        run.args = SimpleNamespace(recovery_timing=timing)
         run.nodes = {name: Mock(npub=name) for name in ("n01", "n02", "n03")}
+        for node in run.nodes.values():
+            node.interface = "mesh0"
+            node.native.return_value = {"status": "ok", "data": {"transports": [{
+                "type": "ethernet", "name": "mesh0", "transport_id": 1,
+                "stats": {"beacons_sent": 1, "beacons_recv": 2, "beacons_dropped": 0}}]}}
+            node.remote.side_effect = lambda command: (
+                b"1000\n20.50\n" if isinstance(command, str) else b"Station test\n")
+        if diagnostic_error:
+            node = run.nodes[outage_node]
+            node.native.side_effect = [RuntimeError("diagnostic unavailable"), node.native.return_value]
         radio_down = False
         def down():
             nonlocal radio_down
@@ -108,6 +120,23 @@ class ActiveOutageTests(unittest.TestCase):
         self.assertEqual([p["npub"] for p in isolated["n01"]["peers"]], ["n02"])
         self.assertEqual([p["npub"] for p in isolated["n02"]["peers"]], ["n01"])
         self.assertEqual(isolated["n03"]["peers"], [])
+
+    def test_timing_keeps_acceptance_and_failure_restoration(self):
+        for failure in ({}, {"restart": True}, {"cut_error": True}, {"stale_peer": "n03"},
+                        {"diagnostic_error": True}):
+            with self.subTest(failure=failure):
+                run, error = self.run_cut(timing=True, outage_node="n02", **failure)
+                evidence = run.evidence["active_outage"]
+                self.assertEqual(evidence["passed"], not failure)
+                self.assertEqual(error is None, not failure)
+                run.nodes["n02"].mesh_up.assert_called_once_with()
+                self.assertEqual(set(evidence["timing"]["anchors"]["before_cut"]), set(run.nodes))
+                if not failure:
+                    self.assertEqual([s["phase"] for s in evidence["timing"]["samples"]],
+                                     ["partition", "rejoin"])
+                    self.assertEqual(set(evidence["timing"]["anchors"]["after_recovery"]), set(run.nodes))
+                    for name in ("profile_check", "process_check", "recovery_arm", "recovery_send"):
+                        self.assertLess(evidence[name + "_started"], evidence[name + "_completed"])
 
     def test_bridge_cut_partitions_all_three_then_restores_exact_line(self):
         run, error = self.run_cut(outage_node="n02")
