@@ -361,14 +361,8 @@ pub(super) async fn exercise(
             .any(|p| p.provider == *peers[2].node_addr() && p.contract.max_units == 32_768),
         "replacement starts with its bounded trial"
     );
-    for index in 1..4 {
-        assert!(
-            controllers[index]
-                .purchase_history()
-                .await
-                .unwrap()
-                .is_empty()
-        );
+    for controller in &controllers[1..] {
+        assert!(controller.purchase_history().await.unwrap().is_empty());
     }
     // The shared fixture reloads and settles these same channels, then verifies
     // conservation of all 259 test sats; no timeline-specific financial replay.
