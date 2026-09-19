@@ -48,7 +48,8 @@ fn sealed_service_packet(
     .unwrap();
     let mut mover = mover();
     mover.register_owner(owner, OwnerConfig::new(1, 8).with_fsp_session_start_ms(0));
-    mover.register_owner(next, OwnerConfig::new(1, 8));
+    // Live FMP owners have a session clock, which supplies the four-byte timestamp.
+    mover.register_owner(next, OwnerConfig::new(1, 8).with_fmp_session_start_ms(0));
     mover.submit_outbound_packet(packet).unwrap();
     let work = dispatch_outbound_available(&mut mover, 1).pop().unwrap();
     let mut untagged = work.packet.clone();
@@ -71,6 +72,7 @@ fn sealed_service_packet(
         assert_eq!(packet.service_carrier, counters);
         mover.submit_outbound_packet(packet).unwrap();
         let work = dispatch_outbound_available(&mut mover, 1).pop().unwrap();
+        assert_eq!(work.reservation.fmp_timestamp_ms, Some(1));
         result = execute_seal_crypto_work(work.packet, &work.reservation, &test_cipher(8));
     }
     let CryptoResult::Sealed(output) = result else {
