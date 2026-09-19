@@ -798,19 +798,21 @@ See [the costs, loss evidence and attribution limits](CADENCE-RESULTS.md#payment
 The controller now saves a full wallet-debit reservation before funding, records
 the original wallet operation and actual cost, and retains net wallet spending
 across verified refunds. Every financial mutation and restart validates the same
-capital/lifetime limits. Read-only recovery includes the original cost even after
-quote expiry or pause. Replayed refunds require the SDK's durable total; importing
-zero new coins is no longer treated as evidence of a zero original refund.
+capital/lifetime limits. Recovery includes the original cost even after quote
+expiry or pause, and restores committed mint outputs for an exact persisted
+opening without another spend. Replayed refunds require the SDK's durable total;
+importing zero new coins is no longer treated as evidence of a zero original refund.
 
 The nonzero-fee service fixture also exposed unused fee reserves returning above
 nominal capacity. Settlement now validates the value after the funding swap;
 actual debit minus the wallet-verified refund determines lifetime spending.
 See [funding costs](FUNDING-COSTS.md) for limits, status fields, verification and
 the required unreleased dependencies. Fresh-profile route and channel retirement
-is implemented. Remaining durability acceptance includes recovery of incomplete
-wallet openings after route expiry, physical power-loss recovery and bounded CDK
-database growth. Legacy profile migration is outside this milestone; dependency
-distribution remains a separate requirement.
+is implemented. The persisted-opening crash boundary below now passes after
+route expiry. Wallet sends interrupted before an opening is saved, physical
+power-loss recovery and bounded CDK database growth remain unverified. Legacy
+profile migration is outside this milestone; dependency distribution remains a
+separate requirement.
 
 The focused gates pass 89 relay tests: library, controllers, destination pricing,
 fee-bearing funding/replayed refunds, standalone services, and ordinary/native
@@ -973,13 +975,14 @@ production-readiness claim. Devices are unchanged.
 
 ## Earlier funding recovery after quote expiry
 
-Recovery now looks up wallet-committed channels before applying route expiry and
-pause checks. Opening and recovery share the same immutable wallet request. The
-existing Cashu SDK recovery operation performs no mint requests and cannot open
-another channel. A successful lookup saves the original funding identity without
-accepting a quote, activating forwarding or releasing reserved capital. Missing
-and conflicting records retain their reservations. No new message, journal field
-or dependency is added.
+Recovery checks original wallet funding before applying route expiry and pause
+checks. Opening and recovery share the same immutable wallet request. Completed
+funding is recovered locally. An incomplete persisted opening uses the Cashu SDK's
+restore-only operation to retrieve its committed mint outputs, with shared output
+and signature validation. It cannot create an opening, send wallet funds or fall
+back to a swap. Recording the original funding identity does not accept a quote,
+activate forwarding or release reserved capital. Missing and conflicting records
+retain their reservations. No new FIPS message, journal field or dependency is added.
 
 Two journal tests exercise durable, repeatable recording and rejection of changed
 funding intent or conflicting channel/payment records. The live five-node
@@ -994,16 +997,32 @@ submitted traffic before the separate datagram phase. An immediate burst can
 otherwise exhaust the shared unpaid allowance before replenishment. It neither
 forces a payment nor changes production credit limits.
 
-This covers the wallet-committed/controller-unrecorded boundary. It does not
-establish recovery after every mint-response or power-loss boundary, refund an
-orphan channel, or renew expired route authorization. The later bounded expiry
-recovery below covers fully identified, never-used withdrawn funding. Funding lost
-before the wallet committed its channel remains unresolved by this read-only
-reconciliation path. The SDK already resumes incomplete persisted openings for an
-eligible purchase retry; its general opening API may submit a swap when restoration
-is empty. Recovery after route expiry therefore still needs a restore-only
-acceptance case that cannot authorize a new spend. Completed channel retirement
-cannot remove unresolved work.
+That baseline covers the wallet-committed/controller-unrecorded boundary. A new
+three-process case also kills the buyer after the mint commits the exact saved
+funding swap, before its response reaches the wallet. It lets the quote expire
+naturally and withdraws the watched route through ordinary provider absence.
+The previous read-only lookup left funding unresolved; the restore-only path
+recovers the original operation and channel automatically, with unchanged wallet
+balance, swap count and spending authority. No purchase is installed. The test
+observes retained funding before the original wallet expiry, then verifies its
+unused refund and coordinated SDK/controller retirement after expiry. Spendable
+balances plus mint fees conserve all 384 issued test sats; lifetime accounting
+retains the original debit and verified refund.
+
+The shared SDK cases cover idempotent completion, empty and partial restore,
+invalid signatures, changed terms, missing custody evidence and a missing opening
+signature. A nonzero-fee proxy regression also verifies that a disconnected response
+cannot erase a mint charge from the test evidence. These checks do not establish
+recovery before a channel opening is persisted, physical power-loss durability or
+renewed routing permission. An empty restore is uncertainty, not permission to
+spend or retire the record. The ordinary opening API retains its swap fallback
+for separately authorized purchases; expired-route recovery never calls it.
+
+The matching source passes all 232 relay library tests, all four fee-bearing
+funding process cases and the five-node controller baseline described above.
+Strict all-feature/all-target relay lint, workspace formatting and the 771-file
+size gate pass with the local development dependencies. No device deployment is
+implied by these software checks.
 
 Expired withdrawn requests which never reached funding now release their
 reservation slots through ordinary upkeep. Removal requires no funding intent
@@ -1040,8 +1059,9 @@ These retained records can exhaust bounded slots, and an early unresolved fundin
 sequence can block retirement of later completed channels. Safe retention alone
 does not establish indefinitely reusable accounts.
 
-Run `cargo test -p fips-relay --lib controller::funding::tests` and
-`cargo test -p fips-relay --test controller`.
+Run `cargo test -p fips-relay --lib controller::funding::tests`,
+`cargo test -p fips-relay --test controller`, and the focused interrupted-funding
+command in [funding costs](FUNDING-COSTS.md).
 
 Verification passes 70 library tests and all seven controller-target tests across
 runs. The full controller run passed six tests; the affected baseline passed

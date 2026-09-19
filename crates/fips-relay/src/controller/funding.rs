@@ -1,8 +1,8 @@
-//! Recover committed wallet funding independently of routing authorization.
+//! Restore original wallet funding independently of routing authorization.
 use super::*;
 use cashu_service::{
     StreamingRouteOpenCashuSpilmanChannelFromWalletRequest,
-    StreamingRouteOpenCashuSpilmanChannelFromWalletResult, recover_cashu_spilman_wallet_funding,
+    StreamingRouteOpenCashuSpilmanChannelFromWalletResult, restore_cashu_spilman_wallet_funding,
 };
 
 impl FundingIntent {
@@ -61,9 +61,10 @@ impl FundingIntent {
 }
 
 impl Controller {
-    /// Recover only wallet-committed channels. This SDK operation never opens a
-    /// channel, contacts the mint or spends a token. Missing records keep their
-    /// capital reservation; expired/paused offers gain no routing permission.
+    /// Restore only the original persisted opening. The SDK can retrieve its
+    /// committed mint outputs, but cannot create an opening, send wallet funds
+    /// or submit a swap. Uncertain records keep their capital reservation;
+    /// expired/paused offers gain no routing permission.
     pub(super) async fn recover_funding(&self) -> Result<(), String> {
         let mut first_error = None;
         for id in self
@@ -98,7 +99,7 @@ impl Controller {
         let runtime = tokio::runtime::Handle::current();
         let (opened, _wallet) = blocking(move || {
             let opened = runtime
-                .block_on(recover_cashu_spilman_wallet_funding(&directory, &request))
+                .block_on(restore_cashu_spilman_wallet_funding(&directory, &request))
                 .map_err(|e| e.to_string());
             // Retain ownership until the blocking SDK call finishes, even when
             // the async recovery worker is cancelled.

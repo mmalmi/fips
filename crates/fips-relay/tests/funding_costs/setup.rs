@@ -12,6 +12,12 @@ pub(super) struct Bench {
 }
 
 pub(super) async fn start_bench(root: &Path, seed: u64, lifetime: u64) -> Bench {
+    let (mint, network) = start_mint(root, seed).await;
+    let url = mint.url().to_owned();
+    start_nodes(root, mint, network, &url, lifetime, lifetime / 2).await
+}
+
+pub(super) async fn start_mint(root: &Path, seed: u64) -> (LocalMint, PaymentNetwork) {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -35,6 +41,17 @@ pub(super) async fn start_bench(root: &Path, seed: u64, lifetime: u64) -> Bench 
         )
         .await
         .unwrap();
+    (mint, network)
+}
+
+pub(super) async fn start_nodes(
+    root: &Path,
+    mint: LocalMint,
+    network: PaymentNetwork,
+    mint_url: &str,
+    lifetime: u64,
+    quote_lifetime: u64,
+) -> Bench {
     let mut configs = Vec::new();
     let mut paths = Vec::new();
     let mut npubs = Vec::new();
@@ -42,19 +59,19 @@ pub(super) async fn start_bench(root: &Path, seed: u64, lifetime: u64) -> Bench 
     for i in 0..3 {
         let directory = root.join(format!("n{i}"));
         std::fs::create_dir(&directory).unwrap();
-        let mut cfg = config(&directory, mint.url());
+        let mut cfg = config(&directory, mint_url);
         cfg.terms.controller.max_funding_overhead_sat = 8;
         cfg.terms.controller.max_locked_sat = 40;
         cfg.terms.controller.max_wallet_spend_sat = 40;
         cfg.terms.controller.channel_lifetime_secs = lifetime;
-        cfg.terms.quote_lifetime_secs = lifetime / 2;
+        cfg.terms.quote_lifetime_secs = quote_lifetime;
         cfg.terms.billing = fips_relay::ledger::BillingBasis::ForwardingAttempt;
         let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         cfg.transports = udp_transports(socket.local_addr().unwrap());
         sockets.push(socket);
         npubs.push(RelayService::initialize(cfg.clone()).await.unwrap());
         let wallet = cfg.state_directory.join("wallet");
-        let quote = create_topup_quote(&wallet, mint.url(), 128).await.unwrap();
+        let quote = create_topup_quote(&wallet, mint_url, 128).await.unwrap();
         network
             .orchestrator_funding()
             .settle_external(&quote.payment_request)

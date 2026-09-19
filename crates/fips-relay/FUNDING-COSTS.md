@@ -24,12 +24,17 @@ signatures. It does not include wallet/mint fees. Set all limits explicitly.
 Zero funding overhead allows only funding that needs no value above capacity.
 
 Recovery reads the original wallet cost even if its quote has expired or the route
-is paused. It grants no routing permission. Missing or conflicting evidence keeps
-the full reservation. Refund recovery requires the wallet's durable original
-recovered amount, including on calls that import zero new coins. Peer settlement
-reports alone cannot release budget. A settlement report also names the value
-after the funding swap; returned unused fee reserves can exceed nominal channel
-capacity. The wallet debit and verified refund determine the lifetime cost.
+is paused. If the mint committed funding before the wallet saved its result, the
+SDK restores the exact outputs from the persisted opening. This recovery cannot
+create an opening, send wallet funds or fall back to a mint swap. It grants no
+routing permission. Missing or conflicting evidence, empty restore replies and
+invalid or partial signatures keep the full reservation.
+
+Refund recovery requires the wallet's durable original recovered amount, including
+on calls that import zero new coins. Peer settlement reports alone cannot release
+budget. A settlement report also names the value after the funding swap; returned
+unused fee reserves can exceed nominal channel capacity. The wallet debit and
+verified refund determine the lifetime cost.
 
 ## Signed charges and payout reserves
 
@@ -118,3 +123,18 @@ values, wallet conservation, report replay and restart. After actual expiry, it
 checks receiver removal and identical SDK/controller histories for both paid and
 zero-usage channels, preserving the original payout values and lifetime budget.
 Zero-usage funding tests alone do not exercise the redemption-reserve distinction.
+
+The interrupted-funding process case kills the buyer after the mint commits the
+exact saved funding swap, while its response is held. The original quote expires
+naturally and the departed provider causes ordinary route withdrawal. Restart
+restores the same operation and channel without another send or swap; the route
+remains disabled. At the original wallet expiry, the unused funding is refunded
+and its SDK/controller records retire. Spendable balances plus mint fees conserve
+all 384 issued test sats, and gross debits/refunds remain in lifetime accounting.
+This covers a persisted opening with restorable committed outputs. Wallet sends
+interrupted before an opening is saved and physical power-loss durability remain
+separate boundaries. Run the focused case with:
+
+```sh
+cargo test --config /path/to/local-dependencies.toml -p fips-relay --all-features --test funding_costs restore::interrupted_funding_restores_after_route_expiry_without_new_spending
+```

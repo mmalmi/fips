@@ -13,7 +13,7 @@ impl Controller {
         self.withdraw_disconnected_purchases().await?;
         self.retire_channels(false).await?;
         // Recover financial identity before applying quote expiry/pause gates.
-        // Recovering a committed channel never authorizes route activation.
+        // Restoring original funding never authorizes route activation.
         let mut first_error = self.recover_funding().await.err();
         if let Err(error) = self.recover_expired_funding().await {
             first_error.get_or_insert(error);
