@@ -223,15 +223,17 @@ impl ControllerTasks {
         });
         let watcher = controller.clone();
         let refresh = tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(Duration::from_secs(2));
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut delay = Duration::ZERO;
             loop {
                 tokio::select! {
                     _ = stop_refresh.changed() => break,
-                    _ = ticker.tick() => {
+                    _ = tokio::time::sleep(delay) => {
                         if let Err(error) = watcher.refresh_watched_routes().await {
                             *watcher.last_error.lock().unwrap() = Some(error);
                         }
+                        // Wake at an existing quote deadline instead of rounding
+                        // five-second refreshes up to the next two-second tick.
+                        delay = watcher.next_refresh_delay();
                     }
                 }
             }

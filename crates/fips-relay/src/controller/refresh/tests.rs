@@ -1,4 +1,5 @@
 mod coalescing;
+mod scheduling;
 
 use super::*;
 use crate::ledger::{BillingBasis, Limits};

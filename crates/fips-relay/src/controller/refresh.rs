@@ -2,6 +2,7 @@
 use super::*;
 
 const REFRESH_SECONDS: u64 = 5;
+pub(super) const REFRESH_RECHECK: Duration = Duration::from_secs(2);
 
 #[cfg(test)]
 pub(super) mod tests;
@@ -34,6 +35,27 @@ impl WatchedRoute {
 }
 
 impl Controller {
+    pub(super) fn next_refresh_delay(&self) -> Duration {
+        let now = tokio::time::Instant::now();
+        self.refresh_checks
+            .lock()
+            .ok()
+            .and_then(|checks| {
+                checks
+                    .values()
+                    .filter_map(|last| {
+                        (last.checked + Duration::from_secs(REFRESH_SECONDS))
+                            .checked_duration_since(now)
+                            .filter(|delay| !delay.is_zero())
+                    })
+                    .min()
+            })
+            // Expired checks may belong to paused watches or ongoing renewals.
+            // They must not cause a busy loop; refresh reports any poisoned lock.
+            .unwrap_or(REFRESH_RECHECK)
+            .min(REFRESH_RECHECK)
+    }
+
     pub(super) fn validate_watched_routes(j: &Journal) -> Result<(), String> {
         if j.watched_routes.len() > MAX_ROUTES {
             return Err("watched route capacity".into());
