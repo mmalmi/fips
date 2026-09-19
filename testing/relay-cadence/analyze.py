@@ -6,6 +6,7 @@ from collections import defaultdict
 from pathlib import Path
 from statistics import mean
 from native_counters import record as record_native_counters
+from service_carrier import record as record_service_carrier
 from validation import (HARDWARE_SCHEDULE, HARDWARE_WORKLOADS, OS_IO_COUNTERS,
                         PAYMENT_OPERATIONS, POLICIES, WORKLOADS, payment_counters, probe_delivery_loss,
                         quiet_boundary, unsigned, validate_gap,
@@ -268,6 +269,9 @@ def validated_rows(rows, pilot, delivery_rejections=None):
     native_counters = metadata.get("native_counters", False)
     if type(native_counters) is not bool or (native_counters and schema != 3):
         raise ValueError("native counters require explicit hardware metadata")
+    service_carrier = metadata.get("payment_service_carrier", False)
+    if type(service_carrier) is not bool:
+        raise ValueError("payment carrier counters require explicit boolean metadata")
     log_filter = metadata.get("dataplane_drop_log_filter")
     if log_filter is not None and (schema != 3 or not isinstance(log_filter, str)
                                    or not 1 <= len(log_filter) <= 256):
@@ -319,6 +323,7 @@ def validated_rows(rows, pilot, delivery_rejections=None):
             if row["max_delay_ms"] != delay:
                 raise ValueError("unmatched policy order")
             result = summarize(row, schema, delivery_rejections)
+            record_service_carrier(row["data"], result, previous, service_carrier)
             if previous is not None:
                 validate_gap(previous, row["data"]["before_guard"], schema)
             if schema == 3:
@@ -342,6 +347,13 @@ def markdown(metadata, grouped):
             avg = lambda k: mean(v.get(k, 0) for v in values)
             latency = f"{avg('mean_latency_us') / 1000:.3f}" if all(v["mean_latency_us"] is not None for v in values) else "—"
             lines.append(f"| {workload} | {delay} | {int(sum(v['delivered_packets'] for v in values))} / {int(sum(v['submitted_packets'] for v in values))} | {avg('payment_cpu_ms'):.2f} | {avg('process_cpu_ms'):.2f} | {avg('updates'):.1f} | {avg('payment_record_bytes') / 1024:.2f} | {avg('payment_journal_writes'):.1f} | {latency} |")
+    if metadata.get("payment_service_carrier", False):
+        lines += ["", "Local payment-service carrier bytes include submitted TCP/FIPS segments, "
+                  "acknowledgments and retransmissions. JSON retains per-node/transport workload "
+                  "deltas and separate guard-gap deltas. Ethernet's three-byte prefix is separate. "
+                  "These counts exclude opaque transit, shared handshakes/MMP/rekeys, kernel "
+                  "encapsulation/retries and radio airtime; they are not physical wire bytes. "
+                  "Idle transport activity remains visible even without another payment."]
     if metadata["schema"] == 3:
         lines[2] = (
             "Optimized build: **True**. Two opposite-order repetitions; three real "

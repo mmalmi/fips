@@ -48,6 +48,7 @@ def metadata(args):
         "policy_order": list(selected), "pilot": args.pilot,
         "pilot_delay_ms": selected[0] if args.pilot else None,
         "native_counters": getattr(args, "native_counters", False),
+        "payment_service_carrier": True,
         "dataplane_drop_log_filter": (DATAPLANE_DROP_LOG_FILTER
                                       if getattr(args, "dataplane_drop_logs", False) else None),
         "mint_connection": "controller_ssh" if args.mint_ssh_forward else "remote_lan",

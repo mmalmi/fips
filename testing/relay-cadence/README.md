@@ -412,6 +412,39 @@ submission or an isolated payment-only capture with a matched idle baseline.
 Subtracting that baseline estimates incremental cost; it does not establish exact
 per-payment attribution during mixed data traffic or measure radio airtime.
 
+### Local payment-service carrier capture
+
+New Wi-Fi captures set `payment_service_carrier: true` in report metadata and
+require a measurement build exposing `control_traffic[].service_carrier` for
+port 44743. The four existing application counters keep their meaning. Absent
+instrumentation is unavailable, not zero; historical reports without this
+metadata retain `payment_service_carrier: null` in their summaries.
+
+The analyzer records successful local submissions per node and transport,
+including inner TCP handshakes, ACKs and retransmissions associated with that
+service. It reports FIPS payload bytes and Ethernet's three-byte prefix
+separately. Counts from requests and replies are added at their sending nodes;
+received bytes are not added again. These observations exclude opaque transit,
+shared FIPS handshake/MMP/rekey traffic, OS/link encapsulation and radio airtime.
+Outer TCP kernel retransmissions are also outside the transport API boundary.
+They are not complete physical wire usage or the complete marginal cost of a
+payment. The quote and agreement ports retain their separate application counts.
+
+Snapshots are not atomic across counters. Each counter must remain monotonic
+within the same process and service identity; missing, saturated, ambiguous or
+malformed evidence rejects a claimed capture. Discarded sealed outputs are
+reported separately; their already-submitted fragment prefixes still cost bytes.
+Each window retains its per-node/transport deltas and bytes per delivered
+application byte. Zero-delivery ratios remain null.
+
+TCP activity may continue after a payment is acknowledged. The analyzer reports
+the before/after guard gaps and the gap between successive workloads separately,
+without extending the three-second tail or subtracting a background estimate.
+Every adjacent interval is counted once. An idle window can therefore show
+transport bytes with zero new payment records. Existing payment, storage,
+delivery and financial-conservation acceptance rules still apply; carrier
+diagnostics cannot turn a failed workload into an accepted comparison.
+
 ### Separate storage syscall diagnostics
 
 For an isolated capture through the production payment path, run from
