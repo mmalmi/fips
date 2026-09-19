@@ -67,8 +67,9 @@ lifetime exposure unchanged. Legacy, unfinished and still-referenced channels
 remain retained. Seller cleanup now requires the buyer's durable refund and report
 release; unpaid exposure remains attached to buyer and mint. It now coordinates
 SDK receiver removal using original wallet payout custody and a durable exact
-plan. CDK histories and already-orphaned legacy receiver records still need
-separate cleanup and migration.
+plan. CDK operation/activity/proof histories still need separate bounded-retention
+work. Cleanup of already-orphaned legacy receiver records is outside this
+fresh-profile milestone.
 [History and recovery](HISTORY.md) specifies the transaction and remaining bounds.
 
 ## Development and migration
@@ -77,9 +78,9 @@ Controller journal versions 2 through 6 require the saved debit approvals, walle
 evidence and refund totals. Version-1 controller journals cannot be automatically
 upgraded because their fee approval and exact wallet costs may be unavailable.
 Keep old state intact and use its matching executable for recovery; do not delete
-the journal or supply invented zero fees. Automated reconciliation/migration is
-still a release blocker. Fresh test profiles must explicitly configure the two
-new policy fields. Settlement peers need the same updated report format.
+the journal or supply invented zero fees. Legacy reconciliation and migration are
+outside this greenfield milestone. Fresh test profiles must explicitly configure
+the two new policy fields. Settlement peers need the same updated report format.
 
 This source requires the unreleased local cashu-service, CDK, Spilman and TCP/FIPS changes;
 the published dependency pins cannot build the funding adapter yet. Use the

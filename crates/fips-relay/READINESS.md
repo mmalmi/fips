@@ -462,8 +462,17 @@ now advances the existing budget and backoff before awaiting transport submissio
 so cancellation cannot erase the attempt either. Eleven focused core tests pass,
 including real UDP initiation followed by a stopped transport, unanswered-packet
 grace, success-only byte accounting, and peer/session-index cleanup. Strict core
-Clippy passes. The hardware runs above used the earlier binary; this failure-path
-fix still needs the next device regression.
+Clippy passes. A rebuilt ARM64 artifact including the fix also passes the guarded
+three-router outage: all eight fresh recovery replies arrive, original funding
+and channels persist, and both directions advance signed payments and seller
+credit. With the temporary 10-second interval, full peer rediscovery is observed
+2.00 seconds after the radio command returns and the rejoin-to-probe upper bound
+is 10.58 seconds. The interrupted stream loses 22 of 24 replies. All 384 test sats
+are collected, all 351 management checks pass, and independent live reads match
+every saved router baseline after cleanup. No local retry-send errors occur in
+this radio run; the stopped-transport regression supplies that failure-path
+evidence. The run preserves ordinary retry grace and does not establish a general
+handover latency or change the production discovery default.
 
 The [competing-provider topology fixture](../../testing/chaos/README.md#competing-wireless-provider-topology)
 also passes on the three routers without funding. A separate source identity on
@@ -797,9 +806,11 @@ The nonzero-fee service fixture also exposed unused fee reserves returning above
 nominal capacity. Settlement now validates the value after the funding swap;
 actual debit minus the wallet-verified refund determines lifetime spending.
 See [funding costs](FUNDING-COSTS.md) for limits, status fields, verification and
-the required unreleased dependencies. Controller version-1 reconciliation and
-remaining CDK history retirement and legacy receiver reconciliation remain release blockers. Devices
-are unchanged.
+the required unreleased dependencies. Fresh-profile route and channel retirement
+is implemented. Remaining durability acceptance includes recovery of incomplete
+wallet openings after route expiry, physical power-loss recovery and bounded CDK
+database growth. Legacy profile migration is outside this milestone; dependency
+distribution remains a separate requirement.
 
 The focused gates pass 89 relay tests: library, controllers, destination pricing,
 fee-bearing funding/replayed refunds, standalone services, and ordinary/native
@@ -987,8 +998,12 @@ This covers the wallet-committed/controller-unrecorded boundary. It does not
 establish recovery after every mint-response or power-loss boundary, refund an
 orphan channel, or renew expired route authorization. The later bounded expiry
 recovery below covers fully identified, never-used withdrawn funding. Funding lost
-before the wallet committed its channel remains unresolved. Completed channel
-retirement cannot remove unresolved work.
+before the wallet committed its channel remains unresolved by this read-only
+reconciliation path. The SDK already resumes incomplete persisted openings for an
+eligible purchase retry; its general opening API may submit a swap when restoration
+is empty. Recovery after route expiry therefore still needs a restore-only
+acceptance case that cannot authorize a new spend. Completed channel retirement
+cannot remove unresolved work.
 
 Expired withdrawn requests which never reached funding now release their
 reservation slots through ordinary upkeep. Removal requires no funding intent
