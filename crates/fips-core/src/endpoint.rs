@@ -33,6 +33,7 @@ mod nostr_api;
 mod receive;
 mod recent_peers;
 mod routing;
+mod service_carrier;
 mod service_receiver;
 mod status;
 pub use routing::SourceRouteQuality;
@@ -50,6 +51,11 @@ use receive::{EndpointReceiveState, ServiceReceiveState};
 pub use recent_peers::{
     RECENT_PEERS_MAX_ENDPOINTS_PER_PEER, RECENT_PEERS_MAX_PEERS, RECENT_PEERS_VERSION, RecentPeer,
     RecentPeerEndpoint, RecentPeerTransport, RecentPeers, RecentPeersError,
+};
+use service_carrier::service_datagram_payloads;
+pub use service_carrier::{
+    SERVICE_CARRIER_DIAGNOSTICS_MAX_SERVICES, ServiceCarrierDiagnostics, ServiceCarrierSnapshot,
+    ServiceCarrierTransportSnapshot,
 };
 pub use status::{FipsEndpointPeer, FipsEndpointRelayStatus};
 
@@ -85,6 +91,9 @@ pub enum FipsEndpointError {
 
     #[error("FSP service port {port} is already registered")]
     ServicePortAlreadyRegistered { port: u16 },
+
+    #[error("endpoint service carrier diagnostic limit reached")]
+    ServiceCarrierDiagnosticsLimit,
 
     #[cfg(feature = "host-ble-transport")]
     #[error("host BLE adapter was already consumed by another endpoint bind")]
@@ -221,25 +230,6 @@ fn endpoint_data_payloads_from_vecs(
     Ok(converted)
 }
 
-fn service_datagram_payloads(
-    datagrams: Vec<FipsEndpointOutboundDatagram>,
-) -> Result<Vec<EndpointDataPayload>, FipsEndpointError> {
-    let max = crate::node::session_wire::fsp_service_datagram_max_body_len();
-    let mut payloads = Vec::with_capacity(datagrams.len());
-    for datagram in datagrams {
-        let len = datagram.data.len();
-        let Some(payload) = EndpointDataPayload::from_service_datagram(
-            datagram.source_port,
-            datagram.destination_port,
-            datagram.data,
-        ) else {
-            return Err(FipsEndpointError::ServiceDatagramTooLarge { len, max });
-        };
-        payloads.push(payload);
-    }
-    Ok(payloads)
-}
-
 fn spawn_node_task(
     mut node: Node,
     shutdown_rx: oneshot::Receiver<()>,
@@ -288,6 +278,7 @@ pub struct FipsEndpoint {
     inbound_service_tx: EndpointServiceEventSender,
     inbound_service_rx: Arc<Mutex<ServiceReceiveState>>,
     registered_services: Arc<StdMutex<HashMap<u16, EndpointServiceEventSender>>>,
+    service_carrier: service_carrier::ServiceCarrierRegistry,
     service_channel_capacity: usize,
     shutdown_tx: StdMutex<Option<oneshot::Sender<()>>>,
     task: StdMutex<Option<JoinHandle<Result<(), NodeError>>>>,
@@ -545,7 +536,10 @@ impl FipsEndpoint {
             return Ok(());
         }
 
-        self.send_endpoint_data_batch(remote, service_datagram_payloads(datagrams)?)
+        self.send_endpoint_data_batch(
+            remote,
+            service_datagram_payloads(datagrams, &self.service_carrier)?,
+        )
     }
 
     fn send_payloads_to_peer(

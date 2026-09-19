@@ -78,6 +78,7 @@ impl DataplaneTransportPayloadBatch {
         let mut item_cursor = 0usize;
         for record in &self.records {
             let item_count = record.item_count();
+            record.record_service_carrier_submissions(sent_items.saturating_sub(item_cursor));
             let record_sent = item_cursor.saturating_add(item_count) <= sent_items;
             let output = record.output();
             if record_sent {
@@ -344,7 +345,8 @@ async fn send_non_udp_transport_plan_group(
                 )
                 .await
                 {
-                    Ok(_) => {
+                    Ok(bytes) => {
+                        output.record_service_carrier(transport.transport_type().name, bytes);
                         output.record_originated_submission();
                         *sent += 1;
                         if let Some(sent_receipts) = sent_receipts.as_deref_mut() {
@@ -363,11 +365,15 @@ async fn send_non_udp_transport_plan_group(
                 let lane = segments.output.lane();
                 for index in 0..segments.len() {
                     let payload = segments.contiguous_payload(index);
-                    if let Err(error) =
-                        send_non_udp_transport_payload(transport, &remote_addr, lane, &payload).await
+                    match send_non_udp_transport_payload(transport, &remote_addr, lane, &payload).await
                     {
-                        send_error = Some(dataplane_output_error_for_transport(&error));
-                        break;
+                        Ok(bytes) => segments.output.record_service_carrier(
+                            transport.transport_type().name, bytes,
+                        ),
+                        Err(error) => {
+                            send_error = Some(dataplane_output_error_for_transport(&error));
+                            break;
+                        }
                     }
                 }
                 if let Some(reason) = send_error {

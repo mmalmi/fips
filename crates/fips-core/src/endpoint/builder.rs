@@ -291,6 +291,7 @@ impl FipsEndpointBuilder {
                 endpoint_data_io.service_event_rx,
             ))),
             registered_services: Arc::new(StdMutex::new(HashMap::new())),
+            service_carrier: Default::default(),
             service_channel_capacity: self.packet_channel_capacity,
             shutdown_tx: std::sync::Mutex::new(Some(shutdown_tx)),
             task: std::sync::Mutex::new(Some(task)),

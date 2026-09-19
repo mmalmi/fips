@@ -245,6 +245,7 @@ pub(crate) enum OutboundPayloadTransform {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct OutboundPacket {
     originated_observation: Option<OriginatedSessionObservation>,
+    service_carrier: Option<crate::endpoint::ServiceCarrierDiagnostics>,
     originated_preparation: Option<OriginatedSessionPreparation>,
     originated_prepared: bool,
     owner: OwnerId,
@@ -285,6 +286,7 @@ impl OutboundPacket {
             fsp_auto_coords_warmup: true,
             fsp_send_receipt: None,
             originated_observation: None,
+            service_carrier: None,
             originated_preparation: None,
             originated_prepared: false,
             send_token: None,
@@ -312,6 +314,7 @@ impl OutboundPacket {
             fsp_auto_coords_warmup: true,
             fsp_send_receipt: None,
             originated_observation: None,
+            service_carrier: None,
             originated_preparation: None,
             originated_prepared: false,
             send_token: None,

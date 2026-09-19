@@ -123,6 +123,7 @@ pub(crate) struct NodeEndpointDataBatch {
 pub(crate) struct EndpointDataPayload {
     msg_type: u8,
     body: crate::transport::PacketBuffer,
+    service_carrier: Option<crate::endpoint::ServiceCarrierDiagnostics>,
 }
 
 impl EndpointDataPayload {
@@ -131,6 +132,7 @@ impl EndpointDataPayload {
             Self {
                 msg_type: crate::protocol::SessionMessageType::EndpointData.to_byte(),
                 body: crate::transport::PacketBuffer::new(payload),
+                service_carrier: None,
             },
         )
     }
@@ -151,6 +153,7 @@ impl EndpointDataPayload {
         Some(Self {
             msg_type: crate::protocol::SessionMessageType::DataPacket.to_byte(),
             body: crate::transport::PacketBuffer::new(body),
+            service_carrier: None,
         })
     }
 
@@ -162,8 +165,20 @@ impl EndpointDataPayload {
         self.body
     }
 
-    pub(crate) fn into_fsp_payload(self) -> (u8, crate::transport::PacketBuffer) {
-        (self.msg_type, self.body)
+    pub(crate) fn with_service_carrier(
+        mut self,
+        counters: Option<crate::endpoint::ServiceCarrierDiagnostics>,
+    ) -> Self {
+        self.service_carrier = counters;
+        self
+    }
+
+    pub(crate) fn into_fsp_payload(self) -> (
+        u8,
+        crate::transport::PacketBuffer,
+        Option<crate::endpoint::ServiceCarrierDiagnostics>,
+    ) {
+        (self.msg_type, self.body, self.service_carrier)
     }
 }
 

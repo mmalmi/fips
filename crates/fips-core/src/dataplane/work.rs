@@ -228,6 +228,7 @@ pub(crate) enum CryptoFailureKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PacketOutput {
     originated_observation: Option<OriginatedSessionObservation>,
+    service_carrier: Option<crate::endpoint::ServiceCarrierDiagnostics>,
     owner: OwnerId,
     counter: u64,
     ingress_seq: u64,
