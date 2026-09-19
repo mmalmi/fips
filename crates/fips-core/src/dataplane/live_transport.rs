@@ -75,10 +75,10 @@ impl DataplaneTransportPayloadBatch {
         sent_receipts: &mut Option<&mut Vec<DataplaneTransportSentReceipt>>,
         sent: &mut usize,
     ) {
-        self.record_service_carrier_submissions(sent_items);
         let mut item_cursor = 0usize;
         for record in &self.records {
             let item_count = record.item_count();
+            record.record_service_carrier_submissions(sent_items.saturating_sub(item_cursor));
             let record_sent = item_cursor.saturating_add(item_count) <= sent_items;
             let output = record.output();
             if record_sent {

@@ -162,6 +162,34 @@ fn service_carrier_failed_submission_has_no_invented_carrier_bytes() {
     assert_eq!(counters.snapshot().discarded_outputs, 1);
 }
 
+#[test]
+fn service_carrier_partial_batch_counts_only_the_submitted_prefix_of_each_record() {
+    let counters = ServiceCarrierDiagnostics::new(44743);
+    let mut output = sealed_service_packet(Some(counters.clone()), false);
+    output.path_mtu = 220;
+    let DataplaneDirectFspTransportOutput::Segments(segments) =
+        dataplane_direct_fsp_transport_output(output)
+    else {
+        panic!("expected fragmented service record");
+    };
+    assert!(segments.len() > 2);
+    let expected = segments.payload_len(0) + segments.payload_len(1);
+    let mut batch = DataplaneTransportPayloadBatch::with_capacity(3);
+    batch.push_whole(sealed_service_packet(None, false));
+    batch.push_direct_fsp_segments(segments);
+    batch.push_whole(sealed_service_packet(Some(counters.clone()), false));
+    let mut sent = 0;
+    let mut drops = Vec::new();
+    let mut receipts = Vec::new();
+    batch.finish_send(3, &mut drops, &mut Some(&mut receipts), &mut sent);
+    assert_eq!(udp_counters(&counters).submitted_packets, 2);
+    assert_eq!(udp_counters(&counters).fips_payload_bytes, expected as u64);
+    assert_eq!(counters.snapshot().discarded_outputs, 2);
+    assert_eq!(sent, 1);
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(drops.len(), 2);
+}
+
 #[tokio::test]
 async fn service_carrier_actual_udp_submission_matches_received_fragment_bytes() {
     let listener = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
