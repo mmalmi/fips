@@ -448,8 +448,10 @@ discarded. The mixed UDP/TCP daemon test verifies each funded endpoint's carrier
 activity through the status interface; ordinary builds report unavailable
 instrumentation as null. Both integration cases pass with measurements enabled
 and disabled, together with 11 core carrier cases, 129 dataplane cases, strict
-core/endpoint/relay lint and the source-length check. The analyzer has 90 passing
-tests and retains guard-gap traffic separately. These counters measure local
+core/endpoint/relay lint and the source-length check. The analyzer has 95 passing
+tests and retains guard-gap traffic separately. Instrumented hardware reports
+must include positive cumulative Ethernet submissions for each node with recorded
+payment-service sends; an idle window need not add any new submissions. These counters measure local
 transport submissions, excluding opaque transit and physical radio overhead;
 a matching measured run is still required before reporting the new overhead.
 
