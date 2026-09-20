@@ -231,6 +231,19 @@ evidence also supports the SDK's receiver-custody checks. Proof cleanup must
 coordinate all of those owners, not merely observe a spent state or completed
 spending operation. This is not yet a bound on total router database size or proof
 of indefinite operation under hostile identity churn.
+
+The SDK now provides an explicit local proof-release queue as a prerequisite for
+that handoff. Its caller must durably release every external owner before adding
+the original coins; spent state alone grants no cleanup authority. The queue
+retains at most 1024 candidates and deletes at most 128 eligible spent records per
+pass, preserving unspent value, local recovery/send/receipt owners and an exact
+crash-recovery intent. FIPS channel retirement does not yet supply those batches.
+It must preserve the original payout identities in its saved retirement plan
+before receiver records disappear, and release them only after custody checks
+and receiver retirement finish. The queue bounds neither unrelated wallet
+history nor total database size; repeated channel lifecycles still need to prove
+a storage plateau after integration. Collection adds no wire messages.
+
 Legacy/full profiles and version-1 funding-cost reconciliation still need explicit
 migration. Missing original evidence must never be replaced with zero costs.
 Expiry alone does not settle or refund an unfinished channel.
