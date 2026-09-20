@@ -161,9 +161,9 @@ lifetime exposure unchanged. Legacy, unfinished and still-referenced channels
 remain retained. Seller cleanup now requires the buyer's durable refund and report
 release; unpaid exposure remains attached to buyer and mint. It now coordinates
 SDK receiver removal using original wallet payout custody and a durable exact
-plan. CDK operation/activity/proof histories still need separate bounded-retention
-work. Cleanup of already-orphaned legacy receiver records is outside this
-fresh-profile milestone.
+plan. Unreleased wallet receipts, spent proofs and other CDK histories still need
+separate bounded-retention work. Cleanup of already-orphaned legacy receiver
+records is outside this fresh-profile milestone.
 [History and recovery](HISTORY.md) specifies the transaction and remaining bounds.
 
 ## Development and migration

@@ -139,6 +139,14 @@ intent resumes before ordinary funding recovery. Wallet ownership spans the
 blocking operation even if the async caller is cancelled. This performs local
 journal cleanup only and introduces no network message.
 
+For an abandoned wallet send, the SDK also acknowledges its exact original refund
+receipt before discarding the operation identity. Its saved channel intent retains
+the verified net refund and original token cost through the wallet's durable
+incoming-history handoff. Recovery completes those refund/fee totals exactly once
+even if receipt deletion preceded an interrupted totals write. Unrelated receipts
+and original coin records remain. This does not change the controller's gross
+debit, refund or lifetime spending calculations.
+
 Buyer rollups retain signed obligations, capacity, advances and rounded route
 accounting. The lifetime signing limit counts both retained and retired channels.
 The controller's capital calculation similarly includes cumulative retired gross
@@ -215,11 +223,14 @@ operator intervention after enough distinct unpaid peers. Active, unexpired,
 unacknowledged, pending, legacy or otherwise unresolved records also retain slots.
 The controller and ledger's channel bounds now count retained records on both sides.
 
-**Remaining history work:** CDK operation/activity/proof records and orphaned legacy
-receiver records remain retained. Original spent proof evidence currently supports
-the SDK's custody check; any future proof cleanup must coordinate that dependency.
-This is not yet a bound on total
-router database size or proof of indefinite operation under hostile identity churn.
+**Remaining history work:** spent proof records, unreleased or unrelated
+transactions, mint/melt records and orphaned legacy receiver records remain.
+Completed CDK recovery operations already remove their saga records; unfinished
+creating and spending operations must retain their original coins. Spent proof
+evidence also supports the SDK's receiver-custody checks. Proof cleanup must
+coordinate all of those owners, not merely observe a spent state or completed
+spending operation. This is not yet a bound on total router database size or proof
+of indefinite operation under hostile identity churn.
 Legacy/full profiles and version-1 funding-cost reconciliation still need explicit
 migration. Missing original evidence must never be replaced with zero costs.
 Expiry alone does not settle or refund an unfinished channel.
