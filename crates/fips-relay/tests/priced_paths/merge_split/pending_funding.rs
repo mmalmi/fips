@@ -72,19 +72,15 @@ impl Pending {
         }
     }
 
-    async fn retained(&self, bench: &Bench, proxy: &MintProxy, buying_finished: bool) {
-        assert!(
-            !buying_finished,
-            "the original funding caller must still be waiting"
-        );
+    async fn retained(&self, bench: &Bench, proxy: &MintProxy) -> bool {
         let saved = journal(bench, 2);
-        assert!(saved["funding"][&self.id] == self.intent);
-        assert!(saved["next_funding"] == self.sequence);
-        assert_eq!(saved["funding"].as_object().unwrap().len(), 2);
-        assert!(
-            saved["outgoing"] == self.before[2]["outgoing"],
-            "pending mint funding must not install another route"
-        );
+        let unresolved = self.funded_channel(&saved).is_none();
+        if unresolved {
+            assert!(
+                saved["outgoing"] == self.before[2]["outgoing"],
+                "pending mint funding must not install another route"
+            );
+        }
         for (i, prior) in self.before.iter().enumerate() {
             let current = journal(bench, i);
             for (id, original) in prior["funding"].as_object().unwrap() {
@@ -99,23 +95,31 @@ impl Pending {
             }
         }
         let wallet = read(&spilman_client_store_path(&bench.wallets[2]));
-        assert!(wallet["openings"][format!("r:{}", self.id)] == self.opening);
+        let original_opening = wallet["openings"][format!("r:{}", self.id)] == self.opening;
         assert_eq!(proxy.state.swaps.load(Ordering::SeqCst), self.swaps);
-        assert_eq!(
-            bench.controllers[2].funding_budget().await.unwrap(),
-            FundingBudget {
-                pending_reserved_sat: 64,
-                wallet_debited_sat: 64,
-                wallet_refunded_sat: 0,
-                locked_sat: 128,
-                exposure_sat: 128,
-            }
+        let budget = bench.controllers[2].funding_budget().await.unwrap();
+        // The mint request normally times out after 30s. Restore-only recovery
+        // may then finish the same operation before native eviction is observed.
+        // Journal and SDK observations are not an atomic cross-store snapshot.
+        assert!(matches!(budget.pending_reserved_sat, 0 | 64));
+        assert_eq!(budget.wallet_debited_sat + budget.pending_reserved_sat, 128);
+        assert_eq!(budget.wallet_refunded_sat, 0);
+        assert_eq!(budget.locked_sat, 128);
+        assert_eq!(budget.exposure_sat, 128);
+        assert!(
+            bench.controllers[2]
+                .purchases()
+                .await
+                .unwrap()
+                .iter()
+                .all(|p| p.contract.destination != *bench.peers[5].node_addr()),
+            "the partition cannot activate the new cross-component route"
         );
         assert_watches(bench).await;
+        unresolved && original_opening && budget.pending_reserved_sat == 64
     }
 
-    fn resolved(&self, bench: &Bench) -> String {
-        let saved = journal(bench, 2);
+    fn funded_channel(&self, saved: &Value) -> Option<String> {
         assert_eq!(saved["funding"].as_object().unwrap().len(), 2);
         assert!(saved["next_funding"] == self.sequence);
         let mut restored = saved["funding"][&self.id].clone();
@@ -124,12 +128,15 @@ impl Pending {
             restored == self.intent,
             "funding authority changed on rejoin"
         );
+        if funded.is_null() {
+            return None;
+        }
         assert!(
             funded["wallet_operation_id"] == self.opening["wallet_send"]["operation_id"],
             "recovery must finish the original wallet operation"
         );
         assert_eq!(funded["opening"]["balance"], 0);
-        funded["terms"]["id"].as_str().unwrap().to_owned()
+        Some(funded["terms"]["id"].as_str().unwrap().to_owned())
     }
 }
 
@@ -230,40 +237,45 @@ async fn exercise() {
         .expect("the original persisted opening must commit at the real mint")
         .unwrap();
     let pending = Pending::capture(&bench, &proxy, before);
-    pending.retained(&bench, &proxy, buying.is_finished()).await;
+    let held_before_progress =
+        pending.retained(&bench, &proxy).await && !buying.is_finished() && !release.is_closed();
     eprintln!("pending encounter: mint committed; one pending operation, reserved=64, locked=128");
 
     bench.network.set_link_up("2", "3", false);
-    converge(
-        &bench,
-        false,
-        "separation with one committed funding reply held",
-    )
-    .await;
-    pending.retained(&bench, &proxy, buying.is_finished()).await;
+    // Observe the stalled operation before either the unchanged 30s mint
+    // deadline or native peer eviction. Delivery alone can use unpaid grace.
     let progressed = healthy_progress(&mut bench, &healthy_channel).await;
-    pending.retained(&bench, &proxy, buying.is_finished()).await;
+    let held_after_progress =
+        pending.retained(&bench, &proxy).await && !buying.is_finished() && !release.is_closed();
+    eprintln!(
+        "pending encounter: healthy-credit interval bracketed by unresolved original funding and held response: before={held_before_progress}, after={held_after_progress}"
+    );
+    converge(&bench, false, "separation after committed funding").await;
+    let still_unresolved = pending.retained(&bench, &proxy).await;
+    let recovered_before_rejoin = pending.funded_channel(&journal(&bench, 2));
+    eprintln!(
+        "pending encounter: after eviction caller_finished={}, original_opening_unresolved={still_unresolved}, original_funding_restored={}",
+        buying.is_finished(),
+        recovered_before_rejoin.is_some()
+    );
     bench.network.set_link_up("2", "3", true);
     converge(
         &bench,
         true,
-        "discovery rejoin with the same pending operation",
+        "discovery rejoin with the retained original operation",
     )
     .await;
-    pending.retained(&bench, &proxy, buying.is_finished()).await;
-
     // Release before awaiting either the original caller or task shutdown. The
     // proxy also releases on sender drop, so a failing assertion cannot keep
     // a blocking wallet operation behind an indefinitely held response.
-    release
-        .send(())
-        .expect("original mint response waiter remains live");
+    // A normal client timeout may already have dropped the proxy's waiter.
+    let released = release.send(()).is_ok();
     let result = tokio::time::timeout(Duration::from_secs(45), buying)
         .await
         .expect("original funding caller must finish after release")
         .unwrap();
     eprintln!(
-        "pending encounter: original Watch returned success={}",
+        "pending encounter: original response waiter released={released}, Watch returned success={}",
         result.is_ok()
     );
     // A withdrawn offer may return an error; the one retained Watch must drive
@@ -284,7 +296,12 @@ async fn exercise() {
     })
     .await
     .expect("the original Watch must recover through discovered neighbors");
-    let restored_channel = pending.resolved(&bench);
+    let restored_channel = pending
+        .funded_channel(&journal(&bench, 2))
+        .expect("the original funding operation must be restored");
+    if let Some(original) = recovered_before_rejoin {
+        assert_eq!(restored_channel, original);
+    }
     assert_eq!(hop_usage(&bench).await[&(2, 3)].channel, restored_channel);
     assert_eq!(hop_usage(&bench).await[&(2, 1)].channel, healthy_channel);
     assert_watches(&bench).await;
@@ -311,6 +328,10 @@ async fn exercise() {
     )
     .await
     .expect("four original channels settle and all 1536 test sats collect");
+    assert!(
+        held_before_progress && held_after_progress,
+        "healthy-payment observation must precede original funding completion or timeout"
+    );
     assert!(
         progressed,
         "pending funding blocked fresh automatic payments on the same router's healthy channel"
