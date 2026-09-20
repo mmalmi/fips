@@ -69,9 +69,19 @@ adds no wire messages or financial record format. Six focused regressions and al
 
 Earlier interruptions before a verified seller channel exists still retain their
 records. A pending source Watch can still retain an expired purchase while its
-provider stays connected. Provider-wide ownership checks also retain funding when
-a refunded old trial is pinned by a Watch or prepared route change. Do not remove
-unresolved records or reset budgets to force progress.
+provider stays connected. Do not remove unresolved records or reset budgets to
+force progress.
+
+A retained trial or route-change record on a different funding intent no longer
+blocks recovery once its exact original channel has a validated terminal
+settlement and verified wallet refund. Both abandoned-send reclaim and unused
+persisted-opening expiry recovery use the same ownership check. Missing or
+inconsistent evidence, live requests, pending Watches, incoming dependencies and
+unfinished renewals continue to block recovery. Route-change targets must be
+withdrawn or exactly bound to terminal history; predecessors must resolve to that
+history. A completed renewal still needs matching terminal predecessor evidence.
+This changes recovery eligibility only: the old trial pointer, consumed quota,
+signed charges, financial records and lifetime costs remain intact.
 
 Refund recovery requires the wallet's durable original recovered amount, including
 on calls that import zero new coins. Peer settlement reports alone cannot release
@@ -218,4 +228,18 @@ radio mobility and the unresolved ownership cases above remain separate checks.
 
 ```sh
 cargo test --config /path/to/local-dependencies.toml -p fips-relay --all-features --test funding_costs transit_preopening::interrupted_transit_wallet_send_recovers_without_a_middle_watch -- --exact --test-threads=1 --nocapture
+```
+
+Retained-history regressions exercise actual buyer admission, cumulative signature
+authorization and journal mutations with explicitly modeled settlement evidence.
+After 1,234 trial bytes and a two-sat authorization, reclaiming another withdrawn
+intent preserves the closed trial's 28,766 remaining bytes and the 1,022-sat buyer
+budget across replay and reload. The same holds for an unused persisted opening
+after its original expiry. Fourteen rejection cases keep live or unproven owners
+blocked without changing the journal. These unit cases establish the accounting
+and ownership transition; they are not a mint-process or hardware demonstration
+of this retained-history sequence.
+
+```sh
+cargo test --config /path/to/local-dependencies.toml -p fips-relay --all-features --lib controller::source_selection::recovery::tests::reclaim -- --test-threads=1
 ```

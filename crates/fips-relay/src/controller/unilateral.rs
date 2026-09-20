@@ -9,44 +9,15 @@ impl Controller {
         timestamp: u64,
     ) -> Result<Funded, String> {
         let funded = intent.funded.as_ref().ok_or("funding remains uncertain")?;
-        if j.funding.get(&intent.id) != Some(intent)
+        if !Self::funding_exclusively_withdrawn(j, intent)
             || intent
                 .expires_unix
                 .checked_add(60)
                 .is_none_or(|e| e >= timestamp)
             || funded.opening.balance != 0
-            || !j
-                .requested
-                .values()
-                .any(|o| o.provider == intent.provider && j.recovery_only.contains(&o.id))
-            || j.requested
-                .values()
-                .any(|o| o.provider == intent.provider && !j.recovery_only.contains(&o.id))
-            || j.outgoing
-                .values()
-                .any(|o| o.purchase.provider == intent.provider)
             || j.history
                 .as_ref()
                 .is_some_and(|h| h.buyers.contains(&funded.terms.id))
-            || j.incoming.values().any(|i| {
-                i.downstream
-                    .as_ref()
-                    .is_some_and(|o| o.provider == intent.provider)
-            })
-            || j.route_changes.values().any(|c| {
-                c.offer.provider == intent.provider
-                    || c.previous.iter().any(|p| p.provider == intent.provider)
-            })
-            || j.renewals.values().any(|r| {
-                r.previous
-                    .iter()
-                    .any(|o| o.purchase.provider == intent.provider)
-            })
-            || j.watched_routes.values().any(|w| {
-                w.pending
-                    .as_ref()
-                    .is_some_and(|o| o.provider == intent.provider)
-            })
         {
             return Err("funded channel is unexpired, shared, used or no longer withdrawn".into());
         }

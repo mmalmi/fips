@@ -39,6 +39,7 @@ mod channel_history;
 mod control_obligations;
 pub(crate) use control_obligations::{ControlObligations, MAX_CONTROL_OBLIGATIONS};
 mod funding;
+mod funding_ownership;
 pub use capital::FundingBudget;
 mod journal;
 mod retirement;

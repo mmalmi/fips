@@ -40,39 +40,9 @@ impl Controller {
     }
 
     pub(super) fn abandoned_funding(j: &Journal, intent: &FundingIntent) -> bool {
-        j.funding.get(&intent.id) == Some(intent)
-            && intent.funded.is_none()
+        intent.funded.is_none()
             && intent.reclaimed().is_none()
-            && j.requested
-                .values()
-                .any(|o| o.provider == intent.provider && j.recovery_only.contains(&o.id))
-            && !j
-                .requested
-                .values()
-                .any(|o| o.provider == intent.provider && !j.recovery_only.contains(&o.id))
-            && !j
-                .outgoing
-                .values()
-                .any(|o| o.purchase.provider == intent.provider)
-            && !j.incoming.values().any(|i| {
-                i.downstream
-                    .as_ref()
-                    .is_some_and(|o| o.provider == intent.provider)
-            })
-            && !j.route_changes.values().any(|c| {
-                c.offer.provider == intent.provider
-                    || c.previous.iter().any(|p| p.provider == intent.provider)
-            })
-            && !j.renewals.values().any(|r| {
-                r.previous
-                    .iter()
-                    .any(|o| o.purchase.provider == intent.provider)
-            })
-            && !j.watched_routes.values().any(|w| {
-                w.pending
-                    .as_ref()
-                    .is_some_and(|o| o.provider == intent.provider)
-            })
+            && Self::funding_exclusively_withdrawn(j, intent)
     }
 
     /// The caller owns the wallet mutex. Persist this routing fence before the

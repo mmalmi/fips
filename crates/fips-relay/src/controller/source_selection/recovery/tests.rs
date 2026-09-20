@@ -5,6 +5,8 @@ use fips_core::node::{
     OriginatedSessionObserver,
 };
 
+mod reclaim;
+
 fn fixture(root: &Path) -> (Store, Outgoing, BuyerAuthorizer, DurableRelay) {
     let (mut store, mut old, buyer, seller) = retirement_tests::fixture(root);
     old.offer.trial = true;
