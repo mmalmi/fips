@@ -561,8 +561,9 @@ PYTHONPATH=testing/chaos:testing/chaos/tests python3 -m unittest \
 ```
 
 These tests use local fakes to check orchestration, authority, evidence and failure
-cleanup. Physical interrupted-promotion acceptance, process-restart recovery and
-arbitrary mobile mesh encounters remain separate checks.
+cleanup. The [readiness assessment](../../crates/fips-relay/READINESS.md#physical-wi-fi-discovery-and-free-recovery)
+records the passing same-process hardware run and its limits. Full-process
+restart recovery and arbitrary mobile mesh encounters remain separate checks.
 
 ### Paid/free Wi-Fi priority
 

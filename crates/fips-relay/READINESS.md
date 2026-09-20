@@ -367,9 +367,34 @@ stop without cleanup errors. The combined lifecycle has 89 passing Linux checks,
 including funding order and preservation after radio or financial uncertainty.
 
 These runs cover controlled departure/rejoin with reconciled, already funded
-routes on both SAE-protected and open radio meshes. Interrupted purchase
-acceptance on hardware, arbitrary physical mobility/mesh merge-split, phone
-outage recovery and sustained hardware capacity still require verification.
+routes on both SAE-protected and open radio meshes.
+
+The [interrupted trial-promotion fixture](../../testing/chaos/README.md#interrupted-trial-promotion)
+also passes on the three-router SAE-protected mesh (2026-09-20). The provider
+commits a full agreement after the source consumes 3,752 of its 32,768 trial
+units; the successful response is held while the source retires that trial.
+Removing the middle radio causes complete native peer eviction and withdrawal
+by the original Watch. After rejoin, the same three processes recover a working
+full route and automatic payments without a replacement Watch or rescue purchase.
+The recovery trial retains exactly 29,016 units. All 32 round trips across four
+fresh bursts complete, including the final eight under the recovered full
+agreement. No traffic is offered during the outage.
+
+The pinned runtime validator checks that the original source channel's 27-sat
+refund precedes its sole 32-sat replacement and that lifetime budgets remain
+intact; the reverse channel remains original. These exact journal transitions
+are runtime assertions, not replayable from the retained summary evidence alone.
+The provider earns 18 test sats, all 384 issued sats are collected, and every
+test wallet ends empty. All 423 management checks pass. Independent restoration
+checks confirm unchanged original router baselines, Internet access and removal
+of the owned test processes and filters.
+
+Releasing the held response closes two abandoned responders without delivering
+a late reply to the buyer; this run does not test buyer rejection of a late
+response. Full-process restart during promotion, other funding interruption
+boundaries, arbitrary physical mobility/mesh merge-split, phone outage recovery
+and sustained hardware capacity still require verification. This controlled,
+same-process recovery does not establish seamless roaming or a performance bound.
 
 The [paid/free priority and round-trip fixture](../../testing/chaos/README.md#paidfree-wi-fi-priority)
 also passes on these routers. With a 500-ms maximum payment age, all 72 paid
