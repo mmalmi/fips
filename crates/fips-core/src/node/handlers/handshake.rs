@@ -797,7 +797,17 @@ impl Node {
             .peers
             .get(&peer_node_addr)
             .is_some_and(|p| p.has_session());
-        if await_confirmation
+        // A simultaneous dial to this authenticated identity must receive
+        // Msg2 before its outbound can be retired. Preserve that bounded
+        // cross-connection exception, including its temporary extra link;
+        // fresh strangers and replacements still need available capacity.
+        let pending_outbound = self.peers.connection_iter().any(|(_, conn)| {
+            conn.is_outbound()
+                && conn
+                    .expected_identity()
+                    .is_some_and(|identity| *identity.node_addr() == peer_node_addr)
+        });
+        if (await_confirmation || !pending_outbound)
             && (self.outbound_handshake_slots() == 0 || self.outbound_link_slots() == 0)
         {
             self.close_unowned_handshake_carrier(packet.transport_id, &packet.remote_addr)

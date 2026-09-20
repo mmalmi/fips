@@ -100,6 +100,207 @@ async fn connect(
 }
 
 #[test]
+fn fresh_inbound_respects_handshake_capacity_with_peer_slots_available() {
+    super::super::session::run_large_stack_async_test("fresh-inbound-handshake-cap", || async {
+        fresh_inbound_at_capacity(1, 0).await;
+    });
+}
+
+#[test]
+fn fresh_inbound_respects_link_capacity_with_peer_slots_available() {
+    super::super::session::run_large_stack_async_test("fresh-inbound-link-cap", || async {
+        fresh_inbound_at_capacity(0, 1).await;
+    });
+}
+
+#[test]
+fn simultaneous_outbound_admission_allows_temporary_extra_link() {
+    super::super::session::run_large_stack_async_test("cross-connection-at-cap", || async {
+        let mut nodes = [make_test_node().await, make_test_node().await];
+        for node in &mut nodes {
+            node.node.max_peers = 1;
+            node.node.max_connections = 1;
+            node.node.max_links = 1;
+        }
+        for (source, destination) in [(0, 1), (1, 0)] {
+            let identity =
+                PeerIdentity::from_pubkey_full(nodes[destination].node.identity.pubkey_full());
+            let remote = nodes[destination].addr.clone();
+            let node = &mut nodes[source];
+            node.node
+                .initiate_connection(node.transport_id, remote, identity)
+                .await
+                .unwrap();
+            assert_eq!(node.node.connection_count(), 1);
+            assert_eq!(node.node.link_count(), 1);
+        }
+        // Consume only the initial Msg1 at each end, before either processes
+        // Msg2. Both authenticated counterparts were already local dial targets.
+        for node in &mut nodes {
+            let packet = tokio::time::timeout(Duration::from_secs(1), node.packet_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            node.node.handle_msg1(packet).await;
+            assert_eq!(node.node.peer_count(), 1);
+            assert_eq!(node.node.connection_count(), 1);
+            assert_eq!(node.node.link_count(), 2);
+            assert_eq!(node.node.index_allocator.count(), 2);
+        }
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                process_available_packets(&mut nodes).await;
+                let a = nodes[0].node.get_peer(nodes[1].node.node_addr()).unwrap();
+                let b = nodes[1].node.get_peer(nodes[0].node.node_addr()).unwrap();
+                if a.their_index() == b.our_index()
+                    && b.their_index() == a.our_index()
+                    && nodes.iter().all(|node| {
+                        node.node.connection_count() == 0 && node.node.pending_outbound.is_empty()
+                    })
+                {
+                    assert!(a.has_session() && a.can_send());
+                    assert!(b.has_session() && b.can_send());
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("simultaneous dial must settle within the existing one-slot limits");
+        let mut draining = 0;
+        for node in &nodes {
+            assert_eq!(node.node.peer_count(), 1);
+            assert_eq!(node.node.link_count(), 1);
+            let peer = node.node.peers.values().next().unwrap();
+            let previous = usize::from(peer.previous_our_index().is_some());
+            assert_eq!(node.node.index_allocator.count(), 1 + previous);
+            assert_eq!(peer.is_draining(), previous == 1);
+            draining += previous;
+        }
+        assert_eq!(
+            draining, 1,
+            "the winning outbound retains its old receiver epoch"
+        );
+        // Session replacement keeps the old receive index for the normal FMP
+        // drain. Exercise its real maintenance expiry, without shortening it.
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                for node in &mut nodes {
+                    node.node.check_rekey().await;
+                }
+                if nodes
+                    .iter()
+                    .all(|node| node.node.index_allocator.count() == 1)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("normal rekey maintenance must retire the old receive index");
+        for node in &nodes {
+            assert_eq!(node.node.peer_count(), 1);
+            assert_eq!(node.node.link_count(), 1);
+            assert_eq!(node.node.index_allocator.count(), 1);
+            assert!(!node.node.peers.values().next().unwrap().is_draining());
+        }
+        cleanup_nodes(&mut nodes).await;
+    });
+}
+
+async fn fresh_inbound_at_capacity(max_connections: usize, max_links: usize) {
+    let mut node = make_test_node().await;
+    let remote = make_node();
+    let stranger = make_node();
+    let (_socket, source) = local_path().await;
+    let (stranger_socket, stranger_source) = local_path().await;
+    let mut current = connect(&mut node, &remote, &source, 10).await;
+    let pending = if max_connections != 0 {
+        Some(connect(&mut node, &remote, &source, 11).await)
+    } else {
+        None
+    };
+    node.node.max_peers = 3;
+    node.node.max_connections = max_connections;
+    node.node.max_links = max_links;
+    let before = (
+        node.node.peer_count(),
+        node.node.connection_count(),
+        node.node.link_count(),
+        node.node.index_allocator.count(),
+    );
+    assert!(node.node.peer_count() < node.node.max_peers);
+    assert!(node.node.outbound_handshake_slots() == 0 || node.node.outbound_link_slots() == 0);
+
+    request(&mut node, &stranger, &stranger_source, 20).await;
+    assert_eq!(
+        (
+            node.node.peer_count(),
+            node.node.connection_count(),
+            node.node.link_count(),
+            node.node.index_allocator.count(),
+        ),
+        before,
+        "a fresh identity must not bypass connection or link admission limits"
+    );
+    assert!(node.node.get_peer(stranger.node_addr()).is_none());
+    assert!(
+        node.node
+            .links
+            .lookup_addr(node.transport_id, &stranger_source)
+            .is_none()
+    );
+    assert_eq!(node.node.msg1_rate_limiter.pending_count(), 0);
+    let mut wire = [0u8; 2048];
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(50),
+            stranger_socket.recv_from(&mut wire)
+        )
+        .await
+        .is_err(),
+        "a denied fresh handshake must not advertise a Msg2 session index"
+    );
+    let owner = node.node.get_peer(remote.node_addr()).unwrap();
+    assert_eq!(owner.our_index(), Some(current.index));
+    assert!(owner.has_session() && owner.can_send());
+    if let Some(pending) = pending {
+        assert_eq!(
+            node.node.get_connection(&pending.link).unwrap().our_index(),
+            Some(pending.index)
+        );
+        node.node
+            .get_connection_mut(&pending.link)
+            .unwrap()
+            .touch(1);
+        node.node.check_timeouts().await;
+        assert_eq!(node.node.connection_count(), 0);
+    } else {
+        node.node.max_links += 1;
+    }
+    // The same identity and source are valid once admission has room again.
+    connect(&mut node, &stranger, &stranger_source, 20).await;
+    assert!(
+        node.node
+            .get_peer(stranger.node_addr())
+            .unwrap()
+            .has_session()
+    );
+    let heartbeat = [crate::protocol::LinkMessageType::Heartbeat.to_byte()];
+    let packet = current.frame(node.transport_id, &heartbeat);
+    super::super::spanning_tree::process_dataplane_packet(&mut node, packet).await;
+    assert_eq!(
+        node.node
+            .dataplane_fmp_link_metrics(remote.node_addr(), Instant::now())
+            .unwrap()
+            .rx_packets,
+        1
+    );
+    cleanup_nodes(std::slice::from_mut(&mut node)).await;
+}
+
+#[test]
 fn inbound_candidate_limits_and_timeout_preserve_current_owner() {
     super::super::session::run_large_stack_async_test("fmp-candidate-timeout", || async {
         let mut node = make_test_node().await;
