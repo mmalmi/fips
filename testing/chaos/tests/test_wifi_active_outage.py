@@ -45,10 +45,13 @@ class ActiveOutageTests(unittest.TestCase):
             def native(command, name=name, node=node):
                 if command["command"] != "show_peers":
                     return node.native.return_value
-                peers = [{"npub": other, "connectivity": "connected", "transport_type": "ethernet",
+                peers = [{"npub": other, "connectivity": "stale" if radio_down and
+                          outage_node in (name, other) else "connected", "transport_type": "ethernet",
                           "link_id": int(other[-1]), "authenticated_at_ms": 50,
                           "our_session_index": "00000002" if rejoined and name == replaced_link else "00000001"}
                          for other in run.nodes if abs(int(other[-1]) - int(name[-1])) == 1]
+                if radio_down and name == removed_peer:
+                    peers = []
                 return {"status": "ok", "data": {"peers": peers}}
             node.native.side_effect = native
         if diagnostic_error:
@@ -70,7 +73,8 @@ class ActiveOutageTests(unittest.TestCase):
         run.assert_finances = Mock()
         shape, sent, partial = probe_report(2)
         def status(node, _kind):
-            peers = [{"npub": other, "connected": True, "transport": "ethernet"}
+            peers = [{"npub": other, "connected": not (radio_down and outage_node in (node, other)),
+                      "transport": "ethernet"}
                      for other in run.nodes if abs(int(other[-1]) - int(node[-1])) == 1
                      and not (radio_down and not brief and outage_node in (node, other))]
             if radio_down and node == removed_peer:
@@ -131,12 +135,12 @@ class ActiveOutageTests(unittest.TestCase):
                 evidence = run.evidence["active_outage"]
                 self.assertTrue(evidence["passed"])
                 self.assertEqual(evidence["radio_stations_during_outage"], "")
-                self.assertEqual(set(evidence["retained_peers"]), set(run.nodes))
+                self.assertEqual(evidence["retained_peer_sessions"], evidence["peer_sessions_before"])
                 self.assertNotIn("eviction_observed", evidence)
                 self.assertNotIn("isolated_peers", evidence)
                 self.assertEqual(evidence["outage_receiver"]["missing_packets"], 22)
                 self.assertEqual(evidence["recovery_receiver"]["unique_packets"], 8)
-                run.ready.assert_has_calls([call(line=True), call(line=True)])
+                run.ready.assert_called_once_with(line=True)
                 run.nodes[node].mesh_up.assert_called_once_with()
 
     def test_brief_cut_rejects_remaining_radio_stations_and_restores(self):
@@ -147,7 +151,7 @@ class ActiveOutageTests(unittest.TestCase):
 
     def test_brief_cut_rejects_evicted_peers_and_restores(self):
         run, error = self.run_cut(brief=True, removed_peer="n03")
-        self.assertIn("retained", str(error))
+        self.assertIn("peer sessions", str(error))
         self.assertFalse(run.evidence["active_outage"]["passed"])
         run.nodes["n03"].mesh_up.assert_called_once_with()
 

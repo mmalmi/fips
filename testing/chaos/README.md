@@ -442,8 +442,9 @@ Add `--brief-outage` to restore after the finite 24-packet stream and the
 two-second quiet observation. At two packets per second, the stream spans at
 least 11.5 seconds; the actual outage also includes radio commands and serial
 observations, and is recorded by the controller's monotonic clock. The departing
-radio must have no associated stations while all original FIPS peers remain
-connected in the observed roster. After fresh replies arrive, every neighbor's
+radio must have no associated stations while all original FIPS peer sessions
+remain present; their connectivity may be stale during the cut. After fresh
+replies arrive, every neighbor must be connected again, and its
 link ID, authentication timestamp and Noise session index must match the
 pre-cut observation. This rejects eviction/reconnection between serial reads.
 Original processes, funding, automatic payments and full collection must also

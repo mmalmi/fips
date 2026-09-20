@@ -23,7 +23,7 @@ def processes(run):
     return result
 
 
-def peer_sessions(run):
+def peer_sessions(run, *, connected=True):
     """Observe the same authenticated link and Noise session on each side of the cut."""
     result = {}
     for name, node in run.nodes.items():
@@ -38,8 +38,9 @@ def peer_sessions(run):
                 "peer sessions no longer describe the original two-hop line")
         observed = {}
         for peer in peers:
-            require(peer["connectivity"] == "connected" and peer["transport_type"] == "ethernet",
-                    "peer session is not connected over Ethernet")
+            require(peer["transport_type"] == "ethernet", "peer session is not over Ethernet")
+            if connected:
+                require(peer["connectivity"] == "connected", "peer session is not connected")
             index = peer.get("our_session_index")
             require(isinstance(index, str) and re.fullmatch(r"[0-9a-f]{8}", index) is not None,
                     "missing native peer session index")
@@ -87,9 +88,12 @@ def active_radio_outage(run, *, outage_node="n03"):
             evidence["radio_stations_during_outage"] = stations(radio)
             require(not evidence["radio_stations_during_outage"].strip(),
                     "brief interruption still has radio stations")
-            # Do not wait for removed peers to return: the live roster must survive the cut.
-            evidence["retained_peers"] = ready("retained_before_rejoin", line=True)
-            require(bool(evidence["retained_peers"]), "brief interruption no longer retained every peer")
+            # A retained peer can be stale while its radio is absent.
+            evidence["retained_peer_sessions"] = peer_sessions(run, connected=False)
+            require(evidence["retained_peer_sessions"] == evidence["peer_sessions_before"],
+                    "brief interruption no longer retained the original peer sessions")
+            if timing:
+                timing.ready("retained_before_rejoin", line=True)
             run.phase("paid replies stopped before peer eviction; original channels retained")
         else:
             run.phase("paid replies stopped during peer eviction; original channels retained")
