@@ -6,7 +6,7 @@ use super::budget::{
 use super::drain::{
     RxLoopDataDrainStats, RxLoopMaintenancePlan, RxLoopMaintenanceState, SingleLaneDrainCursor,
 };
-use super::rx_loop_fast_maintenance_within_budget;
+use super::{rx_loop_fast_maintenance_within_budget, wait_for_optional_deadline};
 use crate::control::protocol::Request;
 use std::time::{Duration, Instant};
 
@@ -17,6 +17,119 @@ async fn fast_maintenance_loses_no_more_than_its_total_budget() {
 
     assert!(!completed);
     assert_eq!(started.elapsed(), RX_LOOP_FAST_MAINTENANCE_TIMEOUT);
+}
+
+#[tokio::test(start_paused = true)]
+async fn absent_report_deadline_never_creates_an_idle_wakeup() {
+    assert!(
+        tokio::time::timeout(
+            Duration::from_secs(3_600),
+            wait_for_optional_deadline(None, Instant::now()),
+        )
+        .await
+        .is_err()
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn report_deadline_honors_due_time_and_slow_batch_retry_floor() {
+    for delayed_floor in [false, true] {
+        let now = tokio::time::Instant::now().into_std();
+        let later = now + Duration::from_secs(3_600);
+        let (due, floor) = if delayed_floor {
+            (now, later)
+        } else {
+            (later, now)
+        };
+        let wait = wait_for_optional_deadline(Some(due), floor);
+        tokio::pin!(wait);
+        // Only the sleep helper uses this virtual clock, not MMP's std clock.
+        tokio::select! {
+            biased;
+            _ = &mut wait => panic!("future report deadline completed immediately"),
+            _ = tokio::task::yield_now() => {}
+        }
+        tokio::time::advance(Duration::from_secs(1_800)).await;
+        tokio::select! {
+            biased;
+            _ = &mut wait => panic!("report woke before its deadline/retry floor"),
+            _ = tokio::task::yield_now() => {}
+        }
+        tokio::time::advance(Duration::from_secs(1_801)).await;
+        wait.await;
+    }
+    let expired = tokio::time::Instant::now().into_std() - Duration::from_secs(1);
+    let wait = wait_for_optional_deadline(Some(expired), expired);
+    tokio::pin!(wait);
+    assert!(
+        futures::poll!(&mut wait).is_ready(),
+        "expired work must be runnable on its first poll"
+    );
+}
+
+#[tokio::test]
+async fn report_turn_drains_bounded_queued_work_without_a_timeout() {
+    use crate::dataplane::{OwnerConfig, OwnerId};
+    use crate::transport::{PacketBuffer, ReceivedPacket, TransportAddr, TransportId};
+
+    let mut node = crate::node::Node::new(crate::config::Config::new()).unwrap();
+    let owner = OwnerId::fmp_node(crate::NodeAddr::from_bytes([17; 16]));
+    node.dataplane.register_owner(
+        owner,
+        OwnerConfig::new(1, 8).with_fmp_mmp(Default::default(), false),
+    );
+    node.dataplane
+        .record_fmp_mmp_send_result(&owner.node_addr(), 1, 1, 80);
+    let earlier = Instant::now() - Duration::from_millis(400);
+    assert_eq!(
+        node.dataplane
+            .collect_fmp_mmp_reports(earlier)
+            .reports
+            .len(),
+        1
+    );
+    node.dataplane
+        .record_fmp_mmp_send_result(&owner.node_addr(), 2, 2, 80);
+    assert!(
+        node.dataplane
+            .fmp_report_deadline()
+            .is_some_and(|due| due < Instant::now())
+    );
+
+    let (packet_tx, mut packet_rx) = crate::transport::packet_channel(PACKET_DRAIN_BUDGET + 1);
+    for _ in 0..=PACKET_DRAIN_BUDGET {
+        packet_tx
+            .send(ReceivedPacket::with_timestamp(
+                TransportId::new(7),
+                TransportAddr::from_string("127.0.0.1:9000"),
+                PacketBuffer::new(vec![0]),
+                123_456,
+            ))
+            .unwrap();
+    }
+    let (_endpoint_tx, mut endpoint_rx) = crate::node::endpoint_data_batch_channel(1);
+    let (_tun_tx, mut tun_rx) = crate::upper::tun::tun_outbound_channel(1);
+    let (_fast_tx, mut fast_rx) = tokio::sync::mpsc::channel(1);
+    let endpoint_io = node.attach_endpoint_data_io(1).unwrap();
+    let mut io = super::rx_loop_dataplane_io(
+        &mut packet_rx,
+        &mut fast_rx,
+        &mut endpoint_rx,
+        &mut tun_rx,
+        &endpoint_io.event_tx,
+    );
+    // There is no active carrier for this owner; the real report dispatch
+    // completes without timeout. This checks post-dispatch queue progress,
+    // not successful delivery or a simulated slow transport.
+    let (completed, drained) = node.run_rx_loop_link_report_turn(&mut io).await;
+    assert!(completed);
+    assert!(drained.has_data_drained());
+    assert_eq!(drained.packets, PACKET_DRAIN_BUDGET);
+    assert!(
+        packet_rx.try_recv().is_ok(),
+        "excess backlog remains bounded"
+    );
+    assert!(packet_rx.try_recv().is_err());
 }
 
 #[test]

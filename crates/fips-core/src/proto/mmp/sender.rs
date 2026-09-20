@@ -130,18 +130,22 @@ impl SenderState {
     /// When consecutive send failures have occurred, the effective interval
     /// is multiplied by an exponential backoff factor (2^failures, capped at 32×).
     pub fn should_send_report(&self, now: Instant) -> bool {
+        self.next_report_at(now).is_some_and(|due| now >= due)
+    }
+
+    pub(crate) fn next_report_at(&self, now: Instant) -> Option<Instant> {
         if !self.interval_has_data {
-            return false;
+            return None;
         }
-        match self.last_report_time {
-            None => true, // Never sent a report — send immediately
+        Some(match self.last_report_time {
+            None => now, // Never sent a report — send immediately
             Some(last) => {
                 let effective = self
                     .report_interval
                     .mul_f64(self.send_failure_backoff_multiplier());
-                now.duration_since(last) >= effective
+                last + effective
             }
-        }
+        })
     }
 
     /// Record a send failure. Returns the new consecutive failure count.
@@ -441,5 +445,28 @@ mod tests {
         // At 2× interval: should send
         let t2 = t0 + s.report_interval() * 2 + Duration::from_millis(1);
         assert!(s.should_send_report(t2));
+    }
+
+    #[test]
+    fn report_deadline_tracks_pending_interval_and_backoff() {
+        let mut s = SenderState::new();
+        let now = Instant::now();
+        assert_eq!(s.next_report_at(now), None);
+        s.record_sent(1, 100, 80);
+        assert_eq!(s.next_report_at(now), Some(now));
+        s.build_report(now).unwrap();
+        assert_eq!(s.next_report_at(now), None);
+        s.record_sent(2, 101, 80);
+        let interval = s.report_interval();
+        assert_eq!(s.next_report_at(now), Some(now + interval));
+        s.record_send_failure();
+        let backed_off = now + interval * 2;
+        assert_eq!(s.next_report_at(now), Some(backed_off));
+        assert!(!s.should_send_report(backed_off - Duration::from_nanos(1)));
+        assert!(s.should_send_report(backed_off));
+        s.record_send_success();
+        assert_eq!(s.next_report_at(now), Some(now + interval));
+        s.reset_for_rekey();
+        assert_eq!(s.next_report_at(now), None);
     }
 }

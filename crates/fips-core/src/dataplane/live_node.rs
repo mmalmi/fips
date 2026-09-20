@@ -152,6 +152,7 @@ pub(crate) struct DataplaneLiveNode {
     deferred_raw_ingress: VecDeque<DataplaneDeferredRawIngress>,
     empty_raw_ingress: VecDeque<DataplaneRawIngress>,
     direct_fsp_reassembler: DataplaneDirectFspReassembler,
+    fmp_report_deadline: Option<std::time::Instant>,
 }
 
 pub(crate) struct DataplaneLiveTurnIo<'a> {
@@ -183,6 +184,7 @@ impl DataplaneLiveNode {
             deferred_raw_ingress: VecDeque::new(),
             empty_raw_ingress: VecDeque::new(),
             direct_fsp_reassembler: DataplaneDirectFspReassembler::default(),
+            fmp_report_deadline: None,
         }
     }
 
@@ -495,51 +497,6 @@ impl DataplaneLiveNode {
     pub(crate) fn fmp_has_srtt(&self, node_addr: &NodeAddr) -> bool {
         self.driver
             .owner_fmp_has_srtt(OwnerId::fmp_node(*node_addr))
-    }
-
-    pub(crate) fn record_authenticated_fmp_mmp_receive(
-        &mut self,
-        receive: DataplaneAuthenticatedFmpMmpReceive,
-    ) -> Result<Option<std::time::Duration>, DataplaneFmpMmpSkip> {
-        let Some(owner_state) = self.driver.owner_mut(receive.owner) else {
-            return Err(DataplaneFmpMmpSkip::UnknownOwner);
-        };
-        owner_state.record_authenticated_fmp_receive(receive)
-    }
-
-    pub(crate) fn record_fmp_mmp_send_result(
-        &mut self,
-        node_addr: &NodeAddr,
-        counter: u64,
-        timestamp_ms: u32,
-        bytes_sent: usize,
-    ) {
-        let owner = OwnerId::fmp_node(*node_addr);
-        let Some(owner_state) = self.driver.owner_mut(owner) else {
-            return;
-        };
-        owner_state.record_fmp_send_result(counter, timestamp_ms, bytes_sent)
-    }
-
-    pub(crate) fn process_fmp_mmp_receiver_report(
-        &mut self,
-        node_addr: &NodeAddr,
-        rr: &crate::mmp::report::ReceiverReport,
-        now_ms: u64,
-        now: std::time::Instant,
-    ) -> Result<DataplaneFmpReceiverReportResult, DataplaneFmpMmpSkip> {
-        let owner = OwnerId::fmp_node(*node_addr);
-        let Some(owner_state) = self.driver.owner_mut(owner) else {
-            return Err(DataplaneFmpMmpSkip::UnknownOwner);
-        };
-        owner_state.process_fmp_mmp_receiver_report(rr, now_ms, now)
-    }
-
-    pub(crate) fn collect_fmp_mmp_reports(
-        &mut self,
-        now: std::time::Instant,
-    ) -> DataplaneFmpMmpReportBatch {
-        self.driver.collect_fmp_mmp_reports(now)
     }
 
     pub(crate) fn collect_fsp_mmp_reports(

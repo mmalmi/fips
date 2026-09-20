@@ -123,6 +123,7 @@ pub(crate) struct DataplaneFmpMmpReport {
 pub(crate) struct DataplaneFmpMmpReportBatch {
     pub(crate) reports: Vec<DataplaneFmpMmpReport>,
     pub(crate) metric_logs: Vec<DataplaneFmpLinkMetrics>,
+    next_report_at: Option<std::time::Instant>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

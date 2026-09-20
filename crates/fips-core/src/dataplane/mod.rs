@@ -81,6 +81,7 @@ include!("turn_extract.rs");
 include!("runtime.rs");
 include!("runtime_io.rs");
 include!("live_node.rs");
+include!("fmp_reports.rs");
 include!("crypto.rs");
 include!("engine.rs");
 include!("engine_dispatch.rs");

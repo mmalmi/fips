@@ -146,6 +146,9 @@ impl DataplaneOwnerShard {
     ) {
         for owner in self.owners.values_mut() {
             owner.collect_fmp_mmp_reports(now, batch);
+            if let Some(due) = owner.next_fmp_mmp_report_at(now) {
+                batch.next_report_at = Some(batch.next_report_at.map_or(due, |old| old.min(due)));
+            }
         }
     }
 

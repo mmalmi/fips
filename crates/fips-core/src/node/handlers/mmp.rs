@@ -1,7 +1,7 @@
 //! MMP report dispatch, periodic report generation, and operator logging.
 //!
 //! Handles incoming SenderReport / ReceiverReport messages, drives
-//! periodic report generation on the tick timer, and emits periodic
+//! report generation at pending link deadlines and on maintenance ticks, and emits periodic
 //! and teardown metric logs.
 
 use crate::mmp::report::{ReceiverReport, SenderReport};
@@ -257,7 +257,8 @@ impl Node {
 
     /// Check all peers for pending MMP reports and send them.
     ///
-    /// Called from the tick handler. Also emits periodic operator logs.
+    /// Called when a link report is due and from maintenance ticks. Also emits
+    /// periodic operator logs during the same collection pass.
     pub(in crate::node) async fn check_mmp_reports(&mut self) {
         let batch = self.dataplane.collect_fmp_mmp_reports(Instant::now());
 

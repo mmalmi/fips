@@ -368,13 +368,17 @@ impl ReceiverState {
 
     /// Check if it's time to send a report.
     pub fn should_send_report(&self, now: Instant) -> bool {
+        self.next_report_at(now).is_some_and(|due| now >= due)
+    }
+
+    pub(crate) fn next_report_at(&self, now: Instant) -> Option<Instant> {
         if !self.interval_has_data {
-            return false;
+            return None;
         }
-        match self.last_report_time {
-            None => true,
-            Some(last) => now.duration_since(last) >= self.report_interval,
-        }
+        Some(
+            self.last_report_time
+                .map_or(now, |last| last + self.report_interval),
+        )
     }
 
     /// Update the report interval based on SRTT (link-layer defaults).
@@ -611,16 +615,22 @@ mod tests {
         let t0 = Instant::now();
 
         assert!(!r.should_send_report(t0)); // no data
+        assert_eq!(r.next_report_at(t0), None);
 
         r.record_recv(1, 100, 500, false, t0);
         assert!(r.should_send_report(t0)); // first time, has data
+        assert_eq!(r.next_report_at(t0), Some(t0));
 
         let _ = r.build_report(t0);
+        assert_eq!(r.next_report_at(t0), None);
         r.record_recv(2, 200, 500, false, t0);
         assert!(!r.should_send_report(t0)); // just reported
+        assert_eq!(r.next_report_at(t0), Some(t0 + r.report_interval()));
 
         let t1 = t0 + r.report_interval() + Duration::from_millis(1);
         assert!(r.should_send_report(t1));
+        r.reset_for_rekey(t1);
+        assert_eq!(r.next_report_at(t1), None);
     }
 
     #[test]

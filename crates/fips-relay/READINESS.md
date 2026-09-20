@@ -1747,6 +1747,53 @@ features/targets and the source-size gate pass. No production timing or payment
 policy changes accompany this instrumentation, and subsecond useful encounters
 still need a regression and hardware acceptance.
 
+A subsequent three-node real-UDP regression isolates one delay in the live RX
+loop. With an already measured parent, a newly encountered smaller root is
+advertised promptly but becomes measured and adopted only after 1.976 s in the
+pre-fix run. Link reports were collected only by the default one-second maintenance
+tick, despite their 200-ms cold-start cadence. The regression uses real handshakes
+and reports, without seeding RTT or driving synthetic maintenance. Encounters use
+two nominal startup-relative offsets; bounded driver wake lateness does not prove
+the phase of a maintenance tick, which can be reset after an overrun.
+
+Link reports now wake the RX loop at their existing report deadlines. Successful
+send, authenticated receive and receiver-feedback processing update one cached
+earliest deadline using only the touched link; the existing collection pass
+recomputes that hint. Idle and Minimal-mode links arm no extra timer. Removed or
+rekeyed links can leave one early wake, which collection clears. Cadence, backoff,
+report formats and the rule excluding unmeasured alternatives remain unchanged.
+No payment or session-report scheduling policy changes accompany this fix.
+
+Each report turn retains the two-second send budget and then performs the existing
+bounded data-queue drain, including successful batches whose next report is already
+overdue. Actual data progress updates maintenance activity; timeout retries retain
+their maintenance-period floor. An expired absolute deadline is ready on its first
+poll. The queue regression processes 512 queued packets and leaves one for another
+turn after ordinary report dispatch; it does not establish slow-carrier throughput
+or a payload latency bound.
+
+The final live-UDP run observes adoption after 223/233 ms for sustained contacts
+at the two nominal offsets and 221/34 ms for half-second contacts. The independent
+cuts occur after 501.987/501.687 ms and discard 18/14 real datagrams. Both cases
+retain the original measured neighbor and require a positive RTT before accepting
+the new root. All 16 spanning-tree regressions pass, including the existing
+unmeasured-neighbor safety check. This establishes local route setup during these
+brief contacts, not physical mobility or end-to-end service latency.
+
+The unchanged paid brief-contact scenario passes its authority, recovery and
+financial checks, including collection of all 1,536 test sats, but delivery is
+mixed. Warm delivery remains 40/64 per direction; cold delivery is 4/32 and 20/32
+without duplicates, versus 13/32 each in the earlier baseline. First cold payloads
+are observed at 7.883 s and 1.886 s on the common observer clock. The child adopts
+the shared root within 0.408–0.608 s, but its neighbor first observes that child's
+declaration within 7.604–7.804 s. Sampled endpoint sessions and eligible agreements
+remain unchanged. This demonstrates another route-information gap, not its exact
+send/loss cause; the existing five-second announcement repair and pending-send
+scheduling need a focused bidirectional-readiness regression. No overall paid
+recovery speedup is claimed. All 43 handshake, 77 shared-MMP, four link-deadline
+and 16 RX-loop tests pass, as do strict core/relay lint and source-size checks.
+These changes remain local software work and have not been deployed to routers.
+
 A held-funding variant now covers a new encounter interrupted after the mint
 commits but before its response reaches the opening caller. The original run
 delivered 36 fresh payloads on an existing healthy route while its credited

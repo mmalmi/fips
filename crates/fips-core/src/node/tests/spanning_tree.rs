@@ -20,6 +20,8 @@ pub(super) async fn lock_large_network_test() -> tokio::sync::MutexGuard<'static
 mod bootstrap_loss;
 mod cases;
 mod drain;
+#[cfg(unix)]
+mod first_rtt;
 mod fixture;
 mod repair;
 mod snapshot;

@@ -219,6 +219,7 @@ impl Node {
         // maintenance turn, not an eager pre-data maintenance pass.
         tick.tick().await;
         let mut nostr_event_turn_not_before = Instant::now();
+        let mut mmp_report_not_before = Instant::now();
 
         loop {
             tokio::select! {
@@ -315,6 +316,27 @@ impl Node {
                                 network_rebind_completion_tx.clone(),
                             );
                         }
+                    }
+                }
+                _ = wait_for_optional_deadline(
+                    self.dataplane.fmp_report_deadline(),
+                    mmp_report_not_before,
+                ) => {
+                    let (completed, drained) = self.run_rx_loop_link_report_turn(
+                        &mut dataplane_runtime.io(),
+                    ).await;
+                    if drained.has_data_drained() {
+                        maintenance_state.record_data_activity(Instant::now());
+                    }
+                    if !completed {
+                        crate::perf_profile::record_event(
+                            crate::perf_profile::Event::RxLoopSlowMaintenanceTimeout,
+                        );
+                        self.mark_rx_loop_maintenance_timeout();
+                        // A slow batch may leave another report already due.
+                        // Give packet/control work a turn before retrying it.
+                        mmp_report_not_before = Instant::now() + tick.period();
+                        warn!("Link MMP report send timed out; continuing packet processing");
                     }
                 }
                 // Discovery receives an explicitly rate-limited fair turn:
@@ -470,6 +492,19 @@ impl Node {
 
         info!("RX event loop stopped (channel closed)");
         Ok(())
+    }
+
+    async fn run_rx_loop_link_report_turn(
+        &mut self,
+        io: &mut RxLoopDataplaneIo<'_>,
+    ) -> (bool, RxLoopDataDrainStats) {
+        let completed = rx_loop_fast_maintenance_within_budget(self.check_mmp_reports()).await;
+        // A successful slow batch can leave the next report already overdue.
+        // Give queued data a bounded turn before another reserved report turn.
+        let drained = self
+            .drain_rx_loop_data_queues(io, PACKET_DRAIN_BUDGET)
+            .await;
+        (completed, drained)
     }
 
     async fn drain_rx_loop_data_queues(
@@ -811,6 +846,15 @@ impl Node {
 async fn wait_for_optional_notify(notify: Option<&Arc<Notify>>) {
     match notify {
         Some(notify) => notify.notified().await,
+        None => std::future::pending().await,
+    }
+}
+
+async fn wait_for_optional_deadline(deadline: Option<Instant>, not_before: Instant) {
+    match deadline {
+        Some(due) => {
+            tokio::time::sleep_until(tokio::time::Instant::from_std(due.max(not_before))).await
+        }
         None => std::future::pending().await,
     }
 }
