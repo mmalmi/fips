@@ -1674,26 +1674,52 @@ bridge peers. After full separation and eviction, the fixture cuts a newly obser
 bidirectional adjacency immediately, then tries 300-ms, 400-ms and 1.5-s contacts
 before leaving the carrier up. No convergence or payment wait extends those contacts.
 
-In the final run, 40 of 64 packets per direction arrive during the warm cohort;
-none of 32 per direction arrive during the cold cohort's receive window. Neither
-cohort records duplicates. These counts include the subsequent sustained contact
-and a five-second receive window after the scheduled final submission; unobserved packets
-are not proof of permanent loss. An earlier run observed 13 of 32 cold packets,
-so this is not a deterministic delivery or short-contact availability guarantee.
-Separate fresh probes all succeed before the interruptions and after each recovery:
-72 payloads in 72 attempts. From the recorded link-up observation to fresh delivery
-and all-hop credit, elapsed times are 12.048 s warm and 52.516 s cold, including
-remaining cohort traffic, receive-window time and polling. The timestamp follows
-the carrier mutation at millisecond resolution; these are not strict bounds from
-the mutation itself or isolated routing latency measurements.
+Before periodic announcement refresh, separate runs deliver either zero or 13 of
+32 cold-cohort packets per direction. One takes 52.516 seconds from the recorded
+sustained-link observation to fresh payloads and credited payments, including the
+remaining cohort, receive window and polling. This exposes variable recovery;
+the later isolated bug below is not proven to explain that particular long run.
+
+Follow-up real-UDP regressions isolate a routing repair gap: losing the initial
+announcements in both directions, or losing a child's announcement after it adopts
+the root, leaves a one-peer node without its neighbor's tree state. Both fail before
+the fix despite measured bidirectional RTT and intact authentication. No tree state
+is deleted or injected; the tests discard actual bootstrap datagrams, including the
+queued duplicate handshake response that could otherwise hide the failure.
+
+Current announcements now refresh every five seconds by default, independently of
+the 60-second cost-based parent reevaluation and its two-peer requirement. Refresh
+uses the existing per-peer timestamp and rate limit, with no new wire message or
+acknowledgment exchange; the redundant no-change rebroadcast is removed. Operators
+can tune or disable refresh using
+[`node.tree.announce_refresh_interval_secs`](../../docs/design/fips-configuration.md#spanning-tree-nodetree).
+The two loss cases synchronize in 5.031 s and 6.029 s in the accepted native run,
+retaining their original authenticated links. A healthy control synchronizes in
+1.025 s. Disabling refresh produces zero announcements during six stable seconds;
+enabling a one-second refresh under a two-second peer rate limit produces three
+frames per direction over six seconds, with every recorded send respecting the
+two-second minimum. All 14 spanning-tree tests, 128 configuration-related tests,
+strict core/relay lint and the source-size gate pass. Run the focused regressions
+with `cargo test -p nvpn-fips-core --all-features --lib
+node::tests::spanning_tree::bootstrap_loss:: -- --test-threads=1 --nocapture`.
+These cases do not establish useful payload service during subsecond encounters.
+
+With refresh enabled, the paid encounter regression delivers 40/64 warm and 13/32
+cold packets per direction without duplicates. These counts include sustained
+contact and a five-second receive window after the scheduled final submission;
+unobserved packets are not proof of permanent loss. Separate fresh probes deliver
+all 72 payloads in 72 attempts. Recorded-link-up-to-fresh-delivery-and-all-hop-credit
+elapsed times are 12.238 s warm and 8.942 s cold, including remaining cohort traffic,
+receive-window time and polling. The timestamp follows the carrier mutation at
+millisecond resolution; this is not an isolated routing latency measurement or a
+controlled before/after performance comparison.
 
 All four original Watch authorities and eight directional funding/channel/wallet
 operation identities survive, with unchanged capital limits and no new funding.
-Sampled native state stays bounded over 587 observation rounds, and final pending
+Native state stays within its bounds over 371 observation rounds; final pending
 connections and excess links drain. Exact wallet equations hold and all 1,536 test
-sats are collected. The shared observer's crowded regression and strict relay lint
-also pass. This proves bounded recovery after contact stabilizes; prompt useful
-delivery during brief encounters, physical mobility and radio handover remain open.
+sats are collected. Prompt useful delivery during brief encounters, physical
+mobility and radio handover remain open; this change has not been deployed to routers.
 
 A held-funding variant now covers a new encounter interrupted after the mint
 commits but before its response reaches the opening caller. The original run

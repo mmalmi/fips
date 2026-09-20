@@ -1,6 +1,22 @@
 use super::*;
 
 #[test]
+fn tree_refresh_defaults_and_explicit_disable() {
+    let direct = TreeConfig::default();
+    let omitted: TreeConfig = serde_yaml::from_str("{}").unwrap();
+    assert_eq!(direct.announce_refresh_interval_secs, 5);
+    assert_eq!(
+        omitted.announce_refresh_interval_secs,
+        direct.announce_refresh_interval_secs
+    );
+    let disabled: TreeConfig = serde_yaml::from_str("announce_refresh_interval_secs: 0\n").unwrap();
+    let restored: TreeConfig =
+        serde_yaml::from_str(&serde_yaml::to_string(&disabled).unwrap()).unwrap();
+    assert_eq!(restored.announce_refresh_interval_secs, 0);
+    assert_eq!(restored.reeval_interval_secs, 60);
+}
+
+#[test]
 fn test_bloom_config_defaults_match_upstream_0_4_1() {
     let direct = BloomConfig::default();
     let deserialized: BloomConfig = serde_yaml::from_str("{}").unwrap();

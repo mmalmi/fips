@@ -95,15 +95,27 @@ impl Node {
         }
     }
 
-    /// Send pending rate-limited tree announces whose cooldown has expired.
-    pub(super) async fn send_pending_tree_announces(&mut self) {
+    /// Send pending or periodic announces within the per-peer rate limit.
+    ///
+    /// Refresh independently of parent selection: a successful datagram send
+    /// does not prove delivery, and a node with one peer still needs repair.
+    pub(super) async fn send_due_tree_announces(&mut self) {
         let now_ms = Self::now_ms();
+        let refresh_ms = self
+            .config
+            .node
+            .tree
+            .announce_refresh_interval_secs
+            .saturating_mul(1000);
 
         let ready: Vec<NodeAddr> = self
             .peers
             .iter()
             .filter(|(_, peer)| {
-                peer.has_pending_tree_announce() && peer.can_send_tree_announce(now_ms)
+                let refresh_due = refresh_ms > 0
+                    && now_ms.saturating_sub(peer.last_tree_announce_sent_ms()) >= refresh_ms;
+                (peer.has_pending_tree_announce() || refresh_due)
+                    && peer.can_send_tree_announce(now_ms)
             })
             .map(|(addr, _)| *addr)
             .collect();
@@ -113,7 +125,7 @@ impl Node {
                 debug!(
                     peer = %self.peer_display_name(&peer_addr),
                     error = %e,
-                    "Failed to send pending TreeAnnounce"
+                    "Failed to send due TreeAnnounce"
                 );
             }
         }
@@ -359,10 +371,10 @@ impl Node {
 
     /// Periodic tree maintenance, called from the tick handler.
     ///
-    /// Sends pending rate-limited announces and checks for periodic
+    /// Sends due rate-limited announces and checks for periodic
     /// parent re-evaluation based on current MMP link costs.
     pub(super) async fn check_tree_state(&mut self) {
-        self.send_pending_tree_announces().await;
+        self.send_due_tree_announces().await;
         self.check_periodic_parent_reeval().await;
     }
 
@@ -444,13 +456,6 @@ impl Node {
             self.send_tree_announce_to_all().await;
             let all_peers: Vec<NodeAddr> = self.peers.keys().copied().collect();
             self.bloom_state.mark_all_updates_needed(all_peers);
-        } else {
-            trace!(
-                seq = self.tree_state.my_declaration().sequence(),
-                root = %self.tree_state.root(),
-                "Periodic TreeAnnounce re-broadcast (no state change)"
-            );
-            self.send_tree_announce_to_all().await;
         }
     }
 

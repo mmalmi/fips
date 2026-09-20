@@ -243,12 +243,27 @@ Controls tree construction and parent selection.
 | Parameter                              | Type  | Default | Description                                      |
 |----------------------------------------|-------|---------|--------------------------------------------------|
 | `node.tree.announce_min_interval_ms`   | u64   | `500`   | Per-peer TreeAnnounce rate limit                 |
+| `node.tree.announce_refresh_interval_secs` | u64 | `5` | Refresh current announcements to repair loss, including with one peer (0 = disabled) |
 | `node.tree.parent_hysteresis`          | f64   | `0.2`   | Cost improvement fraction required for same-root parent switch (0.0–1.0) |
 | `node.tree.hold_down_secs`             | u64   | `30`    | Suppress non-mandatory re-evaluation after parent switch |
 | `node.tree.reeval_interval_secs`       | u64   | `60`    | Periodic cost-based parent re-evaluation interval (0 = disabled) |
 | `node.tree.flap_threshold`             | u32   | `4`     | Parent switches in window before dampening engages  |
 | `node.tree.flap_window_secs`           | u64   | `60`    | Sliding window for counting parent switches          |
 | `node.tree.flap_dampening_secs`        | u64   | `120`   | Extended hold-down duration when flap threshold exceeded |
+
+Announcement refresh is independent of cost-based parent selection. Smaller
+intervals repair lost routing state sooner but use more control bandwidth and
+receiver signature verification. The per-peer rate limit and maintenance tick
+also bound send cadence. Disabling refresh keeps change-driven announcements,
+but lost datagrams can then leave neighbors unsynchronized until another change.
+Each sender controls its own interval; this setting does not change its neighbor's
+refresh behavior.
+
+A refresh from depth `d` occupies `168 + 32d` FMP bytes per outgoing neighbor.
+At the nominal five-second interval, depths 0–5 use 33.6–65.6 bytes/second.
+This excludes transport/radio overhead, MMP traffic and topology-driven updates.
+The sender reuses its signature; receivers still verify it. These are encoded-size
+calculations, not CPU measurements or a recovery-time guarantee.
 
 ### Bloom Filter (`node.bloom.*`)
 
@@ -795,6 +810,7 @@ node:
     forward_min_interval_secs: 2
   tree:
     announce_min_interval_ms: 500
+    announce_refresh_interval_secs: 5  # repair lost announcements (0 = disabled)
     parent_hysteresis: 0.2              # cost improvement fraction for parent switch
     hold_down_secs: 30                  # suppress re-evaluation after switch
     reeval_interval_secs: 60            # periodic cost-based re-evaluation (0 = disabled)

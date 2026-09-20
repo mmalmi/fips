@@ -239,6 +239,11 @@ pub struct TreeConfig {
     /// Per-peer TreeAnnounce rate limit in ms (`node.tree.announce_min_interval_ms`).
     #[serde(default = "TreeConfig::default_announce_min_interval_ms")]
     pub announce_min_interval_ms: u64,
+    /// Refresh unchanged TreeAnnounces to repair datagram loss, including on
+    /// single-peer nodes (`node.tree.announce_refresh_interval_secs`). Zero
+    /// disables periodic refresh; topology changes still trigger announcements.
+    #[serde(default = "TreeConfig::default_announce_refresh_interval_secs")]
+    pub announce_refresh_interval_secs: u64,
     /// Hysteresis factor for cost-based parent re-selection (`node.tree.parent_hysteresis`).
     ///
     /// Only switch parents when the candidate's effective_depth is better than
@@ -274,6 +279,7 @@ impl Default for TreeConfig {
     fn default() -> Self {
         Self {
             announce_min_interval_ms: 500,
+            announce_refresh_interval_secs: 5,
             parent_hysteresis: 0.2,
             hold_down_secs: 30,
             reeval_interval_secs: 60,
@@ -287,6 +293,9 @@ impl Default for TreeConfig {
 impl TreeConfig {
     fn default_announce_min_interval_ms() -> u64 {
         500
+    }
+    fn default_announce_refresh_interval_secs() -> u64 {
+        5
     }
     fn default_parent_hysteresis() -> f64 {
         0.2
