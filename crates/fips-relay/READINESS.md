@@ -675,6 +675,12 @@ statistics are unavailable because `tc` is absent. All 384 test sats are collect
 passes 82 Linux harness and 101 analyzer checks. The longer comparison's loss
 remains unexplained, so this clean pilot does not close delivery readiness.
 
+The next [software-queue observation pilot](CADENCE-RESULTS.md#software-queue-observation-pilot)
+also delivers all packets and completes fund collection and restoration. Four
+bounded middle-router queue snapshots are usable, with no observed backlog or
+increasing software-queue drop/limit counters. This validates the added capture;
+the earlier intermittent radio-path loss remains unexplained.
+
 The focused Ethernet suite passes 47 tests on macOS and 35 on Linux. An isolated
 Linux veth test also forces two separate AF_PACKET queue overflows, verifies
 increasing cumulative drops across resetting/concurrent reads, and confirms

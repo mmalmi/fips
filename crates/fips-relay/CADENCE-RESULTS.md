@@ -525,6 +525,36 @@ checks. This clean pilot validates the added observations but does not reproduce
 or explain the preceding 364-packet deficit. Strict rejection of that comparison
 and the 500-ms production default remain unchanged.
 
+### Software-queue observation pilot
+
+A subsequent 250-ms pilot uses the same matched `62a639370` binaries and the
+`840c31ee5` harness with `--link-loss-counters --aqm-counters`. All 11,712 packets
+arrive and strict acceptance passes. The optional AQM capture passes 90 Linux
+harness and 101 analyzer checks. The recovery changes integrated into the newer
+source are not present in these frozen executables; this experiment does not
+verify those changes on hardware.
+
+The middle router's raw per-destination mac80211 queue table is available and
+untruncated at all four steady-workload boundaries. Interface, radio and station
+association identity remain stable. Across all 16 traffic identifiers, each
+snapshot has zero queued bytes/packets and RUN flags. During the measured steady
+window, traffic identifier 0 adds 3,259 transmitted packets, 3,717,631 transmitted
+bytes and 3,249 new flows; drops, marks, overlimit events and collisions do not
+increase. The before/after guard gaps add no table-counter changes. These tables
+include other traffic, and their packet/byte counts are not application delivery
+receipts. Boundary snapshots cannot exclude transient queueing between reads or
+loss later in the driver, firmware, radio or receiver.
+
+All 384 test sats are collected and every wallet is empty. All 258 management
+checks pass; cleanup has no errors. Independent final reads match the original
+router settings, accounts and radio state, with Internet/DNS available and owned
+processes absent. Source, inventory, artifact and earlier-capture hashes are
+unchanged, and no builds, tests or simulations ran during measurement. This
+validates bounded queue observation on the hardware, but the earlier intermittent
+364-packet loss was not reproduced. Its cause and strict rejection remain open;
+the 500-ms default is unchanged. The added observations are diagnostic overhead,
+not a matched performance improvement.
+
 ## Reproduction and remaining evidence
 
 See the [experiment instructions](../../testing/relay-cadence/README.md) for fixed
