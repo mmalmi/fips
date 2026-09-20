@@ -537,6 +537,7 @@ impl TransportHandle {
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             TransportHandle::Ethernet(t) => {
                 let snap = t.stats().snapshot();
+                let socket = t.socket_stats();
                 serde_json::json!({
                     "frames_sent": snap.frames_sent,
                     "frames_recv": snap.frames_recv,
@@ -549,6 +550,8 @@ impl TransportHandle {
                     "beacons_dropped": snap.beacons_dropped,
                     "frames_too_short": snap.frames_too_short,
                     "frames_too_long": snap.frames_too_long,
+                    "kernel_drops": socket.kernel_drops,
+                    "recv_buffer_bytes": socket.recv_buffer_bytes,
                 })
             }
             TransportHandle::Tcp(t) => {

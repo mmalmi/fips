@@ -7,6 +7,7 @@
 
 pub mod discovery;
 pub mod socket;
+mod socket_stats;
 pub mod stats;
 
 use super::{
@@ -119,6 +120,15 @@ impl EthernetTransport {
     /// Get a reference to the statistics.
     pub fn stats(&self) -> &Arc<EthernetStats> {
         &self.stats
+    }
+
+    /// Socket-local diagnostics, unavailable before start or on unsupported platforms.
+    pub(crate) fn socket_stats(&self) -> socket_stats::SocketStats {
+        #[cfg(target_os = "linux")]
+        if let Some(socket) = &self.socket {
+            return socket.get_ref().socket_stats();
+        }
+        socket_stats::SocketStats::default()
     }
 
     /// Start the transport asynchronously.
@@ -683,6 +693,18 @@ pub fn parse_mac_string(s: &str) -> Result<[u8; 6], TransportError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ethernet_socket_diagnostics_are_null_before_start() {
+        let (tx, _rx) = crate::transport::packet_channel(1);
+        let transport =
+            EthernetTransport::new(TransportId::new(1), None, EthernetConfig::default(), tx);
+        let handle = crate::transport::TransportHandle::Ethernet(transport);
+        let stats = handle.transport_stats();
+        assert!(stats.get("kernel_drops").unwrap().is_null());
+        assert!(stats.get("recv_buffer_bytes").unwrap().is_null());
+        assert_eq!(stats["recv_errors"], 0);
+    }
 
     #[test]
     fn test_parse_mac_addr_valid() {

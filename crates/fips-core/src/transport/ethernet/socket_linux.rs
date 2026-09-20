@@ -1,5 +1,6 @@
 //! AF_PACKET socket creation, binding, and ioctl helpers (Linux).
 
+use super::super::socket_stats::{KernelDropCounter, SocketStats};
 use crate::transport::TransportError;
 use std::os::unix::io::{AsRawFd, RawFd};
 
@@ -11,6 +12,7 @@ pub struct PacketSocket {
     fd: RawFd,
     if_index: i32,
     ethertype: u16,
+    kernel_drops: KernelDropCounter,
 }
 
 impl PacketSocket {
@@ -89,6 +91,7 @@ impl PacketSocket {
             fd,
             if_index,
             ethertype,
+            kernel_drops: KernelDropCounter::default(),
         })
     }
 
@@ -105,6 +108,20 @@ impl PacketSocket {
     /// Get the interface MTU.
     pub fn interface_mtu(&self) -> Result<u16, TransportError> {
         get_if_mtu(self.fd, self.if_index)
+    }
+
+    pub(crate) fn socket_stats(&self) -> SocketStats {
+        SocketStats {
+            kernel_drops: self.kernel_drops.sample(|| {
+                // tpacket_stats is two u32 fields: tp_packets, tp_drops.
+                get_socket_option::<2>(self.fd, libc::SOL_PACKET, libc::PACKET_STATISTICS)
+                    .map(|stats| stats[1])
+            }),
+            recv_buffer_bytes: get_socket_option::<1>(self.fd, libc::SOL_SOCKET, libc::SO_RCVBUF)
+                .ok()
+                .and_then(|size| i32::try_from(size[0]).ok())
+                .and_then(|size| u64::try_from(size).ok()),
+        }
     }
 
     /// Set the socket receive buffer size.
@@ -218,6 +235,31 @@ impl Drop for PacketSocket {
         }
     }
 }
+
+/// Read a fixed-size integer-only Linux socket option.
+fn get_socket_option<const WORDS: usize>(
+    fd: RawFd,
+    level: libc::c_int,
+    option: libc::c_int,
+) -> std::io::Result<[u32; WORDS]> {
+    let mut value = [0; WORDS];
+    let mut len = std::mem::size_of_val(&value) as libc::socklen_t;
+    let ret = unsafe { libc::getsockopt(fd, level, option, value.as_mut_ptr().cast(), &mut len) };
+    if ret < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if len as usize != std::mem::size_of_val(&value) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "unexpected socket option size",
+        ));
+    }
+    Ok(value)
+}
+
+#[cfg(test)]
+#[path = "socket_linux_tests.rs"]
+mod tests;
 
 // ============================================================================
 // ioctl helpers
