@@ -10,6 +10,7 @@ import shlex
 import time
 
 from .wifi_remote import checked_path
+from . import wifi_link_loss
 
 
 PROC = "/proc"
@@ -79,7 +80,7 @@ def validate_measurements(status, pid):
             unsigned(counter)
 
 
-def command(node, native_counters=False, drop_logs=False):
+def command(node, native_counters=False, drop_logs=False, link_loss=False):
     temporary = shlex.quote(checked_path(node.temporary))
     binary = shlex.quote(checked_path(node.binary))
     config = shlex.quote(checked_path(node.config))
@@ -96,6 +97,9 @@ native_transports=$(printf '%s\\n' '{{"command":"show_transports"}}' | {binary} 
                   if drop_logs else "")
     if drop_logs:
         extra += ' "$log_filter" "$log_bytes"'
+    link_sample = wifi_link_loss.command(node, PROC) if link_loss else ""
+    if link_loss:
+        extra += "".join(f' "${field}"' for field in wifi_link_loss.FIELDS)
     # Do not acquire operation.lock: reads must not delay the independent guard.
     # Buffer output until both identity checks succeed; no proc/config data is
     # written remotely. NUL framing preserves spaces and parentheses in comm.
@@ -122,22 +126,23 @@ else
   io=''
   availability=unsupported
 fi
-{log_sample}owned
+{log_sample}{link_sample}owned
 after=$(cat {proc}/$pid/stat)
 printf '%s\\000' "$pid" "$before" "$after" "$resources" "$io" "$relay" "$availability"{extra}
 """
 
 
-def snapshot(node, hostlabel, native_counters=False, drop_logs=False):
+def snapshot(node, hostlabel, native_counters=False, drop_logs=False, link_loss=False):
     """Return one normal status response with validated host/process evidence."""
     if (hostlabel not in ("n01", "n02", "n03") or type(native_counters) is not bool
-            or type(drop_logs) is not bool):
+            or type(drop_logs) is not bool or type(link_loss) is not bool):
         raise ValueError("invalid measurement host label")
     started = time.monotonic_ns()
-    raw = node.remote(command(node, native_counters, drop_logs), timeout=45)
+    raw = node.remote(command(node, native_counters, drop_logs, link_loss), timeout=45)
     finished = time.monotonic_ns()
     parts = raw.decode("utf-8").split("\0")
-    if len(parts) != 8 + 3 * native_counters + 2 * drop_logs or parts[-1]:
+    extra = len(wifi_link_loss.FIELDS) if link_loss else 0
+    if len(parts) != 8 + 3 * native_counters + 2 * drop_logs + extra or parts[-1]:
         raise ValueError("invalid resource sample framing")
     pid = decimal(parts[0])
     before, after = process_identity(parts[1]), process_identity(parts[2])
@@ -175,6 +180,9 @@ def snapshot(node, hostlabel, native_counters=False, drop_logs=False):
         if log_filter != DATAPLANE_DROP_LOG_FILTER:
             raise ValueError("dataplane drop log filter differs from the pinned diagnostic")
         status["dataplane_log"] = {"filter": log_filter, "bytes": decimal(log_bytes)}
+    if link_loss:
+        start = 7 + 3 * native_counters + 2 * drop_logs
+        status["link_loss"] = wifi_link_loss.parse(node, parts[start:-1])
     status["host_process"] = {"host": hostlabel, "pid": pid, "start_ticks": before[1],
                               "rss_kib": memory["VmRSS"], "peak_rss_kib": memory["VmHWM"],
                               "io_available": parts[6] == "available", **io}

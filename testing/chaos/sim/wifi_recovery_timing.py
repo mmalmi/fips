@@ -2,15 +2,14 @@
 
 import copy
 import math
-import shlex
 import time
 
 from .paid_settlement import require
 from .wifi_measurements import unsigned
+from .wifi_link_loss import stations
 
 
 MAX_SAMPLES = 512
-MAX_STATION_BYTES = 65536
 LOG_FILTER = ("warn,fips_core::transport::ethernet=trace,"
               "fips_core::node::handlers::mmp=debug,"
               "fips_core::node::handlers::rekey=trace,"
@@ -34,13 +33,6 @@ def radio_state(node):
     for field in ("beacons_sent", "beacons_recv", "beacons_dropped"):
         unsigned(adapter["stats"][field])
     return adapter
-
-
-def stations(node):
-    command = shlex.join(["iw", "dev", node.interface, "station", "dump"])
-    value = node.remote(["sh", "-c", f"set -o pipefail\n{command} | head -c {MAX_STATION_BYTES + 1}"])
-    require(len(value) <= MAX_STATION_BYTES, "station observation exceeds its bound")
-    return value.decode()
 
 
 class RecoveryTiming:

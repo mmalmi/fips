@@ -49,6 +49,7 @@ def metadata(args):
         "pilot_delay_ms": selected[0] if args.pilot else None,
         "native_counters": getattr(args, "native_counters", False),
         "post_gap_probes": getattr(args, "post_gap_probes", False),
+        "link_loss_counters": getattr(args, "link_loss_counters", False),
         "payment_service_carrier": True,
         "dataplane_drop_log_filter": (DATAPLANE_DROP_LOG_FILTER
                                       if getattr(args, "dataplane_drop_logs", False) else None),
@@ -68,7 +69,8 @@ class CadenceRun(PaidWifiRun):
                 node.diagnostic_log_filter = DATAPLANE_DROP_LOG_FILTER
         self.evidence.update(trial=trial, max_delay_ms=delay,
                              measurement_acceptance="not_analyzed")
-        for name in ("wifi_cadence.py", "cadence_workloads.py", "wifi_measurements.py", "remote_mint.py"):
+        for name in ("wifi_cadence.py", "cadence_workloads.py", "wifi_measurements.py",
+                     "wifi_link_loss.py", "remote_mint.py"):
             self.evidence["harness_sha256"][name] = digest(Path(__file__).with_name(name).read_bytes())
 
     def profile_config(self, node):
@@ -94,7 +96,8 @@ class CadenceRun(PaidWifiRun):
         self.monitor.check()
         with ThreadPoolExecutor(max_workers=3) as pool:
             futures = [pool.submit(snapshot, node, name, getattr(self.args, "native_counters", False),
-                                   getattr(self.args, "dataplane_drop_logs", False))
+                                   getattr(self.args, "dataplane_drop_logs", False),
+                                   getattr(self.args, "link_loss_counters", False) and name in ("n02", "n03"))
                        for name, node in self.nodes.items()]
             return [future.result() for future in futures]
 
@@ -218,6 +221,8 @@ def main():
                         help="pin existing dataplane drop logging and capture per-window byte offsets")
     parser.add_argument("--post-gap-probes", action="store_true",
                         help="record a supplemental same-stream receive observation after each burst gap")
+    parser.add_argument("--link-loss-counters", action="store_true",
+                        help="observe middle/destination station, interface and available qdisc counters at workload boundaries")
     args = parser.parse_args()
     os.umask(0o077)
 

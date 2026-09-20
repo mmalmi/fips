@@ -13,6 +13,19 @@ from sim.cadence_workloads import perform, stream
 
 
 class CadenceTests(unittest.TestCase):
+    def test_link_observations_are_opt_in_and_only_sample_middle_and_destination(self):
+        service = self.service()
+        service.monitor = Mock()
+        with patch("sim.wifi_measurements.snapshot", return_value={}) as sample:
+            service.sample()
+            self.assertEqual(sample.call_count, 3)
+            self.assertTrue(all(call.args[-1] is False for call in sample.call_args_list))
+            sample.reset_mock()
+            service.args.link_loss_counters = True
+            service.sample()
+            self.assertEqual({call.args[1]: call.args[-1] for call in sample.call_args_list},
+                             {"n01": False, "n02": True, "n03": True})
+
     def test_pilot_policy_is_explicit_and_does_not_change_the_matrix(self):
         self.assertEqual(policies(argparse.Namespace(pilot=True)), (250,))
         self.assertEqual(policies(argparse.Namespace(pilot=True, pilot_delay_ms=2000)), (2000,))
