@@ -145,6 +145,9 @@ impl Plan {
 
 impl Controller {
     pub(super) fn validate_seller_history(j: &Journal) -> Result<(), String> {
+        if j.version & journal::RECEIVER_PROOF_RELEASE_VERSION != 0 && j.history_version() != 6 {
+            return Err("receiver proof release requires receiver history".into());
+        }
         let Some(h) = j.history.as_ref().and_then(|h| h.seller.as_ref()) else {
             return if j.history_version() < 5 {
                 Ok(())
@@ -268,7 +271,7 @@ impl Store {
             .receiver
             .as_ref()
             .ok_or("receiver retirement intent missing")?;
-        if retire(receiver)? != receiver.after {
+        if retire(receiver)? != receiver.accounting.after {
             return Err("receiver retirement result changed".into());
         }
         let mut j = self.journal.clone();

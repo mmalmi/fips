@@ -179,6 +179,49 @@ async fn paid_service_settlement_preserves_redemption_reserves_and_signed_charge
         for child in &mut children {
             stop(child).await;
         }
+        // The real service worker must finish the payout ownership handoff,
+        // including a nonzero payout with a redemption reserve. All processes
+        // are stopped before opening their exclusively owned wallet.
+        use cdk_common::database::WalletDatabase;
+        let directory = configs[1].state_directory.join("wallet");
+        let wallet = cashu_service::CashuWalletService::open_file_backed(&directory)
+            .await
+            .unwrap();
+        let released = wallet.payment_proof_history().await.unwrap();
+        assert!(released.retained_proofs > 0);
+        assert_eq!(released.retired_proofs, 0);
+        let db =
+            cdk_sqlite::WalletSqliteDatabase::new(cashu_service::cashu_wallet_db_path(&directory))
+                .await
+                .unwrap();
+        let queue: serde_json::Value = serde_json::from_slice(
+            &db.kv_read("cashu_service", "proof_history", "journal")
+                .await
+                .unwrap()
+                .expect("completed seller handoff must release original payouts"),
+        )
+        .unwrap();
+        let candidates = queue["candidates"].as_object().unwrap();
+        assert_eq!(candidates.len(), released.retained_proofs);
+        let original = candidates
+            .values()
+            .map(|p| serde_json::from_value::<cdk_common::wallet::ProofInfo>(p.clone()).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            original
+                .iter()
+                .map(|p| p.proof.amount.to_u64())
+                .sum::<u64>(),
+            expected[1]
+        );
+        for proof in original {
+            let saved = db.get_proofs_by_ys(vec![proof.y]).await.unwrap();
+            assert_eq!(saved, vec![proof]);
+            assert_eq!(saved[0].state, cashu::nuts::State::Unspent);
+            assert_eq!(saved[0].mint_url.to_string(), mint.url());
+        }
+        assert!(queue["pending"].is_null());
+        assert_ne!(read(1)["version"].as_u64().unwrap() & 0x4000, 0);
     })
     .await
     .expect("bounded paid settlement fee scenario");

@@ -39,17 +39,18 @@ impl Plan {
                 .before
                 .receiver
                 .as_ref()
-                .map_or(r.before != ReceiverHistory::default(), |old| {
-                    old != &r.before
+                .map_or(r.accounting.before != ReceiverHistory::default(), |old| {
+                    old != &r.accounting.before
                 })
         {
             return Err("receiver retirement history does not match controller".into());
         }
-        self.before.receiver = Some(r.before.clone());
-        self.after.receiver = Some(r.after.clone());
+        self.before.receiver = Some(r.accounting.before.clone());
+        self.after.receiver = Some(r.accounting.after.clone());
         self.receiver = Some(r);
         h.totals.receiver = self.before.receiver.clone();
         j.advance_history_version(6);
+        j.version |= journal::RECEIVER_PROOF_RELEASE_VERSION;
         self.validate_receiver(j)
     }
 
@@ -66,14 +67,16 @@ impl Plan {
         };
         r.validate()?;
         if j.history_version() != 6
-            || self.before.receiver.as_ref() != Some(&r.before)
-            || self.after.receiver.as_ref() != Some(&r.after)
-            || r.channels.len() != self.ledger.channels.len()
+            || j.version & journal::RECEIVER_PROOF_RELEASE_VERSION == 0
+            || self.before.receiver.as_ref() != Some(&r.accounting.before)
+            || self.after.receiver.as_ref() != Some(&r.accounting.after)
+            || r.accounting.channels.len() != self.ledger.channels.len()
         {
             return Err("receiver retirement snapshots changed".into());
         }
         for c in &self.ledger.channels {
             let saved = r
+                .accounting
                 .channels
                 .iter()
                 .find(|s| s.id == c.terms.id)

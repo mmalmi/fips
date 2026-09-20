@@ -179,19 +179,30 @@ signed amount and both original payout values to the released settlement reports
 The SDK retains ownership of its nominal funding and usage accounting. An
 ineligible payout retains its records without saving a new cleanup intent.
 
-The controller then saves one exact plan, commits the seller ledger, commits
-receiver retirement through the SDK, checks the returned history, and only then
-removes its channel terms and settlement records. It retains cumulative settlement
-value, signed payments, receiver redemption-fee reserves, returned funds and reported
-fees. Reserves remain distinct from both signed spending and fees already paid;
+The controller then saves one exact plan, including the SDK's original receiver
+payout identities and wallet/receiver binding. It commits the seller ledger, retires
+receiver records through the SDK, and hands those exact payout identities to the
+wallet's proof-release queue. Only after that handoff and the returned history
+have been checked does it remove its channel terms and settlement records.
+It retains cumulative settlement value, signed payments, receiver redemption-fee
+reserves, returned funds and reported fees. Reserves remain distinct from both
+signed spending and fees already paid;
 see [settlement values and compatibility](FUNDING-COSTS.md#signed-charges-and-payout-reserves).
 The wallet owner guard spans this local operation even if its async caller is
 cancelled. It performs no payout import, payment or network exchange. Startup
 resumes an interrupted plan before ordinary funding recovery. Failed writers
 suspend admission; retry checks exact before/after evidence and does not count a
-completed handoff twice. Durable credit
-windows remove only the retired channel entries; other channels keep the same
-allowance.
+completed handoff twice. Durable credit windows remove only the retired channel
+entries; other channels keep the same allowance.
+
+The saved plan survives receiver deletion, a full proof-release queue and a lost
+handoff reply. Startup retries that same plan; it neither reconstructs payout
+ownership from wallet balances nor changes signed amounts or fees. The durable
+`0x4000` format bit rejects older controller readers that could discard the new
+handoff. The bit remains after completion. Original sender refunds have their own
+ownership lifecycle; the receiver handoff does not release them.
+The local SDK plan contains bearer proofs and must remain in protected storage;
+it is never sent to peers. One plan is limited to 1024 original coins and 4 MiB.
 
 The SDK requires original unspent payouts to retain their spending signatures;
 already-spent payouts are eligible without restoring their value. Empty zero
@@ -223,7 +234,7 @@ operator intervention after enough distinct unpaid peers. Active, unexpired,
 unacknowledged, pending, legacy or otherwise unresolved records also retain slots.
 The controller and ledger's channel bounds now count retained records on both sides.
 
-**Remaining history work:** spent proof records, unreleased or unrelated
+**Remaining history work:** unreleased spent proof records, unreleased or unrelated
 transactions, mint/melt records and orphaned legacy receiver records remain.
 Completed CDK recovery operations already remove their saga records; unfinished
 creating and spending operations must retain their original coins. Spent proof
@@ -232,16 +243,15 @@ coordinate all of those owners, not merely observe a spent state or completed
 spending operation. This is not yet a bound on total router database size or proof
 of indefinite operation under hostile identity churn.
 
-The SDK now provides an explicit local proof-release queue as a prerequisite for
-that handoff. Its caller must durably release every external owner before adding
+The SDK provides an explicit local proof-release queue for that handoff.
+Its caller must durably release every external owner before adding
 the original coins; spent state alone grants no cleanup authority. The queue
 retains at most 1024 candidates and deletes at most 128 eligible spent records per
 pass, preserving unspent value, local recovery/send/receipt owners and an exact
-crash-recovery intent. FIPS channel retirement does not yet supply those batches.
-It must preserve the original payout identities in its saved retirement plan
-before receiver records disappear, and release them only after custody checks
-and receiver retirement finish. The queue bounds neither unrelated wallet
-history nor total database size; repeated channel lifecycles still need to prove
+crash-recovery intent. FIPS seller-channel retirement supplies its saved original
+receiver payout batches only after custody checks and receiver retirement finish.
+Outgoing funding/refund proof release remains separate unfinished work. The queue
+bounds neither unrelated wallet history nor total database size; repeated channel lifecycles still need to prove
 a storage plateau after integration. Collection adds no wire messages.
 
 Legacy/full profiles and version-1 funding-cost reconciliation still need explicit
