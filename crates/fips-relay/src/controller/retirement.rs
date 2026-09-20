@@ -153,6 +153,14 @@ impl Retirement {
             }
         }
         let outgoing = self.outgoing();
+        if j.watched_routes.values().any(|watch| {
+            watch
+                .selected_trial
+                .as_ref()
+                .is_some_and(|id| outgoing.contains(id))
+        }) {
+            return Err("retirement crosses retained trial accounting".into());
+        }
         let incoming = self.incoming();
         for c in j.route_changes.values() {
             let touched = c.previous.iter().any(|p| outgoing.contains(&p.contract.id))

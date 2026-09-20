@@ -28,12 +28,20 @@ pub(super) struct Bench {
 }
 
 pub(super) async fn start(root_index: usize, scenario: Scenario, seed: u64) -> Bench {
-    start_inner(root_index, scenario, seed, false).await.0
+    start_inner(root_index, scenario, seed, false, false)
+        .await
+        .0
+}
+
+pub(super) async fn start_with_promotion_gate(root_index: usize, seed: u64) -> Bench {
+    start_inner(root_index, Scenario::RecoveryTiming, seed, false, true)
+        .await
+        .0
 }
 
 #[cfg(unix)]
 pub(super) async fn start_with_mint_proxy(root_index: usize, seed: u64) -> (Bench, MintProxy) {
-    let (bench, proxy) = start_inner(root_index, Scenario::MergeSplit, seed, true).await;
+    let (bench, proxy) = start_inner(root_index, Scenario::MergeSplit, seed, true, false).await;
     (bench, proxy.unwrap())
 }
 
@@ -42,6 +50,7 @@ async fn start_inner(
     scenario: Scenario,
     seed: u64,
     intercept_mint: bool,
+    hold_promotion: bool,
 ) -> (Bench, Option<MintProxy>) {
     let handshakes = matches!(scenario, Scenario::HandshakeSaturation);
     let saturation = matches!(
@@ -114,7 +123,7 @@ async fn start_inner(
             },
         );
     }
-    if mobile {
+    if mobile || hold_promotion {
         network.set_link_up("0", "2", false);
     }
     fips_core::register_sim_network(network_name.clone(), network.clone());
@@ -360,7 +369,15 @@ async fn start_inner(
             )
             .unwrap(),
         );
-        let incoming = if interrupted && i == 2 {
+        let incoming = if hold_promotion && i == 1 {
+            let (incoming, gate) = mobility::pending::interpose_promotion(
+                incoming,
+                peers[0],
+                selection.trial_max_units,
+            );
+            interrupted_acceptance = Some(gate);
+            incoming
+        } else if interrupted && i == 2 {
             let (incoming, gate) = mobility::pending::interpose(incoming, peers[0]);
             interrupted_acceptance = Some(gate);
             incoming

@@ -24,10 +24,12 @@ pub struct WatchedRoute {
     pub max_rate_msat_per_kib: u64,
     pub paused: bool,
     pub(super) pending: Option<RouteOffer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) selected_trial: Option<String>,
 }
 
 impl WatchedRoute {
-    fn accepts(&self, offer: &RouteOffer) -> bool {
+    pub(super) fn accepts(&self, offer: &RouteOffer) -> bool {
         offer.destination.npub() == self.destination
             && offer.billing == self.billing
             && offer.price.per_bytes == 1024
@@ -64,6 +66,7 @@ impl Controller {
             return Err("watched route capacity".into());
         }
         for (id, watch) in &j.watched_routes {
+            Self::validate_selected_trial(j, watch)?;
             let destination = PeerIdentity::from_npub(&watch.destination)
                 .map_err(|_| "invalid watched destination")?;
             if id != &watch.destination
@@ -206,6 +209,7 @@ impl Controller {
                             max_rate_msat_per_kib,
                             paused: false,
                             pending: None,
+                            selected_trial: None,
                         },
                     );
                 }
@@ -225,7 +229,11 @@ impl Controller {
             );
         let offer = match pending {
             Some(offer) => offer,
-            None => self.services.quotes.request_route(destination).await?,
+            None => {
+                let watch = self.snapshot().await?.watched_routes[&id].clone();
+                self.restore_interrupted_trial(&watch).await?;
+                self.services.quotes.request_route(destination).await?
+            }
         };
         self.accept_watched_offer(&id, offer).await
     }
@@ -248,6 +256,21 @@ impl Controller {
                 return Err("previous watched purchase unfinished".into());
             }
             self.activate_source_route(&offer).await?;
+            if watch.selected_trial.is_some() {
+                let expected = watch.clone();
+                self.change(move |j| {
+                    let current = j
+                        .watched_routes
+                        .get_mut(&expected.destination)
+                        .ok_or("source authorization missing")?;
+                    if *current != expected {
+                        return Err("watched purchase changed".into());
+                    }
+                    current.selected_trial = None;
+                    Ok(())
+                })
+                .await?;
+            }
             self.refresh_checks
                 .lock()
                 .map_err(|_| "refresh timer poisoned")?
@@ -289,6 +312,16 @@ impl Controller {
             })
         {
             self.activate_source_route(&old.offer).await?;
+            let selected = old.offer.trial.then(|| old.purchase.contract.id.clone());
+            if watch.selected_trial != selected {
+                let key = id.to_string();
+                let expected = watch.clone();
+                let completed = old.purchase.clone();
+                self.change(move |j| {
+                    Self::complete_watched_purchase(j, &key, expected, &completed)
+                })
+                .await?;
+            }
             return Ok(RouteAccess::Paid(old.purchase.clone()));
         }
         let purchase = self
@@ -301,31 +334,10 @@ impl Controller {
             })?;
         let key = id.to_string();
         let mut expected = watch.clone();
+        expected.pending = Some(offer);
         let completed = purchase.clone();
-        self.change(move |j| {
-            let outgoing = j
-                .outgoing
-                .get(&completed.contract.id)
-                .ok_or("purchase intent missing")?;
-            if outgoing.purchase != completed
-                || !outgoing.accepted
-                || !Self::routing_eligible(j, outgoing)
-                || j.buyer_settlements.contains_key(&completed.channel.id)
-            {
-                return Err("watched purchase changed".into());
-            }
-            expected.pending = Some(outgoing.offer.clone());
-            let watch = j
-                .watched_routes
-                .get_mut(&key)
-                .ok_or("source authorization missing")?;
-            if *watch != expected || !watch.accepts(&outgoing.offer) {
-                return Err("watched purchase changed".into());
-            }
-            watch.pending = None;
-            Ok(())
-        })
-        .await?;
+        self.change(move |j| Self::complete_watched_purchase(j, &key, expected, &completed))
+            .await?;
         if let Some(check) = self
             .refresh_checks
             .lock()
@@ -404,6 +416,7 @@ impl Controller {
                 } else {
                     let destination = PeerIdentity::from_npub(&watch.destination)
                         .map_err(|_| "invalid watched destination")?;
+                    self.restore_interrupted_trial(&watch).await?;
                     let replace = if let Some(id) = replace_fenced {
                         let latest = self.snapshot().await?;
                         let timestamp = now()?;

@@ -29,6 +29,7 @@ async fn withdraw(controller: &Controller, offer: &RouteOffer) {
                 max_rate_msat_per_kib: offer.price.msat,
                 paused: false,
                 pending: Some(offer),
+                selected_trial: None,
             };
             j.watched_routes
                 .insert(watch.destination.clone(), watch.clone());
@@ -400,6 +401,7 @@ fn live_shared_work_and_unmarked_requests_do_not_expire() {
                     max_rate_msat_per_kib: offer.price.msat,
                     paused: true,
                     pending: Some(offer.clone()),
+                    selected_trial: None,
                 };
                 store
                     .journal

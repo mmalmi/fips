@@ -12,6 +12,7 @@ fn withdrawn(root: &Path) -> (Store, Outgoing, BuyerAuthorizer, FundingIntent, u
         max_rate_msat_per_kib: old.offer.price.msat,
         paused: false,
         pending: Some(old.offer.clone()),
+        selected_trial: None,
     };
     store
         .journal

@@ -131,6 +131,7 @@ async fn assert_disconnected_watch(restored: bool) {
         max_rate_msat_per_kib: 8192,
         paused: false,
         pending: restored.then(|| offer.clone()),
+        selected_trial: None,
     };
     let key = id.clone();
     controller
@@ -210,6 +211,7 @@ fn authorized_watch(offer: &RouteOffer) -> WatchedRoute {
         max_rate_msat_per_kib: 8192,
         paused: false,
         pending: None,
+        selected_trial: None,
     }
 }
 

@@ -64,6 +64,59 @@ fn submit(buyer: &BuyerAuthorizer, offer: &RouteOffer, bytes: usize) {
 }
 
 #[test]
+fn closed_trial_retains_only_exact_unspent_quota_across_reload() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("buyer");
+    let (buyer, offer, contract) = fixture(&directory, 32_768, Limits::default());
+    assert_eq!(buyer.retained_quota(&offer), Ok(Some((true, 32_768))));
+    submit(&buyer, &offer, 3_096);
+    buyer.close_quote(&contract.id).unwrap();
+    buyer.close_channel(&contract.channel_id).unwrap();
+    assert_eq!(buyer.retained_quota(&offer), Ok(Some((false, 29_672))));
+    let remaining = buyer.remaining_budget_sat();
+    drop(buyer);
+    let buyer = BuyerAuthorizer::load(&directory).unwrap();
+    assert_eq!(buyer.retained_quota(&offer), Ok(Some((false, 29_672))));
+    assert_eq!(buyer.remaining_budget_sat(), remaining);
+    assert_eq!(
+        buyer.prepare(&intent(&offer, 100)),
+        OriginatedSessionAdmission::Reject
+    );
+    for changed in [
+        RouteOffer {
+            id: "different".into(),
+            ..offer.clone()
+        },
+        RouteOffer {
+            buyer: offer.provider,
+            ..offer.clone()
+        },
+        RouteOffer {
+            max_units: offer.max_units + 1,
+            ..offer.clone()
+        },
+        RouteOffer {
+            provider: offer.buyer,
+            ..offer.clone()
+        },
+    ] {
+        assert_eq!(buyer.retained_quota(&changed), Ok(None));
+    }
+}
+
+#[test]
+fn fully_spent_closed_trial_has_no_replacement_quota() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("buyer");
+    let (buyer, offer, contract) = fixture(&directory, 4_096, Limits::default());
+    submit(&buyer, &offer, 4_096);
+    buyer.close_quote(&contract.id).unwrap();
+    drop(buyer);
+    let buyer = BuyerAuthorizer::load(&directory).unwrap();
+    assert_eq!(buyer.retained_quota(&offer), Ok(Some((false, 0))));
+}
+
+#[test]
 fn quota_denial_with_positive_remainder_is_exact_volatile_and_not_a_reservation() {
     let root = tempfile::tempdir().unwrap();
     let directory = root.path().join("buyer");

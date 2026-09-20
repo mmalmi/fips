@@ -11,7 +11,10 @@ pub(super) fn select(
         .outgoing
         .iter()
         .filter(|(_, o)| {
-            closed_purchase(j, o)
+            !j.watched_routes
+                .values()
+                .any(|watch| watch.selected_trial.as_ref() == Some(&o.purchase.contract.id))
+                && closed_purchase(j, o)
                 && o.offer.expires_unix <= timestamp
                 && !o.purchase.contract.billing.is_legacy()
         })

@@ -35,16 +35,25 @@ pub(crate) struct ResponseGate {
 
 impl ResponseGate {
     pub(super) async fn accepted(&mut self) -> Accepted {
+        self.try_accepted()
+            .await
+            .expect("provider must return a real successful Accept before the reply-loss fault")
+    }
+
+    pub(super) async fn try_accepted(&mut self) -> Result<Accepted, String> {
         tokio::time::timeout(Duration::from_secs(50), async {
             loop {
                 if let Some(accepted) = self.captured.borrow().clone() {
-                    return accepted;
+                    return Ok(accepted);
                 }
-                self.captured.changed().await.unwrap();
+                self.captured
+                    .changed()
+                    .await
+                    .map_err(|_| "acceptance response gate stopped before capture".to_string())?;
             }
         })
         .await
-        .expect("provider 2 must return a real successful Accept before the reply-loss fault")
+        .map_err(|_| "no successful Accept captured within 50 seconds".to_string())?
     }
 
     pub(super) async fn release(&self) -> Released {
@@ -88,8 +97,24 @@ fn release(held: &mut Vec<Held>) -> Released {
 }
 
 pub(crate) fn interpose(
+    incoming: mpsc::Receiver<IncomingRequest>,
+    buyer: PeerIdentity,
+) -> (mpsc::Receiver<IncomingRequest>, ResponseGate) {
+    interpose_matching(incoming, buyer, None)
+}
+
+pub(crate) fn interpose_promotion(
+    incoming: mpsc::Receiver<IncomingRequest>,
+    buyer: PeerIdentity,
+    trial_max_units: u64,
+) -> (mpsc::Receiver<IncomingRequest>, ResponseGate) {
+    interpose_matching(incoming, buyer, Some(trial_max_units))
+}
+
+fn interpose_matching(
     mut incoming: mpsc::Receiver<IncomingRequest>,
     buyer: PeerIdentity,
+    trial_max_units: Option<u64>,
 ) -> (mpsc::Receiver<IncomingRequest>, ResponseGate) {
     let (send, receive) = mpsc::channel(16);
     let (capture, captured) = watch::channel(None::<Accepted>);
@@ -136,6 +161,10 @@ pub(crate) fn interpose(
                     if let Ok(ControllerResponse::Accepted { purchase }) =
                         serde_json::from_slice::<ControllerResponse>(&bytes)
                     {
+                        if trial_max_units.is_some_and(|limit| purchase.contract.max_units <= limit) {
+                            let _ = request.respond.send(bytes);
+                            continue;
+                        }
                         assert_eq!(purchase.channel, channel);
                         assert_eq!(purchase.channel.buyer, *buyer.node_addr());
                         assert_eq!(purchase.contract.channel_id, channel.id);

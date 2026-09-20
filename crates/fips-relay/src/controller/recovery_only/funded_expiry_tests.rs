@@ -105,6 +105,7 @@ async fn exercise(installed: bool, lost_completion: bool) {
                     max_rate_msat_per_kib: 1024,
                     paused: false,
                     pending: Some(saved_offer),
+                    selected_trial: None,
                 };
                 j.watched_routes
                     .insert(watch.destination.clone(), watch.clone());

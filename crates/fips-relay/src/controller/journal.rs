@@ -4,7 +4,8 @@ use super::*;
 // Authorization-format fence independent of the existing accounting checkpoints.
 pub(super) const RECOVERY_ONLY_VERSION: u16 = 0x100;
 pub(super) const EXPIRY_RECOVERY_VERSION: u16 = 0x200;
-const FORMAT_FLAGS: u16 = RECOVERY_ONLY_VERSION | EXPIRY_RECOVERY_VERSION;
+pub(super) const SELECTED_TRIAL_VERSION: u16 = 0x400;
+const FORMAT_FLAGS: u16 = RECOVERY_ONLY_VERSION | EXPIRY_RECOVERY_VERSION | SELECTED_TRIAL_VERSION;
 
 impl Journal {
     pub(super) fn history_version(&self) -> u16 {

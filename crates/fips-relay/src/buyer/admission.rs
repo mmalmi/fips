@@ -172,6 +172,29 @@ impl BuyerAuthorizer {
         Ok(self.state.lock().map_err(|_| "buyer state poisoned")?.local == local)
     }
 
+    /// Retained accounting survives withdrawal and channel closure. It grants
+    /// no routing authority; a replacement can carry only the unspent quota.
+    pub(crate) fn retained_quota(
+        &self,
+        offer: &crate::route_quotes::RouteOffer,
+    ) -> Result<Option<(bool, u64)>, String> {
+        let state = self.state.lock().map_err(|_| "buyer state poisoned")?;
+        let mut matching = matching_quotes(&state, offer);
+        let retained = matching.next();
+        if matching.next().is_some() {
+            return Err("offer has ambiguous retained quota".into());
+        }
+        Ok(retained.map(|(quote, channel)| {
+            (
+                quote.active && channel.active,
+                quote
+                    .contract
+                    .max_units
+                    .saturating_sub(quote.observed_units),
+            )
+        }))
+    }
+
     /// Read only actual local quota denial for the exact accepted offer. Quote
     /// IDs bind to channel-specific contract IDs; a matching destination alone
     /// cannot attribute denial to a new trial or changed agreement.
@@ -180,21 +203,24 @@ impl BuyerAuthorizer {
         offer: &crate::route_quotes::RouteOffer,
     ) -> Result<Option<bool>, String> {
         let state = self.state.lock().map_err(|_| "buyer state poisoned")?;
-        if offer.buyer != state.local {
-            return Ok(None);
-        }
-        for quote in state.quotes.values().filter(|q| q.active) {
-            let channel = &state.channels[&quote.contract.channel_id];
-            if channel.active
-                && channel.provider == offer.provider
-                && crate::route_quotes::contract_from_offer(offer, &channel.terms)
-                    .is_ok_and(|contract| contract == quote.contract)
-            {
-                return Ok(Some(quote.quota_blocked));
-            }
-        }
-        Ok(None)
+        Ok(matching_quotes(&state, offer)
+            .find(|(quote, channel)| quote.active && channel.active)
+            .map(|(quote, _)| quote.quota_blocked))
     }
+}
+
+fn matching_quotes<'a>(
+    state: &'a State,
+    offer: &'a crate::route_quotes::RouteOffer,
+) -> impl Iterator<Item = (&'a PurchaseQuote, &'a PurchaseChannel)> {
+    state.quotes.values().filter_map(move |quote| {
+        let channel = &state.channels[&quote.contract.channel_id];
+        (offer.buyer == state.local
+            && channel.provider == offer.provider
+            && crate::route_quotes::contract_from_offer(offer, &channel.terms)
+                .is_ok_and(|contract| contract == quote.contract))
+        .then_some((quote, channel))
+    })
 }
 
 #[cfg(test)]

@@ -17,6 +17,7 @@ fn paused_free_source_authorization_keeps_its_zero_ceiling_after_reload() {
                     max_rate_msat_per_kib: 0,
                     paused: true,
                     pending: None,
+                    selected_trial: None,
                 },
             );
             Ok(())
@@ -236,6 +237,7 @@ fn refund_retires_interrupted_acceptance_without_erasing_evidence_or_replaying_i
                         max_rate_msat_per_kib: 8192,
                         paused: true,
                         pending: Some(pending.offer.clone()),
+                        selected_trial: None,
                     },
                 );
                 start_close(j, &old);

@@ -4,6 +4,8 @@ use fips_core::SourceRouteQuality;
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 
+mod recovery;
+
 const MAX_DESTINATIONS: usize = 32;
 const MAX_CANDIDATES: usize = 4;
 const MAX_FAILED_PROVIDERS: usize = 16;
@@ -52,6 +54,7 @@ impl PriceSelectionPolicy {
 #[derive(Default)]
 struct Destination {
     active: Option<RouteOffer>,
+    restored: bool,
     observations: BTreeMap<NodeAddr, Observation>,
     failed: BTreeMap<NodeAddr, Instant>,
     cursor: usize,
@@ -143,6 +146,11 @@ impl Destination {
         policy: &PriceSelectionPolicy,
         now: Instant,
     ) -> Result<(), String> {
+        if self.restored {
+            // A restored accounting hint has not bound an accepted carrier.
+            self.observations.clear();
+            return Ok(());
+        }
         let Some(active) = &self.active else {
             return Ok(());
         };
@@ -393,10 +401,11 @@ impl RouteQuotes {
                 return Err("source selection capacity".into());
             }
             let state = states.entry(dest).or_default();
-            state.active.as_ref().is_none_or(|a| {
-                !same_path(a, offer)
-                    || (a.id != offer.id && state.failed.contains_key(&offer.provider))
-            })
+            state.restored
+                || state.active.as_ref().is_none_or(|a| {
+                    !same_path(a, offer)
+                        || (a.id != offer.id && state.failed.contains_key(&offer.provider))
+                })
         };
         if changed {
             let peer = self.connected_provider(offer.provider).await?;
@@ -422,6 +431,7 @@ impl RouteQuotes {
             state.blocked_trial = None;
         }
         state.active = Some(offer.clone());
+        state.restored = false;
         Ok(())
     }
 
@@ -479,7 +489,9 @@ impl RouteQuotes {
                 if active.price.msat == 0 {
                     self.free.quota_blocked(active)?
                 } else {
-                    selection.buyer.quota_blocked(active)?
+                    state.paid_trial_admission(selection.buyer.quota_blocked(active)?, || {
+                        selection.buyer.retained_quota(active)
+                    })?
                 }
             } else {
                 None
@@ -522,9 +534,17 @@ impl RouteQuotes {
             let state = states.get(&dest).ok_or("selection state missing")?;
             let selected = state.choose(offers, &selection.policy, Instant::now())?;
             let step =
-                state.selection_step(&selected, &selection.policy, reuse_unchanged, |offer| {
-                    self.free.remaining_units(offer)
-                })?;
+                match state.interrupted_trial_step(&selected, &selection.policy, |offer| {
+                    selection.buyer.retained_quota(offer)
+                })? {
+                    Some(step) => step,
+                    None => state.selection_step(
+                        &selected,
+                        &selection.policy,
+                        reuse_unchanged,
+                        |offer| self.free.remaining_units(offer),
+                    )?,
+                };
             (selected, step)
         };
         match step {

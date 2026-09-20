@@ -9,6 +9,7 @@ fn watch(j: &mut Journal, offer: &RouteOffer) -> WatchedRoute {
         max_rate_msat_per_kib: offer.price.msat,
         paused: false,
         pending: Some(offer.clone()),
+        selected_trial: None,
     };
     j.watched_routes
         .insert(watch.destination.clone(), watch.clone());
@@ -350,7 +351,7 @@ fn disposition_format_preserves_required_history_and_rejects_unknown_versions() 
         Controller::validate_channel_history(&saved),
         Err("missing channel history".into())
     );
-    saved.version |= 0x400;
+    saved.version |= 0x800;
     assert_eq!(
         Controller::validate_journal(&saved, &saved.policy, saved.local),
         Err("invalid controller journal bindings".into())

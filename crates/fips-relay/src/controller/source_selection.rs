@@ -1,6 +1,8 @@
 //! Distinguish explicitly opened local routes from purchases made for transit.
 use super::*;
 
+mod recovery;
+
 impl Controller {
     pub(super) async fn authorize_source_selection(
         &self,
@@ -27,6 +29,7 @@ impl Controller {
                         max_rate_msat_per_kib,
                         paused: true,
                         pending: None,
+                        selected_trial: None,
                     },
                 );
             }

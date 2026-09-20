@@ -3,7 +3,9 @@ use super::*;
 
 #[path = "pending/gate.rs"]
 mod gate;
-pub(crate) use gate::{ResponseGate, interpose};
+pub(crate) use gate::{ResponseGate, interpose, interpose_promotion};
+#[path = "pending/promotion.rs"]
+mod promotion;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn lost_acceptance_does_not_pin_a_mobile_source_or_release_its_funding() {

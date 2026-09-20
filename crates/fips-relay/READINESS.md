@@ -1617,19 +1617,73 @@ traffic batches. Following the normal mint timeout and bridge rejoin, the
 original Watch recovers using the same restored wallet operation and channel.
 All three final 12-payload streams complete; the four original authorized
 channels settle, and all 1,536 test sats are collected. This is one controlled
-simulation, not a hardware handover or latency guarantee. Earlier wallet-send
-and keyset waits can still serialize signing. Price-selection recovery is not
-covered by this scenario: before first acceptance, the existing selector already
-requests a fresh capped trial. A separate source review identifies a possible
-stall when trial-to-full promotion retires the old trial before its replacement
-is accepted, then interruption leaves the selector retaining that retired trial.
-This needs a production-path regression before changing quota accounting;
-clearing selection state must not refill an exhausted trial allowance.
+simulation, not a hardware handover or latency guarantee. This run covers the
+final funding wait; earlier wallet-send/keyset waits and interrupted selector
+trials require separate regressions.
 
-The final source passes all 234 relay library tests and all 18 priced-path
+That checkpoint passed all 234 relay library tests and all 18 priced-path
 scenarios, including a repeat of this held-funding encounter. The payment SDK
 passes all 240 workspace tests with every feature enabled. Strict relay and SDK
 lint checks pass; these changes have not yet been tested on the physical routers.
+
+Wallet-backed opening now also reserves bounded channel history before keyset
+lookup and wallet sends, then releases channel storage during those waits. Final
+admission is rechecked under the wallet's existing send lock, so a queued retry
+cannot use a slot that failed-send cleanup has released to another caller.
+Cancellation retains the exact request and uncertain funding evidence; unrelated
+payments keep signing. The SDK passes all 249 workspace tests, strict lint and
+formatting. Its nine admission integration tests cover held metadata/send waits,
+concurrent retries, token-only capacity competition and retirement fences. The
+18 production feature profiles also pass. These SDK checks do not replace the
+held-funding FIPS regression or establish hardware acceptance of the earlier waits.
+They also do not prove FIPS recovery of an expired request before its channel
+opening exists.
+
+An additional same-provider promotion regression holds the successful full-offer
+acceptance after the provider commits it. The source has already retired its
+partly used trial. After an idle application window and peer departure, ordinary
+withdrawal and verified refund complete, but the original Watch previously kept
+selecting that retired trial: none of 120 fresh packets arrived within 60 seconds
+of the recovery observation window, despite restored carrier connectivity.
+
+Selection now reads the exact trial's retained buyer accounting and requests only
+its unspent allowance when the old grant is closed or expired and path quality
+is unknown. This grants no authority to the old offer; the new agreement still
+passes the original Watch, funding and acceptance checks. A watched route saves
+only its selected trial's existing contract ID after successful acceptance.
+Withdrawal, refund and pause preserve that reference; accepted replacement updates
+it, and full or free acceptance clears it. A format flag prevents older readers
+from dropping this accounting reference; pre-feature journals without a pointer
+do not reconstruct their prior selected trial. The restored selector ignores native
+quality until an accepted route binds the carrier. Exhausted or missing trial
+accounting excludes that provider before alternative selection, without refilling
+the allowance after cooldown.
+
+Retirement preserves the referenced trial. One pointer per bounded Watch can
+also defer later expiry-prefix records on the same channel and related reference
+groups; existing history limits still apply. Component tests exercise repeated
+same-channel replacement and reload, exhausted quota, stale/paused completion,
+exact retained-offer identity, native binding and eventual retirement after a
+full agreement replaces the trial.
+
+Both promotion variants pass in the complete 20-test priced-path suite. The live
+run recovers after 12.61 seconds of observation with 29 of 31 packets delivered;
+the controller-and-selector reload run takes 17.13 seconds with 29 of 40 delivered.
+Each retains 3,334 consumed trial
+units, advances automatic credit to 2,000 msat, and settles exactly two channels
+for 3 sats paid and 125 refunded. All 259 test sats per run are collected. The
+reload variant keeps the native sessions, wallet and buyer instance alive; it
+checks that the retired agreement remains unusable before reconnecting. These
+are bounded simulations, not full-process restart, radio handover or latency
+guarantees. Verification also includes 247 relay library tests, a repeat of all
+28 selector tests after test-only cleanup, strict all-feature/all-target lint,
+formatting and source-size checks. Source and dependency fingerprints remain
+unchanged during the final complete suite; physical-router acceptance remains
+separate.
+Run both variants with
+`cargo test -p fips-relay --features measurements --test priced_paths
+mobility::pending::promotion:: -- --test-threads=1 --nocapture`, using the development overrides in
+[FUNDING-COSTS.md](FUNDING-COSTS.md).
 
 This uses the existing SimNetwork, real Noise authentication, native tree/session
 routing and production relay controllers. Sim discovery supplies at most 64

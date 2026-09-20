@@ -45,6 +45,7 @@ fn unverified_funding_requested_quotes_and_free_watches_do_not_protect_peers() {
             max_rate_msat_per_kib: 0,
             paused: false,
             pending: Some(free),
+            selected_trial: None,
         },
     );
     Controller::validate_journal(&store.journal, &store.journal.policy, store.journal.local)
