@@ -114,6 +114,82 @@ fn fresh_inbound_respects_link_capacity_with_peer_slots_available() {
 }
 
 #[test]
+fn outbound_promotion_at_peer_capacity_retires_candidate_without_touching_owner() {
+    super::super::session::run_large_stack_async_test("outbound-promotion-at-cap", || async {
+        for same_carrier in [false, true] {
+            let mut node = make_test_node().await;
+            let mut remote = make_test_node().await;
+            let incumbent = make_node();
+            let (_socket, separate_source) = local_path().await;
+            let incumbent_source = if same_carrier {
+                remote.addr.clone()
+            } else {
+                separate_source
+            };
+            node.node.max_peers = 1;
+            node.node.max_connections = 2;
+            node.node.max_links = 2;
+            let remote_identity =
+                PeerIdentity::from_pubkey_full(remote.node.identity.pubkey_full());
+            node.node
+                .initiate_connection(node.transport_id, remote.addr.clone(), remote_identity)
+                .await
+                .unwrap();
+            let msg1 = tokio::time::timeout(Duration::from_secs(1), remote.packet_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            remote.node.handle_msg1(msg1).await;
+            let msg2 = tokio::time::timeout(Duration::from_secs(1), node.packet_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(node.node.peer_count(), 0);
+            assert_eq!(node.node.connection_count(), 1);
+            let mut owner = connect(&mut node, &incumbent, &incumbent_source, 20).await;
+            assert_eq!(node.node.peer_count(), node.node.max_peers);
+            assert_eq!(node.node.link_count(), 2);
+            assert_eq!(node.node.index_allocator.count(), 2);
+
+            // This original, authenticated response arrives after a different
+            // peer filled the last slot. Promotion must retire all dial state.
+            node.node.handle_msg2(msg2).await;
+            assert!(node.node.get_peer(remote.node.node_addr()).is_none());
+            assert_eq!(
+                (
+                    node.node.connection_count(),
+                    node.node.link_count(),
+                    node.node.index_allocator.count(),
+                    node.node.pending_outbound.is_empty(),
+                ),
+                (0, 1, 1, true),
+                "rejected outbound promotion must not orphan a link or pending index"
+            );
+            assert_eq!(
+                node.node
+                    .links
+                    .lookup_addr(node.transport_id, &incumbent_source),
+                Some(owner.link)
+            );
+            let peer = node.node.get_peer(incumbent.node_addr()).unwrap();
+            assert_eq!(peer.our_index(), Some(owner.index));
+            assert!(peer.has_session() && peer.can_send());
+            let heartbeat = [crate::protocol::LinkMessageType::Heartbeat.to_byte()];
+            let packet = owner.frame(node.transport_id, &heartbeat);
+            super::super::spanning_tree::process_dataplane_packet(&mut node, packet).await;
+            assert_eq!(
+                node.node
+                    .dataplane_fmp_link_metrics(incumbent.node_addr(), Instant::now())
+                    .unwrap()
+                    .rx_packets,
+                1
+            );
+            cleanup_nodes(&mut [node, remote]).await;
+        }
+    });
+}
+
+#[test]
 fn simultaneous_outbound_admission_allows_temporary_extra_link() {
     super::super::session::run_large_stack_async_test("cross-connection-at-cap", || async {
         let mut nodes = [make_test_node().await, make_test_node().await];

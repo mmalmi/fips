@@ -840,6 +840,21 @@ impl Node {
                 }
             }
             Err(e) => {
+                // Promotion consumed the candidate and releases its index on
+                // capacity rejection. Retire its remaining admission state
+                // before awaiting physical closure, preserving any live owner.
+                self.pending_outbound.remove(&key);
+                if let Some(link) = self.remove_link(&link_id) {
+                    let transport_id = link.transport_id();
+                    if let Some(winner) =
+                        self.active_link_for_carrier(transport_id, link.remote_addr())
+                    {
+                        self.restore_link_address(winner);
+                    }
+                    self.close_unowned_handshake_carrier(transport_id, link.remote_addr())
+                        .await;
+                    self.cleanup_bootstrap_transport_if_unused(transport_id);
+                }
                 warn!(
                     link_id = %link_id,
                     error = %e,
