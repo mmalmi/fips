@@ -79,6 +79,7 @@ async fn exercise(installed: bool, lost_completion: bool) {
             created_unix: sdk_expiry - 120,
             expires_unix: sdk_expiry - 60,
             funded: None,
+            reclaim: None,
         };
         // An older persisted reservation may be recovered while the immutable
         // wallet locktime is still in the future. No mint clock is shortened.

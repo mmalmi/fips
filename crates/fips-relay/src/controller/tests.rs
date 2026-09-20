@@ -21,6 +21,7 @@ pub(super) fn unresolved_journal() -> Journal {
         created_unix: 100,
         expires_unix: 700,
         funded: None,
+        reclaim: None,
     };
     Journal {
         version: 2,

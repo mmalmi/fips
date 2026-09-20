@@ -94,6 +94,13 @@ fn terminal_refund(
         return false;
     }
     if let Some(intent) = journal["funding"].get(id) {
+        if intent["reclaim"]["state"] == "complete" {
+            let result = &intent["reclaim"]["result"];
+            return intent["funded"].is_null()
+                && result["wallet_operation_id"] == operation
+                && result["wallet_cost"]["wallet_debit_sat"] == debit
+                && result["recovered_amount_sat"] == refund;
+        }
         let funded = &intent["funded"];
         let Some(channel) = funded["terms"]["id"].as_str() else {
             return false;
@@ -111,11 +118,20 @@ fn terminal_refund(
     } else {
         let history = &journal["history"]["channels"]["totals"];
         journal["funding"].as_object().unwrap().is_empty()
-            && history["channels"] == 1
+            && ((history["channels"] == 1
+                && history["abandoned_requests"].as_u64().unwrap_or(0) == 0)
+                || (history["channels"] == 0 && history["abandoned_requests"] == 1))
             && history["cost"]["wallet_debit_sat"] == debit
             && history["refund_sat"] == refund
             && history["signed_sat"] == 0
     }
+}
+
+fn funding_authority(intent: &Value) -> Value {
+    let mut authority = intent.clone();
+    authority["funded"] = Value::Null;
+    authority.as_object_mut().unwrap().remove("reclaim");
+    authority
 }
 
 async fn premise_cleanup(
@@ -144,7 +160,11 @@ async fn premise_cleanup(
     }
     let wallet = cfg.state_directory.join("wallet");
     let path = spilman_client_store_path(&wallet);
-    let sdk = path.exists().then(|| read(&path)).unwrap_or_default();
+    let sdk = if path.exists() {
+        read(&path)
+    } else {
+        Value::default()
+    };
     let sends = send_journal(&wallet).await;
     // Never revoke proofs which might already fund a channel. Those remain
     // represented in the retained SDK state if ordinary settlement did not finish.
@@ -255,7 +275,7 @@ async fn interrupted_wallet_send_recovers_after_offer_expiry_without_replacement
         };
         if let Err(error) = boundary {
             let _ = release.send(());
-            let sdk = store.exists().then(|| read(&store)).unwrap_or_default();
+            let sdk = if store.exists() { read(&store) } else { Value::default() };
             let controller = read(&journal);
             let sends = send_journal(&wallet).await;
             let started = sdk["admissions"].as_object().into_iter().flat_map(|a| a.values())
@@ -345,9 +365,12 @@ async fn interrupted_wallet_send_recovers_after_offer_expiry_without_replacement
                 "expired or withdrawn route regained purchase authority");
             fenced |= current["recovery_only"].as_array().unwrap().iter().any(|v| v == offer_id);
             if let Some(saved) = current["funding"].get(id) {
-                let mut authority = saved.clone();
-                authority["funded"] = Value::Null;
-                check(&mut errors, authority == *intent, "original funding intent changed");
+                check(&mut errors, funding_authority(saved) == *intent, "original funding intent changed");
+                if saved["reclaim"]["state"] == "complete" {
+                    check(&mut errors, saved["reclaim"]["result"]["wallet_operation_id"] == operation,
+                        "reclaim switched wallet operations");
+                    observed_debit = saved["reclaim"]["result"]["wallet_cost"]["wallet_debit_sat"].as_u64();
+                }
                 if !saved["funded"].is_null() {
                     check(&mut errors, saved["funded"]["wallet_operation_id"] == operation,
                         "funding switched wallet operations");
@@ -387,9 +410,10 @@ async fn interrupted_wallet_send_recovers_after_offer_expiry_without_replacement
                 "original wallet request or operation changed");
         }
         if !automatic {
-            check(&mut errors, stopped_journal["funding"].get(id) == Some(intent),
+            check(&mut errors, stopped_journal["funding"].get(id).is_some_and(|saved| funding_authority(saved) == *intent),
                 "unresolved funding lost its original durable authority");
-            check(&mut errors, stopped_sdk["admissions"].get(id) == pending["admissions"].get(id),
+            check(&mut errors, stopped_sdk["admissions"][id]["request"] == pending["admissions"][id]["request"]
+                && stopped_sdk["admissions"][id]["funding_started"] == true,
                 "unresolved admission lost its original request");
             check(&mut errors, before_cleanup["entries"].get(&send_id).is_some(),
                 "unresolved send lost its original operation mapping");

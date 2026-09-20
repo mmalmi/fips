@@ -7,6 +7,9 @@ impl Controller {
         offer: &RouteOffer,
         channel: Option<&str>,
     ) -> Result<(), String> {
+        if Self::provider_reclaiming(j, offer.provider) {
+            return Err("provider funding is being reclaimed".into());
+        }
         if offer.expires_unix <= now()?
             || Self::retired_offer(j, offer)
             || Self::offer_paused(j, &offer.id)

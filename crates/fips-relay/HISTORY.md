@@ -116,6 +116,11 @@ New controller funding uses the SDK's numbered request IDs in one stable scope
 per controller journal. Existing issued IDs are never renamed: interrupted legacy
 funding must recover its original wallet operation, not send again under a new ID.
 
+The same prefix can include a verified reclaimed send that never became a channel.
+Its `abandoned_requests` count retains the original costs, refund and expiry with
+zero capacity or signed payments. See [funding recovery](FUNDING-COSTS.md) for the
+fences and states that still block retirement.
+
 After route compaction, the recovery worker retires a completed numbered funding
 prefix when every cooperative member has a final payment, verified refund and
 acknowledged report release. A zero-use expiry member instead needs its verified

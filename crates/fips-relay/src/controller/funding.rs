@@ -1,8 +1,9 @@
 //! Restore original wallet funding independently of routing authorization.
 use super::*;
 use cashu_service::{
-    StreamingRouteOpenCashuSpilmanChannelFromWalletRequest,
-    StreamingRouteOpenCashuSpilmanChannelFromWalletResult, restore_cashu_spilman_wallet_funding,
+    CashuSpilmanFundingReclaim, StreamingRouteOpenCashuSpilmanChannelFromWalletRequest,
+    StreamingRouteOpenCashuSpilmanChannelFromWalletResult,
+    reclaim_abandoned_cashu_spilman_wallet_funding, restore_cashu_spilman_wallet_funding,
 };
 
 impl FundingIntent {
@@ -61,10 +62,9 @@ impl FundingIntent {
 }
 
 impl Controller {
-    /// Restore only the original persisted opening. The SDK can retrieve its
-    /// committed mint outputs, but cannot create an opening, send wallet funds
-    /// or submit a swap. Uncertain records keep their capital reservation;
-    /// expired/paused offers gain no routing permission.
+    /// Restore the original opening, or reclaim its original send after all
+    /// routing owners withdraw. Neither path can start replacement funding.
+    /// Uncertain records keep their reservation and gain no route permission.
     pub(super) async fn recover_funding(&self) -> Result<(), String> {
         let mut first_error = None;
         for id in self
@@ -72,7 +72,7 @@ impl Controller {
             .await?
             .funding
             .into_values()
-            .filter(|intent| intent.funded.is_none())
+            .filter(|intent| intent.funded.is_none() && intent.reclaimed().is_none())
             .map(|intent| intent.id)
         {
             if let Err(error) = self.recover_funding_intent(&id).await {
@@ -85,19 +85,19 @@ impl Controller {
     async fn recover_funding_intent(&self, id: &str) -> Result<(), String> {
         let wallet_guard = self.wallet.clone().lock_owned().await;
         // A live purchase may have completed while we waited for wallet ownership.
-        let intent = self
-            .snapshot()
-            .await?
+        let snapshot = self.snapshot().await?;
+        let intent = snapshot
             .funding
-            .remove(id)
+            .get(id)
+            .cloned()
             .ok_or("funding intent missing")?;
-        if intent.funded.is_some() {
+        if intent.funded.is_some() || intent.reclaimed().is_some() {
             return Ok(());
         }
         let request = intent.wallet_request(&self.policy)?;
         let directory = self.services.wallet_directory.clone();
         let runtime = tokio::runtime::Handle::current();
-        let (opened, _wallet) = blocking(move || {
+        let (opened, wallet_guard) = blocking(move || {
             let opened = runtime
                 .block_on(restore_cashu_spilman_wallet_funding(&directory, &request))
                 .map_err(|e| e.to_string());
@@ -106,11 +106,52 @@ impl Controller {
             Ok((opened, wallet_guard))
         })
         .await?;
-        if let Some(opened) = opened? {
+        let opened = match opened {
+            Ok(opened) => opened,
+            // The SDK's reclaim fence deliberately rejects restore-only calls.
+            // Its reclaim API still validates the exact request and rejects
+            // existing openings; our Pending marker alone proves neither.
+            Err(_) if matches!(intent.reclaim, Some(FundingReclaim::Pending)) => None,
+            Err(error) => return Err(error),
+        };
+        if let Some(opened) = opened {
             let funded =
                 intent.funded_channel(*self.services.endpoint.node_addr(), &self.policy, opened)?;
-            self.change(move |j| Self::record_funding(j, intent, funded))
+            self.change(move |j| Self::record_restored_funding(j, intent, funded))
                 .await?;
+        } else if Self::abandoned_funding(&snapshot, &intent) {
+            // Recheck under the store lock, then retain this fence even if the
+            // SDK or mint cannot yet prove the original send's terminal outcome.
+            let expected = intent.clone();
+            let intent = self
+                .change(move |j| Self::prepare_funding_reclaim(j, &expected))
+                .await?;
+            let request = intent.wallet_request(&self.policy)?;
+            let directory = self.services.wallet_directory.clone();
+            let runtime = tokio::runtime::Handle::current();
+            let (result, _wallet) = blocking(move || {
+                let result = runtime
+                    .block_on(reclaim_abandoned_cashu_spilman_wallet_funding(
+                        &directory, &request,
+                    ))
+                    .map_err(|e| e.to_string());
+                Ok((result, wallet_guard))
+            })
+            .await?;
+            if let CashuSpilmanFundingReclaim::Reclaimed {
+                wallet_operation_id,
+                wallet_cost,
+                recovered_amount_sat,
+            } = result?
+            {
+                let result = ReclaimedFunding {
+                    wallet_operation_id,
+                    wallet_cost,
+                    recovered_amount_sat,
+                };
+                self.change(move |j| Self::record_funding_reclaim(j, &intent, result))
+                    .await?;
+            }
         }
         Ok(())
     }
@@ -120,6 +161,9 @@ impl Controller {
         mut intent: FundingIntent,
         funded: Funded,
     ) -> Result<(), String> {
+        if intent.reclaim.is_some() {
+            return Err("ordinary funding cannot replace a reclaim disposition".into());
+        }
         intent.validate_cost(&funded)?;
         let current = j
             .funding

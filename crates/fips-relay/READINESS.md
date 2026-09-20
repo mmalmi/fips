@@ -899,9 +899,12 @@ nominal capacity. Settlement now validates the value after the funding swap;
 actual debit minus the wallet-verified refund determines lifetime spending.
 See [funding costs](FUNDING-COSTS.md) for limits, status fields, verification and
 the required unreleased dependencies. Fresh-profile route and channel retirement
-is implemented. The persisted-opening crash boundary below now passes after
-route expiry. Wallet sends interrupted before an opening is saved, physical
-power-loss recovery and bounded CDK database growth remain unverified. Legacy
+is implemented. Both the persisted-opening crash boundary and the committed
+pre-opening send now recover automatically after route expiry; the latter reclaims
+the original send without creating a channel. The focused process test conserves
+all 384 test sats, and all 265 relay library checks pass. Unsubmitted sends,
+shared-owner cleanup, physical power-loss recovery and bounded CDK database growth
+remain open; [funding costs](FUNDING-COSTS.md) describes the exact retained cases. Legacy
 profile migration is outside this milestone; dependency distribution remains a
 separate requirement.
 
@@ -1636,8 +1639,9 @@ formatting. Its nine admission integration tests cover held metadata/send waits,
 concurrent retries, token-only capacity competition and retirement fences. The
 18 production feature profiles also pass. These SDK checks do not replace the
 held-funding FIPS regression or establish hardware acceptance of the earlier waits.
-They also do not prove FIPS recovery of an expired request before its channel
-opening exists.
+The later companion [pre-opening process regression](FUNDING-COSTS.md) now covers
+FIPS recovery of an expired request with a committed wallet preparation send;
+missing or unsubmitted wallet evidence remains a separate boundary.
 
 An additional same-provider promotion regression holds the successful full-offer
 acceptance after the provider commits it. The source has already retired its

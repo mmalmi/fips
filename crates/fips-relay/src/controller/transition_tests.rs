@@ -349,6 +349,60 @@ fn a_route_transition_does_not_reserve_an_unrelated_channel() {
 }
 
 #[test]
+fn route_change_and_reclaim_cannot_acquire_the_same_provider_in_either_order() {
+    for reclaim_first in [true, false] {
+        let root = tempfile::tempdir().unwrap();
+        let (mut store, old) = fixture(&root.path().join("controller"));
+        let other = store
+            .change(|j| {
+                let other = add_other_channel(j, &old);
+                j.outgoing.remove(&other.purchase.contract.id);
+                j.funding.get_mut(&other.funding_id).unwrap().funded = None;
+                j.version |= journal::RECOVERY_ONLY_VERSION;
+                j.recovery_only.insert(other.offer.id.clone());
+                Ok(other)
+            })
+            .unwrap();
+        let funding = store.journal.funding[&other.funding_id].clone();
+        let mut replacement = change(&old);
+        replacement.offer.provider = other.purchase.provider;
+        replacement.offer.path[0] = other.purchase.provider;
+        if reclaim_first {
+            store
+                .change(|j| Controller::prepare_funding_reclaim(j, &funding))
+                .unwrap();
+            store = reload(store);
+            let before = serde_json::to_value(&store.journal).unwrap();
+            assert!(
+                store
+                    .change(|j| Controller::reserve_route_change(j, replacement))
+                    .is_err(),
+                "a route change cannot acquire a provider being reclaimed"
+            );
+            assert_eq!(serde_json::to_value(&store.journal).unwrap(), before);
+        } else {
+            store
+                .change(|j| Controller::reserve_route_change(j, replacement))
+                .unwrap();
+            store = reload(store);
+            let before = serde_json::to_value(&store.journal).unwrap();
+            assert!(
+                store
+                    .change(|j| Controller::prepare_funding_reclaim(j, &funding))
+                    .is_err(),
+                "a selected provider cannot be reclaimed before withdrawal"
+            );
+            assert_eq!(serde_json::to_value(&store.journal).unwrap(), before);
+        }
+        assert!(Controller::routing_eligible(
+            &store.journal,
+            &store.journal.outgoing[&old.purchase.contract.id]
+        ));
+        reload(store);
+    }
+}
+
+#[test]
 fn reload_rejects_overlapping_unfinished_route_and_renewal_intents() {
     let root = tempfile::tempdir().unwrap();
     let (mut store, old) = fixture(&root.path().join("controller"));

@@ -5,7 +5,11 @@ use super::*;
 pub(super) const RECOVERY_ONLY_VERSION: u16 = 0x100;
 pub(super) const EXPIRY_RECOVERY_VERSION: u16 = 0x200;
 pub(super) const SELECTED_TRIAL_VERSION: u16 = 0x400;
-const FORMAT_FLAGS: u16 = RECOVERY_ONLY_VERSION | EXPIRY_RECOVERY_VERSION | SELECTED_TRIAL_VERSION;
+pub(super) const FUNDING_RECLAIM_VERSION: u16 = 0x800;
+const FORMAT_FLAGS: u16 = RECOVERY_ONLY_VERSION
+    | EXPIRY_RECOVERY_VERSION
+    | SELECTED_TRIAL_VERSION
+    | FUNDING_RECLAIM_VERSION;
 
 impl Journal {
     pub(super) fn history_version(&self) -> u16 {
@@ -37,6 +41,7 @@ impl Controller {
             return Err("invalid controller journal bindings".into());
         }
         Self::validate_recovery_only(j)?;
+        Self::validate_funding_reclaims(j)?;
         Self::validate_history(j)?;
         Self::validate_channel_history(j)?;
         Self::validate_seller_history(j)?;

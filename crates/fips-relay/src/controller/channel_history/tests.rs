@@ -20,7 +20,7 @@ impl CashuSpilmanPaymentSigner for Signer {
     }
 }
 
-fn fixture(root: &Path) -> (Store, BuyerAuthorizer, FundingIntent) {
+pub(super) fn fixture(root: &Path) -> (Store, BuyerAuthorizer, FundingIntent) {
     let (mut store, _) = super::super::transition_tests::fixture(&root.join("controller"));
     let f = store.journal.funding.remove("test-1").unwrap();
     store.journal.outgoing.clear();
@@ -39,7 +39,11 @@ fn fixture(root: &Path) -> (Store, BuyerAuthorizer, FundingIntent) {
     (store, buyer, f)
 }
 
-fn append(store: &mut Store, buyer: &BuyerAuthorizer, template: &FundingIntent) -> String {
+pub(super) fn append(
+    store: &mut Store,
+    buyer: &BuyerAuthorizer,
+    template: &FundingIntent,
+) -> String {
     let j = &mut store.journal;
     j.version = 4;
     j.history
@@ -81,15 +85,16 @@ fn append(store: &mut Store, buyer: &BuyerAuthorizer, template: &FundingIntent) 
     terms.id
 }
 
-fn ack(p: &Plan, mint: &str) -> CashuSpilmanRetiredHistory {
+pub(super) fn ack(p: &Plan, mint: &str) -> CashuSpilmanRetiredHistory {
     CashuSpilmanRetiredHistory {
         send: CashuSendSequenceHistory {
             mint_url: mint.into(),
             through: p.after.through,
-            requests: p.after.channels,
+            requests: p.after.channels + p.after.abandoned_requests,
             requested_sat: p.after.capacity_sat,
             cost: p.after.cost.clone(),
         },
+        abandoned_requests: p.after.abandoned_requests,
         capacity_sat: p.after.capacity_sat,
         signed_sat: p.after.signed_sat,
         refund_sat: p.after.refund_sat,
@@ -97,7 +102,7 @@ fn ack(p: &Plan, mint: &str) -> CashuSpilmanRetiredHistory {
     }
 }
 
-fn pending(store: &Store) -> Plan {
+pub(super) fn pending(store: &Store) -> Plan {
     store
         .journal
         .history
@@ -159,7 +164,7 @@ fn repeated_completed_channels_preserve_lifetime_budgets_and_reject_replays() {
                 .unwrap(),
             0
         );
-        buyer.retire_channels(&p.buyer).unwrap();
+        buyer.retire_channels(p.buyer.as_ref().unwrap()).unwrap();
         assert_eq!(
             std::fs::metadata(&controller_file)
                 .unwrap()
@@ -210,7 +215,7 @@ fn interrupted_handoff_resumes_before_or_after_buyer_and_wallet_commit() {
         store.prepare_channel_retirement(&buyer, 10_000).unwrap();
         let p = pending(&store);
         if boundary >= 1 {
-            buyer.retire_channels(&p.buyer).unwrap();
+            buyer.retire_channels(p.buyer.as_ref().unwrap()).unwrap();
         }
         let expected = ack(&p, &store.journal.policy.mint_url);
         if boundary == 2 {

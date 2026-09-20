@@ -31,7 +31,9 @@ use tokio::{
 
 mod cadence;
 pub use cadence::PaymentCadence;
+mod abandoned_funding;
 mod acceptance;
+use abandoned_funding::{FundingReclaim, ReclaimedFunding};
 mod capital;
 mod channel_history;
 mod control_obligations;
@@ -137,6 +139,8 @@ struct FundingIntent {
     created_unix: u64,
     expires_unix: u64,
     funded: Option<Funded>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reclaim: Option<FundingReclaim>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

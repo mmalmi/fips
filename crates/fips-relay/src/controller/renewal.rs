@@ -76,12 +76,13 @@ pub(super) fn same_service(previous: &RouteOffer, next: &RouteOffer) -> bool {
 
 impl Controller {
     pub(super) fn funding_released(journal: &Journal, funding: &FundingIntent) -> bool {
-        funding.funded.as_ref().is_some_and(|f| {
-            journal
-                .buyer_settlements
-                .get(&f.terms.id)
-                .is_some_and(|s| s.refunded)
-        })
+        funding.reclaimed().is_some()
+            || funding.funded.as_ref().is_some_and(|f| {
+                journal
+                    .buyer_settlements
+                    .get(&f.terms.id)
+                    .is_some_and(|s| s.refunded)
+            })
     }
 
     pub(super) fn validate_renewals(journal: &Journal) -> Result<(), String> {

@@ -118,6 +118,13 @@ impl Controller {
         };
         let saved = incoming.clone();
         self.change(move |j| {
+            if saved
+                .downstream
+                .as_ref()
+                .is_some_and(|d| Self::provider_reclaiming(j, d.provider))
+            {
+                return Err("onward funding is being reclaimed".into());
+            }
             if j.selling_stopped || Self::retired_offer(j, &saved.offer) {
                 return Err("controller stopped selling".into());
             }

@@ -13,9 +13,16 @@ pub struct FundingBudget {
 
 impl FundingIntent {
     pub(super) fn validate_cost(&self, funded: &Funded) -> Result<(), String> {
-        let cost = &funded.wallet_cost;
-        if funded.wallet_operation_id.is_empty()
-            || funded.wallet_operation_id.len() > 64
+        self.validate_wallet_cost(&funded.wallet_operation_id, &funded.wallet_cost)
+    }
+
+    pub(super) fn validate_wallet_cost(
+        &self,
+        operation: &str,
+        cost: &cashu_service::CashuSendCost,
+    ) -> Result<(), String> {
+        if operation.is_empty()
+            || operation.len() > 64
             || cost.token_amount_sat < self.capacity_sat
             || cost.token_amount_sat.checked_add(cost.swap_fee_sat) != Some(cost.wallet_debit_sat)
             || cost.wallet_debit_sat > self.max_wallet_debit_sat
@@ -45,28 +52,43 @@ impl Controller {
             {
                 return Err("funding reservation changed".into());
             }
-            let (debit, refund) = match &f.funded {
-                Some(funded) => {
-                    f.validate_cost(funded)?;
-                    if !operations.insert(&funded.wallet_operation_id) {
-                        return Err("wallet operation belongs to multiple funding intents".into());
-                    }
-                    let debit = funded.wallet_cost.wallet_debit_sat;
-                    budget.wallet_debited_sat = add(budget.wallet_debited_sat, debit)?;
-                    let settlement = j.buyer_settlements.get(&funded.terms.id);
-                    let refund = settlement
-                        .filter(|s| s.refunded)
-                        .map(|s| {
-                            s.wallet_refund_sat
-                                .ok_or("completed settlement has no wallet refund evidence")
-                        })
-                        .transpose()?;
-                    (debit, refund)
+            if f.reclaim.is_some() && f.funded.is_some() {
+                return Err("funding cannot be opened and reclaimed".into());
+            }
+            let (debit, refund) = if let Some(result) = f.reclaimed() {
+                f.validate_reclaim(result)?;
+                if !operations.insert(&result.wallet_operation_id) {
+                    return Err("wallet operation belongs to multiple funding intents".into());
                 }
-                None => {
-                    budget.pending_reserved_sat =
-                        add(budget.pending_reserved_sat, f.max_wallet_debit_sat)?;
-                    (f.max_wallet_debit_sat, None)
+                let debit = result.wallet_cost.wallet_debit_sat;
+                budget.wallet_debited_sat = add(budget.wallet_debited_sat, debit)?;
+                (debit, Some(result.recovered_amount_sat))
+            } else {
+                match &f.funded {
+                    Some(funded) => {
+                        f.validate_cost(funded)?;
+                        if !operations.insert(&funded.wallet_operation_id) {
+                            return Err(
+                                "wallet operation belongs to multiple funding intents".into()
+                            );
+                        }
+                        let debit = funded.wallet_cost.wallet_debit_sat;
+                        budget.wallet_debited_sat = add(budget.wallet_debited_sat, debit)?;
+                        let settlement = j.buyer_settlements.get(&funded.terms.id);
+                        let refund = settlement
+                            .filter(|s| s.refunded)
+                            .map(|s| {
+                                s.wallet_refund_sat
+                                    .ok_or("completed settlement has no wallet refund evidence")
+                            })
+                            .transpose()?;
+                        (debit, refund)
+                    }
+                    None => {
+                        budget.pending_reserved_sat =
+                            add(budget.pending_reserved_sat, f.max_wallet_debit_sat)?;
+                        (f.max_wallet_debit_sat, None)
+                    }
                 }
             };
             if let Some(refund) = refund {

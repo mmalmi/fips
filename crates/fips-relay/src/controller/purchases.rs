@@ -90,6 +90,7 @@ impl Controller {
                         .checked_add(j.policy.channel_lifetime_secs)
                         .ok_or("expiry overflow")?,
                     funded: None,
+                    reclaim: None,
                 };
                 j.funding.insert(id, f.clone());
                 Ok(f)

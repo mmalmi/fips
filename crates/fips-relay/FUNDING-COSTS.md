@@ -24,11 +24,36 @@ signatures. It does not include wallet/mint fees. Set all limits explicitly.
 Zero funding overhead allows only funding that needs no value above capacity.
 
 Recovery reads the original wallet cost even if its quote has expired or the route
-is paused. If the mint committed funding before the wallet saved its result, the
-SDK restores the exact outputs from the persisted opening. This recovery cannot
-create an opening, send wallet funds or fall back to a mint swap. It grants no
-routing permission. Missing or conflicting evidence, empty restore replies and
-invalid or partial signatures keep the full reservation.
+is paused. For a persisted channel opening, the SDK restores its exact mint outputs
+without creating another opening, sending wallet funds or falling back to a mint
+swap. This grants no routing permission. Missing or conflicting evidence, empty
+restore replies and invalid or partial signatures retain uncertainty.
+
+Before a channel opening exists, an exclusively withdrawn funding intent can
+instead reclaim its original wallet send. The controller and SDK persist separate
+abandonment fences before recovery. The SDK verifies the original request and saved
+plan, restores only that send's confirmation, and durably revokes its token. An
+empty restore may retry the identical saved confirmation; it never prepares a new
+send or processes unrelated wallet operations. Only the verified original debit
+and net refund release reserved capital. Until that result is saved, new purchases
+from the same provider remain blocked; unrelated providers retain their normal
+limits. Route changes check the same fence atomically with reservation; if the
+route change owns the provider first, reclaim must wait for its withdrawal.
+An existing channel opening still uses its original restore/refund path.
+
+Completed abandoned sends share numbered-prefix retirement with channels after
+their original wallet expiry. They retain gross costs, refunds and lifetime
+exposure, and count as `abandoned_requests`, with zero channel capacity or signed
+payments. The controller retains the `0x800` format bit and the SDK uses version 8
+so older readers cannot silently ignore the abandonment fences.
+
+This recovery remains conservative. Missing admissions, missing plans and
+unsubmitted `ProofsReserved` sends do not prove a terminal financial outcome.
+They keep their reservation. Current provider-wide ownership checks also retain
+funding when a stopped transit acceptance has no installed seller contract, or a
+refunded old trial is still pinned by a Watch or prepared route change. Those
+cleanup cases need dedicated regressions and fixes; do not remove their records
+or reset budgets to force progress.
 
 Refund recovery requires the wallet's durable original recovered amount, including
 on calls that import zero new coins. Peer settlement reports alone cannot release
@@ -65,9 +90,9 @@ this adds one report field over existing control, not another request operation.
 `status.funding_budget` exposes pending reservations, total recorded debits,
 confirmed refunds, locked capital and worst-case lifetime exposure. The historical
 `locked_sat` status field has the same meaning as `funding_budget.locked_sat`.
-The 16-record funding bound now applies to retained channels. The recovery worker
-recycles eligible completed numbered channels after verified settlement, route
-cleanup and immutable wallet expiry. Persistent gross debit/refund rollups keep
+The 16-record funding bound applies to retained funding intents. The recovery
+worker recycles eligible completed channels or reclaimed sends after verified
+financial completion, route cleanup and immutable wallet expiry. Persistent gross debit/refund rollups keep
 lifetime exposure unchanged. Legacy, unfinished and still-referenced channels
 remain retained. Seller cleanup now requires the buyer's durable refund and report
 release; unpaid exposure remains attached to buyer and mint. It now coordinates
@@ -131,10 +156,23 @@ restores the same operation and channel without another send or swap; the route
 remains disabled. At the original wallet expiry, the unused funding is refunded
 and its SDK/controller records retire. Spendable balances plus mint fees conserve
 all 384 issued test sats, and gross debits/refunds remain in lifetime accounting.
-This covers a persisted opening with restorable committed outputs. Wallet sends
-interrupted before an opening is saved and physical power-loss durability remain
-separate boundaries. Run the focused case with:
+This covers a persisted opening with restorable committed outputs. Physical
+power-loss durability remains a separate boundary. Run the focused case with:
 
 ```sh
 cargo test --config /path/to/local-dependencies.toml -p fips-relay --all-features --test funding_costs restore::interrupted_funding_restores_after_route_expiry_without_new_spending
+```
+
+The companion pre-opening case interrupts the original wallet preparation send
+before a channel opening exists. After the quote expires and the provider stops,
+ordinary restart upkeep reclaims that exact operation without another send,
+channel or route. The verified run recorded 43 sats debited and 35 refunded, with
+zero pending or locked capital and eight sats of lifetime mint fees. All 384 test
+sats are accounted for as 376 spendable plus eight in mint fees. This reclaim can
+finish before the original wallet expiry; retirement still waits for that expiry.
+The test checks unchanged request/plan identity, funding sequence and buyer budget.
+It does not cover the retained unsubmitted or shared-owner cases above. Reproduce:
+
+```sh
+cargo test --config /path/to/local-dependencies.toml -p fips-relay --test funding_costs preopening::interrupted_wallet_send_recovers_after_offer_expiry_without_replacement_funding -- --exact --test-threads=1 --nocapture
 ```

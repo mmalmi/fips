@@ -52,7 +52,8 @@ impl Controller {
                     && o.purchase.contract.destination == *saved.offer.destination.node_addr()
             })
             .collect();
-        if saved.offer.expires_unix <= now()?
+        if Self::provider_reclaiming(j, saved.offer.provider)
+            || saved.offer.expires_unix <= now()?
             || Self::retired_offer(j, &saved.offer)
             || Self::offer_paused(j, &saved.offer.id)
             || j.renewals
