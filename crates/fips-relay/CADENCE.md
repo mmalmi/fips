@@ -131,9 +131,9 @@ clock assumption. This measurement check does not relax packet delivery counts.
 The independent-worker milestone passed 43 focused tests: 22 library, seven
 control-transport, three probe, two customer, three multi-process service and six
 controller cases. Strict relay Clippy, Android ARM64 app Clippy, production
-library/binary checks, formatting and the source-size gate passed. The physical
-routers still run the earlier build; no hardware speedup or ad hoc radio joining
-is claimed by these software checks.
+library/binary checks, formatting and the source-size gate passed. This was a
+software checkpoint; later physical results are recorded separately in
+[READINESS.md](READINESS.md) and [CADENCE-RESULTS.md](CADENCE-RESULTS.md).
 
 An optimized [guarded clean-link comparison](CADENCE-RESULTS.md) covers all four
 250/500/1000/2000-ms policies with identical terms under idle, burst, steady and
@@ -153,8 +153,11 @@ unstarted or dropped scheduler reports an unknown acknowledgment. Schema-2
 cadence reports require reconciled boundaries and reject unmeasured work between
 windows, delivery loss, controller errors and idle payment activity. The common
 three-second tail and payment defaults are unchanged.
-Impaired links, total payment CPU attribution, Cashu SQLite/physical I/O and
-complete wire overhead remain unmeasured. The older
+Subsequent matched router captures report payment-specific CPU, logical storage
+work and local payment TCP/FIPS bytes. A separate Linux syscall comparison covers
+SQLite and other storage writes. Their [measurement boundaries](CADENCE-RESULTS.md)
+still exclude complete runtime CPU attribution, physical flash writes and radio
+airtime; impaired/mixed-load performance remains a separate scope. The older
 [performance report](PERFORMANCE.md) is a baseline for the former fixed polling
 implementation, not a measurement of this scheduler.
 

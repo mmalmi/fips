@@ -362,13 +362,13 @@ types and pricing helpers do not let a provider manufacture buyer authorization.
 
 ## Prototype limits and follow-on work
 
-The [acceptance report](PROTOTYPE-RESULTS.md) records the completed bounded
-prototype, including the actual Pixel flow and hardware measurements. Earlier
-run reports retain their original scope; use the current report to distinguish
-completed checks from follow-on work. Combined route-change/unfinished-renewal
-recovery, expired pending offers, broader interrupted-funding exercises and safe
-route/channel history retirement remain limitations. Renewal can interrupt
-delivery, and maximum throughput and indefinite hotspot service are not claimed.
+The [prototype report](PROTOTYPE-RESULTS.md) records the earlier bounded
+demonstration; [v1 readiness](READINESS.md) records subsequent verification and
+remaining work. Current software checks cover route changes during unfinished
+renewal, expired-offer fences, funded-channel recovery and bounded financial-history
+retirement. Earlier interrupted wallet funding and broader combined failures still
+need acceptance. Renewal can interrupt delivery; maximum throughput and indefinite
+hotspot service are not claimed.
 
 The controller retains up to 16 funded or unresolved channel intents and 32
 requested, outgoing and incoming routes in each category. Retained funding still
@@ -377,9 +377,10 @@ complete. Settlement and renewal history are capped at 16 channels each.
 Same-service channel replacement requires an explicit renewal policy and
 remaining lifetime budget; changed routes require a source watch ceiling or a
 fresh explicit purchase. `settle_all` pauses watches and renewal before closure;
-saved replacement requests stay paused until explicitly resumed. Changed service
-during an unfinished renewal and expired pending offers still stop recovery.
-No controller loop erases history or resets the
+saved replacement requests stay paused until explicitly resumed. Expired or
+withdrawn offers cannot regain routing authority during financial recovery;
+unresolved operations retain their capital and evidence.
+No controller loop erases unresolved history or resets the
 buyer's lifetime spending limit to make another purchase possible.
 
 Retained history is bounded to 16 channels and 32 destination contracts. The
@@ -387,7 +388,9 @@ legacy tariff also retains 4,096 distinct packets per contract; the r4 hardware
 run reached that cutoff while credit remained available. The explicit
 `forwarding_attempt` tariff retires completed packet records into cumulative
 totals, keeping at most 1,024 unfinished sends. The journal is capped at 32 MiB.
-Safe route/channel retirement and longer continuous physical runs remain needed.
+[Financial-history retirement](HISTORY.md) preserves lifetime accounting and
+unfinished obligations. CDK operation/activity/proof history still grows, so this
+does not bound total database size or establish indefinite physical operation.
 The r5 results establish bounded streams separately from historical r4 evidence.
 
 Datagrams must fit the discovered path after FIPS headers are added. The native
