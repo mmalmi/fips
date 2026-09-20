@@ -87,6 +87,8 @@ class PromotionChecksTests(unittest.TestCase):
         self.assertIsNone(options(SimpleNamespace()))
         with self.assertRaises(ValueError):
             options(SimpleNamespace(promotion_provenance=Path("unused")))
+        with self.assertRaisesRegex(ValueError, "requires --interrupted-promotion"):
+            options(SimpleNamespace(promotion_restart_source=True))
         with self.assertRaisesRegex(ValueError, "provenance"):
             options(SimpleNamespace(interrupted_promotion=True))
 

@@ -18,12 +18,14 @@ def options(args):
     enabled = getattr(args, "interrupted_promotion", False)
     provenance = getattr(args, "promotion_provenance", None)
     if not enabled:
+        if getattr(args, "promotion_restart_source", False):
+            raise ValueError("--promotion-restart-source requires --interrupted-promotion")
         if provenance is not None:
             raise ValueError("--promotion-provenance requires --interrupted-promotion")
         return None
     if any(getattr(args, key, None) for key in (
             "active_outage", "brief_outage", "outage_node", "recovery_timing", "beacon_interval_secs")):
-        raise ValueError("--interrupted-promotion is a separate live middle-radio scenario")
+        raise ValueError("--interrupted-promotion is a separate middle-radio scenario")
     if provenance is None:
         raise ValueError("interrupted promotion requires instrumented build provenance")
     recorded = Path(provenance).read_bytes()

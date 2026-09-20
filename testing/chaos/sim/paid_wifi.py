@@ -80,7 +80,8 @@ class PaidWifiRun(WifiRun):
                      "paid_finances.py", "paid_settlement.py", "remote_mint.py", "mint_host.py",
                      "wifi_active_outage.py", "wifi_probes.py", "wifi_priority_checks.py",
                      "wifi_measurements.py", "wifi_recovery_timing.py", "wifi_promotion.py",
-                     "wifi_promotion_checks.py", "wifi_promotion_finances.py"):
+                     "wifi_promotion_checks.py", "wifi_promotion_finances.py",
+                     "wifi_promotion_restart.py", "wifi_restart.py"):
             self.evidence["harness_sha256"][name] = digest(Path(__file__).with_name(name).read_bytes())
 
     def create_mint(self, args):
@@ -272,6 +273,8 @@ def main():
                         help="hold real full acceptance, withdraw the middle radio and recover one Watch")
     parser.add_argument("--promotion-provenance", type=Path,
                         help="verified testbench+measurements ARM64 build provenance for promotion mode")
+    parser.add_argument("--promotion-restart-source", action="store_true",
+                        help="also crash the source at the held commitment and restart its saved profile during the cut")
     parser.add_argument("--active-outage", action="store_true",
                         help="interrupt live paid round trips before automatic radio recovery")
     parser.add_argument("--brief-outage", action="store_true",

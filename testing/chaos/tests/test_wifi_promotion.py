@@ -22,12 +22,14 @@ def immediate(description, condition, _seconds=120):
 class PromotionLifecycleTests(unittest.TestCase):
     def run_case(self, *, cut_error=False, stale_peer=False, recovery_error=False, save_error=False,
                  pause_error=False, release_error=False, release_active=False, rejoin_error=None, restore_error=False,
-                 connectivity_error=False, collection_error=False, cleanup_save_error=False):
+                 connectivity_error=False, collection_error=False, cleanup_save_error=False,
+                 restart=False, crash_error=False, start_error=False, source_restore_error=False):
         f, held = held_fixture()
         captured = held["captured"]
         f.raw["n01"]["controller"]["recovery_only"] = [captured["offer_id"]]
         f.raw["n01"]["controller"]["watched_routes"]["n03"]["pending"] = None
         run = Mock()
+        run.args = SimpleNamespace(promotion_restart_source=restart)
         run.evidence = {}
         run.assert_finances = Mock(return_value={})
         run.nodes = {name: Mock(npub=name, node_addr=IDS[name]) for name in IDS}
@@ -37,8 +39,10 @@ class PromotionLifecycleTests(unittest.TestCase):
         radio_down = False
         armed = False
         released = False
+        restart_events = run.restart_events = []
         def down():
             nonlocal radio_down
+            restart_events.append("radio down")
             radio_down = True
             if cut_error:
                 raise RuntimeError("uncertain radio command")
@@ -98,6 +102,22 @@ class PromotionLifecycleTests(unittest.TestCase):
         accounts = Mock(used=4096)
         accounts.observe.return_value = (f.raw, {}, None)
         accounts.evidence.return_value = {"financial": "bounded"}
+        def crash(_run, evidence, _trial, _captured, before):
+            restart_events.append("crash")
+            evidence["source_restart"] = {"crash_attempted": True, "before": before}
+            if crash_error:
+                raise RuntimeError("uncertain kill reply")
+        def start(_run, _evidence):
+            restart_events.append("start")
+            self.assertTrue(radio_down)
+            if start_error:
+                raise RuntimeError("uncertain launch reply")
+            return {"new": "source process"}
+        def restore(_run, evidence):
+            if evidence.get("source_restart"):
+                restart_events.append("restore source")
+                if source_restore_error:
+                    raise RuntimeError("source control unavailable")
         if pause_error:
             accounts.pause.side_effect = RuntimeError("pause unavailable")
         if collection_error:
@@ -111,7 +131,10 @@ class PromotionLifecycleTests(unittest.TestCase):
         failure = None
         with patch("sim.wifi_promotion.PromotionAccounts", return_value=accounts), \
                 patch("sim.wifi_promotion.PaidRelayRun.unpaid_probe"), \
-                patch("sim.wifi_promotion.process_samples", return_value={}), \
+                patch("sim.wifi_promotion.process_samples", return_value={"n01": {"original": "source process"}}), \
+                patch("sim.wifi_promotion.crash_source", side_effect=crash), \
+                patch("sim.wifi_promotion.restart_source", side_effect=start), \
+                patch("sim.wifi_promotion.restore_source", side_effect=restore), \
                 patch("sim.wifi_promotion.qualify"), \
                 patch("sim.wifi_promotion.await_commit", return_value=captured), \
                 patch("sim.wifi_promotion.idle"), \
@@ -124,6 +147,54 @@ class PromotionLifecycleTests(unittest.TestCase):
             except RuntimeError as error:
                 failure = str(error)
         return run, accounts, failure, released, radio_down
+
+    def test_restart_crashes_at_commit_then_launches_during_radio_absence(self):
+        run, accounts, failure, released, down = self.run_case(restart=True)
+        self.assertIsNone(failure)
+        self.assertEqual(run.restart_events, ["crash", "radio down", "start", "restore source"])
+        evidence = run.evidence["interrupted_promotion"]
+        self.assertFalse(evidence["live_only"])
+        self.assertTrue(evidence["passed"])
+        self.assertTrue(released)
+        self.assertFalse(down)
+        self.assertEqual(sum(call.args[1] == "watch" for call in run.ctl.call_args_list), 1)
+        self.assertEqual(sum(call.args[1] == "buy" for call in run.ctl.call_args_list), 1)
+        accounts.collect.assert_called_once_with()
+
+    def test_uncertain_crash_or_launch_recovers_control_for_collection(self):
+        for fault in ("crash_error", "start_error"):
+            with self.subTest(fault=fault):
+                run, accounts, failure, released, down = self.run_case(restart=True, **{fault: True})
+                self.assertIsNotNone(failure)
+                self.assertIn("restore source", run.restart_events)
+                self.assertTrue(released)
+                self.assertFalse(down)
+                self.assertFalse(run.evidence["interrupted_promotion"]["passed"])
+                accounts.collect.assert_called_once_with()
+
+    def test_unavailable_source_cleanup_still_restores_radio_and_retains_accounts(self):
+        run, accounts, failure, released, down = self.run_case(
+            restart=True, start_error=True, source_restore_error=True)
+        self.assertIsNotNone(failure)
+        self.assertTrue(released)
+        self.assertFalse(down)
+        accounts.pause.assert_called_once_with()
+        accounts.collect.assert_not_called()
+        cleanup = run.evidence["interrupted_promotion"]["cleanup"]
+        self.assertFalse(cleanup["source_control_restored"])
+        self.assertTrue(cleanup["accounts_retained_for_recovery"])
+
+    def test_ambiguous_radio_cut_after_crash_uses_cleanup_before_collection(self):
+        run, accounts, failure, released, down = self.run_case(restart=True, cut_error=True)
+        self.assertIsNotNone(failure)
+        self.assertEqual(run.restart_events, ["crash", "radio down", "restore source"])
+        self.assertTrue(released)
+        self.assertFalse(down)
+        evidence = run.evidence["interrupted_promotion"]
+        self.assertFalse(evidence["passed"])
+        self.assertTrue(all(evidence["cleanup"][field] for field in (
+            "source_control_restored", "authority_paused", "connectivity_verified", "collected")))
+        accounts.collect.assert_called_once_with()
 
     def test_live_success_has_one_watch_and_only_original_reverse_buy(self):
         run, accounts, failure, released, down = self.run_case()

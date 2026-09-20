@@ -550,6 +550,18 @@ procedure. Completion still requires all 384 issued test sats to be collected,
 empty test wallets and the existing management and original-profile restoration
 checks. Uncertain financial state retains its accounts and mint for recovery.
 
+Add `--promotion-restart-source` to crash the entire source process with SIGKILL
+at the held commitment, before removing the middle radio. The harness verifies
+the original pending acceptance in the stopped profile, then restarts that same
+profile while the provider radio is absent. This makes withdrawal observable
+without assuming that a restart alone invalidates an already authorized purchase.
+The source must retain its identity, Watch, trial consumption and spending limits;
+only its process epoch may change. The other two processes remain unchanged.
+Recovery still uses the original Watch and the same financial closure checks.
+The exact process is checked under the existing cleanup lease before it is
+signalled. An uncertain kill or launch restores source control for cleanup without
+reissuing the fault; financial uncertainty keeps the original accounts and mint.
+
 Run the affected local checks before a separately authorized hardware run:
 
 ```sh
@@ -557,11 +569,13 @@ PYTHONPATH=testing/chaos:testing/chaos/tests python3 -m unittest \
   tests.test_paid_settlement tests.test_paid_wifi tests.test_paid_wifi_open \
   tests.test_paid_wifi_forwarding tests.test_wifi_active_outage \
   tests.test_wifi_recovery_timing tests.test_wifi_promotion \
-  tests.test_wifi_promotion_checks tests.test_wifi_promotion_finances
+  tests.test_wifi_promotion_checks tests.test_wifi_promotion_finances \
+  tests.test_wifi_promotion_restart tests.test_wifi_restart
 ```
 
 These tests use local fakes to check orchestration, authority, evidence and failure
-cleanup. The [readiness assessment](../../crates/fips-relay/READINESS.md#physical-wi-fi-discovery-and-free-recovery)
+cleanup. Run them on Linux to include the real guarded-process crash and ownership
+checks; those cases skip on other hosts. The [readiness assessment](../../crates/fips-relay/READINESS.md#physical-wi-fi-discovery-and-free-recovery)
 records the passing same-process hardware run and its limits. Full-process
 restart recovery and arbitrary mobile mesh encounters remain separate checks.
 

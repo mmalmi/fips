@@ -14,6 +14,7 @@ from .wifi_promotion_checks import (
     CEILING, HOLD_MS, barrier, held_boundary, purchase, quality, watch, withdrawn,
 )
 from .wifi_promotion_finances import PromotionAccounts
+from .wifi_promotion_restart import crash_source, restart_source, restore_source
 from .wifi_remote import checked_path
 
 
@@ -240,6 +241,7 @@ def finish_promotion(run, accounts, evidence, captured):
 
     # Each attempt is independent. In particular, evidence I/O or a failed pause
     # must not prevent releasing held bytes or restoring an owned radio.
+    cleanup["source_control_restored"] = attempt("source_control", lambda: restore_source(run, evidence))
     cleanup["authority_paused"] = attempt("pause", accounts.pause)
     cleanup["barrier_quiescent"] = attempt("barrier_release", release_remaining)
     if evidence.get("cut_attempted"):
@@ -247,7 +249,8 @@ def finish_promotion(run, accounts, evidence, captured):
         attempt("save_before_restore", run.save)
         attempt("radio_restore", lambda: restore_radio(run.nodes[PROVIDER]))
     cleanup["connectivity_verified"] = attempt("connectivity", restored)
-    if all(cleanup[key] for key in ("authority_paused", "barrier_quiescent", "connectivity_verified")):
+    if all(cleanup[key] for key in ("source_control_restored", "authority_paused",
+                                   "barrier_quiescent", "connectivity_verified")):
         cleanup["collected"] = attempt("collection", accounts.collect)
         cleanup["accounts_retained_for_recovery"] = not cleanup["collected"]
     if not cleanup["errors"] and cleanup["collected"]:
@@ -259,7 +262,9 @@ def finish_promotion(run, accounts, evidence, captured):
 
 
 def exercise(run):
-    evidence = {"passed": False, "live_only": True, "performance_comparable": False}
+    restart = getattr(run.args, "promotion_restart_source", False) is True
+    evidence = {"passed": False, "live_only": not restart, "performance_comparable": False,
+                "source_restart_requested": restart}
     run.evidence["interrupted_promotion"] = evidence
     run.form_line()
     discovered = run.assert_finances()
@@ -297,11 +302,15 @@ def exercise(run):
                 "barrier has insufficient remaining hold time for bounded native eviction")
         evidence["pre_cut_processes"] = process_samples(run, samples)
         barrier_status(run, held=True)
+        if restart:
+            crash_source(run, evidence, trial, captured, samples[SOURCE])
         evidence["cut_started"] = time.monotonic()
         run.save()
         evidence["cut_attempted"] = True
         radio.mesh_down()
         evidence["cut_completed"] = time.monotonic()
+        if restart:
+            samples = {**samples, SOURCE: restart_source(run, evidence)}
         evidence["isolated_peers"] = eventually("middle departure removes both native adjacencies",
             lambda: run.ready(line=True, isolated=True, outage_node=PROVIDER), 100)
 
