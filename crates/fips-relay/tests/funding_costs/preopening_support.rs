@@ -209,9 +209,23 @@ pub(super) async fn inspect_original(
     {
         return Err("capture was not an admitted send before channel opening");
     }
+    let id = id.clone();
+    inspect_send(&wallet, funding_keyset, matched, controller, sdk, id, 1).await
+}
+
+async fn inspect_send(
+    wallet: &Path,
+    funding_keyset: &str,
+    matched: &Mutex<Option<cashu::nuts::SwapRequest>>,
+    controller: Value,
+    sdk: Value,
+    id: String,
+    expected_requests: u64,
+) -> Result<OriginalSend, &'static str> {
+    let intent = &controller["funding"][&id];
     let request: WalletRequest =
-        serde_json::from_value(sdk["admissions"][id]["request"].clone()).unwrap();
-    if request.client_request_id.as_ref() != Some(id)
+        serde_json::from_value(sdk["admissions"][&id]["request"].clone()).unwrap();
+    if request.client_request_id.as_ref() != Some(&id)
         || request.route_created_at_unix != intent["created_unix"].as_u64()
         || request.max_total_amount_sat != intent["max_wallet_debit_sat"].as_u64()
         || request.expiry_unix != intent["expires_unix"].as_u64().unwrap() + 60
@@ -220,9 +234,9 @@ pub(super) async fn inspect_original(
     {
         return Err("admitted request differs from original funding authority");
     }
-    let journal = send_journal(&wallet).await;
-    if request_count(&journal) != 1 {
-        return Err("expected one original wallet send");
+    let journal = send_journal(wallet).await;
+    if request_count(&journal) != expected_requests {
+        return Err("unexpected wallet-send count at preparation boundary");
     }
     let (send_id, entry) = original_send(&journal, &request);
     let operation = entry["plan"]["operation_id"].as_str().unwrap().to_owned();
@@ -243,7 +257,7 @@ pub(super) async fn inspect_original(
         return Err("committed reply differs from the exact persisted preparation swap");
     }
     Ok(OriginalSend {
-        intent_id: id.clone(),
+        intent_id: id,
         intent: intent.clone(),
         controller,
         sdk,
@@ -252,6 +266,125 @@ pub(super) async fn inspect_original(
         entry,
         operation,
     })
+}
+
+/// Exact old records which are allowed to coexist with one new original send.
+#[derive(Clone)]
+pub(super) struct PreparationHistory {
+    controller: Value,
+    sdk: Value,
+    pub sends: Value,
+}
+
+fn map_value(state: &Value, field: &str) -> Value {
+    state
+        .get(field)
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}))
+}
+
+impl PreparationHistory {
+    pub(super) async fn capture(cfg: &fips_relay::service::ServiceConfig) -> Self {
+        let wallet = cfg.state_directory.join("wallet");
+        Self {
+            controller: read(&cfg.state_directory.join("controller/controller.json")),
+            sdk: read(&spilman_client_store_path(&wallet)),
+            sends: send_journal(&wallet).await,
+        }
+    }
+
+    pub(super) fn same_channels(&self, sdk: &Value) -> bool {
+        ["openings", "funding"]
+            .iter()
+            .all(|field| map_value(sdk, field) == map_value(&self.sdk, field))
+    }
+
+    pub(super) fn new_request_id(&self, controller: &Value, sdk: &Value) -> Option<String> {
+        let before = self.controller["funding"].as_object()?;
+        let current = controller["funding"].as_object()?;
+        if current.len() != before.len() + 1
+            || before
+                .iter()
+                .any(|(id, value)| current.get(id) != Some(value))
+            || !self.same_channels(sdk)
+        {
+            return None;
+        }
+        let (id, intent) = current.iter().find(|(id, _)| !before.contains_key(*id))?;
+        let previous = map_value(&self.sdk, "admissions");
+        let previous = previous.as_object()?;
+        let admissions = sdk["admissions"].as_object()?;
+        if !intent["funded"].is_null()
+            || admissions.len() != previous.len() + 1
+            || previous
+                .iter()
+                .any(|(key, value)| admissions.get(key) != Some(value))
+            || previous.contains_key(id)
+            || admissions.get(id)?["funding_started"] != true
+        {
+            return None;
+        }
+        Some(id.clone())
+    }
+
+    pub(super) fn preparation_match(
+        &self,
+        cfg: &fips_relay::service::ServiceConfig,
+        matched: &Mutex<Option<cashu::nuts::SwapRequest>>,
+        seen: &AtomicUsize,
+        request: &cashu::nuts::SwapRequest,
+    ) -> bool {
+        seen.fetch_add(1, Ordering::SeqCst);
+        let controller = read(&cfg.state_directory.join("controller/controller.json"));
+        let sdk = read(&spilman_client_store_path(
+            &cfg.state_directory.join("wallet"),
+        ));
+        if self.new_request_id(&controller, &sdk).is_none() {
+            return false;
+        }
+        *matched.lock().unwrap() = Some(request.clone());
+        true
+    }
+
+    pub(super) async fn inspect_next(
+        &self,
+        cfg: &fips_relay::service::ServiceConfig,
+        funding_keyset: &str,
+        matched: &Mutex<Option<cashu::nuts::SwapRequest>>,
+    ) -> Result<OriginalSend, &'static str> {
+        let wallet = cfg.state_directory.join("wallet");
+        let controller = read(&cfg.state_directory.join("controller/controller.json"));
+        let sdk = read(&spilman_client_store_path(&wallet));
+        let id = self
+            .new_request_id(&controller, &sdk)
+            .ok_or("preparation changed retained history or did not add one exact request")?;
+        let original = inspect_send(
+            &wallet,
+            funding_keyset,
+            matched,
+            controller,
+            sdk,
+            id,
+            request_count(&self.sends) + 1,
+        )
+        .await?;
+        let current = send_journal(&wallet).await;
+        if current["sequences"] != self.sends["sequences"]
+            || self.sends["entries"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .any(|(id, entry)| current["entries"].get(id) != Some(entry))
+            || self.sends["entries"]
+                .as_object()
+                .unwrap()
+                .values()
+                .any(|entry| entry["plan"]["operation_id"] == original.operation)
+        {
+            return Err("new preparation changed or reused an old wallet operation");
+        }
+        Ok(original)
+    }
 }
 
 /// Last-resort fixture cleanup, strictly after autonomous acceptance is recorded.

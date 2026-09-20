@@ -86,6 +86,41 @@ pub(super) async fn start_line(
     quote_lifetime: u64,
     funding_limits: &[u64],
 ) -> Bench {
+    start_configured_line(
+        root,
+        mint,
+        network,
+        mint_url,
+        LineConfig {
+            lifetime,
+            quote_lifetime,
+            funding_limits,
+        },
+        |_, _| {},
+    )
+    .await
+}
+
+pub(super) struct LineConfig<'a> {
+    pub lifetime: u64,
+    pub quote_lifetime: u64,
+    pub funding_limits: &'a [u64],
+}
+
+/// Apply scenario terms before initialization creates immutable money policy.
+pub(super) async fn start_configured_line(
+    root: &Path,
+    mint: LocalMint,
+    network: PaymentNetwork,
+    mint_url: &str,
+    line: LineConfig<'_>,
+    configure: impl Fn(usize, &mut ServiceConfig),
+) -> Bench {
+    let LineConfig {
+        lifetime,
+        quote_lifetime,
+        funding_limits,
+    } = line;
     assert!((3..=4).contains(&funding_limits.len()));
     let mut configs = Vec::new();
     let mut paths = Vec::new();
@@ -103,6 +138,7 @@ pub(super) async fn start_line(
         cfg.terms.controller.channel_lifetime_secs = lifetime;
         cfg.terms.quote_lifetime_secs = quote_lifetime;
         cfg.terms.billing = fips_relay::ledger::BillingBasis::ForwardingAttempt;
+        configure(i, &mut cfg);
         let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         cfg.transports = udp_transports(socket.local_addr().unwrap());
         sockets.push(socket);

@@ -243,3 +243,23 @@ of this retained-history sequence.
 ```sh
 cargo test --config /path/to/local-dependencies.toml -p fips-relay --all-features --lib controller::source_selection::recovery::tests::reclaim -- --test-threads=1
 ```
+
+The retained-history process case also exercises the full mint sequence. A paid
+trial delivers two fresh payloads, signs and credits two sats, and settles while
+its paused Watch retains the selected trial and 1,962 consumed units. A second
+destination uses the same provider and a separately authorized original wallet
+send. The buyer stops after that preparation swap commits, before any new channel
+opens. After the provider stops and the quote expires, ordinary restart upkeep
+reclaims the exact second operation without replacement funding.
+
+Before fixture cleanup, the refund is already spendable and the old trial's
+remaining quota, signature and lifetime budget are unchanged. The observed total
+is 80 sats debited, 65 refunded and no pending or locked capital; all 512 test sats
+are conserved as 500 spendable plus 12 in mint fees. This covers a naturally
+retained selected trial with real settlement.
+Retained route-change/renewal variants and physical interruptions remain separate
+checks. Reproduce:
+
+```sh
+cargo test --config /path/to/local-dependencies.toml -p fips-relay --all-features --test funding_costs terminal_history::refunded_selected_trial_does_not_pin_another_original_send_to_same_provider -- --exact --test-threads=1 --nocapture
+```

@@ -14,6 +14,8 @@ mod restore;
 mod retirement;
 #[path = "funding_costs/setup.rs"]
 mod setup;
+#[path = "funding_costs/terminal_history.rs"]
+mod terminal_history;
 #[path = "funding_costs/transit_preopening.rs"]
 mod transit_preopening;
 use cashu_service::{
