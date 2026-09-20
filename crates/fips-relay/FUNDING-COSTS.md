@@ -193,6 +193,89 @@ admission vectors and live interoperability checks cover the new local policy;
 the wire encoding is unchanged. Dependency version alignment remains a distribution
 requirement, separate from these matching-graph development tests.
 
+### Portable development source bundle
+
+[`scripts/source_bundle.py`](../../scripts/source_bundle.py) exports the exact
+committed workspace and local dependency trees, replaces the workspace lockfile
+with an explicitly hashed tested lock, and vendors its crates.io dependencies.
+It then resolves all workspace features offline with an empty Cargo home and
+rejects package sources outside the bundle. This makes the local development
+graph movable without publishing or relying on the original checkouts. It does
+not repair the published package graph or constitute a release.
+
+The private input specification uses schema 1. Each source must be a clean Git
+workspace at the full revision specified, and the output must be outside those
+workspaces. This abbreviated example shows the format; include **every** local
+patch needed by the tested lock:
+
+```json
+{
+  "schema": 1,
+  "workspace": {"path": "/path/to/fips", "revision": "<full-commit>"},
+  "dependencies": [
+    {
+      "name": "cashu-service",
+      "path": "/path/to/cashu-service",
+      "revision": "<full-commit>",
+      "packages": {
+        "cashu-service": "crates/cashu-service",
+        "cashu-credit": "crates/cashu-credit"
+      }
+    }
+  ],
+  "lockfile": "/path/to/tested.Cargo.lock",
+  "lockfile_sha256": "<64-character-sha256>"
+}
+```
+
+The current development graph also patches the eight CDK packages `cashu`, `cdk`,
+`cdk-axum`, `cdk-common`, `cdk-http-client`, `cdk-signatory`, `cdk-sql-common` and
+`cdk-sqlite` from their corresponding `crates/<package>` directories; Spilman's
+`cdk-spilman` from `crates/cdk-spilman`; `bitreq` from `bitreq`; and
+`nvpn-fips-tcp`/`nvpn-fips-tcp-endpoint` from `rust/fips-tcp`/`rust/fips-tcp-endpoint`.
+Each repository gets one dependency entry with its exact audited revision. The
+generated manifest records those revisions and the tested lock digest without
+copying the private input paths or specification.
+
+```sh
+python3 scripts/source_bundle.py create /path/to/spec.json /path/to/bundle --toolchain 1.96.0 --offline
+python3 /path/to/bundle/checkout/scripts/source_bundle.py verify /path/to/bundle --resolve
+```
+
+Creation requires the pinned registry sources to be cached when `--offline` is
+used; omit that flag to allow Cargo to fetch missing pinned registry sources.
+The exported `checkout/.cargo/config.toml` contains relative patches and a
+relative vendor directory. Run Cargo from `checkout/`, including after relocation,
+with `--offline --locked`. Rust 1.96.0, Python 3.9 or newer, Git and the target's
+native compiler/build tools remain external requirements. Selected dependency
+features can require additional tools, such as protobuf compilation for CDK
+signatory's gRPC feature; vendoring sources does not supply those tools.
+
+The verifier checks hashes, executable flags, symlink targets and unexpected
+files, excluding only the manifest itself and Cargo's `checkout/target/` output.
+Tracked files excluded by `git archive` attributes are still exported. Ignored
+files, Git history, escaping symlinks and submodules are excluded or rejected.
+The manifest is an integrity/provenance record, **not a signature**; trust in its
+contents still depends on how the bundle and manifest are obtained. This is
+source reproducibility, not a claim of bit-identical binaries.
+
+Offline verification also disables compiler wrappers inherited from enclosing
+Cargo configuration files. Manual Cargo builds retain the caller's other build
+configuration and native toolchain; a fresh Cargo home alone does not isolate
+ancestor configuration files.
+
+Cargo builds in the bundle use a Git discovery ceiling to avoid reporting the
+revision of an unrelated enclosing repository. Verification clears inherited
+`GIT_*` overrides; use a similarly clean shell for manual builds. Version output
+has no Git revision in the archive; use the manifest's workspace revision.
+Reproduce the export, relocation, tamper and clean-environment build checks with:
+
+```sh
+python3 -m unittest discover -s testing/source_bundle -v
+```
+
+### Development acceptance
+
 Run with those overrides:
 
 ```sh
