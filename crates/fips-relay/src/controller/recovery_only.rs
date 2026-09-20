@@ -9,6 +9,9 @@ mod funded_expiry_state_tests;
 mod funded_expiry_tests;
 #[cfg(test)]
 mod tests;
+mod transit_expiry;
+#[cfg(test)]
+mod transit_expiry_tests;
 
 impl Store {
     /// Only a reservation which never reached a wallet intent can expire

@@ -1,6 +1,6 @@
 //! Shared exact wallet-preparation boundary; no controller-state repair.
 use super::{restore::*, *};
-use cashu::nuts::ProofsMethods;
+use cashu::nuts::{CurrencyUnit, ProofsMethods, State};
 use cashu_service::{
     StreamingRouteOpenCashuSpilmanChannelFromWalletRequest as WalletRequest, cashu_wallet_db_path,
     revoke_pending_payment, simulation::MintProxy, spilman_client_store_path,
@@ -26,6 +26,21 @@ pub(super) async fn send_journal(wallet: &Path) -> Value {
         .unwrap()
         .map(|bytes| serde_json::from_slice(&bytes).unwrap())
         .unwrap_or_else(|| serde_json::json!({"entries": {}, "sequences": {}}))
+}
+
+/// Inspect the daemon's committed spendable balance without opening another
+/// wallet service or running recovery as part of the observation.
+pub(super) async fn spendable_balance(wallet: &Path, mint_url: &str) -> u64 {
+    let db = cdk_sqlite::WalletSqliteDatabase::new(cashu_wallet_db_path(wallet))
+        .await
+        .unwrap();
+    db.get_balance(
+        Some(mint_url.parse().unwrap()),
+        Some(CurrencyUnit::Sat),
+        Some(vec![State::Unspent]),
+    )
+    .await
+    .unwrap()
 }
 
 pub(super) fn original_send(journal: &Value, request: &WalletRequest) -> (String, Value) {

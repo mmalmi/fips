@@ -57,11 +57,21 @@ a clock rollback. Its `0x1000` journal flag prevents older readers from ignoring
 the saved retirement evidence. Four focused regressions, 269 relay library tests
 and nine retirement integration tests pass with this change.
 
-Earlier interruptions before that seller channel exists still retain their
-records. Transit purchase withdrawal and a four-daemon middle-relay interruption
-test remain separate work. Provider-wide ownership checks also retain funding
-when a refunded old trial is pinned by a Watch or prepared route change. Do not
-remove unresolved records or reset budgets to force progress.
+Ordinary upkeep now stops expired incoming agreements and withdraws expired
+purchases that have no live owner, including middle relays with no local Watch.
+Withdrawal and local forwarding closure hold the controller mutex; failure keeps
+the durable fence and suspends the store until reload reconciles it. Live incoming
+agreements, pending Watches and unfinished renewals or route changes retain their
+exact offer IDs. A fresh offer with a different ID does not pin the expired one.
+The existing recovery-only state preserves original funding and capital; this
+adds no wire messages or financial record format. Six focused regressions and all
+275 relay library tests pass, including reload after local closure failure.
+
+Earlier interruptions before a verified seller channel exists still retain their
+records. A pending source Watch can still retain an expired purchase while its
+provider stays connected. Provider-wide ownership checks also retain funding when
+a refunded old trial is pinned by a Watch or prepared route change. Do not remove
+unresolved records or reset budgets to force progress.
 
 Refund recovery requires the wallet's durable original recovered amount, including
 on calls that import zero new coins. Peer settlement reports alone cannot release
@@ -145,7 +155,7 @@ cargo clippy --config /path/to/local-dependencies.toml -p fips-relay --all-featu
 scripts/check-rust-file-lines.sh
 ```
 
-The focused process tests use three real services and a local test mint charging
+The focused process tests use three or four real services and a local test mint charging
 fees. They check wallet balance deltas, restart, actual refund recovery, replay
 after lost controller completion, and lifetime-budget rejection before another
 wallet spend. Unit tests exercise journal reservations, cost reconciliation,
@@ -183,4 +193,29 @@ It does not cover the retained unsubmitted or shared-owner cases above. Reproduc
 
 ```sh
 cargo test --config /path/to/local-dependencies.toml -p fips-relay --test funding_costs preopening::interrupted_wallet_send_recovers_after_offer_expiry_without_replacement_funding -- --exact --test-threads=1 --nocapture
+```
+
+The four-service transit case extends this boundary to source → middle payer →
+provider → destination. It kills the middle payer after its preparation swap
+commits, with a verified upstream seller channel but no installed seller contract
+or local Watch. Native disconnection withdraws the source's original pending
+purchase. Restart after quote expiry leaves the downstream provider absent; the
+middle receives only status requests during the acceptance window.
+
+Ordinary upkeep withdraws the expired transit purchase, retires its stopped
+incoming dependency and reclaims the same wallet operation without opening a
+channel. The run records 43 sats debited, 35 refunded, no locked capital and eight
+sats of retained lifetime cost. A direct database balance query proves the middle's
+120 sats are already spendable before any cleanup can rescue a send. The original
+upstream channel settles automatically; channel terms and verified credit survive
+retirement. Aggregate wallet balances plus mint fees conserve all 512 test sats
+(494 spendable and 18 fees), without replacement funding or changed limits.
+All six funding/refund process scenarios pass together with strict all-feature,
+all-target lint, formatting and the source-size gate.
+This interruption has zero paid upstream usage; nonzero-credit retirement is
+covered by the focused journal tests, not this process case. Physical power loss,
+radio mobility and the unresolved ownership cases above remain separate checks.
+
+```sh
+cargo test --config /path/to/local-dependencies.toml -p fips-relay --all-features --test funding_costs transit_preopening::interrupted_transit_wallet_send_recovers_without_a_middle_watch -- --exact --test-threads=1 --nocapture
 ```

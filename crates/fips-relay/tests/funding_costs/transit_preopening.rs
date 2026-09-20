@@ -132,13 +132,26 @@ async fn source_withdrawn(
     destination: &str,
     original: &Upstream,
 ) -> bool {
-    tokio::time::timeout(Duration::from_secs(100), async {
+    let mut last_observed = Value::Null;
+    let withdrawn = tokio::time::timeout(Duration::from_secs(100), async {
         loop {
             if let Ok(status) = request(cfg, &AdminRequest::Status).await {
                 let peers = status["peers"].as_array().unwrap();
                 let current = journal(cfg);
                 let watches = current["watched_routes"].as_object().unwrap();
-                if peers.iter().all(|p| p["npub"] != middle)
+                // Configured peers can remain listed while disconnected. Use
+                // the same live-connection boundary as ordinary withdrawal.
+                let connected = peers.iter().any(|p| p["npub"] == middle && p["connected"] == true);
+                last_observed = serde_json::json!({
+                    "connected_middle": connected,
+                    "watches": watches.len(),
+                    "pending": watches.get(destination).map(|w| !w["pending"].is_null()),
+                    "paused": watches.get(destination).map(|w| &w["paused"]),
+                    "fenced": current["recovery_only"].as_array().unwrap().iter()
+                        .any(|id| id == &original.offer_id),
+                    "original_funding_sequence": current["next_funding"] == original.source["next_funding"],
+                });
+                if !connected
                     && watches.len() == 1
                     && watches
                         .get(destination)
@@ -157,7 +170,11 @@ async fn source_withdrawn(
         }
     })
     .await
-    .is_ok()
+    .is_ok();
+    if !withdrawn {
+        eprintln!("transit source withdrawal not observed: {last_observed}");
+    }
+    withdrawn
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -329,6 +346,21 @@ async fn interrupted_transit_wallet_send_recovers_without_a_middle_watch() {
             last_status["funding_budget"], seen.load(Ordering::SeqCst));
         check(&mut errors, automatic && upstream_closed,
             "ordinary transit upkeep did not recover; fixture cleanup is not autonomous success");
+        if automatic {
+            let budget = &last_status["funding_budget"];
+            let retained_proceeds: u64 = before_cleanup["seller_settlements"].as_object().unwrap()
+                .values().map(|s| s["report"]["paid_sat"].as_u64().unwrap_or(0)
+                    + s["report"]["receiver_fee_reserve_sat"].as_u64().unwrap_or(0)).sum();
+            let history = &before_cleanup["history"]["seller"]["totals"];
+            let proceeds = retained_proceeds + history["paid_sat"].as_u64().unwrap_or(0)
+                + history["receiver_fee_reserve_sat"].as_u64().unwrap_or(0);
+            let balance = spendable_balance(&wallet, &proxy.url).await;
+            let expected = 128 - budget["wallet_debited_sat"].as_u64().unwrap()
+                + budget["wallet_refunded_sat"].as_u64().unwrap();
+            check(&mut errors, proceeds == 0 && balance == expected,
+                "original transit refund was not spendable before fixture cleanup");
+            eprintln!("transit pre-cleanup spendable_sat={balance} expected_sat={expected} seller_proceeds_sat={proceeds}");
+        }
         // Stop the acceptance window before any cleanup-only administrative call.
         // Cleanup can reclaim only original unowned sends, never edit a journal.
         let conserved = cleanup_wallet_sends(&configs, &mut children, &proxy).await;
