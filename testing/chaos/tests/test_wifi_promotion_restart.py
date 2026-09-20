@@ -1,5 +1,8 @@
 """Crash-boundary authority and uncertain restart cleanup without devices."""
 
+from pathlib import Path
+import os
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -24,7 +27,10 @@ class RestartBoundaryTests(unittest.TestCase):
     def fixture(self):
         f, held = held_fixture()
         run = Mock()
-        run.nodes = {name: SimpleNamespace(npub=name, node_addr=IDS[name], start=Mock()) for name in IDS}
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        run.nodes = {name: SimpleNamespace(npub=name, node_addr=IDS[name], start=Mock(),
+                                           output=Path(folder.name)) for name in IDS}
         run.ctl.return_value = held
         return run, f, held
 
@@ -120,6 +126,29 @@ class RestartBoundaryTests(unittest.TestCase):
         crash.assert_not_called()
         restore_source(run, {})
         run.nodes["n01"].start.assert_not_called()
+
+    def test_crash_diagnostic_survives_cleanup_without_misattributing_old_error(self):
+        for fresh in (False, True):
+            run, f, held = self.fixture()
+            path = run.nodes["n01"].output / "last-error.txt"
+            path.write_bytes(b"old diagnostic")
+            stamp = path.stat()
+            def failed(_node, _before):
+                if fresh:
+                    path.write_bytes(b"crash observation failed")
+                    os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+                raise RuntimeError("ambiguous crash")
+            evidence = {}
+            with self.subTest(fresh=fresh), \
+                    patch("sim.wifi_promotion_restart.crash_profile", side_effect=failed), \
+                    self.assertRaisesRegex(RuntimeError, "ambiguous crash"):
+                crash_source(run, evidence, f.trial, held["captured"], sample())
+            path.write_bytes(b"cleanup probe cannot read the stopped process")
+            saved = path.with_name("process-crash-error.txt")
+            self.assertEqual(saved.exists(), fresh)
+            if fresh:
+                self.assertEqual(saved.read_bytes(), b"crash observation failed")
+                self.assertIn("crash_diagnostic_sha256", evidence["source_restart"])
 
 
 if __name__ == "__main__":

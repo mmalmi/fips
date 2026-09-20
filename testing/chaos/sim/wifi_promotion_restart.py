@@ -8,6 +8,7 @@ from .wifi_diamond_checks import counter
 from .wifi_measurements import snapshot
 from .wifi_promotion_checks import barrier, held_boundary, watch
 from .wifi_promotion_finances import journals
+from .wifi_remote import digest
 from .wifi_restart import crash_profile
 
 
@@ -37,7 +38,28 @@ def crash_source(run, evidence, trial, captured, before):
     state = evidence["source_restart"] = {"before": before, "crash_attempted": True,
                                            "started": time.monotonic()}
     run.save()
-    state["crash"] = crash_profile(run.nodes[SOURCE], before)
+    node = run.nodes[SOURCE]
+    diagnostic = node.output / "last-error.txt"
+    prior_error = ((diagnostic.stat().st_mtime_ns, digest(diagnostic.read_bytes()))
+                   if diagnostic.exists() else None)
+    try:
+        state["crash"] = crash_profile(node, before)
+    except Exception:
+        # Preserve a fresh shared SSH diagnostic before cleanup overwrites it.
+        # A concurrently failing management monitor can also write this file.
+        try:
+            if diagnostic.exists():
+                data = diagnostic.read_bytes()
+                fingerprint = (diagnostic.stat().st_mtime_ns, digest(data))
+                if fingerprint != prior_error:
+                    saved = node.output / "process-crash-error.txt"
+                    with saved.open("xb") as output:
+                        output.write(data)
+                    saved.chmod(0o600)
+                    state["crash_diagnostic_sha256"] = fingerprint[1]
+        except Exception as error:
+            state["crash_diagnostic_error"] = type(error).__name__
+        raise
     # Read the stopped profile: a controller reload or a crash after normal
     # withdrawal cannot satisfy this exact pending-acceptance boundary.
     status = run.ctl(PROVIDER, "test_accept_barrier_status")
