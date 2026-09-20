@@ -681,6 +681,14 @@ bounded middle-router queue snapshots are usable, with no observed backlog or
 increasing software-queue drop/limit counters. This validates the added capture;
 the earlier intermittent radio-path loss remains unexplained.
 
+The subsequent [eight-trial queue-observed comparison](CADENCE-RESULTS.md#full-software-queue-observed-comparison)
+delivers all 93,696 packets and completes collection and independent restoration.
+Its 32 usable queue snapshots show no recorded software-queue drops, marks or
+overlimit events, and no snapshot backlog or STOP. All 3,072 test sats are
+collected and 2,091 management checks pass. The earlier intermittent loss remains
+unresolved; this clean comparison does not establish its cause or close delivery
+readiness. The 500-ms default remains unchanged.
+
 The focused Ethernet suite passes 47 tests on macOS and 35 on Linux. An isolated
 Linux veth test also forces two separate AF_PACKET queue overflows, verifies
 increasing cumulative drops across resetting/concurrent reads, and confirms

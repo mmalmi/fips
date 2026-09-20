@@ -555,6 +555,31 @@ validates bounded queue observation on the hardware, but the earlier intermitten
 the 500-ms default is unchanged. The added observations are diagnostic overhead,
 not a matched performance improvement.
 
+### Full software-queue observed comparison
+
+The eight-trial AQM comparison uses the same frozen `62a639370` binaries and the
+`c87c3059` harness. It repeats 250, 500, 1,000 and 2,000-ms policies in forward and
+reverse order. All 93,696 packets arrive and strict acceptance passes. All 3,072
+test sats are collected, every test wallet is empty, and all 2,091 management
+checks pass. Independent final reads verify restored router baselines and
+Internet/DNS, with owned processes absent and no cleanup errors. Source, artifact
+and prior-capture hashes remain unchanged; no builds, tests or simulations run
+concurrently with the measurements.
+
+All 32 steady-boundary queue captures are usable, retaining stable observed
+interface, process and association identity within each trial. TID0 advances by
+3,254–3,262 packets and 3,716,892–3,718,082 bytes per steady window; other TIDs
+remain unchanged. Drops, marks and overlimit counters stay zero. Every snapshot
+shows zero backlog and RUN, without STOP. Three steady windows each add one
+flow-hash collision; these are not evidence of radio collisions. Some guard
+gaps add 1–7 queue packets, so the observations include other traffic.
+
+The earlier 364-packet deficit is not reproduced or explained. Boundary snapshots
+can miss transient queueing or stoppage, and these queue totals are not delivery
+receipts. This clean comparison does not establish a performance improvement,
+seamless mobility or hardware acceptance of later recovery changes. The earlier
+strict rejection is retained, and the production default remains 500 ms.
+
 ## Reproduction and remaining evidence
 
 See the [experiment instructions](../../testing/relay-cadence/README.md) for fixed
