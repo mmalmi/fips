@@ -65,15 +65,36 @@ pub(super) async fn start_nodes_with_funding_limit(
     quote_lifetime: u64,
     buyer_funding_limit: u64,
 ) -> Bench {
+    start_line(
+        root,
+        mint,
+        network,
+        mint_url,
+        lifetime,
+        quote_lifetime,
+        &[buyer_funding_limit, 40, 40],
+    )
+    .await
+}
+
+pub(super) async fn start_line(
+    root: &Path,
+    mint: LocalMint,
+    network: PaymentNetwork,
+    mint_url: &str,
+    lifetime: u64,
+    quote_lifetime: u64,
+    funding_limits: &[u64],
+) -> Bench {
+    assert!((3..=4).contains(&funding_limits.len()));
     let mut configs = Vec::new();
     let mut paths = Vec::new();
     let mut npubs = Vec::new();
     let mut sockets = Vec::new();
-    for i in 0..3 {
+    for (i, &limit) in funding_limits.iter().enumerate() {
         let directory = root.join(format!("n{i}"));
         std::fs::create_dir(&directory).unwrap();
         let mut cfg = config(&directory, mint_url);
-        let limit = if i == 0 { buyer_funding_limit } else { 40 };
         cfg.terms.controller.max_funding_overhead_sat = limit
             .checked_sub(cfg.terms.controller.channel_capacity_sat)
             .expect("fixture funding allowance covers channel capacity");

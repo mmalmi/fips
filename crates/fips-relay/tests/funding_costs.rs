@@ -4,6 +4,8 @@
 mod paid_fees;
 #[path = "funding_costs/preopening.rs"]
 mod preopening;
+#[path = "funding_costs/preopening_support.rs"]
+mod preopening_support;
 #[allow(dead_code)]
 mod process_support;
 #[path = "funding_costs/restore.rs"]
@@ -12,6 +14,8 @@ mod restore;
 mod retirement;
 #[path = "funding_costs/setup.rs"]
 mod setup;
+#[path = "funding_costs/transit_preopening.rs"]
+mod transit_preopening;
 use cashu_service::{
     create_topup_quote, load_mint_balance, load_wallet_overview,
     simulation::{IssuerMode, LocalMint, PaymentNetwork, VirtualClock},
