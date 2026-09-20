@@ -655,6 +655,16 @@ single clean run leaves the earlier intermittent loss unexplained. The capture
 now retains full adapter replies inside existing process-bound samples, with
 65 Linux harness and 101 analyzer tests passing.
 
+The subsequent [eight-trial socket-observed comparison](CADENCE-RESULTS.md#full-socket-observed-comparison)
+reproduces intermittent loss: 93,332 of 93,696 packets arrive, with all 364 missing
+packets in one steady stream. Source transport submissions are complete; middle
+output and destination ingress observations differ by the same 364 packets,
+while recorded receive-socket drops remain zero. The repeated policy is clean.
+This narrows the affected leg without identifying the queue, driver or radio
+cause. Strict delivery acceptance remains failed; all 3,072 test sats are
+collected, 2,091 management checks pass, and independent restoration succeeds.
+Diagnostic costs are retained without changing the 500-ms default.
+
 The focused Ethernet suite passes 47 tests on macOS and 35 on Linux. An isolated
 Linux veth test also forces two separate AF_PACKET queue overflows, verifies
 increasing cumulative drops across resetting/concurrent reads, and confirms

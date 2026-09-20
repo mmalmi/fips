@@ -432,6 +432,61 @@ The new build and additional adapter queries preclude a matched cost comparison
 with those captures. No cadence default, receive-buffer optimization, capacity
 claim or mobility claim follows from this result.
 
+### Full socket-observed comparison
+
+The subsequent eight-trial comparison uses the same matched `62a639370` binaries
+and capture code, in forward/reverse order: 250, 500, 1,000, 2,000, 2,000, 1,000,
+500 and 250 ms. No builds, tests or simulations ran concurrently. It **fails
+strict delivery acceptance**: 93,332 of 93,696 packets arrive. The first 250-ms
+steady stream receives 2,836 of 3,200 packets; every other stream, including the
+second 250-ms trial, is complete. There are 55 out-of-order packets and no
+duplicates or invalid packets. This establishes intermittent loss in this run,
+not a causal relationship with payment cadence.
+
+All 32 workload windows have source data-service Ethernet submissions equal to
+probe submissions, and destination application counts equal to probe reception.
+All recorded socket-drop counts remain zero, with the effective receive buffer
+unchanged at 416 KiB. In the failed steady window, the middle-to-destination peer
+counters show 3,234 packets sent versus 2,870 received: a 364-packet, 404,040-byte
+deficit. Adapter frame totals independently differ by 364 frames and 405,132
+bytes, including the three-byte Ethernet transport prefix. Adapter totals on
+the incoming leg balance. These are aggregate, non-atomic observations, not
+per-packet delivery receipts.
+
+The middle router records 805 congestion markings and one matching warning,
+with no reported native drops or receive-socket overflow. The same steady probe
+still reports 2,836 packets over 3.76 seconds after the primary observation,
+before the next stream is armed. This narrows the discrepancy to middle output
+through destination ingress; it does not identify a transmit queue, driver or
+radio cause. The congestion markings alone do not establish causality.
+
+Diagnostic costs below sum all three processes across each trial's four workload
+windows, including the common tails and excluding setup and settlement. They
+remain part of a rejected delivery comparison. Carrier bytes count local payment
+service submissions, including TCP/FIPS framing and Ethernet prefixes, but not
+opaque transit or physical radio overhead. Journal bytes are attributed logical
+writes, excluding SDK snapshots, SQLite and physical storage writes.
+
+| Trial | Maximum age ms | Packets received / submitted | Payment CPU ms | Updates | Payment carrier KiB | Payment journal KiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 250 | 11,348 / 11,712 | 369.88 | 7 | 16.66 | 70.46 |
+| 2 | 500 | 11,712 / 11,712 | 317.10 | 6 | 14.28 | 61.33 |
+| 3 | 1,000 | 11,712 / 11,712 | 258.59 | 5 | 11.90 | 45.31 |
+| 4 | 2,000 | 11,712 / 11,712 | 252.53 | 5 | 11.90 | 46.74 |
+| 5 | 2,000 | 11,712 / 11,712 | 257.64 | 5 | 11.90 | 50.81 |
+| 6 | 1,000 | 11,712 / 11,712 | 272.53 | 5 | 11.90 | 47.24 |
+| 7 | 500 | 11,712 / 11,712 | 321.18 | 6 | 14.28 | 61.94 |
+| 8 | 250 | 11,712 / 11,712 | 355.67 | 7 | 16.66 | 72.58 |
+
+Every trial collects all 384 issued test sats before the next starts: 3,072 total,
+with every test wallet empty. All 2,091 management checks and cleanup checks pass.
+Independent final reads match the original router configurations, accounts and
+radio state, with Internet/DNS available; all owned local mint and forwarding
+processes are absent. Source, inventory, executable and earlier raw-capture hashes
+remain unchanged. The strict rejection is retained, and the 500-ms default is
+unchanged. A follow-up needs bounded station retry/failure, interface-drop and
+available queue counters to distinguish the remaining link-loss possibilities.
+
 ## Reproduction and remaining evidence
 
 See the [experiment instructions](../../testing/relay-cadence/README.md) for fixed
