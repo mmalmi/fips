@@ -576,8 +576,9 @@ PYTHONPATH=testing/chaos:testing/chaos/tests python3 -m unittest \
 These tests use local fakes to check orchestration, authority, evidence and failure
 cleanup. Run them on Linux to include the real guarded-process crash and ownership
 checks; those cases skip on other hosts. The [readiness assessment](../../crates/fips-relay/READINESS.md#physical-wi-fi-discovery-and-free-recovery)
-records the passing same-process hardware run and its limits. Full-process
-restart recovery and arbitrary mobile mesh encounters remain separate checks.
+records the passing same-process and full source-process restart hardware runs
+and their limits. Whole-router power loss and arbitrary mobile mesh encounters
+remain separate checks.
 
 ### Paid/free Wi-Fi priority
 

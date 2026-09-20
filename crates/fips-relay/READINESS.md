@@ -391,10 +391,28 @@ of the owned test processes and filters.
 
 Releasing the held response closes two abandoned responders without delivering
 a late reply to the buyer; this run does not test buyer rejection of a late
-response. Full-process restart during promotion, other funding interruption
-boundaries, arbitrary physical mobility/mesh merge-split, phone outage recovery
-and sustained hardware capacity still require verification. This controlled,
-same-process recovery does not establish seamless roaming or a performance bound.
+response.
+
+The full source-process restart variant also passes on these routers
+(2026-09-20). The harness sends one SIGKILL at that held commitment and verifies
+the original pending acceptance in the stopped profile. It then restarts the
+same profile while the middle radio is absent. The original Watch withdraws the
+pending offer and recovers after rejoin; the other two process epochs remain
+unchanged. All 40 round trips across five fresh bursts complete, including the
+final eight under a stable full agreement with qualifying native feedback and
+an advancing acknowledged payment. No traffic is offered during the outage.
+Original trial consumption remains 3,652 units; the recovery trial receives
+exactly 29,116 remaining units. One 32-sat replacement follows the original
+28-sat refund, as checked by the same runtime financial validator. The provider
+earns 21 test sats; all 384 issued sats are collected and every wallet ends
+empty. All 402 management checks pass. Independent checks confirm restoration
+of original router settings and Internet access, with owned test processes and
+filters absent. Both held stale replies encounter closed responders.
+
+These checks cover a process crash, not whole-router power loss. Other funding
+interruption boundaries, arbitrary physical mobility/mesh merge-split, phone
+outage recovery and sustained hardware capacity still require verification.
+Neither controlled recovery establishes seamless roaming or a performance bound.
 
 The [paid/free priority and round-trip fixture](../../testing/chaos/README.md#paidfree-wi-fi-priority)
 also passes on these routers. With a 500-ms maximum payment age, all 72 paid
