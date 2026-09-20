@@ -484,8 +484,38 @@ Independent final reads match the original router configurations, accounts and
 radio state, with Internet/DNS available; all owned local mint and forwarding
 processes are absent. Source, inventory, executable and earlier raw-capture hashes
 remain unchanged. The strict rejection is retained, and the 500-ms default is
-unchanged. A follow-up needs bounded station retry/failure, interface-drop and
-available queue counters to distinguish the remaining link-loss possibilities.
+unchanged. The follow-up below adds bounded station retry/failure, interface-drop
+and available queue observations; reproducing loss with these observations remains
+necessary to distinguish the remaining possibilities.
+
+### Link-counter pilot
+
+A fresh 250-ms pilot uses the same matched `62a639370` binaries and the
+`674fe5e1a` harness with optional `--link-loss-counters`. It passes strict
+acceptance: all 11,712 packets arrive across idle, bursty, steady and high-rate
+workloads. No builds, tests or simulations ran concurrently. The capture adds
+bounded station, interface and available queue reads on the middle router and
+destination inside the existing process-bound workload/guard snapshots. All
+15 compared workload/gap windows retain comparable interface and station epochs.
+
+Middle-to-destination station `tx retries` and `tx failed` increase equally:
+4 during idle, 142 during bursts, 587 during steady traffic and 446 at high rate.
+These driver counters include other traffic and are not independent counts of
+missing application packets: every application packet arrives in this pilot.
+Both routers' interface transmit/receive drop and error deltas remain zero in
+the four workload windows, as do recorded receive-socket drops. The queue tool
+`tc` is absent, so queue statistics are explicitly unavailable; no package is
+installed. Cross-router reads are not simultaneous and do not identify individual
+packet outcomes.
+
+All 384 test sats are collected and every wallet is empty. All 261 management
+checks pass, cleanup has no errors, and independent final reads match every
+original router baseline with Internet/DNS available. The mint and forwarding
+processes are absent. Source, executable, inventory and prior-capture hashes
+remain unchanged. The optional capture passes 82 Linux harness and 101 analyzer
+checks. This clean pilot validates the added observations but does not reproduce
+or explain the preceding 364-packet deficit. Strict rejection of that comparison
+and the 500-ms production default remain unchanged.
 
 ## Reproduction and remaining evidence
 

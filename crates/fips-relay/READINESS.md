@@ -665,6 +665,16 @@ cause. Strict delivery acceptance remains failed; all 3,072 test sats are
 collected, 2,091 management checks pass, and independent restoration succeeds.
 Diagnostic costs are retained without changing the 500-ms default.
 
+The subsequent [250-ms link-counter pilot](CADENCE-RESULTS.md#link-counter-pilot)
+delivers all 11,712 packets with the same matched binaries. Optional station and
+interface observations retain comparable epochs. Station retry/failure counters
+increase together despite complete delivery; they must not be treated as missing
+application-packet counts. Recorded interface/socket drops remain zero; queue
+statistics are unavailable because `tc` is absent. All 384 test sats are collected,
+261 management checks pass and independent restoration succeeds. The added capture
+passes 82 Linux harness and 101 analyzer checks. The longer comparison's loss
+remains unexplained, so this clean pilot does not close delivery readiness.
+
 The focused Ethernet suite passes 47 tests on macOS and 35 on Linux. An isolated
 Linux veth test also forces two separate AF_PACKET queue overflows, verifies
 increasing cumulative drops across resetting/concurrent reads, and confirms
