@@ -8,7 +8,9 @@ from .wifi_remote import checked_name, checked_path
 
 
 SYS_NET = "/sys/class/net"
+DEBUGFS = "/sys/kernel/debug/ieee80211"
 MAX_STATION_BYTES = 65536
+MAX_AQM_BYTES = 4096
 COUNTERS = ("tx_packets", "tx_bytes", "tx_dropped", "tx_errors",
             "rx_packets", "rx_bytes", "rx_dropped", "rx_errors")
 STATION_COUNTERS = ("tx packets", "tx bytes", "tx retries", "tx failed",
@@ -17,6 +19,10 @@ FIELDS = ("link_started", "link_identity_before", "link_counters", "link_station
           "link_stations_rc", "link_stations", "link_qdisc_status", "link_qdisc_rc",
           "link_qdisc", "link_identity_after", "link_finished")
 MAC = r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}"
+AQM_FIELDS = ("link_aqm_started", "link_aqm_phy_before", "link_aqm_status",
+              "link_aqm_rc", "link_aqm", "link_aqm_phy_after",
+              "link_aqm_station_status", "link_aqm_station_rc", "link_aqm_station",
+              "link_aqm_finished")
 
 
 def bounded_command(arguments):
@@ -51,8 +57,45 @@ fi
 """
 
 
-def command(node, proc):
+def fields(aqm_peer=None):
+    if aqm_peer is not None and (not isinstance(aqm_peer, str) or not re.fullmatch(MAC, aqm_peer)):
+        raise ValueError("invalid AQM peer")
+    return FIELDS + (AQM_FIELDS if aqm_peer is not None else ())
+
+
+def aqm_command(interface, net, uptime, peer):
+    directory = shlex.quote(checked_path(DEBUGFS))
+    suffix = shlex.quote(f"/netdev:{interface}/stations/{peer}/aqm")
+    return f"""link_aqm_started=$(cut -d ' ' -f 1 {uptime})
+link_aqm_phy_before=$(cat {net}/phy80211/name)
+case "$link_aqm_phy_before" in ''|*[!a-zA-Z0-9_.-]*) exit 1;; esac
+link_aqm_path={directory}/"$link_aqm_phy_before"{suffix}
+link_aqm=''
+link_aqm_rc=''
+link_aqm_status=missing
+if test -e "$link_aqm_path" || test -L "$link_aqm_path"; then
+  if link_aqm=$(set -o pipefail
+    aqm_read_status=0
+    cat "$link_aqm_path" 2>&1 | head -c {MAX_AQM_BYTES + 1} || aqm_read_status=$?
+    printf '.'
+    exit "$aqm_read_status"); then
+    link_aqm_status=available
+    link_aqm_rc=0
+  else
+    link_aqm_rc=$?
+    link_aqm_status=error
+  fi
+  link_aqm=${{link_aqm%.}}
+fi
+{optional_tool('aqm_station', 'iw', bounded_command(['iw', 'dev', interface, 'station', 'get', peer]))}
+link_aqm_phy_after=$(cat {net}/phy80211/name)
+link_aqm_finished=$(cut -d ' ' -f 1 {uptime})
+"""
+
+
+def command(node, proc, aqm_peer=None):
     """Assignments only; the caller emits fields after its final process check."""
+    fields(aqm_peer)
     interface = checked_name(node.interface)
     net = shlex.quote(checked_path(SYS_NET + "/" + interface))
     uptime = shlex.quote(checked_path(proc + "/uptime"))
@@ -73,6 +116,7 @@ link_counters=$(
 )
 {optional_tool('stations', 'iw', station_command(interface))}
 {optional_tool('qdisc', 'tc', bounded_command(['tc', '-s', 'qdisc', 'show', 'dev', interface]))}
+{aqm_command(interface, net, uptime, aqm_peer) if aqm_peer is not None else ''}
 link_identity_after=$({identity})
 link_finished=$(cut -d ' ' -f 1 {uptime})
 """
@@ -138,10 +182,52 @@ def station_records(text, interface):
             for peer, fields in records.items()]
 
 
-def parse(node, values):
-    if len(values) != len(FIELDS):
+def parse_aqm(raw, peer, interface, station_before, timing):
+    phy = raw["link_aqm_phy_before"]
+    if not re.fullmatch(r"phy[0-9]+", phy) or phy != raw["link_aqm_phy_after"]:
+        raise ValueError("AQM radio identity changed or invalid")
+    started, finished = (float(raw["link_aqm_" + field]) for field in ("started", "finished"))
+    if not timing["started"] <= started <= finished <= timing["finished"]:
+        raise ValueError("AQM observation outside link timing bracket")
+    aqm = tool_observation(raw["link_aqm_status"], raw["link_aqm_rc"], raw["link_aqm"])
+    text = aqm["raw"]
+    size = len(text.encode()) if text is not None else 0
+    if size > MAX_AQM_BYTES + 1:
+        raise ValueError("AQM output exceeds capture bound")
+    aqm["truncated"] = size > MAX_AQM_BYTES
+    if aqm["truncated"]:
+        aqm["availability"] = "truncated"
+        aqm["raw"] = text.encode()[:MAX_AQM_BYTES].decode("utf-8", errors="ignore")
+    station_after = tool_observation(raw["link_aqm_station_status"],
+                                    raw["link_aqm_station_rc"], raw["link_aqm_station"])
+    station_after["records"] = (station_records(station_after["raw"], interface)
+                                if station_after["availability"] == "available" else None)
+    observations = [[record for record in (value["records"] or []) if record["peer"] == peer]
+                    for value in (station_before, station_after)]
+    associations = [records[0]["association"] if records else None for records in observations]
+    before, after = associations
+    state = "unknown"
+    if before is not None and after is not None:
+        epochs = [value["associated_at_boottime"] for value in associations]
+        connected = [re.fullmatch(r"([0-9]+) seconds", value["connected_time"] or "")
+                     for value in associations]
+        if all(re.fullmatch(r"[0-9]+(?:\.[0-9]+)?s", epoch or "") for epoch in epochs) and all(connected):
+            if any(float(epoch[:-1]) > timing["finished"] for epoch in epochs):
+                raise ValueError("AQM association epoch is after its observation")
+            state = ("changed" if epochs[0] != epochs[1] or int(connected[1][1]) < int(connected[0][1])
+                     else "stable" if all(value["mesh_plink"] == "ESTAB" for value in associations)
+                     else "not_established")
+    return {**aqm, "peer": peer, "phy": phy,
+            "timing": {"clock": "router_uptime_seconds", "started": started, "finished": finished},
+            "association": {"status": state, "before": before, "after": after},
+            "station_after": station_after}
+
+
+def parse(node, values, aqm_peer=None):
+    names = fields(aqm_peer)
+    if len(values) != len(names):
         raise ValueError("invalid link observation framing")
-    raw = dict(zip(FIELDS, values))
+    raw = dict(zip(names, values))
     before, after = (identity(raw["link_identity_" + position]) for position in ("before", "after"))
     if before != after:
         raise ValueError("link interface changed during observation")
@@ -168,8 +254,10 @@ def parse(node, values):
     station = tool_observation(raw["link_stations_status"], raw["link_stations_rc"], raw["link_stations"])
     station["records"] = (station_records(station["raw"], node.interface)
                           if station["availability"] == "available" else None)
-    return {"interface": node.interface, **before,
-            "timing": {"clock": "router_uptime_seconds", "started": started, "finished": finished},
-            "sysfs": counters, "stations": station,
-            "qdisc": tool_observation(raw["link_qdisc_status"], raw["link_qdisc_rc"], raw["link_qdisc"]),
-            "scope": "serial interface and peer observations; not FIPS-specific drops or delivery receipts"}
+    timing = {"clock": "router_uptime_seconds", "started": started, "finished": finished}
+    result = {"interface": node.interface, **before, "timing": timing, "sysfs": counters, "stations": station,
+              "qdisc": tool_observation(raw["link_qdisc_status"], raw["link_qdisc_rc"], raw["link_qdisc"]),
+              "scope": "serial interface and peer observations; not FIPS-specific drops or delivery receipts"}
+    if aqm_peer is not None:
+        result["aqm"] = parse_aqm(raw, aqm_peer, node.interface, station, timing)
+    return result

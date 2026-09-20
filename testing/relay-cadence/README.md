@@ -361,6 +361,17 @@ interface, radio and qdisc counters overlap and include other traffic; do not ad
 them together or treat their changes as proof of where a FIPS packet was lost.
 The extra reads add observation overhead; strict delivery acceptance is unchanged.
 
+Add `--aqm-counters` with `--link-loss-counters` to retain the middle router's
+raw per-destination mac80211 AQM table at the four steady-workload boundaries
+only. Each read is bounded to 4 KiB and bracketed by interface/process checks,
+router uptime, and station association observations. Missing, failed, truncated,
+or unknown/changed-association captures are explicit; no queue columns are
+interpreted by the harness. The table includes other traffic to that peer:
+overlimit events, queue backlog and drop counters are not interchangeable packet
+loss counts. The extra station read and short queue-lock hold add observation
+overhead; this diagnostic neither changes delivery acceptance nor establishes
+where an individual FIPS packet was lost.
+
 ## Measurement boundaries
 
 Build the relay with the optional `measurements` feature. The private local

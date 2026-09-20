@@ -80,7 +80,9 @@ def validate_measurements(status, pid):
             unsigned(counter)
 
 
-def command(node, native_counters=False, drop_logs=False, link_loss=False):
+def command(node, native_counters=False, drop_logs=False, link_loss=False, *, aqm_peer=None):
+    if aqm_peer is not None and not link_loss:
+        raise ValueError("AQM observation requires link-loss capture")
     temporary = shlex.quote(checked_path(node.temporary))
     binary = shlex.quote(checked_path(node.binary))
     config = shlex.quote(checked_path(node.config))
@@ -97,9 +99,9 @@ native_transports=$(printf '%s\\n' '{{"command":"show_transports"}}' | {binary} 
                   if drop_logs else "")
     if drop_logs:
         extra += ' "$log_filter" "$log_bytes"'
-    link_sample = wifi_link_loss.command(node, PROC) if link_loss else ""
+    link_sample = wifi_link_loss.command(node, PROC, aqm_peer) if link_loss else ""
     if link_loss:
-        extra += "".join(f' "${field}"' for field in wifi_link_loss.FIELDS)
+        extra += "".join(f' "${field}"' for field in wifi_link_loss.fields(aqm_peer))
     # Do not acquire operation.lock: reads must not delay the independent guard.
     # Buffer output until both identity checks succeed; no proc/config data is
     # written remotely. NUL framing preserves spaces and parentheses in comm.
@@ -132,16 +134,18 @@ printf '%s\\000' "$pid" "$before" "$after" "$resources" "$io" "$relay" "$availab
 """
 
 
-def snapshot(node, hostlabel, native_counters=False, drop_logs=False, link_loss=False):
+def snapshot(node, hostlabel, native_counters=False, drop_logs=False, link_loss=False, *, aqm_peer=None):
     """Return one normal status response with validated host/process evidence."""
     if (hostlabel not in ("n01", "n02", "n03") or type(native_counters) is not bool
             or type(drop_logs) is not bool or type(link_loss) is not bool):
         raise ValueError("invalid measurement host label")
+    if aqm_peer is not None and (not link_loss or hostlabel != "n02"):
+        raise ValueError("AQM observation requires middle-router link-loss capture")
     started = time.monotonic_ns()
-    raw = node.remote(command(node, native_counters, drop_logs, link_loss), timeout=45)
+    raw = node.remote(command(node, native_counters, drop_logs, link_loss, aqm_peer=aqm_peer), timeout=45)
     finished = time.monotonic_ns()
     parts = raw.decode("utf-8").split("\0")
-    extra = len(wifi_link_loss.FIELDS) if link_loss else 0
+    extra = len(wifi_link_loss.fields(aqm_peer)) if link_loss else 0
     if len(parts) != 8 + 3 * native_counters + 2 * drop_logs + extra or parts[-1]:
         raise ValueError("invalid resource sample framing")
     pid = decimal(parts[0])
@@ -182,7 +186,7 @@ def snapshot(node, hostlabel, native_counters=False, drop_logs=False, link_loss=
         status["dataplane_log"] = {"filter": log_filter, "bytes": decimal(log_bytes)}
     if link_loss:
         start = 7 + 3 * native_counters + 2 * drop_logs
-        status["link_loss"] = wifi_link_loss.parse(node, parts[start:-1])
+        status["link_loss"] = wifi_link_loss.parse(node, parts[start:-1], aqm_peer)
     status["host_process"] = {"host": hostlabel, "pid": pid, "start_ticks": before[1],
                               "rss_kib": memory["VmRSS"], "peak_rss_kib": memory["VmHWM"],
                               "io_available": parts[6] == "available", **io}

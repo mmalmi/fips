@@ -8,11 +8,36 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from sim.wifi_cadence import CadenceRun, policies, run
+from sim.wifi_cadence import CadenceRun, metadata, policies, run
 from sim.cadence_workloads import perform, stream
 
 
 class CadenceTests(unittest.TestCase):
+    def test_aqm_requires_link_capture_before_reading_artifacts_or_starting_a_trial(self):
+        with self.assertRaisesRegex(RuntimeError, "requires --link-loss-counters"):
+            metadata(argparse.Namespace(aqm_counters=True, link_loss_counters=False))
+
+    def test_aqm_is_only_four_middle_reads_in_the_steady_workload(self):
+        service = self.service()
+        service.monitor = Mock()
+        service.nodes["n03"].mac = "02:00:00:00:00:03"
+        service.stream = Mock(return_value={})
+        service.emit, service.phase = Mock(), Mock()
+        service.args.link_loss_counters = True
+        with patch("sim.wifi_measurements.snapshot", return_value={}) as sample, \
+                patch("sim.wifi_cadence.time.sleep"):
+            service.workload("steady")
+            self.assertTrue(all(call.kwargs["aqm_peer"] is None for call in sample.call_args_list))
+            sample.reset_mock()
+            service.args.aqm_counters = True
+            for workload in ("idle", "bursty", "steady", "high_rate"):
+                service.workload(workload)
+        self.assertEqual(sample.call_count, 48)
+        selected = [call for call in sample.call_args_list if call.kwargs["aqm_peer"] is not None]
+        self.assertEqual(len(selected), 4)
+        self.assertTrue(all(call.args[1] == "n02" and call.kwargs["aqm_peer"] == service.nodes["n03"].mac
+                            for call in selected))
+
     def test_link_observations_are_opt_in_and_only_sample_middle_and_destination(self):
         service = self.service()
         service.monitor = Mock()

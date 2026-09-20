@@ -145,15 +145,15 @@ class LinkShellTests(unittest.TestCase):
         path.write_text("#!/bin/sh\nset -eu\n" + body + "\n")
         path.chmod(0o700)
 
-    def read(self):
-        command = link.command(router(), str(self.proc))
-        command += "printf '%s\\0' " + " ".join(f'"${field}"' for field in link.FIELDS)
+    def read(self, aqm_peer=None):
+        command = link.command(router(), str(self.proc), aqm_peer)
+        command += "printf '%s\\0' " + " ".join(f'"${field}"' for field in link.fields(aqm_peer))
         # Bash models OpenWrt ash's pipefail support; the modeled tools use no network.
         raw = subprocess.check_output(["/bin/bash", "-eu", "-c", command],
                                       env={**os.environ, "PATH": str(self.bin)}, timeout=5)
         fields = raw.decode().split("\0")
         self.assertEqual(fields[-1], "")
-        return link.parse(router(), fields[:-1])
+        return link.parse(router(), fields[:-1], aqm_peer)
 
     def test_shell_reads_existing_counters_and_only_an_installed_tc(self):
         missing = self.net / "statistics" / "rx_dropped"

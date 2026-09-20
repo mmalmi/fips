@@ -26,6 +26,8 @@ from .cadence_workloads import POLICIES, SCHEDULE, observe_after_gap, perform, p
 
 
 def metadata(args):
+    require(not getattr(args, "aqm_counters", False) or getattr(args, "link_loss_counters", False),
+            "--aqm-counters requires --link-loss-counters")
     selected = policies(args)
     relay_sha = digest(args.binary.read_bytes())
     provenance = json.loads(args.provenance.read_text())
@@ -50,6 +52,7 @@ def metadata(args):
         "native_counters": getattr(args, "native_counters", False),
         "post_gap_probes": getattr(args, "post_gap_probes", False),
         "link_loss_counters": getattr(args, "link_loss_counters", False),
+        "aqm_counters": getattr(args, "aqm_counters", False),
         "payment_service_carrier": True,
         "dataplane_drop_log_filter": (DATAPLANE_DROP_LOG_FILTER
                                       if getattr(args, "dataplane_drop_logs", False) else None),
@@ -90,14 +93,16 @@ class CadenceRun(PaidWifiRun):
         }
         super().before_launch()
 
-    def sample(self):
+    def sample(self, workload=None):
         from .wifi_measurements import snapshot
 
         self.monitor.check()
         with ThreadPoolExecutor(max_workers=3) as pool:
             futures = [pool.submit(snapshot, node, name, getattr(self.args, "native_counters", False),
                                    getattr(self.args, "dataplane_drop_logs", False),
-                                   getattr(self.args, "link_loss_counters", False) and name in ("n02", "n03"))
+                                   getattr(self.args, "link_loss_counters", False) and name in ("n02", "n03"),
+                                   aqm_peer=(self.nodes["n03"].mac if name == "n02" and workload == "steady"
+                                             and getattr(self.args, "aqm_counters", False) else None))
                        for name, node in self.nodes.items()]
             return [future.result() for future in futures]
 
@@ -117,7 +122,7 @@ class CadenceRun(PaidWifiRun):
         time.sleep(3)
 
     def workload(self, name):
-        before_guard, before = self.sample(), self.sample()
+        before_guard, before = self.sample(name), self.sample(name)
         started = time.monotonic()
         workload = perform(self.stream, name, started=started,
                            after_gap=self.observe_after_gap
@@ -126,9 +131,9 @@ class CadenceRun(PaidWifiRun):
         time.sleep(3)
         # Preserve the fixed tail even if payment reconciliation is incomplete.
         # Quiet-boundary validation runs on this evidence after funds collection.
-        after = self.sample()
+        after = self.sample(name)
         observed = int((time.monotonic() - started) * 1000)
-        after_guard = self.sample()
+        after_guard = self.sample(name)
         self.emit(data={"workload": name, "offered_elapsed_ms": offered,
                         "observation_elapsed_ms": observed, "before_guard": before_guard,
                         "before": before, "after": after, "after_guard": after_guard,
@@ -223,6 +228,8 @@ def main():
                         help="record a supplemental same-stream receive observation after each burst gap")
     parser.add_argument("--link-loss-counters", action="store_true",
                         help="observe middle/destination station, interface and available qdisc counters at workload boundaries")
+    parser.add_argument("--aqm-counters", action="store_true",
+                        help="with --link-loss-counters, retain raw middle-to-destination AQM at four steady boundaries")
     args = parser.parse_args()
     os.umask(0o077)
 
