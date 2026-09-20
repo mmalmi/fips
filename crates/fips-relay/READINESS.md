@@ -474,6 +474,29 @@ this radio run; the stopped-transport regression supplies that failure-path
 evidence. The run preserves ordinary retry grace and does not establish a general
 handover latency or change the production discovery default.
 
+A shorter middle-radio interruption now passes before FIPS peer eviction
+(2026-09-20), using the same rebuilt artifact and temporary 10-second beacon
+interval. Rejoin is requested 16.35 seconds after the cut completes. During the
+cut the departing radio has no stations, while all original FIPS neighbors retain
+their authentication timestamps. Processes, identities, funding and channels
+remain unchanged. The interrupted stream loses 21 of 24 replies; all eight fresh
+recovery replies arrive and subsequent payments advance in both directions.
+The 9.18-second rejoin-to-complete-probe bound includes commands, diagnostics and
+paced sending, rather than measuring the first usable route. All 384 test sats
+are collected, all 315 management checks pass, and independent live reads match
+every original router baseline, including Internet access. The mint and three
+forwarding processes are absent after cleanup.
+
+Two earlier pilots remain failed harness runs: one incorrectly required peers
+to stay connected while their radio was absent; the other rejected normal key
+renewal and link rebinding despite retained authentication timestamps and eight
+fresh replies. Both collected all test funds and restored every original
+baseline. The corrected check accepts rekey/rebinding, rejects recreated peers,
+and passes 66 focused Linux tests alongside unchanged prior guard coverage
+(230 passes and one unrelated customer-firewall skip). This is evidence of
+observed peer retention within a controlled interruption, not physical mobility,
+seamless handover or a unique peer-incarnation proof under clock rollback.
+
 The [competing-provider topology fixture](../../testing/chaos/README.md#competing-wireless-provider-topology)
 also passes on the three routers without funding. A separate source identity on
 the destination's physical router reaches two providers over management-LAN UDP;
