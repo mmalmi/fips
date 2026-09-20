@@ -30,7 +30,7 @@ class ActiveOutageTests(unittest.TestCase):
     def run_cut(self, *, completed=False, lost=False, observation_error=False, restart=False,
                 late_cut=False, cut_error=False, outage_node="n03", stale_peer=None, timing=False,
                 diagnostic_error=False, brief=False, radio_station=False, removed_peer=None,
-                replaced_link=None):
+                replaced_link=None, recreated_peer=None):
         run = Mock()
         run.args = SimpleNamespace(recovery_timing=timing, brief_outage=brief)
         run.nodes = {name: Mock(npub=name) for name in ("n01", "n02", "n03")}
@@ -47,7 +47,8 @@ class ActiveOutageTests(unittest.TestCase):
                     return node.native.return_value
                 peers = [{"npub": other, "connectivity": "stale" if radio_down and
                           outage_node in (name, other) else "connected", "transport_type": "ethernet",
-                          "link_id": int(other[-1]), "authenticated_at_ms": 50,
+                          "link_id": int(other[-1]) + (8 if rejoined and name == replaced_link else 0),
+                          "authenticated_at_ms": 51 if rejoined and name == recreated_peer else 50,
                           "our_session_index": "00000002" if rejoined and name == replaced_link else "00000001"}
                          for other in run.nodes if abs(int(other[-1]) - int(name[-1])) == 1]
                 if radio_down and name == removed_peer:
@@ -161,9 +162,22 @@ class ActiveOutageTests(unittest.TestCase):
         run.nodes["n02"].mesh_up.assert_called_once_with()
         self.assertFalse(run.evidence["active_outage"]["passed"])
 
-    def test_brief_cut_rejects_a_replacement_session_after_retained_observation(self):
+    def test_brief_cut_allows_rekey_and_link_rebinding_of_retained_peers(self):
         run, error = self.run_cut(brief=True, replaced_link="n02", timing=True)
-        self.assertIn("peer sessions", str(error))
+        self.assertIsNone(error)
+        evidence = run.evidence["active_outage"]
+        self.assertTrue(evidence["passed"])
+        before = evidence["peer_sessions_before"]["n02"]
+        after = evidence["peer_sessions_after"]["n02"]
+        for peer in before:
+            self.assertNotEqual(before[peer]["our_session_index"], after[peer]["our_session_index"])
+            self.assertNotEqual(before[peer]["link_id"], after[peer]["link_id"])
+            self.assertEqual(before[peer]["authenticated_at_ms"], after[peer]["authenticated_at_ms"])
+        run.nodes["n03"].mesh_up.assert_called_once_with()
+
+    def test_brief_cut_rejects_recreated_peer_after_retained_observation(self):
+        run, error = self.run_cut(brief=True, recreated_peer="n02", timing=True)
+        self.assertIn("original peers", str(error))
         self.assertFalse(run.evidence["active_outage"]["passed"])
         run.nodes["n03"].mesh_up.assert_called_once_with()
 

@@ -442,15 +442,17 @@ Add `--brief-outage` to restore after the finite 24-packet stream and the
 two-second quiet observation. At two packets per second, the stream spans at
 least 11.5 seconds; the actual outage also includes radio commands and serial
 observations, and is recorded by the controller's monotonic clock. The departing
-radio must have no associated stations while all original FIPS peer sessions
+radio must have no associated stations while all original FIPS peers
 remain present; their connectivity may be stale during the cut. After fresh
-replies arrive, every neighbor must be connected again, and its
-link ID, authentication timestamp and Noise session index must match the
-pre-cut observation. This rejects eviction/reconnection between serial reads.
+replies arrive, every neighbor must be connected again, with its original
+identity and authentication timestamp. Rekeying and link rebinding preserve that
+timestamp, so link IDs and Noise session indices are retained as diagnostics
+and may change. Together with unchanged process identities, this checks observed
+peer retention in the controlled trial; wall-clock timestamps are not unique
+peer incarnation identifiers under clock rollback.
 Original processes, funding, automatic payments and full collection must also
-pass. A legitimate rekey fails this strict session-continuity case; it does not
-mean rekeying is forbidden during ordinary recovery. This controlled interruption
-does not establish physical mobility or lossless handover.
+pass. This controlled interruption does not establish physical mobility or
+lossless handover.
 
 Add `--recovery-timing` to retain bounded controller-clock observation intervals,
 the departing router's native Ethernet adapter counters and Wi-Fi station dumps,

@@ -24,7 +24,7 @@ def processes(run):
 
 
 def peer_sessions(run, *, connected=True):
-    """Observe the same authenticated link and Noise session on each side of the cut."""
+    """Observe peer authentication times, with links and Noise indices as diagnostics."""
     result = {}
     for name, node in run.nodes.items():
         run.monitor.check()
@@ -49,6 +49,12 @@ def peer_sessions(run, *, connected=True):
                                        "our_session_index": index}
         result[name] = observed
     return result
+
+
+def authenticated_peers(sessions):
+    """Existing peers retain authentication time when their keys or links change."""
+    return {name: {npub: peer["authenticated_at_ms"] for npub, peer in peers.items()}
+            for name, peers in sessions.items()}
 
 
 def active_radio_outage(run, *, outage_node="n03"):
@@ -90,8 +96,9 @@ def active_radio_outage(run, *, outage_node="n03"):
                     "brief interruption still has radio stations")
             # A retained peer can be stale while its radio is absent.
             evidence["retained_peer_sessions"] = peer_sessions(run, connected=False)
-            require(evidence["retained_peer_sessions"] == evidence["peer_sessions_before"],
-                    "brief interruption no longer retained the original peer sessions")
+            require(authenticated_peers(evidence["retained_peer_sessions"])
+                    == authenticated_peers(evidence["peer_sessions_before"]),
+                    "brief interruption no longer retained the original peers")
             if timing:
                 timing.ready("retained_before_rejoin", line=True)
             run.phase("paid replies stopped before peer eviction; original channels retained")
@@ -138,7 +145,8 @@ def active_radio_outage(run, *, outage_node="n03"):
         timing.anchor("after_recovery")
     if brief:
         evidence["peer_sessions_after"] = peer_sessions(run)
-        require(evidence["peer_sessions_after"] == evidence["peer_sessions_before"],
-                "brief recovery replaced the original peer sessions")
+        require(authenticated_peers(evidence["peer_sessions_after"])
+                == authenticated_peers(evidence["peer_sessions_before"]),
+                "brief recovery replaced the original peers")
     evidence["passed"] = True
     run.phase("same processes deliver fresh paid round trips after automatic radio rejoin")
