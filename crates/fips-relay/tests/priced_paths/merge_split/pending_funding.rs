@@ -201,19 +201,45 @@ fn recovery_diagnostic(bench: &Bench, pending: &Pending) -> Value {
         .collect();
     // This reads the provider's retained offer, without fetching a quote. It
     // proves retained identity, not which response its cache most recently sent.
-    let provider_retains_fenced = fenced
+    let retained: Vec<_> = fenced
         .iter()
-        .filter(|id| {
+        .filter_map(|id| {
             bench.services[3]
                 .quotes
                 .retained_offer(bench.peers[2], id)
-                .is_ok_and(|offer| {
-                    offer.provider == *bench.peers[3].node_addr()
-                        && offer.destination == bench.peers[5]
-                        && serde_json::to_value(offer).unwrap() == saved["requested"][**id]
-                })
+                .ok()
+                .map(|offer| (*id, offer))
         })
+        .collect();
+    let matching: Vec<_> = retained
+        .iter()
+        .filter(|(_, offer)| {
+            offer.provider == *bench.peers[3].node_addr()
+                && offer.destination.node_addr() == bench.peers[5].node_addr()
+        })
+        .collect();
+    let provider_retains_fenced = matching
+        .iter()
+        .filter(|(id, offer)| serde_json::to_value(offer).unwrap() == saved["requested"][*id])
         .count();
+    let destination = bench.peers[5].npub();
+    let requested: Vec<_> = saved["requested"]
+        .as_object()
+        .into_iter()
+        .flat_map(|offers| offers.iter())
+        .filter(|(_, offer)| offer["destination"].as_str() == Some(destination.as_str()))
+        .collect();
+    let paused_change = |id: &str| saved["route_changes"][id]["paused"].as_bool() == Some(true);
+    let paused_watch = |id: &str| {
+        saved["watched_routes"]
+            .as_object()
+            .into_iter()
+            .flat_map(|watches| watches.values())
+            .any(|w| w["paused"].as_bool() == Some(true) && w["pending"]["id"].as_str() == Some(id))
+    };
+    let retired_through = saved["history"]["through_unix"].as_u64().unwrap_or(0);
+    // These distinguish the persisted pause predicates. They cannot identify
+    // which worker last failed or which quote its client cache last returned.
     let error = bench.controllers[2].last_error();
     let error_kind = match error.as_deref() {
         Some("route change paused") => "route change paused",
@@ -236,7 +262,15 @@ fn recovery_diagnostic(bench: &Bench, pending: &Pending) -> Value {
         "watch_pending_is_fenced": watch["pending"]["id"].as_str().is_some_and(|id| fenced.contains(&id)),
         "requested_count": saved["requested"].as_object().map(|v| v.len()),
         "recovery_only_count": fenced.len(),
+        "provider_retains_fenced_offer_count": retained.len(),
+        "provider_retains_matching_destination_fenced_offer_count": matching.len(),
         "provider_retains_exact_fenced_offer_count": provider_retains_fenced,
+        "destination_requested_count": requested.len(),
+        "destination_requested_fenced_count": requested.iter().filter(|(id, _)| fenced.contains(&id.as_str())).count(),
+        "destination_requested_unfenced_count": requested.iter().filter(|(id, _)| !fenced.contains(&id.as_str())).count(),
+        "destination_requested_paused_change_count": requested.iter().filter(|(id, _)| paused_change(id)).count(),
+        "destination_requested_paused_watch_count": requested.iter().filter(|(id, _)| paused_watch(id)).count(),
+        "destination_requested_retired_count": requested.iter().filter(|(_, offer)| retired_through != 0 && offer["expires_unix"].as_u64().is_some_and(|expiry| expiry <= retired_through)).count(),
         "funding_count": saved["funding"].as_object().map(|v| v.len()),
         "original_funding_restored": saved["funding"][&pending.id]["funded"].is_object(),
         "last_error_kind": error_kind,
