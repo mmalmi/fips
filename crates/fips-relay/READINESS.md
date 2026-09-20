@@ -1794,6 +1794,42 @@ recovery speedup is claimed. All 43 handshake, 77 shared-MMP, four link-deadline
 and 16 RX-loop tests pass, as do strict core/relay lint and source-size checks.
 These changes remain local software work and have not been deployed to routers.
 
+A separate live-UDP regression now reproduces deferred declaration delivery during
+a 750-ms contact. The child adopts the new root with a measured link, but its
+rate-limited updated declaration remains pending and the parent retains its old
+root, parent, sequence and coordinates when the contact ends. The test observes
+that deferred state before accepting the reproduction; it does not inject loss
+before the independent carrier cut.
+
+Pending tree announcements now wake the receive loop at their existing per-peer
+deadline. One cached earliest epoch timestamp is armed when an update is deferred
+or a peer removal/restart changes the tree. Dispatch rechecks the rate limit and
+recomputes the hint, so a cleared or removed owner cannot keep an idle timer alive.
+Periodic five-second repair and 60-second parent reevaluation retain their existing
+maintenance schedule. There are no new wire messages or configuration settings.
+The added turn keeps the existing two-second send budget and bounded packet drain;
+failed or cancelled batches delay fast-path retries by the existing maintenance
+interval. Ordinary maintenance retries remain independent of that floor.
+
+The first corrected run observes matching declarations in both directions after
+519/520 ms, before actual cuts at 753.867/752.021 ms. It preserves authenticated
+link identities and positively observes the deferred update. Its sampled send
+timestamps respect the 500-ms interval; exact deadline boundary tests separately
+exercise the unchanged rate-limit predicate. This proves bidirectional route
+information for these contacts, not payload delivery or physical mobile recovery.
+
+The unchanged paid brief-contact scenario passes its financial, resource and
+recovery assertions. Cold delivery is 19/32 in each direction, compared with
+4/32 and 20/32 in the preceding run; warm delivery remains 40/64 each way, with
+no duplicates. First cold payloads arrive in the 2.339-second observer bracket.
+The parent first observes the child's updated root within 2.008–2.207 seconds,
+and sampled endpoint sessions, source watches and eligible purchases remain
+unchanged. All 1,536 test sats are collected. This single run does not establish
+a general delivery-rate improvement, seamless recovery or arbitrary mobility.
+All six node-deadline, two peer-deadline, 18 receive-loop, 17 spanning-tree and
+43 handshake tests pass, along with strict core/relay lint, formatting and the
+source-size gate. The matching routing fix still requires hardware acceptance.
+
 A held-funding variant now covers a new encounter interrupted after the mint
 commits but before its response reaches the opening caller. The original run
 delivered 36 fresh payloads on an existing healthy route while its credited

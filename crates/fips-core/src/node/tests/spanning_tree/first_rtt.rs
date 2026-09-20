@@ -15,19 +15,41 @@ use tokio::time::Instant;
 
 #[test]
 fn live_udp_new_root_is_measured_between_maintenance_ticks() {
-    run(false);
+    run(Case::Measured);
 }
 
 #[test]
 fn live_udp_new_root_is_measured_during_a_half_second_contact() {
-    run(true);
+    run(Case::BriefMeasured);
 }
 
-fn run(cut: bool) {
+#[test]
+fn live_udp_neighbors_learn_both_routes_during_a_short_contact() {
+    run(Case::Bidirectional);
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Case {
+    Measured,
+    BriefMeasured,
+    Bidirectional,
+}
+
+impl Case {
+    fn contact_ms(self) -> Option<u64> {
+        match self {
+            Self::Measured => None,
+            Self::BriefMeasured => Some(500),
+            Self::Bidirectional => Some(750),
+        }
+    }
+}
+
+fn run(case: Case) {
     super::super::session::run_large_stack_async_test("first-link-rtt", move || async move {
         for phase_ms in [50, 850] {
-            let mut bench = Bench::start(cut).await;
-            let result = AssertUnwindSafe(bench.encounter(phase_ms, cut))
+            let mut bench = Bench::start(case.contact_ms().is_some()).await;
+            let result = AssertUnwindSafe(bench.encounter(phase_ms, case))
                 .catch_unwind()
                 .await;
             bench.stop().await;
@@ -92,6 +114,7 @@ impl Bench {
             node.config.node.control.socket_path =
                 bench.socket(index).to_string_lossy().into_owned();
             assert_eq!(node.config.node.tick_interval_secs, 1);
+            assert_eq!(node.config.node.tree.announce_min_interval_ms, 500);
             if cut {
                 let (tx, rx) = packet_channel(256);
                 let contact = bench.contact.clone();
@@ -188,12 +211,19 @@ impl Bench {
             "link": peer.map(|peer| &peer["link_id"]),
             "authenticated_at_ms": peer.map(|peer| &peer["authenticated_at_ms"]),
             "srtt_ms": peer.map(|peer| &peer["mmp"]["srtt_ms"]),
+            "announce_pending": peer.map(|peer| &peer["tree_announce_pending"]),
+            "last_announce_ms": peer.map(|peer| &peer["last_tree_announce_sent_ms"]),
             "remote_root": declaration.map(|peer| &peer["root"]),
+            "remote_parent": declaration.map(|peer| &peer["parent"]),
+            "remote_sequence": declaration.map(|peer| &peer["declaration_sequence"]),
+            "remote_coords": declaration.map(|peer| &peer["coords"]),
             "root": tree["root"], "parent": tree["parent"],
+            "sequence": tree["declaration_sequence"], "coords": tree["my_coords"],
+            "rate_limited": tree["stats"]["rate_limited"],
         })
     }
 
-    async fn encounter(&mut self, phase_ms: u64, cut: bool) {
+    async fn encounter(&mut self, phase_ms: u64, case: Case) {
         self.connect(2, 1).await;
         let old_root = self.peers[1].node_addr().to_string();
         let until = Instant::now() + Duration::from_secs(10);
@@ -223,14 +253,14 @@ impl Bench {
             start.duration_since(self.started[2]).as_millis() % 1000,
             overshoot.as_micros()
         );
-        if cut {
+        if let Some(contact_ms) = case.contact_ms() {
             let contact = self.contact.clone();
             self.tasks.spawn(async move {
-                tokio::time::sleep_until(start + Duration::from_millis(500)).await;
-                contact.up.store(false, Ordering::Relaxed);
+                tokio::time::sleep_until(start + Duration::from_millis(contact_ms)).await;
                 contact
                     .cut_us
                     .store(start.elapsed().as_micros() as u64, Ordering::Relaxed);
+                contact.up.store(false, Ordering::Release);
             });
         }
         self.connect(2, 0).await;
@@ -238,17 +268,27 @@ impl Bench {
         let mut previous = Value::Null;
         let mut previous_start = 0;
         let mut saw_announcement = false;
+        let mut saw_deferred_update = false;
+        let mut last_announces = [None; 2];
+        let mut link_epochs = [const { None }; 2];
+        let mut adopted = None;
         let until = start + Duration::from_secs(6);
-        let adopted = loop {
+        let ready = loop {
             let before = start.elapsed().as_micros() as u64;
             let state = self.state(2, 0).await;
+            let other = if case == Case::Bidirectional {
+                Some(self.state(0, 2).await)
+            } else {
+                None
+            };
             let after = start.elapsed().as_micros() as u64;
-            if state != previous {
+            let observation = json!({"child": state, "parent": other});
+            if observation != previous {
                 eprintln!(
                     "first link RTT {}",
-                    json!({"phase_ms": phase_ms, "cut": cut, "change_bracket_us": [previous_start, after], "query_us": [before, after], "state": state})
+                    json!({"phase_ms": phase_ms, "case": format!("{case:?}"), "change_bracket_us": [previous_start, after], "query_us": [before, after], "state": observation})
                 );
-                previous = state.clone();
+                previous = observation;
             }
             previous_start = before;
             saw_announcement |= state["remote_root"] == new_root;
@@ -261,7 +301,53 @@ impl Bench {
             if state["root"] == new_root {
                 assert!(state["srtt_ms"].as_f64().is_some_and(|v| v > 0.0));
                 assert!(saw_announcement);
-                break start.elapsed();
+                adopted.get_or_insert(start.elapsed());
+                if other.is_none() {
+                    break start.elapsed();
+                }
+            }
+            if let Some(other) = &other {
+                for (index, current) in [&state, other].into_iter().enumerate() {
+                    if let Some(sent) = current["last_announce_ms"]
+                        .as_u64()
+                        .filter(|&sent| sent > 0)
+                    {
+                        if let Some(previous) = last_announces[index] {
+                            assert!(
+                                sent == previous || sent >= previous + 500,
+                                "per-peer announcement rate limit"
+                            );
+                        }
+                        last_announces[index] = Some(sent);
+                    }
+                    if !current["link"].is_null() {
+                        let epoch = json!([current["link"], current["authenticated_at_ms"]]);
+                        assert_eq!(
+                            *link_epochs[index].get_or_insert(epoch.clone()),
+                            epoch,
+                            "contact changed authenticated link"
+                        );
+                    }
+                }
+                saw_deferred_update |= state["root"] == new_root
+                    && state["announce_pending"] == true
+                    && state["rate_limited"].as_u64().unwrap()
+                        > original["rate_limited"].as_u64().unwrap()
+                    && !Self::learned(other, &state);
+                if adopted.is_some() && Self::learned(other, &state) && Self::learned(&state, other)
+                {
+                    break start.elapsed();
+                }
+                if !self.contact.up.load(Ordering::Acquire) {
+                    let cut_us = self.checked_cut_us(case.contact_ms().unwrap());
+                    assert!(
+                        saw_deferred_update,
+                        "missing rate-limited update premise: {state}; {other}"
+                    );
+                    panic!(
+                        "contact ended at {cut_us}us before both routes were learned: {state}; {other}"
+                    );
+                }
             }
             assert!(
                 Instant::now() < until,
@@ -269,28 +355,33 @@ impl Bench {
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
+        let adopted = adopted.unwrap();
         let retained = self.state(2, 1).await;
         assert_eq!(retained["link"], original["link"]);
         assert_eq!(
             retained["authenticated_at_ms"],
             original["authenticated_at_ms"]
         );
-        eprintln!("first link RTT phase={phase_ms} cut={cut} adopted={adopted:?}");
+        eprintln!(
+            "first link RTT phase={phase_ms} case={case:?} adopted={adopted:?} ready={ready:?}"
+        );
         assert!(
             adopted < Duration::from_millis(750),
             "new root waited for coarse maintenance: {adopted:?}"
         );
-        if cut {
+        if let Some(contact_ms) = case.contact_ms() {
             tokio::time::sleep_until(start + Duration::from_millis(1500)).await;
-            let cut_us = self.contact.cut_us.load(Ordering::Relaxed);
+            let cut_us = self.checked_cut_us(contact_ms);
             assert!(
-                (450_000..600_000).contains(&cut_us),
-                "actual contact duration {cut_us}us"
+                ready.as_micros() < u128::from(cut_us),
+                "route readiness after contact ended"
             );
-            assert!(
-                adopted.as_micros() < u128::from(cut_us),
-                "adoption after contact ended"
-            );
+            if case == Case::Bidirectional {
+                assert!(
+                    saw_deferred_update,
+                    "exercise must defer an updated child declaration"
+                );
+            }
             assert!(
                 self.contact.dropped.load(Ordering::Relaxed) > 0,
                 "carrier cut must discard real traffic"
@@ -303,6 +394,22 @@ impl Bench {
                 self.contact.dropped.load(Ordering::Relaxed)
             );
         }
+    }
+
+    fn checked_cut_us(&self, contact_ms: u64) -> u64 {
+        let cut_us = self.contact.cut_us.load(Ordering::Relaxed);
+        assert!(
+            ((contact_ms - 50) * 1000..(contact_ms + 100) * 1000).contains(&cut_us),
+            "actual contact duration {cut_us}us"
+        );
+        cut_us
+    }
+
+    fn learned(observer: &Value, remote: &Value) -> bool {
+        observer["remote_root"] == remote["root"]
+            && observer["remote_parent"] == remote["parent"]
+            && observer["remote_sequence"] == remote["sequence"]
+            && observer["remote_coords"] == remote["coords"]
     }
 
     async fn stop(&mut self) {

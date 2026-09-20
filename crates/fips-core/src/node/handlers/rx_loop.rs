@@ -339,6 +339,21 @@ impl Node {
                         warn!("Link MMP report send timed out; continuing packet processing");
                     }
                 }
+                _ = wait_for_optional_epoch_deadline(self.pending_tree_announce_deadline_ms()) => {
+                    let (completed, drained) = self.run_rx_loop_tree_announce_turn(
+                        &mut dataplane_runtime.io(),
+                    ).await;
+                    if drained.has_data_drained() {
+                        maintenance_state.record_data_activity(Instant::now());
+                    }
+                    if !completed {
+                        crate::perf_profile::record_event(
+                            crate::perf_profile::Event::RxLoopSlowMaintenanceTimeout,
+                        );
+                        self.mark_rx_loop_maintenance_timeout();
+                        warn!("Pending tree announcement send timed out; continuing packet processing");
+                    }
+                }
                 // Discovery receives an explicitly rate-limited fair turn:
                 // lifecycle control stays reserved, while hot discovery can
                 // delay dataplane work by at most one timeboxed turn per gap.
@@ -501,6 +516,23 @@ impl Node {
         let completed = rx_loop_fast_maintenance_within_budget(self.check_mmp_reports()).await;
         // A successful slow batch can leave the next report already overdue.
         // Give queued data a bounded turn before another reserved report turn.
+        let drained = self
+            .drain_rx_loop_data_queues(io, PACKET_DRAIN_BUDGET)
+            .await;
+        (completed, drained)
+    }
+
+    async fn run_rx_loop_tree_announce_turn(
+        &mut self,
+        io: &mut RxLoopDataplaneIo<'_>,
+    ) -> (bool, RxLoopDataDrainStats) {
+        let completed =
+            rx_loop_fast_maintenance_within_budget(self.send_pending_tree_announces()).await;
+        if !completed {
+            // Cancellation leaves the original pending flags intact. A due
+            // hint must not cause repeated slow sends ahead of packet work.
+            self.defer_tree_announce_retry();
+        }
         let drained = self
             .drain_rx_loop_data_queues(io, PACKET_DRAIN_BUDGET)
             .await;
@@ -855,6 +887,22 @@ async fn wait_for_optional_deadline(deadline: Option<Instant>, not_before: Insta
         Some(due) => {
             tokio::time::sleep_until(tokio::time::Instant::from_std(due.max(not_before))).await
         }
+        None => std::future::pending().await,
+    }
+}
+
+async fn wait_for_optional_epoch_deadline(deadline_ms: Option<u64>) {
+    let Some(due) = deadline_ms else {
+        return std::future::pending().await;
+    };
+    let remaining = due.saturating_sub(crate::time::now_ms());
+    if remaining == 0 {
+        return;
+    }
+    // Tree rate limiting uses epoch milliseconds, including the simulation
+    // clock. This wake is advisory; dispatch rechecks that same clock.
+    match tokio::time::Instant::now().checked_add(Duration::from_millis(remaining)) {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
         None => std::future::pending().await,
     }
 }

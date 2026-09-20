@@ -11,7 +11,55 @@ use crate::protocol::TreeAnnounce;
 use super::{Node, NodeError};
 use tracing::{debug, info, trace, warn};
 
+#[cfg(test)]
+mod deadlines;
+
 impl Node {
+    pub(in crate::node) fn pending_tree_announce_deadline_ms(&self) -> Option<u64> {
+        self.pending_tree_announce_deadline_ms
+            .map(|due| due.max(self.tree_announce_retry_at_ms))
+    }
+
+    fn note_pending_tree_announce(&mut self, due: Option<u64>) {
+        if let Some(due) = due {
+            self.pending_tree_announce_deadline_ms = Some(
+                self.pending_tree_announce_deadline_ms
+                    .map_or(due, |old| old.min(due)),
+            );
+        }
+    }
+
+    pub(in crate::node) fn mark_tree_announce_pending(&mut self, addr: &NodeAddr) {
+        let now_ms = Self::now_ms();
+        let due = self.peers.get_mut(addr).and_then(|peer| {
+            peer.mark_tree_announce_pending();
+            peer.pending_tree_announce_due_ms(now_ms)
+        });
+        self.note_pending_tree_announce(due);
+    }
+
+    pub(in crate::node) fn mark_all_tree_announces_pending(&mut self) {
+        let now_ms = Self::now_ms();
+        let mut due = None;
+        for peer in self.peers.values_mut() {
+            peer.mark_tree_announce_pending();
+            if let Some(next) = peer.pending_tree_announce_due_ms(now_ms) {
+                due = Some(due.map_or(next, |old: u64| old.min(next)));
+            }
+        }
+        self.note_pending_tree_announce(due);
+    }
+
+    pub(in crate::node) fn defer_tree_announce_retry(&mut self) {
+        self.tree_announce_retry_at_ms = Self::now_ms().saturating_add(
+            self.config
+                .node
+                .tick_interval_secs
+                .saturating_mul(1000)
+                .max(1),
+        );
+    }
+
     /// Build a TreeAnnounce from our current tree state.
     pub(super) fn build_tree_announce(&self) -> Result<TreeAnnounce, NodeError> {
         let decl = self.tree_state.my_declaration().clone();
@@ -30,7 +78,7 @@ impl Node {
     /// Send a TreeAnnounce to a specific peer, respecting rate limits.
     ///
     /// If the peer is rate-limited, the announce is marked pending for
-    /// delivery on the next tick cycle.
+    /// delivery when that peer's rate-limit interval expires.
     pub(super) async fn send_tree_announce_to_peer(
         &mut self,
         peer_addr: &NodeAddr,
@@ -44,7 +92,7 @@ impl Node {
         };
 
         if !peer.can_send_tree_announce(now_ms) {
-            peer.mark_tree_announce_pending();
+            self.mark_tree_announce_pending(peer_addr);
             self.stats_mut().tree.rate_limited += 1;
             debug!(
                 peer = %self.peer_display_name(peer_addr),
@@ -100,6 +148,19 @@ impl Node {
     /// Refresh independently of parent selection: a successful datagram send
     /// does not prove delivery, and a node with one peer still needs repair.
     pub(super) async fn send_due_tree_announces(&mut self) {
+        // Preserve the existing periodic repair attempt even when the fast
+        // pending path is backing off after a failure.
+        self.dispatch_tree_announces(true).await;
+    }
+
+    /// Flush deferred updates without advancing periodic refresh or re-evaluation.
+    pub(in crate::node) async fn send_pending_tree_announces(&mut self) {
+        if Self::now_ms() >= self.tree_announce_retry_at_ms {
+            self.dispatch_tree_announces(false).await;
+        }
+    }
+
+    async fn dispatch_tree_announces(&mut self, periodic: bool) {
         let now_ms = Self::now_ms();
         let refresh_ms = self
             .config
@@ -112,7 +173,8 @@ impl Node {
             .peers
             .iter()
             .filter(|(_, peer)| {
-                let refresh_due = refresh_ms > 0
+                let refresh_due = periodic
+                    && refresh_ms > 0
                     && now_ms.saturating_sub(peer.last_tree_announce_sent_ms()) >= refresh_ms;
                 (peer.has_pending_tree_announce() || refresh_due)
                     && peer.can_send_tree_announce(now_ms)
@@ -122,6 +184,7 @@ impl Node {
 
         for peer_addr in ready {
             if let Err(e) = self.send_tree_announce_to_peer(&peer_addr).await {
+                self.defer_tree_announce_retry();
                 debug!(
                     peer = %self.peer_display_name(&peer_addr),
                     error = %e,
@@ -129,6 +192,16 @@ impl Node {
                 );
             }
         }
+
+        // Successful sends, peer replacement/removal, and wall-clock changes
+        // can invalidate a conservative hint. Only retained pending work arms
+        // another deadline; periodic repair remains on maintenance ticks.
+        let now_ms = Self::now_ms();
+        self.pending_tree_announce_deadline_ms = self
+            .peers
+            .values()
+            .filter_map(|peer| peer.pending_tree_announce_due_ms(now_ms))
+            .min();
     }
 
     /// Handle an inbound TreeAnnounce from an authenticated peer.

@@ -45,6 +45,43 @@ fn test_active_peer_creation() {
 }
 
 #[test]
+fn pending_tree_deadline_preserves_epoch_rate_limit_and_replacement() {
+    let identity = make_peer_identity();
+    let mut peer = ActivePeer::new(identity, LinkId::new(1), 1_000);
+    peer.set_tree_announce_min_interval_ms(500);
+    assert_eq!(peer.pending_tree_announce_due_ms(1_000), None);
+    peer.record_tree_announce_sent(1_000);
+    peer.mark_tree_announce_pending();
+    assert_eq!(peer.pending_tree_announce_due_ms(1_499), Some(1_500));
+    assert!(!peer.can_send_tree_announce(1_499));
+    assert!(peer.can_send_tree_announce(1_500));
+    assert_eq!(peer.pending_tree_announce_due_ms(1_500), Some(1_500));
+    assert_eq!(peer.pending_tree_announce_due_ms(900), Some(1_500));
+    assert_eq!(peer.pending_tree_announce_due_ms(2_000), Some(2_000));
+
+    let mut replacement = ActivePeer::new(identity, LinkId::new(2), 1_200);
+    replacement.set_tree_announce_min_interval_ms(500);
+    replacement.set_last_tree_announce_sent_ms(peer.last_tree_announce_sent_ms());
+    replacement.mark_tree_announce_pending();
+    assert_eq!(replacement.pending_tree_announce_due_ms(1_200), Some(1_500));
+    replacement.record_tree_announce_sent(1_500);
+    assert_eq!(replacement.pending_tree_announce_due_ms(2_000), None);
+}
+
+#[test]
+fn pending_tree_deadline_handles_zero_interval_and_epoch_overflow() {
+    let mut peer = ActivePeer::new(make_peer_identity(), LinkId::new(1), 1_000);
+    peer.set_last_tree_announce_sent_ms(u64::MAX);
+    peer.mark_tree_announce_pending();
+    peer.set_tree_announce_min_interval_ms(500);
+    assert!(!peer.can_send_tree_announce(u64::MAX));
+    assert_eq!(peer.pending_tree_announce_due_ms(u64::MAX), None);
+    peer.set_tree_announce_min_interval_ms(0);
+    assert!(peer.can_send_tree_announce(1_000));
+    assert_eq!(peer.pending_tree_announce_due_ms(1_000), Some(1_000));
+}
+
+#[test]
 fn test_connectivity_transitions() {
     let identity = make_peer_identity();
     let mut peer = ActivePeer::new(identity, LinkId::new(1), 1000);

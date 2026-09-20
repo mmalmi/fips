@@ -852,6 +852,20 @@ impl ActivePeer {
         self.pending_tree_announce
     }
 
+    /// Earliest epoch time for an already-deferred announcement. This is only
+    /// a wake hint; the send path rechecks the rate limit against current time.
+    pub(crate) fn pending_tree_announce_due_ms(&self, now_ms: u64) -> Option<u64> {
+        if !self.pending_tree_announce {
+            return None;
+        }
+        if self.can_send_tree_announce(now_ms) {
+            Some(now_ms)
+        } else {
+            self.last_tree_announce_sent_ms
+                .checked_add(self.tree_announce_min_interval_ms)
+        }
+    }
+
     // === Filter Updates ===
 
     /// Update peer's inbound filter.

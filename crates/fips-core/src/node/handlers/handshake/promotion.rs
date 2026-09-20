@@ -458,9 +458,7 @@ impl Node {
         self.handle_peer_removal_tree_cleanup(peer);
         self.coord_cache.invalidate_via_node(peer);
         self.bloom_state.remove_peer_state(peer);
-        for active in self.peers.values_mut() {
-            active.mark_tree_announce_pending();
-        }
+        self.mark_all_tree_announces_pending();
         self.bloom_state
             .mark_all_updates_needed(self.peers.keys().copied());
     }

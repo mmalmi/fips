@@ -431,6 +431,10 @@ pub struct Node {
     // === Periodic Parent Re-evaluation ===
     /// Timestamp of last periodic parent re-evaluation (for pacing).
     last_parent_reeval: Option<crate::time::Instant>,
+    /// Conservative earliest rate-limit deadline of an already-pending announce.
+    pending_tree_announce_deadline_ms: Option<u64>,
+    /// Fast retries after failure wait one tick; periodic maintenance is unchanged.
+    tree_announce_retry_at_ms: u64,
 
     // === Congestion Logging ===
     /// Timestamp of last congestion detection log (rate-limited to 5s).

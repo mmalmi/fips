@@ -220,6 +220,8 @@ pub fn show_peers(node: &Node) -> Value {
                 "has_tree_position": peer.has_tree_position(),
                 "has_bloom_filter": peer.filter_sequence() > 0,
                 "filter_sequence": peer.filter_sequence(),
+                "tree_announce_pending": peer.has_pending_tree_announce(),
+                "last_tree_announce_sent_ms": peer.last_tree_announce_sent_ms(),
                 "is_parent": is_parent,
                 "is_child": is_child,
             });
@@ -403,6 +405,10 @@ pub fn show_tree(node: &Node) -> Value {
                 peer_json["root"] = json!(hex::encode(coords.root_id().as_bytes()));
                 peer_json["coords"] = json!(coord_path);
                 peer_json["distance_to_us"] = json!(my_coords.distance_to(coords));
+            }
+            if let Some(declaration) = tree.peer_declaration(peer_id) {
+                peer_json["declaration_sequence"] = json!(declaration.sequence());
+                peer_json["parent"] = json!(hex::encode(declaration.parent_id().as_bytes()));
             }
             peer_json
         })

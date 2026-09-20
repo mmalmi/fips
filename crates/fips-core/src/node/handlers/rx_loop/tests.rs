@@ -6,7 +6,10 @@ use super::budget::{
 use super::drain::{
     RxLoopDataDrainStats, RxLoopMaintenancePlan, RxLoopMaintenanceState, SingleLaneDrainCursor,
 };
-use super::{rx_loop_fast_maintenance_within_budget, wait_for_optional_deadline};
+use super::{
+    rx_loop_fast_maintenance_within_budget, wait_for_optional_deadline,
+    wait_for_optional_epoch_deadline,
+};
 use crate::control::protocol::Request;
 use std::time::{Duration, Instant};
 
@@ -29,6 +32,69 @@ async fn absent_report_deadline_never_creates_an_idle_wakeup() {
         .await
         .is_err()
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn pending_tree_wait_is_idle_without_work_and_immediate_when_due() {
+    let absent = wait_for_optional_epoch_deadline(None);
+    tokio::pin!(absent);
+    assert!(futures::poll!(&mut absent).is_pending());
+    let due = wait_for_optional_epoch_deadline(Some(crate::time::now_ms()));
+    tokio::pin!(due);
+    assert!(futures::poll!(&mut due).is_ready());
+    let later = wait_for_optional_epoch_deadline(Some(crate::time::now_ms() + 60_000));
+    tokio::pin!(later);
+    assert!(futures::poll!(&mut later).is_pending());
+    tokio::time::advance(Duration::from_secs(61)).await;
+    later.await;
+    assert!(futures::poll!(&mut absent).is_pending());
+}
+
+#[tokio::test]
+async fn failed_pending_tree_turn_still_drains_bounded_data() {
+    use crate::transport::{LinkId, PacketBuffer, ReceivedPacket, TransportAddr, TransportId};
+    use crate::{ActivePeer, Identity, PeerIdentity};
+    let mut node = crate::node::Node::new(crate::config::Config::new()).unwrap();
+    let identity = Identity::generate();
+    let peer = PeerIdentity::from_pubkey(identity.pubkey());
+    let addr = *peer.node_addr();
+    node.peers
+        .insert(addr, ActivePeer::new(peer, LinkId::new(1), 0));
+    node.mark_tree_announce_pending(&addr);
+    let (packet_tx, mut packet_rx) = crate::transport::packet_channel(PACKET_DRAIN_BUDGET + 1);
+    for _ in 0..=PACKET_DRAIN_BUDGET {
+        packet_tx
+            .send(ReceivedPacket::with_timestamp(
+                TransportId::new(7),
+                TransportAddr::from_string("127.0.0.1:9000"),
+                PacketBuffer::new(vec![0]),
+                123_456,
+            ))
+            .unwrap();
+    }
+    let (_endpoint_tx, mut endpoint_rx) = crate::node::endpoint_data_batch_channel(1);
+    let (_tun_tx, mut tun_rx) = crate::upper::tun::tun_outbound_channel(1);
+    let (_fast_tx, mut fast_rx) = tokio::sync::mpsc::channel(1);
+    let endpoint_io = node.attach_endpoint_data_io(1).unwrap();
+    let mut io = super::rx_loop_dataplane_io(
+        &mut packet_rx,
+        &mut fast_rx,
+        &mut endpoint_rx,
+        &mut tun_rx,
+        &endpoint_io.event_tx,
+    );
+    let (completed, drained) = node.run_rx_loop_tree_announce_turn(&mut io).await;
+    assert!(
+        completed,
+        "local carrier rejection completes without timeout"
+    );
+    assert_eq!(node.stats().tree.send_failed, 1);
+    assert!(node.peers.get(&addr).unwrap().has_pending_tree_announce());
+    assert!(node.pending_tree_announce_deadline_ms().unwrap() > crate::time::now_ms());
+    assert_eq!(drained.packets, PACKET_DRAIN_BUDGET);
+    assert!(drained.has_data_drained());
+    assert!(packet_rx.try_recv().is_ok());
+    assert!(packet_rx.try_recv().is_err());
 }
 
 #[tokio::test(start_paused = true)]

@@ -106,7 +106,7 @@ impl Node {
     ///
     /// Also handles tree state cleanup: if the removed peer was our parent,
     /// selects an alternative or becomes root, and marks remaining peers
-    /// for pending tree announce (delivered on next tick).
+    /// for pending tree announce (delivered within the per-peer rate limit).
     pub(in crate::node) fn remove_active_peer(&mut self, node_addr: &NodeAddr) {
         self.remove_active_peer_inner(node_addr, false);
     }
@@ -150,9 +150,7 @@ impl Node {
         // the edge after direct recovery.
         let tree_changed = self.handle_peer_removal_tree_cleanup(node_addr);
         if tree_changed {
-            for peer in self.peers.values_mut() {
-                peer.mark_tree_announce_pending();
-            }
+            self.mark_all_tree_announces_pending();
         }
         self.bloom_state.remove_peer_state(node_addr);
         let remaining_peers = self.peers.keys().copied().collect::<Vec<_>>();
@@ -267,10 +265,7 @@ impl Node {
         let tree_changed = self.handle_peer_removal_tree_cleanup(node_addr);
         if tree_changed {
             // Mark all remaining peers for pending tree announce.
-            // These will be sent on the next tick via check_tree_state().
-            for peer in self.peers.values_mut() {
-                peer.mark_tree_announce_pending();
-            }
+            self.mark_all_tree_announces_pending();
         }
 
         // Bloom filter cleanup: clear state for removed peer, mark all remaining peers
