@@ -49,11 +49,19 @@ so older readers cannot silently ignore the abandonment fences.
 
 This recovery remains conservative. Missing admissions, missing plans and
 unsubmitted `ProofsReserved` sends do not prove a terminal financial outcome.
-They keep their reservation. Current provider-wide ownership checks also retain
-funding when a stopped transit acceptance has no installed seller contract, or a
-refunded old trial is still pinned by a Watch or prepared route change. Those
-cleanup cases need dedicated regressions and fixes; do not remove their records
-or reset budgets to force progress.
+They keep their reservation. A stopped, expired upstream agreement can now retire
+without an installed seller contract if its verified seller channel already
+exists. The ordinary retirement transaction records zero usage, preserves channel
+terms and paid credit for settlement, and prevents delayed activation even after
+a clock rollback. Its `0x1000` journal flag prevents older readers from ignoring
+the saved retirement evidence. Four focused regressions, 269 relay library tests
+and nine retirement integration tests pass with this change.
+
+Earlier interruptions before that seller channel exists still retain their
+records. Transit purchase withdrawal and a four-daemon middle-relay interruption
+test remain separate work. Provider-wide ownership checks also retain funding
+when a refunded old trial is pinned by a Watch or prepared route change. Do not
+remove unresolved records or reset budgets to force progress.
 
 Refund recovery requires the wallet's durable original recovered amount, including
 on calls that import zero new coins. Peer settlement reports alone cannot release
