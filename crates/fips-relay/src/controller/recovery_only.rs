@@ -8,6 +8,8 @@ mod funded_expiry_state_tests;
 #[cfg(test)]
 mod funded_expiry_tests;
 #[cfg(test)]
+mod source_expiry_tests;
+#[cfg(test)]
 mod tests;
 mod transit_expiry;
 #[cfg(test)]

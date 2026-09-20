@@ -61,16 +61,32 @@ Ordinary upkeep now stops expired incoming agreements and withdraws expired
 purchases that have no live owner, including middle relays with no local Watch.
 Withdrawal and local forwarding closure hold the controller mutex; failure keeps
 the durable fence and suspends the store until reload reconciles it. Live incoming
-agreements, pending Watches and unfinished renewals or route changes retain their
-exact offer IDs. A fresh offer with a different ID does not pin the expired one.
+agreements and unfinished renewals or route changes retain their exact offer IDs.
+A fresh offer with a different ID does not pin the expired one.
 The existing recovery-only state preserves original funding and capital; this
 adds no wire messages or financial record format. Six focused regressions and all
 275 relay library tests pass, including reload after local closure failure.
 
+A pending source Watch no longer pins an exactly matching expired requested
+offer solely because the provider remains connected. The same expiry transaction
+clears that pending pointer and records withdrawal, preserving the Watch's pause,
+price ceiling and selected-trial accounting. Same-ID Watches with different terms
+and other live owners still block withdrawal. Four new journal regressions and all
+282 relay library tests pass, including rejection of delayed activation and
+durability after local closure failure.
+
+A real-mint, three-daemon regression holds a successful wallet-preparation reply
+through quote expiry, then loses the reply. Both adjacent daemons keep their
+original processes and native link IDs, with fresh bidirectional application data
+throughout. The original implementation retains the expired reservation; the fix
+automatically recovers the exact original send without replacement funding or
+administrative settlement. Before cleanup, spendable wallets contain 376 test
+sats and measured fees account for the remaining eight of 384 issued. This is
+local process evidence, not physical Wi-Fi or arbitrary mobility acceptance.
+
 Earlier interruptions before a verified seller channel exists still retain their
-records. A pending source Watch can still retain an expired purchase while its
-provider stays connected. Do not remove unresolved records or reset budgets to
-force progress.
+records. Unfinished route changes and renewals also require their own completion
+or withdrawal. Do not remove unresolved records or reset budgets to force progress.
 
 A retained trial or route-change record on a different funding intent no longer
 blocks recovery once its exact original channel has a validated terminal

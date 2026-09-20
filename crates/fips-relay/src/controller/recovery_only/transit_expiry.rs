@@ -1,4 +1,4 @@
-//! Expiry withdraws unowned purchases without requiring a local source Watch.
+//! Expiry withdraws unowned purchases and their exact expired source watches.
 use super::*;
 
 impl Controller {
@@ -11,10 +11,13 @@ impl Controller {
                     && i.contract.expires_unix > timestamp
                     && i.downstream.as_ref().is_some_and(|o| o.id == offer.id)
             })
-            && !j
-                .watched_routes
-                .values()
-                .any(|w| w.pending.as_ref().is_some_and(|o| o.id == offer.id))
+            && !j.watched_routes.values().any(|w| {
+                // A matching pending quote expires with this reservation. A
+                // same-id watch with different terms needs reconciliation first.
+                w.pending
+                    .as_ref()
+                    .is_some_and(|o| o.id == offer.id && o != offer)
+            })
             && !j.route_changes.values().any(|c| {
                 !c.is_finished(j)
                     && (c.offer.id == offer.id
@@ -63,7 +66,7 @@ impl Store {
             .filter(|(_, i)| i.phase != Phase::Stopped && i.contract.expires_unix <= timestamp)
             .map(|(id, _)| id.clone())
             .collect();
-        let offers: Vec<_> = self
+        let offers: std::collections::BTreeSet<_> = self
             .journal
             .requested
             .values()
@@ -82,6 +85,17 @@ impl Store {
             }
             if !offers.is_empty() {
                 j.version |= journal::RECOVERY_ONLY_VERSION;
+                for watch in j.watched_routes.values_mut() {
+                    if watch
+                        .pending
+                        .as_ref()
+                        .is_some_and(|o| offers.contains(&o.id))
+                    {
+                        // Keep the user's pause, price ceiling and selected
+                        // trial accounting while withdrawing only this quote.
+                        watch.pending = None;
+                    }
+                }
                 j.recovery_only.extend(offers);
             }
             Ok(())

@@ -82,7 +82,7 @@ async fn upkeep_fences_expired_transit_without_a_local_watch() {
 }
 
 #[tokio::test]
-async fn live_shared_transit_and_source_watch_keep_their_purchase() {
+async fn live_shared_transit_and_newer_source_terms_keep_their_purchase() {
     for source_watch in [false, true] {
         let root = tempfile::tempdir().unwrap();
         let (controller, incoming) = fixture(root.path(), Phase::Stopped, now().unwrap() - 1).await;
@@ -95,6 +95,10 @@ async fn live_shared_transit_and_source_watch_keep_their_purchase() {
         controller
             .change(move |j| {
                 if source_watch {
+                    // A newer same-id source quote is still live. Expiry must
+                    // not silently substitute the older retained terms for it.
+                    let mut offer = offer;
+                    offer.expires_unix = now()? + 30;
                     let watch = WatchedRoute {
                         destination: offer.destination.npub(),
                         max_rate_msat_per_kib: offer.price.msat,
