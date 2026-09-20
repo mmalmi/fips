@@ -377,7 +377,7 @@ impl Node {
     ) {
         match self.dataplane_outbound_session_state(&dest_addr) {
             OutboundSessionState::Established => {
-                if self.find_next_hop(&dest_addr).is_some()
+                if self.has_application_next_hop(&dest_addr)
                 {
                     match self
                         .send_dataplane_cached_tun_packet(&dest_addr, ipv6_packet.clone())
@@ -553,6 +553,11 @@ impl Node {
                 dest = %self.peer_display_name(dest_addr),
                 "Skipping pending packet flush because dataplane FSP owner is not registered"
             );
+            return;
+        }
+
+        if !self.dataplane_application_route_ready(dest_addr) {
+            self.maybe_initiate_path_recovery_lookup(dest_addr).await;
             return;
         }
 

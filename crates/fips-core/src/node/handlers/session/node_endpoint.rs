@@ -31,7 +31,7 @@ impl Node {
 
         match self.dataplane_outbound_session_state(&dest_addr) {
             OutboundSessionState::Established => {
-                let route_available = self.find_next_hop(&dest_addr).is_some();
+                let route_available = self.has_application_next_hop(&dest_addr);
                 if route_available && self.dataplane_has_fsp_owner(&dest_addr) {
                     if let Err(error) = self
                         .send_dataplane_cached_endpoint_payloads(&dest_addr, payloads)

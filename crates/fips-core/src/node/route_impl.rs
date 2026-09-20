@@ -11,6 +11,34 @@ pub(in crate::node) enum TransitNextHopPlan {
 impl Node {
     // === Routing ===
 
+    /// A known carrier still carries session/control repair while Tree-mode
+    /// application traffic waits for coordinates that transit peers can use.
+    pub(in crate::node) fn application_route_has_coordinates(
+        &self,
+        dest: &NodeAddr,
+        next_hop: NodeAddr,
+    ) -> bool {
+        next_hop == *dest
+            || self.config.node.routing.mode == crate::config::RoutingMode::ReplyLearned
+            || self
+                .coord_cache
+                .get(dest, Self::now_ms())
+                .is_some_and(|coords| {
+                    coords.node_addr() == dest && coords.root_id() == self.tree_state.root()
+                })
+    }
+
+    pub(in crate::node) fn has_application_next_hop(&mut self, dest: &NodeAddr) -> bool {
+        let next = self.find_next_hop(dest).map(|peer| *peer.node_addr());
+        next.is_some_and(|next| self.application_route_has_coordinates(dest, next))
+    }
+
+    pub(in crate::node) fn dataplane_application_route_ready(&self, dest: &NodeAddr) -> bool {
+        self.dataplane
+            .fsp_owner_next_hop(dest)
+            .is_some_and(|next| self.application_route_has_coordinates(dest, next))
+    }
+
     pub(in crate::node) fn cache_current_root_coords(
         &mut self,
         node_addr: NodeAddr,

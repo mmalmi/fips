@@ -15,6 +15,26 @@ use tracing::{debug, info, trace, warn};
 mod deadlines;
 
 impl Node {
+    pub(in crate::node) fn invalidate_tree_coordinates(&mut self) {
+        self.coord_cache.clear();
+        self.reset_discovery_backoff();
+        self.refresh_tree_application_routes();
+    }
+
+    pub(in crate::node) fn refresh_tree_application_routes(&mut self) {
+        if self.config.node.routing.mode != crate::config::RoutingMode::Tree {
+            return;
+        }
+        // Refresh the bounded established owner set, not one lookup per idle
+        // session. Missing application maps defer demand to normal discovery;
+        // ingress, control transport and the chosen carrier remain installed.
+        for dest in self.dataplane.fsp_owner_destinations() {
+            if self.dataplane.fsp_owner_next_hop(&dest) != Some(dest) {
+                self.refresh_dataplane_fsp_owner_routes_retaining_current(&dest);
+            }
+        }
+    }
+
     pub(in crate::node) fn pending_tree_announce_deadline_ms(&self) -> Option<u64> {
         self.pending_tree_announce_deadline_ms
             .map(|due| due.max(self.tree_announce_retry_at_ms))
@@ -275,6 +295,19 @@ impl Node {
             .tree_state
             .update_peer(announce.declaration.clone(), announce.ancestry.clone());
 
+        // Our previous response may have been lost even when this signed
+        // declaration is unchanged. Re-push within the existing peer rate limit
+        // without accepting stale routing state or starting same-root echoes.
+        if *announce.ancestry.root_id() > *self.tree_state.root()
+            && let Err(e) = self.send_tree_announce_to_peer(from).await
+        {
+            debug!(
+                peer = %self.peer_display_name(from),
+                error = %e,
+                "Failed to re-push TreeAnnounce on root disagreement"
+            );
+        }
+
         if !updated {
             self.stats_mut().tree.stale += 1;
             debug!(from = %self.peer_display_name(from), "TreeAnnounce not fresher than existing, ignored");
@@ -290,16 +323,6 @@ impl Node {
             root = %announce.ancestry.root_id(),
             "Processed TreeAnnounce"
         );
-
-        if *announce.ancestry.root_id() > *self.tree_state.root()
-            && let Err(e) = self.send_tree_announce_to_peer(from).await
-        {
-            debug!(
-                peer = %self.peer_display_name(from),
-                error = %e,
-                "Failed to re-push TreeAnnounce on root disagreement"
-            );
-        }
 
         // TreeAnnounce and FilterAnnounce are independent datagrams. If the
         // accepted declaration changes tree membership, recompute from the new
@@ -329,8 +352,7 @@ impl Node {
                 warn!(error = %e, "Failed to sign declaration after parent switch");
                 return;
             }
-            self.coord_cache.clear();
-            self.reset_discovery_backoff();
+            self.invalidate_tree_coordinates();
 
             self.stats_mut().tree.parent_switches += 1;
 
@@ -359,8 +381,7 @@ impl Node {
                 warn!(error = %e, "Failed to sign self-root declaration");
                 return;
             }
-            self.coord_cache.clear();
-            self.reset_discovery_backoff();
+            self.invalidate_tree_coordinates();
             self.stats_mut().tree.parent_switches += 1;
             info!(
                 new_root = %self.tree_state.root(),
@@ -387,8 +408,7 @@ impl Node {
                         warn!(error = %e, "Failed to sign declaration after loop detection");
                         return;
                     }
-                    self.coord_cache.clear();
-                    self.reset_discovery_backoff();
+                    self.invalidate_tree_coordinates();
                     self.send_tree_announce_to_all().await;
                     let all_peers: Vec<NodeAddr> = self.peers.keys().copied().collect();
                     self.bloom_state.mark_all_updates_needed(all_peers);
@@ -421,13 +441,11 @@ impl Node {
                 warn!(error = %e, "Failed to sign declaration after parent update");
                 return;
             }
-            self.coord_cache.clear();
-            self.reset_discovery_backoff();
-
             let new_addrs: Vec<NodeAddr> =
                 self.tree_state.my_coords().node_addrs().copied().collect();
 
             if old_addrs != new_addrs {
+                self.invalidate_tree_coordinates();
                 self.stats_mut().tree.ancestry_changed += 1;
                 info!(
                     parent = %self.peer_display_name(from),
@@ -490,8 +508,7 @@ impl Node {
                 warn!(error = %e, "Failed to sign declaration after periodic parent re-eval");
                 return;
             }
-            self.coord_cache.clear();
-            self.reset_discovery_backoff();
+            self.invalidate_tree_coordinates();
 
             self.stats_mut().tree.parent_switches += 1;
 
@@ -518,8 +535,7 @@ impl Node {
                 warn!(error = %e, "Failed to sign self-root declaration in periodic reeval");
                 return;
             }
-            self.coord_cache.clear();
-            self.reset_discovery_backoff();
+            self.invalidate_tree_coordinates();
             self.stats_mut().tree.parent_switches += 1;
             info!(
                 new_root = %self.tree_state.root(),
@@ -557,6 +573,7 @@ impl Node {
                 self.coord_cache.invalidate_via_node(&our_addr);
                 self.coord_cache
                     .invalidate_other_roots(self.tree_state.root());
+                self.refresh_tree_application_routes();
                 info!(
                     new_root = %self.tree_state.root(),
                     is_root = self.tree_state.is_root(),

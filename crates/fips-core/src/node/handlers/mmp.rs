@@ -202,6 +202,13 @@ impl Node {
             "Processed ReceiverReport"
         );
 
+        // A successful local bootstrap send can still be lost. Authenticated
+        // link feedback with no remote declaration re-arms the existing bounded
+        // announcement exchange instead of waiting for periodic repair.
+        if self.tree_state.peer_declaration(from).is_none() {
+            self.mark_tree_announce_pending(from);
+        }
+
         // First RTT sample — peer is now eligible for parent selection.
         // Trigger re-evaluation so the node doesn't wait for the next
         // periodic tick or TreeAnnounce.
@@ -216,8 +223,7 @@ impl Node {
                     warn!(error = %e, "Failed to sign declaration after first-RTT parent eval");
                     return;
                 }
-                self.coord_cache.clear();
-                self.reset_discovery_backoff();
+                self.invalidate_tree_coordinates();
                 self.stats_mut().tree.parent_switches += 1;
                 info!(
                     new_parent = %self.peer_display_name(&new_parent),
@@ -240,8 +246,7 @@ impl Node {
                     warn!(error = %e, "Failed to sign self-root declaration after first-RTT");
                     return;
                 }
-                self.coord_cache.clear();
-                self.reset_discovery_backoff();
+                self.invalidate_tree_coordinates();
                 self.stats_mut().tree.parent_switches += 1;
                 info!(
                     new_root = %self.tree_state.root(),

@@ -23,7 +23,17 @@ const COLD: &[(u64, bool)] = &[
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn brief_mesh_contacts_preserve_authority_and_recover_original_paid_routes() {
-    tokio::time::timeout(Duration::from_secs(480), exercise_brief())
+    run_brief(0, 123).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn brief_mesh_contacts_with_opposite_root_deliver_before_each_cut() {
+    run_brief(3, 124).await;
+}
+
+async fn run_brief(root_node: usize, seed: u64) {
+    eprintln!("brief scenario root_node={root_node} seed={seed}");
+    tokio::time::timeout(Duration::from_secs(480), exercise_brief(root_node, seed))
         .await
         .expect("brief paid mesh encounters and collection deadline");
 }
@@ -46,9 +56,45 @@ struct Event {
 
 #[derive(Default)]
 struct Cohort {
-    sent: [Vec<u64>; 2],
+    sent: [Vec<[u64; 2]>; 2],
     received: [BTreeMap<u8, u64>; 2],
     duplicates: [usize; 2],
+}
+
+#[derive(Debug, serde::Serialize)]
+struct ContactProgress {
+    warm: bool,
+    direction: usize,
+    window_us: [u64; 2],
+    offered_ids: Vec<u8>,
+    received_before_cut: BTreeMap<u8, u64>,
+}
+
+struct ContactResult {
+    last_up: Instant,
+    contacts: Vec<ContactProgress>,
+    duplicates: [usize; 2],
+}
+
+impl ContactResult {
+    fn assert_progress(&self) {
+        assert_eq!(self.duplicates, [0, 0]);
+        assert_eq!(
+            self.contacts.len(),
+            6,
+            "three finite contacts, both directions"
+        );
+        for contact in &self.contacts {
+            assert!(
+                !contact.offered_ids.is_empty(),
+                "no fresh offer: {contact:?}"
+            );
+            assert!(
+                !contact.received_before_cut.is_empty(),
+                "contact ended without fresh payload delivery: {contact:?}"
+            );
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -114,7 +160,7 @@ fn record(
         match result.received[direction].entry(bytes[0]) {
             std::collections::btree_map::Entry::Occupied(_) => result.duplicates[direction] += 1,
             std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(start.elapsed().as_millis() as u64);
+                entry.insert(start.elapsed().as_micros() as u64);
                 progress.received[direction].fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -145,8 +191,9 @@ async fn cohort(
                 for direction in 0..2 {
                     let mut payload = vec![tag + direction as u8; 256];
                     payload[0] = sent as u8;
+                    let before = start.elapsed().as_micros() as u64;
                     nodes[direction].send_datagram(peers[1 - direction], port, port, payload).await.unwrap();
-                    result.sent[direction].push(start.elapsed().as_millis() as u64);
+                    result.sent[direction].push([before, start.elapsed().as_micros() as u64]);
                     progress.sent[direction].fetch_add(1, Ordering::Relaxed);
                 }
                 sent += 1;
@@ -202,7 +249,7 @@ async fn interrupted(
     anchor: &[Account],
     warm: bool,
     clock: Option<Instant>,
-) -> Instant {
+) -> ContactResult {
     let nodes = [bench.nodes[0].clone(), bench.nodes[5].clone()];
     let peers = [bench.peers[0], bench.peers[5]];
     let (port, tag, count, schedule) = if warm {
@@ -294,7 +341,8 @@ async fn interrupted(
         for cut in events.windows(2).filter(|pair| !pair[0].up) {
             assert!(
                 sent.iter()
-                    .any(|&at| at >= cut[0].actual_ms && at < cut[1].actual_ms),
+                    .any(|span| span[0] >= cut[0].mutation_us[1]
+                        && span[1] < cut[1].mutation_us[0]),
                 "no direction {direction} workload inside cut {cut:?}"
             );
         }
@@ -310,7 +358,7 @@ async fn interrupted(
             "brief packet observations {}",
             serde_json::json!({
                 "warm": warm, "direction": direction, "cohort_start_us": cohort_start_us,
-                "send_completed_ms": sent, "receive_observed_ms": traffic.received[direction],
+                "send_bracket_us": sent, "receive_observed_us": traffic.received[direction],
             })
         );
     }
@@ -326,11 +374,63 @@ async fn interrupted(
             "network_drops_while_down_including_control": delta.packets_dropped_down,
         })
     );
+    let contacts = contact_progress(warm, &events, &traffic);
     let last = events.last().unwrap();
     assert!(last.up);
     // This timestamp observes the completed mutation at millisecond resolution.
     // Later elapsed time includes the remaining cohort and drain interval.
-    start + Duration::from_millis(last.actual_ms)
+    ContactResult {
+        last_up: start + Duration::from_millis(last.actual_ms),
+        contacts,
+        duplicates: traffic.duplicates,
+    }
+}
+
+fn contact_progress(warm: bool, events: &[Event], traffic: &Cohort) -> Vec<ContactProgress> {
+    let mut opened = warm.then_some(0);
+    let mut result = Vec::new();
+    for event in events {
+        if event.up {
+            opened = Some(event.mutation_us[1]);
+            continue;
+        }
+        let start = opened.take().expect("each cut ends an observed contact");
+        let end = event.mutation_us[0];
+        assert!(start < end);
+        for direction in 0..2 {
+            // Use the complete application submission span and observe the
+            // receive before the cut. This excludes queued pre-contact offers
+            // and packets delivered only after a later rejoin, without making
+            // claims about a packet's exact time on any intermediate carrier.
+            let offered_ids: Vec<_> = traffic.sent[direction]
+                .iter()
+                .enumerate()
+                .filter(|(_, span)| span[0] >= start && span[1] < end)
+                .map(|(id, _)| id as u8)
+                .collect();
+            let received_before_cut = offered_ids
+                .iter()
+                .filter_map(|id| {
+                    traffic.received[direction]
+                        .get(id)
+                        .and_then(|&at| (at >= start && at < end).then_some((*id, at)))
+                })
+                .collect();
+            let progress = ContactProgress {
+                warm,
+                direction,
+                window_us: [start, end],
+                offered_ids,
+                received_before_cut,
+            };
+            eprintln!(
+                "brief contact progress {}",
+                serde_json::to_string(&progress).unwrap()
+            );
+            result.push(progress);
+        }
+    }
+    result
 }
 
 async fn recovered(bench: &mut Bench, observer: &mut Observer, tag: u8) -> BTreeMap<String, u64> {
@@ -351,8 +451,8 @@ async fn recovered(bench: &mut Bench, observer: &mut Observer, tag: u8) -> BTree
     observer.during(payments(bench)).await
 }
 
-async fn exercise_brief() {
-    let mut bench = bench::start(0, Scenario::MergeSplit, 123).await;
+async fn exercise_brief(root_node: usize, seed: u64) {
+    let mut bench = bench::start(root_node, Scenario::MergeSplit, seed).await;
     let mut observer = Observer::new(&bench);
     converge(&bench, false, "brief independent components").await;
     for (source, destination) in [(0, 2), (5, 3)] {
@@ -380,7 +480,7 @@ async fn exercise_brief() {
     let warm_paid = recovered(&mut bench, &mut observer, 172).await;
     eprintln!(
         "brief warm: elapsed from recorded link-up observation to fresh bidirectional payloads and all-hop credit {:.3}s (includes cohort/drain/polling)",
-        warm_up.elapsed().as_secs_f64()
+        warm_up.last_up.elapsed().as_secs_f64()
     );
     for (channel, prior) in initial_paid {
         assert!(warm_paid[&channel] > prior);
@@ -426,7 +526,7 @@ async fn exercise_brief() {
     timing.finish().await;
     eprintln!(
         "brief cold: elapsed from recorded link-up observation to fresh bidirectional payloads and all-hop credit {:.3}s (includes cohort/drain/polling)",
-        cold_up.elapsed().as_secs_f64()
+        cold_up.last_up.elapsed().as_secs_f64()
     );
     for (channel, prior) in warm_paid {
         assert!(paid[&channel] > prior);
@@ -439,4 +539,8 @@ async fn exercise_brief() {
         observer.samples, observer.maxima
     );
     collect(bench, &anchor, &paid).await;
+    // Preserve full settlement and collection evidence even if a contact
+    // carried no useful traffic. Eventual recovery cannot satisfy this gate.
+    warm_up.assert_progress();
+    cold_up.assert_progress();
 }

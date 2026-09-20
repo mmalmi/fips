@@ -290,6 +290,13 @@ impl Node {
             });
         }
 
+        if !self.dataplane_application_route_ready(dest_addr) {
+            return Err(NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: "application route coordinates unavailable".into(),
+            });
+        }
+
         let turn = self
             .pump_dataplane_pending_outbound_firsts(
                 DataplaneLiveOutboundFirsts {
@@ -368,6 +375,13 @@ impl Node {
         // may still be empty when pending traffic retries. Refresh this slow
         // path from current routing evidence without displacing a healthy hop.
         self.refresh_dataplane_fsp_owner_routes_retaining_current(dest_addr);
+
+        if !self.dataplane_application_route_ready(dest_addr) {
+            return Err(NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: "application route coordinates unavailable".into(),
+            });
+        }
 
         let payload_count = payloads.len();
         // Pending session traffic waited outside dataplane while first-contact or

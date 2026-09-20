@@ -408,6 +408,15 @@ impl Node {
                 next_hop: Some(next_hop),
             };
         };
+        if !self.application_route_has_coordinates(node_addr, next_hop) {
+            return DataplaneFspOwnerRouteUpdate {
+                routes,
+                wrap,
+                path,
+                direct_path_mtu,
+                next_hop: Some(next_hop),
+            };
+        }
         let tun = DataplaneTunOutboundRoute::fsp_ipv6_shim(
             owner,
             generation,

@@ -86,7 +86,7 @@ impl Probe {
         if let Some(previous) = trace.last_round_us.replace(started) {
             trace.max_round_gap_us = trace.max_round_gap_us.max(started - previous);
         }
-        for (node, remote) in [(2, 3), (3, 2)] {
+        for (node, remote) in [(2, 3), (3, 2), (0, 1), (1, 2), (4, 3), (5, 4)] {
             let (span, peers) = self.native(node, "show_peers", origin).await;
             let peer = peers["peers"]
                 .as_array()
@@ -97,7 +97,23 @@ impl Probe {
             if let Some(peer) = peer {
                 state["srtt_ms"] = peer["mmp"]["srtt_ms"].clone();
             }
-            trace.record(node, "bridge", span, state);
+            let kind = if matches!(node, 2 | 3) {
+                "bridge"
+            } else {
+                "neighbor"
+            };
+            trace.record(node, kind, span, state);
+            let announcements: Vec<_> = peers["peers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|peer| {
+                    json!({"peer": self.node_index(&peer["node_addr"]),
+                    "pending": peer["tree_announce_pending"],
+                    "last_sent_ms": peer["last_tree_announce_sent_ms"]})
+                })
+                .collect();
+            trace.record(node, "announcements", span, json!(announcements));
 
             let (span, tree) = self.native(node, "show_tree", origin).await;
             let remote_tree = tree["peers"]
@@ -113,10 +129,40 @@ impl Probe {
                     "root": self.node_index(&tree["root"]),
                     "parent": self.node_index(&tree["parent"]),
                     "depth": tree["depth"], "sequence": tree["declaration_sequence"],
+                    "coords": tree["my_coords"].as_array().unwrap().iter()
+                        .map(|address| self.node_index(address)).collect::<Vec<_>>(),
                     "remote_root": remote_tree.and_then(|peer| self.node_index(&peer["root"])),
                     "remote_depth": remote_tree.map(|peer| &peer["depth"]),
+                    "remote_sequence": remote_tree.map(|peer| &peer["declaration_sequence"]),
                 }),
             );
+            let (span, routing) = self.native(node, "show_routing", origin).await;
+            trace.record(
+                node,
+                "forwarding",
+                span,
+                json!({
+                    "forwarding": routing["forwarding"], "errors": routing["error_signals"],
+                }),
+            );
+            let (span, cache) = self.native(node, "show_cache", origin).await;
+            let mut entries: Vec<_> = cache["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|entry| {
+                    let destination = self.node_index(&entry["node_addr"])?;
+                    matches!(destination, 0 | 5).then(|| {
+                        json!({
+                            "destination": destination,
+                            "coords": entry["coords"].as_array().unwrap().iter()
+                                .map(|address| self.node_index(address)).collect::<Vec<_>>(),
+                        })
+                    })
+                })
+                .collect();
+            entries.sort_by_key(|entry| entry["destination"].as_u64());
+            trace.record(node, "endpoint_coords", span, json!(entries));
         }
         for (node, remote) in [(0, 5), (5, 0)] {
             let (span, sessions) = self.native(node, "show_sessions", origin).await;

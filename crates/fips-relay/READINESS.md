@@ -1830,6 +1830,51 @@ All six node-deadline, two peer-deadline, 18 receive-loop, 17 spanning-tree and
 43 handshake tests pass, along with strict core/relay lint, formatting and the
 source-size gate. The matching routing fix still requires hardware acceptance.
 
+The paid brief-contact gate now distinguishes useful service during contact from
+eventual recovery. It records microsecond spans around application submission and
+the first observation of each unique received packet. Each finite contact must
+carry at least one fresh packet in each direction: the complete submission span
+and receive observation must fall after the up mutation completes and before the
+cut starts. Pre-contact queued packets and delivery after a later rejoin cannot
+satisfy this check. Financial settlement and collection finish before a missing
+contact-progress assertion is reported. The same finite workload runs with the
+combined tree root in either component; no retries, new purchases or manual
+recovery actions are added to obtain contact delivery.
+
+This gate exposed two recovery gaps. A local tree change cleared destination
+coordinates while established application routes could still dispatch through
+the chosen first hop. A native UDP regression reproduced loss of the original
+packet before coordinate repair. Application maps and slow endpoint/TUN sends
+now wait for usable current-tree coordinates, retaining session keys, ingress,
+control transport and the selected paid carrier. Demand uses existing bounded
+queues and signed discovery; no application replay or delivery receipt is added.
+Direct carriers and ReplyLearned routing keep their existing behavior. A signed
+parent refresh with the same address path preserves cached routes and backoff.
+
+A separate loss regression showed authenticated, measured neighbors missing each
+other's initial tree declarations until the five-second periodic refresh. Valid
+link feedback now re-arms the existing pending announcement when the remote
+declaration is absent. A repeated signed larger-root declaration also receives
+the existing rate-limited disagreement response even when its sequence is stale;
+the stale routing state remains rejected. Two real-UDP loss cases recover in
+900 and 522 ms while preserving authenticated edges and the 500-ms send interval.
+The periodic interval and wire messages are unchanged. Synchronized peers do not
+trigger this repair; an authenticated peer withholding its declaration can
+sustain announcements at the configured bounded rate.
+
+The combined paid run passes all 24 direction/contact checks across both root
+placements, including each first 400-ms cold contact. Warm cohorts deliver 40/64
+packets each way; cold cohorts deliver 19/32 and 24/32 with root 0, and 24/32 and
+19/32 with root 3. No duplicate is observed, original funding/channel identities
+and spending authority remain intact, and all 3,072 test sats are collected.
+Packets offered while disconnected remain part of these denominators. These
+bounded software cases establish useful service during the tested contacts, not
+arbitrary mobility, a general latency bound, or hardware acceptance of this fix.
+The final source passes all 160 session and 20 spanning-tree tests, both paid
+brief-contact scenarios, strict core/relay lint, formatting and the source-size
+gate. The dependency overrides and tested lock are fingerprinted for each gate;
+the portable workspace lock remains unchanged.
+
 A held-funding variant now covers a new encounter interrupted after the mint
 commits but before its response reaches the opening caller. The original run
 delivered 36 fresh payloads on an existing healthy route while its credited

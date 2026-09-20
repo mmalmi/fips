@@ -27,6 +27,7 @@ mod repair;
 mod snapshot;
 mod synthetic;
 mod topology;
+mod unchanged_refresh;
 
 pub(super) use drain::{
     drain_all_packets, process_available_packets, process_dataplane_packet, process_node_packets,

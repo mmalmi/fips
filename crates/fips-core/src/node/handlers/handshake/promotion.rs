@@ -457,6 +457,7 @@ impl Node {
         }
         self.handle_peer_removal_tree_cleanup(peer);
         self.coord_cache.invalidate_via_node(peer);
+        self.refresh_tree_application_routes();
         self.bloom_state.remove_peer_state(peer);
         self.mark_all_tree_announces_pending();
         self.bloom_state
