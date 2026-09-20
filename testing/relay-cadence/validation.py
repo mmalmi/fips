@@ -247,4 +247,8 @@ def post_gap_probes(data, enabled):
                         "read_elapsed_ms": (late_end - late_start) / 1_000_000,
                         "after_primary_ms": (late_start - end) / 1_000_000})
         previous_end = late_end
+    if results:
+        first_start = data["probes"][0]["receiver_observed_ns"][0]
+        if previous_end - first_start > (unsigned(data["offered_elapsed_ms"]) + 1) * 1_000_000:
+            raise ValueError("post-gap observation span exceeds the offered window")
     return results

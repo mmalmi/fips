@@ -148,6 +148,20 @@ class DiagnosticTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises((ValueError, KeyError)):
                 diagnose_rows(rows)
 
+    def test_post_gap_observations_must_fit_the_offered_window(self):
+        rows = self.post_gap_report()
+        last = workload(rows, "bursty")["probes"][-1]
+        last["receiver_observed_ns"] = [v + 3_600_000_000_000 for v in last["receiver_observed_ns"]]
+        last["post_gap_observation"]["observed_ns"] = [
+            v + 3_600_000_000_000 for v in last["post_gap_observation"]["observed_ns"]]
+        with self.assertRaisesRegex(ValueError, "offered window"):
+            diagnose_rows(rows)
+
+    def test_post_gap_diagnostic_cannot_hide_its_extra_work_in_markdown(self):
+        metadata, _, grouped = analyze_rows(self.post_gap_report())
+        with self.assertRaisesRegex(ValueError, "post-gap"):
+            markdown(metadata, grouped)
+
     def test_loss_diagnostic_emits_all_costs_but_fails_acceptance(self):
         rows = delivery_loss_report()
         with self.assertRaises(ValueError):

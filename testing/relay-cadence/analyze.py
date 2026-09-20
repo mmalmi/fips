@@ -346,6 +346,8 @@ def validated_rows(rows, pilot, delivery_rejections=None):
 def markdown(metadata, grouped):
     if metadata.get("pilot") is True:
         raise ValueError("pilot output is not a policy comparison; use JSON")
+    if metadata.get("post_gap_probes") is True:
+        raise ValueError("post-gap capture is a delivery diagnostic; use JSON")
     lines = ["# Cadence measurements", "", f"Optimized build: **{metadata['optimized']}**. Two opposite-order repetitions; five real service processes and three paid relays over loopback UDP.", "",
         "All costs below sum the five service processes. CPU is measured CPU time. Payment CPU covers synchronous signing, usage handling and balance update handling; it excludes scheduler, control-envelope serialization outside those spans, and transport CPU. Storage is logical relay journal I/O, excluding Cashu SQLite and physical writes. Record bytes exclude TCP/FIPS/carrier overhead. These are offered workloads, not maximum throughput.", "",
         "| Workload | Limit ms | Delivered / submitted | Payment CPU ms | All CPU ms | Updates | Payment records KiB | Payment journal writes | Mean delay ms |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
