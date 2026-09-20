@@ -190,6 +190,59 @@ async fn healthy_progress(bench: &mut Bench, channel: &str) -> bool {
     progressed
 }
 
+fn recovery_diagnostic(bench: &Bench, pending: &Pending) -> Value {
+    let saved = journal(bench, 2);
+    let watch = &saved["watched_routes"][bench.peers[5].npub()];
+    let fenced: Vec<_> = saved["recovery_only"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    // This reads the provider's retained offer, without fetching a quote. It
+    // proves retained identity, not which response its cache most recently sent.
+    let provider_retains_fenced = fenced
+        .iter()
+        .filter(|id| {
+            bench.services[3]
+                .quotes
+                .retained_offer(bench.peers[2], id)
+                .is_ok_and(|offer| {
+                    offer.provider == *bench.peers[3].node_addr()
+                        && offer.destination == bench.peers[5]
+                        && serde_json::to_value(offer).unwrap() == saved["requested"][**id]
+                })
+        })
+        .count();
+    let error = bench.controllers[2].last_error();
+    let error_kind = match error.as_deref() {
+        Some("route change paused") => "route change paused",
+        Some("purchase authorization expired or paused") => {
+            "purchase authorization expired or paused"
+        }
+        Some("provider channel is settling or closed") => "provider channel is settling or closed",
+        Some("pending route needs explicit replacement") => {
+            "pending route needs explicit replacement"
+        }
+        Some("selected provider is not connected") => "selected provider is not connected",
+        Some("no connected neighbor") => "no connected neighbor",
+        Some(_) => "other",
+        None => "none",
+    };
+    serde_json::json!({
+        "watch_present": watch.is_object(),
+        "watch_paused": watch["paused"].as_bool(),
+        "watch_pending": watch["pending"].is_object(),
+        "watch_pending_is_fenced": watch["pending"]["id"].as_str().is_some_and(|id| fenced.contains(&id)),
+        "requested_count": saved["requested"].as_object().map(|v| v.len()),
+        "recovery_only_count": fenced.len(),
+        "provider_retains_exact_fenced_offer_count": provider_retains_fenced,
+        "funding_count": saved["funding"].as_object().map(|v| v.len()),
+        "original_funding_restored": saved["funding"][&pending.id]["funded"].is_object(),
+        "last_error_kind": error_kind,
+    })
+}
+
 async fn exercise() {
     let (mut bench, proxy) = bench::start_with_mint_proxy(0, 121).await;
     converge(
@@ -280,7 +333,7 @@ async fn exercise() {
     );
     // A withdrawn offer may return an error; the one retained Watch must drive
     // recovery without another application purchase or new funding identity.
-    tokio::time::timeout(Duration::from_secs(60), async {
+    let recovery = tokio::time::timeout(Duration::from_secs(60), async {
         while !bench.controllers[2]
             .purchases()
             .await
@@ -294,8 +347,14 @@ async fn exercise() {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
-    .await
-    .expect("the original Watch must recover through discovered neighbors");
+    .await;
+    if recovery.is_err() {
+        eprintln!(
+            "pending encounter recovery timeout: {}",
+            recovery_diagnostic(&bench, &pending)
+        );
+    }
+    recovery.expect("the original Watch must recover through discovered neighbors");
     let restored_channel = pending
         .funded_channel(&journal(&bench, 2))
         .expect("the original funding operation must be restored");
