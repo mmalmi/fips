@@ -172,7 +172,7 @@ class LinkShellTests(unittest.TestCase):
     def test_shell_errors_and_interface_replacement_are_visible(self):
         self.tool("tc", "printf '%s' 'not supported'; exit 1")
         self.assertEqual(self.read()["qdisc"]["availability"], "error")
-        self.tool("iw", f"printf 8 > {shlex.quote(str(self.net / 'ifindex'))}; printf '%s' {shlex.quote(STATION)}")
+        self.tool("iw", f"printf '8\\n' > {shlex.quote(str(self.net / 'ifindex'))}; printf '%s' {shlex.quote(STATION)}")
         with self.assertRaisesRegex(ValueError, "interface changed"):
             self.read()
 
