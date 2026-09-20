@@ -1638,6 +1638,34 @@ sats settled and collected into the isolated collector wallet. Each settlement
 redeems at least the acknowledged payment; each wallet must equal its initial
 balance minus purchases plus that router's relay earnings before collection.
 
+The `merge_split::crowded` variant also passes (2026-09-20). After the first paid
+merge/split, eight unfunded, roster-free endpoints compete for the two spare
+bridge slots. Both local paid routes deliver fresh payloads and advance credited
+payments while native observations show the bridge slots full. When all competing
+neighbors depart, the original cross-component Watches recover automatically:
+the same eight directional channels advance without new funding, changed Watch
+authority or reset lifetime budgets. All 72 unique payloads arrive in 72 attempts
+across six finite bursts, and all 1,536 test sats reconcile and are collected.
+
+The six paying nodes have 340 observation rounds, with maxima of two peers, two
+pending connections, four links and three sessions per node. A simultaneous
+authenticated dial may temporarily retain an outbound link beside its inbound
+counterpart; the fixture bounds links by the configured link limit plus pending
+connections. After convergence it requires zero pending connections and exactly
+one link per peer. These are sampled resource/fullness checks, not continuous
+occupancy, newcomer fairness at capacity, radio airtime or physical mobility
+evidence. Candidate departure is explicit; healthy admitted peers keep their slots.
+
+The admission audit reproduced a fresh inbound identity bypassing connection/link
+limits when peer slots remained. The gate now applies before index/link allocation,
+preserving the authenticated simultaneous-dial exception. The crowded fixture then
+exposed rejected outbound promotions retaining orphan links and pending dial entries
+after the connection itself was consumed. Those entries now retire before physical
+carrier closure, preserving any healthy owner sharing that carrier. Focused real
+UDP regressions fail before these fixes; all 43 handshake tests, native discovery,
+strict core/relay lint and the source-size gate pass. The crowded regression checks
+final cleanup as well as delivery and financial conservation.
+
 A held-funding variant now covers a new encounter interrupted after the mint
 commits but before its response reaches the opening caller. The original run
 delivered 36 fresh payloads on an existing healthy route while its credited

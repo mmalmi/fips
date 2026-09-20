@@ -10,6 +10,8 @@ use tokio::{
     time::Instant,
 };
 
+#[path = "merge_split/crowded.rs"]
+mod crowded;
 #[path = "merge_split/pending_funding.rs"]
 mod pending_funding;
 
@@ -23,13 +25,16 @@ async fn independently_discovered_meshes_merge_split_and_reuse_paid_channels() {
 }
 
 async fn tree(bench: &Bench, node: usize) -> Value {
+    native_query(bench.root.path(), node, "show_tree").await
+}
+
+async fn native_query(root: &std::path::Path, node: usize, command: &str) -> Value {
     tokio::time::timeout(Duration::from_secs(3), async {
-        let mut socket =
-            tokio::net::UnixStream::connect(bench.root.path().join(format!("native-{node}.sock")))
-                .await
-                .unwrap();
+        let mut socket = tokio::net::UnixStream::connect(root.join(format!("native-{node}.sock")))
+            .await
+            .unwrap();
         socket
-            .write_all(b"{\"command\":\"show_tree\"}\n")
+            .write_all(format!("{{\"command\":\"{command}\"}}\n").as_bytes())
             .await
             .unwrap();
         let mut reply = String::new();
@@ -39,7 +44,7 @@ async fn tree(bench: &Bench, node: usize) -> Value {
         reply["data"].clone()
     })
     .await
-    .expect("native tree observation deadline")
+    .expect("native control observation deadline")
 }
 
 fn adjacent(a: usize, b: usize, merged: bool) -> bool {
