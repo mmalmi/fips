@@ -34,10 +34,11 @@ struct Progress {
     received: [AtomicU64; 2],
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 struct Event {
     planned_ms: u64,
     actual_ms: u64,
+    mutation_us: [u64; 2],
     up: bool,
     sent: [u64; 2],
     received: [u64; 2],
@@ -72,10 +73,13 @@ async fn flap(
     let mut events = Vec::new();
     for &(planned_ms, up) in schedule {
         tokio::time::sleep_until(start + Duration::from_millis(planned_ms)).await;
+        let before = start.elapsed().as_micros() as u64;
         network.set_link_up("2", "3", up);
+        let after = start.elapsed().as_micros() as u64;
         let event = Event {
             planned_ms,
-            actual_ms: start.elapsed().as_millis() as u64,
+            actual_ms: after / 1000,
+            mutation_us: [before, after],
             up,
             sent: std::array::from_fn(|i| progress.sent[i].load(Ordering::Relaxed)),
             received: std::array::from_fn(|i| progress.received[i].load(Ordering::Relaxed)),
@@ -107,13 +111,12 @@ fn record(
         assert_eq!(bytes.len(), 256);
         assert!(bytes[1..].iter().all(|&b| b == tag + direction as u8));
         assert!((bytes[0] as usize) < count);
-        if result.received[direction]
-            .insert(bytes[0], start.elapsed().as_millis() as u64)
-            .is_some()
-        {
-            result.duplicates[direction] += 1;
-        } else {
-            progress.received[direction].fetch_add(1, Ordering::Relaxed);
+        match result.received[direction].entry(bytes[0]) {
+            std::collections::btree_map::Entry::Occupied(_) => result.duplicates[direction] += 1,
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(start.elapsed().as_millis() as u64);
+                progress.received[direction].fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
 }
@@ -198,6 +201,7 @@ async fn interrupted(
     observer: &mut Observer,
     anchor: &[Account],
     warm: bool,
+    clock: Option<Instant>,
 ) -> Instant {
     let nodes = [bench.nodes[0].clone(), bench.nodes[5].clone()];
     let peers = [bench.peers[0], bench.peers[5]];
@@ -217,6 +221,7 @@ async fn interrupted(
     };
     let before = bench.network.stats();
     let start = Instant::now() + Duration::from_millis(250);
+    let cohort_start_us = start.duration_since(clock.unwrap_or(start)).as_micros() as u64;
     let progress = Arc::new(Progress::default());
     // JoinSet aborts both owned drivers if a surrounding assertion fails.
     let mut drivers = JoinSet::new();
@@ -280,6 +285,8 @@ async fn interrupted(
         assert!(events[0].received.iter().all(|&n| n > 0));
     }
     for event in &events {
+        assert!(event.mutation_us[0] <= event.mutation_us[1]);
+        assert_eq!(event.actual_ms, event.mutation_us[1] / 1000);
         assert!(event.sent.iter().all(|&n| n > 0 && n < count as u64));
     }
     for (direction, sent) in traffic.sent.iter().enumerate() {
@@ -299,6 +306,13 @@ async fn interrupted(
             traffic.received[direction].len(),
             traffic.duplicates[direction]
         );
+        eprintln!(
+            "brief packet observations {}",
+            serde_json::json!({
+                "warm": warm, "direction": direction, "cohort_start_us": cohort_start_us,
+                "send_completed_ms": sent, "receive_observed_ms": traffic.received[direction],
+            })
+        );
     }
     let delta = bench.network.stats().delta_since(&before);
     assert!(
@@ -306,8 +320,11 @@ async fn interrupted(
         "the carrier schedule must interrupt real network traffic"
     );
     eprintln!(
-        "brief warm={warm}: events={events:?}; aggregate network drops while down={} (includes control traffic)",
-        delta.packets_dropped_down
+        "brief carrier observations {}",
+        serde_json::json!({
+            "warm": warm, "cohort_start_us": cohort_start_us, "events": events,
+            "network_drops_while_down_including_control": delta.packets_dropped_down,
+        })
     );
     let last = events.last().unwrap();
     assert!(last.up);
@@ -359,7 +376,7 @@ async fn exercise_brief() {
     assert_watches(&bench).await;
     observer.settled().await;
     let original_bridge = bridge(&bench).await.unwrap();
-    let warm_up = interrupted(&bench, &mut observer, &anchor, true).await;
+    let warm_up = interrupted(&bench, &mut observer, &anchor, true, None).await;
     let warm_paid = recovered(&mut bench, &mut observer, 172).await;
     eprintln!(
         "brief warm: elapsed from recorded link-up observation to fresh bidirectional payloads and all-hop credit {:.3}s (includes cohort/drain/polling)",
@@ -376,8 +393,10 @@ async fn exercise_brief() {
     no_cross_delivery(&mut bench, 180).await;
     retain(&anchor, &accounts(&bench).await, true);
 
+    let timing = timing::Timing::start(&bench).await;
     let encounter_started = Instant::now();
     bench.network.set_link_up("2", "3", true);
+    timing.mark("initial_link_up_observed");
     let new_bridge = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if let Some(peers) = bridge(&bench).await {
@@ -391,6 +410,7 @@ async fn exercise_brief() {
     let observed = Instant::now();
     bench.network.set_link_up("2", "3", false);
     let observed_to_cut = observed.elapsed();
+    timing.mark("authenticated_bridge_cut_observed");
     assert!(observed_to_cut < Duration::from_millis(250));
     for direction in 0..2 {
         assert_ne!(new_bridge[direction].0, original_bridge[direction].0);
@@ -400,8 +420,10 @@ async fn exercise_brief() {
         encounter_started.elapsed().as_secs_f64(),
         observed_to_cut.as_micros()
     );
-    let cold_up = interrupted(&bench, &mut observer, &anchor, false).await;
+    let cold_up = interrupted(&bench, &mut observer, &anchor, false, Some(timing.origin)).await;
     let paid = recovered(&mut bench, &mut observer, 174).await;
+    timing.mark("fresh_bidirectional_payloads_and_all_hop_credit_observed");
+    timing.finish().await;
     eprintln!(
         "brief cold: elapsed from recorded link-up observation to fresh bidirectional payloads and all-hop credit {:.3}s (includes cohort/drain/polling)",
         cold_up.elapsed().as_secs_f64()

@@ -16,6 +16,9 @@ mod brief;
 mod observation;
 use observation::Observer;
 
+#[path = "merge_split/timing.rs"]
+mod timing;
+
 #[path = "merge_split/crowded.rs"]
 mod crowded;
 #[path = "merge_split/pending_funding.rs"]

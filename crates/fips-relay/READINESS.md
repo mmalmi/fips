@@ -1721,6 +1721,32 @@ connections and excess links drain. Exact wallet equations hold and all 1,536 te
 sats are collected. Prompt useful delivery during brief encounters, physical
 mobility and radio handover remain open; this change has not been deployed to routers.
 
+The brief-contact fixture now records bounded passive state observations every
+200 ms alongside structured carrier events and per-packet send/receive observations.
+Cold-contact queries and traffic share a clock; the warm cohort has its own clock.
+Each changed state carries the previous query's start and current query's end as
+a conservative transition bracket. These are application observations, not exact
+protocol or wire event times; sampling can miss intermediate changes and may itself
+affect timing. The contact schedule and its actual-duration guards are unchanged.
+
+In the final measured run, the returning bridge node learns the smaller root
+within 0.608–0.807 s of the cold observer's start. Its first measured RTT appears
+within 4.605–4.807 s, alongside root adoption; the first cold-cohort payload is
+observed at 4.941 s in both directions. Endpoint sessions remain established in
+the samples, with unchanged session epochs, Watches and eligible paid agreements.
+Eligible agreements do not identify the route actually used. An earlier instrumented
+run places first RTT and adoption in the same 4.605–4.807 s interval. This points to
+initial link measurement and parent eligibility as the next focused reproduction;
+it does not explain every missing packet or establish a controlled performance gain.
+
+The final run retains 40/64 warm and 13/32 cold packets per direction with no
+duplicates, passes the existing recovery/authority/accounting assertions and
+collects all 1,536 test sats. Its 80 observation rounds have a maximum query-round
+duration of 11.443 ms and maximum gap of 201.230 ms. Strict relay lint across all
+features/targets and the source-size gate pass. No production timing or payment
+policy changes accompany this instrumentation, and subsecond useful encounters
+still need a regression and hardware acceptance.
+
 A held-funding variant now covers a new encounter interrupted after the mint
 commits but before its response reaches the opening caller. The original run
 delivered 36 fresh payloads on an existing healthy route while its credited
