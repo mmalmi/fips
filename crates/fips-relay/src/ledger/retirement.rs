@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashSet;
 
 impl RelayLedger {
     /// Trusted maintenance after the controller has retained its retirement
@@ -9,8 +10,20 @@ impl RelayLedger {
         channel: &str,
         through_unix: u64,
     ) -> Result<usize, LedgerError> {
+        self.retire_closed_routes_with_uninstalled(channel, through_unix, &[])
+    }
+
+    pub(crate) fn retire_closed_routes_with_uninstalled(
+        &self,
+        channel: &str,
+        through_unix: u64,
+        uninstalled: &[Contract],
+    ) -> Result<usize, LedgerError> {
+        if uninstalled.len() > self.limits.max_contracts {
+            return Err(LedgerError::Capacity);
+        }
         let mut state = self.state.lock().unwrap();
-        let plan = state.retirement_plan(channel, through_unix)?;
+        let plan = state.retirement_plan_with_uninstalled(channel, through_unix, uninstalled)?;
         let count = plan.contracts.len();
         for contract in plan.contracts {
             state.accounts.remove(&contract.id);
@@ -30,6 +43,22 @@ impl RelayLedger {
             .retirement_plan(channel, through_unix)
     }
 
+    pub(crate) fn retirement_plan_with_uninstalled(
+        &self,
+        channel: &str,
+        through_unix: u64,
+        uninstalled: &[Contract],
+    ) -> Result<RouteRetirementPlan, LedgerError> {
+        if uninstalled.len() > self.limits.max_contracts {
+            return Err(LedgerError::Capacity);
+        }
+        self.state.lock().unwrap().retirement_plan_with_uninstalled(
+            channel,
+            through_unix,
+            uninstalled,
+        )
+    }
+
     pub fn retired_route_evidence(&self, channel: &str) -> Option<RetiredRouteEvidence> {
         Some(self.state.lock().ok()?.channels.get(channel)?.retired)
     }
@@ -41,6 +70,20 @@ impl State {
         channel: &str,
         through_unix: u64,
     ) -> Result<RouteRetirementPlan, LedgerError> {
+        self.retirement_plan_with_uninstalled(channel, through_unix, &[])
+    }
+
+    fn retirement_plan_with_uninstalled(
+        &self,
+        channel: &str,
+        through_unix: u64,
+        uninstalled: &[Contract],
+    ) -> Result<RouteRetirementPlan, LedgerError> {
+        let terms = &self
+            .channels
+            .get(channel)
+            .ok_or(LedgerError::UnknownContract)?
+            .terms;
         let before = self
             .channels
             .get(channel)
@@ -66,6 +109,28 @@ impl State {
                 .added(&a.contract, a.usage)
                 .ok_or(LedgerError::Capacity)?;
             plan.contracts.push(a.contract.clone());
+        }
+        let mut ids = HashSet::new();
+        for contract in uninstalled {
+            validate_contract(contract, terms)?;
+            if contract.channel_id != channel
+                || contract.expires_unix > through_unix
+                || contract.billing.is_legacy()
+                || !ids.insert(&contract.id)
+                || self.accounts.contains_key(&contract.id)
+            {
+                return Err(LedgerError::InvalidContract);
+            }
+            // A completed handoff is observed through its exact saved rollup by
+            // the controller. Never create an account or reset existing usage.
+            if before.rejects(contract.expires_unix) {
+                continue;
+            }
+            plan.after = plan
+                .after
+                .added(contract, Usage::default())
+                .ok_or(LedgerError::Capacity)?;
+            plan.contracts.push(contract.clone());
         }
         Ok(plan)
     }

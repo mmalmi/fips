@@ -30,6 +30,11 @@ pub(super) fn select(
         })
         .map(|(id, _)| id.clone())
         .collect();
+    let uninstalled: Vec<_> = incoming
+        .iter()
+        .filter(|id| seller.contract(id).is_none())
+        .map(|id| j.incoming[id].contract.clone())
+        .collect();
     loop {
         let before = outgoing.len() + incoming.len();
         for c in j.route_changes.values() {
@@ -77,12 +82,26 @@ pub(super) fn select(
         let selling = prefixes(
             j.incoming.iter().map(|(id, i)| (id, &i.contract)),
             &mut incoming,
-            |id, cutoff| seller.retirement_plan(id, cutoff).ok(),
+            |id, cutoff| {
+                let missing: Vec<_> = uninstalled
+                    .iter()
+                    .filter(|c| c.channel_id == id && c.expires_unix <= cutoff)
+                    .cloned()
+                    .collect();
+                seller
+                    .retirement_plan_with_uninstalled(id, cutoff, &missing)
+                    .ok()
+            },
         );
         if outgoing.len() + incoming.len() == before {
             let plan = Retirement {
                 through_unix: timestamp,
                 buyer: buying,
+                never_installed: uninstalled
+                    .iter()
+                    .filter(|c| incoming.contains(&c.id))
+                    .cloned()
+                    .collect(),
                 seller: selling,
             };
             if plan.count() == 0 {

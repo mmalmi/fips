@@ -222,16 +222,12 @@ impl Controller {
         // Onward service is accepted before any upstream data receives credit.
         self.check_prepared_route(&incoming).await?;
         let seller = self.services.seller.clone();
-        let contract = incoming.contract.clone();
-        blocking(move || seller.add_contract(contract).map_err(|e| e.to_string())).await?;
-        let id = incoming.contract.id;
-        self.change(move |j| {
-            let entry = j.incoming.get_mut(&id).ok_or("acceptance intent missing")?;
-            if entry.phase == Phase::Stopped {
-                return Err("acceptance was stopped".into());
-            }
-            entry.phase = Phase::Active;
-            Ok(())
+        let store = self.store.clone();
+        blocking(move || {
+            store
+                .lock()
+                .map_err(|_| "controller state poisoned")?
+                .install_incoming_contract(&seller, &incoming, now()?)
         })
         .await
     }

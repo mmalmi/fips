@@ -159,7 +159,7 @@ enum Phase {
     Stopped,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Incoming {
     offer: RouteOffer,
     downstream: Option<RouteOffer>,

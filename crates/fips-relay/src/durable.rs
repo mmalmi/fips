@@ -226,6 +226,41 @@ impl DurableRelay {
             .map_err(Into::into)
     }
 
+    /// Trusted controller retirement of exact stopped agreements which never
+    /// became forwarding accounts. Their zero-usage replay floor is durable.
+    pub(crate) fn retire_closed_routes_with_uninstalled(
+        &self,
+        channel: &str,
+        through_unix: u64,
+        uninstalled: &[Contract],
+    ) -> Result<usize, DurableError> {
+        self.mutate(|l| l.retire_closed_routes_with_uninstalled(channel, through_unix, uninstalled))
+            .map(|(count, _)| count)
+    }
+
+    pub(crate) fn retirement_plan_with_uninstalled(
+        &self,
+        channel: &str,
+        through_unix: u64,
+        uninstalled: &[Contract],
+    ) -> Result<crate::ledger::RouteRetirementPlan, DurableError> {
+        if uninstalled.is_empty() {
+            return self.retirement_plan(channel, through_unix);
+        }
+        let _writer = self.writer.lock().map_err(|_| DurableError::Suspended)?;
+        if !self
+            .windows
+            .read()
+            .map_err(|_| DurableError::Suspended)?
+            .ready
+        {
+            return Err(DurableError::Suspended);
+        }
+        self.ledger
+            .retirement_plan_with_uninstalled(channel, through_unix, uninstalled)
+            .map_err(Into::into)
+    }
+
     pub fn retired_route_evidence(
         &self,
         channel: &str,

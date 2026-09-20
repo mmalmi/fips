@@ -3,6 +3,11 @@ use super::*;
 use crate::ledger::RouteRetirementPlan;
 use std::collections::BTreeSet;
 
+mod never_installed;
+#[cfg(test)]
+mod never_installed_regression;
+#[cfg(test)]
+mod never_installed_tests;
 mod selection;
 
 fn closed_purchase(j: &Journal, o: &Outgoing) -> bool {
@@ -32,6 +37,8 @@ struct Retirement {
     through_unix: u64,
     buyer: Vec<RouteRetirementPlan>,
     seller: Vec<RouteRetirementPlan>,
+    #[serde(default)]
+    never_installed: Vec<Contract>,
 }
 
 impl Retirement {
@@ -101,6 +108,7 @@ impl Retirement {
     }
 
     fn validate(&self, j: &Journal) -> Result<(), String> {
+        self.validate_uninstalled(j)?;
         if self.count() == 0 || self.buyer.len() > MAX_CHANNELS || self.seller.len() > MAX_CHANNELS
         {
             return Err("invalid retirement size".into());
@@ -280,6 +288,11 @@ impl Controller {
             }
         }
         if let Some(p) = &h.pending {
+            if !p.never_installed.is_empty()
+                && j.version & journal::UNINSTALLED_RETIREMENT_VERSION == 0
+            {
+                return Err("unsupported uninstalled retirement format".into());
+            }
             p.validate(j)?;
         }
         Ok(())
@@ -318,6 +331,9 @@ impl Store {
         };
         let mut candidate = self.journal.clone();
         candidate.advance_history_version(3);
+        if !plan.never_installed.is_empty() {
+            candidate.version |= journal::UNINSTALLED_RETIREMENT_VERSION;
+        }
         candidate
             .history
             .get_or_insert_with(History::default)
@@ -371,8 +387,9 @@ impl Store {
                 .map_err(|e| e.to_string())?;
         }
         for p in &plan.seller {
+            let uninstalled = plan.uninstalled_on(&p.channel);
             let current = seller
-                .retirement_plan(&p.channel, p.through_unix)
+                .retirement_plan_with_uninstalled(&p.channel, p.through_unix, &uninstalled)
                 .map_err(|e| e.to_string())?;
             if current.contracts.is_empty() && current.before == p.after {
                 continue;
@@ -381,7 +398,7 @@ impl Store {
                 return Err("seller retirement evidence changed".into());
             }
             seller
-                .retire_closed_routes(&p.channel, p.through_unix)
+                .retire_closed_routes_with_uninstalled(&p.channel, p.through_unix, &uninstalled)
                 .map_err(|e| e.to_string())?;
         }
         let mut candidate = self.journal.clone();
