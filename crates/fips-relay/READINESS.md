@@ -789,6 +789,12 @@ connection bytes are 7,317 per 8,000,000 delivered bytes at 500 ms and 4,878 at
 1 second; these exclude physical radio overhead. The 500-ms default is unchanged.
 See [the costs, loss evidence and attribution limits](CADENCE-RESULTS.md#payment-connection-costs-on-wi-fi--19-september-2026).
 
+A same-build 1-second diagnostic pilot reproduces one missing packet in the sixth
+burst; a supplemental same-stream snapshot after the quiet gap still lacks it.
+Strict acceptance remains rejected, with all funds collected and original router
+state restored. This narrows the timing evidence without locating the loss or
+validating newer native code. See the [supplemental observation and limits](CADENCE-RESULTS.md#supplemental-burst-observation--20-september-2026).
+
 ## Sequence and acceptance
 
 1. **Adaptive payment cadence.** Share one schedule per neighbor channel and

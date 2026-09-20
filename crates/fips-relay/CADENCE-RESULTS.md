@@ -358,6 +358,39 @@ cause of the missing packets. The 500-ms default remains unchanged. This rejecte
 matrix, two stable-topology repetitions and unmeasured hardware one-way latency
 do not establish an optimal policy, maximum capacity or seamless mobility.
 
+## Supplemental burst observation — 20 September 2026
+
+A fresh 1-second pilot reuses the exact `6024f980` relay and matching test mint
+above, with a separately verified newer harness. This investigates that historical
+build; it is not acceptance evidence for newer native code. The optional
+`--post-gap-probes` mode reads each burst's receiver once more after its existing
+800-ms quiet gap and before arming the next stream. Original delivery results
+remain unchanged, and no payload is resent.
+
+The pilot **fails strict acceptance at 11,711 of 11,712 packets**. The sixth burst
+delivers 63 of 64 packets, and the supplemental snapshot still reports 63. Its
+request starts 810.12 ms after the primary response returns and finishes another
+164.10 ms later. These controller intervals bracket receiver snapshots, not exact
+packet arrival times. All other bursts and all 11,200 steady/high-rate packets
+arrive. All eight supplemental reads report zero additional packets. Thus this
+reproduced deficit persists beyond the quiet gap; this does not locate the loss
+or retroactively explain the earlier failed matrix.
+
+The burst window has no payment activity, payment-service submissions, controller
+errors, native drop/error/congestion increments or new dataplane log bytes. The
+middle router's 534 received and 534 forwarded packets include control traffic
+and cannot identify the missing payload. Endpoint/kernel counter coverage remains
+incomplete, so zero counters do not prove delivery at those layers.
+
+All 384 test sats are collected, 264 management checks pass, and independent live
+reads match every original router field plus the fuller pretrial radio-limit
+snapshot. The mint and three forwarding processes are absent after cleanup.
+The harness passes 65 focused Linux tests and the analyzer passes 99, including
+late-arrival cases that preserve strict rejection. Eight extra status reads total
+1.475 seconds of controller wall time; their control work and added spacing make
+this a diagnostic capture, not a matched cost comparison with earlier runs. The
+500-ms production default and both failed measurement results remain unchanged.
+
 ## Reproduction and remaining evidence
 
 See the [experiment instructions](../../testing/relay-cadence/README.md) for fixed
