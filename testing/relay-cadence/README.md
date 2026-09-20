@@ -352,6 +352,15 @@ the 800-ms sleep, or where packets were delayed. An unchanged count only rules
 out arrival between those snapshots. Neither
 result explains a past capture that did not retain this observation.
 
+`--link-loss-counters` optionally captures the middle and destination mesh
+interfaces at the existing workload and guard boundaries. It retains interface
+and association identity, observation intervals, bounded station dumps, sysfs
+drop/error counters, and qdisc statistics when `tc` is already available. Missing
+counters and failed reads remain explicit, never inferred as zero. These raw
+interface, radio and qdisc counters overlap and include other traffic; do not add
+them together or treat their changes as proof of where a FIPS packet was lost.
+The extra reads add observation overhead; strict delivery acceptance is unchanged.
+
 ## Measurement boundaries
 
 Build the relay with the optional `measurements` feature. The private local
