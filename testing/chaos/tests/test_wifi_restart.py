@@ -159,6 +159,75 @@ class CrashShellTests(unittest.TestCase):
         self.assertEqual(child.wait(timeout=1), -9)
         self.assertEqual(self.retained(), before)
 
+    def observe_after_kill(self, child, mode):
+        """Keep real signaling/procfs, injecting only the named post-kill read race."""
+        signalled, reads = self.remote / "signals", self.remote / "post-kill-reads"
+        wrong_stat = self.remote / "reused-stat"
+        observed = self.observed(self.node, child)
+        fields = ["S", *(["0"] * 18),
+                  str(observed["host_process"]["start_ticks"] + 1), "0", "0"]
+        wrong_stat.write_text(f"{child.pid} (reused process) " + " ".join(fields))
+        prefix = f"""kill() {{
+  printf '%s\\n' "$*" >>{signalled}
+  command kill "$@"
+}}
+cat() {{
+  if test "$#" = 1 && test "$1" = /proc/{child.pid}/stat && test -f {signalled}; then
+    if test ! -f {reads}; then
+      printf '%s\\n' unreadable >>{reads}
+      return 1
+    fi
+    printf '%s\\n' {mode} >>{reads}
+    case {mode} in
+      unreadable) return 1;;
+      changed) command cat {wrong_stat}; return;;
+    esac
+  fi
+  command cat "$@"
+}}
+"""
+        original = self.node.guarded
+        def injected(command, **kwargs):
+            return original(prefix + command, **kwargs)
+        return observed, patch.object(self.node, "guarded", side_effect=injected), signalled, reads
+
+    def test_transient_post_kill_stat_failure_can_observe_same_epoch_zombie(self):
+        child = self.launch(self.node)
+        observed, injection, signals, reads = self.observe_after_kill(child, "valid")
+        before = self.retained()
+        with injection:
+            result = crash_profile(self.node, observed)
+        self.assertEqual(result["state"], "zombie")
+        self.assertEqual(child.wait(timeout=1), -9)
+        self.assertEqual(signals.read_text().splitlines(), [f"-KILL {child.pid}"])
+        self.assertEqual(reads.read_text().splitlines(), ["unreadable", "valid"])
+        self.assertEqual(self.retained(), before)
+
+    def test_unreadable_observation_then_changed_epoch_is_not_accepted(self):
+        child, other = self.launch(self.node), self.launch(self.aux)
+        observed, injection, signals, reads = self.observe_after_kill(child, "changed")
+        before = self.retained()
+        with injection, self.assertRaises(RuntimeError):
+            crash_profile(self.node, observed)
+        self.assertEqual(child.wait(timeout=1), -9)
+        self.assertIsNone(other.poll())
+        self.assertEqual(signals.read_text().splitlines(), [f"-KILL {child.pid}"])
+        self.assertEqual(reads.read_text().splitlines(), ["unreadable", "changed"])
+        self.assertEqual(self.retained(), before)
+
+    def test_persistently_unreadable_post_kill_epoch_remains_bounded_and_uncertain(self):
+        child = self.launch(self.node)
+        observed, injection, signals, reads = self.observe_after_kill(child, "unreadable")
+        before = self.retained()
+        started = time.monotonic()
+        with injection, self.assertRaises(RuntimeError):
+            crash_profile(self.node, observed)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual(child.wait(timeout=1), -9)
+        self.assertEqual(signals.read_text().splitlines(), [f"-KILL {child.pid}"])
+        self.assertGreater(len(reads.read_text().splitlines()), 1)
+        self.assertEqual(self.retained(), before)
+
     def test_identity_is_rechecked_after_obtaining_the_operation_lock(self):
         child = self.launch(self.node)
         observed = self.observed(self.node, child)

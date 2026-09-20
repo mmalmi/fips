@@ -25,7 +25,7 @@ def crash_profile(node, before_sample):
 target_pid={pid}
 target_start={start}
 read_epoch() {{
-  record=$(cat /proc/$target_pid/stat) || return 1
+  record=$(cat /proc/$target_pid/stat) || return 2
   test "${{record%% (*}}" = "$target_pid" || return 1
   tail=${{record##*) }}
   test "$tail" != "$record" || return 1
@@ -60,12 +60,22 @@ while :; do
       break
     fi
   else
-    # A reused PID or unreadable live epoch is never another signal target.
-    test ! -d /proc/$target_pid
-    stopped=gone
-    break
+    observation=$?
+    if test "$observation" -ne 2; then
+      echo 'candidate exit observation has a changed or malformed epoch' >&2
+      exit 1
+    fi
+    # Procfs teardown can make stat unreadable before removing the directory.
+    # Retry observation only; never signal again or accept a different epoch.
+    if test ! -d /proc/$target_pid; then
+      stopped=gone
+      break
+    fi
   fi
-  test "$(cut -d . -f 1 /proc/uptime)" -lt "$deadline"
+  if test "$(cut -d . -f 1 /proc/uptime)" -ge "$deadline"; then
+    echo 'candidate exit observation deadline expired' >&2
+    exit 1
+  fi
   sleep .05
 done
 printf '%s\\000' "$target_pid" "$target_start" "$stopped"
