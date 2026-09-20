@@ -170,6 +170,27 @@ class PaidOpenTests(unittest.TestCase):
                 self.assertEqual(args.outage_node, node)
                 runner.return_value.execute.assert_called_once_with()
 
+    def test_brief_outage_requires_active_mode_before_any_run(self):
+        base = ["paid_wifi", "--inventory", "inventory", "--binary", "binary", "--mint-binary", "mint",
+                "--mint-address", "127.0.0.1", "--mint-ssh-forward", "--output", "output",
+                "--brief-outage"]
+        with patch.object(sys, "argv", base), patch("sim.paid_wifi.PaidWifiRun") as runner, \
+                patch("sim.paid_wifi.signal.alarm") as alarm, patch("sys.stderr"), \
+                self.assertRaises(SystemExit) as error:
+            main()
+        self.assertEqual(error.exception.code, 2)
+        runner.assert_not_called()
+        alarm.assert_not_called()
+        with patch.object(sys, "argv", base + ["--active-outage"]), \
+                patch("sim.paid_wifi.PaidWifiRun") as runner, \
+                patch("sim.paid_wifi.signal.signal"), patch("sim.paid_wifi.signal.alarm"), \
+                patch("sim.paid_wifi.os.umask"):
+            main()
+        self.assertTrue(runner.call_args.args[0].brief_outage)
+        runner.return_value.execute.assert_called_once_with()
+        with self.assertRaisesRegex(ValueError, "requires --active-outage"):
+            PaidWifiRun(SimpleNamespace(brief_outage=True, active_outage=False))
+
     def test_paid_open_launch_funds_stopped_accounts_then_late_joins_third_radio(self):
         run = self.fixture()
         run.setup()

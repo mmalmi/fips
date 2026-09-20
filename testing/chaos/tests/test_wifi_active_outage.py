@@ -29,17 +29,28 @@ def probe_report(count, expected=24, stream="a" * 32):
 class ActiveOutageTests(unittest.TestCase):
     def run_cut(self, *, completed=False, lost=False, observation_error=False, restart=False,
                 late_cut=False, cut_error=False, outage_node="n03", stale_peer=None, timing=False,
-                diagnostic_error=False):
+                diagnostic_error=False, brief=False, radio_station=False, removed_peer=None,
+                replaced_link=None):
         run = Mock()
-        run.args = SimpleNamespace(recovery_timing=timing)
+        run.args = SimpleNamespace(recovery_timing=timing, brief_outage=brief)
         run.nodes = {name: Mock(npub=name) for name in ("n01", "n02", "n03")}
-        for node in run.nodes.values():
+        rejoined = False
+        for name, node in run.nodes.items():
             node.interface = "mesh0"
             node.native.return_value = {"status": "ok", "data": {"transports": [{
                 "type": "ethernet", "name": "mesh0", "transport_id": 1,
                 "stats": {"beacons_sent": 1, "beacons_recv": 2, "beacons_dropped": 0}}]}}
             node.remote.side_effect = lambda command: (
                 b"1000\n20.50\n" if isinstance(command, str) else b"Station test\n")
+            def native(command, name=name, node=node):
+                if command["command"] != "show_peers":
+                    return node.native.return_value
+                peers = [{"npub": other, "connectivity": "connected", "transport_type": "ethernet",
+                          "link_id": int(other[-1]), "authenticated_at_ms": 50,
+                          "our_session_index": "00000002" if rejoined and name == replaced_link else "00000001"}
+                         for other in run.nodes if abs(int(other[-1]) - int(name[-1])) == 1]
+                return {"status": "ok", "data": {"peers": peers}}
+            node.native.side_effect = native
         if diagnostic_error:
             node = run.nodes[outage_node]
             node.native.side_effect = [RuntimeError("diagnostic unavailable"), node.native.return_value]
@@ -50,8 +61,9 @@ class ActiveOutageTests(unittest.TestCase):
             if cut_error:
                 raise RuntimeError("radio command reply lost")
         def up():
-            nonlocal radio_down
+            nonlocal radio_down, rejoined
             radio_down = False
+            rejoined = True
         run.nodes[outage_node].mesh_down.side_effect = down
         run.nodes[outage_node].mesh_up.side_effect = up
         run.evidence = {}
@@ -60,7 +72,9 @@ class ActiveOutageTests(unittest.TestCase):
         def status(node, _kind):
             peers = [{"npub": other, "connected": True, "transport": "ethernet"}
                      for other in run.nodes if abs(int(other[-1]) - int(node[-1])) == 1
-                     and not (radio_down and outage_node in (node, other))]
+                     and not (radio_down and not brief and outage_node in (node, other))]
+            if radio_down and node == removed_peer:
+                peers = []
             if radio_down and node == stale_peer:
                 peers.append({"npub": "n02", "connected": False, "transport": "ethernet"})
             return {"npub": node, "measurements": {"version": 1, "process_id": int(node[-1])},
@@ -94,6 +108,8 @@ class ActiveOutageTests(unittest.TestCase):
                 patch("sim.wifi_active_outage.probes.arm", side_effect=[shape, recovery_shape]), \
                 patch("sim.wifi_active_outage.probes.send", return_value=recovery_sent), \
                 patch("sim.wifi_active_outage.probes.receive", side_effect=results), \
+                patch("sim.wifi_active_outage.stations", create=True,
+                      return_value="Station still joined" if radio_station else ""), \
                 patch("sim.wifi_probes.eventually", side_effect=lambda _d, f, _s: f()), \
                 patch("sim.wifi_active_outage.eventually", side_effect=observed), \
                 patch("sim.wifi_active_outage.time.sleep"):
@@ -106,6 +122,46 @@ class ActiveOutageTests(unittest.TestCase):
         pool.submit.assert_called_once()
         future.result.assert_called_once_with(timeout=35)
         return run, error
+
+    def test_brief_cut_recovers_before_peer_eviction_on_leaf_and_bridge(self):
+        for node in ("n02", "n03"):
+            with self.subTest(node=node):
+                run, error = self.run_cut(brief=True, outage_node=node)
+                self.assertIsNone(error)
+                evidence = run.evidence["active_outage"]
+                self.assertTrue(evidence["passed"])
+                self.assertEqual(evidence["radio_stations_during_outage"], "")
+                self.assertEqual(set(evidence["retained_peers"]), set(run.nodes))
+                self.assertNotIn("eviction_observed", evidence)
+                self.assertNotIn("isolated_peers", evidence)
+                self.assertEqual(evidence["outage_receiver"]["missing_packets"], 22)
+                self.assertEqual(evidence["recovery_receiver"]["unique_packets"], 8)
+                run.ready.assert_has_calls([call(line=True), call(line=True)])
+                run.nodes[node].mesh_up.assert_called_once_with()
+
+    def test_brief_cut_rejects_remaining_radio_stations_and_restores(self):
+        run, error = self.run_cut(brief=True, radio_station=True)
+        self.assertIn("radio stations", str(error))
+        self.assertFalse(run.evidence["active_outage"]["passed"])
+        run.nodes["n03"].mesh_up.assert_called_once_with()
+
+    def test_brief_cut_rejects_evicted_peers_and_restores(self):
+        run, error = self.run_cut(brief=True, removed_peer="n03")
+        self.assertIn("retained", str(error))
+        self.assertFalse(run.evidence["active_outage"]["passed"])
+        run.nodes["n03"].mesh_up.assert_called_once_with()
+
+    def test_brief_uncertain_cut_restores_without_replaying_sender(self):
+        run, error = self.run_cut(brief=True, cut_error=True, outage_node="n02")
+        self.assertIn("radio command reply lost", str(error))
+        run.nodes["n02"].mesh_up.assert_called_once_with()
+        self.assertFalse(run.evidence["active_outage"]["passed"])
+
+    def test_brief_cut_rejects_a_replacement_session_after_retained_observation(self):
+        run, error = self.run_cut(brief=True, replaced_link="n02", timing=True)
+        self.assertIn("peer sessions", str(error))
+        self.assertFalse(run.evidence["active_outage"]["passed"])
+        run.nodes["n03"].mesh_up.assert_called_once_with()
 
     def test_partial_live_stream_cut_rejoins_and_uses_fresh_recovery_probe(self):
         run, error = self.run_cut()

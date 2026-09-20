@@ -438,6 +438,19 @@ epochs and financial authority, then requires fresh replies, both-direction paid
 progress, and the existing 384-test-sat collection. `--outage-node` is valid only
 with `--active-outage`; `n03` explicitly selects the default leaf case.
 
+Add `--brief-outage` to restore after the finite 24-packet stream and the
+two-second quiet observation. At two packets per second, the stream spans at
+least 11.5 seconds; the actual outage also includes radio commands and serial
+observations, and is recorded by the controller's monotonic clock. The departing
+radio must have no associated stations while all original FIPS peers remain
+connected in the observed roster. After fresh replies arrive, every neighbor's
+link ID, authentication timestamp and Noise session index must match the
+pre-cut observation. This rejects eviction/reconnection between serial reads.
+Original processes, funding, automatic payments and full collection must also
+pass. A legitimate rekey fails this strict session-continuity case; it does not
+mean rekeying is forbidden during ordinary recovery. This controlled interruption
+does not establish physical mobility or lossless handover.
+
 Add `--recovery-timing` to retain bounded controller-clock observation intervals,
 the departing router's native Ethernet adapter counters and Wi-Fi station dumps,
 and per-router wall-clock/uptime anchors for the scoped native logs. The result

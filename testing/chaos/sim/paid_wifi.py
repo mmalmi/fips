@@ -47,6 +47,8 @@ class PaidWifiRun(WifiRun):
             if requested_outage not in ("n02", "n03"):
                 raise ValueError("outage node must be n02 or n03")
         self.outage_node = requested_outage or "n03"
+        if getattr(args, "brief_outage", False) and not getattr(args, "active_outage", False):
+            raise ValueError("--brief-outage requires --active-outage")
         if getattr(args, "recovery_timing", False) and not getattr(args, "active_outage", False):
             raise ValueError("--recovery-timing requires --active-outage")
         beacon = getattr(args, "beacon_interval_secs", None)
@@ -66,6 +68,7 @@ class PaidWifiRun(WifiRun):
         self.forwards = None
         self.channel_anchor = None
         self.evidence.update(active_radio_outage=getattr(args, "active_outage", False),
+                             brief_outage=getattr(args, "brief_outage", False),
                              outage_node=self.outage_node if getattr(args, "active_outage", False) else None,
                              beacon_interval_secs=beacon,
                              test_funds_only=True, money_operations=True,
@@ -255,6 +258,8 @@ def main():
                         help="temporarily test paid forwarding over open 802.11s, restoring the saved SAE profile")
     parser.add_argument("--active-outage", action="store_true",
                         help="interrupt live paid round trips before automatic radio recovery")
+    parser.add_argument("--brief-outage", action="store_true",
+                        help="rejoin before FIPS peer eviction; requires --active-outage")
     parser.add_argument("--recovery-timing", action="store_true",
                         help="record bounded recovery observations and scoped native logs")
     parser.add_argument("--beacon-interval-secs", type=int, choices=(10, 30),
@@ -265,6 +270,8 @@ def main():
     args = parser.parse_args()
     if args.outage_node is not None and not args.active_outage:
         parser.error("--outage-node requires --active-outage")
+    if args.brief_outage and not args.active_outage:
+        parser.error("--brief-outage requires --active-outage")
     if args.recovery_timing and not args.active_outage:
         parser.error("--recovery-timing requires --active-outage")
     os.umask(0o077)
