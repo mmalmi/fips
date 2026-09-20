@@ -10,6 +10,12 @@ use tokio::{
     time::Instant,
 };
 
+#[path = "merge_split/brief.rs"]
+mod brief;
+#[path = "merge_split/observation.rs"]
+mod observation;
+use observation::Observer;
+
 #[path = "merge_split/crowded.rs"]
 mod crowded;
 #[path = "merge_split/pending_funding.rs"]
@@ -439,6 +445,24 @@ async fn no_cross_delivery(bench: &mut Bench, tag: u8) {
                 );
             }
         }
+    }
+}
+
+async fn assert_watches(bench: &Bench) {
+    for (node, controller) in bench.controllers.iter().enumerate() {
+        let expected: Vec<_> = match node {
+            0 => vec![bench.peers[2].npub(), bench.peers[5].npub()],
+            5 => vec![bench.peers[3].npub(), bench.peers[0].npub()],
+            _ => Vec::new(),
+        };
+        let watches = controller.watched_routes().await.unwrap();
+        assert_eq!(watches.len(), expected.len());
+        assert!(watches.iter().all(|watch| {
+            expected.contains(&watch.destination)
+                && watch.billing == BillingBasis::ForwardingData
+                && watch.max_rate_msat_per_kib == 512
+                && !watch.paused
+        }));
     }
 }
 

@@ -1666,6 +1666,35 @@ UDP regressions fail before these fixes; all 43 handshake tests, native discover
 strict core/relay lint and the source-size gate pass. The crowded regression checks
 final cleanup as well as delivery and financial conservation.
 
+The `merge_split::brief` variant covers repeated short contacts (2026-09-20).
+Independent tasks change the bridge carrier and send single-attempt packets in
+both directions; actual contact intervals must remain within half to one-and-a-half
+times their scheduled lengths. Short outages preserve the existing authenticated
+bridge peers. After full separation and eviction, the fixture cuts a newly observed
+bidirectional adjacency immediately, then tries 300-ms, 400-ms and 1.5-s contacts
+before leaving the carrier up. No convergence or payment wait extends those contacts.
+
+In the final run, 40 of 64 packets per direction arrive during the warm cohort;
+none of 32 per direction arrive during the cold cohort's receive window. Neither
+cohort records duplicates. These counts include the subsequent sustained contact
+and a five-second receive window after the scheduled final submission; unobserved packets
+are not proof of permanent loss. An earlier run observed 13 of 32 cold packets,
+so this is not a deterministic delivery or short-contact availability guarantee.
+Separate fresh probes all succeed before the interruptions and after each recovery:
+72 payloads in 72 attempts. From the recorded link-up observation to fresh delivery
+and all-hop credit, elapsed times are 12.048 s warm and 52.516 s cold, including
+remaining cohort traffic, receive-window time and polling. The timestamp follows
+the carrier mutation at millisecond resolution; these are not strict bounds from
+the mutation itself or isolated routing latency measurements.
+
+All four original Watch authorities and eight directional funding/channel/wallet
+operation identities survive, with unchanged capital limits and no new funding.
+Sampled native state stays bounded over 587 observation rounds, and final pending
+connections and excess links drain. Exact wallet equations hold and all 1,536 test
+sats are collected. The shared observer's crowded regression and strict relay lint
+also pass. This proves bounded recovery after contact stabilizes; prompt useful
+delivery during brief encounters, physical mobility and radio handover remain open.
+
 A held-funding variant now covers a new encounter interrupted after the mint
 commits but before its response reaches the opening caller. The original run
 delivered 36 fresh payloads on an existing healthy route while its credited

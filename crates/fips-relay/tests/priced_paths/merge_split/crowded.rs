@@ -1,6 +1,6 @@
 //! Unfunded neighbors fill admission slots without replacing paid authority.
 use super::*;
-use std::{future::Future, path::PathBuf};
+use std::future::Future;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn crowded_discovery_preserves_paid_progress_and_recovers_after_departure() {
@@ -67,166 +67,52 @@ async fn candidates(bench: &Bench) -> Vec<Candidate> {
     result
 }
 
-struct Observer {
-    root: PathBuf,
-    nodes: Vec<Arc<FipsEndpoint>>,
-    peers: Vec<PeerIdentity>,
-    maxima: BTreeMap<&'static str, u64>,
-    samples: u64,
+async fn occupied(
+    nodes: &[Arc<FipsEndpoint>],
+    identities: &[PeerIdentity],
+    candidates: &[Candidate],
+) -> bool {
+    for (bridge, internal) in [(2, 1), (3, 4)] {
+        let peers = nodes[bridge].peers().await.unwrap();
+        assert!(peers.len() <= 2);
+        let healthy = peers
+            .iter()
+            .any(|p| p.node_addr == *identities[internal].node_addr() && p.connected);
+        assert!(healthy, "crowding displaced the healthy internal neighbor");
+        if peers.len() != 2 || peers.iter().any(|p| !p.connected) {
+            return false;
+        }
+        let Some(candidate) = candidates.iter().find(|c| {
+            c.bridge == bridge && peers.iter().any(|p| p.node_addr == *c.peer.node_addr())
+        }) else {
+            return false;
+        };
+        if !candidate.endpoint.peers().await.unwrap().iter().any(|p| {
+            p.node_addr == *identities[bridge].node_addr()
+                && p.connected
+                && p.transport_type.as_deref() == Some("sim")
+        }) {
+            return false;
+        }
+    }
+    true
 }
 
 impl Observer {
-    fn new(bench: &Bench) -> Self {
-        Self {
-            root: bench.root.path().into(),
-            nodes: bench.nodes.clone(),
-            peers: bench.peers.clone(),
-            maxima: BTreeMap::new(),
-            samples: 0,
-        }
-    }
-
-    async fn sample(&mut self) {
-        for node in 0..self.nodes.len() {
-            let status = native_query(&self.root, node, "show_status").await;
-            for (field, cap) in [
-                ("peer_count", 2),
-                ("connection_count", 4),
-                ("session_count", 128),
-            ] {
-                let value = status[field].as_u64().unwrap();
-                assert!(value <= cap, "node {node}: {field}={value} exceeds {cap}");
-                let maximum = self.maxima.entry(field).or_default();
-                *maximum = (*maximum).max(value);
-            }
-            // Simultaneous authenticated dials may retain the pending outbound
-            // beside the promoted inbound until both sides resolve Msg2.
-            let links = status["link_count"].as_u64().unwrap();
-            let connections = status["connection_count"].as_u64().unwrap();
-            assert!(
-                links <= 4 + connections,
-                "node {node}: {links} links with {connections} pending exceed the admission allowance"
-            );
-            let maximum = self.maxima.entry("link_count").or_default();
-            *maximum = (*maximum).max(links);
-        }
-        self.samples += 1;
-    }
-
-    async fn occupied(&self, candidates: &[Candidate]) -> bool {
-        for (bridge, internal) in [(2, 1), (3, 4)] {
-            let peers = self.nodes[bridge].peers().await.unwrap();
-            assert!(peers.len() <= 2);
-            let healthy = peers
-                .iter()
-                .any(|p| p.node_addr == *self.peers[internal].node_addr() && p.connected);
-            assert!(healthy, "crowding displaced the healthy internal neighbor");
-            if peers.len() != 2 || peers.iter().any(|p| !p.connected) {
-                return false;
-            }
-            let Some(candidate) = candidates.iter().find(|c| {
-                c.bridge == bridge && peers.iter().any(|p| p.node_addr == *c.peer.node_addr())
-            }) else {
-                return false;
-            };
-            if !candidate.endpoint.peers().await.unwrap().iter().any(|p| {
-                p.node_addr == *self.peers[bridge].node_addr()
-                    && p.connected
-                    && p.transport_type.as_deref() == Some("sim")
-            }) {
-                return false;
-            }
-        }
-        true
-    }
-
-    async fn during<T>(&mut self, operation: impl Future<Output = T>) -> T {
-        self.observe(operation, None).await
-    }
-
     async fn while_occupied<T>(
         &mut self,
         candidates: &[Candidate],
         operation: impl Future<Output = T>,
     ) -> T {
-        self.observe(operation, Some(candidates)).await
-    }
-
-    async fn observe<T>(
-        &mut self,
-        operation: impl Future<Output = T>,
-        candidates: Option<&[Candidate]>,
-    ) -> T {
-        tokio::pin!(operation);
-        let mut interval = tokio::time::interval(Duration::from_millis(200));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            tokio::select! {
-                result = &mut operation => {
-                    self.check_sample(candidates).await;
-                    return result;
-                }
-                _ = interval.tick() => self.check_sample(candidates).await,
-            }
-        }
-    }
-
-    async fn check_sample(&mut self, candidates: Option<&[Candidate]>) {
-        self.sample().await;
-        if let Some(candidates) = candidates {
+        let nodes = self.nodes.clone();
+        let peers = self.peers.clone();
+        self.during_checked(operation, || async {
             assert!(
-                self.occupied(candidates).await,
+                occupied(&nodes, &peers, candidates).await,
                 "bridge slots must stay full during paid progress"
             );
-        }
-    }
-
-    async fn settled(&mut self) {
-        let outcome = tokio::time::timeout(Duration::from_secs(60), async {
-            loop {
-                self.sample().await;
-                let mut settled = true;
-                for node in 0..self.nodes.len() {
-                    let status = native_query(&self.root, node, "show_status").await;
-                    settled &= status["connection_count"] == 0
-                        && status["link_count"] == status["peer_count"];
-                }
-                if settled {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(200)).await;
-            }
         })
-        .await;
-        if outcome.is_err() {
-            for node in 0..self.nodes.len() {
-                for command in ["show_links", "show_connections", "show_peers"] {
-                    eprintln!(
-                        "crowded cleanup node={node} {command}: {}",
-                        native_query(&self.root, node, command).await
-                    );
-                }
-            }
-            panic!("temporary handshake links must retire after convergence");
-        }
-    }
-}
-
-async fn assert_watches(bench: &Bench) {
-    for (node, controller) in bench.controllers.iter().enumerate() {
-        let expected: Vec<_> = match node {
-            0 => vec![bench.peers[2].npub(), bench.peers[5].npub()],
-            5 => vec![bench.peers[3].npub(), bench.peers[0].npub()],
-            _ => Vec::new(),
-        };
-        let watches = controller.watched_routes().await.unwrap();
-        assert_eq!(watches.len(), expected.len());
-        assert!(watches.iter().all(|watch| {
-            expected.contains(&watch.destination)
-                && watch.billing == BillingBasis::ForwardingData
-                && watch.max_rate_msat_per_kib == 512
-                && !watch.paused
-        }));
+        .await
     }
 }
 
@@ -259,11 +145,10 @@ async fn exercise_crowded() {
 
     let candidates = observer.during(candidates(&bench)).await;
     let occupied_at = Instant::now();
-    let roster = Observer::new(&bench);
     observer
         .during(async {
             tokio::time::timeout(Duration::from_secs(60), async {
-                while !roster.occupied(&candidates).await {
+                while !occupied(&bench.nodes, &bench.peers, &candidates).await {
                     tokio::time::sleep(Duration::from_millis(200)).await;
                 }
             })
@@ -298,11 +183,11 @@ async fn exercise_crowded() {
         })
         .collect();
     for (source, destination, tag) in [(0, 2, 120), (5, 3, 121)] {
-        assert!(observer.occupied(&candidates).await);
+        assert!(occupied(&bench.nodes, &bench.peers, &candidates).await);
         observer
             .while_occupied(&candidates, traffic(&mut bench, source, destination, tag))
             .await;
-        assert!(observer.occupied(&candidates).await);
+        assert!(occupied(&bench.nodes, &bench.peers, &candidates).await);
     }
     let after_local = hop_usage(&bench).await;
     let local_paid = observer.while_occupied(&candidates, payments(&bench)).await;
