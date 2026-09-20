@@ -391,6 +391,47 @@ late-arrival cases that preserve strict rejection. Eight extra status reads tota
 this a diagnostic capture, not a matched cost comparison with earlier runs. The
 500-ms production default and both failed measurement results remain unchanged.
 
+## Socket and data-service observation — 20 September 2026
+
+A fresh 1-second pilot uses a matched `62a639370` router/test-mint pair, with
+all 1,800 recorded source inputs matched to the preceding verification gates.
+The `740c2308` harness adds `show_transports` inside each existing process-bound
+sample. It retains complete adapter replies alongside the existing data-service
+carrier and application counters. This adds 48 adapter queries across the four
+workloads; the eight supplemental burst observations remain enabled. Per-burst
+reads still contain probe results only, so adapter/carrier attribution is limited
+to the workload boundaries and guarded gaps.
+
+The pilot **passes strict acceptance with all 11,712 packets delivered**:
+
+| Workload | Probe packets submitted / received | Source Ethernet submissions | Destination application packets | Socket drops, all nodes |
+| --- | ---: | ---: | ---: | ---: |
+| Idle | 0 / 0 | 0 | 0 | 0 |
+| Bursty | 512 / 512 | 512 | 512 | 0 |
+| Steady | 3,200 / 3,200 | 3,200 | 3,200 | 0 |
+| High rate | 8,000 / 8,000 | 8,000 | 8,000 | 0 |
+
+Every adapter sample reports an available cumulative socket-drop count and an
+effective `SO_RCVBUF` of 425,984 bytes (416 KiB). No socket drops, data-carrier
+discards, data-service submissions or application receptions occur in the guarded
+gaps. The forwarding-only middle router and passive destination record no locally
+originated data-service submissions. Socket drops also remain zero throughout all
+workload windows. Equal source submissions and receiver counts are consistent
+with this clean run; successful source submission alone would not prove delivery.
+
+All 384 test sats are collected, every test wallet is empty, and all 267 management
+checks pass without cleanup errors. Independent live reads match all original
+router baselines and confirm Internet/DNS access. The mint and three forwarding
+processes are absent, and source, inventory and executable hashes remain unchanged.
+The updated capture passes 65 Linux harness tests and 101 analyzer tests; historical
+two-reply native snapshots remain readable without inventing socket measurements.
+
+This is one clean diagnostic pilot on newer code, not a reproduction or explanation
+of the historical intermittent loss. The earlier rejected captures remain unchanged.
+The new build and additional adapter queries preclude a matched cost comparison
+with those captures. No cadence default, receive-buffer optimization, capacity
+claim or mobility claim follows from this result.
+
 ## Reproduction and remaining evidence
 
 See the [experiment instructions](../../testing/relay-cadence/README.md) for fixed
