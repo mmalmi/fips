@@ -36,33 +36,8 @@ fn ethernet_socket_queue_drops_survive_diagnostic_reads() {
 
     // Leave the receiver undrained until its real AF_PACKET queue overflows.
     let payload = [0x5a; 1024];
-    let deadline = Instant::now() + Duration::from_secs(2);
-    for _ in 0..512 {
-        loop {
-            match sender.send_to(&payload, &destination) {
-                Ok(len) => {
-                    assert_eq!(len, payload.len());
-                    break;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    assert!(Instant::now() < deadline, "bounded test sender stalled");
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                Err(error) => panic!("test send failed: {error}"),
-            }
-        }
-    }
-    let first_drops = loop {
-        let drops = receiver
-            .socket_stats()
-            .kernel_drops
-            .expect("kernel drop counter");
-        if drops > 0 {
-            break drops;
-        }
-        assert!(Instant::now() < deadline, "expected receive queue overflow");
-        std::thread::sleep(Duration::from_millis(1));
-    };
+    flood(&sender, &destination, &payload);
+    let first_drops = wait_for_more_drops(&receiver, 0);
     std::thread::scope(|scope| {
         for _ in 0..8 {
             let receiver = &receiver;
@@ -75,26 +50,20 @@ fn ethernet_socket_queue_drops_survive_diagnostic_reads() {
     });
 
     // Overflow is not a recvfrom error, and diagnostic reads must not consume data.
-    let mut buffer = [0; 2048];
-    let mut delivered = 0;
-    let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        assert!(Instant::now() < deadline, "bounded receive drain stalled");
-        match receiver.recv_from(&mut buffer) {
-            Ok((len, _)) => {
-                assert_eq!(&buffer[..len], &payload);
-                delivered += 1;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-            Err(error) => panic!("test receive failed: {error}"),
-        }
-    }
-    assert!((1..512).contains(&delivered));
-    let retained = receiver.socket_stats().kernel_drops.unwrap();
-    assert!((first_drops..=512).contains(&retained));
+    let retained = drain_flood(&receiver, &payload, 0);
+    assert!(retained >= first_drops);
+
+    // A second real overflow must advance the accumulated, resetting kernel count.
+    flood(&sender, &destination, &payload);
+    let second_drops = wait_for_more_drops(&receiver, retained);
+    assert!(second_drops > retained);
+    let second_retained = drain_flood(&receiver, &payload, retained);
+    assert!(second_retained >= second_drops);
+    assert_eq!(receiver.socket_stats().kernel_drops, Some(second_retained));
 
     // The same socket remains usable after observation and overflow.
     let marker = [0xa5; 1024];
+    let mut buffer = [0; 2048];
     assert_eq!(sender.send_to(&marker, &destination).unwrap(), marker.len());
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -115,5 +84,69 @@ fn ethernet_socket_queue_drops_survive_diagnostic_reads() {
             Err(error) => panic!("test receive failed: {error}"),
         }
     }
-    assert!(receiver.socket_stats().kernel_drops.unwrap() >= retained);
+    assert_eq!(receiver.socket_stats().kernel_drops, Some(second_retained));
+}
+
+const FLOOD_PACKETS: u64 = 512;
+
+fn flood(sender: &PacketSocket, destination: &[u8; 6], payload: &[u8]) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    for _ in 0..FLOOD_PACKETS {
+        loop {
+            assert!(Instant::now() < deadline, "bounded test sender stalled");
+            match sender.send_to(payload, destination) {
+                Ok(len) => {
+                    assert_eq!(len, payload.len());
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("test send failed: {error}"),
+            }
+        }
+    }
+}
+
+fn wait_for_more_drops(receiver: &PacketSocket, previous: u64) -> u64 {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let drops = receiver
+            .socket_stats()
+            .kernel_drops
+            .expect("kernel drop counter");
+        if drops > previous {
+            return drops;
+        }
+        assert!(Instant::now() < deadline, "expected receive queue overflow");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn drain_flood(receiver: &PacketSocket, payload: &[u8], previous_drops: u64) -> u64 {
+    let mut buffer = [0; 2048];
+    let mut delivered = 0;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        assert!(Instant::now() < deadline, "bounded receive drain stalled");
+        match receiver.recv_from(&mut buffer) {
+            Ok((len, _)) => {
+                assert_eq!(&buffer[..len], payload);
+                delivered += 1;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                let drops = receiver.socket_stats().kernel_drops.unwrap();
+                let accounted = delivered + drops.checked_sub(previous_drops).unwrap();
+                assert!(accounted <= FLOOD_PACKETS);
+                // Wait for every submitted frame to be received or counted as dropped,
+                // so the following idle observation cannot include a late flood tail.
+                if accounted == FLOOD_PACKETS {
+                    assert!((1..FLOOD_PACKETS).contains(&delivered));
+                    return drops;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(error) => panic!("test receive failed: {error}"),
+        }
+    }
 }
