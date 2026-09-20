@@ -19,6 +19,7 @@ from .paid_wifi_mint import LocalMint
 from .paid_wifi_forwarding import MintForwards, finish_mint
 from .remote_mint import RemoteMint
 from .wifi_active_outage import active_radio_outage
+from . import wifi_promotion, wifi_promotion_checks
 from .wifi_recovery_timing import LOG_FILTER
 from .wifi_discovery import WifiRun
 from .wifi_remote import ETHERTYPE, digest
@@ -40,6 +41,7 @@ def reconciled_channels(prior, current):
 
 class PaidWifiRun(WifiRun):
     def __init__(self, args):
+        promotion_artifact = wifi_promotion_checks.options(args)
         requested_outage = getattr(args, "outage_node", None)
         if requested_outage is not None:
             if not getattr(args, "active_outage", False):
@@ -67,6 +69,7 @@ class PaidWifiRun(WifiRun):
         self.mint_url = None
         self.forwards = None
         self.channel_anchor = None
+        self.evidence["promotion_artifact"] = promotion_artifact
         self.evidence.update(active_radio_outage=getattr(args, "active_outage", False),
                              brief_outage=getattr(args, "brief_outage", False),
                              outage_node=self.outage_node if getattr(args, "active_outage", False) else None,
@@ -76,7 +79,8 @@ class PaidWifiRun(WifiRun):
         for name in ("paid_wifi.py", "paid_wifi_mint.py", "paid_wifi_forwarding.py",
                      "paid_finances.py", "paid_settlement.py", "remote_mint.py", "mint_host.py",
                      "wifi_active_outage.py", "wifi_probes.py", "wifi_priority_checks.py",
-                     "wifi_measurements.py", "wifi_recovery_timing.py"):
+                     "wifi_measurements.py", "wifi_recovery_timing.py", "wifi_promotion.py",
+                     "wifi_promotion_checks.py", "wifi_promotion_finances.py"):
             self.evidence["harness_sha256"][name] = digest(Path(__file__).with_name(name).read_bytes())
 
     def create_mint(self, args):
@@ -94,9 +98,15 @@ class PaidWifiRun(WifiRun):
         beacon = getattr(self.args, "beacon_interval_secs", None)
         if beacon is not None:
             config["transports"]["ethernet"][node.interface]["beacon_interval_secs"] = beacon
+        if getattr(self.args, "interrupted_promotion", False):
+            wifi_promotion_checks.configure(config, node is self.nodes["n01"])
         return config
 
     def setup(self):
+        artifact = self.evidence.get("promotion_artifact")
+        if artifact is not None:
+            require(digest(self.args.binary.read_bytes()) == artifact["binary_sha256"],
+                    "instrumented promotion artifact changed before setup")
         self.mint_url = self.mint.start()
         self.evidence["mint_process"] = self.mint.info
         self.phase("fresh test mint started with a 384-sat issuance cap")
@@ -182,6 +192,8 @@ class PaidWifiRun(WifiRun):
                           reconciled_channels(before, self.finances()))
 
     def exercise(self):
+        if getattr(self.args, "interrupted_promotion", False):
+            return wifi_promotion.exercise(self)
         self.form_line()
         discovered = self.assert_finances()
         PaidRelayRun.unpaid_probe(self, discovered)
@@ -256,6 +268,10 @@ def main():
                         help="use dedicated inventory SSH forwards instead of controller LAN access")
     parser.add_argument("--open-mesh", action="store_true",
                         help="temporarily test paid forwarding over open 802.11s, restoring the saved SAE profile")
+    parser.add_argument("--interrupted-promotion", action="store_true",
+                        help="hold real full acceptance, withdraw the middle radio and recover one Watch")
+    parser.add_argument("--promotion-provenance", type=Path,
+                        help="verified testbench+measurements ARM64 build provenance for promotion mode")
     parser.add_argument("--active-outage", action="store_true",
                         help="interrupt live paid round trips before automatic radio recovery")
     parser.add_argument("--brief-outage", action="store_true",

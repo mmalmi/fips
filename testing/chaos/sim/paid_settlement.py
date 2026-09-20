@@ -223,6 +223,18 @@ def settle_and_collect(run, prior_finances, *, execute=None, stop=None, export_p
     require(set(reports) == set(owners), "settlement omitted an original channel")
     settled = run.finances()
     validate_finances(prior_finances, settled, reports, fixture=fixture)
+    collect_settled_wallets(run, settled, reports, owners, mint, execute=execute, stop=stop,
+                           export_path=export_path, fixture=fixture)
+
+
+def collect_settled_wallets(run, settled, reports, owners, mint, *, execute, stop,
+                           export_path, fixture=None):
+    """Collect only after the caller has verified every channel's final settlement.
+
+    This tail neither discovers funding nor relaxes the caller's financial
+    checks. A promotion fixture can include a previously verified refund.
+    """
+    issued = 384 if fixture is None else fixture.issued_sat
     for node in run.nodes:
         stop(node)
 

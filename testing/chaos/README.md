@@ -521,6 +521,49 @@ errors. This recovery bound starts at the rejoin request, after the deliberate
 wait for full peer eviction; it excludes that wait and is not an exact packet
 outage duration.
 
+#### Interrupted trial promotion
+
+Add `--interrupted-promotion --promotion-provenance /private/artifacts/build.json`
+to the paid Wi-Fi command above for one live, same-provider setup interruption.
+Use an ARM64 artifact built with both `testbench` and `measurements`; the recorded
+build manifest must bind those features, its successful unchanged-source build,
+and the exact executable hash. The harness also checks the running provider's
+[private acceptance barrier](../../crates/fips-relay/TESTBENCH.md#holding-a-committed-acceptance-response).
+This mode is separate from the other outage modes and is not a performance run.
+
+One source Watch uses the default price selector. Real native feedback must
+qualify a partly consumed trial before the middle provider commits a full
+agreement. The barrier holds that successful reply while the source has retired
+its trial. After an idle feedback window, the harness removes the middle radio,
+requires actual native peer eviction and normal Watch withdrawal, releases the
+stale reply, and rejoins the same processes. Fresh round trips must then arrive
+under a new full agreement with qualifying feedback and an advancing acknowledged
+payment. No replacement Watch, rescue Buy or explicit payment flush drives that
+recovery. The reverse sending direction has its own initial authorization.
+
+Original trial consumption, funding operations and lifetime budgets remain
+anchored throughout. Recovery may open one replacement 32-sat source channel
+only after the original channel has a verified refund; its trial must use the
+exact remaining allowance. The reverse channel remains original. A dedicated
+validator handles these retained refunds before using the shared collection
+procedure. Completion still requires all 384 issued test sats to be collected,
+empty test wallets and the existing management and original-profile restoration
+checks. Uncertain financial state retains its accounts and mint for recovery.
+
+Run the affected local checks before a separately authorized hardware run:
+
+```sh
+PYTHONPATH=testing/chaos:testing/chaos/tests python3 -m unittest \
+  tests.test_paid_settlement tests.test_paid_wifi tests.test_paid_wifi_open \
+  tests.test_paid_wifi_forwarding tests.test_wifi_active_outage \
+  tests.test_wifi_recovery_timing tests.test_wifi_promotion \
+  tests.test_wifi_promotion_checks tests.test_wifi_promotion_finances
+```
+
+These tests use local fakes to check orchestration, authority, evidence and failure
+cleanup. Physical interrupted-promotion acceptance, process-restart recovery and
+arbitrary mobile mesh encounters remain separate checks.
+
 ### Paid/free Wi-Fi priority
 
 `sim.wifi_priority` reuses the paid Wi-Fi lifecycle and adds two unfunded
