@@ -95,6 +95,7 @@ pub(super) fn ack(p: &Plan, mint: &str) -> CashuSpilmanRetiredHistory {
             cost: p.after.cost.clone(),
         },
         abandoned_requests: p.after.abandoned_requests,
+        cancelled_requests: p.after.cancelled_requests,
         capacity_sat: p.after.capacity_sat,
         signed_sat: p.after.signed_sat,
         refund_sat: p.after.refund_sat,

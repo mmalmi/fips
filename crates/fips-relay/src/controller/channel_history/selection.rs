@@ -7,7 +7,7 @@ pub(super) fn completed(j: &Journal, f: &FundingIntent, now: u64) -> bool {
     {
         return false;
     }
-    if f.reclaimed().is_some() {
+    if f.reclaim_terminal() {
         return f.funded.is_none() && !j.outgoing.values().any(|o| o.funding_id == f.id);
     }
     let Some(funded) = &f.funded else {
@@ -32,6 +32,13 @@ pub(super) fn accumulate(
     f: &FundingIntent,
 ) -> Result<Totals, String> {
     total.through = sequence(j, &f.id).ok_or("funding sequence missing")?;
+    total.expires_through_unix = total
+        .expires_through_unix
+        .max(f.expires_unix.checked_add(60).ok_or("expiry overflow")?);
+    if f.cancelled() {
+        total.cancelled_requests = add(total.cancelled_requests, 1)?;
+        return Ok(total);
+    }
     let cost = if let Some(result) = f.reclaimed() {
         f.validate_reclaim(result)?;
         total.abandoned_requests = add(total.abandoned_requests, 1)?;
@@ -57,9 +64,6 @@ pub(super) fn accumulate(
     total.cost.token_amount_sat = add(total.cost.token_amount_sat, cost.token_amount_sat)?;
     total.cost.swap_fee_sat = add(total.cost.swap_fee_sat, cost.swap_fee_sat)?;
     total.cost.wallet_debit_sat = add(total.cost.wallet_debit_sat, cost.wallet_debit_sat)?;
-    total.expires_through_unix = total
-        .expires_through_unix
-        .max(f.expires_unix.checked_add(60).ok_or("expiry overflow")?);
     Ok(total)
 }
 

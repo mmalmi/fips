@@ -1,7 +1,7 @@
 use super::super::transition_tests::{fixture, reload};
 use super::*;
 
-fn abandoned(directory: &Path) -> (Store, Outgoing) {
+pub(super) fn abandoned(directory: &Path) -> (Store, Outgoing) {
     let (mut store, old) = fixture(directory);
     store
         .change(|j| {
@@ -15,7 +15,7 @@ fn abandoned(directory: &Path) -> (Store, Outgoing) {
     (store, old)
 }
 
-fn receipt() -> ReclaimedFunding {
+pub(super) fn receipt() -> ReclaimedFunding {
     ReclaimedFunding {
         wallet_operation_id: "original-send".into(),
         wallet_cost: cashu_service::CashuSendCost {
@@ -27,7 +27,7 @@ fn receipt() -> ReclaimedFunding {
     }
 }
 
-fn prepare(store: &mut Store) -> FundingIntent {
+pub(super) fn prepare(store: &mut Store) -> FundingIntent {
     let intent = store.journal.funding["test-1"].clone();
     store
         .change(|j| Controller::prepare_funding_reclaim(j, &intent))

@@ -76,7 +76,7 @@ pub(super) fn same_service(previous: &RouteOffer, next: &RouteOffer) -> bool {
 
 impl Controller {
     pub(super) fn funding_released(journal: &Journal, funding: &FundingIntent) -> bool {
-        funding.reclaimed().is_some()
+        funding.reclaim_terminal()
             || funding.funded.as_ref().is_some_and(|f| {
                 journal
                     .buyer_settlements

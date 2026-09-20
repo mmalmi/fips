@@ -55,6 +55,11 @@ impl Controller {
             if f.reclaim.is_some() && f.funded.is_some() {
                 return Err("funding cannot be opened and reclaimed".into());
             }
+            // The SDK proved this exact admission never started a wallet send.
+            // It releases its reservation without contributing debit or refund.
+            if f.cancelled() {
+                continue;
+            }
             let (debit, refund) = if let Some(result) = f.reclaimed() {
                 f.validate_reclaim(result)?;
                 if !operations.insert(&result.wallet_operation_id) {

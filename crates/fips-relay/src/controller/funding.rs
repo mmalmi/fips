@@ -1,7 +1,7 @@
 //! Restore original wallet funding independently of routing authorization.
 use super::*;
 use cashu_service::{
-    CashuSpilmanFundingReclaim, StreamingRouteOpenCashuSpilmanChannelFromWalletRequest,
+    StreamingRouteOpenCashuSpilmanChannelFromWalletRequest,
     StreamingRouteOpenCashuSpilmanChannelFromWalletResult,
     reclaim_abandoned_cashu_spilman_wallet_funding, restore_cashu_spilman_wallet_funding,
 };
@@ -72,7 +72,7 @@ impl Controller {
             .await?
             .funding
             .into_values()
-            .filter(|intent| intent.funded.is_none() && intent.reclaimed().is_none())
+            .filter(|intent| intent.funded.is_none() && !intent.reclaim_terminal())
             .map(|intent| intent.id)
         {
             if let Err(error) = self.recover_funding_intent(&id).await {
@@ -91,7 +91,7 @@ impl Controller {
             .get(id)
             .cloned()
             .ok_or("funding intent missing")?;
-        if intent.funded.is_some() || intent.reclaimed().is_some() {
+        if intent.funded.is_some() || intent.reclaim_terminal() {
             return Ok(());
         }
         let request = intent.wallet_request(&self.policy)?;
@@ -138,20 +138,16 @@ impl Controller {
                 Ok((result, wallet_guard))
             })
             .await?;
-            if let CashuSpilmanFundingReclaim::Reclaimed {
-                wallet_operation_id,
-                wallet_cost,
-                recovered_amount_sat,
-            } = result?
-            {
-                let result = ReclaimedFunding {
-                    wallet_operation_id,
-                    wallet_cost,
-                    recovered_amount_sat,
-                };
-                self.change(move |j| Self::record_funding_reclaim(j, &intent, result))
-                    .await?;
+            let result = result?;
+            if matches!(
+                result,
+                cashu_service::CashuSpilmanFundingReclaim::Missing
+                    | cashu_service::CashuSpilmanFundingReclaim::NoPlan
+            ) {
+                return Ok(());
             }
+            self.change(move |j| Self::record_wallet_reclaim(j, &intent, result))
+                .await?;
         }
         Ok(())
     }

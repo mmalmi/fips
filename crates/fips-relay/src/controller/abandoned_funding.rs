@@ -5,6 +5,7 @@ use super::*;
 #[serde(tag = "state", rename_all = "snake_case")]
 pub(super) enum FundingReclaim {
     Pending,
+    Cancelled,
     Complete { result: ReclaimedFunding },
 }
 
@@ -16,6 +17,14 @@ pub(super) struct ReclaimedFunding {
 }
 
 impl FundingIntent {
+    pub(super) fn cancelled(&self) -> bool {
+        matches!(self.reclaim, Some(FundingReclaim::Cancelled))
+    }
+
+    pub(super) fn reclaim_terminal(&self) -> bool {
+        self.cancelled() || self.reclaimed().is_some()
+    }
+
     pub(super) fn reclaimed(&self) -> Option<&ReclaimedFunding> {
         match &self.reclaim {
             Some(FundingReclaim::Complete { result }) => Some(result),
@@ -41,7 +50,7 @@ impl Controller {
 
     pub(super) fn abandoned_funding(j: &Journal, intent: &FundingIntent) -> bool {
         intent.funded.is_none()
-            && intent.reclaimed().is_none()
+            && !intent.reclaim_terminal()
             && Self::funding_exclusively_withdrawn(j, intent)
     }
 
@@ -66,22 +75,65 @@ impl Controller {
         result: ReclaimedFunding,
     ) -> Result<(), String> {
         expected.validate_reclaim(&result)?;
+        Self::record_reclaim_disposition(j, expected, FundingReclaim::Complete { result })
+    }
+
+    pub(super) fn record_wallet_reclaim(
+        j: &mut Journal,
+        expected: &FundingIntent,
+        result: cashu_service::CashuSpilmanFundingReclaim,
+    ) -> Result<(), String> {
+        use cashu_service::CashuSpilmanFundingReclaim as Wallet;
+        match result {
+            Wallet::Missing | Wallet::NoPlan => Ok(()),
+            Wallet::Cancelled => {
+                Self::record_reclaim_disposition(j, expected, FundingReclaim::Cancelled)
+            }
+            Wallet::Reclaimed {
+                wallet_operation_id,
+                wallet_cost,
+                recovered_amount_sat,
+            } => Self::record_funding_reclaim(
+                j,
+                expected,
+                ReclaimedFunding {
+                    wallet_operation_id,
+                    wallet_cost,
+                    recovered_amount_sat,
+                },
+            ),
+        }
+    }
+
+    fn record_reclaim_disposition(
+        j: &mut Journal,
+        expected: &FundingIntent,
+        disposition: FundingReclaim,
+    ) -> Result<(), String> {
         let current = j
             .funding
             .get(&expected.id)
             .ok_or("reclaim intent missing")?;
-        if current.reclaimed() == Some(&result) {
+        if current.reclaim.as_ref() == Some(&disposition)
+            && (matches!(expected.reclaim, Some(FundingReclaim::Pending))
+                || expected.reclaim.as_ref() == Some(&disposition))
+        {
             let mut previous = current.clone();
             previous.reclaim = expected.reclaim.clone();
             if previous == *expected {
                 return Ok(());
             }
         }
-        if current != expected || !matches!(current.reclaim, Some(FundingReclaim::Pending)) {
+        if current != expected
+            || !matches!(current.reclaim, Some(FundingReclaim::Pending))
+            || !Self::abandoned_funding(j, current)
+        {
             return Err("wallet reclaim intent or result changed".into());
         }
-        j.funding.get_mut(&expected.id).unwrap().reclaim =
-            Some(FundingReclaim::Complete { result });
+        if matches!(disposition, FundingReclaim::Cancelled) {
+            j.version |= journal::FUNDING_CANCELLED_VERSION;
+        }
+        j.funding.get_mut(&expected.id).unwrap().reclaim = Some(disposition);
         Ok(())
     }
 
@@ -118,6 +170,13 @@ impl Controller {
                         return Err("reclaimed funding has an outgoing route".into());
                     }
                 }
+                FundingReclaim::Cancelled => {
+                    if j.version & journal::FUNDING_CANCELLED_VERSION == 0
+                        || j.outgoing.values().any(|o| o.funding_id == intent.id)
+                    {
+                        return Err("invalid cancelled funding evidence".into());
+                    }
+                }
                 FundingReclaim::Pending => (),
             }
         }
@@ -125,5 +184,7 @@ impl Controller {
     }
 }
 
+#[cfg(test)]
+mod cancelled_tests;
 #[cfg(test)]
 mod tests;

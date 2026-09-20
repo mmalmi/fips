@@ -33,7 +33,9 @@ mod cadence;
 pub use cadence::PaymentCadence;
 mod abandoned_funding;
 mod acceptance;
-use abandoned_funding::{FundingReclaim, ReclaimedFunding};
+use abandoned_funding::FundingReclaim;
+#[cfg(test)]
+use abandoned_funding::ReclaimedFunding;
 mod capital;
 mod channel_history;
 mod control_obligations;

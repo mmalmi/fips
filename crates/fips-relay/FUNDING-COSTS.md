@@ -34,21 +34,41 @@ instead reclaim its original wallet send. The controller and SDK persist separat
 abandonment fences before recovery. The SDK verifies the original request and saved
 plan, restores only that send's confirmation, and durably revokes its token. An
 empty restore may retry the identical saved confirmation; it never prepares a new
-send or processes unrelated wallet operations. Only the verified original debit
-and net refund release reserved capital. Until that result is saved, new purchases
-from the same provider remain blocked; unrelated providers retain their normal
-limits. Route changes check the same fence atomically with reservation; if the
+send or processes unrelated wallet operations. For a started send, only the
+verified original debit and net refund release reserved capital. Until that result
+is saved, new purchases from the same provider remain blocked; unrelated providers
+retain their normal limits. Route changes check the same fence atomically with reservation; if the
 route change owns the provider first, reclaim must wait for its withdrawal.
 An existing channel opening still uses its original restore/refund path.
 
 Completed abandoned sends share numbered-prefix retirement with channels after
 their original wallet expiry. They retain gross costs, refunds and lifetime
 exposure, and count as `abandoned_requests`, with zero channel capacity or signed
-payments. The controller retains the `0x800` format bit and the SDK uses version 8
-so older readers cannot silently ignore the abandonment fences.
+payments. The controller retains the `0x800` format bit and the SDK requires
+version 8 or later so older readers cannot silently ignore the abandonment fences.
 
-This recovery remains conservative. Missing admissions, missing plans and
-unsubmitted `ProofsReserved` sends do not prove a terminal financial outcome.
+An exact admission which never started a wallet send has a separate terminal
+`Cancelled` outcome. The SDK fences that admission and verifies both wallet
+request namespaces are absent while holding the money lock. Only that evidence
+releases its original reservation; FIPS records no operation ID, debit, refund or
+channel. The controller retains the `0x2000` format bit in addition to `0x800`,
+and the SDK uses version 9. Cancellation survives reload, rejects delayed funding
+and preserves the original sequence, withdrawal fences and lifetime limits.
+After the original wallet expiry, ordered retirement counts `cancelled_requests`
+separately from wallet sends and `abandoned_requests`, with zero monetary totals.
+
+The three-daemon cancellation regression kills the source during the exact
+admitted metadata wait, before any wallet send. A one-time purchase permits no
+automatic replacement. Ordinary startup/upkeep cancels the original intent and
+retires it after its original expiry; another restart preserves both cutoffs.
+All 384 test sats remain spendable before cleanup, with no swaps, fees, channels,
+debits or refunds. The original FIPS implementation keeps its 48-sat reservation
+under the same scenario. This proves the local SDK/controller handoff, not
+physical power-loss or Wi-Fi acceptance.
+
+This recovery remains conservative. Missing admissions, started sends without
+saved plans and unsubmitted `ProofsReserved` sends do not prove a terminal
+financial outcome.
 They keep their reservation. A stopped, expired upstream agreement can now retire
 without an installed seller contract if its verified seller channel already
 exists. The ordinary retirement transaction records zero usage, preserves channel

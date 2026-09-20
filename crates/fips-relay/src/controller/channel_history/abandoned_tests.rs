@@ -2,10 +2,41 @@ use super::super::transition_tests::reload;
 use super::tests::{ack, append, fixture, pending};
 use super::*;
 
-fn append_reclaim(store: &mut Store, template: &FundingIntent, complete: bool) -> String {
+pub(super) fn append_reclaim(
+    store: &mut Store,
+    template: &FundingIntent,
+    complete: bool,
+) -> String {
+    let n = store.journal.next_funding;
+    let reclaim = if complete {
+        FundingReclaim::Complete {
+            result: ReclaimedFunding {
+                wallet_operation_id: format!("reclaimed-{n}"),
+                wallet_cost: cashu_service::CashuSendCost {
+                    token_amount_sat: 32,
+                    swap_fee_sat: 0,
+                    wallet_debit_sat: 32,
+                },
+                recovered_amount_sat: 30,
+            },
+        }
+    } else {
+        FundingReclaim::Pending
+    };
+    append_disposition(store, template, reclaim)
+}
+
+pub(super) fn append_disposition(
+    store: &mut Store,
+    template: &FundingIntent,
+    reclaim: FundingReclaim,
+) -> String {
     let j = &mut store.journal;
     j.advance_history_version(4);
     j.version |= journal::FUNDING_RECLAIM_VERSION;
+    if matches!(reclaim, FundingReclaim::Cancelled) {
+        j.version |= journal::FUNDING_CANCELLED_VERSION;
+    }
     j.history
         .get_or_insert_with(History::default)
         .channels
@@ -16,18 +47,7 @@ fn append_reclaim(store: &mut Store, template: &FundingIntent, complete: bool) -
     f.created_unix = 100 + n;
     f.expires_unix = f.created_unix + j.policy.channel_lifetime_secs;
     f.funded = None;
-    f.reclaim = Some(FundingReclaim::Complete {
-        result: ReclaimedFunding {
-            wallet_operation_id: format!("reclaimed-{n}"),
-            wallet_cost: cashu_service::CashuSendCost {
-                token_amount_sat: 32,
-                swap_fee_sat: 0,
-                wallet_debit_sat: 32,
-            },
-            recovered_amount_sat: 30,
-        },
-    });
-    if !complete {
+    if matches!(reclaim, FundingReclaim::Pending) {
         // Model the real withdrawn reservation, so journal load validates the
         // Pending disposition before any terminal evidence is available.
         let (_, old) =
@@ -39,8 +59,8 @@ fn append_reclaim(store: &mut Store, template: &FundingIntent, complete: bool) -
         j.recovery_only.insert(offer.id.clone());
         j.requested.insert(offer.id.clone(), offer);
         j.version |= journal::RECOVERY_ONLY_VERSION;
-        f.reclaim = Some(FundingReclaim::Pending);
     }
+    f.reclaim = Some(reclaim);
     let id = f.id.clone();
     j.funding.insert(id.clone(), f);
     j.next_funding += 1;

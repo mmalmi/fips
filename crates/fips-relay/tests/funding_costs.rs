@@ -1,5 +1,7 @@
 #![cfg(unix)]
 //! Real service processes account for mint fees and replayed refunds.
+#[path = "funding_costs/cancelled_preopening.rs"]
+mod cancelled_preopening;
 #[path = "funding_costs/connected_preopening.rs"]
 mod connected_preopening;
 #[path = "funding_costs/paid_fees.rs"]

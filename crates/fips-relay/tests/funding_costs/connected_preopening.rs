@@ -98,6 +98,46 @@ impl Drop for DirectTraffic {
     }
 }
 
+async fn settled_links(
+    configs: &[ServiceConfig],
+    npubs: &[String],
+    direct: &DirectTraffic,
+) -> [Value; 2] {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let mut candidate = None;
+        let mut first_round = 0;
+        loop {
+            let status = source_and_provider(configs).await.unwrap();
+            let links = connected_link(&status[0], &npubs[1])
+                .zip(connected_link(&status[1], &npubs[0]))
+                .map(|(source, provider)| [source, provider]);
+            let rounds = {
+                let progress = direct.progress.lock().unwrap();
+                assert!(
+                    !progress.failed,
+                    "direct-neighbor warmup must keep delivering"
+                );
+                progress.rounds
+            };
+            if links != candidate || !direct.fresh() {
+                candidate = links;
+                first_round = rounds;
+            }
+            // Both static peers dial at startup. Anchor only after successive
+            // real exchanges on the same links, before any purchase exists.
+            if rounds >= first_round + 3
+                && let Some(links) = candidate
+            {
+                eprintln!("connected preparation settled links={links:?} direct_rounds={rounds}");
+                return links;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("bounded stable direct-neighbor warmup")
+}
+
 async fn direct_exchange(
     configs: &[ServiceConfig],
     npubs: &[String],
@@ -176,16 +216,7 @@ async fn lost_preparation_reply_recovers_after_expiry_with_continuously_connecte
         let store = spilman_client_store_path(&wallet);
         let journal = cfg.state_directory.join("controller/controller.json");
         let mut direct = DirectTraffic::start(&configs, &npubs);
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while !direct.fresh() {
-                assert!(!direct.progress.lock().unwrap().failed,
-                    "direct-neighbor fixture warmup must deliver both fresh payloads");
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        }).await.expect("bounded direct-neighbor application warmup");
-        let initial = source_and_provider(&configs).await.unwrap();
-        let links = [connected_link(&initial[0], &npubs[1]).unwrap(),
-            connected_link(&initial[1], &npubs[0]).unwrap()];
+        let links = settled_links(&configs, &npubs, &direct).await;
         let initial_funding: Vec<_> = configs.iter().map(|c|
             read(&c.state_directory.join("controller/controller.json"))["next_funding"].clone()).collect();
         let pids: Vec<_> = children.iter().map(|child| child.id()).collect();

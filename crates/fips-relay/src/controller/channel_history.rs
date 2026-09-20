@@ -6,6 +6,8 @@ use sha2::{Digest, Sha256};
 
 #[cfg(test)]
 mod abandoned_tests;
+#[cfg(test)]
+mod cancelled_tests;
 mod selection;
 #[cfg(test)]
 mod tests;
@@ -23,6 +25,8 @@ pub(super) struct Totals {
     pub channels: u64,
     #[serde(default)]
     pub abandoned_requests: u64,
+    #[serde(default)]
+    pub cancelled_requests: u64,
     pub capacity_sat: u64,
     pub signed_sat: u64,
     pub refund_sat: u64,
@@ -62,10 +66,14 @@ impl Totals {
         let Some(requests) = self.channels.checked_add(self.abandoned_requests) else {
             return false;
         };
-        if requests == 0 {
+        let Some(records) = requests.checked_add(self.cancelled_requests) else {
+            return false;
+        };
+        if records == 0 {
             return *self == Self::default();
         }
-        requests <= self.through
+        records <= self.through
+            && (requests != 0 || self.cost == cashu_service::CashuSendCost::default())
             && requests <= self.cost.token_amount_sat
             && self.channels <= self.capacity_sat
             && (self.channels != 0 || self.capacity_sat == 0)
@@ -85,6 +93,7 @@ impl Totals {
             && sdk.send.through == self.through
             && Some(sdk.send.requests) == self.channels.checked_add(self.abandoned_requests)
             && sdk.abandoned_requests == self.abandoned_requests
+            && sdk.cancelled_requests == self.cancelled_requests
             && sdk.capacity_sat == self.capacity_sat
             && sdk.signed_sat == self.signed_sat
             && sdk.refund_sat == self.refund_sat
@@ -193,6 +202,12 @@ impl Controller {
                     .as_ref()
                     .is_some_and(|p| p.after.abandoned_requests > 0))
                 && j.version & journal::FUNDING_RECLAIM_VERSION == 0)
+            || ((h.totals.cancelled_requests > 0
+                || h.pending
+                    .as_ref()
+                    .is_some_and(|p| p.after.cancelled_requests > 0))
+                && (j.version & journal::FUNDING_CANCELLED_VERSION == 0
+                    || j.version & journal::FUNDING_RECLAIM_VERSION == 0))
             || !h.totals.valid()
             || h.totals.through >= j.next_funding
             || j.funding
