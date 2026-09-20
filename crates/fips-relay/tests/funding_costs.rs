@@ -4,6 +4,8 @@
 mod paid_fees;
 #[allow(dead_code)]
 mod process_support;
+#[path = "funding_costs/preopening.rs"]
+mod preopening;
 #[path = "funding_costs/restore.rs"]
 mod restore;
 #[path = "funding_costs/retirement.rs"]

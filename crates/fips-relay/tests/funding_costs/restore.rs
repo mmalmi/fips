@@ -7,11 +7,11 @@ use cashu_service::{
 use serde_json::Value;
 use std::{path::Path, sync::atomic::Ordering};
 
-fn read(path: &Path) -> Value {
+pub(super) fn read(path: &Path) -> Value {
     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
 }
 
-fn now() -> u64 {
+pub(super) fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()

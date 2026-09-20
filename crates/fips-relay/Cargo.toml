@@ -36,6 +36,8 @@ cashu = { version = "=0.18.0", default-features = false }
 libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
+cdk-common = { version = "=0.18.0", default-features = false, features = ["wallet"] }
+cdk-sqlite = { version = "=0.18.0", default-features = false, features = ["wallet"] }
 fips-core = { package = "nvpn-fips-core", version = "=0.4.81", path = "../fips-core", features = ["sim-transport"] }
 cashu-service = { version = "=0.4.8", default-features = false, features = ["simulation", "spilman-wallet-http", "spilman-configurable-host-reqwest"] }
 tokio = { version = "1", features = ["process"] }

@@ -2050,6 +2050,8 @@ version = "0.1.0"
 dependencies = [
  "cashu 0.18.0",
  "cashu-service",
+ "cdk-common",
+ "cdk-sqlite",
  "fs2",
  "ipnet",
  "libc",

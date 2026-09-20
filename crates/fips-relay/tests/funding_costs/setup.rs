@@ -52,6 +52,19 @@ pub(super) async fn start_nodes(
     lifetime: u64,
     quote_lifetime: u64,
 ) -> Bench {
+    start_nodes_with_funding_limit(root, mint, network, mint_url, lifetime, quote_lifetime, 40)
+        .await
+}
+
+pub(super) async fn start_nodes_with_funding_limit(
+    root: &Path,
+    mint: LocalMint,
+    network: PaymentNetwork,
+    mint_url: &str,
+    lifetime: u64,
+    quote_lifetime: u64,
+    buyer_funding_limit: u64,
+) -> Bench {
     let mut configs = Vec::new();
     let mut paths = Vec::new();
     let mut npubs = Vec::new();
@@ -60,9 +73,12 @@ pub(super) async fn start_nodes(
         let directory = root.join(format!("n{i}"));
         std::fs::create_dir(&directory).unwrap();
         let mut cfg = config(&directory, mint_url);
-        cfg.terms.controller.max_funding_overhead_sat = 8;
-        cfg.terms.controller.max_locked_sat = 40;
-        cfg.terms.controller.max_wallet_spend_sat = 40;
+        let limit = if i == 0 { buyer_funding_limit } else { 40 };
+        cfg.terms.controller.max_funding_overhead_sat = limit
+            .checked_sub(cfg.terms.controller.channel_capacity_sat)
+            .expect("fixture funding allowance covers channel capacity");
+        cfg.terms.controller.max_locked_sat = limit;
+        cfg.terms.controller.max_wallet_spend_sat = limit;
         cfg.terms.controller.channel_lifetime_secs = lifetime;
         cfg.terms.quote_lifetime_secs = quote_lifetime;
         cfg.terms.billing = fips_relay::ledger::BillingBasis::ForwardingAttempt;
