@@ -1610,8 +1610,13 @@ original Watch recovers using the same restored wallet operation and channel.
 All three final 12-payload streams complete; the four original authorized
 channels settle, and all 1,536 test sats are collected. This is one controlled
 simulation, not a hardware handover or latency guarantee. Earlier wallet-send
-and keyset waits can still serialize signing; fenced selector/trial recovery
-also remains unimplemented. Neither limitation is covered by this result.
+and keyset waits can still serialize signing. Price-selection recovery is not
+covered by this scenario: before first acceptance, the existing selector already
+requests a fresh capped trial. A separate source review identifies a possible
+stall when trial-to-full promotion retires the old trial before its replacement
+is accepted, then interruption leaves the selector retaining that retired trial.
+This needs a production-path regression before changing quota accounting;
+clearing selection state must not refill an exhausted trial allowance.
 
 The final source passes all 234 relay library tests and all 18 priced-path
 scenarios, including a repeat of this held-funding encounter. The payment SDK
