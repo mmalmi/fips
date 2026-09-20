@@ -93,13 +93,13 @@ impl Controller {
             return Ok(Some(usage));
         }
         let payment = {
-            let wallet_guard = self.wallet.clone().lock_owned().await;
             let buyer = self.services.buyer.clone();
             let directory = self.services.wallet_directory.clone();
             let id = channel_id.clone();
             blocking(move || {
-                let _wallet = wallet_guard;
                 measure(Operation::PaymentSign, || {
+                    // Signing has its own exclusive channel-store lock and never
+                    // spends wallet proofs. Other channels may be awaiting a mint.
                     let signer = FileSpilmanPaymentSigner::load(&directory)?;
                     buyer
                         .sign_claim(&signer, purchase.provider, &id, supported, now()?)

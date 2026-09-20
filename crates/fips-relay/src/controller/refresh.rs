@@ -10,6 +10,7 @@ pub(super) mod tests;
 pub(super) struct RefreshCheck {
     checked: tokio::time::Instant,
     free: Option<RouteOffer>,
+    replace_fenced: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,6 +87,31 @@ impl Controller {
             || j.watched_routes
                 .values()
                 .any(|w| w.paused && w.pending.as_ref().is_some_and(|o| o.id == offer_id))
+    }
+
+    fn replace_fenced_refresh(
+        j: &Journal,
+        watch: &WatchedRoute,
+        offer: &RouteOffer,
+        price_selection: bool,
+        timestamp: u64,
+    ) -> bool {
+        // A fresh selector request can negotiate another trial. Leave that
+        // accounting to the selector; only replace full native-route offers.
+        !price_selection
+            && !offer.trial
+            && offer.price.msat != 0
+            && !watch.paused
+            && watch.pending.is_none()
+            && j.watched_routes.get(&watch.destination) == Some(watch)
+            && watch.accepts(offer)
+            && offer.buyer == j.local
+            && offer.mint_url == j.policy.mint_url
+            && offer.expires_unix > timestamp
+            && j.requested.get(&offer.id) == Some(offer)
+            && j.recovery_only.contains(&offer.id)
+            && !Self::retired_offer(j, offer)
+            && !j.route_changes.get(&offer.id).is_some_and(|c| c.paused)
     }
 
     /// Bind a source watch in the transaction that reserves its purchase. A
@@ -194,6 +220,7 @@ impl Controller {
                 RefreshCheck {
                     checked: tokio::time::Instant::now(),
                     free: None,
+                    replace_fenced: None,
                 },
             );
         let offer = match pending {
@@ -230,6 +257,24 @@ impl Controller {
             return Ok(RouteAccess::Free(offer));
         }
         let timestamp = now()?;
+        if Self::replace_fenced_refresh(
+            &snapshot,
+            watch,
+            &offer,
+            self.services.quotes.price_selection_enabled(),
+            timestamp,
+        ) {
+            // Persisted withdrawal remains authoritative. Remember only to ask
+            // for a fresh quote at the next ordinary refresh deadline.
+            if let Some(check) = self
+                .refresh_checks
+                .lock()
+                .map_err(|_| "refresh timer poisoned")?
+                .get_mut(id)
+            {
+                check.replace_fenced = Some(offer.id.clone());
+            }
+        }
         // An unchanged monitoring result changes no financial state and needs
         // no journal write. A retained pending purchase still runs recovery.
         if watch.pending.is_none()
@@ -335,7 +380,7 @@ impl Controller {
             {
                 continue;
             }
-            let free = {
+            let (free, replace_fenced) = {
                 let mut checks = self
                     .refresh_checks
                     .lock()
@@ -348,9 +393,10 @@ impl Controller {
                 let check = checks.entry(id.clone()).or_insert(RefreshCheck {
                     checked: tokio::time::Instant::now(),
                     free: None,
+                    replace_fenced: None,
                 });
                 check.checked = tokio::time::Instant::now();
-                check.free.clone()
+                (check.free.clone(), check.replace_fenced.take())
             };
             let result = async {
                 let offer = if let Some(pending) = watch.pending {
@@ -358,7 +404,24 @@ impl Controller {
                 } else {
                     let destination = PeerIdentity::from_npub(&watch.destination)
                         .map_err(|_| "invalid watched destination")?;
-                    if let Some(old) = free.filter(|offer| !offer.trial) {
+                    let replace = if let Some(id) = replace_fenced {
+                        let latest = self.snapshot().await?;
+                        let timestamp = now()?;
+                        latest.requested.get(&id).is_some_and(|offer| {
+                            Self::replace_fenced_refresh(
+                                &latest,
+                                &watch,
+                                offer,
+                                self.services.quotes.price_selection_enabled(),
+                                timestamp,
+                            )
+                        })
+                    } else {
+                        false
+                    };
+                    if replace {
+                        self.services.quotes.request_route(destination).await?
+                    } else if let Some(old) = free.filter(|offer| !offer.trial) {
                         let remaining = self.services.quotes.free.remaining_units(&old);
                         let headroom = old.max_units.div_ceil(4).max(2_048).min(old.max_units);
                         let has_quota = remaining

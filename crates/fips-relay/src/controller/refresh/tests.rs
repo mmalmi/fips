@@ -1,4 +1,5 @@
 mod coalescing;
+mod recovery;
 mod scheduling;
 
 use super::*;
@@ -16,6 +17,14 @@ pub(in crate::controller) async fn disconnected_controller(root: &Path) -> Contr
 pub(in crate::controller) async fn disconnected_controller_with_policy(
     root: &Path,
     policy: ControllerPolicy,
+) -> Controller {
+    controller_with_neighbors(root, policy, vec![]).await
+}
+
+async fn controller_with_neighbors(
+    root: &Path,
+    policy: ControllerPolicy,
+    neighbors: Vec<PeerIdentity>,
 ) -> Controller {
     let mut config = Config::new();
     config.node.control.enabled = false;
@@ -51,7 +60,7 @@ pub(in crate::controller) async fn disconnected_controller_with_policy(
         FileSpilmanPaymentReceiverConfig::new([policy.mint_url.clone()]),
     )
     .unwrap();
-    let (transport, _) = ControlTransport::start(endpoint.clone(), 44_741, vec![], 1)
+    let (transport, _) = ControlTransport::start(endpoint.clone(), 44_741, neighbors.clone(), 1)
         .await
         .unwrap();
     let quotes = Arc::new(
@@ -73,10 +82,10 @@ pub(in crate::controller) async fn disconnected_controller_with_policy(
         )
         .unwrap(),
     );
-    let (acceptance, _) = ControlTransport::start(endpoint.clone(), 44_742, vec![], 2)
+    let (acceptance, _) = ControlTransport::start(endpoint.clone(), 44_742, neighbors.clone(), 2)
         .await
         .unwrap();
-    let (payments, _) = ControlTransport::start(endpoint.clone(), 44_743, vec![], 3)
+    let (payments, _) = ControlTransport::start(endpoint.clone(), 44_743, neighbors, 3)
         .await
         .unwrap();
     Controller::create(

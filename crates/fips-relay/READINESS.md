@@ -1558,6 +1558,40 @@ sats settled and collected into the isolated collector wallet. Each settlement
 redeems at least the acknowledged payment; each wallet must equal its initial
 balance minus purchases plus that router's relay earnings before collection.
 
+A held-funding variant now covers a new encounter interrupted after the mint
+commits but before its response reaches the opening caller. The original run
+delivered 36 fresh payloads on an existing healthy route while its credited
+payment remained at 2,000 msat instead of advancing to 6,000 msat. Payment signing
+waited behind both the controller wallet mutex and the SDK's complete channel
+store snapshot. Signing now keeps its channel/authorization/store locks without
+taking the wallet mutex. Wallet-backed final funding and restore waits retain
+the wallet owner, release the JSON snapshot, and reload/recheck the exact opening
+and closed/refund/retirement fences before completion.
+
+The same encounter exposed a second failure: after disconnect withdrawal, an
+unpaused Watch could repeatedly receive the provider's reusable, locally fenced
+offer. Full native-route refresh now requests a fresh quote at the next ordinary
+five-second deadline, after rechecking current authority. It never removes the
+old fence, widens the Watch or creates a new funding intent. The focused real
+control-path test checks the request cadence, reload re-detection and unchanged
+capital; guard tests exclude paused/retired authority and selector/trial offers.
+
+With both corrections, the six-node regression advances healthy credit from
+2,000 to 6,000 msat while the original response is still held and its funding
+unresolved. The final credit observation takes 0.358 seconds after the finite
+traffic batches. Following the normal mint timeout and bridge rejoin, the
+original Watch recovers using the same restored wallet operation and channel.
+All three final 12-payload streams complete; the four original authorized
+channels settle, and all 1,536 test sats are collected. This is one controlled
+simulation, not a hardware handover or latency guarantee. Earlier wallet-send
+and keyset waits can still serialize signing; fenced selector/trial recovery
+also remains unimplemented. Neither limitation is covered by this result.
+
+The final source passes all 234 relay library tests and all 18 priced-path
+scenarios, including a repeat of this held-funding encounter. The payment SDK
+passes all 240 workspace tests with every feature enabled. Strict relay and SDK
+lint checks pass; these changes have not yet been tested on the physical routers.
+
 This uses the existing SimNetwork, real Noise authentication, native tree/session
 routing and production relay controllers. Sim discovery supplies at most 64
 rotating direct-neighbor identity hints per poll; the existing node admission
@@ -1577,7 +1611,7 @@ an observation bound from the start of probing, not exact network convergence or
 lossless handover. The earlier test exhausted its three attempts within about
 1.4 seconds and then only waited; its failed observation is retained and does not
 establish a 20-second production recovery failure. Physical moving meshes,
-interrupted funding/settlement during encounters and hostile discovery load remain
+broader interrupted funding/settlement during encounters and hostile discovery load remain
 separate acceptance cases. Run the scenario with `cargo test -p fips-relay
 --all-features --test priced_paths merge_split:: -- --test-threads=1 --nocapture`,
 using the development dependencies described in [FUNDING-COSTS.md](FUNDING-COSTS.md).

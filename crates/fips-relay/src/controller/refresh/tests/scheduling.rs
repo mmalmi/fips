@@ -26,6 +26,7 @@ async fn refresh_wakeup_preserves_deadlines_without_busy_retries() {
                 RefreshCheck {
                     checked,
                     free: None,
+                    replace_fenced: None,
                 },
             );
         }
@@ -64,6 +65,7 @@ async fn slow_refresh_keeps_the_existing_ready_tick_without_busy_followups() {
         RefreshCheck {
             checked: started,
             free: None,
+            replace_fenced: None,
         },
     );
     tokio::time::advance(Duration::from_millis(5_200)).await;
