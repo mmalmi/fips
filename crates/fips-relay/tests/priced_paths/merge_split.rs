@@ -10,6 +10,9 @@ use tokio::{
     time::Instant,
 };
 
+#[path = "merge_split/pending_funding.rs"]
+mod pending_funding;
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn independently_discovered_meshes_merge_split_and_reuse_paid_channels() {
     for (root, seed) in [(0, 116), (3, 117)] {
@@ -507,11 +510,15 @@ async fn exercise(root: usize, seed: u64) {
             retain(anchor.as_ref().unwrap(), &accounts(&bench).await, true);
         }
     }
+    collect(bench, &anchor.unwrap(), &credited).await;
+    eprintln!("mesh root={root} seed={seed}: eight original channels settled");
+}
+
+async fn collect(bench: Bench, final_accounts: &[Account], credited: &BTreeMap<String, u64>) {
     for controller in &bench.controllers {
         controller.pause_route_refresh().await.unwrap();
         controller.pause_renewals().await.unwrap();
     }
-    let final_accounts = anchor.unwrap();
     let mut unsettled: BTreeMap<_, _> = hop_usage(&bench)
         .await
         .into_iter()
@@ -566,7 +573,7 @@ async fn exercise(root: usize, seed: u64) {
     assert!(unsettled.is_empty());
     let mut total = 0;
     for (i, wallet) in bench.wallets.iter().enumerate() {
-        let balance = load_mint_balance(wallet, bench.mint.url())
+        let balance = load_mint_balance(wallet, &bench.controller_policy.mint_url)
             .await
             .unwrap()
             .balance_sat;
@@ -576,15 +583,16 @@ async fn exercise(root: usize, seed: u64) {
         );
         total += balance;
         if balance > 0 {
-            let token = send_payment_token(wallet, bench.mint.url(), balance as u64)
-                .await
-                .unwrap();
+            let token =
+                send_payment_token(wallet, &bench.controller_policy.mint_url, balance as u64)
+                    .await
+                    .unwrap();
             receive_payment_token(&bench.root.path().join("collector"), &token.token)
                 .await
                 .unwrap();
         }
         assert_eq!(
-            load_mint_balance(wallet, bench.mint.url())
+            load_mint_balance(wallet, &bench.controller_policy.mint_url)
                 .await
                 .unwrap()
                 .balance_sat,
@@ -593,15 +601,16 @@ async fn exercise(root: usize, seed: u64) {
     }
     assert_eq!(total, 1536, "all original test money is conserved");
     assert_eq!(
-        load_mint_balance(&bench.root.path().join("collector"), bench.mint.url())
-            .await
-            .unwrap()
-            .balance_sat,
+        load_mint_balance(
+            &bench.root.path().join("collector"),
+            &bench.controller_policy.mint_url,
+        )
+        .await
+        .unwrap()
+        .balance_sat,
         total
     );
-    eprintln!(
-        "mesh root={root} seed={seed}: eight original channels settled, all {total} test sats collected"
-    );
+    eprintln!("mesh: all {total} test sats collected");
     for task in bench.tasks {
         task.stop().await;
     }

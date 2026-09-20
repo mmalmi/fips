@@ -1,5 +1,6 @@
 //! Shared real controller and test-money assembly for simulated carrier scenarios.
 use super::*;
+use cashu_service::simulation::MintProxy;
 use fips_core::FipsEndpointServiceReceiver;
 use std::path::PathBuf;
 
@@ -27,6 +28,21 @@ pub(super) struct Bench {
 }
 
 pub(super) async fn start(root_index: usize, scenario: Scenario, seed: u64) -> Bench {
+    start_inner(root_index, scenario, seed, false).await.0
+}
+
+#[cfg(unix)]
+pub(super) async fn start_with_mint_proxy(root_index: usize, seed: u64) -> (Bench, MintProxy) {
+    let (bench, proxy) = start_inner(root_index, Scenario::MergeSplit, seed, true).await;
+    (bench, proxy.unwrap())
+}
+
+async fn start_inner(
+    root_index: usize,
+    scenario: Scenario,
+    seed: u64,
+    intercept_mint: bool,
+) -> (Bench, Option<MintProxy>) {
     let handshakes = matches!(scenario, Scenario::HandshakeSaturation);
     let saturation = matches!(
         scenario,
@@ -56,7 +72,14 @@ pub(super) async fn start(root_index: usize, scenario: Scenario, seed: u64) -> B
     )
     .await
     .unwrap();
-    let mut controller_policy = policy(mint.url());
+    let mint_proxy = if intercept_mint {
+        Some(MintProxy::start(mint.url()).await)
+    } else {
+        None
+    };
+    // Wallet proofs, quotes and receiver validation must all name the same mint.
+    let mint_url = mint_proxy.as_ref().map_or(mint.url(), |proxy| &proxy.url);
+    let mut controller_policy = policy(mint_url);
     if recovery_timing || mesh {
         controller_policy.max_wallet_spend_sat = 128;
         controller_policy.renewal = None;
@@ -189,9 +212,7 @@ pub(super) async fn start(root_index: usize, scenario: Scenario, seed: u64) -> B
         let wallet = root.path().join(format!("wallet-{i}"));
         // The diamond funds its source; both mesh components have onward capital.
         let amount = if mesh || i == 0 { 256 } else { 1 };
-        let topup = create_topup_quote(&wallet, mint.url(), amount)
-            .await
-            .unwrap();
+        let topup = create_topup_quote(&wallet, mint_url, amount).await.unwrap();
         payments
             .orchestrator_funding()
             .settle_external(&topup.payment_request)
@@ -232,7 +253,7 @@ pub(super) async fn start(root_index: usize, scenario: Scenario, seed: u64) -> B
     for i in 0..count {
         let receiver = FileSpilmanPaymentReceiver::load_with_keyset_refresh(
             &root.path().join(format!("receiver-{i}")),
-            FileSpilmanPaymentReceiverConfig::new([mint.url().to_string()]),
+            FileSpilmanPaymentReceiverConfig::new([mint_url.to_string()]),
         )
         .await
         .unwrap();
@@ -268,7 +289,7 @@ pub(super) async fn start(root_index: usize, scenario: Scenario, seed: u64) -> B
         let quote_policy = QuotePolicy {
             destination_fees: Default::default(),
             billing: BillingBasis::ForwardingData,
-            mint_url: mint.url().into(),
+            mint_url: mint_url.into(),
             receiver_pubkey_hex: receiver.receiver_pubkey_hex().into(),
             fee_msat_per_kib: if mesh {
                 128
@@ -350,7 +371,7 @@ pub(super) async fn start(root_index: usize, scenario: Scenario, seed: u64) -> B
         controllers.push(controller);
         services.push(service);
     }
-    Bench {
+    let bench = Bench {
         root,
         mint,
         controller_policy,
@@ -371,5 +392,6 @@ pub(super) async fn start(root_index: usize, scenario: Scenario, seed: u64) -> B
         payment_servers,
         admissions,
         interrupted_acceptance,
-    }
+    };
+    (bench, mint_proxy)
 }

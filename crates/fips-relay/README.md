@@ -271,6 +271,11 @@ Strict relay and Android ARM64 linting, default builds, formatting and the
   reuse unchanged offers, so polling does not exhaust pending-offer history;
   stopped or sealed agreements are excluded from reuse. Pending watched offers
   recover their exact funding intent. Settlement durably pauses source watches.
+  A full native-route offer withdrawn during disconnection can still be cached
+  by its provider. An eligible unpaused watch requests a fresh offer at its next
+  ordinary refresh deadline, retaining the old fence and funding operation.
+  This replacement does not override price selection or trial accounting;
+  recovery from fenced selector/trial offers remains separate work.
 * The automatic route-change scenario rejects an unaffordable initial rate
   without locking funds, then accepts explicit watch ceilings in both directions.
   Removing the middle router leads to lower-priced replacement agreements without

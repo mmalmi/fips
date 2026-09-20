@@ -1,8 +1,16 @@
 //! Distinct source/transit quotes can name the same retained paid agreement.
 use super::*;
 
-async fn provider(endpoint: &Arc<FipsEndpoint>) -> Arc<FipsEndpoint> {
+pub(super) async fn provider(endpoint: &Arc<FipsEndpoint>) -> Arc<FipsEndpoint> {
+    provider_with_identity(endpoint, Identity::generate()).await
+}
+
+pub(super) async fn provider_with_identity(
+    endpoint: &Arc<FipsEndpoint>,
+    identity: Identity,
+) -> Arc<FipsEndpoint> {
     let mut config = Config::new();
+    config.node.identity.nsec = Some(fips_core::encode_nsec(&identity.keypair().secret_key()));
     config.node.control.enabled = false;
     config.node.discovery.nostr.enabled = false;
     config.node.discovery.lan.enabled = false;
