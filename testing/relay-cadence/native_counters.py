@@ -50,7 +50,8 @@ def difference(before, after):
 
 def validate(node):
     native = node["native"]
-    if not isinstance(native, dict) or set(native) != {"status", "routing"}:
+    if not isinstance(native, dict) or set(native) not in (
+            {"status", "routing"}, {"status", "routing", "transports"}):
         raise ValueError("missing native status or routing observation")
     for reply in native.values():
         if not isinstance(reply, dict) or reply.get("status") != "ok":
@@ -66,12 +67,55 @@ def validate(node):
     return observed
 
 
+def transport_observations(node):
+    """Older evidence has no adapter query; never synthesize zero socket drops."""
+    reply = node["native"].get("transports")
+    if reply is None:
+        return None
+    adapters = reply["data"]["transports"]
+    if not isinstance(adapters, list):
+        raise ValueError("missing native transport list")
+    result = {}
+    for adapter in adapters:
+        identity = unsigned(adapter["transport_id"])
+        if identity in result or not isinstance(adapter["type"], str) or not adapter["type"]:
+            raise ValueError("invalid or duplicate native transport")
+        values = {"type": adapter["type"], "name": adapter.get("name")}
+        if values["type"] == "ethernet":
+            for field in ("kernel_drops", "recv_buffer_bytes"):
+                value = adapter["stats"][field]
+                if value is not None:
+                    unsigned(value)
+                    if field == "recv_buffer_bytes" and value == 0:
+                        raise ValueError("invalid effective socket receive buffer")
+                values[field] = value
+        result[identity] = values
+    return result
+
+
+def transport_pair(before, after):
+    first, last = transport_observations(before), transport_observations(after)
+    if first is None and last is None:
+        return
+    if first is None or last is None or first.keys() != last.keys():
+        raise ValueError("native transport observations changed within a process epoch")
+    for identity, previous in first.items():
+        current = last[identity]
+        if any(previous[key] != current[key] for key in ("type", "name")):
+            raise ValueError("native transport identity changed")
+        if previous["type"] == "ethernet":
+            a, b = previous["kernel_drops"], current["kernel_drops"]
+            if a is not None and b is not None and b < a:
+                raise ValueError("native Ethernet socket drop counter reset")
+
+
 def sample_pair(before, after):
     if host_identity(before) != host_identity(after):
         raise ValueError("native observations changed process epoch")
     if before["native"]["status"]["data"]["exe_path"] != after["native"]["status"]["data"]["exe_path"]:
         raise ValueError("native executable identity changed")
     first, last = validate(before), validate(after)
+    transport_pair(before, after)
     difference({"forwarding": first["forwarding"]},
                groups(after["native"]["status"]["data"], ("forwarding",)))
     return difference(first, last)

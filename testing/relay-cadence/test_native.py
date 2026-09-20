@@ -8,7 +8,7 @@ from test_analyze import workload
 from test_hardware import hardware_report, nodes
 
 
-def native_report(background=False):
+def native_report(background=False, transports=False):
     rows = hardware_report()
     rows[0]["native_counters"] = True
     for node in nodes(rows):
@@ -24,10 +24,61 @@ def native_report(background=False):
             }},
             "routing": {"status": "ok", "data": counters},
         }
+        if transports:
+            node["native"]["transports"] = {"status": "ok", "data": {"transports": [{
+                "transport_id": 1, "type": "ethernet", "name": "mesh-test", "mtu": 1497,
+                "stats": {"kernel_drops": tick, "recv_buffer_bytes": 4194304},
+            }]}}
     return rows
 
 
 class NativeTests(unittest.TestCase):
+    def test_transport_reply_is_preserved_and_legacy_evidence_still_works(self):
+        for enabled in (False, True):
+            rows = native_report(transports=enabled)
+            original = copy.deepcopy(rows)
+            analyze_rows(rows)
+            self.assertEqual(rows, original)
+        for node in nodes(rows):
+            node["native"]["transports"]["data"]["transports"][0]["stats"].update(
+                kernel_drops=None, recv_buffer_bytes=None)
+        analyze_rows(rows)
+        receiver = workload(rows, "bursty")["probes"][0]["receiver"]
+        receiver.update(unique_packets=63, unique_bytes=63000, missing_packets=1)
+        with self.assertRaises(ValueError):
+            analyze_rows(rows)
+        self.assertFalse(diagnose_rows(rows)["accepted"])
+
+    def test_transport_layout_and_kernel_counter_resets_are_rejected(self):
+        for mutation in ("missing_reply", "failed_reply", "missing_list", "duplicate", "changed_id",
+                         "changed_type", "missing_counter", "negative", "bool", "zero_buffer", "reset"):
+            rows = native_report(transports=True)
+            native = workload(rows)["after"][0]["native"]
+            reply = native["transports"]
+            adapters = reply["data"]["transports"]
+            stats = adapters[0]["stats"]
+            if mutation == "missing_reply":
+                native.pop("transports")
+            elif mutation == "failed_reply":
+                reply["status"] = "error"
+            elif mutation == "missing_list":
+                reply["data"].pop("transports")
+            elif mutation == "duplicate":
+                adapters.append(copy.deepcopy(adapters[0]))
+            elif mutation == "changed_id":
+                adapters[0]["transport_id"] = 2
+            elif mutation == "changed_type":
+                adapters[0]["type"] = "udp"
+            elif mutation == "missing_counter":
+                stats.pop("kernel_drops")
+            elif mutation == "zero_buffer":
+                stats["recv_buffer_bytes"] = 0
+            else:
+                stats["kernel_drops"] = {"negative": -1, "bool": True, "reset": 0}[mutation]
+            for analyzer in (analyze_rows, diagnose_rows):
+                with self.subTest(mutation=mutation), self.assertRaises((ValueError, KeyError, TypeError)):
+                    analyzer(rows)
+
     def test_background_queue_drops_are_preserved_as_observed_counters(self):
         rows = native_report(background=True)
         original = copy.deepcopy(rows)

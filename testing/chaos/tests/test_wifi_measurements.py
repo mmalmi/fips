@@ -22,6 +22,7 @@ def stat(pid=123, start=456, name="fips relay (worker)"):
 
 def status():
     return {"npub": "test-node", "purchases": [], "last_error": None,
+            "data_carrier": {"service_port": 44740, "transports": []},
             "measurements": {"version": 1, "process_id": 123, "process_cpu_ns": 123456,
                              "operations": {name: dict.fromkeys(COUNTERS, 0) for name in OPERATIONS}}}
 
@@ -46,9 +47,15 @@ class MeasurementTests(unittest.TestCase):
         native = {"status": "ok", "data": {"pid": 123, "npub": "test-node",
                   "exe_path": "/tmp/owned/fips-relay", "forwarding": {"received_packets": 1}}}
         routing = {"status": "ok", "data": {"forwarding": {"received_packets": 2}}}
-        raw = frame(native_status=json.dumps(native), native_routing=json.dumps(routing))
+        transports = {"status": "ok", "data": {"transports": [{"transport_id": 1,
+                      "type": "ethernet", "name": "mesh-test", "stats": {
+                          "kernel_drops": 7, "recv_buffer_bytes": 4194304}}]}}
+        raw = frame(native_status=json.dumps(native), native_routing=json.dumps(routing),
+                    native_transports=json.dumps(transports))
         result = snapshot(node(raw), "n01", native_counters=True)
-        self.assertEqual(result["native"], {"status": native, "routing": routing})
+        self.assertEqual(result["native"], {"status": native, "routing": routing,
+                                           "transports": transports})
+        self.assertEqual(result["data_carrier"], status()["data_carrier"])
         for evidence in (raw, frame()):
             with self.assertRaises(ValueError):
                 snapshot(node(evidence), "n01", native_counters=evidence != raw)
@@ -58,10 +65,17 @@ class MeasurementTests(unittest.TestCase):
             changed["data"][field] = value
             with self.subTest(field=field), self.assertRaises(ValueError):
                 snapshot(node(frame(native_status=json.dumps(changed),
-                                    native_routing=json.dumps(routing))), "n01", True)
+                                    native_routing=json.dumps(routing),
+                                    native_transports=json.dumps(transports))), "n01", True)
         with self.assertRaises(ValueError):
             snapshot(node(frame(native_status=json.dumps(native),
-                                native_routing='{"status":"error"}')), "n01", True)
+                                native_routing='{"status":"error"}',
+                                native_transports=json.dumps(transports))), "n01", True)
+        for bad in ({"status": "error"}, {"status": "ok", "data": None}):
+            with self.subTest(reply=bad), self.assertRaises(ValueError):
+                snapshot(node(frame(native_status=json.dumps(native),
+                                    native_routing=json.dumps(routing),
+                                    native_transports=json.dumps(bad))), "n01", True)
 
     def test_stat_parser_preserves_spaces_and_parentheses_in_comm(self):
         for name in ("fips relay", "fips (worker)", "fips ) (worker) name"):
@@ -241,24 +255,38 @@ class ShellSamplerTests(unittest.TestCase):
         (self.root / "process.log").write_bytes(b"")
         native = {"status": "ok", "data": {"pid": 123, "npub": "test-node",
                   "exe_path": self.router.binary}}
+        transports = {"status": "ok", "data": {"transports": [{"transport_id": 1,
+                      "type": "ethernet", "stats": {"kernel_drops": 3, "recv_buffer_bytes": None}}]}}
         (self.root / "native.json").write_text(json.dumps(native))
+        (self.root / "transports.json").write_text(json.dumps(transports))
         Path(self.router.binary).write_text(
             '#!/bin/sh\nset -eu\ncommand=$(cat)\n'
             f'printf \'%s:%s\\n\' "$1" "$command" >> \'{self.root}/calls\'\n'
             f'test "$2" = \'{self.router.config}\'\n'
+            'if test "$command" = \'{"command":"show_transports"}\'; then '
+            f'cat \'{self.root}/transports.json\'; exit; fi\n'
             f'if test "$1" = native; then cat \'{self.root}/native.json\'; '
             f'else cat \'{self.root}/response.json\'; fi\n')
         result = snapshot(self.router, "n01", native_counters=True, drop_logs=True)
         self.assertEqual(result["native"]["status"], native)
+        self.assertEqual(result["native"]["transports"], transports)
         self.assertEqual(result["dataplane_log"], {"filter": DATAPLANE_DROP_LOG_FILTER, "bytes": 0})
         self.assertEqual((self.root / "calls").read_text().splitlines(), [
             'native:{"command":"show_status"}', 'native:{"command":"show_routing"}',
+            'native:{"command":"show_transports"}',
             'ctl:{"type":"status"}',
         ])
+        executable = Path(self.router.binary)
+        executable.write_text(executable.read_text().replace('command=$(cat)',
+            'command=$(cat)\nif test "$command" = \'{"command":"show_transports"}\'; then '
+            f'printf \'%s\' \'{stat(start=999)}\' > \'{self.record}/stat\'; fi'))
+        with self.assertRaises(ValueError):
+            snapshot(self.router, "n01", native_counters=True, drop_logs=True)
+        self.write_stat()
         (self.record / "cmdline").write_bytes(b"another process\0")
         with self.assertRaises(subprocess.CalledProcessError):
             snapshot(self.router, "n01", native_counters=True, drop_logs=True)
-        self.assertEqual(len((self.root / "calls").read_text().splitlines()), 3)
+        self.assertEqual(len((self.root / "calls").read_text().splitlines()), 8)
 
     def test_process_restart_during_control_is_rejected(self):
         self.write_binary(f"printf '%s' '{stat(start=999)}' > '{self.record}/stat'")

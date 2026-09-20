@@ -86,8 +86,9 @@ def command(node, native_counters=False, drop_logs=False):
     proc = shlex.quote(checked_path(PROC))
     native = (f"""native_status=$(printf '%s\\n' '{{"command":"show_status"}}' | {binary} native {config})
 native_routing=$(printf '%s\\n' '{{"command":"show_routing"}}' | {binary} native {config})
+native_transports=$(printf '%s\\n' '{{"command":"show_transports"}}' | {binary} native {config})
 """ if native_counters else "")
-    extra = ' "$native_status" "$native_routing"' if native_counters else ""
+    extra = ' "$native_status" "$native_routing" "$native_transports"' if native_counters else ""
     log_check = (f"""log_filter=$(tr '\\000' '\\n' <{proc}/$pid/environ | sed -n 's/^RUST_LOG=//p')
   test "$log_filter" = {shlex.quote(DATAPLANE_DROP_LOG_FILTER)}
 """ if drop_logs else "")
@@ -136,7 +137,7 @@ def snapshot(node, hostlabel, native_counters=False, drop_logs=False):
     raw = node.remote(command(node, native_counters, drop_logs), timeout=45)
     finished = time.monotonic_ns()
     parts = raw.decode("utf-8").split("\0")
-    if len(parts) != 8 + 2 * native_counters + 2 * drop_logs or parts[-1]:
+    if len(parts) != 8 + 3 * native_counters + 2 * drop_logs or parts[-1]:
         raise ValueError("invalid resource sample framing")
     pid = decimal(parts[0])
     before, after = process_identity(parts[1]), process_identity(parts[2])
@@ -158,7 +159,7 @@ def snapshot(node, hostlabel, native_counters=False, drop_logs=False):
     if getattr(node, "npub", None) and status.get("npub") != node.npub:
         raise ValueError("relay status came from a different node")
     if native_counters:
-        native = dict(zip(("status", "routing"), map(json.loads, parts[7:9])))
+        native = dict(zip(("status", "routing", "transports"), map(json.loads, parts[7:10])))
         if any(not isinstance(v, dict) or v.get("status") != "ok"
                or not isinstance(v.get("data"), dict) for v in native.values()):
             raise ValueError("native diagnostic request failed")
@@ -169,7 +170,7 @@ def snapshot(node, hostlabel, native_counters=False, drop_logs=False):
             raise ValueError("native diagnostics came from a different process")
         status["native"] = native
     if drop_logs:
-        start = 7 + 2 * native_counters
+        start = 7 + 3 * native_counters
         log_filter, log_bytes = parts[start:start + 2]
         if log_filter != DATAPLANE_DROP_LOG_FILTER:
             raise ValueError("dataplane drop log filter differs from the pinned diagnostic")
