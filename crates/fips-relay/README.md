@@ -15,10 +15,15 @@ two tuning experiments without reliable CPU savings.
 See [openwrt/README.md](openwrt/README.md) for the persistent APK package,
 size-oriented ARM64 build, startup readiness checks and backup procedure.
 
-The broader [v1 readiness work](READINESS.md) is active. [Adaptive cadence](CADENCE.md)
-is the first software milestone; permissionless admission, wider transport
-acceptance, long-operation recovery and matched performance evidence remain work.
-The physical prototype reports below describe the earlier r6 hardware build.
+The broader [v1 readiness work](READINESS.md) is active. [Adaptive cadence](CADENCE.md),
+authenticated adjacent-neighbor admission, mixed UDP/TCP/native Ethernet forwarding
+and financial-history retirement have bounded acceptance evidence. Physical checks
+also cover open Wi-Fi joining, paid provider failover/recovery and a Pixel session;
+the [matched cadence measurements](CADENCE-RESULTS.md) report their cost boundaries.
+Newer recovery code still needs hardware acceptance. Earlier interrupted funding,
+total storage growth and broader physical mesh encounters remain open. The
+prototype reports below describe the earlier r6 hardware build, not current v1
+production readiness.
 
 Fresh accounts can explicitly select the [bounded handshake tariff](BOOTSTRAP.md)
 to deliver through paid relays to an unfunded recipient without buying a reverse
@@ -31,8 +36,9 @@ recipient return encrypted native quality reports and other small replies.
 Opt-in [price and quality selection](PRICE-SELECTION.md) now compares adjacent
 providers' real quotes by estimated delivered cost, with latency/loss limits,
 bounded path trials and cooldown. Real paid diamond simulations exercise
-failover, loss, latency, asymmetric feedback, quota exhaustion and controller reload; global optimality, mobility
-and broad production readiness remain unclaimed.
+failover, loss, latency, asymmetric feedback, quota exhaustion and controller reload;
+global optimality, seamless mobile roaming and broad production readiness remain
+unclaimed.
 
 ## Peer protocol
 
@@ -145,8 +151,10 @@ Strict relay and Android ARM64 linting, default builds, formatting and the
   synchronization and an exclusive owner lock. Corrupt state, failed persistence
   and exhausted windows stop admission. During a checkpoint, forwarding can use
   its previously persisted ceiling; publishing a larger ceiling waits for disk
-  synchronization. Node callbacks hold only brief memory locks. Checkpoint
-  frequency, window size and packet loss still need live measurement.
+  synchronization. Node callbacks hold only brief memory locks. The matched
+  [cadence results](CADENCE-RESULTS.md) measure payment and storage work within
+  explicit workloads; they do not establish loss-free forwarding or an optimal
+  window size for every link.
 * The payment adapter reuses `cashu-service` and checks the authenticated buyer,
   channel, capacity, denomination, expiry and signed balance before credit can
   be published. The trusted controller owns immutable agreement bindings.

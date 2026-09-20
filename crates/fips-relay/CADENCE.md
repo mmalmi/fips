@@ -105,7 +105,10 @@ The first milestone passed 43 focused tests: 21 library, two customer lifecycle,
 Controller cases include route repricing, automatic renewal, recovery with an
 evidence gap and bidirectional payments. Strict relay Clippy, the production
 library/binary check, Android ARM64 app Clippy, formatting and source-size checks
-also passed. The changed runtime has not yet been deployed to the physical bench.
+also passed. That milestone preceded physical acceptance; the subsequent
+[matched router comparisons](CADENCE-RESULTS.md) cover the implemented cadence
+with explicit source/build and measurement limits. Later recovery changes require
+their own device checks.
 
 The subsequent slow-neighbor regression holds real payment and settlement control
 requests in a five-node, test-mint scenario. It requires repeated paid deliveries
