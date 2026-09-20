@@ -43,7 +43,10 @@ impl Pending {
             .collect();
         assert_eq!(pending.len(), 1);
         let (id, intent) = pending[0];
-        assert!(intent["provider"] == serde_json::to_value(bench.peers[3].node_addr()).unwrap());
+        assert!(
+            intent["provider"]
+                == serde_json::to_value(bench.peers[3].node_addr().as_bytes()).unwrap()
+        );
         assert_eq!(intent["capacity_sat"], 64);
         assert_eq!(intent["max_wallet_debit_sat"], 64);
         assert_eq!(
