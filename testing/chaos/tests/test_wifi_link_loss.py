@@ -18,9 +18,13 @@ from test_wifi_measurements import frame, node, stat
 
 
 STATION = ("Station 02:00:00:00:00:02 (on mesh0)\n"
-           "\tmesh plink: ESTAB\n\ttx packets: 12\n\ttx retries: 3\n"
+           "\tmesh llid: 1\n\tmesh plid: 2\n\tmesh plink: ESTAB\n"
+           "\tauthorized: yes\n\tauthenticated: yes\n\tassociated: yes\n"
+           "\ttx packets: 12\n\ttx retries: 3\n"
            "\ttx failed: 1\n\trx packets: 8\n\tconnected time: 20 seconds\n"
-           "\tassociated at [boottime]: 10.100s\n")
+           "\tassociated at [boottime]: 10.100s\n"
+           "\tassociated at: 2026-01-01 00:00:10\n"
+           "\tcurrent time: 2026-01-01 00:00:30\n")
 
 
 def observation():
@@ -50,7 +54,10 @@ class LinkObservationTests(unittest.TestCase):
         self.assertEqual(observed["timing"], {"clock": "router_uptime_seconds", "started": 30, "finished": 30.02})
         self.assertEqual(observed["stations"]["raw"], STATION)
         peer = observed["stations"]["records"][0]
-        self.assertEqual(peer["association"]["associated_at_boottime"], "10.100s")
+        self.assertEqual(peer["association"], {
+            "associated_at_boottime": "10.100s", "connected_time": "20 seconds",
+            "mesh_plink": "ESTAB",
+        })
         self.assertEqual(peer["counters"]["tx failed"], 1)
         self.assertIsNone(peer["counters"]["rx drop misc"])
         self.assertEqual(observed["qdisc"], {"availability": "missing", "exit_code": None, "raw": None})
