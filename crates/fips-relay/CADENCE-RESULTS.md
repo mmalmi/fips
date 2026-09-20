@@ -508,6 +508,14 @@ the four workload windows, as do recorded receive-socket drops. The queue tool
 installed. Cross-router reads are not simultaneous and do not identify individual
 packet outcomes.
 
+A subsequent read-only inspection reports mt7915e/mt76 package revision
+`39c960c3-r2` and the `wed_enable` parameter set to `N`. The matching
+[non-WED transmit-completion code](https://github.com/openwrt/mt76/blob/39c960c3ada558b4c2e7915772483d3731573d09/mt7915/mac.c#L914-L929)
+adds retries to both counters, then adds the failure-status bit to `tx_failed`.
+This explains why equal increments can coexist with complete delivery. The
+post-run parameter read is not a historical offload-state trace, and the counter
+relationship does not locate the earlier missing packets.
+
 All 384 test sats are collected and every wallet is empty. All 261 management
 checks pass, cleanup has no errors, and independent final reads match every
 original router baseline with Internet/DNS available. The mint and forwarding
