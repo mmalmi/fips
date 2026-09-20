@@ -22,10 +22,11 @@ impl RelayService {
                 // during status must not certify an earlier counter boundary.
                 #[cfg(feature = "measurements")]
                 let payment_progress = self.controller.payment_progress().await?;
-                let service_carrier = self
-                    .control_carrier
-                    .as_ref()
-                    .map(ServiceCarrierDiagnostics::snapshot);
+                let service_carriers: Vec<_> = self
+                    .service_carriers
+                    .iter()
+                    .map(ServiceCarrierDiagnostics::snapshot)
+                    .collect();
                 let status = json!({"npub": self.endpoint.npub(), "peers": peers.iter().map(|p| json!({
                     "npub": p.npub, "connected": p.connected, "transport": p.transport_type,
                     "address": p.transport_addr, "link_id": p.link_id,
@@ -44,9 +45,10 @@ impl RelayService {
                     "measurements": crate::measurements::snapshot(),
                     "received": self.received.lock().unwrap().clone(),
                     "probe": probe,
+                    "data_carrier": service_carriers.iter().find(|c| c.service_port == DATA_PORT),
                     "control_traffic": self.control_statistics.iter().map(|(port, stats)| json!({
                         "service_port": port, "counters": stats.snapshot(),
-                        "service_carrier": service_carrier.as_ref().filter(|c| c.service_port == *port)
+                        "service_carrier": service_carriers.iter().find(|c| c.service_port == *port)
                     })).collect::<Vec<_>>(),
                     "last_error": self.controller.last_error()});
                 #[cfg(feature = "measurements")]

@@ -3,6 +3,32 @@ use super::*;
 
 pub(super) async fn assert_status(bench: &MixedBench, active: bool) {
     for (node, status) in bench.states().await.into_iter().enumerate() {
+        let data = status
+            .get("data_carrier")
+            .expect("explicit data availability");
+        if cfg!(feature = "measurements") {
+            assert_eq!(data["service_port"], 44_740);
+            assert_eq!(data["ambiguous_port_datagrams"], 0);
+            assert_eq!(data["discarded_outputs"], 0);
+            let transports = data["transports"].as_array().unwrap();
+            assert_eq!(transports.len(), 9);
+            for transport in transports {
+                let kind = transport["transport"].as_str().unwrap();
+                let packets = transport["submitted_packets"].as_u64().unwrap();
+                let bytes = transport["fips_payload_bytes"].as_u64().unwrap();
+                assert_eq!(transport["ethernet_framing_bytes"], 0);
+                if active && ((node == 0 && kind == "udp") || (node == 2 && kind == "tcp")) {
+                    assert!(
+                        packets > 0 && bytes > 0,
+                        "originating data reaches its carrier"
+                    );
+                } else {
+                    assert_eq!((packets, bytes), (0, 0), "opaque transit is not local data");
+                }
+            }
+        } else {
+            assert!(data.is_null(), "unavailable is not measured zero");
+        }
         let entries = status["control_traffic"].as_array().unwrap();
         assert_eq!(entries.len(), 3);
         for (index, entry) in entries.iter().enumerate() {

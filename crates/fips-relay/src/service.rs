@@ -100,7 +100,7 @@ pub struct RelayService {
     probe_receiver: Arc<Mutex<Option<ProbeReceiver>>>,
     probe_sender: tokio::sync::Semaphore,
     control_statistics: Vec<(u16, Arc<ControlStatistics>)>,
-    control_carrier: Option<ServiceCarrierDiagnostics>,
+    service_carriers: Vec<ServiceCarrierDiagnostics>,
     receive_task: tokio::task::JoinHandle<()>,
     receiver_pubkey: String,
     forwarding: Arc<ServiceForwarder>,
@@ -286,16 +286,19 @@ impl RelayService {
             config.customer_network,
             config.neighbor_admission,
         )?;
-        // Register once, before any service traffic; status only samples this
-        // stable handle. Normal builds leave endpoint diagnostics disabled.
+        // Register once, before any service traffic; status only samples these
+        // stable handles. Normal builds leave endpoint diagnostics disabled.
         #[cfg(feature = "measurements")]
-        let control_carrier = Some(
-            endpoint
-                .enable_service_carrier_diagnostics(PAYMENT_CONTROL_PORT)
-                .map_err(|error| error.to_string())?,
-        );
+        let service_carriers = [PAYMENT_CONTROL_PORT, DATA_PORT]
+            .into_iter()
+            .map(|port| {
+                endpoint
+                    .enable_service_carrier_diagnostics(port)
+                    .map_err(|error| error.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         #[cfg(not(feature = "measurements"))]
-        let control_carrier = None;
+        let service_carriers = Vec::new();
         let (quote_transport, quote_incoming) = ControlTransport::start_with_admission(
             endpoint.clone(),
             44_741,
@@ -421,7 +424,7 @@ impl RelayService {
             probe_receiver,
             probe_sender: tokio::sync::Semaphore::new(1),
             control_statistics,
-            control_carrier,
+            service_carriers,
             receive_task,
             receiver_pubkey,
             forwarding,

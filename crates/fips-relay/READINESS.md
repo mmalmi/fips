@@ -633,6 +633,30 @@ transport submissions, excluding opaque transit and physical radio overhead.
 The router capture below exercises these counters and retains its clean-link
 delivery rejection alongside the diagnostic costs.
 
+The next diagnostic build also exposes `data_carrier` for the local data service
+(port 44740), using the same optional carrier registry. It counts actual local
+transport submissions for all traffic on that port, including probes and replies;
+snapshots are cumulative and not atomic. This is neither a per-stream counter nor
+a delivery receipt. It distinguishes
+transport submission from the probe sender's successful endpoint API calls.
+Normal builds return null, and opaque middle-router transit is excluded. The
+mixed UDP/TCP daemon test verifies these boundaries in both feature modes while
+preserving payment, exhaustion and restart checks.
+
+Ethernet adapter statistics now separately expose Linux AF_PACKET `kernel_drops`
+and the effective `recv_buffer_bytes`. One socket-owned accumulator serializes
+the resetting kernel reads; unsupported or failed reads return null. These
+diagnostics do not change congestion feedback or routing decisions. Zero drops
+cannot exclude earlier radio/driver loss or later endpoint loss. They have not
+yet been deployed in a new router measurement, so the missing burst packet
+described below remains unexplained.
+
+The focused Ethernet suite passes 47 tests on macOS and 35 on Linux. An isolated
+Linux veth test also forces two separate AF_PACKET queue overflows, verifies
+increasing cumulative drops across resetting/concurrent reads, and confirms
+continued reception after draining the queue. It exercises the production socket
+implementation without changing the host's network interfaces.
+
 The current isolated Android package passes a fresh arm64 native build, Android
 lint and strict Android-target relay/app linting. Native-library provenance is
 verified through packaging, including the build tool's stripping step. Installation
