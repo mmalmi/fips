@@ -15,6 +15,9 @@ use std::{
 mod bench;
 use crate::process_support;
 use bench::MixedBench;
+#[cfg(feature = "testbench")]
+#[path = "mixed_transport/accept_barrier.rs"]
+mod accept_barrier;
 #[cfg(feature = "measurements")]
 #[path = "mixed_transport/payment_progress.rs"]
 mod payment_progress;

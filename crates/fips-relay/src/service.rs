@@ -1,5 +1,7 @@
 //! Unix service assembly. Init is explicit; run never creates missing accounts.
 
+#[cfg(feature = "testbench")]
+mod accept_barrier;
 mod config;
 mod control;
 mod network;
@@ -94,6 +96,8 @@ pub struct RelayService {
     seller: Arc<DurableRelay>,
     buyer: Arc<BuyerAuthorizer>,
     tasks: ControllerTasks,
+    #[cfg(feature = "testbench")]
+    accept_barrier: accept_barrier::AcceptBarrier,
     payment_server: PaymentServer,
     quote_server: QuoteServer,
     received: Arc<Mutex<Received>>,
@@ -371,6 +375,9 @@ impl RelayService {
         } else {
             Controller::load(&root.join("controller"), t.controller.clone(), services)
         }?);
+        #[cfg(feature = "testbench")]
+        let (incoming, accept_barrier) =
+            accept_barrier::AcceptBarrier::interpose(incoming, *endpoint.node_addr());
         let tasks = ControllerTasks::start_with_cadence(
             controller.clone(),
             incoming,
@@ -418,6 +425,8 @@ impl RelayService {
             seller,
             buyer,
             tasks,
+            #[cfg(feature = "testbench")]
+            accept_barrier,
             payment_server,
             quote_server,
             received,
@@ -440,6 +449,8 @@ impl RelayService {
             seller,
             buyer,
             tasks,
+            #[cfg(feature = "testbench")]
+            accept_barrier,
             payment_server,
             quote_server,
             receive_task,
@@ -448,7 +459,11 @@ impl RelayService {
             ..
         } = self;
         forwarding.ready.store(false, Ordering::Release);
+        #[cfg(feature = "testbench")]
+        accept_barrier.releasing_for_shutdown();
         tasks.stop().await;
+        #[cfg(feature = "testbench")]
+        accept_barrier.shutdown().await;
         payment_server.stop().await;
         drop(quote_server);
         endpoint.shutdown().await.map_err(|e| e.to_string())?;

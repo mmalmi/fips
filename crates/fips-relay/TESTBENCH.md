@@ -116,6 +116,47 @@ redemption, issuance bounds, refused public binds, and both command-line tools
 through the private mint control socket. These supplement the native paid
 forwarding tests; they do not replace hardware path or customer-flow checks.
 
+## Holding a committed acceptance response
+
+An explicitly `testbench`-enabled relay build exposes three additional requests
+on its existing private operator socket. Normal builds reject them. They add no
+peer protocol message, spending authority or persistent configuration.
+
+- `test_accept_barrier_arm` takes `buyer` and `destination` npubs,
+  `trial_max_units`, and `hold_ms` in `1..=180000`.
+- `test_accept_barrier_status` reports waiting/held replies, the captured offer
+  and purchase, release counts and any terminal reason.
+- `test_accept_barrier_release` forwards the original held reply bytes and ends
+  interception. Rearming is rejected for the rest of that process's lifetime.
+
+The real controller handles and commits each request first. Only a successful
+acceptance for the selected buyer/destination with quota above the trial cap is
+held. Configure the full offer above that cap; ordinary trial replies and
+nonmatching replies pass through. Payment and quote services remain separate.
+A matching request counter alone is not proof of commitment: require an active
+barrier with a held reply and a captured purchase, and match that purchase to the
+provider's durable active record before injecting the fault.
+
+At most eight replies may be waiting or held, with a 16-request forwarding queue
+and a 30-second response wait. Expiry, capacity failure and shutdown release held
+replies; their reason remains visible and late replies cannot arm a new fault.
+Forwarded-reply counts mean delivery to the local transport responder, not receipt
+by the remote buyer. Use this instrument only in an isolated test run, not for
+performance comparisons with ordinary builds.
+
+Using the development dependencies in [FUNDING-COSTS.md](FUNDING-COSTS.md), run:
+
+```sh
+cargo test -p fips-relay --all-features --lib service::accept_barrier::tests
+cargo test -p fips-relay --all-features --test service mixed_transport::accept_barrier::
+cargo test -p fips-relay --no-default-features --lib service::tests::production_admin_rejects_test_accept_barrier_commands
+```
+
+The daemon test observes the real provider's committed purchase while the buyer
+still waits, releases the reply, and verifies the same purchase, paid delivery,
+settlement and conservation of 384 test sats. It establishes the barrier boundary;
+it does not establish physical interrupted-promotion recovery.
+
 ## First hardware result
 
 An isolated run used two endpoint processes on one ARM64 Linux host and three

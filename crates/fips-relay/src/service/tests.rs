@@ -231,3 +231,16 @@ fn cadence_is_local_configuration_and_old_configs_keep_the_default() {
     changed.payment_cadence.unpaid_percent = 100;
     assert!(changed.validate().is_err());
 }
+
+#[cfg(not(feature = "testbench"))]
+#[test]
+fn production_admin_rejects_test_accept_barrier_commands() {
+    for command in [
+        json!({"type":"test_accept_barrier_arm", "buyer":"unused", "destination":"unused",
+               "trial_max_units":32768, "hold_ms":1000}),
+        json!({"type":"test_accept_barrier_status"}),
+        json!({"type":"test_accept_barrier_release"}),
+    ] {
+        assert!(serde_json::from_value::<AdminRequest>(command).is_err());
+    }
+}

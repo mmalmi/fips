@@ -9,6 +9,22 @@ mod route_quality_tests;
 impl RelayService {
     async fn handle(&self, request: AdminRequest) -> Result<Value, String> {
         match request {
+            #[cfg(feature = "testbench")]
+            AdminRequest::TestAcceptBarrierArm {
+                buyer,
+                destination,
+                trial_max_units,
+                hold_ms,
+            } => Ok(json!(self.accept_barrier.arm(
+                &buyer,
+                &destination,
+                trial_max_units,
+                hold_ms
+            )?)),
+            #[cfg(feature = "testbench")]
+            AdminRequest::TestAcceptBarrierStatus => Ok(json!(self.accept_barrier.status()?)),
+            #[cfg(feature = "testbench")]
+            AdminRequest::TestAcceptBarrierRelease => Ok(json!(self.accept_barrier.release()?)),
             AdminRequest::Status => {
                 let peers = self.endpoint.peers().await.map_err(|e| e.to_string())?;
                 let probe = self
@@ -183,6 +199,17 @@ impl RelayService {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AdminRequest {
+    #[cfg(feature = "testbench")]
+    TestAcceptBarrierArm {
+        buyer: String,
+        destination: String,
+        trial_max_units: u64,
+        hold_ms: u64,
+    },
+    #[cfg(feature = "testbench")]
+    TestAcceptBarrierStatus,
+    #[cfg(feature = "testbench")]
+    TestAcceptBarrierRelease,
     Status,
     RouteQuality {
         destination: String,
