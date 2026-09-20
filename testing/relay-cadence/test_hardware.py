@@ -100,6 +100,54 @@ def delivery_loss_report():
 
 
 class DiagnosticTests(unittest.TestCase):
+    def post_gap_report(self):
+        rows = hardware_report()
+        rows[0]["post_gap_probes"] = True
+        for row in rows:
+            if row.get("data", {}).get("workload") != "bursty":
+                continue
+            for index, probe in enumerate(row["data"]["probes"]):
+                start = index * 2_000_000_000
+                probe["receiver_observed_ns"] = [start, start + 100_000_000]
+                probe["post_gap_observation"] = {
+                    "observed_ns": [start + 900_000_000, start + 1_000_000_000],
+                    "receiver": copy.deepcopy(probe["receiver"]),
+                }
+        return rows
+
+    def test_post_gap_arrivals_never_repair_the_strict_delivery_result(self):
+        rows = self.post_gap_report()
+        probe = workload(rows, "bursty")["probes"][0]
+        probe["receiver"].update(unique_packets=62, unique_bytes=62000, missing_packets=2)
+        with self.assertRaisesRegex(ValueError, "delivery loss"):
+            analyze_rows(rows)
+        diagnostic = diagnose_rows(rows)
+        self.assertFalse(diagnostic["accepted"])
+        result = next(v for v in diagnostic["trials"] if v["workload"] == "bursty")
+        self.assertEqual(result["delivered_packets"], 510)
+        self.assertEqual(result["post_gap_probes"][0]["additional_packets"], 2)
+        self.assertEqual(result["post_gap_probes"][0]["still_missing_packets"], 0)
+        self.assertEqual(result["post_gap_probes"][0]["read_elapsed_ms"], 100)
+
+    def test_post_gap_evidence_requires_explicit_mode_identity_and_ordered_clock(self):
+        changes = (
+            lambda rows, p: rows[0].update(post_gap_probes=False),
+            lambda rows, p: rows[0].update(post_gap_probes=1),
+            lambda rows, p: p.pop("post_gap_observation"),
+            lambda rows, p: p["post_gap_observation"]["receiver"].update(source="another-source"),
+            lambda rows, p: p["post_gap_observation"]["receiver"].update(stream_id="b" * 32),
+            lambda rows, p: p["post_gap_observation"]["receiver"].update(
+                unique_packets=63, unique_bytes=63000, missing_packets=1),
+            lambda rows, p: p["post_gap_observation"].update(observed_ns=[899_999_999, 1_000_000_000]),
+            lambda rows, p: p["post_gap_observation"].update(observed_ns=[1_000_000_001, 1_000_000_000]),
+            lambda rows, p: p.update(receiver_observed_ns=[True, 100_000_000]),
+        )
+        for change in changes:
+            rows = self.post_gap_report()
+            change(rows, workload(rows, "bursty")["probes"][0])
+            with self.subTest(change=change), self.assertRaises((ValueError, KeyError)):
+                diagnose_rows(rows)
+
     def test_loss_diagnostic_emits_all_costs_but_fails_acceptance(self):
         rows = delivery_loss_report()
         with self.assertRaises(ValueError):

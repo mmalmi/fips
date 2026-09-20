@@ -1,6 +1,7 @@
 """Matched workloads and failure recovery without hardware or funds."""
 
 import argparse
+import copy
 import json
 from pathlib import Path
 import tempfile
@@ -8,6 +9,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from sim.wifi_cadence import CadenceRun, policies, run
+from sim.cadence_workloads import perform, stream
 
 
 class CadenceTests(unittest.TestCase):
@@ -22,8 +24,62 @@ class CadenceTests(unittest.TestCase):
 
     def service(self):
         service = object.__new__(CadenceRun)
+        service.args = argparse.Namespace(post_gap_probes=False)
         service.nodes = {name: Mock(npub=name) for name in ("n01", "n02", "n03")}
         return service
+
+    def test_post_gap_observation_preserves_loss_without_rearming_or_resending(self):
+        service = self.service()
+        events, identity = [], ""
+        def control(node, command, **fields):
+            nonlocal identity
+            events.append(command)
+            if command == "receive_probe":
+                identity = fields["probe"]["stream_id"]
+                return {}
+            if command == "send_probe":
+                return {"probe": {"stream_id": identity, "requested_packets": 64}}
+            count = 64 if events[-2] == "sleep" else 62
+            return {"probe": {"stream_id": identity, "source": "n01", "expected_packets": 64,
+                              "payload_bytes": 1000, "unique_packets": count}}
+        service.ctl = Mock(side_effect=control)
+        service.stream = lambda count, rate: stream(service, count, rate, drain_seconds=0)
+        with patch("sim.cadence_workloads.time.sleep", side_effect=lambda _: events.append("sleep")):
+            result = perform(service.stream, "bursty", after_gap=service.observe_after_gap)
+        self.assertEqual(events, ["receive_probe", "send_probe", "status", "sleep", "status"] * 8)
+        for probe in result["probes"]:
+            self.assertEqual(probe["receiver"]["unique_packets"], 62)
+            late = probe["post_gap_observation"]
+            self.assertEqual(late["receiver"]["unique_packets"], 64)
+            self.assertEqual(late["receiver"]["stream_id"], probe["receiver"]["stream_id"])
+            self.assertLessEqual(probe["receiver_observed_ns"][1], late["observed_ns"][0])
+            self.assertLessEqual(late["observed_ns"][0], late["observed_ns"][1])
+
+    def test_post_gap_observation_rejects_changed_stream_or_reset_counter(self):
+        service = self.service()
+        original = {"stream_id": "a" * 32, "source": "n01", "expected_packets": 64,
+                    "payload_bytes": 1000, "unique_packets": 62}
+        for change in ({"stream_id": "b" * 32}, {"source": "n02"}, {"unique_packets": 61},
+                       {"expected_packets": 65}, {"payload_bytes": 64}):
+            service.ctl = Mock(return_value={"probe": {**original, **change}})
+            with self.subTest(change=change), self.assertRaises(RuntimeError):
+                service.observe_after_gap({"receiver": copy.deepcopy(original)})
+
+    def test_post_gap_reads_are_optional_and_only_run_after_existing_gaps(self):
+        service = self.service()
+        service.sample = Mock(return_value=[])
+        service.stream = Mock(return_value={})
+        service.observe_after_gap = Mock(return_value={"diagnostic": True})
+        service.emit, service.phase = Mock(), Mock()
+        with patch("sim.wifi_cadence.time.sleep"):
+            service.workload("bursty")
+            service.observe_after_gap.assert_not_called()
+            service.args.post_gap_probes = True
+            for name in ("idle", "steady", "high_rate"):
+                service.workload(name)
+            service.observe_after_gap.assert_not_called()
+            service.workload("bursty")
+        self.assertEqual(service.observe_after_gap.call_count, 8)
 
     def test_workload_failure_collects_known_original_channels_before_propagating(self):
         service = self.service()

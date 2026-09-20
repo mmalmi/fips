@@ -22,7 +22,7 @@ from .wifi_remote import digest
 from .wifi_measurements import DATAPLANE_DROP_LOG_FILTER
 
 
-from .cadence_workloads import POLICIES, SCHEDULE, perform, policies, stream
+from .cadence_workloads import POLICIES, SCHEDULE, observe_after_gap, perform, policies, stream
 
 
 def metadata(args):
@@ -48,6 +48,7 @@ def metadata(args):
         "policy_order": list(selected), "pilot": args.pilot,
         "pilot_delay_ms": selected[0] if args.pilot else None,
         "native_counters": getattr(args, "native_counters", False),
+        "post_gap_probes": getattr(args, "post_gap_probes", False),
         "payment_service_carrier": True,
         "dataplane_drop_log_filter": (DATAPLANE_DROP_LOG_FILTER
                                       if getattr(args, "dataplane_drop_logs", False) else None),
@@ -98,6 +99,7 @@ class CadenceRun(PaidWifiRun):
             return [future.result() for future in futures]
 
     stream = stream
+    observe_after_gap = observe_after_gap
 
     def warmup(self):
         results = []
@@ -114,7 +116,9 @@ class CadenceRun(PaidWifiRun):
     def workload(self, name):
         before_guard, before = self.sample(), self.sample()
         started = time.monotonic()
-        workload = perform(self.stream, name, started=started)
+        workload = perform(self.stream, name, started=started,
+                           after_gap=self.observe_after_gap
+                           if getattr(self.args, "post_gap_probes", False) else None)
         offered, probes = workload["offered_elapsed_ms"], workload["probes"]
         time.sleep(3)
         # Preserve the fixed tail even if payment reconciliation is incomplete.
@@ -212,6 +216,8 @@ def main():
                         help="capture existing native forwarding/drop counters at each boundary")
     parser.add_argument("--dataplane-drop-logs", action="store_true",
                         help="pin existing dataplane drop logging and capture per-window byte offsets")
+    parser.add_argument("--post-gap-probes", action="store_true",
+                        help="record a supplemental same-stream receive observation after each burst gap")
     args = parser.parse_args()
     os.umask(0o077)
 

@@ -9,6 +9,7 @@ from native_counters import record as record_native_counters
 from service_carrier import record as record_service_carrier
 from validation import (HARDWARE_SCHEDULE, HARDWARE_WORKLOADS, OS_IO_COUNTERS,
                         PAYMENT_OPERATIONS, POLICIES, WORKLOADS, payment_counters, probe_delivery_loss,
+                        post_gap_probes,
                         quiet_boundary, unsigned, validate_gap,
                         validate_hardware_schedule, validate_host_pair,
                         validate_idle, validate_measurements, validate_probe)
@@ -269,6 +270,9 @@ def validated_rows(rows, pilot, delivery_rejections=None):
     native_counters = metadata.get("native_counters", False)
     if type(native_counters) is not bool or (native_counters and schema != 3):
         raise ValueError("native counters require explicit hardware metadata")
+    post_gap = metadata.get("post_gap_probes", False)
+    if type(post_gap) is not bool or (post_gap and schema != 3):
+        raise ValueError("post-gap observations require explicit hardware metadata")
     service_carrier = metadata.get("payment_service_carrier", False)
     if type(service_carrier) is not bool:
         raise ValueError("payment carrier counters require explicit boolean metadata")
@@ -323,6 +327,9 @@ def validated_rows(rows, pilot, delivery_rejections=None):
             if row["max_delay_ms"] != delay:
                 raise ValueError("unmatched policy order")
             result = summarize(row, schema, delivery_rejections)
+            observations = post_gap_probes(row["data"], post_gap)
+            if post_gap:
+                result["post_gap_probes"] = observations
             record_service_carrier(row["data"], result, previous, service_carrier,
                                    native_ethernet=schema == 3)
             if previous is not None:

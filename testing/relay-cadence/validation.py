@@ -215,3 +215,36 @@ def validate_hardware_schedule(data):
     # sequential; all sender work and all eight burst sleeps belong inside it.
     if unsigned(data["offered_elapsed_ms"]) * 1000 + 1000 < elapsed_us:
         raise ValueError("hardware offered window omits probe work or sleep")
+
+
+def post_gap_probes(data, enabled):
+    """Diagnose later reception without changing original delivery acceptance."""
+    results = []
+    previous_end = 0
+    for index, probe in enumerate(data["probes"]):
+        expected = enabled and data["workload"] == "bursty"
+        if ("post_gap_observation" in probe) != expected:
+            raise ValueError("post-gap observations differ from the explicit diagnostic mode")
+        if not expected:
+            continue
+        late = probe["post_gap_observation"]
+        a, b = probe["receiver_observed_ns"], late["observed_ns"]
+        if len(a) != 2 or len(b) != 2:
+            raise ValueError("missing controller-clock observation interval")
+        start, end, late_start, late_end = map(unsigned, (*a, *b))
+        if not previous_end <= start <= end <= late_start <= late_end:
+            raise ValueError("post-gap controller-clock observations overlap or run backwards")
+        if late_start - end < unsigned(probe["after_sleep_ms"]) * 1_000_000:
+            raise ValueError("post-gap observation precedes the existing quiet gap")
+        count = probe["sender"]["requested_packets"]
+        missing = probe_delivery_loss({"sender": probe["sender"], "receiver": late["receiver"]}, count, 3)
+        before, after = probe["receiver"], late["receiver"]
+        if after["source"] != before["source"] or after["unique_packets"] < before["unique_packets"]:
+            raise ValueError("post-gap source changed or receive counter reset")
+        results.append({"probe_index": index,
+                        "additional_packets": after["unique_packets"] - before["unique_packets"],
+                        "still_missing_packets": missing,
+                        "read_elapsed_ms": (late_end - late_start) / 1_000_000,
+                        "after_primary_ms": (late_start - end) / 1_000_000})
+        previous_end = late_end
+    return results

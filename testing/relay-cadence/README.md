@@ -332,6 +332,22 @@ Malformed or unreconciled evidence still fails without a summary. Diagnostic
 output cannot be combined with Markdown comparison output, and must not replace
 the original rejected result or be presented as an accepted comparison.
 
+For a fresh Wi-Fi loss investigation, add `--post-gap-probes` to `sim.wifi_cadence`.
+After each existing 800-ms burst gap, this reads the same receive stream once,
+before the next stream is armed. The original two-second drain result stays in
+`receiver`; `post_gap_observation` contains the supplemental result. Both reads
+have controller-monotonic nanosecond intervals. Explicit metadata distinguishes
+these diagnostic runs, and the analyzer validates matching stream/source,
+nondecreasing receive counts and observation order. Its `post_gap_probes` summaries
+report additional packets, remaining missing packets and status-read duration.
+Late arrivals never repair the original acceptance result, and no payload is resent.
+
+The extra reads add control work and delay the next burst; do not compare their
+costs directly with captures that omit them. A 62-to-64 change establishes late
+reception during the additional observation interval, not where the packets were
+delayed. An unchanged count only rules out arrival within that interval. Neither
+result explains a past capture that did not retain this observation.
+
 ## Measurement boundaries
 
 Build the relay with the optional `measurements` feature. The private local
