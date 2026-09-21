@@ -667,7 +667,7 @@ pub struct WebSocketConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_inbound_connections: Option<usize>,
 
-    /// Outbound TCP/TLS/WebSocket connect timeout.
+    /// Outbound TCP/TLS/WebSocket connect and inbound HTTP upgrade timeout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connect_timeout_ms: Option<u64>,
 

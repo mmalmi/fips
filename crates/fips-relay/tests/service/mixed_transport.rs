@@ -58,6 +58,7 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
         .await
         .unwrap();
         let mut bench = MixedBench::start_with_second_hop(mint.url(), &network, second_hop).await;
+        bench.set_stage("unfunded-admission");
         bench.assert_carriers().await;
         service_carrier::assert_status(&bench, false).await;
         #[cfg(feature = "measurements")]
@@ -82,6 +83,7 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
             request(config, &AdminRequest::PauseRenewals).await.unwrap();
         }
 
+        bench.set_stage("initial-paid");
         let mut original_channels = Vec::new();
         for (source, destination) in [(0, 2), (2, 0)] {
             let bought = request(
@@ -109,6 +111,7 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
 
         // Fill a small channel with renewals explicitly paused. This tests a
         // financial denial, not an inference from a lost carrier connection.
+        bench.set_stage("exhaustion");
         for (index, (source, destination)) in [(0, 2), (2, 0)].into_iter().enumerate() {
             bench.send_probe(source, destination, 40, 256, 8).await;
             bench.wait_exhausted(source).await;
@@ -121,6 +124,7 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
             assert_eq!(state["funding_budget"]["wallet_debited_sat"], 8);
             assert_eq!(state["remaining_budget_sat"], 56);
         }
+        bench.set_stage("renewal");
         let exhausted = bench.states().await;
         for config in &bench.configs {
             request(config, &AdminRequest::ResumeRenewals)
@@ -147,6 +151,7 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
 
         // A process crash preserves accounts. Whether any individual stream write
         // was submitted is covered by deterministic core completion tests.
+        bench.set_stage("middle-restart");
         let before = bench.states().await;
         bench.children[1].kill().await.unwrap();
         bench.children[1] = process_support::start(&bench.paths[1]).await;
@@ -167,12 +172,14 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
                     <= old["remaining_budget_sat"].as_u64().unwrap()
             );
         }
+        bench.set_stage("post-restart-paid");
         for (source, destination) in [(0, 2), (2, 0)] {
             bench.deliver(source, destination).await;
         }
         if second_hop != SecondHop::Tcp {
             round_trip::assert_paid_round_trip(&bench, &"65".repeat(16)).await;
         }
+        bench.set_stage("settlement");
         for config in &bench.configs {
             request(config, &AdminRequest::Settle).await.unwrap();
         }

@@ -1,5 +1,7 @@
 use super::*;
 
+mod handshake_lifetime;
+
 #[test]
 fn websocket_record_validation_accepts_bounded_direct_fsp_fragments() {
     let mut fragment = vec![0u8; 24];

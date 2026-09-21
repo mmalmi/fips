@@ -7,8 +7,9 @@ use fips_relay::{
     probe::{ReceiveProbe, SendProbe},
     service::{AdminRequest, ServiceConfig, native_request, request},
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::{
+    io::{Read, Seek, SeekFrom},
     net::{SocketAddr, TcpListener, UdpSocket},
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
@@ -49,6 +50,7 @@ pub struct MixedBench {
     pub children: Vec<Child>,
     second_hop: SecondHop,
     next_probe: AtomicU64,
+    stage: &'static str,
 }
 
 impl MixedBench {
@@ -217,7 +219,16 @@ impl MixedBench {
             children,
             second_hop,
             next_probe: AtomicU64::new(1),
+            stage: "other-mixed-fixture",
         }
+    }
+
+    pub fn set_stage(&mut self, stage: &'static str) {
+        self.stage = stage;
+        eprintln!(
+            "mixed-carrier stage={stage} second_hop={:?}",
+            self.second_hop
+        );
     }
 
     pub fn second_hop_kind(&self) -> &'static str {
@@ -365,7 +376,78 @@ impl MixedBench {
                 return;
             }
         }
-        panic!("paid mixed-carrier delivery {source}->{destination} timed out");
+        // Failure is latched before these read-only observations. They cannot
+        // retry or rescue this cohort, and sequential samples are not atomic.
+        self.delivery_failure(source, destination).await;
+        panic!(
+            "paid mixed-carrier delivery {source}->{destination} timed out at stage={} second_hop={:?}",
+            self.stage, self.second_hop
+        );
+    }
+
+    async fn delivery_failure(&self, source: usize, destination: usize) {
+        eprintln!(
+            "mixed-carrier delivery-failure stage={} second_hop={:?} flow={source}->{destination} attempts=3",
+            self.stage, self.second_hop
+        );
+        let captured = tokio::time::timeout(Duration::from_secs(4), async {
+            for (node, config) in self.configs.iter().enumerate() {
+                daemon_tail(node, &self.paths[node].with_extension("log"));
+                match tokio::time::timeout(
+                    Duration::from_millis(250),
+                    request(config, &AdminRequest::Status),
+                ).await {
+                    Ok(Ok(status)) => {
+                        let mut safe = selected(&status, &[
+                            "peers", "funding_budget", "remaining_budget_sat", "locked_sat",
+                            "probe", "data_carrier", "control_traffic", "payment_progress",
+                        ]);
+                        safe["last_error_present"] = json!(!status["last_error"].is_null());
+                        safe["history_count"] = json!(status["history"].as_array().map(Vec::len));
+                        safe["purchases"] = json!(status["purchases"].as_array().map(|rows| rows.iter().map(|row| json!({
+                            "provider": row["provider"],
+                            "channel": selected(&row["channel"], &["id", "capacity_sat", "expires_unix"]),
+                            "contract": selected(&row["contract"], &["id", "destination", "next_hop", "expires_unix", "max_units", "billing"]),
+                        })).collect::<Vec<_>>()));
+                        diagnostic(node, "service-status", &safe);
+                    }
+                    _ => diagnostic(node, "service-status", &json!({"unavailable": true})),
+                }
+                // Never serialize the journal: it contains wallet material.
+                // Project only the saved route phases and renewal switches.
+                let journal = std::fs::File::open(config.state_directory.join("controller/controller.json"))
+                    .ok().and_then(|file| {
+                        let mut bytes = Vec::new();
+                        file.take(1_048_577).read_to_end(&mut bytes).ok()?;
+                        if bytes.len() > 1_048_576 { return None; }
+                        serde_json::from_slice::<Value>(&bytes).ok()
+                    });
+                if let Some(journal) = journal {
+                    let mut safe = selected(&journal, &["renewals_paused", "selling_stopped"]);
+                    for (field, keys) in [
+                        ("outgoing", &["accepted", "retired"][..]),
+                        ("incoming", &["phase", "verified_paid_msat", "replacement_retired"][..]),
+                        ("renewals", &["completed"][..]),
+                        ("watched_routes", &["paused", "billing", "max_rate_msat_per_kib"][..]),
+                    ] {
+                        safe[field] = json!(journal[field].as_object().map(|rows| rows.iter().take(16)
+                            .map(|(id, row)| json!({"id": id, "state": selected(row, keys)})).collect::<Vec<_>>()));
+                    }
+                    diagnostic(node, "controller-phases", &safe);
+                } else {
+                    diagnostic(node, "controller-phases", &json!({"unavailable": true}));
+                }
+                for command in ["show_connections", "show_tree", "show_routing", "show_sessions", "show_transports"] {
+                    match tokio::time::timeout(Duration::from_millis(250), native_request(config, &json!({"command": command}))).await {
+                        Ok(Ok(reply)) if reply["status"] == "ok" => diagnostic(node, command, &reply["data"]),
+                        _ => diagnostic(node, command, &json!({"unavailable": true})),
+                    }
+                }
+            }
+        }).await;
+        if captured.is_err() {
+            eprintln!("mixed-carrier failure diagnostics reached their four-second budget");
+        }
     }
 
     pub async fn wait_paid(&self, channel: &str) {
@@ -430,5 +512,77 @@ impl MixedBench {
         })
         .await
         .expect("explicitly resumed renewals replace both exhausted channels");
+    }
+}
+
+fn selected(value: &Value, fields: &[&str]) -> Value {
+    Value::Object(
+        fields
+            .iter()
+            .map(|field| ((*field).to_owned(), value[*field].clone()))
+            .collect(),
+    )
+}
+
+fn diagnostic(node: usize, label: &str, value: &Value) {
+    let text = value.to_string();
+    let bounded: String = text.chars().take(4096).collect();
+    eprintln!(
+        "mixed-carrier diagnostic node={node} query={label} truncated={} {bounded}",
+        bounded.len() < text.len()
+    );
+}
+
+fn daemon_tail(node: usize, path: &std::path::Path) {
+    let tail = (|| -> std::io::Result<Vec<u8>> {
+        let mut file = std::fs::File::open(path)?;
+        let start = file.metadata()?.len().saturating_sub(8192);
+        file.seek(SeekFrom::Start(start))?;
+        let mut bytes = Vec::new();
+        file.take(8192).read_to_end(&mut bytes)?;
+        // Discard a possibly partial first line rather than print a suffix of
+        // a sensitive record without the label used by the filter below.
+        if start > 0 {
+            let end = bytes
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(bytes.len(), |i| i + 1);
+            bytes.drain(..end);
+        }
+        Ok(bytes)
+    })();
+    let Ok(bytes) = tail else {
+        diagnostic(node, "daemon-tail", &json!({"unavailable": true}));
+        return;
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    let mut lines: Vec<_> = text.lines().rev().take(20).collect();
+    lines.reverse();
+    for line in lines {
+        let lower = line.to_ascii_lowercase();
+        let sensitive = [
+            "cashua",
+            "cashub",
+            "nsec",
+            "secret",
+            "proof",
+            "signature",
+            "private_key",
+            "seed_phrase",
+            "seed_words",
+            "access_token",
+            "bearer",
+        ]
+        .iter()
+        .any(|word| lower.contains(word))
+            || line.split_whitespace().any(|word| word.len() > 256);
+        eprintln!(
+            "mixed-carrier daemon-tail node={node} {}",
+            if sensitive {
+                "[sensitive or oversized log line omitted]"
+            } else {
+                line
+            }
+        );
     }
 }

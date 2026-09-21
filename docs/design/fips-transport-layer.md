@@ -167,6 +167,13 @@ URL-seed key-hint request/response, each binary message contains exactly one
 complete FMP/FSP record including the shared four-byte prefix. Text messages
 and partial or concatenated records close the physical connection.
 
+Incoming HTTP upgrades use the configured `connect_timeout_ms` deadline, also
+used for outbound connections. An incomplete upgrade releases its socket and
+connection slots on timeout. Shutdown cancels and joins all transport-owned
+workers, including incomplete upgrades and established connections, before
+clearing runtime state. Cancelling shutdown retains that join ownership for a
+subsequent shutdown call.
+
 **Addressing opacity**: Transport addresses are opaque byte vectors. FMP
 doesn't interpret them — it just passes them back to the transport when
 sending. This means adding a new transport type with a novel address format

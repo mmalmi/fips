@@ -244,6 +244,30 @@ pass; formatting and source-size checks pass without new size exceptions.
 Run `cargo test -p fips-relay --all-features --test service websocket` for the
 WebSocket process cases, or use `--no-default-features` for their production mode.
 
+Native WebSocket lifecycle checks additionally reproduce and fix stalled HTTP
+upgrades retaining both connection slots indefinitely and completing after a
+transport restart. Incoming upgrades now use the existing connection deadline.
+The transport owns and joins accepted workers on shutdown, retaining their
+handles if shutdown itself is cancelled. Regression tests observe actual socket
+closure and release of both inbound and total connection permits, then complete
+a fresh WebSocket/key-hint exchange. The hint is discovery metadata; the separate
+node and paid-service tests exercise FIPS authentication and forwarding.
+Closed-connection statistics now include cancellation exactly once; incomplete
+HTTP upgrades count as neither opened nor closed. The three lifecycle regressions
+failed before the fix and pass afterward. All 14 transport checks (including those
+regressions), six authenticated-node checks and seven public-API reconnect/churn
+checks pass. Paid-service
+checks in both feature modes and strict core/relay linting also pass.
+
+One no-default-feature seed-only service run nevertheless timed out in paid
+delivery. Its original failure lacked a phase snapshot. Bounded failure-only
+diagnostics now retain the purchase/renewal/restart phase, safe payment state,
+native routes/sessions and daemon-log tails without changing the original retries
+or deadlines. Four isolated diagnostic runs and a full sequence on the fixed code,
+plus two full sequences before the lifecycle fix, passed. These passing reruns do
+not resolve the earlier timeout or establish whether it relates to this change.
+Intermittent paid delivery therefore remains an open readiness item.
+
 These results establish bounded link behavior. They do not establish radio
 mobility, congestion fairness, throughput, remote TLS proxy deployment or
 support for every core adapter.

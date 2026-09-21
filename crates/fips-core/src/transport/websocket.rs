@@ -93,6 +93,14 @@ impl WebSocketStats {
     }
 }
 
+struct ConnectionStatsGuard(Arc<WebSocketStats>);
+
+impl Drop for ConnectionStatsGuard {
+    fn drop(&mut self) {
+        self.0.connections_closed.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 #[derive(Clone)]
 struct Runtime {
     transport_id: TransportId,
@@ -109,9 +117,21 @@ struct Runtime {
     // Only explicit network changes advance this value; ordinary closes retain backoff.
     network_rebind_generation: watch::Sender<u64>,
     stats: Arc<WebSocketStats>,
+    tasks: Arc<StdMutex<Vec<JoinHandle<()>>>>,
 }
 
 impl Runtime {
+    fn spawn(&self, future: impl std::future::Future<Output = ()> + Send + 'static) {
+        let mut tasks = self.tasks.lock().unwrap_or_else(|error| error.into_inner());
+        // Registration and the running check share the shutdown drain's lock.
+        // A rejected future releases its socket and permits without being polled.
+        if !self.running.load(Ordering::Acquire) {
+            return;
+        }
+        tasks.retain(|task| !task.is_finished());
+        tasks.push(tokio::spawn(future));
+    }
+
     fn websocket_config(&self) -> TungsteniteConfig {
         let mut config = TungsteniteConfig::default();
         config.max_message_size = Some(self.config.max_frame_bytes());
@@ -155,7 +175,8 @@ pub struct WebSocketTransport {
     state: TransportState,
     local_addr: Option<SocketAddr>,
     runtime: Runtime,
-    tasks: Arc<StdMutex<Vec<JoinHandle<()>>>>,
+    // Keep join ownership if a caller cancels stop_async before it finishes.
+    draining_tasks: Vec<JoinHandle<()>>,
 }
 
 impl WebSocketTransport {
@@ -183,6 +204,7 @@ impl WebSocketTransport {
             generation: Arc::new(AtomicU64::new(1)),
             network_rebind_generation,
             stats: Arc::new(WebSocketStats::default()),
+            tasks: Arc::new(StdMutex::new(Vec::new())),
         };
         Self {
             transport_id,
@@ -191,7 +213,7 @@ impl WebSocketTransport {
             state: TransportState::Configured,
             local_addr: None,
             runtime,
-            tasks: Arc::new(StdMutex::new(Vec::new())),
+            draining_tasks: Vec::new(),
         }
     }
 
@@ -240,13 +262,6 @@ impl WebSocketTransport {
         self.runtime.stats.snapshot()
     }
 
-    fn push_task(&self, task: JoinHandle<()>) {
-        self.tasks
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .push(task);
-    }
-
     pub async fn start_async(&mut self) -> Result<(), TransportError> {
         if !self.state.can_start() {
             return Err(TransportError::AlreadyStarted);
@@ -269,16 +284,15 @@ impl WebSocketTransport {
                     .local_addr()
                     .map_err(|error| TransportError::StartFailed(error.to_string()))?,
             );
-            self.push_task(tokio::spawn(run_accept_loop(
-                self.runtime.clone(),
-                listener,
-            )));
+            self.runtime
+                .spawn(run_accept_loop(self.runtime.clone(), listener));
         }
 
         for seed_url in self.config.seed_urls.clone() {
             let addr = TransportAddr::from_string(&seed_url);
             self.runtime.set_state(&addr, ConnectionState::Connecting);
-            self.push_task(tokio::spawn(run_seed_dialer(self.runtime.clone(), addr)));
+            self.runtime
+                .spawn(run_seed_dialer(self.runtime.clone(), addr));
         }
 
         self.state = TransportState::Up;
@@ -297,14 +311,20 @@ impl WebSocketTransport {
         }
         self.runtime.running.store(false, Ordering::Release);
         let tasks = {
-            let mut tasks = self.tasks.lock().unwrap_or_else(|error| error.into_inner());
+            let mut tasks = self
+                .runtime
+                .tasks
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             std::mem::take(&mut *tasks)
         };
-        for task in &tasks {
+        self.draining_tasks.extend(tasks);
+        for task in &self.draining_tasks {
             task.abort();
         }
-        for task in tasks {
+        while let Some(task) = self.draining_tasks.last_mut() {
             let _ = task.await;
+            self.draining_tasks.pop();
         }
         self.runtime.pool.lock().await.clear();
         self.runtime
@@ -383,10 +403,8 @@ impl WebSocketTransport {
             }
             states.insert(addr.clone(), ConnectionState::Connecting);
         }
-        self.push_task(tokio::spawn(run_one_shot_dial(
-            self.runtime.clone(),
-            addr.clone(),
-        )));
+        self.runtime
+            .spawn(run_one_shot_dial(self.runtime.clone(), addr.clone()));
         Ok(())
     }
 
@@ -418,7 +436,7 @@ impl WebSocketTransport {
     pub fn close_connection_detached(&self, addr: &TransportAddr) {
         let runtime = self.runtime.clone();
         let addr = addr.clone();
-        tokio::spawn(async move {
+        self.runtime.spawn(async move {
             runtime.pool.lock().await.remove(&addr);
             runtime
                 .states
@@ -553,7 +571,7 @@ async fn run_accept_loop(runtime: Runtime, listener: TcpListener) {
         };
         let accepted_runtime = runtime.clone();
         let accepted_network_rebind_generation = *runtime.network_rebind_generation.borrow();
-        tokio::spawn(async move {
+        runtime.spawn(async move {
             let _inbound_permit = inbound_permit;
             let _total_permit = total_permit;
             if let Err(error) = accept_connection(
@@ -587,10 +605,13 @@ async fn accept_connection(
             Err(error)
         }
     };
-    let websocket =
-        accept_hdr_async_with_config(stream, callback, Some(runtime.websocket_config()))
-            .await
-            .map_err(|_| TransportError::ConnectionRefused)?;
+    let websocket = tokio::time::timeout(
+        Duration::from_millis(runtime.config.connect_timeout_ms()),
+        accept_hdr_async_with_config(stream, callback, Some(runtime.websocket_config())),
+    )
+    .await
+    .map_err(|_| TransportError::Timeout)?
+    .map_err(|_| TransportError::ConnectionRefused)?;
     let generation = runtime.next_generation();
     let addr = TransportAddr::from_string(&format!("ws-peer://{peer_addr}/{generation}"));
     run_connection(
@@ -728,6 +749,8 @@ where
         .stats
         .connections_opened
         .fetch_add(1, Ordering::Relaxed);
+    // Cancellation and early send failures also close the physical connection.
+    let _stats_guard = ConnectionStatsGuard(runtime.stats.clone());
 
     let mut pending_nonce = request_key_hint.then(|| rand::rng().random::<u64>());
     if let Some(nonce) = pending_nonce {
@@ -892,10 +915,6 @@ where
         }
     }
     runtime.clear_state_if(&addr, generation);
-    runtime
-        .stats
-        .connections_closed
-        .fetch_add(1, Ordering::Relaxed);
     debug!(
         transport_id = %runtime.transport_id,
         remote_addr = %addr,
