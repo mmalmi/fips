@@ -10,6 +10,9 @@ use futures::FutureExt;
 use serde_json::{Value, json};
 use std::panic::AssertUnwindSafe;
 
+#[path = "rendezvous/responsive.rs"]
+mod responsive;
+
 const ADDRESSES: [&str; 8] = [
     "a", "b", "useful-a", "useful-b", "idle-a", "idle-b", "silent-a", "silent-b",
 ];
@@ -46,6 +49,15 @@ fn ready_bridge_gets_an_opportunity_while_other_outbound_is_unanswered() {
 }
 
 async fn make_node(network: &str, address: &str, boundary: bool) -> TestNode {
+    make_node_with(network, address, boundary, |_| {}).await
+}
+
+async fn make_node_with(
+    network: &str,
+    address: &str,
+    boundary: bool,
+    configure: impl FnOnce(&mut Config),
+) -> TestNode {
     let mut config = Config::new();
     config.node.system_files_enabled = false;
     config.node.limits.max_peers = if boundary { 2 } else { 1 };
@@ -64,6 +76,7 @@ async fn make_node(network: &str, address: &str, boundary: bool) -> TestNode {
         auto_connect: Some(boundary),
         ..Default::default()
     });
+    configure(&mut config);
     let mut node = Node::new(config).unwrap();
     let (packet_tx, packet_rx) = crate::transport::packet_channel(256);
     let (tun_outbound_tx, tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(256);
@@ -111,12 +124,79 @@ fn caps(nodes: &[TestNode]) {
         assert!(n.node.peer_count() <= peers, "hard peer cap at {i}");
         assert!(n.node.connection_count() <= 1, "hard pending cap at {i}");
         assert!(n.node.link_count() <= links, "hard link cap at {i}");
+        let (owned, evidence) = index_owners(nodes, i);
+        let allocated = owned
+            .iter()
+            .all(|index| n.node.index_allocator.is_allocated(*index));
+        if !allocated || n.node.index_allocator.count() != owned.len() {
+            eprintln!("rendezvous index ownership mismatch at {i}: {evidence}");
+        }
         assert!(
-            n.node.index_allocator.count() <= links,
-            "bounded indexes at {i}"
+            allocated,
+            "every retained receive epoch must be allocated at {i}"
+        );
+        assert_eq!(
+            n.node.index_allocator.count(),
+            owned.len(),
+            "every allocated index must have an exact active or pending owner at {i}"
         );
         assert!(n.node.config.peers.is_empty());
     }
+}
+
+fn index_owners(nodes: &[TestNode], at: usize) -> (std::collections::HashSet<SessionIndex>, Value) {
+    let node = &nodes[at].node;
+    let mut owned = std::collections::HashSet::new();
+    let mut entries = Vec::new();
+    let mut record =
+        |index: Option<SessionIndex>, role: &str, peer: Option<usize>, link: LinkId| {
+            if let Some(index) = index {
+                owned.insert(index);
+                entries.push(
+                    json!({"index":index.as_u32(),"role":role,"node":peer,"link":link.as_u64()}),
+                );
+            }
+        };
+    for peer in node.peers.values() {
+        let label = nodes
+            .iter()
+            .position(|n| n.node.node_addr() == peer.node_addr());
+        record(peer.our_index(), "current", label, peer.link_id());
+        record(
+            peer.pending_our_index(),
+            "pending_epoch",
+            label,
+            peer.link_id(),
+        );
+        record(
+            peer.previous_our_index(),
+            "draining_epoch",
+            label,
+            peer.link_id(),
+        );
+        record(
+            peer.rekey_our_index(),
+            "rekey_handshake",
+            label,
+            peer.link_id(),
+        );
+    }
+    for connection in node.peers.connection_values() {
+        let label = connection.expected_identity().and_then(|id| {
+            nodes
+                .iter()
+                .position(|n| n.node.node_addr() == id.node_addr())
+        });
+        record(
+            connection.our_index(),
+            "candidate_handshake",
+            label,
+            connection.link_id(),
+        );
+    }
+    let evidence =
+        json!({"allocated":node.index_allocator.count(),"owned":owned.len(),"entries":entries});
+    (owned, evidence)
 }
 
 async fn turn(nodes: &mut [TestNode]) {
@@ -144,6 +224,29 @@ async fn local_round(
     sequence: u8,
     flows: &[(usize, usize)],
 ) {
+    send_round(nodes, ids, sequence, flows).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut received = Vec::new();
+    loop {
+        turn(nodes).await;
+        receive_round(endpoints, ids, sequence, flows, &mut received);
+        if received.len() == flows.len() {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "useful direct payloads must keep progressing"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+async fn send_round(
+    nodes: &mut [TestNode],
+    ids: &[PeerIdentity],
+    sequence: u8,
+    flows: &[(usize, usize)],
+) {
     for &(source, destination) in flows {
         send_endpoint_data_via_dataplane(
             &mut nodes[source].node,
@@ -153,41 +256,37 @@ async fn local_round(
         .await
         .unwrap();
     }
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    let mut received = Vec::new();
-    loop {
-        turn(nodes).await;
-        for (destination, endpoint) in endpoints.iter_mut().enumerate() {
-            while let Ok(event) = endpoint.event_rx.try_recv() {
-                let count = event.message_count();
-                for message in event.messages {
-                    let payload = message.payload.as_slice();
-                    assert_eq!(payload.len(), 3);
-                    assert_eq!(
-                        payload[0], sequence,
-                        "late packet from a prior observation turn"
-                    );
-                    let source = usize::from(payload[1]);
-                    assert_eq!(usize::from(payload[2]), destination);
-                    assert_eq!(message.source_peer.node_addr(), ids[source].node_addr());
-                    assert!(flows.contains(&(source, destination)));
-                    assert!(
-                        !received.contains(&(source, destination)),
-                        "no retry or duplicate can supply progress"
-                    );
-                    received.push((source, destination));
-                }
-                endpoint.event_rx.release_messages(count);
+}
+
+fn receive_round(
+    endpoints: &mut [EndpointDataIo],
+    ids: &[PeerIdentity],
+    sequence: u8,
+    flows: &[(usize, usize)],
+    received: &mut Vec<(usize, usize)>,
+) {
+    for (destination, endpoint) in endpoints.iter_mut().enumerate() {
+        while let Ok(event) = endpoint.event_rx.try_recv() {
+            let count = event.message_count();
+            for message in event.messages {
+                let payload = message.payload.as_slice();
+                assert_eq!(payload.len(), 3);
+                assert_eq!(
+                    payload[0], sequence,
+                    "late packet from a prior observation turn"
+                );
+                let source = usize::from(payload[1]);
+                assert_eq!(usize::from(payload[2]), destination);
+                assert_eq!(message.source_peer.node_addr(), ids[source].node_addr());
+                assert!(flows.contains(&(source, destination)));
+                assert!(
+                    !received.contains(&(source, destination)),
+                    "no retry or duplicate can supply progress"
+                );
+                received.push((source, destination));
             }
+            endpoint.event_rx.release_messages(count);
         }
-        if received.len() == flows.len() {
-            return;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "useful direct payloads must keep progressing"
-        );
-        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 }
 
@@ -200,20 +299,25 @@ fn snapshot(nodes: &[TestNode], ids: &[PeerIdentity], started: tokio::time::Inst
     let now = Node::now_ms();
     let boundaries: Vec<_> = (0..2).map(|i| {
         let n = &nodes[i].node;
+        let demand_window = n.config.node.neighbor_rotation.as_ref()
+            .map_or(1000, |config| config.idle_secs.saturating_mul(1000));
         let peers: Vec<_> = n.peers.iter().map(|(address, p)| json!({
             "node":label(ids,address), "link":p.link_id().as_u64(), "index":p.our_index().map(|i| i.as_u32()),
             "age_ms":now.saturating_sub(p.authenticated_at()),
-            "application_demand":n.peer_has_application_demand(address,now,1000),
-            "transit_demand":p.has_recent_transit_demand(now,1000),
+            "application_demand":n.peer_has_application_demand(address,now,demand_window),
+            "transit_demand":p.has_recent_transit_demand(now,demand_window),
             "pending_owner":n.peers.connection_values().any(|c| c.expected_identity().is_some_and(|id| id.node_addr()==address))
         })).collect();
         let owners: Vec<_> = n.peers.connection_values().map(|c| json!({
             "node":c.expected_identity().map(|id|label(ids,id.node_addr())), "link":c.link_id().as_u64(),
             "index":c.our_index().map(|i|i.as_u32()), "outbound":c.is_outbound(),
             "state":format!("{:?}",c.handshake_state()), "has_session":c.has_session(),
-            "started_ms":c.started_at(), "age_ms":c.duration(now), "idle_ms":c.idle_time(now)
+            "started_ms":c.started_at(), "age_ms":c.duration(now), "idle_ms":c.idle_time(now),
+            "rotation_age_ms":c.expected_identity().and_then(|id| n.neighbor_rotation_started_at(id.node_addr()))
+                .map(|started|now.saturating_sub(started))
         })).collect();
         json!({"node":i,"peers":peers,"owners":owners,"links":n.link_count(),"indexes":n.index_allocator.count(),
+            "index_owners":index_owners(nodes,i).1,
             "incoming_bridge_allowed":n.can_receive_neighbor_rotation(ids[1-i].node_addr(),now),
             "outgoing_bridge_allowed":n.can_attempt_neighbor_rotation(ids[1-i].node_addr(),true,now),
             "bridge_awaits_confirmation":n.neighbor_rotation_awaits_confirmation(ids[1-i].node_addr()),
@@ -243,10 +347,19 @@ fn useful_retained(
 ) {
     for i in 0..2 {
         assert_eq!(original_owner(nodes, ids, i), original[i]);
+        let idle_ms = nodes[i]
+            .node
+            .config
+            .node
+            .neighbor_rotation
+            .as_ref()
+            .unwrap()
+            .idle_secs
+            .saturating_mul(1000);
         assert!(nodes[i].node.peer_has_application_demand(
             ids[i + 2].node_addr(),
             Node::now_ms(),
-            1000
+            idle_ms
         ));
     }
 }

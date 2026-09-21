@@ -1,0 +1,404 @@
+//! Responsive local candidates compete with a permanently reachable bridge.
+use super::*;
+
+const IDLE_SECS: u64 = 10;
+const INTERVAL_SECS: u64 = 2;
+const RESPONSIVE_ADDRESSES: [&str; 12] = [
+    "a",
+    "b",
+    "useful-a",
+    "useful-b",
+    "idle-a",
+    "idle-b",
+    "silent-a",
+    "silent-b",
+    "candidate-a-2",
+    "candidate-b-2",
+    "candidate-a-3",
+    "candidate-b-3",
+];
+
+#[test]
+fn offset_full_rosters_form_a_bridge_among_responsive_candidates() {
+    run(2, Duration::from_secs(35));
+}
+
+#[test]
+fn offset_full_rosters_form_a_bridge_among_four_responsive_candidates() {
+    run(4, Duration::from_secs(60));
+}
+
+fn run(candidates_per_boundary: usize, window: Duration) {
+    run_large_stack_async_test("rotation-responsive-rendezvous", move || async move {
+        let _guard = lock_large_network_test().await;
+        let name = format!("rotation-responsive-rendezvous-{}", std::process::id());
+        let network = SimNetwork::new(89);
+        network.set_default_link(SimLink {
+            up: false,
+            ..Default::default()
+        });
+        register_sim_network(name.clone(), network.clone());
+        let addresses = &RESPONSIVE_ADDRESSES[..4 + 2 * candidates_per_boundary];
+        let mut nodes = Vec::new();
+        for (i, address) in addresses.iter().enumerate() {
+            nodes.push(
+                make_node_with(&name, address, i < 2, |config| {
+                    // Public test-only scalars keep identity-based discovery order reproducible.
+                    config.node.identity.nsec = Some(format!("{:02x}", i + 1).repeat(32));
+                    // Keep normal handshake/retry policy, independently from the
+                    // unanswered-dial fixture's deliberately short timeout.
+                    config.node.rate_limit = Config::new().node.rate_limit;
+                    assert_eq!(config.node.rate_limit.handshake_timeout_secs, 30);
+                    config.node.neighbor_rotation = (i < 2).then_some(NeighborRotationConfig {
+                        idle_secs: IDLE_SECS,
+                        interval_secs: INTERVAL_SECS,
+                    });
+                    config.transports.sim = TransportInstances::Single(SimTransportConfig {
+                        network: Some(name.clone()),
+                        addr: Some(address.to_string()),
+                        auto_connect: Some(true),
+                        ..Default::default()
+                    });
+                })
+                .await,
+            );
+        }
+        let result = AssertUnwindSafe(exercise(&mut nodes, &network, addresses, window))
+            .catch_unwind()
+            .await;
+        cleanup_nodes(&mut nodes).await;
+        unregister_sim_network(&name);
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
+        }
+    });
+}
+
+struct Observation {
+    started: tokio::time::Instant,
+    next_tick: tokio::time::Instant,
+    bridge_msg1: [usize; 2],
+    incumbents: [Option<(usize, LinkId, u64)>; 2],
+    replacements: [usize; 2],
+    ticks: usize,
+}
+
+impl Observation {
+    fn new() -> Self {
+        let started = tokio::time::Instant::now();
+        Self {
+            started,
+            next_tick: started,
+            bridge_msg1: [0; 2],
+            incumbents: [None; 2],
+            replacements: [0; 2],
+            ticks: 0,
+        }
+    }
+
+    fn incumbents(
+        &mut self,
+        nodes: &[TestNode],
+        ids: &[PeerIdentity],
+        before_packet: Option<(usize, Value)>,
+    ) {
+        let now = Node::now_ms();
+        for i in 0..2 {
+            let current = nodes[i]
+                .node
+                .peers
+                .iter()
+                .find(|(address, _)| **address != *ids[i + 2].node_addr())
+                .map(|(address, peer)| {
+                    (label(ids, address), peer.link_id(), peer.authenticated_at())
+                });
+            if current == self.incumbents[i] {
+                continue;
+            }
+            if self.incumbents[i].is_some() && current.is_some() {
+                self.replacements[i] += 1;
+            }
+            let describe = |entry: Option<(usize, LinkId, u64)>| {
+                entry.map(|(peer, link, authenticated)| {
+                    json!({"node":peer,"link":link.as_u64(),"authenticated_ms":authenticated,
+                        "age_ms":now.saturating_sub(authenticated)})
+                })
+            };
+            eprintln!(
+                "responsive incumbent: {}",
+                json!({"observed_ms":self.started.elapsed().as_millis(),"boundary":i,
+                    "old":describe(self.incumbents[i]),"new":describe(current),
+                    "attempts_before_packet":before_packet.as_ref()
+                        .filter(|(boundary,_)|*boundary==i).map(|(_,attempts)|attempts)})
+            );
+            self.incumbents[i] = current;
+        }
+    }
+
+    async fn turn(&mut self, nodes: &mut [TestNode], ids: &[PeerIdentity]) {
+        if tokio::time::Instant::now() >= self.next_tick {
+            // One real maintenance/discovery turn per second, without catch-up
+            // bursts. All endpoints respond; no native request is held or lost.
+            self.next_tick = tokio::time::Instant::now() + Duration::from_secs(1);
+            self.ticks += 1;
+            for n in nodes.iter_mut() {
+                n.node.check_timeouts().await;
+                n.node.check_link_heartbeats().await;
+                let now = Node::now_ms();
+                n.node.resend_pending_handshakes(now).await;
+                n.node.resend_pending_rekeys(now).await;
+                n.node.resend_pending_session_handshakes(now).await;
+                n.node.resend_pending_session_msg3(now).await;
+                n.node.retry_pending_session_traffic().await;
+                n.node.check_mmp_reports().await;
+                n.node.check_session_mmp_reports().await;
+                n.node.check_rekey().await;
+                n.node.check_session_rekey().await;
+                n.node.check_pending_lookups(now).await;
+                n.node.poll_pending_connects().await;
+                n.node.process_pending_retries(now).await;
+                n.node.poll_transport_discovery().await;
+                n.node.check_tree_state().await;
+                n.node.send_pending_tree_announces().await;
+            }
+            self.incumbents(nodes, ids, None);
+            snapshot(nodes, ids, self.started, "responsive-maintenance");
+        }
+        for destination in 0..nodes.len() {
+            for _ in 0..256 {
+                let Ok(packet) = nodes[destination].packet_rx.try_recv() else {
+                    break;
+                };
+                let incoming =
+                    destination < 2 && Msg1Header::parse(packet.data.as_slice()).is_some();
+                let bridge = incoming && packet.remote_addr == nodes[1 - destination].addr;
+                let before_packet = (destination < 2).then(|| {
+                    let node = &nodes[destination].node;
+                    let now = Node::now_ms();
+                    let attempts: Vec<_> = node.peers.connection_values().map(|conn| {
+                        let identity = conn.expected_identity();
+                        json!({"node":identity.map(|id|label(ids,id.node_addr())),
+                            "link":conn.link_id().as_u64(),"outbound":conn.is_outbound(),
+                            "connection_age_ms":conn.duration(now),
+                            "rotation_age_ms":identity.and_then(|id|node.neighbor_rotation_started_at(id.node_addr()))
+                                .map(|start|now.saturating_sub(start))})
+                    }).collect();
+                    (destination, json!(attempts))
+                });
+                if incoming {
+                    if bridge {
+                        self.bridge_msg1[destination] += 1;
+                    }
+                    let source = nodes
+                        .iter()
+                        .position(|node| node.addr == packet.remote_addr)
+                        .unwrap();
+                    eprintln!(
+                        "responsive incoming Msg1: {}",
+                        json!({"source":source,"receiver":destination,"bridge":bridge,
+                            "observed_ms":self.started.elapsed().as_millis(),"received_ms":packet.timestamp_ms,
+                            "attempts_before":before_packet.as_ref().map(|(_,attempts)|attempts)})
+                    );
+                    snapshot(nodes, ids, self.started, "responsive-msg1-before");
+                }
+                process_dataplane_packet(&mut nodes[destination], packet).await;
+                if incoming {
+                    snapshot(nodes, ids, self.started, "responsive-msg1-after");
+                }
+                self.incumbents(nodes, ids, before_packet);
+            }
+        }
+        caps(nodes);
+    }
+
+    async fn round(
+        &mut self,
+        nodes: &mut [TestNode],
+        endpoints: &mut [EndpointDataIo],
+        ids: &[PeerIdentity],
+        sequence: &mut u8,
+        flows: &[(usize, usize)],
+    ) {
+        let current = *sequence;
+        *sequence = sequence.checked_add(1).expect("bounded unique payloads");
+        send_round(nodes, ids, current, flows).await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let mut received = Vec::new();
+        loop {
+            self.turn(nodes, ids).await;
+            receive_round(endpoints, ids, current, flows, &mut received);
+            if received.len() == flows.len() {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "exact direct payloads must continue while candidates compete"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+}
+
+async fn connect(
+    observation: &mut Observation,
+    nodes: &mut [TestNode],
+    ids: &[PeerIdentity],
+    network: &SimNetwork,
+    addresses: &[&str],
+    source: usize,
+    destination: usize,
+) {
+    network.set_link(
+        addresses[source],
+        addresses[destination],
+        SimLink::default(),
+    );
+    dial(nodes, source, destination).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        observation.turn(nodes, ids).await;
+        if nodes[source]
+            .node
+            .get_peer(ids[destination].node_addr())
+            .is_some()
+            && nodes[destination]
+                .node
+                .get_peer(ids[source].node_addr())
+                .is_some()
+            && nodes[source].node.connection_count() == 0
+            && nodes[destination].node.connection_count() == 0
+        {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "initial real handshake"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+async fn exercise(
+    nodes: &mut [TestNode],
+    network: &SimNetwork,
+    addresses: &[&str],
+    window: Duration,
+) {
+    let ids = identities(nodes);
+    let mut observation = Observation::new();
+    connect(&mut observation, nodes, &ids, network, addresses, 0, 2).await;
+    connect(&mut observation, nodes, &ids, network, addresses, 1, 3).await;
+    let mut endpoints: Vec<_> = nodes
+        .iter_mut()
+        .map(|n| n.node.attach_endpoint_data_io(16).unwrap())
+        .collect();
+    let original: Vec<_> = (0..2).map(|i| original_owner(nodes, &ids, i)).collect();
+    let mut sequence = 0;
+    observation
+        .round(nodes, &mut endpoints, &ids, &mut sequence, &LOCAL_FLOWS)
+        .await;
+    connect(&mut observation, nodes, &ids, network, addresses, 0, 4).await;
+    let first = nodes[0]
+        .node
+        .get_peer(ids[4].node_addr())
+        .unwrap()
+        .authenticated_at();
+    while Node::now_ms().saturating_sub(first) < 5_000 {
+        observation
+            .round(nodes, &mut endpoints, &ids, &mut sequence, &LOCAL_FLOWS)
+            .await;
+        useful_retained(nodes, &ids, &original);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    connect(&mut observation, nodes, &ids, network, addresses, 1, 5).await;
+    let second = nodes[1]
+        .node
+        .get_peer(ids[5].node_addr())
+        .unwrap()
+        .authenticated_at();
+    assert!(
+        (5_000..6_000).contains(&second.saturating_sub(first)),
+        "actual incumbent authentication must have the intended five-second phase offset"
+    );
+    for (i, candidate) in [(0, 4), (1, 5)] {
+        assert_eq!(nodes[i].node.peer_count(), 2);
+        assert!(nodes[i].node.get_peer(ids[candidate].node_addr()).is_some());
+        assert!(nodes[i].node.pending_connects.is_empty());
+        assert_eq!(nodes[i].node.connection_count(), 0);
+    }
+    observation
+        .round(nodes, &mut endpoints, &ids, &mut sequence, &LOCAL_FLOWS)
+        .await;
+    useful_retained(nodes, &ids, &original);
+    // All local candidates and the bridge remain available through cleanup.
+    // Candidates have no configured peers, application load or forced departure.
+    for candidate in 6..addresses.len() {
+        network.set_link(
+            addresses[candidate % 2],
+            addresses[candidate],
+            SimLink::default(),
+        );
+    }
+    network.set_link(addresses[0], addresses[1], SimLink::default());
+    let exposed = tokio::time::Instant::now();
+    snapshot(
+        nodes,
+        &ids,
+        observation.started,
+        "responsive-bridge-exposed",
+    );
+    let mut bridge_at = None;
+    while exposed.elapsed() < window {
+        observation
+            .round(nodes, &mut endpoints, &ids, &mut sequence, &LOCAL_FLOWS)
+            .await;
+        useful_retained(nodes, &ids, &original);
+        if reciprocal_bridge(nodes, &ids) {
+            bridge_at = Some(exposed.elapsed());
+            observation
+                .round(
+                    nodes,
+                    &mut endpoints,
+                    &ids,
+                    &mut sequence,
+                    &[(0, 1), (1, 0)],
+                )
+                .await;
+            observation
+                .round(nodes, &mut endpoints, &ids, &mut sequence, &LOCAL_FLOWS)
+                .await;
+            useful_retained(nodes, &ids, &original);
+            assert!(reciprocal_bridge(nodes, &ids));
+            break;
+        }
+        // Continue processing between fresh half-second useful data rounds.
+        let next_round = tokio::time::Instant::now() + Duration::from_millis(500);
+        while tokio::time::Instant::now() < next_round && exposed.elapsed() < window {
+            observation.turn(nodes, &ids).await;
+            useful_retained(nodes, &ids, &original);
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+    caps(nodes);
+    snapshot(
+        nodes,
+        &ids,
+        observation.started,
+        "responsive-final-before-cleanup",
+    );
+    eprintln!(
+        "responsive rendezvous outcome: {}",
+        json!({"candidates_per_boundary":(nodes.len()-4)/2,"window_ms":window.as_millis(),
+            "elapsed_ms":exposed.elapsed().as_millis(),"bridge_ms":bridge_at.map(|d|d.as_millis()),
+            "bridge_msg1":observation.bridge_msg1,"incumbent_changes":observation.replacements,
+            "maintenance_turns":observation.ticks,"completed_payload_rounds":sequence})
+    );
+    assert!(
+        observation.bridge_msg1.iter().sum::<usize>() > 0,
+        "diagnostic premise: discovery must actually offer the exposed bridge"
+    );
+    assert!(
+        bridge_at.is_some_and(|elapsed| elapsed < window),
+        "responsive local replacements must not prevent the offset rosters forming a reciprocal bridge within {window:?}"
+    );
+}
