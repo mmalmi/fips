@@ -1793,6 +1793,28 @@ recovery for this sequence. They do not establish fairness among newly admitted
 identities or later attempts after cleanup, radio contention tolerance, or useful
 progress under every possible packet schedule.
 
+Incoming attempts also no longer reset local discovery's exploration cursor
+(2026-09-21). A first inbound attempt can seed the cursor, but only subsequent
+outbound attempts advance it. The native regression establishes ordered peers
+B < C < D, authenticates incoming C, discovers and authenticates D, then accepts
+a fresh incoming C. The next discovery now selects B; before the fix it selected
+D again. It uses real Noise messages, encrypted confirmation, transport discovery
+and normal idle/cooldown waits, without fabricated timestamps or peer state.
+This adds no wire messages or stored state and does not reserve an exploration
+turn while other handshakes occupy the available slots.
+
+All four discovery tests, 56 handshake tests and strict core/relay lint pass.
+The existing paid full-roster regression completes all-hop credit at 34.939 s,
+preserves the original eight channels and boundary-to-internal link epochs, and
+delivers 35/35 independent local packets in each direction (largest gap 1.016 s).
+All 1,536 test sats are collected. These observations are not a latency guarantee.
+Separate repeated-encounter experiments remain unaccepted: one joined and paid
+at 41.307 s but later exceeded the five-second local delivery-gap limit after
+splitting; another missed the first 60-second join deadline and subsequently
+timed out during settlement. Their evidence does not establish a loss cause or
+complete fund collection for those failed runs. Repeated crowded recovery and
+failure cleanup therefore remain open; hardware acceptance is unchanged.
+
 The `merge_split::brief` variant covers repeated short contacts (2026-09-20).
 Independent tasks change the bridge carrier and send single-attempt packets in
 both directions; actual contact intervals must remain within half to one-and-a-half

@@ -159,6 +159,12 @@ Existing authenticated peers and simultaneous outbound dials retain their normal
 recovery paths. Cleanup can admit a later attempt; this is not a fairness guarantee
 among repeatedly joining identities.
 
+Discovery continues after its last locally attempted identity. A first incoming
+attempt can seed that position; subsequent incoming attempts cannot reset it.
+This prevents returning peers from repeatedly skipping another advertised
+neighbor when local discovery gets a turn. It does not guarantee a discovery
+turn while other candidates occupy all transient slots.
+
 Disabling the section stops future optional replacements; it does not reconnect
 previously displaced peers. This is a local exploration policy, not a guarantee
 of topology preservation, newcomer fairness against hostile identities, or

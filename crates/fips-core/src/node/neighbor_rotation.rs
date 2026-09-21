@@ -171,7 +171,11 @@ impl Node {
                 confirmed_inbound: None,
             });
             self.neighbor_rotation.next_attempt_ms = now_ms.saturating_add(interval_ms);
-            self.neighbor_rotation.cursor = Some(peer);
+            // The first inbound attempt seeds exploration past itself. Later
+            // inbound traffic must not rewind progress through local discovery.
+            if outbound || self.neighbor_rotation.cursor.is_none() {
+                self.neighbor_rotation.cursor = Some(peer);
+            }
         }
         true
     }
@@ -295,7 +299,7 @@ impl Node {
         true
     }
 
-    /// Continue after the last attempted identity rather than retrying the
+    /// Continue after the last locally attempted identity rather than retrying the
     /// first discovery result forever. This stores no untrusted identity list.
     pub(in crate::node) fn neighbor_rotation_order(&self, peer: NodeAddr) -> (bool, NodeAddr) {
         (
