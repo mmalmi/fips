@@ -174,7 +174,7 @@ async fn test_originator_stores_path_mtu_in_cache() {
 
     let target_identity = Identity::generate();
     let target = *target_identity.node_addr();
-    let root = make_node_addr(0xF0);
+    let root = *node.tree_state().root();
     let coords = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
 
     node.register_identity(target, target_identity.pubkey_full());
@@ -213,7 +213,7 @@ async fn test_originator_path_mtu_expires_at_coordinate_ttl() {
     let target_identity = Identity::generate();
     let target = *target_identity.node_addr();
     let target_fips = crate::FipsAddress::from_node_addr(&target);
-    let coords = TreeCoordinate::from_addrs(vec![target, make_node_addr(0xF0)]).unwrap();
+    let coords = TreeCoordinate::from_addrs(vec![target, *node.tree_state().root()]).unwrap();
 
     node.register_identity(target, target_identity.pubkey_full());
     seed_pending_lookup(&mut node, target, 803);
@@ -251,7 +251,7 @@ async fn test_originator_lookup_response_keeps_tighter_path_mtu() {
 
     let target_identity = Identity::generate();
     let target = *target_identity.node_addr();
-    let root = make_node_addr(0xF0);
+    let root = *node.tree_state().root();
     let coords = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
     let target_fips = crate::FipsAddress::from_node_addr(&target);
 
@@ -291,7 +291,7 @@ async fn sub_floor_lookup_mtu_is_ignored_while_signed_coordinates_are_kept() {
     let from = make_node_addr(0xAA);
     let target_identity = Identity::generate();
     let target = *target_identity.node_addr();
-    let coords = TreeCoordinate::from_addrs(vec![target, make_node_addr(0xF0)]).unwrap();
+    let coords = TreeCoordinate::from_addrs(vec![target, *node.tree_state().root()]).unwrap();
     let target_fips = crate::FipsAddress::from_node_addr(&target);
     node.register_identity(target, target_identity.pubkey_full());
     seed_pending_lookup(&mut node, target, 802);

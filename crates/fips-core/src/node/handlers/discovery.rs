@@ -316,6 +316,28 @@ impl Node {
                     return;
                 }
 
+                // A signature authenticates the target's coordinate view, not
+                // its freshness after a tree change. Keep indirect Tree repair
+                // pending until its coordinates are usable. Only a direct
+                // reply on the selected direct application route can complete
+                // without shared-root coordinates. ReplyLearned is independent.
+                let cache_coordinates = self.config.node.routing.mode == RoutingMode::ReplyLearned
+                    || response.target_coords.root_id() == self.tree_state.root();
+                if !cache_coordinates
+                    && (*from != target
+                        || self
+                            .find_next_hop(&target)
+                            .is_none_or(|peer| peer.node_addr() != &target))
+                {
+                    debug!(
+                        target = %self.peer_display_name(&target),
+                        response_root = %response.target_coords.root_id(),
+                        current_root = %self.tree_state.root(),
+                        "Keeping discovery pending after a foreign-root response"
+                    );
+                    return;
+                }
+
                 self.stats_mut().discovery.resp_accepted += 1;
 
                 // Clear backoff on success — target is reachable
@@ -327,31 +349,36 @@ impl Node {
                     next_hop = %self.peer_display_name(from),
                     depth = response.target_coords.depth(),
                     path_mtu = path_mtu,
-                    "Discovery succeeded, proof verified, route cached"
+                    cache_coordinates,
+                    "Discovery succeeded, proof verified"
                 );
 
                 // `path_mtu` is a hop annotation outside the signed proof.
                 // A forwarder may lower it, so values below the minimum that
-                // can describe a usable path are treated as absent. The
-                // signed coordinates remain useful and must still be cached.
+                // can describe a usable path are treated as absent. Usable
+                // signed coordinates can still be cached independently.
                 let path_mtu_actionable = path_mtu >= crate::mmp::MIN_ACTIONABLE_PATH_MTU;
-                if path_mtu_actionable {
-                    self.coord_cache.insert_verified_with_path_mtu(
-                        target,
-                        response.target_coords,
-                        now_ms,
-                        path_mtu,
-                    );
-                } else {
+                if !path_mtu_actionable {
                     self.stats_mut().errors.lookup_resp_mtu_below_floor += 1;
                     warn!(
                         target = %self.peer_display_name(&target),
                         path_mtu,
                         floor = crate::mmp::MIN_ACTIONABLE_PATH_MTU,
-                        "LookupResponse path MTU is below the actionable floor; caching coordinates only"
+                        "LookupResponse path MTU is below the actionable floor"
                     );
-                    self.coord_cache
-                        .insert_verified(target, response.target_coords, now_ms);
+                }
+                if cache_coordinates {
+                    if path_mtu_actionable {
+                        self.coord_cache.insert_verified_with_path_mtu(
+                            target,
+                            response.target_coords,
+                            now_ms,
+                            path_mtu,
+                        );
+                    } else {
+                        self.coord_cache
+                            .insert_verified(target, response.target_coords, now_ms);
+                    }
                 }
                 let response_hop_quarantined = session_established
                     && self

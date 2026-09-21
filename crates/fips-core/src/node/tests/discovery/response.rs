@@ -43,7 +43,7 @@ async fn test_response_originator_caches_route() {
     // Use the target identity's actual node_addr for consistency
     let target_identity = Identity::generate();
     let target = *target_identity.node_addr();
-    let root = make_node_addr(0xF0);
+    let root = *node.tree_state().root();
     let coords = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
 
     // Register target identity in cache so verification can find it
@@ -488,7 +488,7 @@ async fn test_response_proof_verification_success() {
 
     let target_identity = Identity::generate();
     let target = *target_identity.node_addr();
-    let root = make_node_addr(0xF0);
+    let root = *node.tree_state().root();
     let coords = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
 
     // Register target in identity_cache

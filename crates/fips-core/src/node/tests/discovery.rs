@@ -15,6 +15,8 @@ use spanning_tree::{
 };
 
 mod convergent_paths_large;
+mod foreign_root_controls;
+mod foreign_root_origin;
 mod forwarding_basic;
 mod open_sweep;
 mod path_mtu;
