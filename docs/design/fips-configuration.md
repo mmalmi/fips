@@ -144,6 +144,12 @@ protect that peer equally; native link maintenance alone does not.
 Attempt spacing and replacement spacing are independent: completing a prepared
 replacement does not restart the next-attempt cooldown.
 
+Each admitted learned peer gets a fresh minimum-age window. At a full roster,
+several competing candidates can therefore require several such windows before
+a continuously available new neighbor is selected. These settings do not bound
+end-to-end join or failover latency; early handshake preparation overlaps
+authentication work but preserves the incumbent's protection window.
+
 Replacement requires a fresh authenticated Noise exchange. An inbound Msg1 alone
 cannot evict a neighbor: the candidate must prove receipt of the fresh Msg2 using
 an encrypted response. Admission rechecks current demand, then binds carrier

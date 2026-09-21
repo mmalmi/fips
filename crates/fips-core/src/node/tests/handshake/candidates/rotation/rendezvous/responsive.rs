@@ -2,6 +2,9 @@
 use super::*;
 use crate::node::wire::Msg2Header;
 
+#[path = "responsive_timing.rs"]
+mod timing;
+
 const IDLE_SECS: u64 = 10;
 const INTERVAL_SECS: u64 = 2;
 const RESPONSIVE_ADDRESSES: [&str; 12] = [
@@ -82,6 +85,7 @@ struct Observation {
     incumbents: [Option<(usize, LinkId, u64)>; 2],
     replacements: [usize; 2],
     ticks: usize,
+    timing: timing::Ledger,
 }
 
 fn pending_attempts(node: &Node, ids: &[PeerIdentity]) -> Value {
@@ -116,6 +120,7 @@ impl Observation {
             incumbents: [None; 2],
             replacements: [0; 2],
             ticks: 0,
+            timing: timing::Ledger::default(),
         }
     }
 
@@ -159,6 +164,7 @@ impl Observation {
     }
 
     async fn turn(&mut self, nodes: &mut [TestNode], ids: &[PeerIdentity]) {
+        self.timing.observe(nodes, ids, self.started, "turn-entry");
         if tokio::time::Instant::now() >= self.next_tick {
             // One real maintenance/discovery turn per second, without catch-up
             // bursts. All endpoints respond; no native request is held or lost.
@@ -185,6 +191,8 @@ impl Observation {
                 n.node.send_pending_tree_announces().await;
             }
             self.incumbents(nodes, ids, None);
+            self.timing
+                .observe(nodes, ids, self.started, "maintenance-completed");
             snapshot(nodes, ids, self.started, "responsive-maintenance");
         }
         for destination in 0..nodes.len() {
@@ -263,6 +271,15 @@ impl Observation {
                     snapshot(nodes, ids, self.started, "responsive-msg1-after");
                 }
                 self.incumbents(nodes, ids, before_packet);
+                if destination < 2 {
+                    self.timing.observe_boundary(
+                        &nodes[destination].node,
+                        ids,
+                        destination,
+                        self.started,
+                        "packet-completed",
+                    );
+                }
             }
         }
         caps(nodes);
@@ -398,6 +415,7 @@ async fn exercise(
     }
     network.set_link(addresses[0], addresses[1], SimLink::default());
     let exposed = tokio::time::Instant::now();
+    observation.timing.exposed(observation.started);
     snapshot(
         nodes,
         &ids,
@@ -443,6 +461,10 @@ async fn exercise(
         observation.started,
         "responsive-final-before-cleanup",
     );
+    observation
+        .timing
+        .observe(nodes, &ids, observation.started, "final");
+    observation.timing.summary(observation.started);
     eprintln!(
         "responsive rendezvous outcome: {}",
         json!({"candidates_per_boundary":(nodes.len()-4)/2,"window_ms":window.as_millis(),

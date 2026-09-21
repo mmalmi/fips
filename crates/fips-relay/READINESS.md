@@ -1943,6 +1943,42 @@ linting and the source-size gate pass. The latest code has no matched physical
 router measurements; arbitrary encounter schedules, hostile-identity fairness,
 radio contention and channel handover remain separate acceptance work.
 
+An unchanged-policy diagnostic run (2026-09-21) records bridge admission at
+31.011 and 39.917 seconds, tree convergence at 32.027 and 40.933 seconds, and
+all-hop credit at 33.775 and 51.032 seconds. Targeted native rotation/discovery
+logs show successive incumbent replacements approximately ten seconds apart:
+each newly admitted idle peer receives the configured minimum-age protection.
+The 32.417-second intervening split/eviction is outside both encounter timers.
+All 1,536 test sats are collected and the existing native resource caps hold.
+These observations identify serial candidate turnover as a substantial cost;
+they do not prove that every wait is necessary or establish a join-time bound.
+
+The post-tree application measurement includes the fixture's seven-second retry
+spacing and sequential bidirectional bursts. In the second encounter, the first
+direction delivered its second batch at 7.429 seconds, followed by a 1.953-second
+reverse burst. Their combined time is not an isolated routing-outage measurement.
+Admission timing must be separated from application retry gaps before retaining
+an optimization; no protection interval or acceptance deadline was shortened.
+
+The existing native responsive-candidate fixtures now emit a bounded timing
+ledger at their normal maintenance and packet-processing boundaries. It records
+incumbent maturity, exact candidate ownership and original deadline, retained
+authentication evidence, resend state and promotion observations. At most 256
+changed states per boundary are emitted; the summary reports any omissions.
+Monotonic observation brackets and native wall-clock deadlines remain distinct.
+Victim-selection eligibility alone does not establish final ACL/carrier/proof
+validity, so the ledger does not invent a new promotion deadline.
+
+Both original native fixtures pass: two competing candidates form the bridge in
+20.515 seconds and four in 40.509 seconds, within their unchanged 35/60-second
+windows. The ledger emits 37 and 59 total transitions respectively, with no
+omissions; this covers observed state changes, not every wire event. Strict core
+lint, formatting and the 868-file source-size gate pass. These diagnostic changes
+do not alter production neighbor selection or prove faster recovery. Reproduce
+with `cargo test -p nvpn-fips-core --all-features --lib
+node::tests::handshake::candidates::rotation::rendezvous::responsive::
+-- --test-threads=1 --nocapture`, using the same development dependencies.
+
 Reproduce with `cargo test -p fips-relay --features measurements --test
 priced_paths merge_split::crowded::automatic::repeated::repeated_full_rosters_recover_paid_routes_without_candidate_departures
 -- --exact --test-threads=1 --nocapture`, using the development dependencies in
