@@ -156,6 +156,8 @@ pub struct ActivePeer {
     authenticated_at: u64,
     /// When this peer was last seen (any activity, Unix milliseconds).
     last_seen: u64,
+    /// Last locally admitted opaque transit use; link maintenance does not renew it.
+    last_transit_demand_ms: Option<u64>,
 
     // === Epoch (Restart Detection) ===
     /// Remote peer's startup epoch (from handshake). Used to detect restarts.
@@ -254,6 +256,7 @@ impl ActivePeer {
             link_stats: LinkStats::new(),
             authenticated_at,
             last_seen: authenticated_at,
+            last_transit_demand_ms: None,
             remote_epoch: None,
             fmp_mmp_is_initiator: false,
             last_heartbeat_sent: None,
@@ -333,6 +336,7 @@ impl ActivePeer {
             link_stats: session.link_stats,
             authenticated_at,
             last_seen: authenticated_at,
+            last_transit_demand_ms: None,
             remote_epoch: session.remote_epoch,
             fmp_mmp_is_initiator: session.is_initiator,
             last_heartbeat_sent: None,
@@ -704,6 +708,15 @@ impl ActivePeer {
     /// When this peer was last seen.
     pub fn last_seen(&self) -> u64 {
         self.last_seen
+    }
+
+    pub(crate) fn record_transit_demand(&mut self, now_ms: u64) {
+        self.last_transit_demand_ms = Some(self.last_transit_demand_ms.unwrap_or(0).max(now_ms));
+    }
+
+    pub(crate) fn has_recent_transit_demand(&self, now_ms: u64, idle_ms: u64) -> bool {
+        self.last_transit_demand_ms
+            .is_some_and(|last| now_ms.saturating_sub(last) <= idle_ms)
     }
 
     /// Time since last activity.

@@ -767,7 +767,15 @@ impl Node {
         }
 
         // Normal path: promote to active peer
-        match self.promote_connection(link_id, peer_identity, packet.timestamp_ms) {
+        let rotation = self
+            .prepare_neighbor_rotation_promotion(link_id, &peer_identity)
+            .await;
+        match self.promote_connection_with_rotation(
+            link_id,
+            peer_identity,
+            packet.timestamp_ms,
+            rotation,
+        ) {
             Ok(result) => {
                 // Clean up pending_outbound
                 self.pending_outbound.remove(&key);
@@ -844,17 +852,7 @@ impl Node {
                 // capacity rejection. Retire its remaining admission state
                 // before awaiting physical closure, preserving any live owner.
                 self.pending_outbound.remove(&key);
-                if let Some(link) = self.remove_link(&link_id) {
-                    let transport_id = link.transport_id();
-                    if let Some(winner) =
-                        self.active_link_for_carrier(transport_id, link.remote_addr())
-                    {
-                        self.restore_link_address(winner);
-                    }
-                    self.close_unowned_handshake_carrier(transport_id, link.remote_addr())
-                        .await;
-                    self.cleanup_bootstrap_transport_if_unused(transport_id);
-                }
+                self.cleanup_failed_promotion(link_id).await;
                 warn!(
                     link_id = %link_id,
                     error = %e,

@@ -1,7 +1,7 @@
 //! Shared real controller and test-money assembly for simulated carrier scenarios.
 use super::*;
 use cashu_service::simulation::MintProxy;
-use fips_core::FipsEndpointServiceReceiver;
+use fips_core::{FipsEndpointServiceReceiver, config::NeighborRotationConfig};
 use std::path::PathBuf;
 
 pub(super) struct Bench {
@@ -28,21 +28,46 @@ pub(super) struct Bench {
 }
 
 pub(super) async fn start(root_index: usize, scenario: Scenario, seed: u64) -> Bench {
-    start_inner(root_index, scenario, seed, false, false)
+    start_inner(root_index, scenario, seed, false, false, None)
         .await
         .0
 }
 
 pub(super) async fn start_with_promotion_gate(root_index: usize, seed: u64) -> Bench {
-    start_inner(root_index, Scenario::RecoveryTiming, seed, false, true)
-        .await
-        .0
+    start_inner(
+        root_index,
+        Scenario::RecoveryTiming,
+        seed,
+        false,
+        true,
+        None,
+    )
+    .await
+    .0
 }
 
 #[cfg(unix)]
 pub(super) async fn start_with_mint_proxy(root_index: usize, seed: u64) -> (Bench, MintProxy) {
-    let (bench, proxy) = start_inner(root_index, Scenario::MergeSplit, seed, true, false).await;
+    let (bench, proxy) =
+        start_inner(root_index, Scenario::MergeSplit, seed, true, false, None).await;
     (bench, proxy.unwrap())
+}
+
+pub(super) async fn start_with_neighbor_rotation(
+    root_index: usize,
+    seed: u64,
+    rotation: NeighborRotationConfig,
+) -> Bench {
+    Box::pin(start_inner(
+        root_index,
+        Scenario::MergeSplit,
+        seed,
+        false,
+        false,
+        Some(rotation),
+    ))
+    .await
+    .0
 }
 
 async fn start_inner(
@@ -51,6 +76,7 @@ async fn start_inner(
     seed: u64,
     intercept_mint: bool,
     hold_promotion: bool,
+    rotation: Option<NeighborRotationConfig>,
 ) -> (Bench, Option<MintProxy>) {
     let handshakes = matches!(scenario, Scenario::HandshakeSaturation);
     let saturation = matches!(
@@ -173,6 +199,10 @@ async fn start_inner(
         let mut config = Config::new();
         config.node.identity.nsec = Some(fips_core::encode_nsec(&key.keypair().secret_key()));
         config.node.control.enabled = mesh;
+        config.node.neighbor_rotation = rotation.as_ref().map(|r| NeighborRotationConfig {
+            idle_secs: r.idle_secs,
+            interval_secs: r.interval_secs,
+        });
         if mesh {
             config.node.control.socket_path = root
                 .path()
@@ -311,7 +341,11 @@ async fn start_inner(
             },
             max_rate_msat_per_kib: 8192,
             lifetime_secs: 300,
-            max_units: if recovery_timing || mesh {
+            max_units: if rotation.is_some() {
+                // The continuous local pump plus finite paid bursts exceed
+                // 128 KiB. At 128 msat/KiB this still fits the 64-sat channel.
+                384 * 1024
+            } else if recovery_timing || mesh {
                 128 * 1024
             } else {
                 1_000_000

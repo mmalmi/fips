@@ -1662,6 +1662,42 @@ one link per peer. These are sampled resource/fullness checks, not continuous
 occupancy, newcomer fairness at capacity, radio airtime or physical mobility
 evidence. Candidate departure is explicit; healthy admitted peers keep their slots.
 
+The optional full-roster variant passes without candidate departure (2026-09-21).
+It enables [`node.neighbor_rotation`](../../docs/design/fips-configuration.md#optional-neighbor-rotation-nodeneighbor_rotation)
+with a ten-second idle threshold and two-second attempt interval on the six
+paying nodes. Eight unfunded adjacent candidates remain physically available.
+Only the bridge carrier changes during acceptance: native discovery and fresh
+authentication must replace idle learned neighbors within the existing limits.
+Configured peers and recent application demand, whether free or paid, remain
+protected. Msg1 replay, failed proof and demand appearing before confirmation
+cannot displace the incumbent. No new protocol messages are used.
+
+The accepted run observes the authenticated bridge and common tree at 33.374 s,
+then fresh two-way delivery and credit on all eight original directional channels
+at 35.137 s. These times include discovery, polling and payment catch-up, not just
+packet latency. An independent one-packet-per-second local workload delivers
+36/36 packets in each direction with no duplicates and a largest delivery gap of
+1.015 s. The original local link IDs and authentication epochs remain unchanged.
+Across 189 native observations, maxima are two peers, two pending connections,
+four links and three sessions per node. The same channel/funding identities and
+spending bounds remain, and all 1,536 test sats reconcile and are collected.
+
+Continuous traffic initially exhausted the fixture's 128-KiB local route allowance
+(131,032 bytes used, 40 left). This variant authorizes 384 KiB per offer, costing
+at most 48 sats at its 128-msat/KiB rate, within the unchanged 64-sat channels.
+It does not remove byte accounting or increase wallet, channel or funding limits.
+The finite workload and five-second maximum local delivery gap remain enforced.
+
+Run this case with `cargo test -p fips-relay --features measurements --test
+priced_paths merge_split::crowded::automatic::full_rosters_form_a_paid_bridge_without_forced_departure
+-- --exact --test-threads=1 --nocapture`. Focused native tests also exercise real
+TCP pool release and remote EOF before shutdown, fresh traffic on the replacement,
+and an exact prepared replacement surviving elapsed time during carrier cleanup.
+This simulation does not establish physical roaming, channel coordination,
+subsecond handover, Sybil fairness or general topology preservation. Idle-neighbor
+selection scans existing bounded session and demand state; CPU cost has not been
+benchmarked for large rosters. Current hardware evidence predates this policy.
+
 The admission audit reproduced a fresh inbound identity bypassing connection/link
 limits when peer slots remained. The gate now applies before index/link allocation,
 preserving the authenticated simultaneous-dial exception. The crowded fixture then

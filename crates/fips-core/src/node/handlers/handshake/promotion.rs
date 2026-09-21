@@ -8,11 +8,23 @@ impl Node {
     /// Promote a connection to active peer after successful authentication.
     ///
     /// Handles cross-connection detection and resolution using tie-breaker rules.
+    #[cfg(test)]
     pub(in crate::node) fn promote_connection(
         &mut self,
         link_id: LinkId,
         verified_identity: PeerIdentity,
         current_time_ms: u64,
+    ) -> Result<PromotionResult, NodeError> {
+        let rotation = self.choose_neighbor_rotation_promotion(link_id, &verified_identity);
+        self.promote_connection_with_rotation(link_id, verified_identity, current_time_ms, rotation)
+    }
+
+    pub(in crate::node) fn promote_connection_with_rotation(
+        &mut self,
+        link_id: LinkId,
+        verified_identity: PeerIdentity,
+        current_time_ms: u64,
+        rotation: Option<crate::node::neighbor_rotation::PreparedNeighborRotation>,
     ) -> Result<PromotionResult, NodeError> {
         // Remove the connection from pending
         let mut connection = self
@@ -374,7 +386,9 @@ impl Node {
             }
 
             // Normal promotion
-            if self.max_peers > 0 && self.peers.len() >= self.max_peers {
+            if self.neighbor_roster_full()
+                && !self.commit_neighbor_rotation(&peer_node_addr, link_id, rotation)
+            {
                 let _ = self.index_allocator.free(our_index);
                 return Err(NodeError::MaxPeersExceeded {
                     max: self.max_peers,

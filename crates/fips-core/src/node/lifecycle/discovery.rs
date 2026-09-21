@@ -18,6 +18,7 @@ impl Node {
         let mut queued_per_peer: HashMap<NodeAddr, usize> = HashMap::new();
         let mut connect_budget = self.discovery_connect_budget();
         let mut skipped_budget = 0usize;
+        let mut rotation_candidate: Option<(TransportId, TransportAddr, PeerIdentity)> = None;
 
         for transport in self.transports.values() {
             if !transport.is_operational() {
@@ -108,6 +109,29 @@ impl Node {
                     continue;
                 }
 
+                if self.neighbor_roster_full() && self.config.node.neighbor_rotation.is_some() {
+                    if self
+                        .authorize_peer(
+                            &identity,
+                            PeerAclContext::OutboundConnect,
+                            candidate_transport_id,
+                            &remote_addr,
+                        )
+                        .is_err()
+                    {
+                        continue;
+                    }
+                    if connect_budget > 0 && self.path_candidate_attempt_budget(&node_addr) > 0 {
+                        let key = self.neighbor_rotation_order(node_addr);
+                        if rotation_candidate.as_ref().is_none_or(|(_, _, chosen)| {
+                            key < self.neighbor_rotation_order(*chosen.node_addr())
+                        }) {
+                            rotation_candidate =
+                                Some((candidate_transport_id, remote_addr, identity));
+                        }
+                    }
+                    continue;
+                }
                 let queued_for_peer = queued_per_peer.get(&node_addr).copied().unwrap_or(0);
                 if connect_budget == 0
                     || self
@@ -132,6 +156,11 @@ impl Node {
             );
         }
 
+        if connect_budget > 0
+            && let Some((transport_id, remote_addr, identity)) = rotation_candidate
+        {
+            to_connect.push((transport_id, remote_addr, identity, false));
+        }
         for (transport_id, remote_addr, identity, active_refresh) in to_connect {
             info!(
                 peer = %self.peer_display_name(identity.node_addr()),

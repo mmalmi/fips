@@ -22,12 +22,42 @@ impl Node {
         transport_id: TransportId,
         remote_addr: &TransportAddr,
     ) {
-        if self
-            .active_link_for_carrier(transport_id, remote_addr)
-            .is_none()
-            && let Some(transport) = self.transports.get(&transport_id)
-        {
+        if self.handshake_carrier_is_owned(transport_id, remote_addr) {
+            return;
+        }
+        if let Some(transport) = self.transports.get(&transport_id) {
             transport.close_connection(remote_addr).await;
+        }
+    }
+
+    pub(in crate::node) fn handshake_carrier_is_owned(
+        &self,
+        transport_id: TransportId,
+        remote_addr: &TransportAddr,
+    ) -> bool {
+        self.links
+            .values()
+            .any(|link| link.transport_id() == transport_id && link.remote_addr() == remote_addr)
+            || self
+                .active_link_for_carrier(transport_id, remote_addr)
+                .is_some()
+            || self.peers.connection_values().any(|conn| {
+                conn.transport_id() == Some(transport_id) && conn.source_addr() == Some(remote_addr)
+            })
+            || self.pending_connects.iter().any(|pending| {
+                pending.transport_id == transport_id && &pending.remote_addr == remote_addr
+            })
+    }
+
+    pub(super) async fn cleanup_failed_promotion(&mut self, link_id: LinkId) {
+        if let Some(link) = self.remove_link(&link_id) {
+            let transport_id = link.transport_id();
+            if let Some(winner) = self.active_link_for_carrier(transport_id, link.remote_addr()) {
+                self.restore_link_address(winner);
+            }
+            self.close_unowned_handshake_carrier(transport_id, link.remote_addr())
+                .await;
+            self.cleanup_bootstrap_transport_if_unused(transport_id);
         }
     }
 
@@ -116,6 +146,7 @@ impl Node {
             self.cleanup_stale_connection(link_id, Self::now_ms()).await;
             return false;
         }
+        self.confirm_neighbor_rotation_candidate(identity.node_addr(), link_id);
         if self
             .finish_inbound_handshake(link_id, identity, &packet, true)
             .await
@@ -137,49 +168,52 @@ impl Node {
         let our_index = connection.our_index()?;
         let their_index = connection.their_index()?;
         let wire_msg2 = connection.handshake_msg2()?.to_vec();
-        self.unregister_handshake_candidate(link_id);
         // Responder handshake is complete after receive_handshake_init (Noise IK
         // pattern: responder processes msg1 and generates msg2 in one step).
         // Promote first so a winning receiver index is owned and routed before
         // the peer can answer Msg2 with an Established frame. Losing inbound
         // candidates must never advertise their already-freed index.
-        let (node_addr, loser_link_id) =
-            match self.promote_connection(link_id, peer_identity, packet.timestamp_ms) {
-                Ok(PromotionResult::Promoted(node_addr)) => (node_addr, None),
-                Ok(PromotionResult::CrossConnectionWon {
-                    loser_link_id,
-                    node_addr,
-                }) => (node_addr, Some(loser_link_id)),
-                Ok(PromotionResult::CrossConnectionLost { winner_link_id }) => {
-                    self.close_cross_connection_loser_physical_path(link_id, Some(winner_link_id))
-                        .await;
-                    if let Some(link) = self.remove_link(&link_id) {
-                        self.cleanup_bootstrap_transport_if_unused(link.transport_id());
-                    }
-                    self.links.insert_addr(
-                        (packet.transport_id, packet.remote_addr.clone()),
-                        winner_link_id,
-                    );
-                    debug!(
-                        winner_link_id = %winner_link_id,
-                        "Inbound cross-connection lost without advertising its receiver index"
-                    );
-                    return None;
-                }
-                Err(e) => {
-                    warn!(
-                        link_id = %link_id,
-                        error = %e,
-                        "Failed to promote inbound connection"
-                    );
-                    // Clean up on promotion failure
-                    if let Some(link) = self.remove_link(&link_id) {
-                        self.cleanup_bootstrap_transport_if_unused(link.transport_id());
-                    }
-                    let _ = self.index_allocator.free(our_index);
-                    return None;
-                }
-            };
+        let rotation = self
+            .prepare_neighbor_rotation_promotion(link_id, &peer_identity)
+            .await;
+        self.unregister_handshake_candidate(link_id);
+        let (node_addr, loser_link_id) = match self.promote_connection_with_rotation(
+            link_id,
+            peer_identity,
+            packet.timestamp_ms,
+            rotation,
+        ) {
+            Ok(PromotionResult::Promoted(node_addr)) => (node_addr, None),
+            Ok(PromotionResult::CrossConnectionWon {
+                loser_link_id,
+                node_addr,
+            }) => (node_addr, Some(loser_link_id)),
+            Ok(PromotionResult::CrossConnectionLost { winner_link_id }) => {
+                self.close_cross_connection_loser_physical_path(link_id, Some(winner_link_id))
+                    .await;
+                self.cleanup_failed_promotion(link_id).await;
+                self.links.insert_addr(
+                    (packet.transport_id, packet.remote_addr.clone()),
+                    winner_link_id,
+                );
+                debug!(
+                    winner_link_id = %winner_link_id,
+                    "Inbound cross-connection lost without advertising its receiver index"
+                );
+                return None;
+            }
+            Err(e) => {
+                warn!(
+                    link_id = %link_id,
+                    error = %e,
+                    "Failed to promote inbound connection"
+                );
+                // Clean up on promotion failure
+                self.cleanup_failed_promotion(link_id).await;
+                let _ = self.index_allocator.free(our_index);
+                return None;
+            }
+        };
 
         // Retain Msg2 before sending so duplicate Msg1 can safely retry.
         // Timestamp generation, not queued arrival: an outbound dial may have

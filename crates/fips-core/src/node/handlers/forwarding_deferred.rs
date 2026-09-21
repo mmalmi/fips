@@ -131,6 +131,14 @@ pub(in crate::node) struct DeferredSessionForwards {
 }
 
 impl DeferredSessionForwards {
+    pub(in crate::node) fn has_demand_for(&self, peer: &NodeAddr) -> bool {
+        self.pending
+            .values()
+            .map(|pending| &pending.forward)
+            .chain(self.completed.iter().map(|(forward, _)| forward))
+            .any(|forward| &forward.ingress_peer == peer || &forward.next_hop_addr == peer)
+    }
+
     fn has_capacity(&self, forward: &PreparedSessionForward, lane: ForwardingLane) -> bool {
         self.window
             .has_capacity(forward.next_hop_addr, forward.src_addr, lane)

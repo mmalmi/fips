@@ -11,9 +11,17 @@ impl Node {
         let Some(runtime) = self.lan_discovery.clone() else {
             return;
         };
-        let events = runtime.drain_events().await;
+        let mut events = runtime.drain_events().await;
         if events.is_empty() {
             return;
+        }
+        if self.neighbor_roster_full() && self.config.node.neighbor_rotation.is_some() {
+            events.sort_by_cached_key(|event| {
+                let crate::discovery::lan::LanEvent::Discovered(peer) = event;
+                crate::PeerIdentity::from_npub(&peer.npub)
+                    .ok()
+                    .map(|id| self.neighbor_rotation_order(*id.node_addr()))
+            });
         }
         let mut connect_budget = self.discovery_connect_budget();
         let mut skipped_budget = 0usize;

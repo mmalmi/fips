@@ -21,8 +21,10 @@ mod io_impl;
 mod lifecycle;
 mod link_registry;
 mod local_rendezvous;
+mod neighbor_rotation;
 pub(crate) mod originated_observer;
 mod path_mtu;
+mod peer_activity;
 mod peer_error_budget;
 mod peer_lifecycle;
 mod peer_runtime;
@@ -303,6 +305,8 @@ pub struct Node {
     max_peers: usize,
     /// Maximum links (0 = unlimited).
     max_links: usize,
+    /// Constant-size state for optional exploration at the neighbor limit.
+    neighbor_rotation: neighbor_rotation::NeighborRotation,
 
     // === Counters ===
     /// Next link ID to allocate.

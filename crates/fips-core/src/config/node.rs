@@ -753,6 +753,10 @@ pub struct NodeConfig {
     #[serde(default)]
     pub limits: LimitsConfig,
 
+    /// Optional replacement of idle learned neighbors at the peer limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub neighbor_rotation: Option<super::NeighborRotationConfig>,
+
     /// Rate limiting (`node.rate_limit.*`).
     #[serde(default)]
     pub rate_limit: RateLimitConfig,
@@ -831,6 +835,7 @@ impl Default for NodeConfig {
             link_dead_timeout_secs: 30,
             fast_link_dead_timeout_secs: 5,
             limits: LimitsConfig::default(),
+            neighbor_rotation: None,
             rate_limit: RateLimitConfig::default(),
             retry: RetryConfig::default(),
             cache: CacheConfig::default(),

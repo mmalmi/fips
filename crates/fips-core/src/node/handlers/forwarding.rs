@@ -458,6 +458,13 @@ impl Node {
             None
         };
 
+        // Local admission establishes demand even if crypto/socket work later
+        // queues or fails. Opaque transit cannot distinguish end-to-end MMP
+        // from application data; adjacent link maintenance never reaches here.
+        let admitted_at = Self::now_ms();
+        self.record_peer_transit_demand(&previous_hop, admitted_at);
+        self.record_peer_transit_demand(&next_hop_addr, admitted_at);
+
         // LookupResponse reverse entries are intentionally one-shot. Once a
         // well-formed initial SessionSetup has a forward route, retain its
         // ingress hop so the SessionAck can traverse the same transit chain.
@@ -941,3 +948,9 @@ impl PreparedSessionForwardRoute {
 }
 
 include!("forwarding_tests.rs");
+
+#[cfg(test)]
+mod application_demand_tests {
+    use super::*;
+    include!("forwarding_activity_tests.rs");
+}

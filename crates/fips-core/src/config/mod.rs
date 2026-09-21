@@ -20,6 +20,7 @@
 
 #[cfg(target_os = "linux")]
 mod gateway;
+mod neighbor_rotation;
 mod node;
 mod peer;
 mod transport;
@@ -36,6 +37,7 @@ use zeroize::{Zeroize, Zeroizing};
 pub use crate::discovery::local::LocalInstanceDiscoveryConfig;
 #[cfg(target_os = "linux")]
 pub use gateway::{ConntrackConfig, GatewayConfig, GatewayDnsConfig, PortForward, Proto};
+pub use neighbor_rotation::NeighborRotationConfig;
 pub use node::{
     BloomConfig, BuffersConfig, CacheConfig, ControlConfig, DiscoveryConfig, LimitsConfig,
     NodeConfig, NostrDiscoveryConfig, NostrDiscoveryPolicy, NostrPeerfindingSource,
@@ -731,6 +733,13 @@ impl Config {
 
     /// Validate cross-field configuration invariants.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        if let Some(rotation) = &self.node.neighbor_rotation
+            && (rotation.idle_secs == 0 || rotation.interval_secs == 0)
+        {
+            return Err(ConfigError::Validation(
+                "node.neighbor_rotation idle_secs and interval_secs must be positive".into(),
+            ));
+        }
         let nostr = &self.node.discovery.nostr;
         let local = &self.node.discovery.local;
 

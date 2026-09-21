@@ -1,6 +1,9 @@
 //! Unfunded neighbors fill admission slots without replacing paid authority.
 use super::*;
-use std::future::Future;
+use std::{future::Future, path::Path};
+
+#[path = "full_roster.rs"]
+mod automatic;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn crowded_discovery_preserves_paid_progress_and_recovers_after_departure() {
@@ -116,10 +119,60 @@ impl Observer {
     }
 }
 
-async fn exercise_crowded() {
-    let mut bench = bench::start(0, Scenario::MergeSplit, 119).await;
+async fn internal_links(
+    root: &Path,
+    nodes: &[Arc<FipsEndpoint>],
+    identities: &[PeerIdentity],
+) -> [(u64, u64); 2] {
+    let mut result = [(0, 0); 2];
+    for (index, (boundary, internal)) in [(2, 1), (3, 4)].into_iter().enumerate() {
+        assert!(
+            nodes[boundary].peers().await.unwrap().iter().any(|peer| {
+                peer.connected && peer.node_addr == *identities[internal].node_addr()
+            }),
+            "the original local paid neighbor must remain connected"
+        );
+        let reply = native_query(root, boundary, "show_peers").await;
+        let peer = reply["peers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|peer| peer["npub"] == identities[internal].npub())
+            .expect("the original local native peer must remain present");
+        assert_eq!(peer["transport_type"], "sim");
+        result[index] = (
+            peer["link_id"].as_u64().unwrap(),
+            peer["authenticated_at_ms"].as_u64().unwrap(),
+        );
+    }
+    result
+}
+
+async fn setup_crowded(
+    seed: u64,
+    rotation: Option<fips_core::config::NeighborRotationConfig>,
+) -> (Bench, Observer, Vec<Account>, Vec<Candidate>) {
+    let rotating = rotation.is_some();
+    let mut bench = match rotation {
+        Some(rotation) => Box::pin(bench::start_with_neighbor_rotation(0, seed, rotation)).await,
+        None => Box::pin(bench::start(0, Scenario::MergeSplit, seed)).await,
+    };
     let mut observer = Observer::new(&bench);
+    if rotating {
+        for (index, identity) in bench.peers.iter().enumerate() {
+            eprintln!(
+                "full-roster identity: node={index} address={} npub={}",
+                identity.node_addr(),
+                identity.npub()
+            );
+        }
+    }
     converge(&bench, false, "crowded initial components").await;
+    let original_links = if rotating {
+        Some(internal_links(bench.root.path(), &bench.nodes, &bench.peers).await)
+    } else {
+        None
+    };
     for (source, destination) in [(0, 2), (5, 3)] {
         watch(&bench, source, destination).await;
     }
@@ -143,7 +196,24 @@ async fn exercise_crowded() {
     bench.network.set_link_up("2", "3", false);
     converge(&bench, false, "before crowded encounter").await;
 
+    if rotating {
+        // Split convergence outlasts the idle threshold. Refresh real local
+        // application demand before new discoveries compete for the last slots.
+        for (source, destination, tag) in [(0, 2, 102), (5, 3, 103)] {
+            traffic(&mut bench, source, destination, tag).await;
+        }
+    }
+
     let candidates = observer.during(candidates(&bench)).await;
+    if rotating {
+        for candidate in &candidates {
+            eprintln!(
+                "full-roster identity: node={} address={}",
+                candidate.address,
+                candidate.peer.node_addr()
+            );
+        }
+    }
     let occupied_at = Instant::now();
     observer
         .during(async {
@@ -162,6 +232,18 @@ async fn exercise_crowded() {
     );
     retain(&anchor, &accounts(&bench).await, true);
     assert_watches(&bench).await;
+    if let Some(links) = original_links {
+        assert_eq!(
+            internal_links(bench.root.path(), &bench.nodes, &bench.peers).await,
+            links,
+            "crowding must retain the original refreshed internal link epochs"
+        );
+    }
+    (bench, observer, anchor, candidates)
+}
+
+async fn exercise_crowded() {
+    let (mut bench, mut observer, anchor, candidates) = Box::pin(setup_crowded(119, None)).await;
     // Full native rosters deliberately retain healthy peers. The bridge can
     // reconnect after departures; this fixture does not assume Sybil fairness.
     bench.network.set_link_up("2", "3", true);

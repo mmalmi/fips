@@ -7,6 +7,9 @@ use crate::noise::{HandshakeState, NoiseSession};
 use crate::transport::{PacketBuffer, ReceivedPacket};
 use std::time::Instant;
 
+#[path = "rotation.rs"]
+mod rotation;
+
 struct Candidate {
     link: LinkId,
     index: SessionIndex,

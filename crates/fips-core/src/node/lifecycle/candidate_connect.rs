@@ -229,8 +229,8 @@ impl Node {
 
     pub(super) fn path_candidate_attempt_budget(&self, peer_node_addr: &NodeAddr) -> usize {
         if !self.peers.contains_key(peer_node_addr)
-            && self.max_peers > 0
-            && self.peers.len() >= self.max_peers
+            && self.neighbor_roster_full()
+            && !self.can_attempt_neighbor_rotation(peer_node_addr, true, Self::now_ms())
         {
             return 0;
         }
@@ -567,8 +567,8 @@ impl Node {
         }
 
         if !self.peers.contains_key(&peer_node_addr)
-            && self.max_peers > 0
-            && self.peers.len() >= self.max_peers
+            && self.neighbor_roster_full()
+            && !self.can_attempt_neighbor_rotation(&peer_node_addr, true, Self::now_ms())
         {
             return Err(NodeError::MaxPeersExceeded {
                 max: self.max_peers,
@@ -581,6 +581,15 @@ impl Node {
             transport_id,
             &remote_addr,
         )?;
+
+        if !self.peers.contains_key(&peer_node_addr)
+            && self.neighbor_roster_full()
+            && !self.begin_neighbor_rotation(peer_node_addr, true, Self::now_ms())
+        {
+            return Err(NodeError::MaxPeersExceeded {
+                max: self.max_peers,
+            });
+        }
 
         let is_connection_oriented = self
             .transports

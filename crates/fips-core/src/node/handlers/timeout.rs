@@ -203,6 +203,17 @@ impl Node {
         link_id: LinkId,
         _now_ms: u64,
     ) {
+        self.retire_connection_candidate(link_id, None).await;
+    }
+
+    pub(in crate::node) async fn retire_connection_candidate(
+        &mut self,
+        link_id: LinkId,
+        retained_carrier: Option<(
+            crate::transport::TransportId,
+            crate::transport::TransportAddr,
+        )>,
+    ) {
         self.unregister_handshake_candidate(link_id);
         let conn = match self.peers.remove_connection(&link_id) {
             Some(c) => c,
@@ -224,13 +235,27 @@ impl Node {
             .transport_id()
             .zip(conn.source_addr())
             .and_then(|(tid, addr)| self.active_link_for_carrier(tid, addr));
-        self.close_cross_connection_loser_physical_path(link_id, winner)
-            .await;
+        let retains_carrier =
+            conn.transport_id()
+                .zip(conn.source_addr())
+                .is_some_and(|(tid, addr)| {
+                    retained_carrier
+                        .as_ref()
+                        .is_some_and(|(kept_tid, kept_addr)| tid == *kept_tid && addr == kept_addr)
+                });
+        if !retains_carrier {
+            self.close_cross_connection_loser_physical_path(link_id, winner)
+                .await;
+        }
         self.remove_link(&link_id);
         if let Some(winner) = winner {
             self.restore_link_address(winner);
         }
-        if let Some(transport_id) = transport_id {
+        if let Some(transport_id) = transport_id
+            && retained_carrier
+                .as_ref()
+                .is_none_or(|(kept_tid, _)| *kept_tid != transport_id)
+        {
             self.cleanup_bootstrap_transport_if_unused(transport_id);
         }
     }

@@ -396,7 +396,10 @@ impl Node {
                     .map(|id| *id.node_addr() == peer_node_addr)
                     .unwrap_or(false)
             });
-            if !is_known_active && !is_pending_outbound {
+            if !is_known_active
+                && !is_pending_outbound
+                && !self.can_attempt_neighbor_rotation(&peer_node_addr, false, Self::now_ms())
+            {
                 debug!(
                     peer = %self.peer_display_name(&peer_node_addr),
                     max = self.max_peers,
@@ -793,10 +796,26 @@ impl Node {
 
         // Existing owners remain usable until the replacement proves receipt
         // of Msg2. Park it within the normal handshake and link limits.
+        if self.config.node.neighbor_rotation.is_some()
+            && self.neighbor_roster_full()
+            && !self.peers.contains_key(&peer_node_addr)
+            && !self.begin_neighbor_rotation(peer_node_addr, false, Self::now_ms())
+        {
+            self.close_unowned_handshake_carrier(packet.transport_id, &packet.remote_addr)
+                .await;
+            return;
+        }
         let await_confirmation = self
             .peers
             .get(&peer_node_addr)
-            .is_some_and(|p| p.has_session());
+            .is_some_and(|p| p.has_session())
+            || self.neighbor_rotation_awaits_confirmation(&peer_node_addr);
+        self.reclaim_crossed_rotation_dial(
+            &peer_node_addr,
+            packet.transport_id,
+            &packet.remote_addr,
+        )
+        .await;
         // A simultaneous dial to this authenticated identity must receive
         // Msg2 before its outbound can be retired. Preserve that bounded
         // cross-connection exception, including its temporary extra link;

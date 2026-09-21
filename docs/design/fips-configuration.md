@@ -122,6 +122,42 @@ Controls capacity for connections, peers, and links.
 | `node.limits.max_pending_inbound` | usize | `1000` | Max pending inbound handshakes |
 | `node.limits.max_sessions` | usize | `1024` | Max end-to-end sessions; `0` restores unlimited behavior |
 
+### Optional Neighbor Rotation (`node.neighbor_rotation`)
+
+Omit this section to retain healthy authenticated neighbors when the peer roster
+is full. Enable it for mobile or changing neighborhoods that should explore new
+adjacent peers even at capacity:
+
+```yaml
+node:
+  neighbor_rotation:
+    idle_secs: 30
+    interval_secs: 10
+```
+
+Both values must be positive. `idle_secs` is the minimum age of a learned peer
+and the minimum interval without application demand before it can be replaced.
+`interval_secs` limits candidate attempts and successful replacements across
+all identities on this node. Configured peers are protected. Recent admitted
+free and paid traffic, including transit and queued work attributable to a peer,
+protect that peer equally; native link maintenance alone does not.
+
+Replacement requires a fresh authenticated Noise exchange. An inbound Msg1 alone
+cannot evict a neighbor: the candidate must prove receipt of the fresh Msg2 using
+an encrypted response. Admission rechecks current demand, then binds carrier
+cleanup and promotion to that exact decision. The existing peer, handshake and
+link limits still apply; leave at least one spare handshake/link slot for the
+candidate. Only one candidate identity is explored at a time, with a bounded
+opposite-direction handshake for simultaneous dials. No new wire messages or
+unbounded candidate history are introduced.
+
+Disabling the section stops future optional replacements; it does not reconnect
+previously displaced peers. This is a local exploration policy, not a guarantee
+of topology preservation, newcomer fairness against hostile identities, or
+continuous service while radios move. An idle edge can still be important to a
+route that has not recently carried application traffic. Neighbor admission
+does not grant permission to buy forwarding or spend a wallet.
+
 ### Rate Limiting (`node.rate_limit.*`)
 
 Handshake rate limiting protects against DoS on the Noise IK handshake path.

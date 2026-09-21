@@ -253,6 +253,7 @@ impl Node {
         // peers otherwise disappear logically while their ICE sockets remain
         // open until the process reaches its file-descriptor limit.
         if let Some(link) = self.remove_link(&link_id)
+            && !self.handshake_carrier_is_owned(link.transport_id(), link.remote_addr())
             && let Some(transport) = self.transports.get(&link.transport_id())
         {
             transport.close_connection_detached(link.remote_addr());
