@@ -143,9 +143,10 @@ For an abandoned wallet send, the SDK also acknowledges its exact original refun
 receipt before discarding the operation identity. Its saved channel intent retains
 the verified net refund and original token cost through the wallet's durable
 incoming-history handoff. Recovery completes those refund/fee totals exactly once
-even if receipt deletion preceded an interrupted totals write. Unrelated receipts
-and original coin records remain. This does not change the controller's gross
-debit, refund or lifetime spending calculations.
+even if receipt deletion preceded an interrupted totals write. The later proof
+handoff releases only the retired send's original native inputs and outputs;
+unspent coins and unrelated receipt owners remain protected. This does not change
+the controller's gross debit, refund or lifetime spending calculations.
 
 Buyer rollups retain signed obligations, capacity, advances and rounded route
 accounting. The lifetime signing limit counts both retained and retired channels.
@@ -250,12 +251,31 @@ retains at most 1024 candidates and deletes at most 128 eligible spent records p
 pass, preserving unspent value, local recovery/send/receipt owners and an exact
 crash-recovery intent. FIPS seller-channel retirement supplies its saved original
 receiver payout batches only after custody checks and receiver retirement finish.
-Outgoing funding/refund proof release remains separate unfinished work. The queue
-bounds neither unrelated wallet history nor total database size; repeated channel lifecycles still need to prove
-a storage plateau after integration. Collection adds no wire messages.
 
-Legacy/full profiles and version-1 funding-cost reconciliation still need explicit
-migration. Missing original evidence must never be replaced with zero costs.
+Outgoing channel retirement now hands off exact completed sender refunds and
+wallet-created funding records through the same queue. The SDK saves a bounded,
+wallet-authenticated snapshot before removing send records, checks its original
+channel and accounting evidence on retry, and removes the channel records only
+after queue admission succeeds. Unspent coins remain spendable. Spending an
+imported receiver payout does not release its receiver owner; receiver retirement
+must still finish separately. Sender records use SDK format version 10 and require
+the original refund proofs, including an explicit empty list for a zero refund.
+No additional FIPS journal or wire message is introduced.
+
+One sender intent holds at most 2048 distinct coins and 8 MiB of proof JSON, with
+queue admission in groups of 128. Native funding capture separately permits at
+most 1024 coins and 4 MiB. An already saved FIPS retirement prefix can exceed
+these snapshot limits and cannot currently be reduced automatically; resumable
+paging of that unchanged target remains unfinished. A full queue can also delay
+retirement. These limits do not bound unrelated wallet history, total database
+size or the aggregate SDK client file. Local proof and transaction enumeration still loads existing records.
+Production bounds require recovery headroom reserved before funding and sustained
+storage acceptance across supported histories; cleanup must not discard live
+value or evidence to make space.
+
+The supported v1 scope uses fresh profiles. Automated migration of legacy/full
+profiles and version-1 funding-cost records is unsupported; missing original
+evidence must never be replaced with zero costs.
 Expiry alone does not settle or refund an unfinished channel.
 
 The release exchange requires matching controller versions to complete cleanup.
@@ -345,4 +365,6 @@ Each resumes the original plan once. Legacy pending intents recover both before
 and after ledger removal; changed payout/history evidence and incomplete modern
 schemas are rejected. These use fixture SDK callbacks through the production
 coordinator; actual custody and removal are exercised by the service tests above.
-CDK history removal and physical power-loss recovery are not claimed.
+These coordinator tests do not establish whole-wallet storage bounds or physical
+power-loss recovery. Exact proof-history collection has the separate ownership
+and recovery requirements described above.

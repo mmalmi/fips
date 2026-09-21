@@ -945,11 +945,14 @@ the required unreleased dependencies. Fresh-profile route and channel retirement
 is implemented. Both the persisted-opening crash boundary and the committed
 pre-opening send now recover automatically after route expiry; the latter reclaims
 the original send without creating a channel. The focused process test conserves
-all 384 test sats, and all 265 relay library checks pass. Unsubmitted sends,
-shared-owner cleanup, physical power-loss recovery and bounded CDK database growth
-remain open; [funding costs](FUNDING-COSTS.md) describes the exact retained cases. Legacy
-profile migration is outside this milestone; dependency distribution remains a
-separate requirement.
+all 384 test sats, and all 265 relay library checks passed at that checkpoint.
+Subsequent cases cover safe cancellation before native funding and recovery
+alongside another intent for the same provider whose original channel settlement
+and wallet refund are verified terminal. Started sends without an exact saved plan, missing
+evidence and still-live shared authority remain retained; [funding costs](FUNDING-COSTS.md)
+describes these boundaries. Physical power-loss recovery, whole-wallet storage
+bounds and dependency distribution remain open. Legacy profile migration is
+outside this greenfield milestone.
 
 The focused gates pass 89 relay tests: library, controllers, destination pricing,
 fee-bearing funding/replayed refunds, standalone services, and ordinary/native
@@ -1049,9 +1052,12 @@ Controller version 6 requires explicit receiver history and pending SDK evidence
 Older pending seller plans can upgrade while their original IDs and reports still
 exist, even after ledger removal. Already-orphaned legacy receiver records need
 explicit reconciliation; out-of-band history is never silently adopted. CDK
-activity/proof history remains retained, and complete legacy migration, hostile
-admission, device acceptance and dependency distribution remain unfinished.
-See [eligibility and recovery](HISTORY.md).
+proof history now has an explicit bounded release queue, and coordinated receiver
+retirement transfers its exact original payout custody through a saved plan before
+removing controller records. Unspent coins and other owners remain protected;
+this does not bound total wallet storage or enumeration. Hostile-load and device
+acceptance remain limited to the cases documented here, and dependency distribution
+is unfinished. See [eligibility and recovery](HISTORY.md).
 
 Ten focused seller-coordinator tests pass, covering 64 reuse cycles, changed
 evidence, legacy pending upgrades and failures across all three stores. All three
@@ -1718,8 +1724,9 @@ All four original Watch authorities and eight directional funding/channel/wallet
 operation identities survive, with unchanged capital limits and no new funding.
 Native state stays within its bounds over 371 observation rounds; final pending
 connections and excess links drain. Exact wallet equations hold and all 1,536 test
-sats are collected. Prompt useful delivery during brief encounters, physical
-mobility and radio handover remain open; this change has not been deployed to routers.
+sats are collected. This historical run established eventual recovery. The later
+contact-specific gate below verifies useful delivery within each tested encounter;
+physical mobility and radio handover still need acceptance of those newer fixes.
 
 The brief-contact fixture now records bounded passive state observations every
 200 ms alongside structured carrier events and per-packet send/receive observations.
@@ -1744,8 +1751,8 @@ duplicates, passes the existing recovery/authority/accounting assertions and
 collects all 1,536 test sats. Its 80 observation rounds have a maximum query-round
 duration of 11.443 ms and maximum gap of 201.230 ms. Strict relay lint across all
 features/targets and the source-size gate pass. No production timing or payment
-policy changes accompany this instrumentation, and subsecond useful encounters
-still need a regression and hardware acceptance.
+policy changes accompanied this instrumentation. The later contact-specific
+regressions below address subsecond delivery; hardware acceptance remains open.
 
 A subsequent three-node real-UDP regression isolates one delay in the live RX
 loop. With an already measured parent, a newly encountered smaller root is

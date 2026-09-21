@@ -248,11 +248,13 @@ The latest impairment run passed all three paid-path tests (13 deployments in
 total), 111 dataplane tests, 32 route-metric tests, 12 metric tests, two transport
 tests and 10 simulator tests. Strict core/relay/simulator and Android ARM64 linting,
 the default relay check, formatting and the 660-file size gate also passed.
-The latest broad session check was **not green**: 148/149 tests passed with the
-100-node case run separately. Sparse-session recovery failed once in the combined
-run, then both sparse cases passed alone. The 100-node case failed its first
-forward payload despite established sessions on both endpoints; a freshly rebuilt,
-unchanged baseline also failed. These remain readiness issues, not waived gates.
+An earlier broad session check failed sparse-session recovery and the first
+100-node forward payload. Subsequent fixes to tree-mode carrier selection,
+broken-path recovery and delayed feedback passed the complete session suite,
+including 200/200 payloads in the 100-node mesh. See the
+[current routing evidence](READINESS.md#cheapest-routes-that-work). These fixes
+cover the reproduced failures; they do not explain every historical intermittent
+stall or establish a general recovery-time bound.
 
 ## Remaining limitations
 
@@ -268,8 +270,15 @@ still need explicit attribution before penalizing a provider. No eligible altern
 existing agreement/binding in place; applications can still emit billable traffic
 within its bounds. This is not an automatic stop-on-poor-quality source gate.
 
-Further acceptance must extend the bounded loss/delay/asymmetry cases to misleading
-reports, multiple simultaneously changing paths/prices, renewal races,
-full restarts, longer operation, free-route transitions, mobile merge/split,
-permissionless admission, mixed links and physical devices. No throughput or
-selection-overhead benchmark is claimed. The physical routers remain unchanged.
+Bounded acceptance now also covers authenticated-adjacent admission, mixed
+UDP/TCP/native Ethernet forwarding, simulated mobile merge/split, controlled
+wireless provider departure/rejoin and interrupted trial promotion with source
+restart. See [the acceptance limits](READINESS.md); these cases do not establish
+all combinations of those failures.
+
+Remaining work includes misleading reports, multiple simultaneously changing
+paths and prices, broader renewal/restart combinations, longer operation,
+free-route transitions and independent physical mobile meshes. The newest
+routing and recovery revisions still need matched hardware acceptance. No
+throughput or selection-overhead benchmark is claimed. Completed hardware
+trials restored their original network settings.

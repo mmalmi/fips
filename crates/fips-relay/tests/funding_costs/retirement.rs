@@ -33,6 +33,16 @@ async fn service_retires_real_wallet_channels_after_expiry_without_resetting_spe
             serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
         };
         let journal = read(&controller_path);
+        let sender_before = read(&cashu_service::spilman_client_store_path(&wallet));
+        let refunds = sender_before["settled_refunds"].as_object().unwrap();
+        assert_eq!(refunds.len(), 1);
+        let refund_originals: Vec<cashu::nuts::Proof> = serde_json::from_str(
+            refunds.values().next().unwrap()["proofs_json"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(!refund_originals.is_empty());
         assert!(
             journal["buyer_settlements"]
                 .as_object()
@@ -206,6 +216,39 @@ async fn service_retires_real_wallet_channels_after_expiry_without_resetting_spe
         );
         for child in &mut children {
             stop(child).await;
+        }
+        // The real service must hand off sender refunds before deleting their
+        // original channel owner, including after the source process restarts.
+        use cdk_common::database::WalletDatabase;
+        let sender = read(&cashu_service::spilman_client_store_path(&wallet));
+        assert_eq!(sender["version"], 10);
+        assert!(sender["settled_refunds"].is_null());
+        let db =
+            cdk_sqlite::WalletSqliteDatabase::new(cashu_service::cashu_wallet_db_path(&wallet))
+                .await
+                .unwrap();
+        let queue: serde_json::Value = serde_json::from_slice(
+            &db.kv_read("cashu_service", "proof_history", "journal")
+                .await
+                .unwrap()
+                .expect("the sender worker must hand off its original refund"),
+        )
+        .unwrap();
+        assert!(queue["pending"].is_null());
+        let candidates = queue["candidates"].as_object().unwrap();
+        for original in &refund_originals {
+            let y = original.y().unwrap();
+            let saved = db.get_proofs_by_ys(vec![y]).await.unwrap();
+            assert_eq!(saved.len(), 1);
+            assert!(
+                saved[0].proof == *original,
+                "original sender refund changed"
+            );
+            assert_eq!(saved[0].state, cashu::nuts::State::Unspent);
+            assert!(
+                candidates.get(&y.to_string()) == Some(&serde_json::to_value(&saved[0]).unwrap()),
+                "sender refund was not handed to the queue unchanged"
+            );
         }
     })
     .await

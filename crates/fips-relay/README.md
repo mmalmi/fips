@@ -20,9 +20,10 @@ authenticated adjacent-neighbor admission, mixed UDP/TCP/native Ethernet forward
 and financial-history retirement have bounded acceptance evidence. Physical checks
 also cover open Wi-Fi joining, paid provider failover/recovery and a Pixel session;
 the [matched cadence measurements](CADENCE-RESULTS.md) report their cost boundaries.
-Newer recovery code still needs hardware acceptance. Unsubmitted funding,
-shared-owner cleanup, total storage growth and broader physical mesh encounters
-remain open. The
+Newer routing and recovery code still needs matched hardware acceptance. Software
+checks cover cancellation before funding, recovery of committed sends and exact
+proof-history handoff. Aggregate wallet storage, bounded database enumeration and
+broader physical mesh encounters remain open. The
 prototype reports below describe the earlier r6 hardware build, not current v1
 production readiness.
 
@@ -283,8 +284,10 @@ Strict relay and Android ARM64 linting, default builds, formatting and the
   A full native-route offer withdrawn during disconnection can still be cached
   by its provider. An eligible unpaused watch requests a fresh offer at its next
   ordinary refresh deadline, retaining the old fence and funding operation.
-  This replacement does not override price selection or trial accounting;
-  recovery from fenced selector/trial offers remains separate work.
+  This replacement does not override price selection or trial accounting.
+  Separate [selector recovery checks](READINESS.md) cover interrupted trial-to-full
+  promotion, retained quotas and source restart; they do not establish arbitrary
+  combined-failure recovery.
 * The automatic route-change scenario rejects an unaffordable initial rate
   without locking funds, then accepts explicit watch ceilings in both directions.
   Removing the middle router leads to lower-priced replacement agreements without
@@ -366,10 +369,11 @@ types and pricing helpers do not let a provider manufacture buyer authorization.
 The [prototype report](PROTOTYPE-RESULTS.md) records the earlier bounded
 demonstration; [v1 readiness](READINESS.md) records subsequent verification and
 remaining work. Current software checks cover route changes during unfinished
-renewal, expired-offer fences, funded-channel recovery, abandoned committed sends
-and bounded financial-history retirement. Unsubmitted sends, shared-owner cleanup
-and broader combined failures still need acceptance. Renewal can interrupt delivery; maximum throughput and indefinite
-hotspot service are not claimed.
+renewal, expired-offer fences, funded-channel recovery, safe cancellation of
+unsubmitted funding, abandoned committed sends and exact financial-history
+handoffs. Aggregate wallet storage, bounded enumeration and broader combined
+failures still need acceptance. Renewal can interrupt delivery; maximum throughput
+and indefinite hotspot service are not claimed.
 
 The controller retains up to 16 funded or unresolved channel intents and 32
 requested, outgoing and incoming routes in each category. Retained funding still

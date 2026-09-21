@@ -278,7 +278,9 @@ local CDK mint with simulated Lightning funding. It initializes five separate
 service processes and seeds their wallets through the existing Cashu wallet API.
 No public mint, user wallet or real payment backend is involved. The offline
 `wallet` command and isolated hardware mint are documented in
-[TESTBENCH.md](TESTBENCH.md). The phone/customer interface remains separate work.
+[TESTBENCH.md](TESTBENCH.md). The separate [Pixel acceptance](READINESS.md)
+checks a bounded phone session and customer-network isolation; this process test
+does not establish paid Internet access or TollGate interoperability.
 
 The test exercises a source, three paid routers and another endpoint, separately
 buys both directions, sends traffic, stops/restarts every process and abruptly
