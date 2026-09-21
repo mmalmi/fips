@@ -23,12 +23,13 @@ mod terminal_history;
 #[path = "funding_costs/transit_preopening.rs"]
 mod transit_preopening;
 use cashu_service::{
-    create_topup_quote, load_mint_balance, load_wallet_overview,
+    create_topup_quote, load_wallet_overview,
     simulation::{IssuerMode, LocalMint, PaymentNetwork, VirtualClock},
 };
 use fips_core::config::PeerConfig;
 use fips_relay::service::{AdminRequest, RelayService, request};
 use process_support::*;
+use setup::load_mint_balance;
 use std::{
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},

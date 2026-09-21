@@ -11,6 +11,33 @@ pub(super) struct Bench {
     pub children: Vec<Child>,
 }
 
+// Observe the small fixture's stored balance without competing with the running
+// service for exclusive SDK wallet ownership or invoking recovery on its behalf.
+pub(super) async fn load_mint_balance(
+    directory: &Path,
+    mint_url: &str,
+) -> Result<cashu_service::CashuMintBalance, String> {
+    use cashu::nuts::{CurrencyUnit, State};
+    use cdk_common::database::WalletDatabase;
+    let db = cdk_sqlite::WalletSqliteDatabase::new(cashu_service::cashu_wallet_db_path(directory))
+        .await
+        .map_err(|error| error.to_string())?;
+    let coins = db
+        .get_proofs(
+            Some(mint_url.parse().map_err(|error| format!("{error}"))?),
+            Some(CurrencyUnit::Sat),
+            Some(vec![State::Unspent]),
+            None,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(cashu_service::CashuMintBalance {
+        mint_url: mint_url.to_owned(),
+        unit: CurrencyUnit::Sat.to_string(),
+        balance_sat: coins.iter().map(|coin| coin.proof.amount.to_u64()).sum(),
+    })
+}
+
 pub(super) async fn start_bench(root: &Path, seed: u64, lifetime: u64) -> Bench {
     let (mint, network) = start_mint(root, seed).await;
     let url = mint.url().to_owned();

@@ -198,6 +198,33 @@ async fn service_retires_real_wallet_channels_after_expiry_without_resetting_spe
             children.push(start(path).await);
         }
         ready(&configs, &paths, &npubs, &mut children).await;
+        let db =
+            cdk_sqlite::WalletSqliteDatabase::new(cashu_service::cashu_wallet_db_path(&wallet))
+                .await
+                .unwrap();
+        let heads = archive_heads(&db).await;
+        assert!(!heads.is_empty());
+        let financial = read(&controller_path)["history"]["channels"].clone();
+        let sender_history = read(&cashu_service::spilman_client_store_path(&wallet))["retirement"]
+            ["scopes"].clone();
+        // A previous upkeep could have collected only alongside retirement.
+        // Require later progress after restart without any new financial owner.
+        tokio::time::timeout(Duration::from_secs(12), async {
+            loop {
+                let current = archive_heads(&db).await;
+                let controller = read(&controller_path);
+                assert!(controller["funding"].as_object().unwrap().is_empty());
+                assert_eq!(controller["history"]["channels"], financial);
+                assert_eq!(
+                    read(&cashu_service::spilman_client_store_path(&wallet))["retirement"]["scopes"],
+                    sender_history
+                );
+                if heads.iter().any(|(scope, head)| current.get(scope).is_some_and(|next| next > head)) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }).await.expect("upkeep must revisit custody without another retired channel");
         assert_eq!(
             request(cfg, &AdminRequest::Status).await.unwrap()["funding_budget"],
             before
@@ -221,21 +248,46 @@ async fn service_retires_real_wallet_channels_after_expiry_without_resetting_spe
         // original channel owner, including after the source process restarts.
         use cdk_common::database::WalletDatabase;
         let sender = read(&cashu_service::spilman_client_store_path(&wallet));
-        assert_eq!(sender["version"], 10);
+        assert_eq!(sender["version"], 11);
         assert!(sender["settled_refunds"].is_null());
-        let db =
-            cdk_sqlite::WalletSqliteDatabase::new(cashu_service::cashu_wallet_db_path(&wallet))
-                .await
-                .unwrap();
-        let queue: serde_json::Value = serde_json::from_slice(
-            &db.kv_read("cashu_service", "proof_history", "journal")
+        let service = cashu_service::CashuWalletService::open_file_backed(&wallet)
+            .await
+            .unwrap();
+        let custody = service.payment_proof_history().await.unwrap();
+        assert!(custody.archived_proofs >= refund_originals.len() as u64);
+        let registry: serde_json::Value = serde_json::from_slice(
+            &db.kv_read("cashu_service", "proof_archive", "registry")
                 .await
                 .unwrap()
-                .expect("the sender worker must hand off its original refund"),
+                .unwrap(),
         )
         .unwrap();
-        assert!(queue["pending"].is_null());
-        let candidates = queue["candidates"].as_object().unwrap();
+        assert!(
+            registry["value"]["scopes"]
+                .as_object()
+                .unwrap()
+                .values()
+                .any(|scope| { scope["pending"].is_null() && scope["head"].as_u64().unwrap() > 0 }),
+            "service upkeep must visit acknowledged custody after financial retirement"
+        );
+        let mut archived = std::collections::BTreeMap::new();
+        for key in db.kv_list("cashu_service", "proof_archive").await.unwrap() {
+            if !key.starts_with("page_") {
+                continue;
+            }
+            let page: serde_json::Value = serde_json::from_slice(
+                &db.kv_read("cashu_service", "proof_archive", &key)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+            let proofs: Vec<cashu::nuts::Proof> =
+                serde_json::from_value(page["value"]["proofs"].clone()).unwrap();
+            for proof in proofs {
+                archived.insert(proof.y().unwrap().to_string(), proof);
+            }
+        }
         for original in &refund_originals {
             let y = original.y().unwrap();
             let saved = db.get_proofs_by_ys(vec![y]).await.unwrap();
@@ -246,11 +298,33 @@ async fn service_retires_real_wallet_channels_after_expiry_without_resetting_spe
             );
             assert_eq!(saved[0].state, cashu::nuts::State::Unspent);
             assert!(
-                candidates.get(&y.to_string()) == Some(&serde_json::to_value(&saved[0]).unwrap()),
-                "sender refund was not handed to the queue unchanged"
+                archived.get(&y.to_string()) == Some(original),
+                "sender refund was not handed to paged custody unchanged"
             );
         }
     })
     .await
     .expect("bounded real channel retirement scenario");
+}
+
+async fn archive_heads(
+    db: &cdk_sqlite::WalletSqliteDatabase,
+) -> std::collections::BTreeMap<String, u64> {
+    use cdk_common::database::WalletDatabase;
+    let registry: serde_json::Value = serde_json::from_slice(
+        &db.kv_read("cashu_service", "proof_archive", "registry")
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    registry["value"]["scopes"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(scope, saved)| {
+            assert!(saved["pending"].is_null());
+            (scope.clone(), saved["head"].as_u64().unwrap())
+        })
+        .collect()
 }

@@ -269,6 +269,22 @@ impl Controller {
             if select {
                 count += store.retire_sales(&seller, timestamp, &mut prepare, &mut retire)?;
             }
+            drop(store);
+            // Completed financial owners leave durable paged custody. Visit one
+            // page per upkeep turn, including turns with no newly retired channel.
+            // The wallet guard still fences funding; the controller journal is free.
+            if select && cashu_service::cashu_wallet_db_path(&directory).is_file() {
+                if !cashu_service::cashu_wallet_seed_path(&directory).is_file() {
+                    return Err("proof history wallet seed is missing".into());
+                }
+                runtime
+                    .block_on(async {
+                        let wallet =
+                            cashu_service::CashuWalletService::open_file_backed(&directory).await?;
+                        wallet.collect_released_proof_history().await
+                    })
+                    .map_err(|e| e.to_string())?;
+            }
             Ok(count)
         })
         .await

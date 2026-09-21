@@ -1,4 +1,5 @@
 use super::*;
+use cdk_common::database::WalletDatabase;
 use sha2::{Digest, Sha256};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -124,6 +125,33 @@ async fn paid_service_settlement_preserves_redemption_reserves_and_signed_charge
             cashu_service::FileSpilmanPaymentReceiverConfig::new([mint.url().to_string()]),
         )
         .unwrap();
+        let directory = configs[1].state_directory.join("wallet");
+        let db =
+            cdk_sqlite::WalletSqliteDatabase::new(cashu_service::cashu_wallet_db_path(&directory))
+                .await
+                .unwrap();
+        // Capture the actual settled payouts before their receiver records retire.
+        // Later queue references must retain these exact original wallet rows.
+        let mut original = std::collections::BTreeMap::new();
+        for report in reports
+            .iter()
+            .chain(reverse["settlements"].as_array().unwrap())
+        {
+            let closed = receiver
+                .close_cashu_spilman_channel(report["channel_id"].as_str().unwrap())
+                .await
+                .unwrap();
+            assert!(closed.already_closed, "the service must have settled first");
+            let proofs: Vec<cashu::nuts::Proof> =
+                serde_json::from_str(&closed.receiver_proofs_json).unwrap();
+            for proof in proofs {
+                let y = proof.y().unwrap();
+                let rows = db.get_proofs_by_ys(vec![y]).await.unwrap();
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].proof, proof);
+                assert!(original.insert(y.to_string(), rows[0].clone()).is_none());
+            }
+        }
         let history = tokio::time::timeout(Duration::from_secs(150), async {
             loop {
                 let history = receiver.retirement_history().unwrap();
@@ -182,18 +210,12 @@ async fn paid_service_settlement_preserves_redemption_reserves_and_signed_charge
         // The real service worker must finish the payout ownership handoff,
         // including a nonzero payout with a redemption reserve. All processes
         // are stopped before opening their exclusively owned wallet.
-        use cdk_common::database::WalletDatabase;
-        let directory = configs[1].state_directory.join("wallet");
         let wallet = cashu_service::CashuWalletService::open_file_backed(&directory)
             .await
             .unwrap();
         let released = wallet.payment_proof_history().await.unwrap();
         assert!(released.retained_proofs > 0);
         assert_eq!(released.retired_proofs, 0);
-        let db =
-            cdk_sqlite::WalletSqliteDatabase::new(cashu_service::cashu_wallet_db_path(&directory))
-                .await
-                .unwrap();
         let queue: serde_json::Value = serde_json::from_slice(
             &db.kv_read("cashu_service", "proof_history", "journal")
                 .await
@@ -203,18 +225,22 @@ async fn paid_service_settlement_preserves_redemption_reserves_and_signed_charge
         .unwrap();
         let candidates = queue["candidates"].as_object().unwrap();
         assert_eq!(candidates.len(), released.retained_proofs);
-        let original = candidates
-            .values()
-            .map(|p| serde_json::from_value::<cdk_common::wallet::ProofInfo>(p.clone()).unwrap())
-            .collect::<Vec<_>>();
+        assert_eq!(
+            candidates.keys().collect::<Vec<_>>(),
+            original.keys().collect::<Vec<_>>()
+        );
         assert_eq!(
             original
-                .iter()
+                .values()
                 .map(|p| p.proof.amount.to_u64())
                 .sum::<u64>(),
             expected[1]
         );
-        for proof in original {
+        for (key, proof) in original {
+            assert_eq!(
+                candidates[&key]["y"],
+                serde_json::to_value(proof.y).unwrap()
+            );
             let saved = db.get_proofs_by_ys(vec![proof.y]).await.unwrap();
             assert_eq!(saved, vec![proof]);
             assert_eq!(saved[0].state, cashu::nuts::State::Unspent);

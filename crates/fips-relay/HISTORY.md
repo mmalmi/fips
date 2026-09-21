@@ -251,24 +251,40 @@ retains at most 1024 candidates and deletes at most 128 eligible spent records p
 pass, preserving unspent value, local recovery/send/receipt owners and an exact
 crash-recovery intent. FIPS seller-channel retirement supplies its saved original
 receiver payout batches only after custody checks and receiver retirement finish.
+The SDK's version-2 queue stores compact authenticated references; the original
+coin stays in the wallet until exact comparison/deletion. The authenticated
+deletion intent binds the full current record, so large originals and later
+metadata growth do not consume duplicate journal space. Collection reads originals
+incrementally, with a soft 4 MiB batch budget and one oversized original allowed
+to progress alone. The journal rejects older queue formats; use fresh profiles.
 
-Outgoing channel retirement now hands off exact completed sender refunds and
-wallet-created funding records through the same queue. The SDK saves a bounded,
-wallet-authenticated snapshot before removing send records, checks its original
-channel and accounting evidence on retry, and removes the channel records only
-after queue admission succeeds. Unspent coins remain spendable. Spending an
+Outgoing channel retirement hands off exact completed sender refunds and
+wallet-created funding records through paged wallet custody. The SDK saves a
+wallet-authenticated plan binding the original native send records, channel
+identity and accounting before capture starts. Pages contain at most 128 coins
+and 4 MiB of proof JSON, with indexed reads by creating operation. All pages must
+be sealed before send owners are removed. The client financial commit acknowledges
+custody; retry completes that acknowledgment after interruption. Unspent coins
+remain spendable without occupying the deletion queue. Spending an
 imported receiver payout does not release its receiver owner; receiver retirement
-must still finish separately. Sender records use SDK format version 10 and require
+must still finish separately. Sender retirement plans use SDK format version 11;
+completed refunds still require
 the original refund proofs, including an explicit empty list for a zero refund.
 No additional FIPS journal or wire message is introduced.
 
-One sender intent holds at most 2048 distinct coins and 8 MiB of proof JSON, with
-queue admission in groups of 128. Native funding capture separately permits at
-most 1024 coins and 4 MiB. An already saved FIPS retirement prefix can exceed
-these snapshot limits and cannot currently be reduced automatically; resumable
-paging of that unchanged target remains unfinished. A full queue can also delay
-retirement. These limits do not bound unrelated wallet history, total database
-size or the aggregate SDK client file. Local proof and transaction enumeration still loads existing records.
+The wallet retains one custody stream per existing numbered-send scope, within
+the same 32-scope lifetime bound. It reuses the descriptor across retirements.
+FIPS upkeep visits one acknowledged page even when no new channel retires, after
+releasing the controller journal lock. Eligible spent coins enter the exact
+deletion queue; residual coins rotate to the tail so an unspent head cannot starve
+later pages. An authenticated bounded redo log covers the custody transfer and
+page removal. A pending capture pauses only its own scope's collection.
+
+Archive storage remains proportional to retained custody. The receiver release
+queue retains its existing limit, and capture still runs to exhaustion within one
+retirement call. These mechanisms do not bound unrelated wallet history, total
+database size or the aggregate SDK client file. Transaction-owner and receipt
+enumeration still loads existing transactions.
 Production bounds require recovery headroom reserved before funding and sustained
 storage acceptance across supported histories; cleanup must not discard live
 value or evidence to make space.
@@ -356,8 +372,12 @@ write boundaries. The real `funding_costs` service scenario loses a release repl
 keeps the buyer offline while the seller removes its acknowledged report, and
 then recovers both sides without changing wallet balance or lifetime spending.
 It also verifies SDK receiver removal and exact matching controller/SDK history.
+After another restart, it requires custody-page progress without new funding or
+another financial retirement, while retaining the original sender refund coins.
 The paid-fee service case retires both paid and zero-usage channels after actual
 expiry, retaining the original signed amounts, redemption reserves and payouts.
+It snapshots payout records before retirement, then checks that authenticated
+queue references identify the same complete original wallet records afterward.
 
 Coordinator fixtures additionally cover receiver failure before commit, a lost
 commit reply, final controller write failure and a mismatched returned history.
@@ -368,3 +388,10 @@ coordinator; actual custody and removal are exercised by the service tests above
 These coordinator tests do not establish whole-wallet storage bounds or physical
 power-loss recovery. Exact proof-history collection has the separate ownership
 and recovery requirements described above.
+
+The current paged-custody revision passes the complete 336-test SDK workspace
+suite, 290 relay library tests and all nine funding process scenarios. Feature
+matrix, strict lint, formatting and source-size checks pass with matching source
+and dependency fingerprints. This verifies the tested custody and recovery paths;
+it does not establish total wallet storage bounds or current-build hardware
+acceptance.
