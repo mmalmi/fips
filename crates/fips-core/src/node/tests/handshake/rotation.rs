@@ -51,16 +51,42 @@ fn packet(node: &TestNode, source: &TransportAddr, wire: Vec<u8>) -> ReceivedPac
     )
 }
 
-async fn heartbeat(node: &mut TestNode, remote: &Node, owner: &mut Candidate) -> u64 {
+async fn heartbeat(
+    node: &mut TestNode,
+    remote: &Node,
+    owner: &mut Candidate,
+    expected_rx: u64,
+) -> u64 {
     let frame = owner.frame(
         node.transport_id,
         &[crate::protocol::LinkMessageType::Heartbeat.to_byte()],
     );
     super::super::super::spanning_tree::process_dataplane_packet(node, frame).await;
-    node.node
-        .dataplane_fmp_link_metrics(remote.node_addr(), Instant::now())
-        .unwrap()
-        .rx_packets
+    await_heartbeat(node, remote, expected_rx).await
+}
+
+async fn await_heartbeat(node: &mut TestNode, remote: &Node, expected_rx: u64) -> u64 {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        super::super::super::spanning_tree::process_dataplane_completions(&mut node.node).await;
+        let received = node
+            .node
+            .dataplane_fmp_link_metrics(remote.node_addr(), Instant::now())
+            .unwrap()
+            .rx_packets;
+        assert!(
+            received <= expected_rx,
+            "unexpected additional authenticated heartbeat"
+        );
+        if received == expected_rx {
+            return received;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "one submitted heartbeat must complete: received {received}, expected {expected_rx}"
+        );
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
 }
 
 // Only the captured Msg1 arrival is aged. Keys, Msg2 and installed ownership
@@ -92,7 +118,7 @@ async fn incumbent(
         session: handshake.into_session().unwrap(),
         source: source.clone(),
     };
-    assert_eq!(heartbeat(node, remote, &mut owner).await, 1);
+    assert_eq!(heartbeat(node, remote, &mut owner, 1).await, 1);
     assert!(
         Node::now_ms()
             - node
@@ -139,7 +165,7 @@ fn fresh_confirmation_replaces_only_idle_neighbor_and_preserves_active_session()
             node.node.get_peer(old.node_addr()).unwrap().our_index(),
             Some(old_owner.index)
         );
-        assert_eq!(heartbeat(&mut node, &active, &mut active_owner).await, 2);
+        assert_eq!(heartbeat(&mut node, &active, &mut active_owner, 2).await, 2);
 
         let proof = candidate.frame(
             node.transport_id,
@@ -171,7 +197,7 @@ fn fresh_confirmation_replaces_only_idle_neighbor_and_preserves_active_session()
         assert_eq!(retained.remote_epoch(), Some(active.startup_epoch));
         assert_eq!(retained.session_generation(), generation);
         assert_eq!(node.node.startup_epoch, epoch);
-        assert_eq!(heartbeat(&mut node, &active, &mut active_owner).await, 3);
+        assert_eq!(heartbeat(&mut node, &active, &mut active_owner, 3).await, 3);
         cleanup_nodes(std::slice::from_mut(&mut node)).await;
     });
 }
@@ -225,7 +251,7 @@ fn msg1_replay_bad_proof_and_retired_confirmation_never_evict() {
         );
         assert_eq!(resources(&node), (1, 1, 2, 2));
         assert!(node.node.get_peer(newcomer.node_addr()).is_none());
-        assert_eq!(heartbeat(&mut node, &old, &mut owner).await, 2);
+        assert_eq!(heartbeat(&mut node, &old, &mut owner, 2).await, 2);
 
         node.node
             .cleanup_stale_connection(candidate.link, Node::now_ms())
@@ -241,7 +267,7 @@ fn msg1_replay_bad_proof_and_retired_confirmation_never_evict() {
             node.node.get_peer(old.node_addr()).unwrap().remote_epoch(),
             Some(old.startup_epoch)
         );
-        assert_eq!(heartbeat(&mut node, &old, &mut owner).await, 3);
+        assert_eq!(heartbeat(&mut node, &old, &mut owner, 3).await, 3);
         cleanup_nodes(std::slice::from_mut(&mut node)).await;
     });
 }
@@ -276,7 +302,7 @@ fn application_demand_arriving_before_confirmation_cancels_replacement() {
             node.node.get_peer(old.node_addr()).unwrap().our_index(),
             Some(owner.index)
         );
-        assert_eq!(heartbeat(&mut node, &old, &mut owner).await, 2);
+        assert_eq!(heartbeat(&mut node, &old, &mut owner, 2).await, 2);
         cleanup_nodes(std::slice::from_mut(&mut node)).await;
     });
 }
@@ -323,7 +349,7 @@ fn configured_incumbent_is_protected_while_an_idle_learned_neighbor_can_rotate()
                 .our_index(),
             Some(owner.index)
         );
-        assert_eq!(heartbeat(&mut node, &configured, &mut owner).await, 2);
+        assert_eq!(heartbeat(&mut node, &configured, &mut owner, 2).await, 2);
         cleanup_nodes(std::slice::from_mut(&mut node)).await;
     });
 }
@@ -374,7 +400,7 @@ fn attempt_and_replacement_cooldowns_apply_across_candidate_identities() {
                     node.node.get_peer(second.node_addr()).unwrap().our_index(),
                     Some(retained.index)
                 );
-                assert_eq!(heartbeat(&mut node, &second, &mut retained).await, 2);
+                assert_eq!(heartbeat(&mut node, &second, &mut retained, 2).await, 2);
                 cleanup_nodes(std::slice::from_mut(&mut node)).await;
             }
         },
@@ -431,7 +457,7 @@ fn rotation_does_not_increase_link_or_handshake_caps_and_default_stays_closed() 
                 node.node.get_peer(old.node_addr()).unwrap().our_index(),
                 Some(owner.index)
             );
-            assert_eq!(heartbeat(&mut node, &old, &mut owner).await, 2);
+            assert_eq!(heartbeat(&mut node, &old, &mut owner, 2).await, 2);
             cleanup_nodes(std::slice::from_mut(&mut node)).await;
         }
     });

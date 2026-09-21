@@ -34,6 +34,29 @@ pub(in crate::node::tests) async fn process_dataplane_packet(
     Box::pin(process_dataplane_turn(&mut node.node, Some(packet), 64)).await
 }
 
+/// Drain one ordinary completion turn without receiving another raw packet.
+/// A caller awaiting an exact outcome must poll again: readiness also covers
+/// deferred control work and is not a fence for a particular crypto operation.
+pub(in crate::node::tests) async fn process_dataplane_completions(node: &mut Node) -> usize {
+    let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
+    let (_fast_tx, mut fast_rx) = tokio::sync::mpsc::channel(1);
+    let (_endpoint_tx, mut endpoint_rx) = crate::node::endpoint_data_batch_channel(1);
+    let (_tun_tx, mut tun_rx) = crate::upper::tun::tun_outbound_channel(1);
+    let (dummy_tx, _dummy_rx) = crate::node::EndpointEventSender::channel(1);
+    let endpoint_tx = node.endpoint_events.sender().unwrap_or(dummy_tx);
+    let mut io = crate::node::handlers::rx_loop_dataplane_io(
+        &mut packet_rx,
+        &mut fast_rx,
+        &mut endpoint_rx,
+        &mut tun_rx,
+        &endpoint_tx,
+    );
+    let mut turn = Box::pin(node.drain_dataplane_completion_turn(&mut io, 64)).await;
+    let had_activity = turn.has_activity();
+    let processed = finish_synthetic_dataplane_turn(node, &mut turn).await;
+    usize::from(had_activity || processed > 0)
+}
+
 async fn process_dataplane_turn(
     node: &mut Node,
     first_packet: Option<ReceivedPacket>,

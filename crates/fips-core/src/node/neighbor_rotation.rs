@@ -394,7 +394,7 @@ impl Node {
             .unwrap()
             .interval_secs
             .saturating_mul(1000);
-        self.remove_active_peer(&victim);
+        self.remove_neighbor_for_rotation(&victim);
         self.neighbor_rotation.displaced = Some((victim, now_ms));
         self.neighbor_rotation.last_replacement_ms = Some(now_ms);
         self.neighbor_rotation.next_attempt_ms = now_ms.saturating_add(interval_ms);

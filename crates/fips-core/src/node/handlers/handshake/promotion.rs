@@ -411,6 +411,21 @@ impl Node {
                 });
             }
 
+            // Rotation may retain FSP after adjacency is gone. Its startup
+            // epoch still distinguishes a rejoin from an actual peer restart.
+            if self
+                .sessions
+                .get(&peer_node_addr)
+                .is_some_and(|session| session.remote_epoch_changed(remote_epoch))
+            {
+                self.reset_peer_routing_after_restart(&peer_node_addr);
+                self.clear_stale_fsp_unless_recovered_to_remote_epoch(
+                    &peer_node_addr,
+                    remote_epoch,
+                    "normal_promotion",
+                );
+            }
+
             // Preserve tree announce rate-limit state from old peer (if reconnecting).
             // Without this, reconnection resets the rate limit window to zero,
             // allowing an immediate announce that can feed an announce loop.

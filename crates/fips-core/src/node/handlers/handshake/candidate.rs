@@ -3,6 +3,22 @@ use crate::dataplane::FmpWireHeader;
 use crate::transport::{TransportAddr, TransportId};
 
 impl Node {
+    /// The crossed-dial allowance has room for only one inbound half.
+    /// Requests from other source addresses cannot multiply that allowance.
+    pub(super) fn has_unpaired_outbound_handshake(&self, peer: &NodeAddr) -> bool {
+        let mut outbound = false;
+        for conn in self.peers.connection_values().filter(|conn| {
+            conn.expected_identity()
+                .is_some_and(|identity| identity.node_addr() == peer)
+        }) {
+            if !conn.is_outbound() {
+                return false;
+            }
+            outbound = true;
+        }
+        outbound
+    }
+
     pub(in crate::node) fn active_link_for_carrier(
         &self,
         transport_id: TransportId,

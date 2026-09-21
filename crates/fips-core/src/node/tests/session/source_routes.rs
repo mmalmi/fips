@@ -1,5 +1,7 @@
 use super::*;
 
+mod queued_retry;
+
 #[test]
 fn unknown_destination_coordinates_preserve_bootstrap_identity() {
     let node = make_node();

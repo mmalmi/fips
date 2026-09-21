@@ -111,6 +111,13 @@ impl Node {
         self.remove_active_peer_inner(node_addr, false);
     }
 
+    /// Free an elective neighbor slot without resetting its end-to-end session.
+    /// The remote still owns those FSP keys; ordinary route and idle-session
+    /// handling govern the retained session and its bounded pending traffic.
+    pub(in crate::node) fn remove_neighbor_for_rotation(&mut self, node_addr: &NodeAddr) {
+        self.remove_active_peer_inner(node_addr, true);
+    }
+
     /// Degrade a dead direct path while preserving peer/session continuity.
     ///
     /// A link-dead timeout proves that one authenticated transport path has
@@ -174,7 +181,7 @@ impl Node {
         );
     }
 
-    fn remove_active_peer_inner(&mut self, node_addr: &NodeAddr, preserve_queued_packets: bool) {
+    fn remove_active_peer_inner(&mut self, node_addr: &NodeAddr, preserve_end_to_end: bool) {
         let removed_peer = match self.peers.remove_with_session_indices(node_addr) {
             Some(removed) => removed,
             None => {
@@ -210,25 +217,17 @@ impl Node {
             Self::log_mmp_teardown(&peer_name, &mmp);
         }
 
-        // Remove any end-to-end session associated with this peer.
-        //
-        // Sessions are tracked separately from peers (self.sessions vs
-        // self.peers). Leaving a stale session alive after link removal causes:
-        //   1. check_session_mmp_reports() keeps logging stale
-        //      "MMP session metrics" with frozen counters until
-        //      purge_idle_sessions() eventually fires.
-        //   2. initiate_session() finds is_established() == true on the stale
-        //      entry and silently returns Ok(()), preventing a new session over
-        //      fallback or a recovered direct link.
-        let session_mmp = self.session_mmp_snapshot(node_addr);
-        self.remove_dataplane_fsp_owner(node_addr);
-        if self.sessions.remove(node_addr).is_some()
-            && let Some(mmp) = session_mmp
-        {
-            Self::log_session_mmp_teardown(&peer_name, &mmp);
-        }
-
-        if !preserve_queued_packets {
+        // Generic removal still discards stale end-to-end state. Elective
+        // rotation only removes adjacency: the remote has not reset its FSP
+        // session, and the same keys can survive a route change or rejoin.
+        if !preserve_end_to_end {
+            let session_mmp = self.session_mmp_snapshot(node_addr);
+            self.remove_dataplane_fsp_owner(node_addr);
+            if self.sessions.remove(node_addr).is_some()
+                && let Some(mmp) = session_mmp
+            {
+                Self::log_session_mmp_teardown(&peer_name, &mmp);
+            }
             self.pending_session_traffic.remove_destination(node_addr);
         }
 
@@ -274,11 +273,18 @@ impl Node {
         let remaining_peers: Vec<NodeAddr> = self.peers.keys().copied().collect();
         self.bloom_state.mark_all_updates_needed(remaining_peers);
 
+        if preserve_end_to_end {
+            // Rebuild after tree changes and release of the old direct MTU.
+            // Retain authenticated FSP ingress, but leave application egress
+            // absent when no authorized, usable carrier remains.
+            self.refresh_dataplane_fsp_owner_routes(node_addr);
+        }
+
         info!(
             peer = %self.peer_display_name(node_addr),
             link_id = %link_id,
             tree_changed = tree_changed,
-            preserve_queued_packets,
+            preserve_end_to_end,
             "Peer removed and state cleaned up"
         );
     }

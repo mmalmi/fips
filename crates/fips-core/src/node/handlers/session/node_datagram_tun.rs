@@ -127,11 +127,7 @@ impl Node {
                     .peers
                     .get(&dest_addr)
                     .is_some_and(|peer| peer.is_healthy());
-                self.select_tree_payload_candidate(
-                    dest_coords,
-                    &dest_addr,
-                    direct_payload_eligible,
-                )
+                self.select_tree_payload_candidate(dest_coords, &dest_addr, direct_payload_eligible)
             }
         } else {
             None
@@ -228,15 +224,14 @@ impl Node {
             (Some(FSP_PHASE_MSG1), Some(inner)) => SessionSetup::decode(inner)
                 .ok()
                 .map(|setup| setup.dest_coords),
-            (Some(FSP_PHASE_MSG2), Some(inner)) => SessionAck::decode(inner)
-                .ok()
-                .map(|ack| ack.dest_coords),
+            (Some(FSP_PHASE_MSG2), Some(inner)) => {
+                SessionAck::decode(inner).ok().map(|ack| ack.dest_coords)
+            }
             _ => None,
         };
         let current_root = *self.tree_state.my_coords().root_id();
-        let usable_carried_coords = carried_dest_coords.filter(|coords| {
-            coords.node_addr() == &dest_addr && coords.root_id() == &current_root
-        });
+        let usable_carried_coords = carried_dest_coords
+            .filter(|coords| coords.node_addr() == &dest_addr && coords.root_id() == &current_root);
         let usable_dest_coords = usable_carried_coords.or_else(|| {
             self.coord_cache
                 .get_and_touch(&dest_addr, Self::now_ms())
@@ -377,8 +372,7 @@ impl Node {
     ) {
         match self.dataplane_outbound_session_state(&dest_addr) {
             OutboundSessionState::Established => {
-                if self.has_application_next_hop(&dest_addr)
-                {
+                if self.has_application_next_hop(&dest_addr) {
                     match self
                         .send_dataplane_cached_tun_packet(&dest_addr, ipv6_packet.clone())
                         .await
@@ -562,10 +556,8 @@ impl Node {
         }
 
         if let Some(packets) = self.pending_session_traffic.take_tun_packets(dest_addr) {
-            let (mut packets, stale_count) = packets.into_fresh_packets(
-                Self::now_ms(),
-                Self::PENDING_TUN_PACKET_FLUSH_MAX_AGE_MS,
-            );
+            let (mut packets, stale_count) = packets
+                .into_fresh_packets(Self::now_ms(), Self::PENDING_TUN_PACKET_FLUSH_MAX_AGE_MS);
             if stale_count > 0 {
                 crate::perf_profile::record_pending_tun_session_stale_drops(stale_count as u64);
                 debug!(
@@ -608,17 +600,15 @@ impl Node {
                     {
                         debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued endpoint data");
                         let mut restore = std::collections::VecDeque::new();
-                        if let Some(pending) = crate::node::PendingEndpointData::new_batch(
-                            batch,
-                            enqueued_at_ms,
-                        ) {
+                        if let Some(pending) =
+                            crate::node::PendingEndpointData::new_batch(batch, enqueued_at_ms)
+                        {
                             restore.push_back(pending);
                         }
                         let remaining = pending_payloads.collect::<Vec<_>>();
-                        if let Some(pending) = crate::node::PendingEndpointData::new_batch(
-                            remaining,
-                            enqueued_at_ms,
-                        ) {
+                        if let Some(pending) =
+                            crate::node::PendingEndpointData::new_batch(remaining, enqueued_at_ms)
+                        {
                             restore.push_back(pending);
                         }
                         restore.append(&mut payloads);
@@ -677,7 +667,11 @@ impl Node {
             .collect();
 
         for dest_addr in destinations {
-            if self.find_next_hop(&dest_addr).is_some() {
+            // Recovery can stage a session route before general routing has
+            // directional feedback. Let the normal flush validate that route.
+            if self.find_next_hop(&dest_addr).is_some()
+                || self.dataplane_application_route_ready(&dest_addr)
+            {
                 self.flush_pending_packets(&dest_addr).await;
             }
         }

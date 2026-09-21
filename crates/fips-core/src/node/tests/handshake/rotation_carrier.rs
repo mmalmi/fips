@@ -124,7 +124,7 @@ fn rejected_tcp_rotation_closes_candidate_carrier_and_preserves_incumbent() {
             assert_eq!(retained.our_index(), Some(owner.index));
             assert_eq!(retained.session_generation(), generation);
             assert_eq!(retained.remote_epoch(), epoch);
-            assert_eq!(heartbeat(&mut node, &old, &mut owner).await, 2);
+            assert_eq!(heartbeat(&mut node, &old, &mut owner, 2).await, 2);
             cleanup_nodes(std::slice::from_mut(&mut node)).await;
         },
     );

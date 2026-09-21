@@ -189,7 +189,7 @@ fn reciprocal_transfer_preserves_deadline_acl_and_one_candidate_bound() {
                 assert_eq!(retained.remote_epoch(), Some(peer.startup_epoch));
                 assert_eq!(retained.session_generation(), generation);
             }
-            assert_eq!(heartbeat(&mut node, &active, &mut active_owner).await, 2);
+            assert_eq!(heartbeat(&mut node, &active, &mut active_owner, 2).await, 2);
 
             // Even after the new identity's cooldown elapses, an inbound owner
             // cannot be replaced by another identity's replayable Msg1.
@@ -222,8 +222,8 @@ fn reciprocal_transfer_preserves_deadline_acl_and_one_candidate_bound() {
             assert!(!node.node.confirm_inbound_handshake(expired_proof).await);
             assert_eq!(resources(&node), (2, 0, 2, 2));
             assert!(node.node.has_neighbor_rotation_opportunity(Node::now_ms()));
-            assert_eq!(heartbeat(&mut node, &old, &mut old_owner).await, 2);
-            assert_eq!(heartbeat(&mut node, &active, &mut active_owner).await, 3);
+            assert_eq!(heartbeat(&mut node, &old, &mut old_owner, 2).await, 2);
+            assert_eq!(heartbeat(&mut node, &active, &mut active_owner, 3).await, 3);
             cleanup_nodes(std::slice::from_mut(&mut node)).await;
         },
     );
@@ -451,7 +451,7 @@ fn cancelled_reciprocal_transfer_keeps_old_tcp_owner_until_close_completes() {
                 Some(candidate.index)
             );
             assert!(!node.node.index_allocator.is_allocated(old_owner.index));
-            assert_eq!(heartbeat(&mut node, &ready, &mut candidate).await, 2);
+            assert_eq!(heartbeat(&mut node, &ready, &mut candidate, 2).await, 2);
             cleanup_nodes(std::slice::from_mut(&mut node)).await;
         },
     );

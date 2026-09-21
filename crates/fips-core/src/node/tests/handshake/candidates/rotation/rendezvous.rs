@@ -13,6 +13,9 @@ use std::panic::AssertUnwindSafe;
 #[path = "rendezvous/responsive.rs"]
 mod responsive;
 
+#[path = "rendezvous/same_path_rejoin.rs"]
+mod same_path_rejoin;
+
 const ADDRESSES: [&str; 8] = [
     "a", "b", "useful-a", "useful-b", "idle-a", "idle-b", "silent-a", "silent-b",
 ];

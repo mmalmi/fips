@@ -98,7 +98,7 @@ fn unconfirmed_restarts_cannot_renew_the_full_roster_candidate_slot() {
                     assert!(node.node.get_connection(&candidate.link).is_some());
                 }
                 assert_eq!(
-                    heartbeat(&mut node, &active, &mut active_owner).await,
+                    heartbeat(&mut node, &active, &mut active_owner, round + 1).await,
                     round + 1
                 );
                 let retained = node.node.get_peer(active.node_addr()).unwrap();
@@ -129,8 +129,8 @@ fn unconfirmed_restarts_cannot_renew_the_full_roster_candidate_slot() {
             assert!(node.node.get_peer(attacker.node_addr()).is_none());
             assert!(node.node.get_peer(old.node_addr()).is_none());
             assert!(node.node.get_peer(newcomer.node_addr()).is_some());
-            assert_eq!(heartbeat(&mut node, &active, &mut active_owner).await, 4);
-            assert_eq!(heartbeat(&mut node, &newcomer, &mut admitted).await, 2);
+            assert_eq!(heartbeat(&mut node, &active, &mut active_owner, 4).await, 4);
+            assert_eq!(heartbeat(&mut node, &newcomer, &mut admitted, 2).await, 2);
             cleanup_nodes(std::slice::from_mut(&mut node)).await;
         },
     );
@@ -190,7 +190,7 @@ fn fresh_inbound_can_confirm_before_the_original_deadline() {
             assert_eq!(resources(&node), (1, 0, 1, 1));
             assert!(node.node.get_peer(old.node_addr()).is_none());
             assert!(node.node.get_peer(newcomer.node_addr()).is_some());
-            assert_eq!(heartbeat(&mut node, &newcomer, &mut restarted).await, 2);
+            assert_eq!(heartbeat(&mut node, &newcomer, &mut restarted, 2).await, 2);
             cleanup_nodes(std::slice::from_mut(&mut node)).await;
         },
     );
@@ -224,7 +224,7 @@ async fn retry_inside_cooldown(node: &mut TestNode) {
     // Establish and age the incumbent through actual elapsed time. Neither
     // received timestamps nor the pending attempt's deadline are rewritten.
     let mut old_owner = connect(node, &old, &old_source, 310).await;
-    assert_eq!(heartbeat(node, &old, &mut old_owner).await, 1);
+    assert_eq!(heartbeat(node, &old, &mut old_owner, 1).await, 1);
     let old_generation = node
         .node
         .get_peer(old.node_addr())
@@ -393,5 +393,5 @@ async fn retry_inside_cooldown(node: &mut TestNode) {
     assert!(node.node.get_peer(newcomer.node_addr()).is_some());
     assert!(!node.node.index_allocator.is_allocated(old_owner.index));
     assert!(node.node.index_allocator.is_allocated(fresh.index));
-    assert_eq!(heartbeat(node, &newcomer, &mut fresh).await, 2);
+    assert_eq!(heartbeat(node, &newcomer, &mut fresh, 2).await, 2);
 }

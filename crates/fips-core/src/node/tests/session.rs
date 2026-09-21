@@ -34,6 +34,7 @@ mod rekey_routed;
 mod remote_restart;
 mod resend_rekey_large;
 mod retransmit_harness;
+mod rotation_restart;
 mod route_metrics;
 #[cfg(feature = "sim-transport")]
 mod sim_harness;

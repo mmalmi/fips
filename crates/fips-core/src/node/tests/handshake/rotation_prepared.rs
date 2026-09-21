@@ -116,14 +116,14 @@ fn prepared_rotation_keeps_exact_victim_after_demand_and_attempt_age_change() {
             assert_eq!(retained.session_generation(), protected_generation);
             assert_eq!(retained.remote_epoch(), protected_epoch);
             assert_eq!(
-                heartbeat(&mut node, &protected, &mut protected_owner).await,
+                heartbeat(&mut node, &protected, &mut protected_owner, 2).await,
                 2
             );
             assert_eq!(
                 node.node.get_peer(newcomer.node_addr()).unwrap().link_id(),
                 candidate.link
             );
-            assert_eq!(heartbeat(&mut node, &newcomer, &mut candidate).await, 1);
+            assert_eq!(heartbeat(&mut node, &newcomer, &mut candidate, 1).await, 1);
             cleanup_nodes(std::slice::from_mut(&mut node)).await;
         },
     );

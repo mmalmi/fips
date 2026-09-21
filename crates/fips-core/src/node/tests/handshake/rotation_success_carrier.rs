@@ -103,13 +103,7 @@ fn successful_tcp_rotation_releases_old_pool_slot_and_keeps_new_carrier_live() {
             .await;
             assert_eq!(resources(&node), (1, 0, 1, 1));
             assert_eq!(stats.snapshot().pool_inbound, 1);
-            assert_eq!(
-                node.node
-                    .dataplane_fmp_link_metrics(old.node_addr(), Instant::now())
-                    .unwrap()
-                    .rx_packets,
-                1
-            );
+            assert_eq!(await_heartbeat(&mut node, &old, 1).await, 1);
             enable(&mut node, 1);
 
             let (mut new_stream, mut candidate) =
@@ -165,21 +159,14 @@ fn successful_tcp_rotation_releases_old_pool_slot_and_keeps_new_carrier_live() {
                 &mut rx,
             )
             .await;
-            let received = node
-                .node
-                .dataplane_fmp_link_metrics(newcomer.node_addr(), Instant::now())
-                .unwrap()
-                .rx_packets;
+            let received = await_heartbeat(&mut node, &newcomer, 1).await;
             assert_eq!(received, 1);
             write_heartbeat(&mut new_stream, &mut candidate, tcp_id).await;
             let fresh = next_packet(&mut rx).await;
             super::super::super::super::spanning_tree::process_dataplane_packet(&mut node, fresh)
                 .await;
             assert_eq!(
-                node.node
-                    .dataplane_fmp_link_metrics(newcomer.node_addr(), Instant::now())
-                    .unwrap()
-                    .rx_packets,
+                await_heartbeat(&mut node, &newcomer, received + 1).await,
                 received + 1
             );
             assert_eq!(stats.snapshot().pool_inbound, 1);

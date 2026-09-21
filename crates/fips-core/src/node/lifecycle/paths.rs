@@ -461,10 +461,17 @@ impl Node {
         &self,
         peer_node_addr: &NodeAddr,
     ) -> bool {
+        self.active_peer_needs_same_path_refresh_at(peer_node_addr, Self::now_ms())
+    }
+
+    pub(in crate::node) fn active_peer_needs_same_path_refresh_at(
+        &self,
+        peer_node_addr: &NodeAddr,
+        now_ms: u64,
+    ) -> bool {
         let Some(peer) = self.peers.get(peer_node_addr) else {
             return false;
         };
-        let now_ms = Self::now_ms();
         if self
             .dataplane
             .any_fsp_recent_outbound_without_inbound_for_next_hop(

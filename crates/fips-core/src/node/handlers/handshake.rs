@@ -793,9 +793,6 @@ impl Node {
             return;
         }
 
-        // Note: we don't early-return if peer is already in self.peers here.
-        // promote_connection handles cross-connection resolution via tie-breaker.
-
         // Check admission before retiring a pending owner. Rejected restarts
         // must leave its receiver index, Msg2 and original deadline usable.
         if self.config.node.neighbor_rotation.is_some()
@@ -829,11 +826,14 @@ impl Node {
             }
         }
 
-        let await_confirmation = self
+        let replacing_neighbor = self
             .peers
             .get(&peer_node_addr)
             .is_some_and(|p| p.has_session())
             || self.neighbor_rotation_awaits_confirmation(&peer_node_addr);
+        // A replayed Msg1 must not reset retained FSP or divert its route.
+        // Keep the ordinary crossed-dial capacity rule independent of proof.
+        let await_confirmation = replacing_neighbor || self.sessions.contains_key(&peer_node_addr);
         let rotation_started_at = self.neighbor_rotation_started_at(&peer_node_addr);
         self.reclaim_crossed_rotation_dial(
             &peer_node_addr,
@@ -845,13 +845,8 @@ impl Node {
         // Msg2 before its outbound can be retired. Preserve that bounded
         // cross-connection exception, including its temporary extra link;
         // fresh strangers and replacements still need available capacity.
-        let pending_outbound = self.peers.connection_iter().any(|(_, conn)| {
-            conn.is_outbound()
-                && conn
-                    .expected_identity()
-                    .is_some_and(|identity| *identity.node_addr() == peer_node_addr)
-        });
-        if (await_confirmation || !pending_outbound)
+        let crossed_dial = self.has_unpaired_outbound_handshake(&peer_node_addr);
+        if (replacing_neighbor || !crossed_dial)
             && (self.outbound_handshake_slots() == 0 || self.outbound_link_slots() == 0)
         {
             self.close_unowned_handshake_carrier(packet.transport_id, &packet.remote_addr)

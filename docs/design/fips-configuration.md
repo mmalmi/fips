@@ -172,6 +172,16 @@ demand is rechecked, and physical BLE reconnections retain normal priority.
 This prevents discovery's own refresh from invalidating its exploration attempt;
 other maintenance and incoming handshakes still share the existing limits.
 
+Elective rotation releases the direct neighbor's link and keys while retaining
+established end-to-end sessions and their bounded queues. Those sessions remain
+subject to the normal session-table and idle-expiry limits. Their former direct
+egress is removed; sending requires a valid surviving route or a newly
+authenticated connection. A confirmed change of the remote startup epoch clears
+obsolete end-to-end keys even if the direct neighbor was already removed;
+rejoining the same process preserves them. Generic disconnect cleanup is unchanged.
+An inbound handshake must provide fresh encrypted confirmation before it changes
+a retained session's keys or direct route; a replayed request alone cannot do so.
+
 Disabling the section stops future optional replacements; it does not reconnect
 previously displaced peers. This is a local exploration policy, not a guarantee
 of topology preservation, newcomer fairness against hostile identities, or

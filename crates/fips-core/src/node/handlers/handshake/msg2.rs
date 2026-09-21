@@ -441,6 +441,14 @@ impl Node {
                 });
             let existing_path_unusable = !simultaneous_inbound_session
                 && (active_peer_unusable
+                    // Discovery can redial a quiet peer before link-dead
+                    // removal, including one with no application session.
+                    // Admit its fresh reply under the same stale-path rule.
+                    || (!outbound_path_differs
+                        && self.active_peer_needs_same_path_refresh_at(
+                            &peer_node_addr,
+                            packet.timestamp_ms,
+                        ))
                     || self.session_direct_path_blocks_direct_payload(
                         &peer_node_addr,
                         packet.timestamp_ms,
