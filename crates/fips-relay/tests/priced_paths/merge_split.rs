@@ -23,6 +23,8 @@ mod timing;
 mod crowded;
 #[path = "merge_split/pending_funding.rs"]
 mod pending_funding;
+#[path = "merge_split/settlement_cleanup.rs"]
+mod settlement_cleanup;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn independently_discovered_meshes_merge_split_and_reuse_paid_channels() {
@@ -561,13 +563,21 @@ async fn collect(bench: Bench, final_accounts: &[Account], credited: &BTreeMap<S
         credited.keys().collect::<Vec<_>>()
     );
     let mut expected_balances = vec![256u64; bench.wallets.len()];
+    let settlement_deadline = Instant::now() + Duration::from_secs(120);
     for (i, controller) in bench.controllers.iter().enumerate() {
         let before: Vec<_> = bench
             .services
             .iter()
             .map(|service| service.acceptance.statistics().snapshot())
             .collect();
-        let reports = match controller.settle_all().await {
+        let reports = match settlement_cleanup::resume(
+            &bench,
+            i,
+            &final_accounts[i],
+            settlement_deadline,
+        )
+        .await
+        {
             Ok(reports) => reports,
             Err(error) => {
                 let after: Vec<_> = bench
