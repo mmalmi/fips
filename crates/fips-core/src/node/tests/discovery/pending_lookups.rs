@@ -373,7 +373,6 @@ async fn lookup_timeout_preserves_endpoint_data_for_fsp_responder_awaiting_msg3(
 
 #[tokio::test]
 async fn established_session_keeps_path_recovery_lookup_and_endpoint_data() {
-    use crate::node::handlers::discovery::PendingLookup;
     use crate::node::session::{EndToEndState, SessionEntry};
     use crate::noise::HandshakeState;
 
@@ -416,8 +415,16 @@ async fn established_session_keeps_path_recovery_lookup_and_endpoint_data() {
             usize::MAX,
             1_000,
         );
-    node.pending_lookups
-        .insert(target_addr, PendingLookup::new(0));
+    // Exercise lookup creation before Bloom reachability returns, not a
+    // manually inserted lookup that hides the recovery-admission boundary.
+    node.maybe_initiate_lookup(&target_addr).await;
+    assert!(!node.discovery_backoff.is_suppressed(&target_addr));
+    let lookup = node.pending_lookups.get_mut(&target_addr).expect(
+        "queued established traffic must retain a bounded lookup while reachability converges",
+    );
+    assert!(lookup.awaiting_first_request());
+    lookup.initiated_ms = 0;
+    lookup.last_sent_ms = 0;
     let baseline_initiated = node.stats().discovery.req_initiated;
     let baseline_timed_out = node.stats().discovery.resp_timed_out;
 
@@ -458,6 +465,15 @@ async fn established_session_keeps_path_recovery_lookup_and_endpoint_data() {
         baseline_timed_out,
         "an established authenticated session is not an unreachable destination"
     );
+
+    node.pending_session_traffic
+        .remove_destination(&target_addr);
+    node.maybe_initiate_lookup(&target_addr).await;
+    assert!(
+        !node.pending_lookups.contains_key(&target_addr),
+        "an idle established session does not reserve a lookup without local demand"
+    );
+    assert!(node.discovery_backoff.is_suppressed(&target_addr));
 }
 
 #[test]
@@ -512,7 +528,98 @@ fn first_contact_starts_when_reachability_arrives_before_retry_deadline() {
         let mut filter = crate::bloom::BloomFilter::new();
         filter.insert(&target);
         let baseline = nodes[0].node.stats().discovery.req_initiated;
-        for sequence in [1, 2] {
+        let announce = crate::protocol::FilterAnnounce::new(filter.clone(), 1);
+        let payload = announce.encode().unwrap();
+
+        // New reachability cannot revive an expired current attempt. Reuse
+        // this fixture's deterministic retry clock before the real wire check.
+        let timeout_ms = nodes[0].node.config.node.discovery.attempt_timeouts_secs[2] * 1000;
+        let expired = now - timeout_ms;
+        nodes[0]
+            .node
+            .pending_lookups
+            .get_mut(&target)
+            .unwrap()
+            .last_sent_ms = expired;
+        nodes[0]
+            .node
+            .handle_filter_announce(&transit, &payload[1..])
+            .await;
+        assert_eq!(nodes[0].node.stats().discovery.req_initiated, baseline);
+        let pending = nodes[0].node.pending_lookups.get(&target).unwrap();
+        assert!(
+            pending.awaiting_first_request(),
+            "expired attempt must remain unsent"
+        );
+        assert_eq!(pending.attempt, 3);
+        assert_eq!(pending.last_sent_ms, expired);
+        assert_eq!(
+            nodes[0].node.get_peer(&transit).unwrap().filter_sequence(),
+            1
+        );
+
+        // The same accepted filter is now a replay, even with a live attempt
+        // and queued demand. It cannot reach the wakeup helper.
+        nodes[0]
+            .node
+            .pending_lookups
+            .get_mut(&target)
+            .unwrap()
+            .last_sent_ms = now;
+        let stale = nodes[0].node.stats().bloom.stale;
+        nodes[0]
+            .node
+            .handle_filter_announce(&transit, &payload[1..])
+            .await;
+        assert_eq!(nodes[0].node.stats().bloom.stale, stale + 1);
+        assert_eq!(nodes[0].node.stats().discovery.req_initiated, baseline);
+        assert!(
+            nodes[0]
+                .node
+                .pending_lookups
+                .get(&target)
+                .unwrap()
+                .awaiting_first_request()
+        );
+
+        // Keep the original packet for the positive case, but remove local
+        // demand while a newer accepted filter arrives.
+        let held = nodes[0]
+            .node
+            .pending_session_traffic
+            .take_tun_packets(&target)
+            .unwrap();
+        assert!(
+            !nodes[0]
+                .node
+                .pending_session_traffic
+                .has_traffic_for(&target)
+        );
+        let announce = crate::protocol::FilterAnnounce::new(filter.clone(), 2);
+        nodes[0]
+            .node
+            .handle_filter_announce(&transit, &announce.encode().unwrap()[1..])
+            .await;
+        assert_eq!(
+            nodes[0].node.get_peer(&transit).unwrap().filter_sequence(),
+            2
+        );
+        assert_eq!(nodes[0].node.stats().discovery.req_initiated, baseline);
+        let pending = nodes[0].node.pending_lookups.get(&target).unwrap();
+        assert!(
+            pending.awaiting_first_request(),
+            "drained traffic must not wake a lookup"
+        );
+        assert_eq!(pending.attempt, 3);
+        assert_eq!(pending.last_sent_ms, now);
+        let (held, stale_packets) = held.into_fresh_packets(now, u64::MAX);
+        assert_eq!(stale_packets, 0);
+        nodes[0]
+            .node
+            .pending_session_traffic
+            .restore_tun_packets(target, held);
+
+        for sequence in [3, 4] {
             let announce = crate::protocol::FilterAnnounce::new(filter.clone(), sequence);
             nodes[0]
                 .node

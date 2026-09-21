@@ -58,29 +58,93 @@ fn discovery_diagnostics(nodes: &[TestNode], destination: &NodeAddr) -> Vec<Stri
 #[test]
 fn bound_established_payload_waits_for_coordinates_after_root_change() {
     run_large_stack_async_test("fips-bound-coordinate-recovery", || async {
-        root_change_recovery(Traffic::Endpoint).await;
+        root_change_recovery(Traffic::Endpoint, false).await;
     });
 }
 
 #[test]
 fn bound_established_tun_waits_for_coordinates_after_root_change() {
     run_large_stack_async_test("fips-bound-tun-coordinate-recovery", || async {
-        root_change_recovery(Traffic::Tun).await;
+        root_change_recovery(Traffic::Tun, false).await;
     });
 }
 
 #[test]
 fn reply_learned_payload_keeps_its_carrier_after_root_change() {
     run_large_stack_async_test("fips-reply-learned-coordinate-control", || async {
-        root_change_recovery(Traffic::ReplyLearned).await;
+        root_change_recovery(Traffic::ReplyLearned, false).await;
     });
 }
 
 #[test]
 fn direct_payload_needs_no_destination_coordinates_after_root_change() {
     run_large_stack_async_test("fips-direct-coordinate-control", || async {
-        root_change_recovery(Traffic::Direct).await;
+        root_change_recovery(Traffic::Direct, false).await;
     });
+}
+
+#[test]
+fn queued_established_payload_resumes_on_first_reachable_filter() {
+    run_large_stack_async_test("fips-payload-filter-recovery", || async {
+        root_change_recovery(Traffic::Endpoint, true).await;
+    });
+}
+
+#[test]
+fn queued_established_tun_resumes_on_first_reachable_filter() {
+    run_large_stack_async_test("fips-tun-filter-recovery", || async {
+        root_change_recovery(Traffic::Tun, true).await;
+    });
+}
+
+/// Model delayed reachability with an empty, then current computed filter.
+/// Both announcements cross the original authenticated UDP adjacency.
+async fn advertise_reachability(nodes: &mut [TestNode], destination: NodeAddr, empty: bool) {
+    let source = *nodes[0].node.node_addr();
+    let transit = *nodes[1].node.node_addr();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let computed = loop {
+        let announce = nodes[1].node.build_filter_announce(&source);
+        if announce.filter.contains(&destination) {
+            break announce;
+        }
+        assert!(
+            empty,
+            "restoring reachability must not run lookup maintenance"
+        );
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "real downstream reachability"
+        );
+        discovery_turn(nodes).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    let announce = if empty {
+        crate::protocol::FilterAnnounce::new(crate::bloom::BloomFilter::new(), computed.sequence)
+    } else {
+        computed
+    };
+    nodes[1]
+        .node
+        .send_dataplane_fmp_link_plaintext(&source, &announce.encode().unwrap(), false)
+        .await
+        .unwrap();
+    while nodes[0].node.get_peer(&transit).unwrap().filter_sequence() < announce.sequence {
+        process_available_packets(&mut nodes[..1]).await;
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "authenticated filter arrival"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(
+        nodes[0]
+            .node
+            .get_peer(&transit)
+            .unwrap()
+            .may_reach(&destination),
+        !empty
+    );
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -119,7 +183,17 @@ fn collect_deliveries(
     }
 }
 
-async fn root_change_recovery(traffic: Traffic) {
+fn session_identity(node: &Node, destination: &NodeAddr) -> ([u8; 32], u64, u64) {
+    let entry = node.get_session(destination).unwrap();
+    assert!(entry.is_established());
+    (
+        *entry.handshake_hash().unwrap(),
+        entry.created_at(),
+        entry.session_start_ms(),
+    )
+}
+
+async fn root_change_recovery(traffic: Traffic, delayed_filter: bool) {
     let _guard = lock_large_network_test().await;
     let mut nodes = Vec::new();
     for _ in 0..5 {
@@ -229,20 +303,26 @@ async fn root_change_recovery(traffic: Traffic) {
         );
     }
     let epochs = [
-        nodes[0]
-            .node
-            .get_session(&destination)
-            .unwrap()
-            .session_start_ms(),
-        nodes[destination_index]
-            .node
-            .get_session(&source)
-            .unwrap()
-            .session_start_ms(),
+        session_identity(&nodes[0].node, &destination),
+        session_identity(&nodes[destination_index].node, &source),
     ];
 
     initiate_handshake(&mut nodes, 3, 4).await;
     let joined = converge(&mut nodes, *identities[4].node_addr(), 5).await;
+    if joined && matches!(traffic, Traffic::ReplyLearned | Traffic::Direct) {
+        // These controls must prove delivery without destination coordinates.
+        // Background warmups or signed responses may refill them during real
+        // convergence; reply-learned responses can even describe another root.
+        // Remove only this cache entry, preserving learned paths and sessions.
+        drain_to_quiescence(&mut nodes).await;
+        for index in [0, 1] {
+            let removed = nodes[index].node.coord_cache.remove(&destination);
+            eprintln!(
+                "cache-absence control {traffic:?}: node={index} removed={}",
+                removed.is_some()
+            );
+        }
+    }
     let empty_coords = [0, 1].into_iter().all(|index| {
         nodes[index]
             .node
@@ -255,9 +335,24 @@ async fn root_change_recovery(traffic: Traffic) {
         assert!(joined, "real smaller-root contact did not converge");
         assert!(
             empty_coords,
-            "root transition must invalidate source and transit coordinates"
+            "Tree recovery needs naturally invalidated coordinates; direct/learned controls explicitly remove them"
         );
         return;
+    }
+    if delayed_filter {
+        drain_to_quiescence(&mut nodes).await;
+        advertise_reachability(&mut nodes, destination, true).await;
+        if traffic == Traffic::Tun {
+            // Let setup discovery's forwarding budget refill before offering
+            // a TUN packet, whose existing queue lifetime is only two seconds.
+            let interval = nodes[1]
+                .node
+                .config
+                .node
+                .discovery
+                .forward_min_interval_secs;
+            tokio::time::sleep(Duration::from_secs(interval)).await;
+        }
     }
     let before_lookup = nodes[0].node.stats().discovery.req_initiated;
     let before_error = nodes[0].node.stats().errors.coords_required;
@@ -306,14 +401,61 @@ async fn root_change_recovery(traffic: Traffic) {
     };
     let lookup_pending = nodes[0].node.pending_lookups.contains_key(&destination);
     let lookup_count = nodes[0].node.stats().discovery.req_initiated - before_lookup;
+    let mut released_by_filter = true;
+    let mut filter_started = None;
+    if delayed_filter {
+        // Let zero-peer attempts become due on the real clock. Aging only
+        // lookup timestamps would bypass time elapsed at the transit limiter.
+        // No packet is reoffered, and the configured retry ladder is unchanged.
+        let retries = if traffic == Traffic::Tun { 1 } else { 2 };
+        for _ in 0..retries {
+            let lookup = nodes[0].node.pending_lookups.get(&destination).unwrap();
+            let attempt = lookup.attempt;
+            let timeout = nodes[0].node.config.node.discovery.attempt_timeouts_secs
+                [usize::from(attempt - 1)]
+                * 1000;
+            let due = lookup.last_sent_ms + timeout;
+            while Node::now_ms() < due {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            nodes[0].node.check_pending_lookups(Node::now_ms()).await;
+        }
+        let lookup = nodes[0].node.pending_lookups.get(&destination).unwrap();
+        assert!(
+            lookup.awaiting_first_request(),
+            "no lookup left without reachability"
+        );
+        assert_eq!(lookup.attempt, retries + 1);
+        let original_clock = (lookup.initiated_ms, lookup.last_sent_ms, lookup.attempt);
+        let initiated = nodes[0].node.stats().discovery.req_initiated;
+        filter_started = Some(tokio::time::Instant::now());
+        for _ in 0..2 {
+            advertise_reachability(&mut nodes, destination, false).await;
+            let lookup = nodes[0].node.pending_lookups.get(&destination).unwrap();
+            released_by_filter &= !lookup.awaiting_first_request();
+            assert_eq!(
+                (lookup.initiated_ms, lookup.last_sent_ms, lookup.attempt),
+                original_clock,
+                "filter updates must not reset the retry ladder or extend its deadline"
+            );
+            released_by_filter &= nodes[0].node.stats().discovery.req_initiated == initiated + 1;
+        }
+    }
 
     // Submit exactly once. Ordinary signed discovery must flush that same
     // queued payload, without a replay after a transit routing error.
     let mut delivered = Vec::new();
     let mut wrong_path = 0;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let deadline =
+        tokio::time::Instant::now() + Duration::from_secs(if delayed_filter { 1 } else { 5 });
     loop {
-        discovery_turn(&mut nodes).await;
+        if delayed_filter {
+            // The FilterAnnounce must wake signed lookup and original-packet
+            // delivery without a maintenance flush or a later retry timer.
+            process_available_packets(&mut nodes).await;
+        } else {
+            discovery_turn(&mut nodes).await;
+        }
         collect_deliveries(
             traffic,
             &mut destination_endpoint.event_rx,
@@ -326,6 +468,9 @@ async fn root_change_recovery(traffic: Traffic) {
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+    let filter_to_delivery_ms = filter_started
+        .filter(|_| !delivered.is_empty())
+        .map(|start| start.elapsed().as_millis());
     drain_to_quiescence(&mut nodes).await;
     collect_deliveries(
         traffic,
@@ -342,16 +487,8 @@ async fn root_change_recovery(traffic: Traffic) {
         .get_entry(&destination)
         .is_some_and(|entry| entry.is_verified(Node::now_ms()));
     let final_epochs = [
-        nodes[0]
-            .node
-            .get_session(&destination)
-            .unwrap()
-            .session_start_ms(),
-        nodes[destination_index]
-            .node
-            .get_session(&source)
-            .unwrap()
-            .session_start_ms(),
+        session_identity(&nodes[0].node, &destination),
+        session_identity(&nodes[destination_index].node, &source),
     ];
     let binding = nodes[0].node.source_routes.get(&destination).copied();
     let requires_coordinates = matches!(traffic, Traffic::Endpoint | Traffic::Tun);
@@ -363,10 +500,20 @@ async fn root_change_recovery(traffic: Traffic) {
     }
     cleanup_nodes(&mut nodes).await;
     eprintln!(
-        "bound coord recovery {traffic:?}: queued={queued}, lookup_pending={lookup_pending}, lookup_count={lookup_count}, delivered={}, errors={errors}, drops={drops}, verified={verified}",
+        "bound coord recovery {traffic:?}: delayed_filter={delayed_filter}, queued={queued}, lookup_pending={lookup_pending}, lookup_count={lookup_count}, delivered={}, errors={errors}, drops={drops}, verified={verified}, filter_to_delivery_ms={filter_to_delivery_ms:?}",
         delivered.len()
     );
     if requires_coordinates {
+        assert!(
+            released_by_filter,
+            "new reachability must release the unsent recovery lookup once"
+        );
+        if delayed_filter {
+            assert!(
+                filter_to_delivery_ms.is_some_and(|elapsed| elapsed <= 1000),
+                "the original must arrive within one second of the ready filter, before the duplicate drain"
+            );
+        }
         assert_eq!(
             queued, 1,
             "missing current-tree coordinates must defer the original payload"
@@ -375,7 +522,7 @@ async fn root_change_recovery(traffic: Traffic) {
             lookup_pending,
             "existing bounded discovery must start before application dispatch"
         );
-        assert_eq!(lookup_count, 1);
+        assert_eq!(lookup_count, u64::from(!delayed_filter));
         assert!(
             verified,
             "flush must follow authenticated destination discovery"

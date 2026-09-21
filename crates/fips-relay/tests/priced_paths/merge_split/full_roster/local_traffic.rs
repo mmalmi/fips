@@ -9,6 +9,19 @@ const PORT: u16 = 44_749;
 const MAX_PACKETS: usize = 256;
 const MAX_GAP_MS: u64 = 5_000; // Below the fixture's 10-second idle threshold.
 
+/// Application receive observations, not transport arrival timestamps. Keep
+/// one largest gap and only four examples of its skipped originals arriving.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+struct DeliveryGap {
+    previous_sequence: Option<usize>,
+    previous_received_ms: u64,
+    current_sequence: usize,
+    current_received_ms: u64,
+    unreceived_between: usize,
+    late_received_between: usize,
+    late_arrivals: [Option<(usize, u64)>; 4],
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct Counts {
     offered: usize,
@@ -19,6 +32,8 @@ struct Counts {
     last_delivered_ms: u64,
     max_offered_gap_ms: u64,
     max_delivered_gap_ms: u64,
+    last_delivered_sequence: Option<usize>,
+    largest_delivery_gap: Option<DeliveryGap>,
 }
 
 #[derive(Debug, Default)]
@@ -110,6 +125,9 @@ impl LocalTraffic {
                     "submitted": counts.submitted,
                     "received": counts.delivered,
                     "duplicates": counts.duplicates,
+                    "last_received_sequence": counts.last_delivered_sequence,
+                    "max_delivery_gap_ms": counts.max_delivered_gap_ms,
+                    "largest_delivery_gap": counts.largest_delivery_gap,
                     "discarded_outputs": carrier.discarded_outputs,
                     "ambiguous_port_datagrams": carrier.ambiguous_port_datagrams,
                     "transports": transports,
@@ -232,10 +250,34 @@ fn record(
         }
         seen[seq] = true;
         let elapsed = start.elapsed().as_millis() as u64;
-        stream.max_delivered_gap_ms = stream
-            .max_delivered_gap_ms
-            .max(elapsed.saturating_sub(stream.last_delivered_ms));
+        let gap_ms = elapsed.saturating_sub(stream.last_delivered_ms);
+        if gap_ms > stream.max_delivered_gap_ms {
+            let first_between = stream
+                .last_delivered_sequence
+                .map_or(0, |previous| previous + 1);
+            stream.largest_delivery_gap = Some(DeliveryGap {
+                previous_sequence: stream.last_delivered_sequence,
+                previous_received_ms: stream.last_delivered_ms,
+                current_sequence: seq,
+                current_received_ms: elapsed,
+                unreceived_between: (first_between..seq).filter(|&index| !seen[index]).count(),
+                late_received_between: 0,
+                late_arrivals: [None; 4],
+            });
+        } else if let Some(gap) = &mut stream.largest_delivery_gap
+            && gap.previous_sequence.is_none_or(|previous| previous < seq)
+            && seq < gap.current_sequence
+        {
+            // Duplicates were rejected above, so this original was still
+            // absent when the gap's higher sequence arrived.
+            if let Some(sample) = gap.late_arrivals.get_mut(gap.late_received_between) {
+                *sample = Some((seq, elapsed));
+            }
+            gap.late_received_between += 1;
+        }
+        stream.max_delivered_gap_ms = stream.max_delivered_gap_ms.max(gap_ms);
         stream.last_delivered_ms = elapsed;
+        stream.last_delivered_sequence = Some(seq);
         stream.delivered += 1;
     }
 }

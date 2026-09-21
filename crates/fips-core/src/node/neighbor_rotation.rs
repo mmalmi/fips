@@ -6,6 +6,9 @@ mod carrier;
 mod incoming;
 mod outgoing;
 
+#[cfg(test)]
+mod demand_tests;
+
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod benchmark;
 
@@ -528,12 +531,11 @@ impl Node {
     }
 
     fn neighbor_rotation_prefers_demand(&self, peer: NodeAddr) -> bool {
-        !self.neighbor_rotation.exploration_due
-            && self.pending_session_traffic.has_traffic_for(&peer)
+        !self.neighbor_rotation.exploration_due && self.peer_has_queued_application_demand(&peer)
     }
 
     /// Retry a presently offered interrupted attempt first, then alternate
-    /// queued destination demand with ordinary cursor exploration.
+    /// queued application-carrier demand with ordinary cursor exploration.
     pub(in crate::node) fn neighbor_rotation_discovery_order(
         &self,
         peer: NodeAddr,

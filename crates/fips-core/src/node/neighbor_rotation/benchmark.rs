@@ -3,8 +3,10 @@
 use super::*;
 use crate::config::NeighborRotationConfig;
 use crate::dataplane::{
-    ActivityTick, DataplaneAuthenticatedFspSession, FspReceiveSync, OwnerConfig, OwnerId,
+    ActivityTick, DataplaneAuthenticatedFspSession, DataplaneFspWrapRoute,
+    DataplaneLiveOwnerRoutes, FspReceiveSync, OwnerConfig, OwnerId,
 };
+use crate::node::endpoint_channels::EndpointDataPayload;
 use crate::peer::{ActivePeer, PeerConnection};
 use crate::protocol::SessionMessageType;
 use crate::{Config, Identity, PeerIdentity};
@@ -195,5 +197,163 @@ fn admission_cpu_by_roster_and_session_count() {
             );
             assert_eq!(node.peer_count(), peers);
         }
+    }
+}
+
+/// Post-admission queue/route metadata only: this setup is not evidence of
+/// authenticated delivery. Every miss maps to a carrier outside the measured
+/// candidate set, so old direct-only and carrier-aware policies agree.
+fn queued_discovery_node(queued: usize, direct_hits: bool) -> Node {
+    let mut node = populated(2, 0, State::Idle);
+    let max_destinations = node.config.node.session.pending_max_destinations;
+    let packets_per_dest = node.config.node.session.pending_packets_per_dest;
+    assert_eq!(max_destinations, 256);
+    assert!(queued <= 2 * max_destinations);
+    for index in 0..queued {
+        let destination = address(if direct_hits { 20_000 + index } else { index });
+        let admission = if index < max_destinations {
+            node.pending_session_traffic.push_tun_packet(
+                destination,
+                vec![1],
+                max_destinations,
+                packets_per_dest,
+                Some(NOW_MS),
+            )
+        } else {
+            node.pending_session_traffic
+                .push_endpoint_data_batch_with_enqueued_at_ms(
+                    destination,
+                    vec![EndpointDataPayload::from_packet_payload(vec![1]).unwrap()],
+                    max_destinations,
+                    packets_per_dest,
+                    NOW_MS,
+                )
+        };
+        assert!(!admission.destination_dropped());
+        assert!(!admission.dropped_oldest());
+        if direct_hits {
+            continue;
+        }
+        let carrier = address(10_000 + index);
+        if index < 64 {
+            node.source_routes.insert(destination, carrier);
+        } else {
+            let owner = OwnerId::fsp_node(destination);
+            node.dataplane.register_owner(owner, OwnerConfig::new(1, 8));
+            node.dataplane
+                .replace_owner_fsp_routes(
+                    owner,
+                    DataplaneLiveOwnerRoutes::default(),
+                    Some(DataplaneFspWrapRoute::new(
+                        OwnerId::fmp_node(carrier),
+                        1,
+                        2,
+                        *node.node_addr(),
+                        destination,
+                    )),
+                    None,
+                )
+                .unwrap();
+            assert_eq!(
+                node.dataplane.fsp_owner_next_hop(&destination),
+                Some(carrier)
+            );
+        }
+    }
+    assert_eq!(node.pending_session_traffic.destinations().count(), queued);
+    assert_eq!(
+        node.source_routes.len(),
+        if direct_hits { 0 } else { queued.min(64) }
+    );
+    assert_eq!(
+        node.dataplane.fsp_owner_destinations().len(),
+        if direct_hits {
+            0
+        } else {
+            queued.saturating_sub(64)
+        }
+    );
+    node
+}
+
+fn discovery_query(node: &Node, candidates: &[NodeAddr], batches: usize) -> (u64, u64, u64) {
+    let wall_start = Instant::now();
+    let cpu_start = cpu_ns();
+    let mut checksum = 0u64;
+    for _ in 0..batches {
+        for candidate in candidates {
+            let key = black_box(
+                black_box(node)
+                    .neighbor_rotation_discovery_order(black_box(*candidate), black_box(NOW_MS)),
+            );
+            checksum = checksum.wrapping_add(
+                u64::from(key.0)
+                    + 2 * u64::from(key.1)
+                    + 4 * u64::from(key.2.0)
+                    + u64::from(key.2.1.as_bytes()[15]),
+            );
+        }
+    }
+    let cpu = cpu_ns() - cpu_start;
+    (
+        cpu,
+        wall_start.elapsed().as_nanos() as u64,
+        black_box(checksum),
+    )
+}
+
+#[test]
+#[ignore = "explicit CPU benchmark; use --release --ignored --exact --nocapture"]
+fn discovery_key_cpu_by_queued_destination_count() {
+    assert!(
+        !black_box(cfg!(debug_assertions)),
+        "measure an optimized release build"
+    );
+    let candidates: Vec<_> = (20_000..20_000 + CANDIDATES).map(address).collect();
+    for (queued, direct_hits) in [(0, false), (64, false), (512, false), (64, true)] {
+        let node = queued_discovery_node(queued, direct_hits);
+        let mut expected_per_batch = 0u64;
+        for candidate in &candidates {
+            assert_eq!(
+                node.neighbor_rotation_discovery_order(*candidate, NOW_MS),
+                (true, !direct_hits, (false, *candidate))
+            );
+            expected_per_batch +=
+                1 + 2 * u64::from(!direct_hits) + u64::from(candidate.as_bytes()[15]);
+        }
+        let mut batches = 1;
+        // Bound calibration even on extremely fast clocks. Neither the fixed
+        // policy time nor the queue, cursor or carrier state changes here.
+        while discovery_query(&node, &candidates, batches).0 < 10_000_000 && batches < 262_144 {
+            batches *= 2;
+        }
+        let mut cpu = Vec::new();
+        let mut wall = Vec::new();
+        for _ in 0..SAMPLES {
+            let (cpu_ns, wall_ns, checksum) = discovery_query(&node, &candidates, batches);
+            assert_eq!(checksum, expected_per_batch * batches as u64);
+            cpu.push(cpu_ns as f64 / batches as f64);
+            wall.push(wall_ns as f64 / batches as f64);
+        }
+        cpu.sort_by(f64::total_cmp);
+        wall.sort_by(f64::total_cmp);
+        eprintln!(
+            "rotation-discovery-key-cpu {}",
+            serde_json::json!({
+                "queued_destinations": queued, "direct_hits": direct_hits,
+                "explicit_bindings": node.source_routes.len(),
+                "installed_fsp_carriers": node.dataplane.fsp_owner_destinations().len(),
+                "candidates_per_batch": CANDIDATES, "batches_per_sample": batches,
+                "samples": SAMPLES, "checksum_per_batch": expected_per_batch,
+                "cpu_ns_per_key_median": cpu[SAMPLES / 2] / CANDIDATES as f64,
+                "cpu_ns_per_key_max": cpu[SAMPLES - 1] / CANDIDATES as f64,
+                "cpu_ns_per_64_keys_median": cpu[SAMPLES / 2],
+                "cpu_ns_per_64_keys_max": cpu[SAMPLES - 1],
+                "wall_ns_per_key_median": wall[SAMPLES / 2] / CANDIDATES as f64,
+                "wall_ns_per_64_keys_median": wall[SAMPLES / 2],
+                "includes": "key evaluation, black_box and checksum; setup excluded"
+            })
+        );
+        assert_eq!(node.pending_session_traffic.destinations().count(), queued);
     }
 }

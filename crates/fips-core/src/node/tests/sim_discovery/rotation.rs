@@ -4,6 +4,7 @@ use crate::node::acl::{PeerAclContext, PeerAclReloader};
 use spanning_tree::process_available_packets;
 use std::time::Instant;
 
+mod carrier_demand;
 mod cursor;
 mod demand;
 mod refresh;

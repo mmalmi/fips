@@ -834,7 +834,6 @@ impl OwnerState {
 
     pub(crate) fn fsp_activity(&self) -> Option<DataplaneFspOwnerActivity> {
         (self.owner.protocol() == PacketProtocol::Fsp).then_some(DataplaneFspOwnerActivity {
-            owner: self.owner.node_addr(),
             fsp_session_start_ms: self.fsp_session_start_ms,
             last_rx_activity: self.last_rx_activity,
             last_authenticated_rx_activity: self.last_authenticated_rx_activity,

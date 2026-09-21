@@ -229,19 +229,6 @@ impl DataplaneOwnerShard {
             .min()
     }
 
-    fn any_fsp_recent_outbound_without_inbound_for_next_hop(
-        &self,
-        next_hop: &NodeAddr,
-        now_ms: u64,
-        timeout_ms: u64,
-    ) -> bool {
-        self.owners
-            .values()
-            .filter_map(OwnerState::fsp_activity)
-            .filter(|activity| activity.tracks_outbound_next_hop(next_hop))
-            .any(|activity| activity.has_recent_outbound_without_inbound(now_ms, timeout_ms))
-    }
-
     fn submit_socket_packet_with_seq(
         &mut self,
         packet: SocketPacket,

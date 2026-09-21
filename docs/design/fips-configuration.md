@@ -210,8 +210,11 @@ order; they do not use this candidate-list preference.
 
 Transport and LAN discovery alternate demand preference with ordinary exploration.
 When no ordinary turn is owed, an advertised identity with locally queued endpoint
-or TUN traffic takes priority over the cursor order. This uses the existing bounded
-destination queue; an advert alone cannot create demand. Starting that attempt
+or TUN demand takes priority over the cursor order. Each queued destination names
+its explicit source carrier first, otherwise its currently installed session
+carrier, otherwise the destination itself. The same attribution protects an active
+carrier from optional replacement. This uses the existing bounded destination
+queue and current routes; an advert alone cannot create demand. Starting that attempt
 consumes the preference, even if the peer never answers. The next new outgoing
 attempt uses ordinary cursor order and replenishes demand preference. A preferred
 attempt does not move the cursor. Empty or ineligible demand falls through, and
@@ -219,8 +222,8 @@ incoming attempts or failed scans do not replenish preference. The one-use
 interrupted retry above stays ahead of both choices and continues its original
 turn without changing the cursor or the owed exploration turn.
 
-This preference applies to the queued destination itself, not inferred transit
-neighbors. It does not bypass ACLs, capacity, incumbent protection or handshake
+Historical routes are not consulted. The preference does not bypass ACLs,
+capacity, incumbent protection or handshake
 deadlines, grant paid forwarding authority, or guarantee admission time. Ordinary
 exploration still gets opportunities when a demanded peer remains unresponsive;
 changing candidate populations and incoming contention can still delay admission.
@@ -231,6 +234,16 @@ It does not wait for a periodic reachability lookup. This preserves explicit
 carrier bindings, session admission limits and the original queued traffic;
 existing sessions keep their recovery state. A successfully installed handshake
 owns the queue through its normal retransmission and timeout lifecycle.
+
+Queued traffic on an established session also retains the bounded discovery retry
+ladder while neighbor reachability converges. An accepted filter update from a
+healthy, sendable tree peer can release an admitted lookup whose first request
+has not been attempted through an eligible peer, provided its current attempt is
+unexpired and local traffic is still queued. Each update considers at most 16
+eligible destinations. Requests
+already attempted keep their normal retry cadence, including after a send error;
+neither the attempt number nor its deadline is reset. Session-owned queues retain
+their existing lifetime rules.
 
 After a successful incoming replacement, a node with automatic discovery reserves
 one local outgoing opportunity before another fresh incoming attempt. That

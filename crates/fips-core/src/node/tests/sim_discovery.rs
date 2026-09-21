@@ -17,6 +17,10 @@ async fn discovering_node(network: &str, addr: &str, auto_connect: bool) -> Test
         auto_connect: Some(auto_connect),
         ..Default::default()
     });
+    configured_discovering_node(config, addr).await
+}
+
+async fn configured_discovering_node(config: Config, addr: &str) -> TestNode {
     assert!(config.peers.is_empty());
     let mut node = Node::new(config).unwrap();
     let (packet_tx, packet_rx) = packet_channel(256);

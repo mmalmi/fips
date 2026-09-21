@@ -88,7 +88,7 @@ fn fsp_owner_tracks_data_return_without_registry_side_channel() {
         "wrapped FSP evidence must include both AEAD envelopes and wire headers"
     );
     assert!(activity.has_recent_outbound_activity(105, 10));
-    assert!(activity.has_recent_outbound_without_inbound(105, 10));
+    assert_eq!(activity.last_rx_data_age_ms(105), None);
     assert_eq!(mover.record_fsp_decrypt_failure(owner), Some(1));
     assert_eq!(mover.record_fsp_decrypt_failure(owner), Some(2));
     let sync = |counter, body_len| FspReceiveSync {
@@ -128,7 +128,6 @@ fn fsp_owner_tracks_data_return_without_registry_side_channel() {
         !activity.has_unacknowledged_outbound_from(&owner.node_addr(), 115, 20,),
         "fallback traffic must not be misclassified as an unreturned direct send"
     );
-    assert!(!activity.has_recent_outbound_without_inbound(115, 20));
     assert_eq!(mover.record_fsp_decrypt_failure(owner), Some(1));
 
     assert!(

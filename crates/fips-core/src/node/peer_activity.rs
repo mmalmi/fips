@@ -32,17 +32,25 @@ impl Node {
                                 && activity.has_recent_outbound_activity(now_ms, idle_ms)
                         })
                 })
-            || self.pending_session_traffic.destinations().any(|dest| {
-                // Attribute queued application traffic to an existing explicit
-                // or installed carrier. An unresolved lookup does not pin every
-                // neighbor, which would prevent discovery of its missing route.
-                self.source_routes
-                    .get(&dest)
-                    .copied()
-                    .or_else(|| self.dataplane.fsp_owner_next_hop(&dest))
-                    .or_else(|| self.peers.contains_key(&dest).then_some(dest))
-                    == Some(*peer)
-            })
+            || self.peer_has_queued_application_demand(peer)
+    }
+
+    /// Attribute local queues to their explicit or currently installed carrier.
+    /// An unresolved destination asks for itself; no historical path is revived.
+    pub(in crate::node) fn peer_has_queued_application_demand(&self, peer: &NodeAddr) -> bool {
+        let carrier = |destination: &NodeAddr| {
+            self.source_routes
+                .get(destination)
+                .copied()
+                .or_else(|| self.dataplane.fsp_owner_next_hop(destination))
+                .unwrap_or(*destination)
+        };
+        // Keep direct demand cheap without bypassing a selected other carrier.
+        (self.pending_session_traffic.has_traffic_for(peer) && carrier(peer) == *peer)
+            || self
+                .pending_session_traffic
+                .destinations()
+                .any(|destination| destination != *peer && carrier(&destination) == *peer)
     }
 
     pub(in crate::node) fn record_peer_transit_demand(&mut self, peer: &NodeAddr, now_ms: u64) {

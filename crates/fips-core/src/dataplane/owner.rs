@@ -552,7 +552,6 @@ pub(crate) enum OwnerReserveBlockReason {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DataplaneFspOwnerActivity {
-    owner: NodeAddr,
     fsp_session_start_ms: Option<u64>,
     last_rx_activity: Option<ActivityTick>,
     last_authenticated_rx_activity: Option<ActivityTick>,
@@ -685,15 +684,6 @@ impl DataplaneFspOwnerActivity {
             && last_inbound_ms.is_some_and(|last_ms| now_ms.saturating_sub(last_ms) > timeout_ms)
     }
 
-    pub(crate) fn has_recent_outbound_without_inbound(self, now_ms: u64, timeout_ms: u64) -> bool {
-        let inbound_data_stale = self
-            .last_rx_data_age_ms(now_ms)
-            .is_none_or(|age_ms| age_ms > timeout_ms);
-        self.data_packets_sent > 0
-            && self.has_recent_outbound_activity(now_ms, timeout_ms)
-            && inbound_data_stale
-    }
-
     pub(crate) fn has_recent_delivery_feedback_from(
         self,
         next_hop: &NodeAddr,
@@ -748,11 +738,6 @@ impl DataplaneFspOwnerActivity {
 
     fn tracks_data_next_hop(self, next_hop: &NodeAddr) -> bool {
         self.last_rx_data_previous_hop == Some(*next_hop)
-    }
-
-    fn tracks_outbound_next_hop(self, next_hop: &NodeAddr) -> bool {
-        self.last_outbound_next_hop == Some(*next_hop)
-            || (self.owner == *next_hop && self.last_outbound_next_hop.is_none())
     }
 
     pub(crate) fn traffic_counters(self) -> (u64, u64, u64, u64) {

@@ -2048,6 +2048,68 @@ observed at 33.413/33.443 seconds and all-hop credit at 34.330/34.256 seconds.
 All 1,536 test sats are collected. Bridge authentication still takes
 30.765/29.760 seconds in that run; broad mobile-mesh convergence remains open.
 
+Queued carrier recovery now shares the existing incumbent-demand attribution
+with optional discovery preference (2026-09-22): explicit source binding, otherwise
+current session carrier, otherwise the destination itself. Shared carriers remain
+demanded until their last local queue drains. Historical paths, payment authority,
+ordinary exploration turns and interrupted-attempt deadlines are unchanged.
+
+Two recovery prerequisites accompany this preference. Missing reverse application
+traffic no longer marks a responsive adjacent FMP link for key replacement:
+one-way end-to-end traffic is valid, and direct-session degradation retains its
+own recovery rules. Queued established sessions also retain bounded lookup retries
+while Bloom reachability converges. An accepted healthy tree-peer filter can wake
+an unexpired lookup that has never selected an eligible peer, even with an existing
+session. It does not reset retry clocks or repeatedly send on later filters.
+
+The real six-node retained-carrier fixture starts with successful routed delivery,
+then authenticates the carrier again after an actual reciprocal departure. The
+original baseline misses its 15-second delivery deadline. With the fixes, both
+measurement and strict-selection cases deliver the one original in 931 ms, through
+one relay admission, with 30 native packets/5,509 bytes after the offer. Original
+FSP identities and binding survive. These are controlled observations, not radio
+latency guarantees. The separate five-node root-change regressions retain signed
+discovery, real retry time, transit anti-spam limits and the two-second TUN queue
+lifetime. After reachability arrives, the original endpoint/TUN packet delivers
+in 138/132 ms without maintenance or resubmission. Reintroducing the session
+exclusion fails both cases. Expired attempts, replayed filters and drained queues
+cannot wake requests; later accepted filters cannot reset or duplicate a request.
+The direct/reply-learned controls explicitly remove destination cache entries
+after genuine convergence because background traffic can legitimately refill them.
+
+The shared demand query keeps a bounded scan instead of a new route cache. A native
+release benchmark of 64 ordering keys reports median CPU costs of 0.17 microseconds
+with no queues, 43.23 microseconds with 64 carrier misses, 1,011.19 microseconds
+with 512 carrier misses, and 0.83 microseconds for 64 direct hits. The previous
+direct-destination query measured 0.09/0.61/0.62/0.60 microseconds. These measure
+ordering-key evaluation, not a full discovery pass, forwarding cost or router CPU.
+
+Focused validation passes all six coordinate-recovery cases, 75 active lookup
+cases (one existing ignored), 17 native discovery cases, and strict core/relay
+linting. Run the carrier cases with `cargo test -p nvpn-fips-core --all-features
+--lib node::tests::sim_discovery::rotation::carrier_demand:: -- --test-threads=1
+--nocapture`; use the same invocation with
+`node::tests::session::source_coords_recovery::` for coordinate recovery. The
+ignored release benchmark is
+`node::neighbor_rotation::benchmark::discovery_key_cpu_by_queued_destination_count`.
+
+An earlier candidate exceeded the paid full-roster local delivery-gap limit
+(5,001 ms versus 5,000 ms). Four delayed originals arrived in the normal drain;
+credit remained available and all 1,536 test sats were collected. The matched
+unchanged baseline passed, as did an instrumented candidate run. The deterministic
+filter regression establishes an unnecessary recovery wait but does not reconstruct
+the exact cause of that earlier failure. After the wakeup fix, two planned runs
+with normal logging pass both crowded reconnects under the original limits.
+Their 112/110 offered local packets per direction all arrive once; maximum local
+gaps are 2,249/4,315 ms. Paid cross-component delivery resumes in
+33.879–43.591 seconds and all-hop credit in 34.594–44.406 seconds, within each
+60-second encounter window. Both runs collect all 1,536 test sats.
+
+A separate genuinely asymmetric quiet-FMP
+refresh can still disagree about owner replacement after fresh proof; removing
+the invalid one-way-application trigger does not establish a fix for that case.
+Latest code has not received physical-router or mobile-radio acceptance.
+
 The `merge_split::brief` variant covers repeated short contacts (2026-09-20).
 Independent tasks change the bridge carrier and send single-attempt packets in
 both directions; actual contact intervals must remain within half to one-and-a-half

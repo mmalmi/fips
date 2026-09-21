@@ -224,10 +224,10 @@ impl Node {
             return;
         }
 
-        // Keep first-contact traffic owned while startup reachability arrives.
-        // The existing lookup ladder bounds retries and eventually drains it.
-        let queued_first_contact = route_query || (self.pending_session_traffic.has_traffic_for(dest)
-            && self.sessions.get(dest).is_none());
+        // Queued traffic needs bounded lookup retries while reachability
+        // converges, including when an existing session loses its route.
+        // Lookup exhaustion leaves session-owned traffic to that lifecycle.
+        let queued_lookup = route_query || self.pending_session_traffic.has_traffic_for(dest);
 
         // Bloom filter pre-check: original routing skips if no peer's filter
         // contains the target. Reply-learned mode intentionally allows a
@@ -235,14 +235,17 @@ impl Node {
         let reachable = self.peers.values().any(|peer| peer.may_reach(dest));
         if !reachable && self.config.node.routing.mode != RoutingMode::ReplyLearned {
             self.stats_mut().discovery.req_bloom_miss += 1;
-            if queued_first_contact {
+            if queued_lookup {
                 self.pending_lookups.insert_new(*dest, now_ms);
+                if path_recovery {
+                    self.pending_lookups.mark_path_recovery(dest);
+                }
             } else {
                 self.discovery_backoff.record_failure(dest);
             }
             debug!(
                 target_node = %self.peer_display_name(dest),
-                queued_first_contact,
+                queued_lookup,
                 "Discovery has no target in any peer bloom filter"
             );
             return;
@@ -256,10 +259,10 @@ impl Node {
         let sent = self.initiate_lookup(dest, ttl).await;
 
         // No request left without an eligible peer. Keep bounded retries for
-        // queued first contact or degraded-route recovery; other callers stay
+        // queued traffic or degraded-route recovery; other callers stay
         // immediately retryable without creating an orphaned lookup.
         if sent == 0 {
-            if !queued_first_contact
+            if !queued_lookup
                 && !self.session_direct_path_degradation_active(dest, now_ms)
             {
                 self.pending_lookups.remove(dest);
@@ -556,9 +559,10 @@ impl Node {
         }
     }
 
-    /// Release first contact when a tree peer gains reachability. Requests
-    /// already sent keep their normal retry cadence and timeout ownership.
-    pub(in crate::node) async fn resume_first_contact_after_filter(&mut self, from: &NodeAddr) {
+    /// Release queued discovery when a tree peer gains reachability, including
+    /// recovery of an established session. Requests already sent keep their
+    /// normal retry cadence and timeout ownership.
+    pub(in crate::node) async fn resume_unsent_lookup_after_filter(&mut self, from: &NodeAddr) {
         let Some(peer) = self.peers.get(from).filter(|peer| {
             self.is_tree_peer(from) && peer.can_send() && peer.is_healthy()
         }) else {
@@ -570,7 +574,6 @@ impl Node {
                 .get(usize::from(entry.attempt.saturating_sub(1))).copied().unwrap_or(0) * 1000;
             (entry.awaiting_first_request()
                 && now_ms.saturating_sub(entry.last_sent_ms) < timeout_ms
-                && self.sessions.get(target).is_none()
                 && self.pending_session_traffic.has_traffic_for(target)
                 && peer.may_reach(target)).then_some(*target)
         }).take(MAX_ROUTE_LOOKUPS_PER_PASS).collect();

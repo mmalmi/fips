@@ -569,16 +569,6 @@ impl DataplaneLiveNode {
             .min_fsp_data_rx_age_for_next_hop(next_hop, now_ms)
     }
 
-    pub(crate) fn any_fsp_recent_outbound_without_inbound_for_next_hop(
-        &self,
-        next_hop: &NodeAddr,
-        now_ms: u64,
-        timeout_ms: u64,
-    ) -> bool {
-        self.driver
-            .any_fsp_recent_outbound_without_inbound_for_next_hop(next_hop, now_ms, timeout_ms)
-    }
-
     #[cfg(test)]
     pub(crate) fn record_authenticated_fsp_session(
         &mut self,

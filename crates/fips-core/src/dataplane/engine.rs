@@ -275,19 +275,6 @@ impl Dataplane {
             .min()
     }
 
-    pub(crate) fn any_fsp_recent_outbound_without_inbound_for_next_hop(
-        &self,
-        next_hop: &NodeAddr,
-        now_ms: u64,
-        timeout_ms: u64,
-    ) -> bool {
-        self.shards.iter().any(|shard| {
-            shard.any_fsp_recent_outbound_without_inbound_for_next_hop(
-                next_hop, now_ms, timeout_ms,
-            )
-        })
-    }
-
     pub(crate) fn owner_mut(&mut self, owner: OwnerId) -> Option<&mut OwnerState> {
         self.owner_shard_mut(owner).owner_mut(owner)
     }

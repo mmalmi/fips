@@ -292,16 +292,6 @@ impl DataplaneTurnDriver {
             .min_fsp_data_rx_age_for_next_hop(next_hop, now_ms)
     }
 
-    pub(crate) fn any_fsp_recent_outbound_without_inbound_for_next_hop(
-        &self,
-        next_hop: &NodeAddr,
-        now_ms: u64,
-        timeout_ms: u64,
-    ) -> bool {
-        self.mover
-            .any_fsp_recent_outbound_without_inbound_for_next_hop(next_hop, now_ms, timeout_ms)
-    }
-
     pub(crate) fn owner_mut(&mut self, owner: OwnerId) -> Option<&mut OwnerState> {
         self.mover.owner_mut(owner)
     }

@@ -472,16 +472,9 @@ impl Node {
         let Some(peer) = self.peers.get(peer_node_addr) else {
             return false;
         };
-        if self
-            .dataplane
-            .any_fsp_recent_outbound_without_inbound_for_next_hop(
-                peer_node_addr,
-                now_ms,
-                self.session_direct_path_exclusive_trust_timeout_ms(),
-            )
-        {
-            return true;
-        }
+        // End-to-end traffic may be one-way or fail beyond this neighbor.
+        // Its missing application replies do not invalidate a live FMP link;
+        // direct-session validation keeps its own bounded recovery state.
         let stale_after_ms = self
             .config
             .node
