@@ -782,6 +782,7 @@ impl Node {
 
                 let authenticated_path_updated = match result {
                     PromotionResult::Promoted(node_addr) => {
+                        self.retire_losing_inbound_handshakes(&node_addr).await;
                         info!(
                             peer = %self.peer_display_name(&node_addr),
                             "Peer promoted to active"

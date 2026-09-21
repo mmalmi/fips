@@ -13,6 +13,9 @@ mod rotation_prepared;
 #[path = "rotation_starvation.rs"]
 mod rotation_starvation;
 
+#[path = "rotation_overlap.rs"]
+mod rotation_overlap;
+
 fn enable(node: &mut TestNode, peers: usize) {
     node.node.config.node.neighbor_rotation = Some(NeighborRotationConfig {
         idle_secs: 1,

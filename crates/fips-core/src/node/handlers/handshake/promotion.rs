@@ -5,6 +5,45 @@ const AUTHENTICATED_UDP_ROAM_QUIET_MS: u64 = 1_000;
 const SIMULTANEOUS_CROSS_CONNECTION_GRACE_MS: u32 = 1_000;
 
 impl Node {
+    /// A winning outbound can leave the opposite inbound parked at capacity.
+    /// Retire only that same-epoch, same-carrier losing half; a restart or an
+    /// alternate path must still authenticate through its normal lifecycle.
+    pub(in crate::node) async fn retire_losing_inbound_handshakes(&mut self, peer: &NodeAddr) {
+        let Some(active) = self.peers.get(peer) else {
+            return;
+        };
+        if !active.fmp_mmp_is_initiator() || !cross_connection_winner(self.node_addr(), peer, true)
+        {
+            return;
+        }
+        let (Some(transport), Some(address), Some(epoch)) = (
+            active.transport_id(),
+            active.current_addr().cloned(),
+            active.remote_epoch(),
+        ) else {
+            return;
+        };
+        let losers: Vec<_> = self
+            .peers
+            .connection_iter()
+            .filter(|(_, conn)| {
+                conn.is_inbound()
+                    && conn.is_complete()
+                    && conn
+                        .expected_identity()
+                        .is_some_and(|id| id.node_addr() == peer)
+                    && conn.remote_epoch() == Some(epoch)
+                    && conn.transport_id() == Some(transport)
+                    && conn.source_addr() == Some(&address)
+            })
+            .map(|(link, _)| *link)
+            .collect();
+        for link in losers {
+            self.retire_connection_candidate(link, Some((transport, address.clone())))
+                .await;
+        }
+    }
+
     /// Promote a connection to active peer after successful authentication.
     ///
     /// Handles cross-connection detection and resolution using tie-breaker rules.
@@ -358,32 +397,9 @@ impl Node {
                 })
             }
         } else {
-            // No existing promoted peer. There may be a pending outbound
-            // connection to the same peer (cross-connection in progress).
-            // Do NOT clean it up yet — we need the outbound to stay alive
-            // so that when the peer's msg2 arrives, we can learn the peer's
-            // inbound session index and update their_index on the promoted
-            // peer. The outbound will be cleaned up in handle_msg2 or by
-            // the 30s handshake timeout.
-            let pending_to_same_peer: Vec<LinkId> = self
-                .peers
-                .connection_iter()
-                .filter(|(_, conn)| {
-                    conn.expected_identity()
-                        .map(|id| *id.node_addr() == peer_node_addr)
-                        .unwrap_or(false)
-                })
-                .map(|(lid, _)| *lid)
-                .collect();
-
-            for pending_link_id in &pending_to_same_peer {
-                debug!(
-                    peer = %self.peer_display_name(&peer_node_addr),
-                    pending_link_id = %pending_link_id,
-                    promoted_link_id = %link_id,
-                    "Deferring cleanup of pending outbound (awaiting msg2 for index update)"
-                );
-            }
+            // An inbound promotion retains pending outbound work until Msg2
+            // supplies the remote index. A winning outbound promotion retires
+            // only its proven losing inbound halves in the Msg2 handler.
 
             // Normal promotion
             if self.neighbor_roster_full()
