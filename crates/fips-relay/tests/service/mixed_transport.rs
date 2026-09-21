@@ -1,4 +1,4 @@
-//! Real relay processes cross a native UDP/TCP carrier boundary. Payment
+//! Real relay processes cross a native UDP/TCP or UDP/WebSocket boundary. Payment
 //! control remains TCP-over-FIPS, independent of those physical transports.
 
 use cashu_service::{
@@ -14,7 +14,7 @@ use std::{
 #[path = "mixed_transport/bench.rs"]
 mod bench;
 use crate::process_support;
-use bench::MixedBench;
+use bench::{MixedBench, SecondHop};
 #[cfg(feature = "testbench")]
 #[path = "mixed_transport/accept_barrier.rs"]
 mod accept_barrier;
@@ -28,6 +28,20 @@ mod service_carrier;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mixed_udp_tcp_daemons_preserve_paid_limits_through_exhaustion_and_restart() {
+    mixed_daemons_preserve_paid_limits(SecondHop::Tcp).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mixed_udp_websocket_daemons_preserve_paid_limits_through_exhaustion_and_restart() {
+    mixed_daemons_preserve_paid_limits(SecondHop::WebSocket).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mixed_udp_websocket_seed_daemons_preserve_paid_limits_without_a_websocket_peer_roster() {
+    mixed_daemons_preserve_paid_limits(SecondHop::WebSocketSeed).await;
+}
+
+async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
     tokio::time::timeout(Duration::from_secs(240), async {
         let root = tempfile::tempdir().unwrap();
         let now = SystemTime::now()
@@ -43,7 +57,7 @@ async fn mixed_udp_tcp_daemons_preserve_paid_limits_through_exhaustion_and_resta
         )
         .await
         .unwrap();
-        let mut bench = MixedBench::start(mint.url(), &network).await;
+        let mut bench = MixedBench::start_with_second_hop(mint.url(), &network, second_hop).await;
         bench.assert_carriers().await;
         service_carrier::assert_status(&bench, false).await;
         #[cfg(feature = "measurements")]
@@ -86,12 +100,15 @@ async fn mixed_udp_tcp_daemons_preserve_paid_limits_through_exhaustion_and_resta
             bench.wait_paid(&channel).await;
             original_channels.push(channel);
         }
+        if second_hop != SecondHop::Tcp {
+            round_trip::assert_paid_round_trip(&bench, &"64".repeat(16)).await;
+        }
         #[cfg(feature = "measurements")]
         payment_progress::assert_reconciled(&bench, &original_channels).await;
         service_carrier::assert_status(&bench, true).await;
 
         // Fill a small channel with renewals explicitly paused. This tests a
-        // financial denial, not an inference from a lost TCP connection.
+        // financial denial, not an inference from a lost carrier connection.
         for (index, (source, destination)) in [(0, 2), (2, 0)].into_iter().enumerate() {
             bench.send_probe(source, destination, 40, 256, 8).await;
             bench.wait_exhausted(source).await;
@@ -128,7 +145,7 @@ async fn mixed_udp_tcp_daemons_preserve_paid_limits_through_exhaustion_and_resta
                 .await;
         }
 
-        // A process crash preserves accounts. Whether any individual TCP write
+        // A process crash preserves accounts. Whether any individual stream write
         // was submitted is covered by deterministic core completion tests.
         let before = bench.states().await;
         bench.children[1].kill().await.unwrap();
@@ -152,6 +169,9 @@ async fn mixed_udp_tcp_daemons_preserve_paid_limits_through_exhaustion_and_resta
         }
         for (source, destination) in [(0, 2), (2, 0)] {
             bench.deliver(source, destination).await;
+        }
+        if second_hop != SecondHop::Tcp {
+            round_trip::assert_paid_round_trip(&bench, &"65".repeat(16)).await;
         }
         for config in &bench.configs {
             request(config, &AdminRequest::Settle).await.unwrap();

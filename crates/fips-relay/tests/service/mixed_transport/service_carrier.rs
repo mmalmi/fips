@@ -17,7 +17,10 @@ pub(super) async fn assert_status(bench: &MixedBench, active: bool) {
                 let packets = transport["submitted_packets"].as_u64().unwrap();
                 let bytes = transport["fips_payload_bytes"].as_u64().unwrap();
                 assert_eq!(transport["ethernet_framing_bytes"], 0);
-                if active && ((node == 0 && kind == "udp") || (node == 2 && kind == "tcp")) {
+                if active
+                    && ((node == 0 && kind == "udp")
+                        || (node == 2 && kind == bench.second_hop_kind()))
+                {
                     assert!(
                         packets > 0 && bytes > 0,
                         "originating data reaches its carrier"
@@ -65,8 +68,8 @@ pub(super) async fn assert_status(bench: &MixedBench, active: bool) {
                 assert_eq!(transport["ethernet_framing_bytes"], 0);
                 let possible = match node {
                     0 => kind == "udp",
-                    1 => matches!(kind, "udp" | "tcp"),
-                    2 => kind == "tcp",
+                    1 => kind == "udp" || kind == bench.second_hop_kind(),
+                    2 => kind == bench.second_hop_kind(),
                     _ => unreachable!(),
                 };
                 if !possible {

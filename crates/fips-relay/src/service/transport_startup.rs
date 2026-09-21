@@ -50,6 +50,13 @@ pub(super) async fn verify(config: &ServiceConfig) -> Result<(), String> {
                 .iter()
                 .map(|(name, _)| ("ethernet".to_owned(), name.map(str::to_owned))),
         )
+        .chain(
+            config
+                .transports
+                .websocket
+                .iter()
+                .map(|(name, _)| ("websocket".to_owned(), name.map(str::to_owned))),
+        )
         .collect();
     // The node binds its operator socket from a task started after endpoint bind.
     wait_for_control(config).await?;

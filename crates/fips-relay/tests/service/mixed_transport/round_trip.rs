@@ -57,6 +57,84 @@ async fn wait_probe(bench: &MixedBench, index: usize, count: u32) -> Value {
     .expect("probe delivery")
 }
 
+pub(super) async fn assert_paid_round_trip(bench: &MixedBench, id: &str) {
+    // One fixed cohort after the existing delivery warm-up: no probe retry,
+    // additional Buy, or payment flush can make this cohort pass.
+    let before_states = bench.states().await;
+    let ledger_path = bench.configs[1].state_directory.join("seller/ledger.json");
+    let before: Value = serde_json::from_slice(&std::fs::read(&ledger_path).unwrap()).unwrap();
+    let channels: Vec<_> = [0, 2]
+        .into_iter()
+        .map(|node| {
+            let id = before_states[node]["purchases"][0]["channel"]["id"]
+                .as_str()
+                .unwrap();
+            let row = before["ledger"]["channels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["terms"]["id"] == id)
+                .unwrap();
+            (
+                id.to_owned(),
+                row["usage"]["submitted_msat"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    arm(bench, id, 6).await;
+    measure(bench, id, 6).await;
+    let reply = wait_probe(bench, 0, 6).await;
+    let forward = wait_probe(bench, 2, 6).await;
+    for report in [&reply, &forward] {
+        assert_eq!(report["unique_packets"], 6);
+        assert_eq!(report["unique_bytes"], 768);
+        assert_eq!(report["missing_packets"], 0);
+        assert_eq!(report["invalid_packets"], 0);
+        assert_eq!(report["duplicate_packets"], 0);
+    }
+    assert_eq!(reply["round_trip_latency"]["samples"], 6);
+    assert_eq!(reply["round_trip_latency"]["invalid_timestamps"], 0);
+    assert_eq!(reply["reflected_submitted_packets"], 0);
+    assert_eq!(forward["reflected_submitted_packets"], 6);
+    assert_eq!(forward["reflection_failed_packets"], 0);
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let ledger: Value =
+                serde_json::from_slice(&std::fs::read(&ledger_path).unwrap()).unwrap();
+            if channels.iter().all(|(id, previous)| {
+                let row = ledger["ledger"]["channels"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|row| row["terms"]["id"] == *id)
+                    .unwrap();
+                let submitted = row["usage"]["submitted_msat"].as_u64().unwrap();
+                submitted >= previous + 6 * 128
+                    && row["usage"]["paid_msat"].as_u64().unwrap() >= submitted
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("both existing channels advance credited payment for the fixed round trip");
+    for node in [0, 2] {
+        let state = request(&bench.configs[node], &AdminRequest::Status)
+            .await
+            .unwrap();
+        assert_eq!(state["history"], before_states[node]["history"]);
+        assert_eq!(
+            state["funding_budget"],
+            before_states[node]["funding_budget"]
+        );
+        assert_eq!(
+            state["purchases"][0]["channel"]["id"],
+            before_states[node]["purchases"][0]["channel"]["id"]
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn round_trip_is_priced_in_both_directions_and_never_reflects_invalid_or_duplicate_data() {
     tokio::time::timeout(Duration::from_secs(150), async {

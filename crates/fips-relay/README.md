@@ -16,7 +16,7 @@ See [openwrt/README.md](openwrt/README.md) for the persistent APK package,
 size-oriented ARM64 build, startup readiness checks and backup procedure.
 
 The broader [v1 readiness work](READINESS.md) is active. [Adaptive cadence](CADENCE.md),
-authenticated adjacent-neighbor admission, mixed UDP/TCP/native Ethernet forwarding
+authenticated adjacent-neighbor admission, UDP/TCP/native Ethernet/WebSocket forwarding
 and financial-history retirement have bounded acceptance evidence. Physical checks
 also cover open Wi-Fi joining, paid provider failover/recovery and a Pixel session;
 the [matched cadence measurements](CADENCE-RESULTS.md) report their cost boundaries.
@@ -327,9 +327,10 @@ Strict relay and Android ARM64 linting, default builds, formatting and the
   authenticated peer restarts also reset stale tree/filter announcement state.
 
 Transport discovery settings are independent of payment-control admission.
-Paid-link acceptance covers UDP and Ethernet, plus a mixed UDP/TCP route with
-allowance exhaustion, renewal and restart. See [service configuration](SERVICE.md)
-for explicit link settings.
+Paid-link acceptance covers UDP and Ethernet, plus mixed UDP/TCP and UDP/WebSocket
+routes with allowance exhaustion, renewal and restart. WebSocket process tests use
+loopback listeners; remote TLS proxy deployment remains unverified. See
+[service configuration](SERVICE.md) for explicit link settings.
 
 Only the local mint's Lightning backend is simulated. These test tokens have no
 external backing. `settlement` supplies submission outcomes to test exact

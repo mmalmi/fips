@@ -1,14 +1,15 @@
 use cashu_service::{create_topup_quote, load_wallet_overview, simulation::PaymentNetwork};
-use fips_core::config::{PeerConfig, TcpConfig, TransportInstances, UdpConfig};
+use fips_core::config::{PeerConfig, TcpConfig, TransportInstances, UdpConfig, WebSocketConfig};
 use fips_relay::{
+    control_transport::NeighborAdmission,
     controller::RenewalPolicy,
     ledger::BillingBasis,
     probe::{ReceiveProbe, SendProbe},
-    service::{AdminRequest, ServiceConfig, request},
+    service::{AdminRequest, ServiceConfig, native_request, request},
 };
 use serde_json::Value;
 use std::{
-    net::{TcpListener, UdpSocket},
+    net::{SocketAddr, TcpListener, UdpSocket},
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
@@ -17,17 +18,49 @@ use tokio::process::Child;
 
 use crate::process_support::{command, config, ready, start};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SecondHop {
+    Tcp,
+    WebSocket,
+    WebSocketSeed,
+}
+
+impl SecondHop {
+    pub fn kind(self) -> &'static str {
+        match self {
+            Self::Tcp => "tcp",
+            Self::WebSocket | Self::WebSocketSeed => "websocket",
+        }
+    }
+
+    fn address(self, socket: SocketAddr) -> String {
+        match self {
+            Self::Tcp => socket.to_string(),
+            Self::WebSocket | Self::WebSocketSeed => format!("ws://{socket}/fips"),
+        }
+    }
+}
+
 pub struct MixedBench {
     _root: tempfile::TempDir,
     pub configs: Vec<ServiceConfig>,
     pub paths: Vec<PathBuf>,
     pub npubs: Vec<String>,
     pub children: Vec<Child>,
+    second_hop: SecondHop,
     next_probe: AtomicU64,
 }
 
 impl MixedBench {
     pub async fn start(mint: &str, network: &PaymentNetwork) -> Self {
+        Self::start_with_second_hop(mint, network, SecondHop::Tcp).await
+    }
+
+    pub async fn start_with_second_hop(
+        mint: &str,
+        network: &PaymentNetwork,
+        second_hop: SecondHop,
+    ) -> Self {
         let root = tempfile::tempdir().unwrap();
         let udp: Vec<_> = (0..2)
             .map(|_| UdpSocket::bind("127.0.0.1:0").unwrap())
@@ -48,10 +81,33 @@ impl MixedBench {
                 });
             }
             if node > 0 {
-                config.transports.tcp = TransportInstances::Single(TcpConfig {
-                    bind_addr: Some(tcp[node - 1].local_addr().unwrap().to_string()),
-                    ..Default::default()
-                });
+                let bind_addr = Some(tcp[node - 1].local_addr().unwrap().to_string());
+                match second_hop {
+                    SecondHop::Tcp => {
+                        config.transports.tcp = TransportInstances::Single(TcpConfig {
+                            bind_addr,
+                            ..Default::default()
+                        });
+                    }
+                    SecondHop::WebSocket | SecondHop::WebSocketSeed => {
+                        config.transports.websocket = TransportInstances::Single(WebSocketConfig {
+                            bind_addr: if second_hop == SecondHop::WebSocketSeed && node == 2 {
+                                None
+                            } else {
+                                bind_addr
+                            },
+                            seed_urls: if second_hop == SecondHop::WebSocketSeed && node == 2 {
+                                vec![second_hop.address(tcp[0].local_addr().unwrap())]
+                            } else {
+                                Vec::new()
+                            },
+                            ..Default::default()
+                        });
+                    }
+                }
+                if second_hop == SecondHop::WebSocketSeed {
+                    config.neighbor_admission = NeighborAdmission::AuthenticatedAdjacent;
+                }
             }
             config.terms.billing = BillingBasis::ForwardingData;
             config.terms.controller.channel_capacity_sat = 8;
@@ -96,18 +152,53 @@ impl MixedBench {
             "udp",
             udp[1].local_addr().unwrap().to_string(),
         )];
-        configs[1].neighbors = vec![
-            PeerConfig::new(&npubs[0], "udp", udp[0].local_addr().unwrap().to_string()),
-            PeerConfig::new(&npubs[2], "tcp", tcp[1].local_addr().unwrap().to_string()),
-        ];
-        configs[2].neighbors = vec![PeerConfig::new(
-            &npubs[1],
-            "tcp",
-            tcp[0].local_addr().unwrap().to_string(),
+        configs[1].neighbors = vec![PeerConfig::new(
+            &npubs[0],
+            "udp",
+            udp[0].local_addr().unwrap().to_string(),
         )];
+        if second_hop != SecondHop::WebSocketSeed {
+            configs[1].neighbors.push(PeerConfig::new(
+                &npubs[2],
+                second_hop.kind(),
+                second_hop.address(tcp[1].local_addr().unwrap()),
+            ));
+            configs[2].neighbors = vec![PeerConfig::new(
+                &npubs[1],
+                second_hop.kind(),
+                second_hop.address(tcp[0].local_addr().unwrap()),
+            )];
+        } else {
+            // The bootstrap URL carries no peer identity. The known npubs
+            // remain test observations/destinations, not native peer rosters.
+            assert!(configs[2].neighbors.is_empty());
+            for config in &configs[1..] {
+                assert_eq!(
+                    config.neighbor_admission,
+                    NeighborAdmission::AuthenticatedAdjacent
+                );
+                assert!(config.neighbors.iter().all(|peer| {
+                    peer.addresses
+                        .iter()
+                        .all(|address| address.transport == "udp")
+                }));
+            }
+            let client = configs[2].transports.websocket.iter().next().unwrap().1;
+            assert!(client.bind_addr.is_none());
+            assert!(client.public_url.is_none());
+            assert_eq!(
+                client.seed_urls,
+                vec![second_hop.address(tcp[0].local_addr().unwrap())]
+            );
+        }
         assert!(
             configs[2].transports.udp.is_empty(),
-            "TCP endpoint has no UDP fallback"
+            "stream endpoint has no UDP fallback"
+        );
+        assert_eq!(
+            configs[2].transports.instance_counts().collect::<Vec<_>>(),
+            vec![(second_hop.kind(), 1)],
+            "final endpoint has only its selected stream adapter"
         );
         for (config, path) in configs.iter().zip(&paths) {
             std::fs::write(path, serde_json::to_vec(config).unwrap()).unwrap();
@@ -124,8 +215,13 @@ impl MixedBench {
             paths,
             npubs,
             children,
+            second_hop,
             next_probe: AtomicU64::new(1),
         }
+    }
+
+    pub fn second_hop_kind(&self) -> &'static str {
+        self.second_hop.kind()
     }
 
     pub async fn states(&self) -> Vec<Value> {
@@ -137,6 +233,23 @@ impl MixedBench {
     }
 
     pub async fn assert_carriers(&self) {
+        if self.second_hop == SecondHop::WebSocketSeed {
+            let report = native_request(
+                &self.configs[2],
+                &serde_json::json!({"command": "show_transports"}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(report["status"], "ok");
+            let transports = report["data"]["transports"].as_array().unwrap();
+            assert_eq!(transports.len(), 1);
+            assert_eq!(transports[0]["type"], "websocket");
+            assert_eq!(transports[0]["state"], "up");
+            assert!(
+                transports[0].get("local_addr").is_none(),
+                "seed client has no listener"
+            );
+        }
         for (node, status) in self.states().await.iter().enumerate() {
             let mut actual: Vec<_> = status["peers"]
                 .as_array()
@@ -146,11 +259,12 @@ impl MixedBench {
                 .map(|peer| peer["transport"].as_str().unwrap())
                 .collect();
             actual.sort_unstable();
-            let expected = match node {
+            let mut expected = match node {
                 0 => vec!["udp"],
-                1 => vec!["tcp", "udp"],
-                _ => vec!["tcp"],
+                1 => vec![self.second_hop_kind(), "udp"],
+                _ => vec![self.second_hop_kind()],
             };
+            expected.sort_unstable();
             assert_eq!(actual, expected, "native carrier topology at node {node}");
         }
     }

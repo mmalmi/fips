@@ -3,7 +3,7 @@ use super::{Identity, PeerIdentity, ServiceConfig};
 use crate::control_transport::NeighborAdmission;
 use fips_core::{
     Config,
-    config::{TransportInstances, UdpConfig},
+    config::{TransportInstances, UdpConfig, WebSocketConfig},
 };
 use std::{
     collections::HashSet,
@@ -17,7 +17,7 @@ impl ServiceConfig {
             return Err("configure between one and four native transport instances".into());
         }
         for (kind, _) in counts {
-            if !matches!(kind, "udp" | "tcp" | "ethernet") {
+            if !matches!(kind, "udp" | "tcp" | "ethernet" | "websocket") {
                 return Err(format!("paid relay does not yet support transport {kind}"));
             }
         }
@@ -36,6 +36,11 @@ impl ServiceConfig {
         }
         for (_, tcp) in self.transports.tcp.iter() {
             if let Some(bind) = &tcp.bind_addr {
+                socket_address(bind, false)?;
+            }
+        }
+        for (_, websocket) in self.transports.websocket.iter() {
+            if let Some(bind) = &websocket.bind_addr {
                 socket_address(bind, false)?;
             }
         }
@@ -84,6 +89,13 @@ impl ServiceConfig {
                     }
                     "tcp" if !self.transports.tcp.is_empty() => {
                         socket_address(&address.addr, true)?;
+                    }
+                    "websocket" if !self.transports.websocket.is_empty() => {
+                        WebSocketConfig {
+                            seed_urls: vec![address.addr.clone()],
+                            ..Default::default()
+                        }
+                        .validate()?;
                     }
                     "ethernet" => {
                         let (interface, mac) = address

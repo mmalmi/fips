@@ -199,11 +199,12 @@ wire messages are unchanged.
 
 The forwarding audit found shared transit admission before outgoing transport
 selection, including batched sends. Service configuration now uses the core
-`transports` schema and accepts UDP, native TCP and Ethernet. Other core adapters
-are explicitly rejected until their paid-service acceptance is supplied. The
+`transports` schema and accepts UDP, native TCP, Ethernet and WebSocket. Other
+core adapters are rejected until their paid-service acceptance is supplied. The
 service checks the exact configured type/name set against operational adapters
-before starting payment workers. A failed TCP listener beside a healthy UDP
-socket stops startup, releases the sibling socket and preserves financial state.
+before starting payment workers. A failed TCP or WebSocket listener beside a
+healthy UDP socket stops startup, releases the sibling socket and preserves
+financial state.
 Initialization still uses only loopback, without runtime discovery or listeners.
 The node owns and joins its operator listener during shutdown before the same
 account path can be reopened, including when the endpoint cancels its receive loop.
@@ -221,8 +222,31 @@ and all 384 test sats are conserved. One endpoint has only native TCP, so no UDP
 fallback can satisfy the scenario. Payment control remains TCP-over-FIPS over
 the selected physical carriers; no new payment wire messages are introduced.
 
-These results establish bounded configured-link behavior. They do not establish
-radio mobility, congestion fairness, throughput or support for every core adapter.
+A matching three-process UDP-to-WebSocket test passes the same payment,
+exhaustion, renewal, middle restart and 384-test-sat conservation checks. Its
+final endpoint has only WebSocket, and runtime adapter/peer checks establish
+the intended route. Six fixed round-trip probes before exhaustion and after
+restart each verify complete delivery, matching paid byte progress and no
+extra channel funding. Startup checks cover named WebSocket instances beside
+UDP and TCP, including outbound-only TCP and cleanup of failed listeners.
+These checks use real native adapters on macOS loopback, with no new payment
+wire messages or dependencies.
+
+A second WebSocket case uses only the middle relay's bootstrap URL, with no
+configured WebSocket peer identities. Its final endpoint is client-only, and
+both WebSocket participants explicitly permit authenticated adjacent peers.
+The same paid delivery, exhaustion, renewal, restart and conservation assertions
+pass; restarting the middle relay requires the seed connection to recover.
+This proves URL-bootstrapped adjacency, not arbitrary endpoint discovery. Both
+WebSocket cases also pass with test instrumentation disabled. All five mixed-link
+tests, four startup tests, 292 relay library tests and strict all-target linting
+pass; formatting and source-size checks pass without new size exceptions.
+Run `cargo test -p fips-relay --all-features --test service websocket` for the
+WebSocket process cases, or use `--no-default-features` for their production mode.
+
+These results establish bounded link behavior. They do not establish radio
+mobility, congestion fairness, throughput, remote TLS proxy deployment or
+support for every core adapter.
 
 ### Operator-selected free forwarding
 

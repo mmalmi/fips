@@ -2,8 +2,9 @@
 
 `fips-relay` assembles the native endpoint, durable buyer/seller accounting,
 Spilman receiver, quotes and autonomous controller in one Unix process. Linux
-and macOS local process tests cover UDP and native TCP. Three OpenWrt routers have also earned
-test payments over native Wi-Fi links. See [TESTBENCH.md](TESTBENCH.md) for the
+and macOS local process tests cover UDP and native TCP; macOS also covers native
+WebSocket. Three OpenWrt routers have earned test payments over native Wi-Fi links.
+See [TESTBENCH.md](TESTBENCH.md) for the
 historical hardware evidence and [PROTOTYPE-RESULTS.md](PROTOTYPE-RESULTS.md) for
 the completed bounded customer demonstration and current limits.
 
@@ -103,12 +104,22 @@ numeric socket address and list numeric UDP neighbor addresses. Omit UDP for a
 native-only node; there is no implicit UDP fallback. The old `udp_bind` and
 `ethernet_interfaces` service fields are not accepted.
 
-The paid service currently accepts UDP, native TCP and Ethernet, with at most
+The paid service accepts UDP, native TCP, Ethernet and WebSocket, with at most
 four total transport instances and eight configured neighbors. Native TCP uses
 `transports.tcp.bind_addr` for a listener; an omitted TCP bind makes that instance
 outbound-only. Neighbor addresses identify the transport type (`tcp`, for example),
 not its optional instance name. Other core adapters are rejected until their
 paid-service acceptance is supplied.
+
+WebSocket uses `transports.websocket` and `websocket` neighbor addresses. Set a
+numeric `bind_addr` for a listener, or omit it for an outbound-only instance.
+Use `wss://` URLs for remote peers; plaintext `ws://` is restricted to loopback.
+The native listener serves plaintext WebSocket, so remote inbound access needs
+a TLS reverse proxy. Listener paths, seed URLs and connection/queue limits use
+the core WebSocket configuration. An optional `seed_urls` list discovers peers
+without preconfigured identities; payment control then requires explicit
+`neighbor_admission: "authenticated_adjacent"`. A seed URL supplies a bootstrap
+location, not spending authority or arbitrary endpoint discovery.
 
 Before starting payment workers, the service checks that every requested
 transport instance is operational. A failed listener or unavailable adapter
@@ -122,8 +133,10 @@ joining, enable these flags on each intended interface and select
 That admission setting does not enable discovery or authorize wallet spending.
 Nostr and LAN/local discovery remain disabled. No system TUN, DNS server or
 ordinary Internet gateway is installed by this process. Paid-service acceptance
-covers UDP and Ethernet, plus a mixed UDP/TCP route with payment, exhausted
-allowance, renewal and relay restart.
+covers UDP and Ethernet, plus mixed UDP/TCP and UDP/WebSocket routes with payment,
+exhausted allowance, renewal and relay restart. WebSocket checks include both
+configured peers and URL-only bootstrap with authenticated adjacent admission.
+They use local loopback listeners; TLS proxy deployment is not covered.
 
 An optional `customer_network` subnet enables bounded incoming quote/payment
 control from authenticated direct UDP customers without preconfiguring their

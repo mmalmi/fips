@@ -43,6 +43,84 @@ fn tcp_only_configuration_keeps_its_native_settings_without_adding_udp() {
 }
 
 #[test]
+fn websocket_only_configuration_preserves_native_limits_and_peer_urls() {
+    let mut config = configured(json!({
+        "websocket": {
+            "bind_addr": "127.0.0.1:0",
+            "path": "/relay",
+            "max_connections": 8,
+            "max_inbound_connections": 4,
+            "max_send_queue": 16
+        }
+    }));
+    for address in [
+        "ws://127.0.0.1:2121/relay",
+        "ws://[::1]:2121/relay",
+        "wss://relay.example/relay",
+    ] {
+        config.neighbors = vec![PeerConfig::new(
+            Identity::generate().npub(),
+            "websocket",
+            address,
+        )];
+        config.validate().unwrap();
+        let native = config.network(&Identity::generate(), false);
+        assert_eq!(
+            serde_json::to_value(&native.transports).unwrap(),
+            serde_json::to_value(&config.transports).unwrap()
+        );
+        assert_eq!(
+            native.transports.instance_counts().collect::<Vec<_>>(),
+            [("websocket", 1)]
+        );
+        assert_eq!(native.peers[0].addresses[0].addr, address);
+        assert_discovery_disabled(&native);
+    }
+    for address in [
+        "ws://relay.example/relay",
+        "https://relay.example/relay",
+        "127.0.0.1:2121",
+        "wss:///relay",
+    ] {
+        config.neighbors[0].addresses[0].addr = address.into();
+        assert!(config.validate().is_err(), "{address}");
+    }
+    config.neighbors[0].addresses[0].addr = "ws://127.0.0.1:2121/relay".into();
+    config.transports = serde_json::from_value(json!({"tcp": {}})).unwrap();
+    assert!(config.validate().is_err());
+}
+
+#[test]
+fn websocket_instances_share_service_capacity_and_core_validation() {
+    let transports = json!({
+        "udp": { "bind_addr": "127.0.0.1:0" },
+        "tcp": {},
+        "websocket": {
+            "listener": { "bind_addr": "127.0.0.1:0" },
+            "outbound": { "seed_urls": ["wss://relay.example/fips"] }
+        }
+    });
+    configured(transports.clone()).validate().unwrap();
+    let mut too_many = transports;
+    too_many["websocket"]["extra"] = json!({});
+    assert!(configured(too_many).validate().is_err());
+    for invalid in [
+        json!({"path": "relative"}),
+        json!({"max_frame_bytes": 64}),
+        json!({"max_send_queue": 4097}),
+        json!({"seed_urls": ["ws://relay.example/fips"]}),
+        json!({"seed_urls": ["wss://relay.example/fips", "wss://relay.example/fips"]}),
+        json!({"bind_addr": "127.0.0.1:0", "public_url": "wss://relay.example/other"}),
+    ] {
+        assert!(
+            configured(json!({"websocket": invalid}))
+                .validate()
+                .is_err()
+        );
+    }
+}
+
+#[test]
 fn named_transport_instances_share_one_total_bound_and_preserve_configuration() {
     let transports = json!({
         "udp": {
@@ -67,7 +145,8 @@ fn named_transport_instances_share_one_total_bound_and_preserve_configuration() 
 fn initialization_uses_only_loopback_even_with_multiple_runtime_transports() {
     let mut config = configured(json!({
         "udp": { "bind_addr": "0.0.0.0:2121" },
-        "tcp": { "bind_addr": "0.0.0.0:2122" }
+        "tcp": { "bind_addr": "0.0.0.0:2122" },
+        "websocket": { "seed_urls": ["wss://relay.example/fips"] }
     }));
     config.neighbor_admission = NeighborAdmission::AuthenticatedAdjacent;
     config.neighbors.push(PeerConfig::new(
@@ -139,7 +218,7 @@ fn explicit_link_discovery_is_independent_of_control_and_purchase_authority() {
 #[test]
 fn empty_unsupported_and_misspelled_transport_configuration_is_rejected() {
     assert!(configured(json!({})).validate().is_err());
-    for adapter in ["websocket", "tor", "webrtc", "ble"] {
+    for adapter in ["tor", "webrtc", "ble"] {
         let mut transports = json!({"udp": {"bind_addr": "127.0.0.1:0"}});
         transports[adapter] = json!({});
         assert!(configured(transports).validate().is_err(), "{adapter}");
@@ -151,7 +230,7 @@ fn empty_unsupported_and_misspelled_transport_configuration_is_rejected() {
 
 #[test]
 fn binds_are_numeric_and_unicast_even_when_outbound_mode_overrides_them() {
-    for adapter in ["udp", "tcp"] {
+    for adapter in ["udp", "tcp", "websocket"] {
         for bind in [
             "not-an-address",
             "localhost:2121",
@@ -330,6 +409,7 @@ fn customer_entry_requires_a_specific_inbound_udp_listener_inside_its_network() 
     assert_eq!(native.node.limits.max_sessions, 128);
     for transports in [
         json!({"tcp": {"bind_addr": "192.0.2.1:2121"}}),
+        json!({"websocket": {"bind_addr": "192.0.2.1:2121"}}),
         json!({"udp": {"bind_addr": "0.0.0.0:2121"}}),
         json!({"udp": {"bind_addr": "198.51.100.1:2121"}}),
         json!({"udp": {"bind_addr": "[::1]:2121"}}),

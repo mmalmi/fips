@@ -4,7 +4,7 @@ use cashu_service::{
     create_topup_quote, load_mint_balance, load_wallet_overview,
     simulation::{IssuerMode, LocalMint, PaymentNetwork, VirtualClock},
 };
-use fips_core::config::{TcpConfig, TransportInstances, UdpConfig};
+use fips_core::config::{TcpConfig, TransportInstances, UdpConfig, WebSocketConfig};
 use fips_relay::service::{RelayService, native_request};
 use serde_json::json;
 use std::{
@@ -25,7 +25,7 @@ fn network() -> PaymentNetwork {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn named_udp_tcp_and_outbound_only_tcp_all_start() {
+async fn named_udp_tcp_websocket_and_outbound_only_tcp_all_start() {
     healthy_transports_start().await;
 }
 
@@ -45,6 +45,8 @@ async fn healthy_transports_start() {
         )
         .await
         .unwrap();
+        let websocket = TcpListener::bind("127.0.0.1:0").unwrap();
+        let websocket_address = websocket.local_addr().unwrap();
         let mut config = process_support::config(root.path(), mint.url());
         config.transports.udp = TransportInstances::Named(HashMap::from([(
             "local".into(),
@@ -63,6 +65,14 @@ async fn healthy_transports_start() {
             ),
             ("outbound".into(), TcpConfig::default()),
         ]));
+        config.transports.websocket = TransportInstances::Named(HashMap::from([(
+            "websocket-listener".into(),
+            WebSocketConfig {
+                bind_addr: Some(websocket_address.to_string()),
+                ..Default::default()
+            },
+        )]));
+        drop(websocket);
         RelayService::initialize(config.clone()).await.unwrap();
         for _ in 0..2 {
             let service = RelayService::load(config.clone()).await.unwrap();
@@ -70,8 +80,22 @@ async fn healthy_transports_start() {
                 .await
                 .unwrap();
             let rows = report["data"]["transports"].as_array().unwrap();
-            assert_eq!(rows.len(), 3);
+            assert_eq!(rows.len(), 4);
             assert!(rows.iter().all(|row| row["state"] == "up"));
+            let mut instances: Vec<_> = rows
+                .iter()
+                .map(|row| (row["type"].as_str().unwrap(), row["name"].as_str().unwrap()))
+                .collect();
+            instances.sort_unstable();
+            assert_eq!(
+                instances,
+                vec![
+                    ("tcp", "listener"),
+                    ("tcp", "outbound"),
+                    ("udp", "local"),
+                    ("websocket", "websocket-listener"),
+                ]
+            );
             let outbound = rows.iter().find(|row| row["name"] == "outbound").unwrap();
             assert_eq!(outbound["type"], "tcp");
             assert!(
@@ -80,6 +104,9 @@ async fn healthy_transports_start() {
             );
             service.shutdown().await.unwrap();
             assert!(!config.state_directory.join("native.sock").exists());
+            let released = TcpListener::bind(websocket_address)
+                .expect("shutdown releases the native WebSocket listener before reload");
+            assert_eq!(released.local_addr().unwrap(), websocket_address);
         }
         assert_eq!(
             load_mint_balance(&config.state_directory.join("wallet"), mint.url())
@@ -95,6 +122,15 @@ async fn healthy_transports_start() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn failed_tcp_bind_rejects_service_and_releases_started_udp_without_spending() {
+    failed_stream_bind_rejects_without_spending(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failed_websocket_bind_rejects_service_and_releases_started_udp_without_spending() {
+    failed_stream_bind_rejects_without_spending(true).await;
+}
+
+async fn failed_stream_bind_rejects_without_spending(websocket: bool) {
     tokio::time::timeout(Duration::from_secs(30), async {
         let root = tempfile::tempdir().unwrap();
         let network = network();
@@ -117,13 +153,24 @@ async fn failed_tcp_bind_rejects_service_and_releases_started_udp_without_spendi
                 ..Default::default()
             },
         )]));
-        config.transports.tcp = TransportInstances::Named(HashMap::from([(
-            "occupied".into(),
-            TcpConfig {
-                bind_addr: Some(occupied.local_addr().unwrap().to_string()),
-                ..Default::default()
-            },
-        )]));
+        let bind_addr = Some(occupied.local_addr().unwrap().to_string());
+        if websocket {
+            config.transports.websocket = TransportInstances::Named(HashMap::from([(
+                "occupied".into(),
+                WebSocketConfig {
+                    bind_addr,
+                    ..Default::default()
+                },
+            )]));
+        } else {
+            config.transports.tcp = TransportInstances::Named(HashMap::from([(
+                "occupied".into(),
+                TcpConfig {
+                    bind_addr,
+                    ..Default::default()
+                },
+            )]));
+        }
         // Initialization intentionally uses only its private loopback adapter;
         // deployment checks must happen when the real transports are started.
         RelayService::initialize(config.clone()).await.unwrap();
@@ -161,7 +208,7 @@ async fn failed_tcp_bind_rejects_service_and_releases_started_udp_without_spendi
             Err(error) => error,
             Ok(service) => {
                 service.shutdown().await.unwrap();
-                panic!("a healthy UDP adapter must not mask an occupied TCP listener");
+                panic!("a healthy UDP adapter must not mask an occupied stream listener");
             }
         };
         assert!(
