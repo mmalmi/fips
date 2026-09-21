@@ -562,7 +562,60 @@ async fn collect(bench: Bench, final_accounts: &[Account], credited: &BTreeMap<S
     );
     let mut expected_balances = vec![256u64; bench.wallets.len()];
     for (i, controller) in bench.controllers.iter().enumerate() {
-        let reports = controller.settle_all().await.unwrap();
+        let before: Vec<_> = bench
+            .services
+            .iter()
+            .map(|service| service.acceptance.statistics().snapshot())
+            .collect();
+        let reports = match controller.settle_all().await {
+            Ok(reports) => reports,
+            Err(error) => {
+                let after: Vec<_> = bench
+                    .services
+                    .iter()
+                    .map(|service| service.acceptance.statistics().snapshot())
+                    .collect();
+                eprintln!(
+                    "mesh settlement node={i}: {error}; control_before={before:?} control_after={after:?}"
+                );
+                let saved: Value = serde_json::from_slice(
+                    &std::fs::read(
+                        bench
+                            .root
+                            .path()
+                            .join(format!("controller-{i}/controller.json")),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+                for (id, settlement) in saved["buyer_settlements"]
+                    .as_object()
+                    .unwrap()
+                    .iter()
+                    .take(2)
+                {
+                    eprintln!(
+                        "mesh settlement node={i} channel={id} usage={} payment={} report={} released={} refunded={}",
+                        !settlement["usage"].is_null(),
+                        !settlement["payment"].is_null(),
+                        !settlement["report"].is_null(),
+                        settlement["released"],
+                        settlement["refunded"]
+                    );
+                }
+                for node in
+                    (0..bench.nodes.len()).filter(|&node| node == i || adjacent(i, node, true))
+                {
+                    for command in ["show_peers", "show_sessions", "show_connections"] {
+                        eprintln!(
+                            "mesh settlement source={i} node={node} command={command}: {}",
+                            native_query(bench.root.path(), node, command).await
+                        );
+                    }
+                }
+                panic!("mesh settlement node={i}: {error}");
+            }
+        };
         let expected: std::collections::BTreeSet<_> = final_accounts[i]
             .funding
             .values()

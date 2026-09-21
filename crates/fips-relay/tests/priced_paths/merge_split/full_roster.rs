@@ -4,6 +4,8 @@ use super::*;
 #[path = "full_roster/local_traffic.rs"]
 mod local_traffic;
 use local_traffic::LocalTraffic;
+#[path = "full_roster/repeated.rs"]
+mod repeated;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn full_rosters_form_a_paid_bridge_without_forced_departure() {
@@ -135,8 +137,22 @@ async fn exercise() {
     retain(&anchor, &accounts(&bench).await, true);
     assert_watches(&bench).await;
 
-    // Cleanup may restore reachability for settlement, but its result is never
-    // counted as automatic admission. Save `automatic` before any departure.
+    collect_crowded(bench, observer, &anchor, candidates).await;
+    assert!(
+        automatic,
+        "full native rosters made no automatic paid bridge within 60s; all test money collected"
+    );
+}
+
+async fn collect_crowded(
+    bench: Bench,
+    mut observer: Observer,
+    anchor: &[Account],
+    candidates: Vec<Candidate>,
+) {
+    // Restore reachability only after recording acceptance. Candidate departures
+    // during collection cannot count as automatic admission or bridge recovery.
+    bench.network.set_link_up("2", "3", true);
     for candidate in &candidates {
         bench
             .network
@@ -146,7 +162,7 @@ async fn exercise() {
         .during(converge(&bench, true, "full-roster settlement cleanup"))
         .await;
     let paid = observer.during(payments(&bench)).await;
-    retain(&anchor, &accounts(&bench).await, true);
+    retain(anchor, &accounts(&bench).await, true);
     assert_watches(&bench).await;
     for candidate in candidates {
         candidate.endpoint.shutdown().await.unwrap();
@@ -156,9 +172,5 @@ async fn exercise() {
         "full-roster encounter: {} native samples; maxima {:?}",
         observer.samples, observer.maxima
     );
-    Box::pin(collect(bench, &anchor, &paid)).await;
-    assert!(
-        automatic,
-        "full native rosters made no automatic paid bridge within 60s; all test money collected"
-    );
+    Box::pin(collect(bench, anchor, &paid)).await;
 }

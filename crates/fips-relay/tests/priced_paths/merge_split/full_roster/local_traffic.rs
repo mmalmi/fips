@@ -1,11 +1,12 @@
 //! Independently offered local demand during slow cross-mesh/payment checks.
 use super::*;
+use fips_core::endpoint::ServiceCarrierDiagnostics;
 use fips_core::{FipsEndpointServiceDatagram, FipsEndpointServiceReceiver};
 use std::sync::Mutex;
 use tokio::{sync::oneshot, task::JoinHandle};
 
 const PORT: u16 = 44_749;
-const MAX_PACKETS: usize = 128;
+const MAX_PACKETS: usize = 256;
 const MAX_GAP_MS: u64 = 5_000; // Below the fixture's 10-second idle threshold.
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -29,12 +30,18 @@ struct Progress {
 pub(super) struct LocalTraffic {
     start: Instant,
     progress: Arc<Mutex<Progress>>,
+    carriers: [ServiceCarrierDiagnostics; 2],
     stop: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<()>>,
 }
 
 impl LocalTraffic {
     pub(super) async fn start(bench: &Bench) -> Self {
+        Self::with_payload_len(bench, 900).await
+    }
+
+    pub(super) async fn with_payload_len(bench: &Bench, payload_len: usize) -> Self {
+        assert!((2..=900).contains(&payload_len));
         let receivers = [
             bench.nodes[2]
                 .register_service_receiver(PORT)
@@ -46,26 +53,75 @@ impl LocalTraffic {
                 .unwrap(),
         ];
         let nodes = [bench.nodes[0].clone(), bench.nodes[5].clone()];
-        let sources = [bench.peers[0], bench.peers[5]];
-        let destinations = [bench.peers[2], bench.peers[3]];
+        let carriers = nodes
+            .each_ref()
+            .map(|node| node.enable_service_carrier_diagnostics(PORT).unwrap());
+        let peers = [
+            (bench.peers[0], bench.peers[2]),
+            (bench.peers[5], bench.peers[3]),
+        ];
         let progress = Arc::new(Mutex::new(Progress::default()));
         let (stop, stopped) = oneshot::channel();
         let start = Instant::now();
         let task = tokio::spawn(run(
             nodes,
-            sources,
-            destinations,
+            peers,
             receivers,
             progress.clone(),
             start,
+            payload_len,
             stopped,
         ));
         Self {
             start,
             progress,
+            carriers,
             stop: Some(stop),
             task: Some(task),
         }
+    }
+
+    /// Non-atomic observations of application demand and successful local
+    /// transport submissions. Carrier counts do not prove remote delivery;
+    /// discarded outputs exclude failures before sealing.
+    pub(super) fn snapshot(&self) -> Value {
+        let before_ms = self.start.elapsed().as_millis();
+        let (streams, error) = {
+            let progress = self.progress.lock().unwrap();
+            (progress.streams, progress.error.clone())
+        };
+        let streams: Vec<_> = streams
+            .into_iter()
+            .zip(&self.carriers)
+            .zip([(0, 2), (5, 3)])
+            .map(|((counts, handle), (source, destination))| {
+                let carrier = handle.snapshot();
+                let transports: Vec<_> = carrier
+                    .transports
+                    .into_iter()
+                    .filter(|transport| {
+                        transport.submitted_packets > 0 || transport.fips_payload_bytes > 0
+                    })
+                    .collect();
+                serde_json::json!({
+                    "source": source,
+                    "destination": destination,
+                    "offered": counts.offered,
+                    "submitted": counts.submitted,
+                    "received": counts.delivered,
+                    "duplicates": counts.duplicates,
+                    "discarded_outputs": carrier.discarded_outputs,
+                    "ambiguous_port_datagrams": carrier.ambiguous_port_datagrams,
+                    "transports": transports,
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "service_port": PORT,
+            "observation_ms": [before_ms, self.start.elapsed().as_millis()],
+            "streams": streams,
+            "error": error,
+        })
     }
 
     pub(super) fn failure(&self) -> Option<String> {
@@ -94,32 +150,41 @@ impl LocalTraffic {
         None
     }
 
-    pub(super) fn check(&self) {
-        let failure = self.failure();
-        assert!(failure.is_none(), "{}", failure.unwrap_or_default());
+    pub(super) async fn stop(self) {
+        self.finish().await.unwrap();
     }
 
-    pub(super) async fn stop(mut self) {
+    pub(super) async fn finish(mut self) -> Result<(), String> {
         let _ = self.stop.take().unwrap().send(());
         let task = self.task.as_mut().unwrap();
         match tokio::time::timeout(Duration::from_secs(3), &mut *task).await {
-            Ok(result) => result.expect("local demand pump task"),
+            Ok(result) => result.map_err(|error| format!("local demand pump task: {error}"))?,
             Err(_) => {
                 task.abort();
                 let _ = task.await;
-                panic!("local demand pump did not stop within its bounded drain");
+                return Err("local demand pump did not stop within its bounded drain".into());
             }
         }
         self.task.take();
-        self.check();
+        let failure = self.failure();
+        eprintln!("full-roster local carrier diagnostics: {}", self.snapshot());
         let progress = self.progress.lock().unwrap();
         eprintln!(
             "full-roster independent local demand: elapsed_ms={} {progress:?}",
             self.start.elapsed().as_millis()
         );
-        assert!(progress.streams.iter().all(|stream| stream.offered > 0
-            && stream.offered == stream.submitted
-            && stream.delivered > 0));
+        if let Some(failure) = failure {
+            return Err(failure);
+        }
+        if !progress.streams.iter().all(|stream| {
+            stream.offered > 0
+                && stream.offered == stream.submitted
+                && stream.duplicates == 0
+                && stream.delivered > 0
+        }) {
+            return Err(format!("invalid local demand counts: {progress:?}"));
+        }
+        Ok(())
     }
 }
 
@@ -146,6 +211,7 @@ fn record(
     seen: &mut [bool; MAX_PACKETS],
     progress: &Mutex<Progress>,
     start: Instant,
+    payload_len: usize,
 ) {
     for message in batch.drain(..) {
         let bytes = message.data.as_slice();
@@ -154,7 +220,7 @@ fn record(
             .map_or(MAX_PACKETS, |value| usize::from(*value));
         let mut progress = progress.lock().unwrap();
         if message.source_peer.node_addr() != source.node_addr()
-            || bytes.len() != 900
+            || bytes.len() != payload_len
             || bytes[1..].iter().any(|&byte| byte != 210 + direction as u8)
             || seq >= progress.streams[direction].offered
         {
@@ -180,11 +246,11 @@ fn record(
 
 async fn run(
     nodes: [Arc<FipsEndpoint>; 2],
-    sources: [PeerIdentity; 2],
-    destinations: [PeerIdentity; 2],
+    peers: [(PeerIdentity, PeerIdentity); 2],
     receivers: [FipsEndpointServiceReceiver; 2],
     progress: Arc<Mutex<Progress>>,
     start: Instant,
+    payload_len: usize,
     mut stop: oneshot::Receiver<()>,
 ) {
     let mut tick = tokio::time::interval(Duration::from_secs(1));
@@ -199,14 +265,14 @@ async fn run(
             _ = &mut stop, if draining.is_none() => {
                 draining = Some(Instant::now() + Duration::from_secs(1));
             }
-            _ = tokio::time::sleep_until(draining.unwrap_or(start + Duration::from_secs(130))) => break,
+            _ = tokio::time::sleep_until(draining.unwrap_or(start + Duration::from_secs(MAX_PACKETS as u64 + 2))) => break,
             _ = tick.tick(), if draining.is_none() => {
                 if next == MAX_PACKETS {
                     progress.lock().unwrap().error = Some("finite local workload exhausted".into());
                     break;
                 }
                 for direction in 0..2 {
-                    let mut payload = vec![210 + direction as u8; 900];
+                    let mut payload = vec![210 + direction as u8; payload_len];
                     payload[0] = next as u8;
                     {
                         let mut progress = progress.lock().unwrap();
@@ -218,7 +284,7 @@ async fn run(
                         stream.offered += 1;
                     }
                     let submitted = tokio::time::timeout(Duration::from_millis(500),
-                        nodes[direction].send_datagram(destinations[direction], PORT, PORT, payload)).await;
+                        nodes[direction].send_datagram(peers[direction].1, PORT, PORT, payload)).await;
                     let mut progress = progress.lock().unwrap();
                     match submitted {
                         Ok(Ok(())) => progress.streams[direction].submitted += 1,
@@ -235,14 +301,14 @@ async fn run(
                     progress.lock().unwrap().error = Some("local receiver 0 closed".into());
                     break;
                 }
-                record(left, sources[0], 0, &mut seen[0], &progress, start);
+                record(left, peers[0].0, 0, &mut seen[0], &progress, start, payload_len);
             }
             result = receivers[1].recv_batch_into(right, 64) => {
                 if result.is_none() {
                     progress.lock().unwrap().error = Some("local receiver 1 closed".into());
                     break;
                 }
-                record(right, sources[1], 1, &mut seen[1], &progress, start);
+                record(right, peers[1].0, 1, &mut seen[1], &progress, start, payload_len);
             }
         }
     }
@@ -328,7 +394,7 @@ pub(super) async fn capture_failure(
         });
         eprintln!("full-roster failure node=0 purchase={summary}");
     }
-    for (node, gate) in gates.iter().enumerate().take(3) {
+    for (node, gate) in gates.iter().enumerate().take(6) {
         eprintln!(
             "full-roster failure node={node} refused={} dropped={}",
             gate.refused.load(Ordering::Relaxed),
@@ -337,6 +403,7 @@ pub(super) async fn capture_failure(
         for command in [
             "show_tree",
             "show_peers",
+            "show_connections",
             "show_sessions",
             "show_cache",
             "show_routing",
@@ -384,10 +451,38 @@ pub(super) async fn capture_failure(
                                 "authenticated_at_ms",
                                 "tree_announce_pending",
                                 "last_tree_announce_sent_ms",
+                                "stats",
+                                "noise",
+                                "replay_suppressed",
+                                "consecutive_decrypt_failures",
+                                "our_session_index",
+                                "current_k_bit",
+                                "rekey_in_progress",
+                                "rekey_draining",
+                                "mmp",
                             ],
                         );
                         selected["srtt_ms"] = peer["mmp"]["srtt_ms"].clone();
                         selected
+                    })
+                    .collect(),
+                "show_connections" => value["connections"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .take(4)
+                    .map(|connection| {
+                        fields(
+                            connection,
+                            &[
+                                "link_id",
+                                "direction",
+                                "handshake_state",
+                                "started_at_ms",
+                                "idle_ms",
+                                "expected_peer",
+                            ],
+                        )
                     })
                     .collect(),
                 "show_sessions" => value["sessions"]
@@ -395,12 +490,12 @@ pub(super) async fn capture_failure(
                     .unwrap()
                     .iter()
                     .filter(|session| {
-                        identities[..3].iter().any(|peer| {
+                        identities.iter().any(|peer| {
                             session["remote_addr"].as_str()
                                 == Some(peer.node_addr().to_string().as_str())
                         })
                     })
-                    .take(3)
+                    .take(6)
                     .map(|session| {
                         let mut selected = fields(
                             session,
@@ -423,15 +518,24 @@ pub(super) async fn capture_failure(
                     .unwrap()
                     .iter()
                     .filter(|entry| {
-                        identities[..3].iter().any(|peer| {
+                        identities.iter().any(|peer| {
                             entry["node_addr"].as_str()
                                 == Some(peer.node_addr().to_string().as_str())
                         })
                     })
-                    .take(3)
+                    .take(6)
                     .map(|entry| fields(entry, &["node_addr", "coords"]))
                     .collect(),
-                "show_routing" => fields(&value, &["forwarding", "error_signals"]),
+                "show_routing" => fields(
+                    &value,
+                    &[
+                        "forwarding",
+                        "error_signals",
+                        "pending_lookups",
+                        "pending_tun_packets",
+                        "learned_routes",
+                    ],
+                ),
                 _ => unreachable!(),
             };
             eprintln!(
