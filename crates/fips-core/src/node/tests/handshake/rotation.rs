@@ -1,6 +1,10 @@
 use super::*;
 use crate::config::{NeighborRotationConfig, PeerConfig};
 
+#[cfg(feature = "sim-transport")]
+#[path = "candidates/rotation/rendezvous.rs"]
+mod rendezvous;
+
 #[path = "rotation_carrier.rs"]
 mod rotation_carrier;
 
@@ -15,6 +19,9 @@ mod rotation_starvation;
 
 #[path = "rotation_overlap.rs"]
 mod rotation_overlap;
+
+#[path = "rotation_transfer.rs"]
+mod rotation_transfer;
 
 fn enable(node: &mut TestNode, peers: usize) {
     node.node.config.node.neighbor_rotation = Some(NeighborRotationConfig {

@@ -3,6 +3,7 @@
 use super::{LinkId, Node, NodeAddr, TransportAddr, TransportId};
 
 mod carrier;
+mod incoming;
 
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod benchmark;
@@ -144,17 +145,8 @@ impl Node {
         outbound: bool,
         now_ms: u64,
     ) -> Option<&'static str> {
-        let Some(config) = self.config.node.neighbor_rotation.as_ref() else {
-            return Some("rotation disabled");
-        };
-        if !self.neighbor_roster_full() || self.peers.contains_key(peer) || peer == self.node_addr()
-        {
-            return Some("not a new full-roster neighbor");
-        }
-        if self.neighbor_rotation.displaced.is_some_and(|(old, at)| {
-            old == *peer && now_ms.saturating_sub(at) < config.idle_secs.saturating_mul(1000)
-        }) {
-            return Some("recently displaced neighbor");
+        if let Some(reason) = self.rotation_new_peer_rejection(peer, now_ms) {
+            return Some(reason);
         }
         if self.rotation_has_pending_candidate() {
             let Some(attempt) = &self.neighbor_rotation.attempt else {
@@ -188,6 +180,22 @@ impl Node {
         self.rotation_victim(now_ms)
             .is_none()
             .then_some("no eligible idle neighbor")
+    }
+
+    fn rotation_new_peer_rejection(&self, peer: &NodeAddr, now_ms: u64) -> Option<&'static str> {
+        let Some(config) = self.config.node.neighbor_rotation.as_ref() else {
+            return Some("rotation disabled");
+        };
+        if !self.neighbor_roster_full() || self.peers.contains_key(peer) || peer == self.node_addr()
+        {
+            return Some("not a new full-roster neighbor");
+        }
+        self.neighbor_rotation
+            .displaced
+            .is_some_and(|(old, at)| {
+                old == *peer && now_ms.saturating_sub(at) < config.idle_secs.saturating_mul(1000)
+            })
+            .then_some("recently displaced neighbor")
     }
 
     fn observe_neighbor_rotation_rejection(

@@ -414,7 +414,7 @@ impl Node {
             });
             if !is_known_active
                 && !is_pending_identity
-                && !self.can_attempt_neighbor_rotation(&peer_node_addr, false, Self::now_ms())
+                && !self.can_receive_neighbor_rotation(&peer_node_addr, Self::now_ms())
             {
                 debug!(
                     peer = %self.peer_display_name(&peer_node_addr),
@@ -816,7 +816,13 @@ impl Node {
         if self.config.node.neighbor_rotation.is_some()
             && self.neighbor_roster_full()
             && !self.peers.contains_key(&peer_node_addr)
-            && !self.begin_neighbor_rotation(peer_node_addr, false, Self::now_ms())
+            && !self
+                .begin_inbound_neighbor_rotation(
+                    peer_node_addr,
+                    packet.transport_id,
+                    &packet.remote_addr,
+                )
+                .await
         {
             self.close_unowned_handshake_carrier(packet.transport_id, &packet.remote_addr)
                 .await;
@@ -827,6 +833,7 @@ impl Node {
             .get(&peer_node_addr)
             .is_some_and(|p| p.has_session())
             || self.neighbor_rotation_awaits_confirmation(&peer_node_addr);
+        let rotation_started_at = self.neighbor_rotation_started_at(&peer_node_addr);
         self.reclaim_crossed_rotation_dial(
             &peer_node_addr,
             packet.transport_id,
@@ -893,7 +900,11 @@ impl Node {
             // request on this same carrier is authenticated before replacing it.
             if let Some(conn) = self.peers.get_connection_mut(&link_id) {
                 conn.set_handshake_msg1(packet.data.as_slice().to_vec(), 0);
-                conn.touch(restarted_activity.unwrap_or_else(Self::now_ms));
+                conn.touch(
+                    restarted_activity
+                        .or(rotation_started_at)
+                        .unwrap_or_else(Self::now_ms),
+                );
             }
             if let Some(transport) = self.transports.get(&packet.transport_id)
                 && let Err(error) = transport.send(&packet.remote_addr, &wire_msg2).await
@@ -947,10 +958,8 @@ impl Node {
     /// Close the losing logical connection's physical carrier unless the
     /// winning logical connection uses that exact carrier too.
     ///
-    /// TCP cross-connections own distinct sockets, while WebRTC can carry both
-    /// simultaneous Noise handshakes over one authenticated data channel. In
-    /// the latter case, closing the logical loser must not tear down the
-    /// physical winner.
+    /// TCP cross-connections own distinct sockets; WebRTC can carry both Noise
+    /// handshakes on one data channel, which must survive the loser's removal.
     pub(in crate::node) async fn close_cross_connection_loser_physical_path(
         &self,
         loser_link_id: LinkId,

@@ -172,6 +172,11 @@ impl TcpTransport {
         &self.stats
     }
 
+    #[cfg(test)]
+    pub(crate) async fn test_pool_guard(&self) -> impl Send + use<> {
+        self.pool.clone().lock_owned().await
+    }
+
     /// Start the transport asynchronously.
     ///
     /// If `bind_addr` is configured, binds a TCP listener and spawns

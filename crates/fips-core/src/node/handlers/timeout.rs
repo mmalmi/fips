@@ -214,20 +214,11 @@ impl Node {
             crate::transport::TransportAddr,
         )>,
     ) {
-        self.unregister_handshake_candidate(link_id);
-        let conn = match self.peers.remove_connection(&link_id) {
+        let conn = match self.peers.get_connection(&link_id) {
             Some(c) => c,
             None => return,
         };
         let transport_id = conn.transport_id();
-
-        // Free session index and pending_outbound if allocated
-        if let Some(idx) = conn.our_index() {
-            if let Some(tid) = conn.transport_id() {
-                self.pending_outbound.remove(&(tid, idx.as_u32()));
-            }
-            let _ = self.index_allocator.free(idx);
-        }
 
         // A candidate can share the current carrier. Expiring its keys must
         // neither close that carrier nor remove its active address dispatch.
@@ -246,6 +237,16 @@ impl Node {
         if !retains_carrier {
             self.close_cross_connection_loser_physical_path(link_id, winner)
                 .await;
+        }
+        // Physical close can yield. Keep native ownership until it completes
+        // so cancellation cannot leave a link whose handshake/index is gone.
+        self.unregister_handshake_candidate(link_id);
+        let conn = self.peers.remove_connection(&link_id).unwrap();
+        if let Some(idx) = conn.our_index() {
+            if let Some(tid) = conn.transport_id() {
+                self.pending_outbound.remove(&(tid, idx.as_u32()));
+            }
+            let _ = self.index_allocator.free(idx);
         }
         self.remove_link(&link_id);
         if let Some(winner) = winner {
