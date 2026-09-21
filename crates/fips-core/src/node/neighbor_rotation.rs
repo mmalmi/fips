@@ -4,6 +4,9 @@ use super::{LinkId, Node, NodeAddr, TransportAddr, TransportId};
 
 mod carrier;
 
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod benchmark;
+
 #[derive(Default)]
 pub(super) struct NeighborRotation {
     attempt: Option<Attempt>,
@@ -41,13 +44,23 @@ impl Node {
             return None;
         }
         let idle_ms = config.idle_secs.saturating_mul(1000);
-        self.peers
+        let mut candidates: Vec<_> = self
+            .peers
             .values()
             .filter(|peer| {
-                let addr = peer.node_addr();
                 !self.is_configured_peer_identity(peer.identity())
                     && now_ms.saturating_sub(peer.authenticated_at()) >= idle_ms
-                    && !self.peer_has_application_demand(addr, now_ms, idle_ms)
+                    && !peer.has_recent_transit_demand(now_ms, idle_ms)
+            })
+            .collect();
+        candidates.sort_unstable_by_key(|peer| (peer.authenticated_at(), *peer.node_addr()));
+        // Inspect demand in victim order. Once the oldest eligible peer is
+        // found, younger peers cannot change this decision.
+        candidates
+            .into_iter()
+            .find(|peer| {
+                let addr = peer.node_addr();
+                !self.peer_has_application_demand(addr, now_ms, idle_ms)
                     && !self.peers.connection_values().any(|conn| {
                         conn.expected_identity()
                             .is_some_and(|id| id.node_addr() == addr)
@@ -57,7 +70,6 @@ impl Node {
                         .iter()
                         .any(|p| p.peer_identity.node_addr() == addr)
             })
-            .min_by_key(|peer| (peer.authenticated_at(), *peer.node_addr()))
             .map(|peer| *peer.node_addr())
     }
 
@@ -105,28 +117,34 @@ impl Node {
             || self.neighbor_rotation.displaced.is_some_and(|(old, at)| {
                 old == *peer && now_ms.saturating_sub(at) < config.idle_secs.saturating_mul(1000)
             })
-            || self.rotation_victim(now_ms).is_none()
         {
             return false;
         }
-        if !self.rotation_has_pending_candidate() {
-            return now_ms >= self.neighbor_rotation.next_attempt_ms;
-        }
-        let Some(attempt) = &self.neighbor_rotation.attempt else {
+        if self.rotation_has_pending_candidate() {
+            let Some(attempt) = &self.neighbor_rotation.attempt else {
+                return false;
+            };
+            if attempt.peer != *peer
+                || !self.rotation_attempt_is_fresh(attempt, now_ms)
+                || self.peers.connection_values().any(|conn| {
+                    conn.expected_identity().is_some_and(|id| {
+                        !self.peers.contains_key(id.node_addr())
+                            && (id.node_addr() != peer || conn.is_outbound() == outbound)
+                    })
+                })
+                || self.pending_connects.iter().any(|pending| {
+                    !self.peers.contains_key(pending.peer_identity.node_addr())
+                        && (pending.peer_identity.node_addr() != peer || outbound)
+                })
+            {
+                return false;
+            }
+        } else if now_ms < self.neighbor_rotation.next_attempt_ms {
             return false;
-        };
-        if attempt.peer != *peer || !self.rotation_attempt_is_fresh(attempt, now_ms) {
-            return false;
         }
-        !self.peers.connection_values().any(|conn| {
-            conn.expected_identity().is_some_and(|id| {
-                !self.peers.contains_key(id.node_addr())
-                    && (id.node_addr() != peer || conn.is_outbound() == outbound)
-            })
-        }) && !self.pending_connects.iter().any(|pending| {
-            !self.peers.contains_key(pending.peer_identity.node_addr())
-                && (pending.peer_identity.node_addr() != peer || outbound)
-        })
+        // Cooldown and candidate ownership can reject without walking every
+        // neighbor's session activity. Demand is still fresh on allowed paths.
+        self.rotation_victim(now_ms).is_some()
     }
 
     pub(in crate::node) fn begin_neighbor_rotation(

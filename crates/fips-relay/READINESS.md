@@ -1695,8 +1695,54 @@ TCP pool release and remote EOF before shutdown, fresh traffic on the replacemen
 and an exact prepared replacement surviving elapsed time during carrier cleanup.
 This simulation does not establish physical roaming, channel coordination,
 subsecond handover, Sybil fairness or general topology preservation. Idle-neighbor
-selection scans existing bounded session and demand state; CPU cost has not been
-benchmarked for large rosters. Current hardware evidence predates this policy.
+selection scans existing bounded session and demand state. Admission-query CPU
+measurements follow below; current hardware evidence predates this policy.
+
+An explicit release-build microbenchmark measures the production admission query
+over populated native peer and FSP-owner metadata (2026-09-21). It covers 23
+combinations of 2/8/32/128 neighbors, 0/64/256/1,024 session owners, idle demand,
+recent received data, recent admitted transit, cooldown, another pending candidate,
+and disabled rotation. Each sample queries 64 distinct candidates at a fixed policy
+time; seven samples follow repetition calibration. Every sample checks the same
+expected admission decisions and unchanged peer count. Thread CPU and wall time
+are separate; the values below are median CPU per query on aarch64 macOS with
+Rust 1.96.0. Repetition counts and maximum sample costs are emitted with each row.
+
+| State | Neighbors / sessions | Before | After |
+|---|---:|---:|---:|
+| Idle learned peers | 8 / 64 | 16.455 µs | 2.253 µs |
+| Idle learned peers | 128 / 1,024 | 4,365.054 µs | 36.698 µs |
+| Cooldown rejection | 128 / 1,024 | 4,328.953 µs | < 1 µs |
+| Unrelated pending candidate | 128 / 1,024 | 4,314.257 µs | < 1 µs |
+| All protected by recent transit | 128 / 1,024 | 1.734 µs | 0.169 µs |
+| All protected by recent received data | 128 / 1,024 | 187.684 µs | 190.565 µs |
+
+Cheap cooldown/candidate checks now precede session scans. Victim metadata is
+ordered by the existing age/identity key, then demand is checked only until the
+first eligible victim is found. Recent transit excludes peers before sorting.
+This keeps the exact victim choice and fresh promotion validation without caching
+demand across calls. The large idle case uses about 99% less query CPU. The
+RX-only protected cases are slightly slower: 0.721 to 0.833 µs at 8/64 and 9.534
+to 10.673 µs at 32/256. This is not a claim of improvement for every workload.
+
+These measurements exclude state construction, cryptographic authentication,
+discovery enumeration, real slot reservation, packet forwarding and payments.
+They do not predict OpenWrt throughput, whole-node CPU or physical mobility.
+The session metadata is populated through native APIs; no live traffic is driven
+during a timed sample. Very cheap cases can reach the repetition cap before the
+ten-millisecond calibration target. Run explicitly with `cargo test
+-p nvpn-fips-core --features sim-transport --release --lib
+node::neighbor_rotation::benchmark::admission_cpu_by_roster_and_session_count
+-- --ignored --exact --test-threads=1 --nocapture`, using the workspace's
+development dependency overrides where required.
+
+After the optimization, all 54 native handshake, two discovery and five local/
+transit-demand tests pass. The paid full-roster case again preserves the original
+local link epochs and eight channels: 32/32 independent local packets arrive in
+each direction, fresh cross-component delivery and credit complete at 31.245 s,
+and all 1,536 test sats are collected. This is a functional regression result;
+the difference from the previous encounter time is not an established latency
+improvement.
 
 The admission audit reproduced a fresh inbound identity bypassing connection/link
 limits when peer slots remained. The gate now applies before index/link allocation,
