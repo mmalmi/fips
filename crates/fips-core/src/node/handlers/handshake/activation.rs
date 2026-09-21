@@ -1,6 +1,31 @@
 use super::*;
 
 impl Node {
+    /// An authenticated destination needs no lookup before first contact.
+    /// Keep explicitly selected carriers and existing session recovery intact.
+    pub(super) async fn resume_queued_direct_session(&mut self, destination: &NodeAddr) {
+        if !self.pending_session_traffic.has_traffic_for(destination)
+            || self.sessions.contains_key(destination)
+        {
+            return;
+        }
+        let Some(peer) = self
+            .find_next_hop(destination)
+            .filter(|peer| peer.node_addr() == destination)
+        else {
+            return;
+        };
+        let public_key = peer.identity().pubkey_full();
+        if let Err(error) = self.initiate_session(*destination, public_key).await {
+            debug!(peer = %destination, %error, "Queued direct session initiation failed");
+        }
+        // A failed/uncertain first send may still own an initiating generation.
+        // Its existing retransmission and timeout lifecycle now owns the queue.
+        if self.sessions.contains_key(destination) {
+            self.pending_lookups.remove(destination);
+        }
+    }
+
     /// Transfer only the winning session's pending traffic before any active
     /// send or replay. Fresh peers already own the connection's link totals;
     /// replacing an existing session must add those physical writes once.
@@ -65,3 +90,6 @@ impl Node {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

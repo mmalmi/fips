@@ -904,6 +904,7 @@ impl Node {
         self.bloom_state.mark_update_needed(*node_addr);
         self.reset_discovery_backoff();
         self.schedule_local_rendezvous_after_peer_authenticated(node_addr);
+        self.resume_queued_direct_session(node_addr).await;
     }
 
     /// Find stored msg2 bytes for a given link (pre- or post-promotion).

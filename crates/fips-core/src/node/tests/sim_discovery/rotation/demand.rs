@@ -9,6 +9,12 @@ use crate::node::wire::Msg1Header;
 use futures::FutureExt;
 use std::panic::AssertUnwindSafe;
 
+#[path = "demand_timing.rs"]
+mod timing;
+
+#[path = "demand_incoming.rs"]
+mod incoming;
+
 const ADDRESSES: [&str; 5] = [
     "local",
     "incumbent",
@@ -24,6 +30,8 @@ enum Case {
     Tun,
     Fairness,
     Measurement,
+    EndpointEventsOnly,
+    TunEventsOnly,
 }
 
 #[test]
@@ -44,6 +52,37 @@ fn unresponsive_demand_alternates_with_advancing_cursor_attempts() {
 #[test]
 fn measure_original_queued_delivery_with_up_to_three_candidate_admissions() {
     run(Case::Measurement);
+}
+
+#[test]
+fn authenticated_direct_endpoint_delivers_without_periodic_maintenance() {
+    run(Case::EndpointEventsOnly);
+}
+
+#[test]
+fn authenticated_direct_tun_delivers_without_periodic_maintenance() {
+    run(Case::TunEventsOnly);
+}
+
+/// Real ingress and queued crypto/control completions only. In particular no
+/// Bloom, lookup, session retry, tree or discovery timer rescues the original.
+async fn events_only(nodes: &mut [TestNode], ledger: Option<&mut timing::Ledger>) {
+    process_available_packets(nodes).await;
+    if let Some(ledger) = ledger {
+        ledger.observe(nodes, "packet_completion_events_only");
+    }
+    assert_inventory(nodes);
+}
+
+fn reciprocal_direct(nodes: &[TestNode], destination: usize) -> bool {
+    let Some(source_peer) = nodes[0].node.get_peer(nodes[destination].node.node_addr()) else {
+        return false;
+    };
+    let Some(destination_peer) = nodes[destination].node.get_peer(nodes[0].node.node_addr()) else {
+        return false;
+    };
+    source_peer.our_index() == destination_peer.their_index()
+        && source_peer.their_index() == destination_peer.our_index()
 }
 
 fn run(case: Case) {
@@ -100,32 +139,58 @@ fn assert_inventory(nodes: &[TestNode]) {
 /// Drive ordinary maintenance and completion. The fairness case deliberately
 /// leaves candidate handlers unresponsive; their real Sim endpoints still
 /// advertise and receive the actual Noise flights.
-async fn turn(nodes: &mut [TestNode], responsive: bool, tick: &mut Instant) {
+async fn turn(
+    nodes: &mut [TestNode],
+    responsive: bool,
+    tick: &mut Instant,
+    mut ledger: Option<&mut timing::Ledger>,
+) {
     let live = if responsive { nodes.len() } else { 2 };
     if Instant::now() >= *tick {
         *tick = Instant::now() + Duration::from_secs(1);
-        for node in &mut nodes[..live] {
+        for (index, node) in nodes[..live].iter_mut().enumerate() {
+            if let Some(ledger) = ledger.as_deref_mut() {
+                ledger.maintenance(&node.node, index, "begin");
+            }
             node.node.check_timeouts().await;
             node.node.check_link_heartbeats().await;
             let now = Node::now_ms();
             node.node.resend_pending_handshakes(now).await;
+            if let Some(ledger) = ledger.as_deref_mut() {
+                ledger.observe_node(&node.node, index, "after_link_retry");
+            }
             node.node.resend_pending_rekeys(now).await;
             node.node.resend_pending_session_handshakes(now).await;
             node.node.resend_pending_session_msg3(now).await;
+            if let Some(ledger) = ledger.as_deref_mut() {
+                ledger.observe_node(&node.node, index, "after_session_retry");
+            }
             node.node.retry_pending_session_traffic().await;
+            if let Some(ledger) = ledger.as_deref_mut() {
+                ledger.observe_node(&node.node, index, "after_traffic_retry");
+            }
             node.node.check_mmp_reports().await;
             node.node.check_session_mmp_reports().await;
             node.node.check_rekey().await;
             node.node.check_session_rekey().await;
             node.node.check_pending_lookups(now).await;
+            if let Some(ledger) = ledger.as_deref_mut() {
+                ledger.observe_node(&node.node, index, "after_lookup_retry");
+            }
             node.node.poll_pending_connects().await;
             node.node.process_pending_retries(now).await;
             node.node.check_tree_state().await;
             node.node.send_pending_tree_announces().await;
             node.node.check_bloom_state().await;
+            if let Some(ledger) = ledger.as_deref_mut() {
+                ledger.maintenance(&node.node, index, "end");
+            }
         }
     }
     process_available_packets(&mut nodes[..live]).await;
+    if let Some(ledger) = ledger {
+        ledger.observe(nodes, "after_packet_completion_turn");
+    }
     assert_inventory(nodes);
 }
 
@@ -157,7 +222,7 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, case: Case) {
         .authenticated_at();
     let mut tick = Instant::now();
     while Node::now_ms().saturating_sub(authenticated) < 1_050 {
-        turn(nodes, true, &mut tick).await;
+        turn(nodes, true, &mut tick, None).await;
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     assert!(
@@ -169,7 +234,8 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, case: Case) {
     let mut receiver = nodes[d].node.attach_endpoint_data_io(8).unwrap();
     let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
     nodes[d].node.tun_tx = Some(tun_tx);
-    let tun = case == Case::Tun;
+    let tun = matches!(case, Case::Tun | Case::TunEventsOnly);
+    let no_maintenance = matches!(case, Case::EndpointEventsOnly | Case::TunEventsOnly);
     let original_payload = if tun {
         // A locally addressed TUN destination needs its public key to resolve
         // the IPv6 prefix. This installs identity knowledge only: no peer,
@@ -188,6 +254,11 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, case: Case) {
     assert!(nodes[0].node.get_peer(&destination).is_none());
     assert!(nodes[0].node.get_session(&destination).is_none());
     let offered = Instant::now();
+    let mut ledger = (case != Case::Fairness)
+        .then(|| timing::Ledger::new(case, offered, d, source, destination, tun));
+    if let Some(ledger) = &mut ledger {
+        ledger.observe(nodes, "before_original_offer");
+    }
     if tun {
         send_tun_packet_via_dataplane(nodes, 0, original_payload.clone()).await;
     } else {
@@ -200,6 +271,9 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, case: Case) {
         1,
         "the real original must be locally queued before discovery"
     );
+    if let Some(ledger) = &mut ledger {
+        ledger.observe(nodes, "original_queued_before_discovery");
+    }
     for candidate in &nodes[2..] {
         network.set_link(
             ADDRESSES[0],
@@ -215,6 +289,9 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, case: Case) {
         return;
     }
     nodes[0].node.poll_transport_discovery().await;
+    if let Some(ledger) = &mut ledger {
+        ledger.observe(nodes, "after_discovery_selection");
+    }
     let selected = current_attempt(nodes);
     if case != Case::Measurement {
         assert_eq!(
@@ -229,6 +306,24 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, case: Case) {
             "demand preference must not move the ordinary exploration cursor"
         );
     }
+    if no_maintenance {
+        // Establish the causal premise separately: the demanded identity must
+        // complete genuine reciprocal Noise authentication with no subsequent
+        // maintenance. A failure here is a fixture/authentication failure, not
+        // evidence that session initiation waited for a periodic lookup.
+        let authentication_deadline = Instant::now() + Duration::from_secs(3);
+        while !reciprocal_direct(nodes, d) {
+            events_only(nodes, ledger.as_mut()).await;
+            assert!(
+                Instant::now() < authentication_deadline,
+                "fixture must authenticate the actual queued destination through real events"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        if let Some(ledger) = &mut ledger {
+            ledger.observe(nodes, "reciprocal_direct_authenticated_without_maintenance");
+        }
+    }
     let mut attempts = vec![selected.0];
     let mut last_attempt = selected.1;
     let mut last_incumbent = incumbent;
@@ -236,7 +331,15 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, case: Case) {
     let mut next_discovery = Instant::now() + Duration::from_secs(1);
     let deadline = offered + Duration::from_secs(15);
     let delivered_at = loop {
-        turn(nodes, true, &mut tick).await;
+        if no_maintenance {
+            events_only(nodes, ledger.as_mut()).await;
+            assert!(
+                reciprocal_direct(nodes, d),
+                "authenticated direct pair retained"
+            );
+        } else {
+            turn(nodes, true, &mut tick, ledger.as_mut()).await;
+        }
         if let Some(peer) = nodes[0].node.peers.values().next()
             && *peer.node_addr() != last_incumbent
         {
@@ -248,15 +351,23 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, case: Case) {
             );
         }
         if receive(&mut receiver, &tun_rx, tun, &source, &original_payload) {
-            break Instant::now();
+            let observed = Instant::now();
+            if let Some(ledger) = &mut ledger {
+                ledger.delivered(observed);
+                ledger.observe(nodes, "original_delivery_observed");
+            }
+            break observed;
         }
         assert!(
             Instant::now() < deadline,
             "original queued payload delivery deadline"
         );
-        if Instant::now() >= next_discovery {
+        if !no_maintenance && Instant::now() >= next_discovery {
             next_discovery = Instant::now() + Duration::from_secs(1);
             nodes[0].node.poll_transport_discovery().await;
+            if let Some(ledger) = &mut ledger {
+                ledger.observe(nodes, "after_discovery_poll");
+            }
             if nodes[0].node.connection_count() > 0 {
                 let selected = current_attempt(nodes);
                 if selected.1 != last_attempt {
@@ -270,9 +381,21 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, case: Case) {
     assert!(nodes[0].node.get_peer(&destination).is_some());
     assert!(nodes[d].node.get_peer(&source).is_some());
     assert_eq!(queued(&nodes[0].node, &destination, tun), 0);
+    if no_maintenance {
+        assert!(!nodes[0].node.pending_lookups.contains_key(&destination));
+        assert_eq!(nodes[0].node.stats().discovery.req_initiated, 0);
+    }
     let duplicate_deadline = Instant::now() + Duration::from_millis(200);
     while Instant::now() < duplicate_deadline {
-        turn(nodes, true, &mut tick).await;
+        if no_maintenance {
+            events_only(nodes, ledger.as_mut()).await;
+            assert!(
+                reciprocal_direct(nodes, d),
+                "authenticated direct pair retained"
+            );
+        } else {
+            turn(nodes, true, &mut tick, ledger.as_mut()).await;
+        }
         assert!(
             !receive(&mut receiver, &tun_rx, tun, &source, &original_payload),
             "the original one-shot payload must not be duplicated"
@@ -298,7 +421,7 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, case: Case) {
         serde_json::json!({"case":format!("{case:?}"),
         "attempts":labels,"admissions":admissions,"offered":1,"delivered":1,
         "first_observed_ms":delivered_at.duration_since(offered).as_millis(),
-        "duplicate_observation_ms":200})
+        "duplicate_observation_ms":200,"periodic_maintenance_withheld":no_maintenance})
     );
     assert_inventory(nodes);
 }
@@ -431,7 +554,7 @@ async fn fairness(
                 Instant::now() < cleanup_deadline,
                 "ordinary original attempt expiry"
             );
-            turn(nodes, false, tick).await;
+            turn(nodes, false, tick, None).await;
             assert_eq!(
                 nodes[0].node.get_peer(&incumbent).unwrap().link_id(),
                 original

@@ -225,6 +225,13 @@ deadlines, grant paid forwarding authority, or guarantee admission time. Ordinar
 exploration still gets opportunities when a demanded peer remains unresponsive;
 changing candidate populations and incoming contention can still delay admission.
 
+When the queued destination authenticates and ordinary route selection chooses
+it directly, first contact starts its existing end-to-end handshake immediately.
+It does not wait for a periodic reachability lookup. This preserves explicit
+carrier bindings, session admission limits and the original queued traffic;
+existing sessions keep their recovery state. A successfully installed handshake
+owns the queue through its normal retransmission and timeout lifecycle.
+
 After a successful incoming replacement, a node with automatic discovery reserves
 one local outgoing opportunity before another fresh incoming attempt. That
 preference ends when a new outgoing attempt starts, an eligible complete

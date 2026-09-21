@@ -2016,6 +2016,38 @@ not faster transit-bridge discovery or physical-router acceptance of this policy
 Run the focused cases with `cargo test -p nvpn-fips-core --all-features --lib
 node::tests::sim_discovery::rotation::demand:: -- --test-threads=1 --nocapture`.
 
+Authenticated direct destinations now wake original queued first contact from
+the shared inbound/outbound handshake bootstrap (2026-09-21). The existing route
+selector must choose that destination itself; explicit other-carrier bindings
+and existing sessions are preserved. The existing session admission, send,
+retransmission and timeout paths remain authoritative. No new message type,
+queue, timer or spending authority is added. A returned send error can still
+leave an installed initiating session owning the queue; its redundant lookup is
+then removed. Cancellation before cleanup may retain the bounded lookup, whose
+existing final-timeout rule preserves session-owned traffic.
+
+The instrumented baseline observes a direct peer at about 26 ms but does not
+start its lookup until about 971 ms. Waking the existing session at authentication
+reduces original endpoint delivery from 1,021 to 48 ms, TUN delivery from 1,008
+to 51 ms, and the matched measurement case from 1,007 to 50 ms. The original
+offers, maintenance/discovery schedules, limits and dependencies are unchanged.
+Separate outbound endpoint/TUN regressions authenticate real reciprocal peers
+but fail the original 15-second delivery deadline on baseline when further
+maintenance is withheld. They pass at about 50 ms after this change, with zero
+lookup requests. Incoming-destination variants also deliver once using real
+packet/completion processing alone. These are controlled simulation observations,
+not general latency bounds or current-router acceptance.
+
+All 14 discovery cases, five focused queue/route/session ownership controls,
+89 handshake cases, 10 source-route cases, five session-admission cases, eight
+interrupted-handshake cases and 75 active lookup cases pass; the existing ignored
+100-node lookup test remains ignored. Strict core/relay linting, formatting and
+the source-size check pass. The repeated paid full-roster test preserves all
+original channels, resource caps and 60-second encounter deadlines: delivery is
+observed at 33.413/33.443 seconds and all-hop credit at 34.330/34.256 seconds.
+All 1,536 test sats are collected. Bridge authentication still takes
+30.765/29.760 seconds in that run; broad mobile-mesh convergence remains open.
+
 The `merge_split::brief` variant covers repeated short contacts (2026-09-20).
 Independent tasks change the bridge carrier and send single-attempt packets in
 both directions; actual contact intervals must remain within half to one-and-a-half
