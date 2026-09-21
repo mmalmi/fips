@@ -10,6 +10,9 @@ mod rotation_success_carrier;
 #[path = "rotation_prepared.rs"]
 mod rotation_prepared;
 
+#[path = "rotation_starvation.rs"]
+mod rotation_starvation;
+
 fn enable(node: &mut TestNode, peers: usize) {
     node.node.config.node.neighbor_rotation = Some(NeighborRotationConfig {
         idle_secs: 1,

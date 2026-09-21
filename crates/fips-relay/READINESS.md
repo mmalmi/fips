@@ -1754,6 +1754,45 @@ UDP regressions fail before these fixes; all 43 handshake tests, native discover
 strict core/relay lint and the source-size gate pass. The crowded regression checks
 final cleanup as well as delivery and financial conservation.
 
+The full-roster admission audit also reproduced an unconfirmed inbound renewing
+its slot (2026-09-21). A fresh Noise Msg1 from the same identity and carrier could
+replace its pending inbound after the attempt cooldown but before the handshake
+timeout. The replacement now retains the first connection's activity timestamp
+when that identity is not active and the roster is full. Timeout cleanup and
+encrypted confirmation therefore enforce the original connection deadline.
+Admission, attempt pacing and promotion checks remain unchanged. Exact duplicates
+still resend the current stored Msg2; authenticated peers and simultaneous dials
+retain their existing paths. No wire message, state table or additional admission
+slot is introduced.
+
+The native regressions check two fresh replacements and 32 additional identities
+on shared and separate source addresses, including another path for the same
+identity. They check identical responses to exact retries, rejection of superseded
+encrypted proofs, resource/index bounds, and an incumbent's continuing heartbeats
+and unchanged link generation. Every replacement retains the first activity
+timestamp; the real three-second timeout frees its slot for another neighbor to
+confirm and exchange encrypted traffic. Another case checks fresh confirmation
+after the normal retry interval but before the original connection deadline. The
+simulated-carrier case dispatches
+actual Noise packets through native ingress, then runs timeout cleanup followed
+by discovery in the production maintenance order. Discovery selects and
+authenticates another advertised neighbor after the original timeout without
+removing any carrier, fabricating connection state, or configuring a peer roster.
+All 56 handshake and three discovery tests, strict core/relay lint and source-size
+checks pass. The paid full-roster regression preserves the original local link
+epochs and eight channels: 51/51 independent local packets arrive in each direction,
+with no duplicates and a maximum observed delivery gap of 2.293 s. The bridge and
+all-hop credit complete at 50.648 s, within the existing 60-second gate; all 1,536
+test sats are collected. This is slower than the 25.554-second unchanged control
+run and does not establish a fixed latency bound. The 267 native samples stay
+within the existing limits (two peers, two pending connections, four links and
+three sessions at most).
+
+These checks bound one continuously retained inbound connection and establish
+recovery for this sequence. They do not establish fairness among newly admitted
+identities or later attempts after cleanup, radio contention tolerance, or useful
+progress under every possible packet schedule.
+
 The `merge_split::brief` variant covers repeated short contacts (2026-09-20).
 Independent tasks change the bridge carrier and send single-attempt packets in
 both directions; actual contact intervals must remain within half to one-and-a-half

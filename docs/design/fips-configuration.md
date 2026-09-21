@@ -151,6 +151,14 @@ candidate. Only one candidate identity is explored at a time, with a bounded
 opposite-direction handshake for simultaneous dials. No new wire messages or
 unbounded candidate history are introduced.
 
+At capacity, a fresh request replacing an unconfirmed stranger on the same carrier
+and with the same identity retains the original connection's handshake deadline.
+The existing admission and retry cadence still apply. An exact Msg1 retry resends
+the stored response; a replacement exchange needs its own encrypted confirmation.
+Existing authenticated peers and simultaneous outbound dials retain their normal
+recovery paths. Cleanup can admit a later attempt; this is not a fairness guarantee
+among repeatedly joining identities.
+
 Disabling the section stops future optional replacements; it does not reconnect
 previously displaced peers. This is a local exploration policy, not a guarantee
 of topology preservation, newcomer fairness against hostile identities, or

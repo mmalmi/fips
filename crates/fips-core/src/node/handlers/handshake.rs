@@ -354,6 +354,22 @@ impl Node {
         };
 
         let peer_node_addr = *peer_identity.node_addr();
+        // A fresh Noise request may replace a parked stranger, but cannot keep
+        // its full-roster slot alive beyond the original handshake deadline.
+        let restarted_activity = superseded_candidate
+            .and_then(|replaced| self.peers.get_connection(&replaced))
+            .filter(|previous| {
+                self.neighbor_roster_full()
+                    && !self.peers.contains_key(&peer_node_addr)
+                    && !previous.is_outbound()
+                    && previous.has_session()
+                    && previous.transport_id() == Some(packet.transport_id)
+                    && previous.source_addr() == Some(&packet.remote_addr)
+                    && previous
+                        .expected_identity()
+                        .is_some_and(|identity| *identity.node_addr() == peer_node_addr)
+            })
+            .map(PeerConnection::last_activity);
 
         // A refusing transport admitted this msg1 only because its source
         // matched an existing address entry. Now that Noise authenticated the
@@ -391,13 +407,13 @@ impl Node {
 
         if self.max_peers > 0 && self.peers.len() >= self.max_peers {
             let is_known_active = self.peers.contains_key(&peer_node_addr);
-            let is_pending_outbound = self.peers.connection_iter().any(|(_, conn)| {
+            let is_pending_identity = self.peers.connection_iter().any(|(_, conn)| {
                 conn.expected_identity()
                     .map(|id| *id.node_addr() == peer_node_addr)
                     .unwrap_or(false)
             });
             if !is_known_active
-                && !is_pending_outbound
+                && !is_pending_identity
                 && !self.can_attempt_neighbor_rotation(&peer_node_addr, false, Self::now_ms())
             {
                 debug!(
@@ -876,7 +892,7 @@ impl Node {
             // request on this same carrier is authenticated before replacing it.
             if let Some(conn) = self.peers.get_connection_mut(&link_id) {
                 conn.set_handshake_msg1(packet.data.as_slice().to_vec(), 0);
-                conn.touch(Self::now_ms());
+                conn.touch(restarted_activity.unwrap_or_else(Self::now_ms));
             }
             if let Some(transport) = self.transports.get(&packet.transport_id)
                 && let Err(error) = transport.send(&packet.remote_addr, &wire_msg2).await

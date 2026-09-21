@@ -4,6 +4,8 @@ use crate::node::acl::{PeerAclContext, PeerAclReloader};
 use spanning_tree::process_available_packets;
 use std::time::Instant;
 
+mod unconfirmed;
+
 fn assert_caps(nodes: &[TestNode]) {
     for (index, node) in nodes.iter().enumerate() {
         assert!(node.node.peer_count() <= 1, "peer cap at node {index}");
