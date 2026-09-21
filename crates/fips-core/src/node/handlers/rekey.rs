@@ -588,6 +588,16 @@ impl Node {
             Err(FmpRekeyInitiationSkip::Address) => return false,
         };
 
+        // A carrier refresh and an ActivePeer rekey must not advertise two
+        // sender indexes for the same path before either exchange completes.
+        if self.is_connecting_to_peer_on_path(
+            node_addr,
+            initiation.transport_id,
+            &initiation.remote_addr,
+        ) {
+            return false;
+        }
+
         // Allocate a new session index for the rekey
         let our_index = match self.index_allocator.allocate() {
             Ok(idx) => idx,

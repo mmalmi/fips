@@ -80,11 +80,20 @@ impl Node {
                     {
                         continue;
                     }
-                    if self.is_connecting_to_peer_on_path(
-                        &node_addr,
-                        candidate_transport_id,
-                        &remote_addr,
-                    ) {
+                    let connecting = if confirms_new_connection {
+                        self.has_pending_connection_on_path(
+                            &node_addr,
+                            candidate_transport_id,
+                            &remote_addr,
+                        )
+                    } else {
+                        self.is_connecting_to_peer_on_path(
+                            &node_addr,
+                            candidate_transport_id,
+                            &remote_addr,
+                        )
+                    };
+                    if connecting {
                         continue;
                     }
                     let queued_for_peer = queued_per_peer.get(&node_addr).copied().unwrap_or(0);
@@ -104,12 +113,17 @@ impl Node {
                                 candidate_transport_id,
                                 remote_addr,
                                 identity,
-                                true,
+                                false,
                             ));
                         }
                         continue;
                     }
-                    to_connect.push((candidate_transport_id, remote_addr, identity, true));
+                    to_connect.push((
+                        candidate_transport_id,
+                        remote_addr,
+                        identity,
+                        confirms_new_connection,
+                    ));
                     *queued_per_peer.entry(node_addr).or_default() += 1;
                     connect_budget = connect_budget.saturating_sub(1);
                     continue;
@@ -186,17 +200,22 @@ impl Node {
             );
             to_connect.extend(deferred_refreshes.into_iter().take(budget));
         }
-        for (transport_id, remote_addr, identity, active_refresh) in to_connect {
+        for (transport_id, remote_addr, identity, carrier_replaced) in to_connect {
             info!(
                 node = %self.node_addr(),
                 peer = %self.peer_display_name(identity.node_addr()),
                 transport_id = %transport_id,
                 remote_addr = %remote_addr,
-                active_refresh,
+                active_refresh = self.peers.contains_key(identity.node_addr()),
                 "Auto-connecting to discovered peer"
             );
             if let Err(e) = self
-                .initiate_connection(transport_id, remote_addr, identity)
+                .initiate_connection_on_carrier(
+                    transport_id,
+                    remote_addr,
+                    identity,
+                    carrier_replaced,
+                )
                 .await
             {
                 warn!(error = %e, "Failed to auto-connect to discovered peer");

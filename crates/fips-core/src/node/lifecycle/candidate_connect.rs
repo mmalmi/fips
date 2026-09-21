@@ -54,6 +54,44 @@ impl Node {
         transport_id: TransportId,
         remote_addr: &TransportAddr,
     ) -> bool {
+        self.fmp_rekey_owns_path(peer_node_addr, transport_id, remote_addr)
+            || self.has_pending_connection_on_path(peer_node_addr, transport_id, remote_addr)
+    }
+
+    pub(in crate::node) fn fmp_rekey_owns_path(
+        &self,
+        peer_node_addr: &NodeAddr,
+        transport_id: TransportId,
+        remote_addr: &TransportAddr,
+    ) -> bool {
+        let alias_link = self.links.lookup_addr(transport_id, remote_addr);
+        self.peers.get(peer_node_addr).is_some_and(|peer| {
+            // Local cutover does not prove the peer has observed the new
+            // keys. Preserve that receiver until current-epoch traffic does;
+            // confirmed drains can still recover through ordinary refresh.
+            (peer.rekey_in_progress()
+                || peer.pending_new_session().is_some()
+                || self.fmp_cutover_is_unconfirmed(peer_node_addr))
+                && peer.transport_id() == Some(transport_id)
+                && (peer.current_addr() == Some(remote_addr) || alias_link == Some(peer.link_id()))
+        })
+    }
+
+    pub(in crate::node) fn fmp_cutover_is_unconfirmed(&self, peer_node_addr: &NodeAddr) -> bool {
+        self.peers
+            .get(peer_node_addr)
+            .is_some_and(|peer| peer.is_draining())
+            && self
+                .dataplane_fmp_link_metrics(peer_node_addr, std::time::Instant::now())
+                .is_none_or(|metrics| !metrics.current_epoch_authenticated)
+    }
+
+    pub(super) fn has_pending_connection_on_path(
+        &self,
+        peer_node_addr: &NodeAddr,
+        transport_id: TransportId,
+        remote_addr: &TransportAddr,
+    ) -> bool {
         let alias_link = self.links.lookup_addr(transport_id, remote_addr);
         self.peers.connection_values().any(|conn| {
             conn.expected_identity()
@@ -539,12 +577,28 @@ impl Node {
         remote_addr: TransportAddr,
         peer_identity: PeerIdentity,
     ) -> Result<(), NodeError> {
+        self.initiate_connection_on_carrier(transport_id, remote_addr, peer_identity, false)
+            .await
+    }
+
+    pub(super) async fn initiate_connection_on_carrier(
+        &mut self,
+        transport_id: TransportId,
+        remote_addr: TransportAddr,
+        peer_identity: PeerIdentity,
+        carrier_replaced: bool,
+    ) -> Result<(), NodeError> {
         let remote_addr = self
             .canonical_transport_addr(transport_id, remote_addr)
             .map_err(NodeError::from_transport_error)?;
         let peer_node_addr = *peer_identity.node_addr();
 
-        if self.is_connecting_to_peer_on_path(&peer_node_addr, transport_id, &remote_addr) {
+        let connecting = if carrier_replaced {
+            self.has_pending_connection_on_path(&peer_node_addr, transport_id, &remote_addr)
+        } else {
+            self.is_connecting_to_peer_on_path(&peer_node_addr, transport_id, &remote_addr)
+        };
+        if connecting {
             debug!(
                 peer = %self.peer_display_name(&peer_node_addr),
                 transport_id = %transport_id,
@@ -581,6 +635,14 @@ impl Node {
             transport_id,
             &remote_addr,
         )?;
+
+        // Transport discovery can prove that the old physical connection was
+        // replaced. Its unfinished rekey cannot own that new incarnation;
+        // retain the current session until the replacement authenticates.
+        if carrier_replaced && self.fmp_rekey_owns_path(&peer_node_addr, transport_id, &remote_addr)
+        {
+            self.abandon_fmp_rekey_for_peer(&peer_node_addr, "physical carrier replaced");
+        }
 
         if !self.peers.contains_key(&peer_node_addr)
             && self.neighbor_roster_full()

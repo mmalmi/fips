@@ -108,11 +108,10 @@ impl Node {
             if !rekey_blocked && self.initiate_rekey(&peer_node_addr).await {
                 return Ok(true);
             }
-            // An in-flight epoch cutover, drain, or dampening window must
-            // prevent only another immediate FMP epoch rotation. A
-            // consecutive outage still needs the concrete same-path
-            // handshake below; returning here would leave recovery idle
-            // until that longer rekey state expires.
+            // An unfinished exchange retains ownership of this path. Once it
+            // finishes, a consecutive outage can still use the concrete
+            // handshake below during drain or dampening; those windows must
+            // not leave recovery idle.
         }
         let same_path_refresh_needed = allow_same_path_refresh
             && self.peers.get(&peer_node_addr).is_some_and(|peer| {

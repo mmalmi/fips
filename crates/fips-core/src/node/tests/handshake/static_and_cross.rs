@@ -6,6 +6,7 @@ async fn confirm_cross_connection_packets(
     b: &mut Node,
     b_rx: &mut PacketRx,
 ) {
+    let heartbeat = [crate::protocol::LinkMessageType::Heartbeat.to_byte()];
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
             super::super::spanning_tree::process_node_packets(a, a_rx).await;
@@ -16,10 +17,22 @@ async fn confirm_cross_connection_packets(
                 && b_peer.their_index() == a_peer.our_index()
                 && a.pending_outbound.is_empty()
                 && b.pending_outbound.is_empty()
+                && a.dataplane_fmp_link_metrics(b.node_addr(), std::time::Instant::now())
+                    .is_some_and(|metrics| metrics.current_epoch_authenticated)
+                && b.dataplane_fmp_link_metrics(a.node_addr(), std::time::Instant::now())
+                    .is_some_and(|metrics| metrics.current_epoch_authenticated)
             {
                 break;
             }
-            tokio::task::yield_now().await;
+            // Receiving the first frame may promote pending keys. The next
+            // ordinary heartbeat then confirms those keys in the other direction.
+            a.send_dataplane_fmp_link_plaintext(b.node_addr(), &heartbeat, false)
+                .await
+                .unwrap();
+            b.send_dataplane_fmp_link_plaintext(a.node_addr(), &heartbeat, false)
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
@@ -409,6 +422,11 @@ async fn cross_connection_both_initiate(queued_before_outbound: bool) {
         peer_b_on_a.our_index(),
         "B must send to A's installed receiver index after degraded simultaneous reconnect"
     );
+
+    // Finish the actual current-key confirmation before declaring the first
+    // carrier established and then simulating a separate roaming outage.
+    confirm_cross_connection_packets(&mut node_a, &mut packet_rx_a, &mut node_b, &mut packet_rx_b)
+        .await;
 
     // Repeat the simultaneous dial with an already-established carrier that
     // liveness has marked link-dead. This is the roaming ordering: both sides

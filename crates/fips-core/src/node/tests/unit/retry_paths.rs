@@ -644,7 +644,7 @@ async fn direct_refresh_rearms_exhausted_inflight_candidate_without_changing_sen
 }
 
 #[tokio::test]
-async fn direct_refresh_waits_for_fmp_drain_but_probes_same_path() {
+async fn direct_refresh_preserves_unconfirmed_fmp_cutover() {
     let mut node = make_node();
     let peer_full = Identity::generate();
     let transport_id = TransportId::new(1);
@@ -698,8 +698,8 @@ async fn direct_refresh_waits_for_fmp_drain_but_probes_same_path() {
     );
     assert_eq!(
         node.connection_count(),
-        1,
-        "an FMP drain must not suppress the concrete same-path handshake needed after another path change"
+        0,
+        "local cutover must retain the responder's keys until current-epoch authentication or drain expiry"
     );
 
     for transport in node.transports.values_mut() {

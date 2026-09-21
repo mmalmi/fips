@@ -16,6 +16,7 @@ impl Node {
         while i > 0 {
             i -= 1;
             let pending = &mut self.pending_connects[i];
+            let mut resolved_hostname = None;
             let state = if !self.transports.contains_key(&pending.transport_id) {
                 crate::transport::ConnectionState::Failed("transport removed".into())
             } else if let Some(resolution) = pending.address_resolution.as_mut() {
@@ -40,7 +41,8 @@ impl Node {
                         // Keep configured hostname matching until this link is
                         // removed, while all Noise sends use its numeric path.
                         self.links
-                            .insert_addr((pending.transport_id, hostname), pending.link_id);
+                            .insert_addr((pending.transport_id, hostname.clone()), pending.link_id);
+                        resolved_hostname = Some(hostname);
                         crate::transport::ConnectionState::Connected
                     }
                 }
@@ -58,6 +60,35 @@ impl Node {
                     Some("no connection attempt found".into())
                 }
             };
+            let pending = &self.pending_connects[i];
+            // DNS can reveal that this preparation duplicates an existing
+            // rekey. Coalesce now: replaying it after local cutover could still
+            // retire the responder's keys before its first new-epoch frame.
+            if resolved_hostname.is_some()
+                && reason.is_none()
+                && self.fmp_rekey_owns_path(
+                    pending.peer_identity.node_addr(),
+                    pending.transport_id,
+                    &pending.remote_addr,
+                )
+            {
+                let peer = self.peers.get(pending.peer_identity.node_addr()).unwrap();
+                let active_link = peer.link_id();
+                let current_addr = peer.current_addr().cloned();
+                let pending = self.pending_connects.remove(i);
+                self.remove_link(&pending.link_id);
+                self.restore_link_address(active_link);
+                if let Some(addr) = current_addr {
+                    self.links
+                        .insert_addr((pending.transport_id, addr), active_link);
+                }
+                if let Some(hostname) = resolved_hostname {
+                    self.links
+                        .insert_addr((pending.transport_id, hostname), active_link);
+                }
+                // Only the temporary link is gone; its active carrier stays open.
+                continue;
+            }
             let pending = self.pending_connects.remove(i);
 
             if reason.is_none() {

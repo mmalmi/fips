@@ -421,7 +421,11 @@ impl Node {
                             (peer.remote_epoch(), outbound_remote_epoch),
                             (Some(old), Some(new)) if old != new
                         ),
-                        !peer.is_healthy() || !peer.can_send(),
+                        !peer.is_healthy()
+                            || !peer.can_send()
+                            // Cutover alone cannot make an old carrier usable:
+                            // its remote pending keys may have been replaced.
+                            || self.fmp_cutover_is_unconfirmed(&peer_node_addr),
                     )
                 })
                 .unwrap_or((false, false, false, false));

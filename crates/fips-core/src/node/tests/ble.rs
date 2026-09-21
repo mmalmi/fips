@@ -17,6 +17,8 @@ use spanning_tree::{
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 
+mod rekey_reconnect;
+
 /// Generate a deterministic BLE address for test node `n`.
 fn ble_addr(n: u8) -> BleAddr {
     BleAddr::from_mac("hci0", [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, n])

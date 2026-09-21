@@ -5,24 +5,50 @@ use crate::node::EndpointDataIo;
 use crate::node::tests::spanning_tree::{
     initiate_handshake, make_test_node, process_dataplane_packet, process_node_packets,
 };
-use crate::node::wire::FLAG_KEY_EPOCH;
+use crate::node::wire::{FLAG_KEY_EPOCH, Msg1Header, Msg2Header};
 use futures::FutureExt;
 use std::panic::AssertUnwindSafe;
 use tokio::time::Instant;
+
+mod preparation;
 
 const FLOWS: [(usize, usize); 6] = [(0, 2), (0, 1), (1, 0), (1, 2), (2, 1), (2, 0)];
 
 #[test]
 fn source_fmp_rekey_preserves_direct_and_routed_fsp_payloads() {
-    run(true);
+    run(Scenario::Rekey);
 }
 
 #[test]
 fn direct_and_routed_fsp_payloads_continue_without_rekey() {
-    run(false);
+    run(Scenario::Control);
 }
 
-fn run(rekey: bool) {
+#[test]
+fn same_path_refresh_during_fmp_rekey_preserves_routed_payloads() {
+    run(Scenario::Overlap);
+}
+
+#[test]
+fn resolved_hostname_refresh_preserves_unconfirmed_rekey_receiver() {
+    run(Scenario::Dns);
+}
+
+#[test]
+fn cutover_defers_refresh_until_reciprocal_new_epoch_authentication() {
+    run(Scenario::Cutover);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scenario {
+    Control,
+    Rekey,
+    Overlap,
+    Dns,
+    Cutover,
+}
+
+fn run(scenario: Scenario) {
     run_large_stack_async_test("routed-fsp-over-fmp-rekey", move || async move {
         let _guard = lock_large_network_test().await;
         let mut nodes = vec![
@@ -30,11 +56,16 @@ fn run(rekey: bool) {
             make_test_node().await,
             make_test_node().await,
         ];
-        // The routed source is a leaf sending towards the component's root.
-        nodes.sort_by_key(|node| std::cmp::Reverse(*node.node.node_addr()));
-        let result = AssertUnwindSafe(exercise(&mut nodes, rekey))
-            .catch_unwind()
-            .await;
+        let result = AssertUnwindSafe(async {
+            if scenario == Scenario::Dns {
+                preparation::bind_localhost_family(&mut nodes).await;
+            }
+            // The routed source is a leaf sending towards the component's root.
+            nodes.sort_by_key(|node| std::cmp::Reverse(*node.node.node_addr()));
+            exercise(&mut nodes, scenario).await;
+        })
+        .catch_unwind()
+        .await;
         cleanup_nodes(&mut nodes).await;
         if let Err(panic) = result {
             std::panic::resume_unwind(panic);
@@ -166,7 +197,125 @@ async fn round(
     receive_round(nodes, endpoints, identities, phase).await;
 }
 
-async fn exercise(nodes: &mut [TestNode], rekey: bool) {
+// Hold the actual replies until every dispatched Msg1 has reached the responder.
+// This reproduces a discovery refresh starting before the rekey Msg2 is handled;
+// it does not require a fix to keep dispatching that redundant second handshake.
+async fn overlap_same_path_refresh(nodes: &mut [TestNode], identities: &[PeerIdentity]) {
+    let remote_addr = nodes[1].addr.clone();
+    let source = &mut nodes[0];
+    assert!(source.node.peers.connection_is_empty());
+    assert!(
+        source
+            .node
+            .get_peer(identities[1].node_addr())
+            .unwrap()
+            .pending_new_session()
+            .is_none(),
+        "the original rekey reply must not have been processed"
+    );
+    source
+        .node
+        .initiate_connection(source.transport_id, remote_addr, identities[1])
+        .await
+        .unwrap();
+    let refresh_indices: Vec<_> = source
+        .node
+        .peers
+        .connection_values()
+        .map(|connection| {
+            assert!(connection.is_outbound());
+            assert_eq!(
+                connection.expected_identity().unwrap().node_addr(),
+                identities[1].node_addr()
+            );
+            connection.our_index().unwrap()
+        })
+        .collect();
+    assert!(
+        refresh_indices.len() <= 1,
+        "at most one refresh may be dispatched"
+    );
+    let flight_count = 1 + refresh_indices.len();
+    let mut sender_indices = Vec::new();
+    let mut replies = Vec::new();
+    let mut deferred = Vec::new();
+    for _ in 0..flight_count {
+        let request = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let packet = nodes[1].packet_rx.recv().await.unwrap();
+                if packet.remote_addr == nodes[0].addr
+                    && Msg1Header::parse(packet.data.as_slice()).is_some()
+                {
+                    break packet;
+                }
+                process_dataplane_packet(&mut nodes[1], packet).await;
+            }
+        })
+        .await
+        .expect("each dispatched Msg1 must reach the actual UDP responder");
+        let request_index = Msg1Header::parse(request.data.as_slice())
+            .unwrap()
+            .sender_idx;
+        assert!(
+            !sender_indices.contains(&request_index),
+            "overlap must use distinct Noise handshakes"
+        );
+        sender_indices.push(request_index);
+        process_dataplane_packet(&mut nodes[1], request).await;
+        let response = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let packet = nodes[0].packet_rx.recv().await.unwrap();
+                if packet.remote_addr == nodes[1].addr
+                    && Msg2Header::parse(packet.data.as_slice()).is_some()
+                {
+                    break packet;
+                }
+                // In particular, do not process a new-epoch carrier or any reply
+                // before the responder has handled the overlapping request.
+                assert!(
+                    deferred.len() < 32,
+                    "unexpected traffic while holding rekey replies"
+                );
+                deferred.push(packet);
+            }
+        })
+        .await
+        .expect("each real request must produce its matching UDP Msg2");
+        assert_eq!(
+            Msg2Header::parse(response.data.as_slice())
+                .unwrap()
+                .receiver_idx,
+            request_index
+        );
+        replies.push(response);
+    }
+    if let Some(refresh_index) = refresh_indices.first() {
+        assert_eq!(sender_indices[1], *refresh_index);
+        assert_ne!(sender_indices[0], *refresh_index);
+    }
+    eprintln!(
+        "rekey/refresh overlap: actual_msg1_flights={flight_count}, distinct_sender_indices=true, replies_held_before_source_receive={}",
+        replies.len()
+    );
+    assert!(
+        nodes[0]
+            .node
+            .get_peer(identities[1].node_addr())
+            .unwrap()
+            .pending_new_session()
+            .is_none()
+    );
+    for response in replies {
+        process_dataplane_packet(&mut nodes[0], response).await;
+    }
+    for packet in deferred {
+        process_dataplane_packet(&mut nodes[0], packet).await;
+    }
+}
+
+async fn exercise(nodes: &mut [TestNode], scenario: Scenario) {
+    let rekey = scenario != Scenario::Control;
+    let dns = scenario == Scenario::Dns;
     setup(nodes).await;
     let identities: Vec<_> = nodes
         .iter()
@@ -238,7 +387,16 @@ async fn exercise(nodes: &mut [TestNode], rekey: bool) {
     );
 
     if rekey {
+        if dns {
+            preparation::queue_hostname_refresh(nodes, &identities).await;
+        }
         assert!(nodes[0].node.initiate_rekey(&addresses[1]).await);
+        if dns {
+            preparation::resolve_during_rekey(nodes, &identities).await;
+        }
+        if scenario == Scenario::Overlap {
+            overlap_same_path_refresh(nodes, &identities).await;
+        }
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             // No synthetic crypto/session changes: receive the real Msg1 and Msg2.
@@ -260,6 +418,9 @@ async fn exercise(nodes: &mut [TestNode], rekey: bool) {
                 "real rekey handshake must finish"
             );
             tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        if dns {
+            preparation::assert_resolved_pending(nodes, &identities).await;
         }
         let pending_middle_index = nodes[1]
             .node
@@ -297,6 +458,15 @@ async fn exercise(nodes: &mut [TestNode], rekey: bool) {
         assert!(nodes[0].node.get_peer(&addresses[1]).unwrap().is_draining());
         assert!(!nodes[1].node.get_peer(&addresses[0]).unwrap().is_draining());
 
+        if scenario == Scenario::Cutover {
+            preparation::refresh_before_confirmation(nodes, &identities).await;
+        }
+        if dns {
+            // Poll at the first real cutover, without first giving the responder
+            // a new-key heartbeat or application packet to confirm its epoch.
+            preparation::poll_refresh(nodes, &identities).await;
+        }
+
         // Submit the routed payload first. Observe its actual carrier flight before
         // giving the responder any new-epoch traffic; no extra heartbeat repairs it.
         send(nodes, &identities, 2, FLOWS[0]).await;
@@ -315,8 +485,24 @@ async fn exercise(nodes: &mut [TestNode], rekey: bool) {
         })
         .await
         .expect("routed payload must produce a real UDP carrier frame");
+        assert!(
+            Msg1Header::parse(flight.data.as_slice()).is_none(),
+            "no second Msg1 may precede the original new-key routed packet"
+        );
         let header = FmpWireHeader::parse_encrypted(flight.data.as_slice()).unwrap();
-        assert_eq!(header.receiver_idx(), pending_middle_index.as_u32());
+        assert_eq!(
+            header.receiver_idx(),
+            pending_middle_index.as_u32(),
+            "the first routed new-epoch frame must name the responder's retained receiver index"
+        );
+        assert_eq!(
+            nodes[1]
+                .node
+                .peers
+                .lookup_session_index((nodes[1].transport_id, header.receiver_idx())),
+            Some(addresses[0]),
+            "the actual routed carrier must still resolve to its authenticated sender"
+        );
         assert_eq!(header.flags() & FLAG_KEY_EPOCH != 0, !old_k);
         assert_eq!(
             nodes[1]
@@ -340,6 +526,12 @@ async fn exercise(nodes: &mut [TestNode], rekey: bool) {
             !old_k
         );
         assert!(nodes[1].node.get_peer(&addresses[0]).unwrap().is_draining());
+        if scenario == Scenario::Cutover {
+            preparation::refresh_after_confirmation(nodes, &mut endpoints, &identities).await;
+            // This case covers eligibility within the drain window. The other
+            // rekey cases below separately require the real old-key expiry.
+            return;
+        }
     } else {
         // Match the cutover wait and application phase without changing keys.
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -438,4 +630,8 @@ async fn exercise(nodes: &mut [TestNode], rekey: bool) {
         nodes[2].node.dataplane.fsp_owner_next_hop(&addresses[0]),
         Some(addresses[1])
     );
+    if dns {
+        preparation::finish_retained_refresh(nodes, &identities).await;
+        round(nodes, &mut endpoints, &identities, phase + 2).await;
+    }
 }
