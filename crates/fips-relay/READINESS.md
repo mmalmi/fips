@@ -259,6 +259,21 @@ regressions), six authenticated-node checks and seven public-API reconnect/churn
 checks pass. Paid-service
 checks in both feature modes and strict core/relay linting also pass.
 
+Three additional regressions reproduce failed initial key-hint writes retaining
+their connection address, old connection completion clearing a replacement's
+status, and a late HTTP upgrade rejection overwriting an established replacement's
+status. The hint write and frame loop now share one cleanup path. Pool and status
+removal use the same lock and require the exiting connection's generation; dial
+status updates leave an established owner unchanged. The tests use the production
+WebSocket encoder with a deterministically closed duplex underlay, overlapping
+connection workers, and real loopback HTTP upgrades. They verify fresh physical
+record delivery and balanced connection counters; this is separate from FIPS
+identity authentication. All three fail before the fix and pass afterward, along
+with all 17 transport, six authenticated-node and seven public reconnect/churn
+checks. All four paid-service checks pass in each feature mode, as do strict
+core/relay lint, formatting and source-size checks. These concrete cleanup
+failures have not been linked to the intermittent paid-delivery timeout below.
+
 One no-default-feature seed-only service run nevertheless timed out in paid
 delivery. Its original failure lacked a phase snapshot. Bounded failure-only
 diagnostics now retain the purchase/renewal/restart phase, safe payment state,

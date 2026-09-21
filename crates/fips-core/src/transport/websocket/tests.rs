@@ -1,5 +1,6 @@
 use super::*;
 
+mod connection_cleanup;
 mod handshake_lifetime;
 
 #[test]

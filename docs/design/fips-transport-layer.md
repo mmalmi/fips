@@ -174,6 +174,11 @@ workers, including incomplete upgrades and established connections, before
 clearing runtime state. Cancelling shutdown retains that join ownership for a
 subsequent shutdown call.
 
+The initial key-hint write and established frame loop share connection cleanup.
+A failed write releases its pool entry before returning to the dialer. Cleanup
+removes the address and status together only if that connection still owns the
+entry; late dial results cannot overwrite an established replacement's status.
+
 **Addressing opacity**: Transport addresses are opaque byte vectors. FMP
 doesn't interpret them — it just passes them back to the transport when
 sending. This means adding a new transport type with a novel address format
