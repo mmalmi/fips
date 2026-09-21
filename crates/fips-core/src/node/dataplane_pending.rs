@@ -36,8 +36,38 @@ impl Node {
         if synced {
             self.mark_dataplane_direct_fsp_sources_dirty();
             self.refresh_dataplane_fsp_owner_routes_after_fmp_owner_update(node_addr);
+            self.observe_dataplane_fmp_epoch(node_addr, "owner synchronized");
         }
         synced
+    }
+
+    fn observe_dataplane_fmp_epoch(&self, node_addr: &NodeAddr, reason: &'static str) {
+        if !tracing::enabled!(target: "fips_core::node::fmp_epoch", tracing::Level::DEBUG) {
+            return;
+        }
+        let Some(peer) = self.peers.get(node_addr) else {
+            return;
+        };
+        let send = self.dataplane.fmp_owner_send_context(node_addr);
+        debug!(
+            target: "fips_core::node::fmp_epoch",
+            node = %self.node_addr(),
+            peer = %node_addr,
+            reason,
+            generation = peer.session_generation(),
+            current_k_bit = peer.current_k_bit(),
+            our_index = ?peer.our_index(),
+            their_index = ?peer.their_index(),
+            pending_our_index = ?peer.pending_our_index(),
+            pending_their_index = ?peer.pending_their_index(),
+            previous_our_index = ?peer.previous_our_index(),
+            send_generation = ?send.as_ref().map(|context| context.generation()),
+            send_receiver_index = ?send.as_ref().map(|context| context.receiver_idx()),
+            send_flags = ?send.as_ref().map(|context| context.flags()),
+            pending_key_false = self.dataplane.fmp_owner_has_pending_receive_epoch(node_addr, false),
+            pending_key_true = self.dataplane.fmp_owner_has_pending_receive_epoch(node_addr, true),
+            "Observed FMP epoch ownership"
+        );
     }
 
     pub(in crate::node) fn remove_dataplane_fmp_owner(&mut self, node_addr: &NodeAddr) {
@@ -351,14 +381,19 @@ impl Node {
         else {
             return false;
         };
-        self.dataplane
+        let installed = self
+            .dataplane
             .install_owner_fmp_pending_receive_epoch(
                 OwnerId::fmp_node(*node_addr),
                 pending_k_bit,
                 std::sync::Arc::new(open),
                 authority,
             )
-            .is_ok()
+            .is_ok();
+        if installed {
+            self.observe_dataplane_fmp_epoch(node_addr, "pending receive epoch installed");
+        }
+        installed
     }
 
     pub(in crate::node) fn clear_dataplane_fmp_pending_receive_epoch(

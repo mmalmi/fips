@@ -419,6 +419,7 @@ impl Node {
                 debug!(
                     peer = %self.peer_display_name(&peer_node_addr),
                     max = self.max_peers,
+                    node = %self.node_addr(),
                     "Silent-dropping Msg1 at max_peers cap (early gate; no Msg2 sent)"
                 );
                 return;

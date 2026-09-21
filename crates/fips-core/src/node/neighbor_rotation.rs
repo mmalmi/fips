@@ -131,43 +131,119 @@ impl Node {
         outbound: bool,
         now_ms: u64,
     ) -> bool {
+        let rejection = self.neighbor_rotation_rejection(peer, outbound, now_ms);
+        if let Some(reason) = rejection {
+            self.observe_neighbor_rotation_rejection(peer, outbound, now_ms, reason);
+        }
+        rejection.is_none()
+    }
+
+    fn neighbor_rotation_rejection(
+        &self,
+        peer: &NodeAddr,
+        outbound: bool,
+        now_ms: u64,
+    ) -> Option<&'static str> {
         let Some(config) = self.config.node.neighbor_rotation.as_ref() else {
-            return false;
+            return Some("rotation disabled");
         };
-        if !self.neighbor_roster_full()
-            || self.peers.contains_key(peer)
-            || peer == self.node_addr()
-            || self.neighbor_rotation.displaced.is_some_and(|(old, at)| {
-                old == *peer && now_ms.saturating_sub(at) < config.idle_secs.saturating_mul(1000)
-            })
+        if !self.neighbor_roster_full() || self.peers.contains_key(peer) || peer == self.node_addr()
         {
-            return false;
+            return Some("not a new full-roster neighbor");
+        }
+        if self.neighbor_rotation.displaced.is_some_and(|(old, at)| {
+            old == *peer && now_ms.saturating_sub(at) < config.idle_secs.saturating_mul(1000)
+        }) {
+            return Some("recently displaced neighbor");
         }
         if self.rotation_has_pending_candidate() {
             let Some(attempt) = &self.neighbor_rotation.attempt else {
-                return false;
+                return Some("pending candidate without rotation ownership");
             };
-            if attempt.peer != *peer
-                || !self.rotation_attempt_is_fresh(attempt, now_ms)
-                || self.peers.connection_values().any(|conn| {
-                    conn.expected_identity().is_some_and(|id| {
-                        !self.peers.contains_key(id.node_addr())
-                            && (id.node_addr() != peer || conn.is_outbound() == outbound)
-                    })
+            if attempt.peer != *peer {
+                return Some("another candidate owns the attempt");
+            }
+            if !self.rotation_attempt_is_fresh(attempt, now_ms) {
+                return Some("candidate attempt expired");
+            }
+            if self.peers.connection_values().any(|conn| {
+                conn.expected_identity().is_some_and(|id| {
+                    !self.peers.contains_key(id.node_addr())
+                        && (id.node_addr() != peer || conn.is_outbound() == outbound)
                 })
-                || self.pending_connects.iter().any(|pending| {
-                    !self.peers.contains_key(pending.peer_identity.node_addr())
-                        && (pending.peer_identity.node_addr() != peer || outbound)
-                })
-            {
-                return false;
+            }) {
+                return Some("conflicting pending handshake");
+            }
+            if self.pending_connects.iter().any(|pending| {
+                !self.peers.contains_key(pending.peer_identity.node_addr())
+                    && (pending.peer_identity.node_addr() != peer || outbound)
+            }) {
+                return Some("conflicting pending transport connection");
             }
         } else if now_ms < self.neighbor_rotation.next_attempt_ms {
-            return false;
+            return Some("rotation cooldown");
         }
         // Cooldown and candidate ownership can reject without walking every
         // neighbor's session activity. Demand is still fresh on allowed paths.
-        self.rotation_victim(now_ms).is_some()
+        self.rotation_victim(now_ms)
+            .is_none()
+            .then_some("no eligible idle neighbor")
+    }
+
+    fn observe_neighbor_rotation_rejection(
+        &self,
+        peer: &NodeAddr,
+        outbound: bool,
+        now_ms: u64,
+        reason: &'static str,
+    ) {
+        if !tracing::enabled!(target: "fips_core::node::neighbor_rotation", tracing::Level::DEBUG) {
+            return;
+        }
+        let attempt = self.neighbor_rotation.attempt.as_ref();
+        tracing::debug!(
+            target: "fips_core::node::neighbor_rotation",
+            node = %self.node_addr(),
+            peer = %peer,
+            outbound,
+            reason,
+            peers = self.peers.len(),
+            max_peers = self.max_peers,
+            attempt_peer = ?attempt.map(|attempt| attempt.peer),
+            attempt_age_ms = ?attempt.map(|attempt| now_ms.saturating_sub(attempt.started_ms)),
+            cooldown_remaining_ms = self.neighbor_rotation.next_attempt_ms.saturating_sub(now_ms),
+            "Neighbor rotation rejected"
+        );
+        if reason != "no eligible idle neighbor" {
+            return;
+        }
+        let idle_ms = self
+            .config
+            .node
+            .neighbor_rotation
+            .as_ref()
+            .map_or(0, |config| config.idle_secs.saturating_mul(1000));
+        for neighbor in self.peers.values() {
+            let addr = neighbor.node_addr();
+            tracing::debug!(
+                target: "fips_core::node::neighbor_rotation",
+                node = %self.node_addr(),
+                candidate = %peer,
+                neighbor = %addr,
+                authenticated_age_ms = now_ms.saturating_sub(neighbor.authenticated_at()),
+                idle_ms,
+                configured = self.is_configured_peer_identity(neighbor.identity()),
+                transit_demand = neighbor.has_recent_transit_demand(now_ms, idle_ms),
+                application_demand = self.peer_has_application_demand(addr, now_ms, idle_ms),
+                pending_handshake = self.peers.connection_values().any(|conn| {
+                    conn.expected_identity().is_some_and(|identity| identity.node_addr() == addr)
+                }),
+                pending_transport = self.pending_connects.iter().any(|pending| {
+                    pending.peer_identity.node_addr() == addr
+                }),
+                "Observed protected neighbor at rotation rejection"
+            );
+        }
     }
 
     pub(in crate::node) fn begin_neighbor_rotation(

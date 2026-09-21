@@ -398,7 +398,6 @@ impl DataplaneLiveNode {
         )
     }
 
-    #[cfg(all(test, feature = "sim-transport"))]
     pub(crate) fn fmp_owner_has_pending_receive_epoch(
         &self,
         node_addr: &NodeAddr,

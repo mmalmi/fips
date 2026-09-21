@@ -38,7 +38,7 @@ impl Node {
                 },
             )
             .await;
-        Self::observe_dataplane_turn(&turn);
+        self.observe_dataplane_turn(&turn);
         turn
     }
 
@@ -63,7 +63,7 @@ impl Node {
                 },
             )
             .await;
-        Self::observe_dataplane_turn(&turn);
+        self.observe_dataplane_turn(&turn);
         turn
     }
 
@@ -359,7 +359,10 @@ impl Node {
             .saturating_add(turn.fsp_local_session_ingress().len())
     }
 
-    pub(in crate::node) fn observe_dataplane_turn(turn: &crate::dataplane::DataplaneLiveNodeTurn) {
+    pub(in crate::node) fn observe_dataplane_turn(
+        &self,
+        turn: &crate::dataplane::DataplaneLiveNodeTurn,
+    ) {
         if !turn.has_activity() {
             return;
         }
@@ -367,6 +370,7 @@ impl Node {
         let summary = turn.summary();
         if turn.has_failures() {
             debug!(
+                node = %self.node_addr(),
                 raw_ingress_dropped = summary.raw_ingress_dropped(),
                 inbound_dropped = summary.inbound_dropped(),
                 outbound_dropped = summary.outbound_dropped(),
@@ -387,6 +391,7 @@ impl Node {
             );
             for drop in turn.raw_ingress_drops() {
                 debug!(
+                    node = %self.node_addr(),
                     protocol = ?drop.protocol(),
                     transport_id = ?drop.transport_id(),
                     remote_addr = ?drop.remote_addr(),
@@ -398,6 +403,7 @@ impl Node {
             }
             for drop in turn.endpoint_data_drops() {
                 debug!(
+                    node = %self.node_addr(),
                     dest_addr = ?drop.dest_addr(),
                     payload_len = drop.payload_len(),
                     reason = ?drop.reason(),
@@ -406,12 +412,18 @@ impl Node {
             }
             for drop in turn.drops() {
                 debug!(
+                    node = %self.node_addr(),
                     owner = ?drop.owner(),
                     counter = ?drop.counter(),
                     reason = ?drop.reason(),
                     crypto_failure = ?drop.crypto_failure(),
                     wire_flags = ?drop.wire_flags(),
                     authenticated_counter_highest = ?drop.authenticated_counter_highest(),
+                    fmp_current_k_bit = ?self.peers.get(&drop.owner().node_addr()).map(|peer| peer.current_k_bit()),
+                    fmp_our_index = ?self.peers.get(&drop.owner().node_addr()).and_then(|peer| peer.our_index()),
+                    fmp_pending_our_index = ?self.peers.get(&drop.owner().node_addr()).and_then(|peer| peer.pending_our_index()),
+                    fmp_pending_key_false = self.dataplane.fmp_owner_has_pending_receive_epoch(&drop.owner().node_addr(), false),
+                    fmp_pending_key_true = self.dataplane.fmp_owner_has_pending_receive_epoch(&drop.owner().node_addr(), true),
                     "dataplane packet dropped"
                 );
             }
@@ -419,6 +431,7 @@ impl Node {
         }
 
         trace!(
+            node = %self.node_addr(),
             inbound_admitted = summary.inbound_admitted(),
             outbound_admitted = summary.outbound_admitted(),
             outputs_sent = summary.outputs_sent(),

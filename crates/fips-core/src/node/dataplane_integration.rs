@@ -494,7 +494,7 @@ impl Node {
                 },
             )
             .await;
-        Self::observe_dataplane_turn(&turn);
+        self.observe_dataplane_turn(&turn);
         self.collect_deferred_session_forward_terminals(&mut turn);
         turn
     }
