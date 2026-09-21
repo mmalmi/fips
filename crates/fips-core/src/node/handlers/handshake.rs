@@ -846,6 +846,17 @@ impl Node {
 
         conn.set_our_index(our_index);
         conn.set_their_index(header.sender_idx);
+        // A confirmed outbound owner predates this incoming refresh. Without
+        // that evidence, preserve the simultaneous crossed-dial decision.
+        // Capture eligibility now; later traffic cannot retarget this request.
+        if let Some(peer) = self.peers.get(&peer_node_addr).filter(|peer| {
+            !peer.fmp_mmp_is_initiator()
+                || self
+                    .dataplane_fmp_link_metrics(&peer_node_addr, Instant::now())
+                    .is_some_and(|metrics| metrics.current_epoch_authenticated)
+        }) {
+            conn.bind_refresh_owner(peer);
+        }
 
         // Create link
         let link = Link::connectionless(

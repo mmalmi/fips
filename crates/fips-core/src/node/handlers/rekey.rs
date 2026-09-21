@@ -512,10 +512,6 @@ impl Node {
     /// - If the drain window has expired, clean up the previous session
     /// - If the rekey timer/counter fires, initiate a new handshake
     pub(in crate::node) async fn check_rekey(&mut self) {
-        if !self.config.node.rekey.enabled {
-            return;
-        }
-
         self.expire_unconfirmed_fmp_rekeys(std::time::Instant::now());
 
         let rekey_after_secs = self.config.node.rekey.after_secs;
@@ -569,7 +565,10 @@ impl Node {
             }
         }
 
-        // Initiate new rekeys
+        // Completed handshakes still retire old keys when new rekeys are disabled.
+        if !self.config.node.rekey.enabled {
+            return;
+        }
         for node_addr in plan.initiate {
             let _ = self.initiate_rekey(&node_addr).await;
         }

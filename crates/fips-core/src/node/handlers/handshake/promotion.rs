@@ -178,6 +178,16 @@ impl Node {
                     &current_addr,
                 );
 
+            // The initiator may have lost our traffic while its old-key frames
+            // still reach us. Its fresh confirmation proves possession of
+            // the candidate keys. Only replace the exact owner this request
+            // targeted; a delayed proof must not roll back a newer session.
+            let confirmed_same_path_refresh = !is_outbound
+                && !inbound_alternate_path
+                && remote_epoch.is_some()
+                && existing_peer.remote_epoch() == remote_epoch
+                && connection.confirms_refresh_of(existing_peer);
+
             let remote_epoch_changed = matches!((existing_peer.remote_epoch(), remote_epoch), (Some(old), Some(new)) if old != new);
             let existing_payload_path_unusable = self
                 .session_direct_path_blocks_direct_payload(&peer_node_addr, current_time_ms)
@@ -231,6 +241,7 @@ impl Node {
                 || authenticated_inbound_udp_roam
                 || authenticated_inbound_connection_refresh
                 || late_inbound_refresh_for_active_outbound
+                || confirmed_same_path_refresh
                 || if outbound_alternate_path {
                     outbound_alternate_path_wins
                 } else if inbound_alternate_path {
@@ -242,7 +253,8 @@ impl Node {
                     // one cross-connection. Applying it to a second handshake
                     // in the same direction can replace only one endpoint's
                     // Noise owner while the peer keeps the first matching
-                    // owner. A healthy same-carrier duplicate therefore loses.
+                    // owner. Without fresh proof for that exact owner, a
+                    // healthy same-carrier duplicate therefore loses.
                     false
                 };
 

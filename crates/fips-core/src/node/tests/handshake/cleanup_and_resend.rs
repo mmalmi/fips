@@ -496,19 +496,20 @@ async fn losing_inbound_candidate_never_advertises_an_unowned_receiver_index() {
     let old_our_index = responder.index_allocator.allocate().unwrap();
     let old_their_index = SessionIndex::new(20);
 
+    // The existing outbound wins the crossed-dial rule. A confirmed refresh
+    // in the same direction would instead be a valid owner replacement.
     let mut old_initiator = crate::noise::HandshakeState::new_initiator(
-        initiator.keypair(),
-        responder.identity.pubkey_full(),
+        responder.identity.keypair(),
+        initiator.pubkey_full(),
     );
-    let mut old_responder =
-        crate::noise::HandshakeState::new_responder(responder.identity.keypair());
-    old_initiator.set_local_epoch([0xA1; 8]);
-    old_responder.set_local_epoch(responder.startup_epoch);
+    let mut old_responder = crate::noise::HandshakeState::new_responder(initiator.keypair());
+    old_initiator.set_local_epoch(responder.startup_epoch);
+    old_responder.set_local_epoch([0xA1; 8]);
     let old_msg1 = old_initiator.write_message_1().unwrap();
     old_responder.read_message_1(&old_msg1).unwrap();
     let old_msg2 = old_responder.write_message_2().unwrap();
     old_initiator.read_message_2(&old_msg2).unwrap();
-    let old_session = old_responder.into_session().unwrap();
+    let old_session = old_initiator.into_session().unwrap();
 
     let active = ActivePeer::with_session(
         initiator_peer,
@@ -521,7 +522,7 @@ async fn losing_inbound_candidate_never_advertises_an_unowned_receiver_index() {
             transport_id,
             current_addr: remote_addr.clone(),
             link_stats: LinkStats::new(),
-            is_initiator: false,
+            is_initiator: true,
             remote_epoch: Some([0xA1; 8]),
         },
     );
@@ -534,7 +535,7 @@ async fn losing_inbound_candidate_never_advertises_an_unowned_receiver_index() {
             link_id,
             transport_id,
             remote_addr.clone(),
-            LinkDirection::Inbound,
+            LinkDirection::Outbound,
             Duration::from_millis(1),
         ),
     );

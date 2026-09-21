@@ -46,8 +46,8 @@ impl Node {
             .session_direct_degradation
             .has_pending_validation(peer_node_addr);
         // A real frame accepted by the current epoch proves the remote has
-        // installed matching keys. Configured timer/counter thresholds may
-        // legitimately rotate this session before the initial 30s window.
+        // matching keys, including during pending readiness. Timer/counter
+        // thresholds may rotate this session before the initial 30s window.
         // Unauthenticated arrivals and a previous epoch's traffic cannot
         // supply this evidence.
         let current_epoch_authenticated = self

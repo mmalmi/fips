@@ -4,6 +4,7 @@
 //! PeerConnection tracks the Noise IK handshake state and transitions to
 //! ActivePeer upon successful authentication.
 
+use super::ActivePeer;
 use crate::PeerIdentity;
 use crate::noise::{self, NoiseError, NoiseSession};
 use crate::transport::{
@@ -146,6 +147,9 @@ pub struct PeerConnection {
     /// length is bounded by FMP's u16 length, and retries never replace it.
     handshake_confirmation: Option<ReceivedPacket>,
 
+    /// Current owner when this refresh was admitted. Retries cannot retarget it.
+    refresh_owner: Option<(LinkId, u64, SessionIndex)>,
+
     /// Number of resends performed so far.
     resend_count: u32,
 
@@ -185,6 +189,7 @@ impl PeerConnection {
             handshake_msg2: None,
             completed_handshake_response: None,
             handshake_confirmation: None,
+            refresh_owner: None,
             resend_count: 0,
             next_resend_at_ms: 0,
         }
@@ -217,6 +222,7 @@ impl PeerConnection {
             handshake_msg2: None,
             completed_handshake_response: None,
             handshake_confirmation: None,
+            refresh_owner: None,
             resend_count: 0,
             next_resend_at_ms: 0,
         }
@@ -253,6 +259,7 @@ impl PeerConnection {
             handshake_msg2: None,
             completed_handshake_response: None,
             handshake_confirmation: None,
+            refresh_owner: None,
             resend_count: 0,
             next_resend_at_ms: 0,
         }
@@ -414,6 +421,21 @@ impl PeerConnection {
 
     pub(crate) fn handshake_confirmation(&self) -> Option<&ReceivedPacket> {
         self.handshake_confirmation.as_ref()
+    }
+
+    pub(crate) fn bind_refresh_owner(&mut self, peer: &ActivePeer) {
+        self.refresh_owner = peer
+            .our_index()
+            .map(|index| (peer.link_id(), peer.session_generation(), index));
+    }
+
+    pub(crate) fn confirms_refresh_of(&self, peer: &ActivePeer) -> bool {
+        self.handshake_confirmation.is_some()
+            && self.refresh_owner.is_some_and(|(link, generation, index)| {
+                peer.link_id() == link
+                    && peer.session_generation() == generation
+                    && peer.our_index() == Some(index)
+            })
     }
 
     pub(crate) fn retain_handshake_confirmation(&mut self, packet: &ReceivedPacket) {

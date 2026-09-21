@@ -1,6 +1,9 @@
 //! A second crowded encounter must reuse authority after native peer eviction.
 use super::*;
 
+#[path = "repeated/witness.rs"]
+mod witness;
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn repeated_full_rosters_recover_paid_routes_without_candidate_departures() {
     tokio::time::timeout(Duration::from_secs(480), Box::pin(exercise_repeated()))
@@ -160,7 +163,12 @@ async fn exercise_repeated() {
     let gates = bench.gates.clone();
     let controllers = bench.controllers.clone();
     let buyer = bench.buyers[0].clone();
-    let original_links = internal_links(&root, &nodes, &identities).await;
+    let mut witness = witness::BridgeWitness::new(&identities);
+    let original_links =
+        internal_links_observed(&root, &nodes, &identities, |node, a, b, reply| {
+            witness.observe(node, a, b, reply);
+        })
+        .await;
     // One bounded 256-byte/s stream in each component persists through both
     // encounters and the split. It needs no extra funding or enlarged offers.
     let local = LocalTraffic::with_payload_len(&bench, 256).await;
@@ -169,7 +177,12 @@ async fn exercise_repeated() {
             if let Some(failure) = local.failure() {
                 return failure;
             }
-            if internal_links(&root, &nodes, &identities).await != original_links {
+            if internal_links_observed(&root, &nodes, &identities, |node, a, b, reply| {
+                witness.observe(node, a, b, reply);
+            })
+            .await
+                != original_links
+            {
                 return "an original boundary-to-internal link changed during an encounter".into();
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -184,13 +197,18 @@ async fn exercise_repeated() {
         })
         .await;
     let outcome = outcome.and(
-        (internal_links(&root, &nodes, &identities).await == original_links)
+        (internal_links_observed(&root, &nodes, &identities, |node, a, b, reply| {
+            witness.observe(node, a, b, reply);
+        })
+        .await
+            == original_links)
             .then_some(())
             .ok_or_else(|| {
                 "an original boundary-to-internal link changed during an encounter".into()
             }),
     );
     if let Err(reason) = &outcome {
+        eprintln!("repeated full-roster bridge witness: {}", witness.summary());
         eprintln!("repeated full-roster failure before drain: {reason}");
         eprintln!(
             "repeated full-roster carrier snapshot: {}",

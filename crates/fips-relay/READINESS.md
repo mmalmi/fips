@@ -2105,10 +2105,37 @@ gaps are 2,249/4,315 ms. Paid cross-component delivery resumes in
 33.879–43.591 seconds and all-hop credit in 34.594–44.406 seconds, within each
 60-second encounter window. Both runs collect all 1,536 test sats.
 
-A separate genuinely asymmetric quiet-FMP
-refresh can still disagree about owner replacement after fresh proof; removing
-the invalid one-way-application trigger does not establish a fix for that case.
-Latest code has not received physical-router or mobile-radio acceptance.
+Asymmetric quiet-FMP refresh now binds an incoming candidate to the current
+link, receive index and session generation. Fresh encrypted proof may replace
+only that exact owner, in either original connection direction. An existing
+outbound owner must already have authenticated its current epoch when the new
+request arrives, preserving simultaneous-dial arbitration. A delayed proof
+cannot roll back a completed rekey. Disabling periodic rekeys still permits
+normal pending-session maintenance and ten-second retirement of old indices.
+Real UDP regressions cover quiet and healthy controls in both directions,
+obsolete proof after an actual overlapping rekey, and index retirement.
+
+Readiness proves possession of candidate keys, not continued remote admission.
+A four-node UDP regression delays a real request until the initiator's original
+attempt is nearly expired. The responder can subsequently admit its retained
+readiness frame after the initiator has freed that receive index. A fresh dial
+must restore reciprocal authenticated keys within two seconds and deliver one
+payload in each direction. This passes with periodic rekeys enabled and disabled;
+the unchanged baseline fails the disabled-rekey recovery case. Reproduce with
+`cargo test -p nvpn-fips-core --all-features --lib
+node::tests::handshake::candidates::rotation::rotation_readiness:: --
+--test-threads=1 --nocapture`; the asymmetric cases are under
+`node::tests::handshake::same_path_refresh::`.
+
+Crowded reconnection timing remains open. Both this candidate and unchanged
+master have exceeded the second 60-second paid encounter window. The baseline
+snapshots are consistent with the expiry/admission overlap above, but do not
+prove the exact cause. Two later diagnostic runs pass both encounters, with
+all-hop credit restored in 33.658–39.988 seconds and all 1,536 test sats collected
+per run. Those passing controls do not waive the earlier failures. The fixture
+now keeps bounded neighbor-transition history from its existing queries and
+prints it on failure. Latest code has not received physical-router or mobile-radio
+acceptance.
 
 The `merge_split::brief` variant covers repeated short contacts (2026-09-20).
 Independent tasks change the bridge carrier and send single-attempt packets in

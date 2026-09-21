@@ -11,5 +11,6 @@ mod early_rekey;
 mod epoch_restart;
 mod maintenance_progress;
 mod rx_loop;
+mod same_path_refresh;
 mod static_and_cross;
 mod udp_two_node;

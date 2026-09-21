@@ -124,6 +124,16 @@ async fn internal_links(
     nodes: &[Arc<FipsEndpoint>],
     identities: &[PeerIdentity],
 ) -> [(u64, u64); 2] {
+    internal_links_observed(root, nodes, identities, |_, _, _, _| {}).await
+}
+
+/// Observe replies already required by the internal-link check; never add a query.
+async fn internal_links_observed(
+    root: &Path,
+    nodes: &[Arc<FipsEndpoint>],
+    identities: &[PeerIdentity],
+    mut observe: impl FnMut(usize, Instant, Instant, &Value),
+) -> [(u64, u64); 2] {
     let mut result = [(0, 0); 2];
     for (index, (boundary, internal)) in [(2, 1), (3, 4)].into_iter().enumerate() {
         assert!(
@@ -132,7 +142,9 @@ async fn internal_links(
             }),
             "the original local paid neighbor must remain connected"
         );
+        let query_start = Instant::now();
         let reply = native_query(root, boundary, "show_peers").await;
+        observe(boundary, query_start, Instant::now(), &reply);
         let peer = reply["peers"]
             .as_array()
             .unwrap()
