@@ -1918,8 +1918,8 @@ preserves end-to-end sessions and queued traffic; fresh remote startup epochs
 still use the restart recovery path. Pending neighbors can prepare before an
 incumbent is old enough to replace, but activation requires fresh encrypted
 confirmation and current eligibility at both ends. An interrupted local discovery
-attempt gets one fresh retry within its original deadline. The existing heartbeat
-carries readiness; no new wire message or larger admission allowance is needed.
+attempt gets one eligible fresh retry within its original deadline. The existing
+heartbeat carries readiness; no new wire message or larger admission allowance is needed.
 See the [rotation policy](../../docs/design/fips-configuration.md#optional-neighbor-rotation-nodeneighbor_rotation)
 for exact pacing, demand protection and discovery-source limits.
 
@@ -2136,6 +2136,18 @@ per run. Those passing controls do not waive the earlier failures. The fixture
 now keeps bounded neighbor-transition history from its existing queries and
 prints it on failure. Latest code has not received physical-router or mobile-radio
 acceptance.
+
+Interrupted outgoing discovery retries now skip a candidate when the current
+full roster cannot satisfy minimum age or replacement spacing before its original
+deadline. The check preserves that deadline, peer limits and discovery fairness;
+it does not predict later disconnects or remote progress. Two production-path
+regressions independently cover age and spacing, confirm another discovered peer
+is selected, and observe no handshake sent to the ineligible retry target. All
+98 handshake tests, eight demand-discovery tests and strict core/relay lint pass.
+One unchanged paid full-roster compatibility run restores delivery in
+34.191/34.787 seconds and all-hop credit in 34.904/35.602 seconds, then collects
+all 1,536 test sats. This verifies avoiding a futile local attempt, not faster
+bridge recovery or resolution of the earlier 60-second failures.
 
 The `merge_split::brief` variant covers repeated short contacts (2026-09-20).
 Independent tasks change the bridge carrier and send single-attempt packets in

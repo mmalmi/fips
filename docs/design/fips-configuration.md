@@ -204,8 +204,10 @@ When an unanswered local attempt yields to incoming traffic, transport and LAN
 discovery give its selected identity one retry before the original attempt's
 deadline. The retry uses a fresh handshake and current discovery address, ACL and
 capacity checks. A missing or ineligible identity cannot block other candidates,
-and an interrupted retry cannot create another retry. The original discovery
-cursor remains intact. Nostr traversal events retain their existing arrival
+including when the current full roster cannot satisfy minimum age or replacement
+spacing before the original deadline. This check does not predict future
+disconnects. An interrupted retry cannot create another retry. The original
+discovery cursor remains intact. Nostr traversal events retain their existing arrival
 order; they do not use this candidate-list preference.
 
 Transport and LAN discovery alternate demand preference with ordinary exploration.
@@ -218,9 +220,9 @@ queue and current routes; an advert alone cannot create demand. Starting that at
 consumes the preference, even if the peer never answers. The next new outgoing
 attempt uses ordinary cursor order and replenishes demand preference. A preferred
 attempt does not move the cursor. Empty or ineligible demand falls through, and
-incoming attempts or failed scans do not replenish preference. The one-use
-interrupted retry above stays ahead of both choices and continues its original
-turn without changing the cursor or the owed exploration turn.
+incoming attempts or failed scans do not replenish preference. When eligible, the
+one-use interrupted retry above stays ahead of both choices and continues its
+original turn without changing the cursor or the owed exploration turn.
 
 Historical routes are not consulted. The preference does not bypass ACLs,
 capacity, incumbent protection or handshake

@@ -15,6 +15,8 @@ enum Case {
     MissingTarget,
     PreparationExpires,
     HandshakeExpires,
+    RetryCannotMature,
+    RetryCannotPace,
 }
 
 #[test]
@@ -40,6 +42,16 @@ fn retried_hostname_preparation_expires_at_original_deadline() {
 #[test]
 fn retried_noise_expires_at_original_deadline_after_timeout_increase() {
     run(Case::HandshakeExpires);
+}
+
+#[test]
+fn interrupted_retry_that_cannot_mature_yields_to_another_discovered_peer() {
+    run(Case::RetryCannotMature);
+}
+
+#[test]
+fn interrupted_retry_that_cannot_meet_replacement_interval_yields_to_another_peer() {
+    run(Case::RetryCannotPace);
 }
 
 fn run(case: Case) {
@@ -76,8 +88,12 @@ async fn exercise(node: &mut TestNode, case: Case) {
     let mut old_owner = incumbent(node, &old, &old_source, 601, 0).await;
     enable(node, 1);
     node.node.config.node.neighbor_rotation = Some(NeighborRotationConfig {
-        idle_secs: 1,
-        interval_secs: 1,
+        idle_secs: if case == Case::RetryCannotMature {
+            2
+        } else {
+            1
+        },
+        interval_secs: if case == Case::RetryCannotPace { 2 } else { 1 },
     });
     node.node.config.node.rate_limit.handshake_timeout_secs = 6;
     node.node.config.node.rekey.enabled = false;
@@ -127,7 +143,9 @@ async fn exercise(node: &mut TestNode, case: Case) {
         &responder.write_message_2().unwrap(),
     );
 
-    tokio::time::sleep_until(wall_start + Duration::from_millis(1_050)).await;
+    let short_retry = matches!(case, Case::RetryCannotMature | Case::RetryCannotPace);
+    let transfer_ms = if short_retry { 2_050 } else { 1_050 };
+    tokio::time::sleep_until(wall_start + Duration::from_millis(transfer_ms)).await;
     let mut first_owner = connect(node, &first, &first_source, 603).await;
     assert_eq!(
         node.node.neighbor_rotation_started_at(first.node_addr()),
@@ -141,6 +159,12 @@ async fn exercise(node: &mut TestNode, case: Case) {
         old_owner.link
     );
     assert_eq!(heartbeat(node, &old, &mut old_owner, 2).await, 2);
+    if short_retry {
+        // The incoming peer supplies its fresh proof late in the transferred
+        // attempt. Exactly one of minimum age and replacement interval cannot
+        // elapse before the interrupted attempt's original six-second deadline.
+        tokio::time::sleep_until(wall_start + Duration::from_millis(4_500)).await;
+    }
     promote(node, &first, &mut first_owner).await;
     assert_eq!(
         node.node.neighbor_rotation_order(*competitor.node_addr()),
@@ -181,7 +205,7 @@ async fn exercise(node: &mut TestNode, case: Case) {
 
     let mut discovery = Discovery::new(node, &target, &competitor, case).await;
     node.node.poll_transport_discovery().await;
-    let expected = if case == Case::MissingTarget {
+    let expected = if case == Case::MissingTarget || short_retry {
         &competitor
     } else {
         &target
@@ -195,9 +219,38 @@ async fn exercise(node: &mut TestNode, case: Case) {
     assert_eq!(
         pending.expected_identity().unwrap().node_addr(),
         expected.node_addr(),
-        "the offered interrupted target must get one priority turn, without blocking other candidates"
+        "discovery must select an eligible candidate without blocking on an unusable preference"
     );
     assert_eq!(resources(node), (1, 1, 2, 2));
+    if short_retry {
+        let admitted = node
+            .node
+            .get_peer(first.node_addr())
+            .unwrap()
+            .authenticated_at();
+        let policy = node.node.config.node.neighbor_rotation.as_ref().unwrap();
+        let deadline = original_start + 6_000;
+        assert_eq!(
+            admitted + policy.idle_secs * 1000 >= deadline,
+            case == Case::RetryCannotMature
+        );
+        assert_eq!(
+            admitted + policy.interval_secs * 1000 >= deadline,
+            case == Case::RetryCannotPace
+        );
+        assert!(Node::now_ms() < original_start + 6_000);
+        assert_ne!(
+            node.node
+                .neighbor_rotation_started_at(competitor.node_addr()),
+            Some(original_start),
+            "the other peer gets its own ordinary attempt, not a renewed interrupted retry"
+        );
+        assert!(
+            discovery.target_rx.try_recv().is_err(),
+            "no unusable retry is sent"
+        );
+        return;
+    }
     if case == Case::MissingTarget {
         return;
     }

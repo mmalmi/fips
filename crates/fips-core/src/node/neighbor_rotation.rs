@@ -58,10 +58,10 @@ impl Node {
     }
 
     fn rotation_victim(&self, now_ms: u64) -> Option<NodeAddr> {
-        self.rotation_victim_with_age(now_ms, true)
+        self.rotation_victim_by(now_ms, Some(now_ms))
     }
 
-    fn rotation_victim_with_age(&self, now_ms: u64, require_age: bool) -> Option<NodeAddr> {
+    fn rotation_victim_by(&self, now_ms: u64, eligible_by_ms: Option<u64>) -> Option<NodeAddr> {
         let config = self.config.node.neighbor_rotation.as_ref()?;
         if self.max_peers == 0 || self.peers.len() != self.max_peers {
             return None;
@@ -72,7 +72,8 @@ impl Node {
             .values()
             .filter(|peer| {
                 !self.is_configured_peer_identity(peer.identity())
-                    && (!require_age || now_ms.saturating_sub(peer.authenticated_at()) >= idle_ms)
+                    && eligible_by_ms
+                        .is_none_or(|at| at.saturating_sub(peer.authenticated_at()) >= idle_ms)
                     && !peer.has_recent_transit_demand(now_ms, idle_ms)
             })
             .collect();
@@ -122,7 +123,9 @@ impl Node {
         self.neighbor_roster_full()
             && now_ms >= self.neighbor_rotation.next_attempt_ms
             && !self.rotation_has_pending_candidate()
-            && self.rotation_victim_with_age(now_ms, require_age).is_some()
+            && self
+                .rotation_victim_by(now_ms, require_age.then_some(now_ms))
+                .is_some()
     }
 
     /// Keep discovery from refreshing the idle peer that can make room for
@@ -149,7 +152,7 @@ impl Node {
         }
         // Both directions may prepare while the incumbent ages. Ordinary
         // discovery refresh must not keep postponing that maturity window.
-        self.rotation_victim_with_age(now_ms, false)
+        self.rotation_victim_by(now_ms, None)
     }
 
     /// At most one candidate identity, with one handshake in each direction
@@ -177,7 +180,8 @@ impl Node {
         if let Some(reason) = self.rotation_new_peer_rejection(peer, now_ms) {
             return Some(reason);
         }
-        if self.rotation_has_pending_candidate() {
+        let pending_candidate = self.rotation_has_pending_candidate();
+        if pending_candidate {
             let Some(attempt) = &self.neighbor_rotation.attempt else {
                 return Some("pending candidate without rotation ownership");
             };
@@ -207,13 +211,46 @@ impl Node {
         } else if !outbound && self.neighbor_rotation_discovery_turn_reserved(now_ms) {
             return Some("local discovery turn reserved");
         }
+        // An interrupted retry keeps its original deadline. Do not spend a
+        // discovery turn on it if this roster cannot become eligible in time.
+        // This does not predict later disconnects. A rejected candidate keeps
+        // its original deadline and one-use preference.
+        let mut eligible_by_ms = None;
+        let retry_ineligible = "interrupted retry cannot become eligible before expiry";
+        if outbound
+            && !pending_candidate
+            && let Some(retry) = self.neighbor_rotation.interrupted_outgoing.as_ref()
+            && retry.peer == *peer
+            && now_ms < retry.deadline_ms
+        {
+            let interval_ms = self
+                .config
+                .node
+                .neighbor_rotation
+                .as_ref()
+                .unwrap()
+                .interval_secs
+                .saturating_mul(1000);
+            if self
+                .neighbor_rotation
+                .last_replacement_ms
+                .is_some_and(|at| at.saturating_add(interval_ms) >= retry.deadline_ms)
+            {
+                return Some(retry_ineligible);
+            }
+            eligible_by_ms = Some(retry.deadline_ms - 1);
+        }
         // Cooldown and candidate ownership can reject without walking every
         // neighbor's session activity. Demand is still fresh on allowed paths.
         // Either direction may prepare one candidate before minimum age.
         // Promotion still requires fresh mature eligibility and peer proof.
-        self.rotation_victim_with_age(now_ms, false)
+        self.rotation_victim_by(now_ms, eligible_by_ms)
             .is_none()
-            .then_some("no eligible idle neighbor")
+            .then_some(if eligible_by_ms.is_some() {
+                retry_ineligible
+            } else {
+                "no eligible idle neighbor"
+            })
     }
 
     fn rotation_new_peer_rejection(&self, peer: &NodeAddr, now_ms: u64) -> Option<&'static str> {
