@@ -6,6 +6,7 @@ import tempfile
 import unittest
 
 from analyze import analyze
+from validation import validate_latency
 
 
 DELAYS = [250, 500, 1000, 2000, 2000, 1000, 500, 250]
@@ -227,6 +228,93 @@ class AnalyzeTests(unittest.TestCase):
             latency.update(samples=3199, invalid_timestamps=1, sum_us=3199 * 80)
             latency["bucket_counts"][0] = 3199
         self.reject(invalid)
+
+    def test_negative_latency_mean_is_rejected(self):
+        self.reject(lambda rows: workload(rows)["probes"][0]["receiver"]["latency"]
+                    .__setitem__("sum_us", -256000))
+
+    def test_latency_fields_require_nonnegative_integers(self):
+        for field in ("samples", "invalid_timestamps", "sum_us", "min_us", "max_us",
+                      "bucket_upper_bounds_us", "bucket_counts"):
+            for invalid in (-1, True, None, 1.5, "80"):
+                with self.subTest(field=field, invalid=invalid):
+                    def mutate(rows):
+                        latency = workload(rows)["probes"][0]["receiver"]["latency"]
+                        if field.startswith("bucket_"):
+                            latency[field][0] = invalid
+                        else:
+                            latency[field] = invalid
+                    self.reject(mutate)
+
+    def test_latency_histogram_shape_and_order_are_required(self):
+        for field, value in (("bucket_counts", None),
+                             ("bucket_counts", [3200]),
+                             ("bucket_upper_bounds_us", None),
+                             ("bucket_upper_bounds_us", [250, 100] + BOUNDS[2:]),
+                             ("bucket_upper_bounds_us", [100, 100] + BOUNDS[2:])):
+            with self.subTest(field=field, value=value):
+                self.reject(lambda rows: workload(rows)["probes"][0]["receiver"]["latency"]
+                            .__setitem__(field, value))
+
+    def test_latency_extrema_and_sum_must_fit_occupied_buckets(self):
+        cases = ({"min_us": 81}, {"max_us": 79},
+                 {"min_us": 101, "max_us": 101, "sum_us": 3200 * 101},
+                 {"sum_us": 3200 * 80 - 1}, {"sum_us": 3200 * 80 + 1})
+        for changes in cases:
+            with self.subTest(changes=changes):
+                self.reject(lambda rows: workload(rows)["probes"][0]["receiver"]["latency"]
+                            .update(changes))
+        # These sums fit samples * min/max, but cannot fit the actual occupied
+        # inclusive bins (one at 10, 3198 in 101..200, and one at 250).
+        for total in (320000, 700000):
+            def mutate(rows):
+                workload(rows)["probes"][0]["receiver"]["latency"].update(
+                    min_us=10, max_us=250, sum_us=total,
+                    bucket_upper_bounds_us=[100, 200], bucket_counts=[1, 3198, 1])
+            with self.subTest(total=total):
+                self.reject(mutate)
+
+    def test_latency_inclusive_boundaries_and_overflow_remain_valid(self):
+        for delay, bucket in ((0, 0), (100, 0), (101, 1),
+                              (1000000, 12), (1000001, 13)):
+            with self.subTest(delay=delay):
+                rows = complete_report()
+                latency = workload(rows)["probes"][0]["receiver"]["latency"]
+                counts = [0] * (len(BOUNDS) + 1)
+                counts[bucket] = 3200
+                latency.update(min_us=delay, max_us=delay, sum_us=3200 * delay,
+                               bucket_counts=counts)
+                _, _, grouped = self.run_report(rows)
+                self.assertEqual(grouped[("steady", 250)][0]["mean_latency_us"], delay)
+
+    def test_self_described_histogram_accepts_feasible_sum_endpoints(self):
+        for total in (10 + 3198 * 101 + 250, 10 + 3198 * 200 + 250):
+            rows = complete_report()
+            workload(rows)["probes"][0]["receiver"]["latency"].update(
+                min_us=10, max_us=250, sum_us=total,
+                bucket_upper_bounds_us=[100, 200], bucket_counts=[1, 3198, 1])
+            _, _, grouped = self.run_report(rows)
+            self.assertEqual(grouped[("steady", 250)][0]["mean_latency_us"], total / 3200)
+
+    def test_zero_and_single_sample_latency_match_reporter_extrema(self):
+        empty = {"samples": 0, "invalid_timestamps": 0, "min_us": None,
+                 "max_us": None, "sum_us": 0, "bucket_upper_bounds_us": BOUNDS,
+                 "bucket_counts": [0] * (len(BOUNDS) + 1)}
+        validate_latency(empty, 0)
+        for changes in ({"min_us": 0}, {"max_us": 0}, {"sum_us": 1}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                validate_latency({**empty, **changes}, 0)
+        single = probe(1, 0)["receiver"]["latency"]
+        validate_latency(single, 1)
+        with self.assertRaises(ValueError):
+            validate_latency({**single, "max_us": 81}, 1)
+        # Both extrema must be actual samples, even within one broad bin.
+        pair = probe(2, 0)["receiver"]["latency"]
+        pair.update(min_us=10, max_us=80, sum_us=90)
+        validate_latency(pair, 2)
+        for total in (89, 91):
+            with self.subTest(total=total), self.assertRaises(ValueError):
+                validate_latency({**pair, "sum_us": total}, 2)
 
     def test_mismatched_workload_and_payload_sizes_are_rejected(self):
         for side, field, value in (("sender", "requested_packets", 3201),

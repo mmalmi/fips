@@ -145,8 +145,6 @@ def summarize(row, schema=2, delivery_rejections=None):
         latency = received["latency"]
         if latency is None:
             continue
-        if latency["samples"] + latency["invalid_timestamps"] != received["unique_packets"]:
-            raise ValueError("timing sample coverage differs from packet delivery")
         result["latency_samples"] += latency["samples"]
         result["invalid_timestamps"] += latency["invalid_timestamps"]
         result["latency_sum_us"] += latency["sum_us"]
@@ -162,8 +160,6 @@ def summarize(row, schema=2, delivery_rejections=None):
     result["mean_latency_us"] = result["latency_sum_us"] / result["latency_samples"] if result["latency_samples"] else None
     result["p95_upper_us"] = None
     if buckets:
-        if sum(buckets) != result["latency_samples"]:
-            raise ValueError("histogram differs from valid sample count")
         cumulative = 0
         for index, count in enumerate(buckets):
             cumulative += count

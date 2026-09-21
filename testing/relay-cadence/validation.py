@@ -1,5 +1,7 @@
 """Acceptance rules for the fixed clean-link experiment, not impaired trials."""
 
+from bisect import bisect_left
+
 PAYMENT_PORT = 44743
 PAYMENT_OPERATIONS = ("payment_sign", "payment_usage", "payment_update")
 OPERATIONS = {"other", *PAYMENT_OPERATIONS, "payment_open", "payment_stop", "window_checkpoint"}
@@ -160,6 +162,51 @@ def validate_probe(probe, count, schema=2):
         raise ValueError("clean-link probe has delivery loss")
 
 
+def validate_latency(latency, delivered):
+    """Validate LatencyReport's inclusive upper bins and final overflow bin."""
+    if not isinstance(latency, dict):
+        raise ValueError("missing latency report")
+    samples = unsigned(latency["samples"])
+    invalid = unsigned(latency["invalid_timestamps"])
+    total = unsigned(latency["sum_us"])
+    bounds, counts = latency["bucket_upper_bounds_us"], latency["bucket_counts"]
+    if not isinstance(bounds, list) or not isinstance(counts, list):
+        raise ValueError("latency histogram must contain arrays")
+    bounds = list(map(unsigned, bounds))
+    counts = list(map(unsigned, counts))
+    if (len(counts) != len(bounds) + 1
+            or any(a >= b for a, b in zip(bounds, bounds[1:]))):
+        raise ValueError("invalid latency histogram bounds or shape")
+    if samples + invalid != delivered or sum(counts) != samples:
+        raise ValueError("timing sample coverage differs from packet delivery")
+    minimum, maximum = latency["min_us"], latency["max_us"]
+    if not samples:
+        if minimum is not None or maximum is not None or total:
+            raise ValueError("empty latency report has extrema or a sum")
+        return
+    minimum, maximum = unsigned(minimum), unsigned(maximum)
+    if minimum > maximum:
+        raise ValueError("latency extrema are reversed")
+    first, last = bisect_left(bounds, minimum), bisect_left(bounds, maximum)
+    if (not counts[first] or not counts[last]
+            or (minimum != maximum and first == last and counts[first] < 2)):
+        raise ValueError("latency extrema are absent from the histogram")
+    lower_sum = upper_sum = 0
+    for index, count in enumerate(counts):
+        if not count:
+            continue
+        lower = max(minimum, bounds[index - 1] + 1 if index else 0)
+        upper = min(maximum, bounds[index] if index < len(bounds) else maximum)
+        if lower > upper:
+            raise ValueError("latency histogram lies outside its extrema")
+        # Both reported extrema must occur at least once. Other samples may
+        # occupy any integer delay inside their bucket; no samples are invented.
+        lower_sum += count * lower + (maximum - lower if index == last else 0)
+        upper_sum += count * upper - (upper - minimum if index == first else 0)
+    if not lower_sum <= total <= upper_sum:
+        raise ValueError("latency sum is inconsistent with its histogram and extrema")
+
+
 def probe_delivery_loss(probe, count, schema=2):
     """Return a proven missing count; reject every other malformed probe field."""
     sent, received = probe["sender"], probe["receiver"]
@@ -186,8 +233,10 @@ def probe_delivery_loss(probe, count, schema=2):
     if schema == 3:
         if received["latency"] is not None:
             raise ValueError("hardware one-way latency must remain unmeasured")
-    elif unsigned(received["latency"]["invalid_timestamps"]) != 0:
-        raise ValueError("clean-link latency has invalid timestamps")
+    else:
+        validate_latency(received["latency"], unique)
+        if received["latency"]["invalid_timestamps"]:
+            raise ValueError("clean-link latency has invalid timestamps")
     return missing
 
 
