@@ -1134,6 +1134,40 @@ and route-history, seven multi-node controller and five test-mint financial
 scenarios. Strict all-feature/all-target linting, default compilation, formatting
 and the 600-line relay source / 1000-line integration-test limits pass.
 
+### Bounded incoming receipt enumeration
+
+The SDK's receipt reader now selects at most 128 incoming sat transactions for
+one mint before decoding them. An indexed timestamp/ID cursor continues through
+empty eligible-result pages and survives deletion of its own row. Each call is
+a separate read; a new pass sees earlier insertions or newly eligible receipts.
+Selected corrupt evidence and pages exceeding 4 MiB of projected payload fail
+explicitly. Unsupported backends fail without a whole-history fallback.
+
+This bounds receipt enumeration, not total wallet storage or every maintenance
+operation. Proof-owner checks still inspect complete history before permitting
+deletion; normal interrupted-history recovery can run those checks before the
+page read. The per-page limits do not bound that recovery. The payload limit
+protects the database-driver boundary; it does not bound all database-engine
+memory or proof-eligibility work. These changes add no network message or
+automatic retirement authority.
+
+The regression first fails against the old reader because malformed history for
+an unrelated mint poisons receipt enumeration. The new reader passes five
+SQLite-backed SDK scenarios covering that case, empty pages, tied timestamps,
+deleted cursors, reopening, changing history, invalid cursors and oversized or
+malformed selected rows. Exact records, balances and accounting totals remain
+unchanged in those reads. All 341 SDK workspace tests, strict linting and 18
+feature configurations pass. Native storage checks pass 358 common/SQL/SQLite
+unit tests, including five page tests. PostgreSQL compiles but has no runtime
+acceptance here; the query-plan assertion covers index use by the header seek,
+not the complete generated payload query. No hardware or throughput result is
+claimed for this storage change.
+
+With the same dependency sources, all 292 relay unit tests and nine test-mint
+funding/recovery scenarios pass, including expiry, restart, refunds and channel
+retirement without resetting lifetime spending. Strict all-target relay lint,
+formatting and the 867-file source-size gate also pass.
+
 ### Route-evidence retirement foundation
 
 Buyer and seller accounting now share fixed-size per-channel rollups for closed,

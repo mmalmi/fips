@@ -183,6 +183,13 @@ crate path to `[patch.crates-io]`. Keep machine-specific overrides outside the
 repository and record exact revisions. Dependency release/version updates remain
 necessary before distribution. No device deployment is implied by these tests.
 
+The wallet's incoming-receipt reader now requires CDK's indexed
+`get_transactions_page` API and the matching SQL scope/cursor index. Its SDK API
+returns a page and continuation cursor; a page with no eligible receipts can
+still have more history. This bounds receipt enumeration without truncating the
+independent checks that protect coin and receipt ownership. Use matched SDK/CDK
+sources; the published versions do not provide this storage contract.
+
 The TCP stack and endpoint override must include `set_connection_reservation`.
 Override both `nvpn-fips-tcp` and `nvpn-fips-tcp-endpoint`; this workspace still
 pins stack 0.2.2 and endpoint 0.2.16, whose FIPS core requirement is 0.4.81. Use
