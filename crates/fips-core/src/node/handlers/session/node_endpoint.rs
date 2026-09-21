@@ -46,6 +46,14 @@ impl Node {
                     return Ok(());
                 }
 
+                tracing::debug!(
+                    node = %self.node_addr(),
+                    destination = %dest_addr,
+                    packets = payloads.len(),
+                    route_available,
+                    fsp_owner = self.dataplane_has_fsp_owner(&dest_addr),
+                    "Queueing established endpoint data for route recovery"
+                );
                 self.queue_pending_endpoint_data_batch_with_enqueued_at_ms(
                     dest_addr,
                     payloads,

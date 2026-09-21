@@ -150,10 +150,6 @@ impl LocalTraffic {
         None
     }
 
-    pub(super) async fn stop(self) {
-        self.finish().await.unwrap();
-    }
-
     pub(super) async fn finish(mut self) -> Result<(), String> {
         let _ = self.stop.take().unwrap().send(());
         let task = self.task.as_mut().unwrap();

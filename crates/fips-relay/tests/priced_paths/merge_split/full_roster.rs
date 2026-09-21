@@ -55,89 +55,99 @@ async fn exercise() {
     // This is the sole physical change during acceptance. All eight candidate
     // links remain available, including after native policy replaces a neighbor.
     bench.network.set_link_up("2", "3", true);
+    let monitor = async {
+        loop {
+            if let Some(failure) = local_traffic.failure() {
+                return failure;
+            }
+            if internal_links(&root, &nodes, &identities).await != original_links {
+                return "admission changed an original local paid link epoch".into();
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    };
+    let acceptance = tokio::time::timeout_at(deadline, async {
+        for round in 0..15 {
+            tokio::time::sleep_until(started + Duration::from_secs(round * 4)).await;
+            let before = hop_usage(&bench).await;
+            let paid_before = payments(&bench).await;
+            for (direction, (source, destination)) in [(0, 2), (5, 3)].into_iter().enumerate() {
+                traffic(
+                    &mut bench,
+                    source,
+                    destination,
+                    160 + round as u8 * 2 + direction as u8,
+                )
+                .await;
+            }
+            let paid_after = payments(&bench).await;
+            local_progress(&before, &hop_usage(&bench).await, &paid_before, &paid_after);
+            rounds += 1;
+            retain(&anchor, &accounts(&bench).await, true);
+            assert_watches(&bench).await;
+            // Exact topology requires the two-way authenticated bridge and
+            // working common tree, not merely discovery or a pending dial.
+            if topology(&bench, true).await {
+                bridge_observed_ms = Some(started.elapsed().as_millis());
+                let before = hop_usage(&bench).await;
+                let credited = payments(&bench).await;
+                for (source, destination, tag) in [(0, 5, 145), (5, 0, 146)] {
+                    traffic(&mut bench, source, destination, tag).await;
+                }
+                fresh_hops(&before, &hop_usage(&bench).await);
+                let paid = payments(&bench).await;
+                assert_eq!(paid.len(), 8);
+                for (channel, prior) in credited {
+                    assert!(paid[&channel] > prior);
+                }
+                retain(&anchor, &accounts(&bench).await, true);
+                assert_watches(&bench).await;
+                completion_ms = Some(started.elapsed().as_millis());
+                return;
+            }
+        }
+        // Exhausting the finite offered workload cannot become success.
+        tokio::time::sleep_until(deadline).await;
+        std::future::pending::<()>().await;
+    });
     let outcome = observer
-        .during_checked(
-            tokio::time::timeout_at(deadline, async {
-                for round in 0..15 {
-                    tokio::time::sleep_until(started + Duration::from_secs(round * 4)).await;
-                    let before = hop_usage(&bench).await;
-                    let paid_before = payments(&bench).await;
-                    for (direction, (source, destination)) in
-                        [(0, 2), (5, 3)].into_iter().enumerate()
-                    {
-                        traffic(
-                            &mut bench,
-                            source,
-                            destination,
-                            160 + round as u8 * 2 + direction as u8,
-                        )
-                        .await;
-                    }
-                    let paid_after = payments(&bench).await;
-                    local_progress(&before, &hop_usage(&bench).await, &paid_before, &paid_after);
-                    rounds += 1;
-                    retain(&anchor, &accounts(&bench).await, true);
-                    assert_watches(&bench).await;
-                    // Exact topology requires the two-way authenticated bridge and
-                    // working common tree, not merely discovery or a pending dial.
-                    if topology(&bench, true).await {
-                        bridge_observed_ms = Some(started.elapsed().as_millis());
-                        let before = hop_usage(&bench).await;
-                        let credited = payments(&bench).await;
-                        for (source, destination, tag) in [(0, 5, 145), (5, 0, 146)] {
-                            traffic(&mut bench, source, destination, tag).await;
-                        }
-                        fresh_hops(&before, &hop_usage(&bench).await);
-                        let paid = payments(&bench).await;
-                        assert_eq!(paid.len(), 8);
-                        for (channel, prior) in credited {
-                            assert!(paid[&channel] > prior);
-                        }
-                        retain(&anchor, &accounts(&bench).await, true);
-                        assert_watches(&bench).await;
-                        completion_ms = Some(started.elapsed().as_millis());
-                        return;
-                    }
-                }
-                // Exhausting the finite offered workload cannot become success.
-                tokio::time::sleep_until(deadline).await;
-                std::future::pending::<()>().await;
-            }),
-            || async {
-                if let Some(failure) = local_traffic.failure() {
-                    eprintln!("full-roster failure: {failure}");
-                    local_traffic::capture_failure(
-                        &root,
-                        &identities,
-                        &gates,
-                        &controllers,
-                        &buyer,
-                    )
-                    .await;
-                    panic!("{failure}");
-                }
-                assert_eq!(
-                    internal_links(&root, &nodes, &identities).await,
-                    original_links,
-                    "admission must preserve the original local paid link epochs"
-                );
-            },
-        )
+        .during(async {
+            tokio::select! {
+                result = acceptance => result.map_err(|_| "full rosters made no paid bridge within 60s".to_owned()),
+                failure = monitor => Err(failure),
+            }
+        })
         .await;
+    let outcome = outcome.and(
+        (internal_links(&root, &nodes, &identities).await == original_links)
+            .then_some(())
+            .ok_or_else(|| "admission changed an original local paid link epoch".to_owned()),
+    );
     let automatic = outcome.is_ok() && completion_ms.is_some();
-    local_traffic.stop().await;
+    if let Err(reason) = &outcome {
+        eprintln!("full-roster failure before drain: {reason}");
+        eprintln!("full-roster carrier snapshot: {}", local_traffic.snapshot());
+        local_traffic::capture_failure(&root, &identities, &gates, &controllers, &buyer).await;
+    }
+    // Diagnose first, then restore reachability and collect before failing.
+    let outcome = outcome.and(local_traffic.finish().await);
+    if let Err(reason) = &outcome {
+        eprintln!("full-roster outcome: {reason}");
+        local_traffic::capture_failure(&root, &identities, &gates, &controllers, &buyer).await;
+    }
     eprintln!(
         "full-roster encounter: automatic={automatic} local_paid_rounds={rounds} bridge_observed_ms={bridge_observed_ms:?} completed_ms={completion_ms:?} observation_ms={}",
         started.elapsed().as_millis()
-    );
-    assert!(
-        rounds > 0,
-        "the full-roster window must include real local paid progress"
     );
     retain(&anchor, &accounts(&bench).await, true);
     assert_watches(&bench).await;
 
     collect_crowded(bench, observer, &anchor, candidates).await;
+    assert!(outcome.is_ok(), "{outcome:?}; all test money collected");
+    assert!(
+        rounds > 0,
+        "full-roster window must include local paid progress"
+    );
     assert!(
         automatic,
         "full native rosters made no automatic paid bridge within 60s; all test money collected"

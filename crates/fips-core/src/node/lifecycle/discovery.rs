@@ -188,6 +188,7 @@ impl Node {
         }
         for (transport_id, remote_addr, identity, active_refresh) in to_connect {
             info!(
+                node = %self.node_addr(),
                 peer = %self.peer_display_name(identity.node_addr()),
                 transport_id = %transport_id,
                 remote_addr = %remote_addr,

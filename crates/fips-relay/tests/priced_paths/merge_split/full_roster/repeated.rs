@@ -183,6 +183,13 @@ async fn exercise_repeated() {
             }
         })
         .await;
+    let outcome = outcome.and(
+        (internal_links(&root, &nodes, &identities).await == original_links)
+            .then_some(())
+            .ok_or_else(|| {
+                "an original boundary-to-internal link changed during an encounter".into()
+            }),
+    );
     if let Err(reason) = &outcome {
         eprintln!("repeated full-roster failure before drain: {reason}");
         eprintln!(
