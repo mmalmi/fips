@@ -1,5 +1,6 @@
 //! Responsive local candidates compete with a permanently reachable bridge.
 use super::*;
+use crate::node::wire::Msg2Header;
 
 const IDLE_SECS: u64 = 10;
 const INTERVAL_SECS: u64 = 2;
@@ -81,6 +82,28 @@ struct Observation {
     incumbents: [Option<(usize, LinkId, u64)>; 2],
     replacements: [usize; 2],
     ticks: usize,
+}
+
+fn pending_attempts(node: &Node, ids: &[PeerIdentity]) -> Value {
+    let now = Node::now_ms();
+    let attempts: Vec<_> = node
+        .peers
+        .connection_values()
+        .map(|conn| {
+            let identity = conn.expected_identity();
+            let rotation_started =
+                identity.and_then(|id| node.neighbor_rotation_started_at(id.node_addr()));
+            json!({"node":identity.map(|id|label(ids,id.node_addr())),
+            "link":conn.link_id().as_u64(),"outbound":conn.is_outbound(),
+            "our_index":conn.our_index().map(|index|index.as_u32()),
+            "their_index":conn.their_index().map(|index|index.as_u32()),
+            "state":format!("{:?}",conn.handshake_state()),"has_session":conn.has_session(),
+            "started_ms":conn.started_at(),"last_activity_ms":conn.last_activity(),
+            "connection_age_ms":conn.duration(now),"rotation_started_ms":rotation_started,
+            "rotation_age_ms":rotation_started.map(|start|now.saturating_sub(start))})
+        })
+        .collect();
+    json!(attempts)
 }
 
 impl Observation {
@@ -169,21 +192,41 @@ impl Observation {
                 let Ok(packet) = nodes[destination].packet_rx.try_recv() else {
                     break;
                 };
-                let incoming =
-                    destination < 2 && Msg1Header::parse(packet.data.as_slice()).is_some();
+                let msg1 = (destination < 2)
+                    .then(|| Msg1Header::parse(packet.data.as_slice()))
+                    .flatten();
+                let incoming = msg1.is_some();
                 let bridge = incoming && packet.remote_addr == nodes[1 - destination].addr;
-                let before_packet = (destination < 2).then(|| {
-                    let node = &nodes[destination].node;
-                    let now = Node::now_ms();
-                    let attempts: Vec<_> = node.peers.connection_values().map(|conn| {
-                        let identity = conn.expected_identity();
-                        json!({"node":identity.map(|id|label(ids,id.node_addr())),
-                            "link":conn.link_id().as_u64(),"outbound":conn.is_outbound(),
-                            "connection_age_ms":conn.duration(now),
-                            "rotation_age_ms":identity.and_then(|id|node.neighbor_rotation_started_at(id.node_addr()))
-                                .map(|start|now.saturating_sub(start))})
-                    }).collect();
-                    (destination, json!(attempts))
+                let before_packet = (destination < 2)
+                    .then(|| (destination, pending_attempts(&nodes[destination].node, ids)));
+                let bridge_msg2 = (destination < 2
+                    && packet.remote_addr == nodes[1 - destination].addr)
+                    .then(|| Msg2Header::parse(packet.data.as_slice()))
+                    .flatten();
+                let transport_id = packet.transport_id;
+                let received_ms = packet.timestamp_ms;
+                // Read only bounded local ownership; never retain/reorder a packet
+                // or query a routing selector while correlating these responses.
+                let response_owner = |node: &Node| {
+                    let response = bridge_msg2.as_ref().unwrap();
+                    let key = (transport_id, response.receiver_idx.as_u32());
+                    let active = node.get_peer(ids[1 - destination].node_addr()).map(|peer| {
+                        json!({"link":peer.link_id().as_u64(),
+                            "our_index":peer.our_index().map(|index|index.as_u32()),
+                            "their_index":peer.their_index().map(|index|index.as_u32())})
+                    });
+                    json!({"pending":pending_attempts(node,ids),
+                        "exact_pending_link":node.pending_outbound.get(&key).map(|link|link.as_u64()),
+                        "matched_pending_link":node.pending_outbound.match_msg2(key.0,key.1)
+                            .map(|(_,link)|link.as_u64()),
+                        "receiver_index_allocated":node.index_allocator.is_allocated(response.receiver_idx),
+                        "active_bridge":active})
+                };
+                let msg2_before = bridge_msg2.as_ref().map(|_| {
+                    (
+                        self.started.elapsed().as_millis(),
+                        response_owner(&nodes[destination].node),
+                    )
                 });
                 if incoming {
                     if bridge {
@@ -196,12 +239,26 @@ impl Observation {
                     eprintln!(
                         "responsive incoming Msg1: {}",
                         json!({"source":source,"receiver":destination,"bridge":bridge,
+                            "sender_index":msg1.as_ref().map(|header|header.sender_idx.as_u32()),
                             "observed_ms":self.started.elapsed().as_millis(),"received_ms":packet.timestamp_ms,
                             "attempts_before":before_packet.as_ref().map(|(_,attempts)|attempts)})
                     );
                     snapshot(nodes, ids, self.started, "responsive-msg1-before");
                 }
                 process_dataplane_packet(&mut nodes[destination], packet).await;
+                if let Some(response) = bridge_msg2.as_ref() {
+                    let (before_ms, before) = msg2_before.unwrap();
+                    let after = response_owner(&nodes[destination].node);
+                    eprintln!(
+                        "responsive bridge Msg2: {}",
+                        json!({"source":1-destination,"receiver":destination,
+                            "sender_index":response.sender_idx.as_u32(),
+                            "receiver_index":response.receiver_idx.as_u32(),
+                            "received_ms":received_ms,
+                            "observation_ms":[before_ms,self.started.elapsed().as_millis()],
+                            "before":before,"after":after})
+                    );
+                }
                 if incoming {
                     snapshot(nodes, ids, self.started, "responsive-msg1-after");
                 }

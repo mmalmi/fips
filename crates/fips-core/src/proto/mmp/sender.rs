@@ -125,6 +125,49 @@ impl SenderState {
         self.interval_has_data = false;
     }
 
+    /// Adopt the unreported readiness frame of a newly winning Noise session.
+    /// The current counter interval must be empty (fresh owner or rekey reset).
+    /// Keep lifetime totals, report cadence and backoff from the existing owner.
+    /// Refusal changes neither state; pending readiness contains at most one nonce.
+    pub(crate) fn absorb_pending_sender(&mut self, pending: Self) -> Result<(), Self> {
+        let valid_pending = match pending.cumulative_packets_sent {
+            0 => !pending.interval_has_data && pending.cumulative_bytes_sent == 0,
+            1 => {
+                pending.interval_has_data
+                    && pending.interval_start_counter == pending.last_counter
+                    && pending.interval_start_timestamp == pending.last_timestamp
+                    && pending.cumulative_bytes_sent == u64::from(pending.interval_bytes_sent)
+            }
+            _ => false,
+        };
+        if self.interval_has_data || pending.last_report_time.is_some() || !valid_pending {
+            return Err(pending);
+        }
+        let Some(packets) = self
+            .cumulative_packets_sent
+            .checked_add(pending.cumulative_packets_sent)
+        else {
+            return Err(pending);
+        };
+        let Some(bytes) = self
+            .cumulative_bytes_sent
+            .checked_add(pending.cumulative_bytes_sent)
+        else {
+            return Err(pending);
+        };
+        if pending.cumulative_packets_sent != 0 {
+            self.interval_start_counter = pending.interval_start_counter;
+            self.interval_start_timestamp = pending.interval_start_timestamp;
+            self.interval_bytes_sent = pending.interval_bytes_sent;
+            self.last_counter = pending.last_counter;
+            self.last_timestamp = pending.last_timestamp;
+            self.interval_has_data = true;
+            self.cumulative_packets_sent = packets;
+            self.cumulative_bytes_sent = bytes;
+        }
+        Ok(())
+    }
+
     /// Check if it's time to send a report.
     ///
     /// When consecutive send failures have occurred, the effective interval
@@ -470,3 +513,6 @@ mod tests {
         assert_eq!(s.next_report_at(now), None);
     }
 }
+
+#[cfg(test)]
+mod pending_tests;

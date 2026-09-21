@@ -19,11 +19,14 @@ impl Node {
         let mut connect_budget = self.discovery_connect_budget();
         let mut skipped_budget = 0usize;
         let mut rotation_candidate: Option<(TransportId, TransportAddr, PeerIdentity)> = None;
+        let mut polled_discovery = false;
+        let mut discovery_complete = true;
         let rotation_victim = self.discovery_rotation_victim(Self::now_ms());
         let mut deferred_refreshes = Vec::new();
 
         for transport in self.transports.values() {
             if !transport.is_operational() {
+                discovery_complete &= !transport.auto_connect();
                 continue;
             }
             if !transport.auto_connect() {
@@ -33,8 +36,12 @@ impl Node {
             }
             let discovered = match transport.discover() {
                 Ok(peers) => peers,
-                Err(_) => continue,
+                Err(_) => {
+                    discovery_complete = false;
+                    continue;
+                }
             };
+            polled_discovery = true;
             for peer in discovered {
                 let discovered_transport_id = peer.transport_id;
                 let pubkey = match peer.pubkey_hint {
@@ -150,9 +157,12 @@ impl Node {
                         continue;
                     }
                     if connect_budget > 0 && self.path_candidate_attempt_budget(&node_addr) > 0 {
-                        let key = self.neighbor_rotation_order(node_addr);
+                        let key = self.neighbor_rotation_discovery_order(node_addr, Self::now_ms());
                         if rotation_candidate.as_ref().is_none_or(|(_, _, chosen)| {
-                            key < self.neighbor_rotation_order(*chosen.node_addr())
+                            key < self.neighbor_rotation_discovery_order(
+                                *chosen.node_addr(),
+                                Self::now_ms(),
+                            )
                         }) {
                             rotation_candidate =
                                 Some((candidate_transport_id, remote_addr, identity));
@@ -184,11 +194,23 @@ impl Node {
             );
         }
 
+        // An empty transport scan says nothing about separately polled LAN or
+        // Nostr discovery. Those sources keep their turn until a dial or expiry.
+        if polled_discovery
+            && discovery_complete
+            && self.lan_discovery.is_none()
+            && self.nostr_discovery.is_none()
+            && connect_budget > 0
+            && rotation_candidate.is_none()
+        {
+            self.yield_empty_neighbor_discovery_turn(Self::now_ms());
+        }
         if connect_budget > 0
             && let Some((transport_id, remote_addr, identity)) = rotation_candidate
         {
             to_connect.push((transport_id, remote_addr, identity, false));
         } else if !deferred_refreshes.is_empty()
+            && !self.neighbor_rotation_discovery_turn_reserved(Self::now_ms())
             && self.has_neighbor_rotation_opportunity(Self::now_ms())
         {
             // No new candidate and no pending exploration: ordinary refresh

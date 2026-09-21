@@ -777,6 +777,13 @@ impl Link {
         self.state
     }
 
+    /// Move an authenticated winning link to its observed carrier without
+    /// resetting lifecycle state, creation time or accumulated statistics.
+    pub(crate) fn rebind_path(&mut self, transport_id: TransportId, remote_addr: TransportAddr) {
+        self.transport_id = transport_id;
+        self.remote_addr = remote_addr;
+    }
+
     /// Get the base RTT hint.
     pub fn base_rtt(&self) -> Duration {
         self.base_rtt

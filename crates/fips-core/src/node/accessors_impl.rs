@@ -516,8 +516,8 @@ impl Node {
             .peers
             .connection_len()
             .saturating_add(self.pending_connects.len());
-        let peer_allowed =
-            !self.neighbor_roster_full() || self.has_neighbor_rotation_opportunity(Self::now_ms());
+        let peer_allowed = !self.neighbor_roster_full()
+            || self.has_neighbor_preparation_opportunity(Self::now_ms());
         let connection_allowed =
             self.max_connections == 0 || connection_used < self.max_connections;
         let link_allowed = self.max_links == 0 || self.links.len() < self.max_links;

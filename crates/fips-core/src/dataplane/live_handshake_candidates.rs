@@ -14,6 +14,11 @@ fn is_fmp_handshake_candidate(
 }
 
 impl DataplaneLiveNode {
+    #[cfg(test)]
+    pub(crate) fn fmp_handshake_candidate_count(&self) -> usize {
+        self.fmp_handshake_candidates.len()
+    }
+
     /// Divert a newly allocated receiver index to handshake confirmation.
     /// The candidate has no active owner route until the node promotes it.
     pub(crate) fn register_fmp_handshake_candidate(

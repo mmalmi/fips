@@ -804,7 +804,7 @@ impl Node {
 
         let peer_slots = if self.max_peers == 0 {
             usize::MAX
-        } else if self.has_neighbor_rotation_opportunity(Self::now_ms()) {
+        } else if self.has_neighbor_preparation_opportunity(Self::now_ms()) {
             1
         } else {
             self.max_peers.saturating_sub(self.peers.len())

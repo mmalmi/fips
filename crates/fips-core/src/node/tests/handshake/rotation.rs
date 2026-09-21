@@ -8,6 +8,10 @@ mod rendezvous;
 #[path = "rotation_carrier.rs"]
 mod rotation_carrier;
 
+#[cfg(feature = "sim-transport")]
+#[path = "rotation_direction.rs"]
+mod rotation_direction;
+
 #[path = "rotation_success_carrier.rs"]
 mod rotation_success_carrier;
 
@@ -20,8 +24,21 @@ mod rotation_starvation;
 #[path = "rotation_overlap.rs"]
 mod rotation_overlap;
 
+#[path = "rotation_outgoing.rs"]
+mod rotation_outgoing;
+
+#[path = "rotation_incoming_proof.rs"]
+mod rotation_incoming_proof;
+
+#[path = "rotation_readiness.rs"]
+mod rotation_readiness;
+
 #[path = "rotation_transfer.rs"]
 mod rotation_transfer;
+
+#[cfg(feature = "sim-transport")]
+#[path = "rotation_retry.rs"]
+mod rotation_retry;
 
 fn enable(node: &mut TestNode, peers: usize) {
     node.node.config.node.neighbor_rotation = Some(NeighborRotationConfig {
@@ -171,7 +188,7 @@ fn fresh_confirmation_replaces_only_idle_neighbor_and_preserves_active_session()
             node.transport_id,
             &[crate::protocol::LinkMessageType::Heartbeat.to_byte()],
         );
-        assert!(node.node.confirm_inbound_handshake(proof).await);
+        assert!(node.node.confirm_pending_handshake(proof).await);
         process_available_packets(std::slice::from_mut(&mut node)).await;
         assert_eq!(resources(&node), (2, 0, 2, 2));
         assert_eq!(
@@ -240,13 +257,13 @@ fn msg1_replay_bad_proof_and_retired_confirmation_never_evict() {
         assert!(
             !node
                 .node
-                .confirm_inbound_handshake(packet(&node, &new_source, corrupt))
+                .confirm_pending_handshake(packet(&node, &new_source, corrupt))
                 .await
         );
         assert!(
             !node
                 .node
-                .confirm_inbound_handshake(packet(&node, &wrong_source, original.clone()))
+                .confirm_pending_handshake(packet(&node, &wrong_source, original.clone()))
                 .await
         );
         assert_eq!(resources(&node), (1, 1, 2, 2));
@@ -259,7 +276,7 @@ fn msg1_replay_bad_proof_and_retired_confirmation_never_evict() {
         assert!(
             !node
                 .node
-                .confirm_inbound_handshake(packet(&node, &new_source, original))
+                .confirm_pending_handshake(packet(&node, &new_source, original))
                 .await
         );
         assert_eq!(resources(&node), (1, 0, 1, 1));
@@ -273,7 +290,7 @@ fn msg1_replay_bad_proof_and_retired_confirmation_never_evict() {
 }
 
 #[test]
-fn application_demand_arriving_before_confirmation_cancels_replacement() {
+fn application_demand_arriving_before_confirmation_defers_replacement() {
     super::super::super::session::run_large_stack_async_test("rotation-demand-race", || async {
         let mut node = make_test_node().await;
         let old = make_node();
@@ -283,6 +300,11 @@ fn application_demand_arriving_before_confirmation_cancels_replacement() {
         let mut owner = incumbent(&mut node, &old, &old_source, 30, 60_000).await;
         enable(&mut node, 1);
         let mut candidate = connect(&mut node, &newcomer, &new_source, 31).await;
+        let original_activity = node
+            .node
+            .get_connection(&candidate.link)
+            .unwrap()
+            .last_activity();
         assert_eq!(resources(&node), (1, 1, 2, 2));
         node.node.pending_session_traffic.push_tun_packet(
             *old.node_addr(),
@@ -295,8 +317,11 @@ fn application_demand_arriving_before_confirmation_cancels_replacement() {
             node.transport_id,
             &[crate::protocol::LinkMessageType::Heartbeat.to_byte()],
         );
-        assert!(!node.node.confirm_inbound_handshake(proof).await);
-        assert_eq!(resources(&node), (1, 0, 1, 1));
+        assert!(node.node.confirm_pending_handshake(proof).await);
+        assert_eq!(resources(&node), (1, 1, 2, 2));
+        let retained = node.node.get_connection(&candidate.link).unwrap();
+        assert_eq!(retained.last_activity(), original_activity);
+        assert!(retained.handshake_confirmation().is_some());
         assert!(node.node.get_peer(newcomer.node_addr()).is_none());
         assert_eq!(
             node.node.get_peer(old.node_addr()).unwrap().our_index(),
@@ -339,7 +364,7 @@ fn configured_incumbent_is_protected_while_an_idle_learned_neighbor_can_rotate()
             node.transport_id,
             &[crate::protocol::LinkMessageType::Heartbeat.to_byte()],
         );
-        assert!(node.node.confirm_inbound_handshake(proof).await);
+        assert!(node.node.confirm_pending_handshake(proof).await);
         assert_eq!(resources(&node), (2, 0, 2, 2));
         assert!(node.node.get_peer(learned.node_addr()).is_none());
         assert_eq!(
@@ -381,7 +406,7 @@ fn attempt_and_replacement_cooldowns_apply_across_candidate_identities() {
                         node.transport_id,
                         &[crate::protocol::LinkMessageType::Heartbeat.to_byte()],
                     );
-                    assert!(node.node.confirm_inbound_handshake(proof).await);
+                    assert!(node.node.confirm_pending_handshake(proof).await);
                 } else {
                     node.node
                         .cleanup_stale_connection(candidate.link, Node::now_ms())

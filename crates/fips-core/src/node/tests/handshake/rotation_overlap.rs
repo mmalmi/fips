@@ -123,15 +123,21 @@ fn winning_outbound_rotation_retires_parked_crossed_inbound() {
                 winner_index
             );
             nodes[0].node.handle_msg2(response).await;
+            assert!(nodes[0].node.get_peer(&newcomer).is_none());
+            assert_eq!(nodes[0].node.get_peer(&old).unwrap().link_id(), old_link);
+            assert_eq!(resources(&nodes[0]), (1, 2, 3, 3));
+
+            // Deliver the remote's losing Msg2 and both real encrypted
+            // bootstraps. Only fresh peer proof can activate the winning
+            // outgoing candidate and retire its parked crossed half.
+            quiesce(&mut nodes).await;
             assert_eq!(
                 nodes[0].node.get_peer(&newcomer).unwrap().link_id(),
                 winner_link
             );
             assert!(nodes[0].node.get_peer(&old).is_none());
 
-            // Deliver the remote's losing Msg2 and both real encrypted
-            // bootstraps. The winning session must match at both ends.
-            quiesce(&mut nodes).await;
+            // The winning session must match at both ends.
             let local_peer = nodes[0].node.get_peer(&newcomer).unwrap();
             let remote_peer = nodes[1].node.get_peer(&local).unwrap();
             assert_eq!(local_peer.our_index(), remote_peer.their_index());

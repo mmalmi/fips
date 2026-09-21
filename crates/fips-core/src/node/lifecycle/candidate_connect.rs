@@ -671,7 +671,12 @@ impl Node {
             .is_none()
         {
             let addr = remote_addr.clone();
-            let timeout = Duration::from_secs(self.config.node.rate_limit.handshake_timeout_secs);
+            let timeout = self
+                .neighbor_rotation_deadline(&peer_node_addr)
+                .map_or_else(
+                    || Duration::from_secs(self.config.node.rate_limit.handshake_timeout_secs),
+                    |deadline| Duration::from_millis(deadline.saturating_sub(Self::now_ms())),
+                );
             Some(Box::pin(async move {
                 tokio::time::timeout(timeout, crate::transport::resolve_socket_addr(&addr))
                     .await
@@ -682,6 +687,11 @@ impl Node {
         } else {
             None
         };
+
+        // The immediate connectionless path has no preparation to retain on
+        // rejection. Validate before allocating its link; no await separates
+        // this check from installing the Noise owner below.
+        self.preflight_connection_handshake(&peer_identity, transport_id, &remote_addr)?;
 
         // Allocate link ID and create link
         let link_id = self.allocate_link_id();
@@ -716,6 +726,13 @@ impl Node {
                 };
                 match connect_result {
                     Ok(()) => {
+                        let rejection = self
+                            .preflight_connection_handshake(
+                                &peer_identity,
+                                transport_id,
+                                &remote_addr,
+                            )
+                            .err();
                         debug!(
                             peer = %self.peer_display_name(&peer_node_addr),
                             transport_id = %transport_id,
@@ -730,6 +747,12 @@ impl Node {
                             peer_identity,
                             address_resolution,
                         });
+                        if let Some(error) = rejection {
+                            // A successful connect can outlive its admission.
+                            // Retain its owner before an awaited rejection close.
+                            self.retire_connection_preparation(link_id).await;
+                            return Err(error);
+                        }
                     }
                     Err(e) => {
                         // Clean up link
@@ -746,10 +769,38 @@ impl Node {
         }
     }
 
+    /// Validate synchronously while a preparation still owns any opened carrier.
+    /// Callers either have not allocated a link yet or retain PendingConnect
+    /// through rejection cleanup. A ready preparation is handed to Noise
+    /// immediately after this check, without an intervening await.
+    pub(super) fn preflight_connection_handshake(
+        &self,
+        peer_identity: &PeerIdentity,
+        transport_id: TransportId,
+        remote_addr: &TransportAddr,
+    ) -> Result<(), NodeError> {
+        if self
+            .neighbor_rotation_deadline(peer_identity.node_addr())
+            .is_some_and(|deadline| Self::now_ms() >= deadline)
+        {
+            return Err(NodeError::HandshakeFailed(
+                "rotation preparation expired".into(),
+            ));
+        }
+        self.authorize_peer(
+            peer_identity,
+            PeerAclContext::OutboundConnect,
+            transport_id,
+            remote_addr,
+        )
+    }
+
     /// Start the Noise handshake on a link and send msg1.
     ///
     /// Called immediately for connectionless transports, or after the
     /// transport connection is established for connection-oriented transports.
+    /// Both callers preflight before relinquishing preparation ownership; this
+    /// installs the pending Noise owner before its first await.
     pub(in crate::node) async fn start_handshake(
         &mut self,
         link_id: LinkId,
@@ -786,6 +837,9 @@ impl Node {
                 }
             };
 
+        if let Some(started) = self.neighbor_rotation_started_at(&peer_node_addr) {
+            connection.touch(started);
+        }
         // Set index and transport info on the connection
         connection.set_our_index(our_index);
         connection.set_transport_id(transport_id);

@@ -84,6 +84,25 @@ impl LinkRegistry {
         self.by_addr.insert(key, link_id)
     }
 
+    /// Rebind a winning link while removing only aliases it still owns.
+    pub(in crate::node) fn rebind_path(
+        &mut self,
+        link_id: LinkId,
+        transport_id: TransportId,
+        remote_addr: TransportAddr,
+    ) -> bool {
+        let Some(link) = self.links.get_mut(&link_id) else {
+            return false;
+        };
+        if link.transport_id() == transport_id && link.remote_addr() == &remote_addr {
+            return true;
+        }
+        link.rebind_path(transport_id, remote_addr.clone());
+        self.by_addr.remove_all_pointing_to(&link_id);
+        self.by_addr.insert((transport_id, remote_addr), link_id);
+        true
+    }
+
     pub(in crate::node) fn remove(&mut self, link_id: &LinkId) -> Option<Link> {
         let link = self.links.remove(link_id)?;
         // Cross-connection resolution can index the surviving link under the

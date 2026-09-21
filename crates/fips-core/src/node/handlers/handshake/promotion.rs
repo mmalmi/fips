@@ -65,6 +65,7 @@ impl Node {
         current_time_ms: u64,
         rotation: Option<crate::node::neighbor_rotation::PreparedNeighborRotation>,
     ) -> Result<PromotionResult, NodeError> {
+        self.unregister_handshake_candidate(link_id);
         // Remove the connection from pending
         let mut connection = self
             .peers
@@ -92,8 +93,12 @@ impl Node {
                 link_id,
                 reason: "missing their_index".into(),
             })?;
+        // A retained authenticated reply can arrive through another local
+        // listener. Its receive path must own the promoted receiver index.
         let transport_id = connection
-            .transport_id()
+            .completed_handshake_response()
+            .map(|reply| reply.transport_id)
+            .or_else(|| connection.transport_id())
             .ok_or_else(|| NodeError::PromotionFailed {
                 link_id,
                 reason: "missing transport_id".into(),
@@ -142,7 +147,8 @@ impl Node {
             // the exact same carrier; hard carrier failure and later recovery
             // handshakes still replace it normally.
             let fresh_same_carrier_cross_connection = same_carrier_cross_connection
-                && existing_peer.session_elapsed_ms() < SIMULTANEOUS_CROSS_CONNECTION_GRACE_MS;
+                && existing_peer.session_start().elapsed()
+                    < Duration::from_millis(u64::from(SIMULTANEOUS_CROSS_CONNECTION_GRACE_MS));
             let outbound_alternate_path = is_outbound
                 && !connection_oriented_cross_connection
                 && (existing_peer.transport_id() != Some(transport_id)
@@ -299,7 +305,7 @@ impl Node {
                         &inserted,
                         "cross_connection_won_restart",
                     );
-                    self.sync_dataplane_fmp_owner(&peer_node_addr);
+                    self.sync_promoted_handshake(&peer_node_addr, &mut connection, false)?;
                     self.clear_session_direct_path_degraded_after_promotion(
                         &peer_node_addr,
                         current_time_ms,
@@ -355,7 +361,7 @@ impl Node {
                     {
                         peer.set_preferred_send_addr(addr);
                     }
-                    self.sync_dataplane_fmp_owner(&peer_node_addr);
+                    self.sync_promoted_handshake(&peer_node_addr, &mut connection, true)?;
                     self.clear_session_direct_path_degraded_after_promotion(
                         &peer_node_addr,
                         current_time_ms,
@@ -464,7 +470,7 @@ impl Node {
                 .peers
                 .insert_with_current_session_index(peer_node_addr, new_peer);
             self.log_active_peer_insert_result(&peer_node_addr, &inserted, "promoted");
-            self.sync_dataplane_fmp_owner(&peer_node_addr);
+            self.sync_promoted_handshake(&peer_node_addr, &mut connection, false)?;
             self.clear_session_direct_path_degraded_after_promotion(
                 &peer_node_addr,
                 current_time_ms,

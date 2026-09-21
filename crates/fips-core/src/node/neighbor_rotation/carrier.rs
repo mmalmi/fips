@@ -29,6 +29,7 @@ impl Node {
         Some(PreparedNeighborRotation {
             candidate: *identity.node_addr(),
             candidate_link: link,
+            outbound: candidate.is_outbound(),
             victim,
             victim_link: old.link_id(),
             victim_index: old.our_index(),

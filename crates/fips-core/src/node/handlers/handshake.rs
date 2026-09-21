@@ -274,27 +274,8 @@ impl Node {
                         superseded_candidate = Some(existing_link_id);
                     } else {
                         // Retry the exact pending request without extending its deadline.
-                        let msg2_bytes = self.find_stored_msg2(existing_link_id);
-                        if let Some(msg2) = msg2_bytes {
-                            if let Some(transport) = self.transports.get(&packet.transport_id) {
-                                match transport.send(&packet.remote_addr, &msg2).await {
-                                    Ok(_) => debug!(
-                                        remote_addr = %packet.remote_addr,
-                                        "Resent msg2 for duplicate msg1"
-                                    ),
-                                    Err(e) => debug!(
-                                        remote_addr = %packet.remote_addr,
-                                        error = %e,
-                                        "Failed to resend msg2"
-                                    ),
-                                }
-                            }
-                        } else {
-                            debug!(
-                                remote_addr = %packet.remote_addr,
-                                "Duplicate msg1 but no stored msg2 to resend"
-                            );
-                        }
+                        self.send_retained_handshake_response(existing_link_id)
+                            .await;
                         return;
                     }
                 }
@@ -895,18 +876,14 @@ impl Node {
             // Retain the exact request for duplicate retries. A different
             // request on this same carrier is authenticated before replacing it.
             if let Some(conn) = self.peers.get_connection_mut(&link_id) {
-                conn.set_handshake_msg1(packet.data.as_slice().to_vec(), 0);
+                conn.set_handshake_msg1(packet.data.as_slice().to_vec(), Self::now_ms());
                 conn.touch(
                     restarted_activity
                         .or(rotation_started_at)
                         .unwrap_or_else(Self::now_ms),
                 );
             }
-            if let Some(transport) = self.transports.get(&packet.transport_id)
-                && let Err(error) = transport.send(&packet.remote_addr, &wire_msg2).await
-            {
-                debug!(%link_id, %error, "Candidate Msg2 send failed; retaining for retry");
-            }
+            self.send_retained_handshake_response(link_id).await;
             return;
         }
         self.finish_inbound_handshake(link_id, peer_identity, &packet, false)
@@ -989,6 +966,7 @@ impl Node {
     }
 }
 
+mod activation;
 mod candidate;
 mod msg2;
 mod promotion;

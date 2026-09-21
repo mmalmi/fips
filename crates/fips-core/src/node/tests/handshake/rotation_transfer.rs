@@ -219,7 +219,7 @@ fn reciprocal_transfer_preserves_deadline_acl_and_one_candidate_bound() {
                 node.transport_id,
                 &[crate::protocol::LinkMessageType::Heartbeat.to_byte()],
             );
-            assert!(!node.node.confirm_inbound_handshake(expired_proof).await);
+            assert!(!node.node.confirm_pending_handshake(expired_proof).await);
             assert_eq!(resources(&node), (2, 0, 2, 2));
             assert!(node.node.has_neighbor_rotation_opportunity(Node::now_ms()));
             assert_eq!(heartbeat(&mut node, &old, &mut old_owner, 2).await, 2);
@@ -443,7 +443,7 @@ fn cancelled_reciprocal_transfer_keeps_old_tcp_owner_until_close_completes() {
                 .await
                 .unwrap()
                 .unwrap();
-            assert!(node.node.confirm_inbound_handshake(received).await);
+            assert!(node.node.confirm_pending_handshake(received).await);
             assert_eq!(resources(&node), (1, 0, 1, 1));
             assert!(node.node.get_peer(old.node_addr()).is_none());
             assert_eq!(

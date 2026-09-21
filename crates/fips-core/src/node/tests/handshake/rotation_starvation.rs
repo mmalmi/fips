@@ -80,7 +80,7 @@ fn unconfirmed_restarts_cannot_renew_the_full_roster_candidate_slot() {
                 msg1 = retained.handshake_msg1().unwrap().to_vec();
                 msg2 = retained.handshake_msg2().unwrap().to_vec();
                 assert_response(&attack_socket, &msg2).await;
-                assert!(!node.node.confirm_inbound_handshake(stale_proof).await);
+                assert!(!node.node.confirm_pending_handshake(stale_proof).await);
                 assert!(node.node.get_peer(attacker.node_addr()).is_none());
 
                 // Different authenticated identities cannot take the pending slot,
@@ -123,7 +123,7 @@ fn unconfirmed_restarts_cannot_renew_the_full_roster_candidate_slot() {
                 node.transport_id,
                 &[crate::protocol::LinkMessageType::Heartbeat.to_byte()],
             );
-            assert!(node.node.confirm_inbound_handshake(proof).await);
+            assert!(node.node.confirm_pending_handshake(proof).await);
             process_available_packets(std::slice::from_mut(&mut node)).await;
             assert_eq!(resources(&node), (2, 0, 2, 2));
             assert!(node.node.get_peer(attacker.node_addr()).is_none());
@@ -179,13 +179,13 @@ fn fresh_inbound_can_confirm_before_the_original_deadline() {
                 original_activity,
             );
             assert_eq!(resources(&node), (1, 1, 2, 2));
-            assert!(!node.node.confirm_inbound_handshake(stale).await);
+            assert!(!node.node.confirm_pending_handshake(stale).await);
             assert!(node.node.get_peer(old.node_addr()).is_some());
             let proof = restarted.frame(
                 node.transport_id,
                 &[crate::protocol::LinkMessageType::Heartbeat.to_byte()],
             );
-            assert!(node.node.confirm_inbound_handshake(proof).await);
+            assert!(node.node.confirm_pending_handshake(proof).await);
             process_available_packets(std::slice::from_mut(&mut node)).await;
             assert_eq!(resources(&node), (1, 0, 1, 1));
             assert!(node.node.get_peer(old.node_addr()).is_none());
@@ -310,7 +310,7 @@ async fn retry_inside_cooldown(node: &mut TestNode) {
             node.transport_id,
             &[crate::protocol::LinkMessageType::Heartbeat.to_byte()],
         );
-        assert!(!node.node.confirm_inbound_handshake(stale).await);
+        assert!(!node.node.confirm_pending_handshake(stale).await);
         candidate = Candidate {
             link: retained_link,
             index: retained_index,
@@ -349,7 +349,7 @@ async fn retry_inside_cooldown(node: &mut TestNode) {
     );
     let response = retained.handshake_msg2().unwrap().to_vec();
     assert_response(&new_socket, &response).await;
-    assert!(!node.node.confirm_inbound_handshake(stale).await);
+    assert!(!node.node.confirm_pending_handshake(stale).await);
     assert_eq!(resources(node), (1, 1, 2, 2));
     assert!(node.node.index_allocator.is_allocated(later.index));
     let proof = later.frame(
@@ -366,7 +366,7 @@ async fn retry_inside_cooldown(node: &mut TestNode) {
     );
     assert!(!node.node.index_allocator.is_allocated(later.index));
     assert!(!node.node.links.contains_key(&later.link));
-    assert!(!node.node.confirm_inbound_handshake(proof).await);
+    assert!(!node.node.confirm_pending_handshake(proof).await);
     let incumbent = node.node.get_peer(old.node_addr()).unwrap();
     assert_eq!(
         (
@@ -386,7 +386,7 @@ async fn retry_inside_cooldown(node: &mut TestNode) {
         node.transport_id,
         &[crate::protocol::LinkMessageType::Heartbeat.to_byte()],
     );
-    assert!(node.node.confirm_inbound_handshake(proof).await);
+    assert!(node.node.confirm_pending_handshake(proof).await);
     process_available_packets(std::slice::from_mut(node)).await;
     assert_eq!(resources(node), (1, 0, 1, 1));
     assert!(node.node.get_peer(old.node_addr()).is_none());

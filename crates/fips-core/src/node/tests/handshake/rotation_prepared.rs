@@ -228,3 +228,179 @@ fn incomplete_or_wrong_identity_preparation_preserves_real_tcp_incumbent() {
         },
     );
 }
+
+#[test]
+fn expired_rotation_attempt_does_not_block_active_peer_alternate_carrier_response() {
+    super::super::super::super::session::run_large_stack_async_test(
+        "rotation-expired-maintenance-response",
+        || async {
+            let mut node = make_test_node().await;
+            let old = make_node();
+            let newcomer = make_node();
+            let (_old_socket, old_source) = local_path().await;
+            let (first_socket, first_source) = local_path().await;
+            let (alternate_socket, alternate_source) = local_path().await;
+            // Use real Noise ownership and real elapsed age, including the
+            // first incumbent. No timestamp or session state is manufactured.
+            let mut old_owner = incumbent(&mut node, &old, &old_source, 160, 0).await;
+            enable(&mut node, 1);
+            node.node.config.node.rate_limit.handshake_timeout_secs = 2;
+            node.node.config.node.rekey.enabled = false;
+            tokio::time::sleep(Duration::from_millis(1_050)).await;
+            assert!(node.node.has_neighbor_rotation_opportunity(Node::now_ms()));
+
+            let mut candidate = connect(&mut node, &newcomer, &first_source, 161).await;
+            let started = node
+                .node
+                .neighbor_rotation_started_at(newcomer.node_addr())
+                .expect("full-roster candidate owns the original rotation attempt");
+            let initial_response = retained_response(&first_socket).await;
+            assert_eq!(
+                initial_response.as_slice(),
+                node.node
+                    .get_connection(&candidate.link)
+                    .unwrap()
+                    .handshake_msg2()
+                    .unwrap()
+            );
+            assert_eq!(resources(&node), (1, 1, 2, 2));
+            assert!(node.node.get_peer(newcomer.node_addr()).is_none());
+
+            // The incumbent leaves before the candidate's confirmation. The
+            // candidate therefore fills an empty slot rather than committing
+            // a rotation; its original exploration bookkeeping can remain.
+            let disconnect =
+                crate::protocol::Disconnect::new(crate::protocol::DisconnectReason::Shutdown);
+            let departure = old_owner.frame(node.transport_id, &disconnect.encode());
+            super::super::super::super::spanning_tree::process_dataplane_packet(
+                &mut node, departure,
+            )
+            .await;
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while node.node.get_peer(old.node_addr()).is_some() {
+                    super::super::super::super::spanning_tree::process_dataplane_completions(
+                        &mut node.node,
+                    )
+                    .await;
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("authenticated incumbent departure must free the active slot");
+            assert_eq!(resources(&node), (0, 1, 1, 1));
+            let proof = candidate.frame(
+                node.transport_id,
+                &[crate::protocol::LinkMessageType::Heartbeat.to_byte()],
+            );
+            assert!(node.node.confirm_pending_handshake(proof).await);
+            process_available_packets(std::slice::from_mut(&mut node)).await;
+            assert_eq!(await_heartbeat(&mut node, &newcomer, 1).await, 1);
+            assert_eq!(resources(&node), (1, 0, 1, 1));
+            let active = node.node.get_peer(newcomer.node_addr()).unwrap();
+            let original_owner = (
+                active.link_id(),
+                active.our_index(),
+                active.their_index(),
+                active.session_generation(),
+                active.remote_epoch(),
+            );
+            assert_eq!(original_owner.0, candidate.link);
+
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while Node::now_ms().saturating_sub(started) <= 2_100 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            node.node.check_timeouts().await;
+
+            // A real fresh Noise request on a new UDP source is ordinary
+            // maintenance of this active identity, not the expired attempt.
+            let mut handshake = request(&mut node, &newcomer, &alternate_source, 162).await;
+            assert_eq!(resources(&node), (1, 1, 2, 2));
+            let active = node.node.get_peer(newcomer.node_addr()).unwrap();
+            assert_eq!(
+                (
+                    active.link_id(),
+                    active.our_index(),
+                    active.their_index(),
+                    active.session_generation(),
+                    active.remote_epoch(),
+                ),
+                original_owner,
+                "replayable Msg1 must preserve current keys until fresh proof"
+            );
+            let response = retained_response(&alternate_socket).await;
+            let header = Msg2Header::parse(&response).unwrap();
+            assert_eq!(header.receiver_idx, SessionIndex::new(162));
+            handshake
+                .read_message_2(header.noise_msg2(&response))
+                .unwrap();
+            let link = node
+                .node
+                .links
+                .lookup_addr(node.transport_id, &alternate_source)
+                .unwrap();
+            let mut replacement = Candidate {
+                link,
+                index: header.sender_idx,
+                session: handshake.into_session().unwrap(),
+                source: alternate_source,
+            };
+            let proof = replacement.frame(
+                node.transport_id,
+                &[crate::protocol::LinkMessageType::Heartbeat.to_byte()],
+            );
+            assert!(node.node.confirm_pending_handshake(proof).await);
+            tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    process_available_packets(std::slice::from_mut(&mut node)).await;
+                    if node
+                        .node
+                        .dataplane_fmp_link_metrics(newcomer.node_addr(), Instant::now())
+                        .is_some_and(|metrics| metrics.current_epoch_authenticated)
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("fresh proof authenticates the replacement's actual current FMP keys");
+            // Same-epoch path replacement deliberately retains the old receive
+            // index during its normal drain; it is owned, not a pending leak.
+            assert_eq!(resources(&node), (1, 0, 1, 2));
+            let active = node.node.get_peer(newcomer.node_addr()).unwrap();
+            assert_eq!(active.link_id(), replacement.link);
+            assert_eq!(active.our_index(), Some(replacement.index));
+            assert_eq!(active.previous_our_index(), Some(candidate.index));
+            assert_eq!(active.remote_epoch(), Some(newcomer.startup_epoch));
+            assert_eq!(
+                node.node
+                    .peers
+                    .lookup_session_index((node.transport_id, candidate.index.as_u32())),
+                Some(*newcomer.node_addr())
+            );
+            let received = node
+                .node
+                .dataplane_fmp_link_metrics(newcomer.node_addr(), Instant::now())
+                .unwrap()
+                .rx_packets;
+            assert_eq!(
+                heartbeat(&mut node, &newcomer, &mut replacement, received + 1).await,
+                received + 1
+            );
+            cleanup_nodes(std::slice::from_mut(&mut node)).await;
+        },
+    );
+}
+
+async fn retained_response(socket: &tokio::net::UdpSocket) -> Vec<u8> {
+    let mut response = [0; 512];
+    let length = tokio::time::timeout(Duration::from_secs(1), socket.recv(&mut response))
+        .await
+        .expect("ordinary maintenance must advertise Msg2 despite an expired rotation attempt")
+        .unwrap();
+    response[..length].to_vec()
+}

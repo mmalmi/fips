@@ -353,7 +353,7 @@ async fn fresh_msg1_from_changed_udp_source_replaces_path_instead_of_starting_re
         .await
         .unwrap()
         .unwrap();
-    assert!(responder.confirm_inbound_handshake(confirmation).await);
+    assert!(responder.confirm_pending_handshake(confirmation).await);
     assert!(responder.get_connection(&pending_link).is_none());
     let replaced = responder.get_peer(&initiator_addr).unwrap();
     assert_eq!(replaced.current_addr(), Some(&roamed_addr));

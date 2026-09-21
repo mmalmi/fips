@@ -13,6 +13,9 @@ use std::panic::AssertUnwindSafe;
 #[path = "rendezvous/responsive.rs"]
 mod responsive;
 
+#[path = "rendezvous/preparation.rs"]
+mod preparation;
+
 #[path = "rendezvous/same_path_rejoin.rs"]
 mod same_path_rejoin;
 

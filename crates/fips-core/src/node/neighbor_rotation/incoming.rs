@@ -30,6 +30,18 @@ impl Node {
         {
             return None;
         }
+        let idle_ms = self
+            .config
+            .node
+            .neighbor_rotation
+            .as_ref()?
+            .idle_secs
+            .saturating_mul(1000);
+        // Leave room for a remote roster to age, while reserving half the
+        // original attempt timeout for a possible incoming exchange.
+        let incoming_turn_ms = attempt
+            .started_ms
+            .saturating_add(attempt.deadline_ms.saturating_sub(attempt.started_ms) / 2);
         let mut outgoing = None;
         for (link, conn) in self.peers.connection_iter() {
             let Some(identity) = conn.expected_identity() else {
@@ -46,6 +58,11 @@ impl Node {
                 || !conn.is_outbound()
                 || conn.has_session()
                 || conn.handshake_state() != crate::peer::HandshakeState::SentMsg1
+                || now_ms
+                    < conn
+                        .started_at()
+                        .saturating_add(idle_ms)
+                        .min(incoming_turn_ms)
             {
                 return None;
             }
@@ -107,6 +124,14 @@ impl Node {
             .saturating_mul(1000);
         let attempt = self.neighbor_rotation.attempt.as_mut().unwrap();
         let previous = attempt.peer;
+        // Only the original outgoing attempt earns one retry. A transferred
+        // retry is consumed, even if its new incoming owner later succeeds.
+        self.neighbor_rotation.interrupted_outgoing =
+            (!attempt.is_retry).then_some(InterruptedOutgoing {
+                peer: previous,
+                started_ms: attempt.started_ms,
+                deadline_ms: attempt.deadline_ms,
+            });
         attempt.peer = peer;
         // Preserve the original deadline and local discovery cursor. The new
         // identity still consumes the configured minimum attempt interval.
@@ -126,5 +151,74 @@ impl Node {
     pub(in crate::node) fn neighbor_rotation_started_at(&self, peer: &NodeAddr) -> Option<u64> {
         self.neighbor_rotation_awaits_confirmation(peer)
             .then(|| self.neighbor_rotation.attempt.as_ref().unwrap().started_ms)
+    }
+
+    pub(in crate::node) fn neighbor_rotation_response_ready(
+        &self,
+        link: LinkId,
+        now_ms: u64,
+    ) -> bool {
+        let Some(peer) = self
+            .peers
+            .get_connection(&link)
+            .and_then(|conn| conn.expected_identity())
+        else {
+            return false;
+        };
+        // Promotion into a slot freed by a disconnect can leave exploration
+        // bookkeeping behind. It must not gate ordinary peer maintenance.
+        if !self.neighbor_roster_full() || self.peers.contains_key(peer.node_addr()) {
+            return true;
+        }
+        let Some(attempt) = self
+            .neighbor_rotation
+            .attempt
+            .as_ref()
+            .filter(|attempt| &attempt.peer == peer.node_addr())
+        else {
+            return true;
+        };
+        if !self.rotation_attempt_is_fresh(attempt, now_ms) {
+            return false;
+        }
+        // Msg2 acknowledges bounded handshake ownership, not a ready route.
+        // Fresh encrypted proof and current eligibility still gate promotion.
+        self.config.node.neighbor_rotation.is_some()
+    }
+
+    /// Release only the retained response owned by the current attempt. A
+    /// successful advertisement returns to ordinary duplicate-Msg1 handling.
+    pub(in crate::node) async fn resend_prepared_neighbor_response(&mut self, now_ms: u64) {
+        let Some(attempt) = &self.neighbor_rotation.attempt else {
+            return;
+        };
+        let link = self.peers.connection_iter().find_map(|(link, conn)| {
+            (!conn.is_outbound()
+                && conn.has_session()
+                && conn
+                    .expected_identity()
+                    .is_some_and(|id| id.node_addr() == &attempt.peer)
+                && conn.next_resend_at_ms() > 0
+                && now_ms >= conn.next_resend_at_ms())
+            .then_some(*link)
+        });
+        if let Some(link) = link {
+            self.send_retained_handshake_response(link).await;
+        }
+    }
+
+    pub(in crate::node) async fn retry_prepared_inbound_neighbors(&mut self) {
+        // The exact connection owns the first frame across cancellation. The
+        // normal confirmation path rechecks its source, keys, epoch, deadline,
+        // ACL and current admission before replaying it through the dataplane.
+        let proofs: Vec<_> = self
+            .peers
+            .connection_values()
+            .filter(|conn| !conn.is_outbound())
+            .filter_map(|conn| conn.handshake_confirmation().cloned())
+            .collect();
+        for proof in proofs {
+            self.confirm_pending_handshake(proof).await;
+        }
     }
 }

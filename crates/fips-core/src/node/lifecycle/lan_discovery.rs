@@ -18,9 +18,9 @@ impl Node {
         if self.neighbor_roster_full() && self.config.node.neighbor_rotation.is_some() {
             events.sort_by_cached_key(|event| {
                 let crate::discovery::lan::LanEvent::Discovered(peer) = event;
-                crate::PeerIdentity::from_npub(&peer.npub)
-                    .ok()
-                    .map(|id| self.neighbor_rotation_order(*id.node_addr()))
+                crate::PeerIdentity::from_npub(&peer.npub).ok().map(|id| {
+                    self.neighbor_rotation_discovery_order(*id.node_addr(), Self::now_ms())
+                })
             });
         }
         let mut connect_budget = self.discovery_connect_budget();
@@ -54,6 +54,11 @@ impl Node {
                     continue;
                 }
                 if self.is_connecting_to_peer_on_path(&peer_node_addr, transport_id, &remote_addr) {
+                    continue;
+                }
+                // Repeated adverts alone must not reset an incumbent's age
+                // while a prepared incoming or reserved outgoing turn waits.
+                if self.pending_rotation_discovery_victim(Self::now_ms()) == Some(peer_node_addr) {
                     continue;
                 }
                 if connect_budget == 0 || self.path_candidate_attempt_budget(&peer_node_addr) == 0 {

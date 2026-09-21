@@ -91,6 +91,14 @@ fn populated(peers: usize, sessions: usize, state: State) -> Node {
             node.neighbor_rotation.attempt = Some(Attempt {
                 peer: *identity.node_addr(),
                 started_ms: NOW_MS,
+                deadline_ms: NOW_MS.saturating_add(
+                    node.config
+                        .node
+                        .rate_limit
+                        .handshake_timeout_secs
+                        .saturating_mul(1000),
+                ),
+                is_retry: false,
                 confirmed_inbound: None,
             });
             node.peers

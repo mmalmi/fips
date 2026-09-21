@@ -141,6 +141,8 @@ and the minimum interval without application demand before it can be replaced.
 all identities on this node. Configured peers are protected. Recent admitted
 free and paid traffic, including transit and queued work attributable to a peer,
 protect that peer equally; native link maintenance alone does not.
+Attempt spacing and replacement spacing are independent: completing a prepared
+replacement does not restart the next-attempt cooldown.
 
 Replacement requires a fresh authenticated Noise exchange. An inbound Msg1 alone
 cannot evict a neighbor: the candidate must prove receipt of the fresh Msg2 using
@@ -151,10 +153,37 @@ candidate. Only one candidate identity is explored at a time, with a bounded
 opposite-direction handshake for simultaneous dials. No new wire messages or
 unbounded candidate history are introduced.
 
+Either direction can prepare a handshake when only the incumbent's minimum age
+prevents replacement. Preparation still requires an unconfigured incumbent with
+no current application or transit demand. An incoming Msg2 acknowledges its
+bounded pending reservation before replacement is eligible. An outgoing
+candidate retains that response and sends an encrypted heartbeat only when its
+own replacement is eligible. It remains pending until it also receives fresh
+encrypted proof from the responder. Neither the reservation nor the outgoing
+heartbeat creates an active route. Normal maintenance rechecks eligibility, and
+new demand protects the incumbent through the candidate's original timeout.
+Retaining or repeating a response does not renew that timeout.
+The retained outgoing response belongs to its exact pending connection, including
+through simultaneous incoming promotion; it cannot replace a subsequently
+authenticated peer with a different startup epoch.
+The first authenticated confirmation remains with its pending connection until replacement
+is safe or the original timeout expires. At most one FMP frame is retained;
+additional traffic cannot replace it or extend the deadline. Normal maintenance
+rechecks its carrier, identity, epoch, ACL and current demand before promotion,
+then delivers that first frame through the ordinary dataplane exactly once.
+Readiness retries reuse one encrypted frame and nonce. Physical link counters
+include every successful write; link-quality accounting counts the unique frame
+once. Promotion preserves that frame's wire clock and sender history while
+starting a fresh neighbor admission/liveness clock.
+
 At capacity, a fresh request replacing an unconfirmed stranger on the same carrier
 and with the same identity retains the original connection's handshake deadline.
 The existing admission and retry cadence still apply. An exact Msg1 retry resends
-the stored response; a replacement exchange needs its own encrypted confirmation.
+the stored response while the bounded reservation remains valid; a replacement
+exchange needs its own encrypted confirmation. An unanswered outgoing attempt is
+protected from transfer to another incoming identity until the earlier of its
+connection start plus `idle_secs` and half of the original attempt timeout. A
+completed exchange cannot be taken over by another candidate.
 Existing authenticated peers and simultaneous outbound dials retain their normal
 recovery paths. Cleanup can admit a later attempt; this is not a fairness guarantee
 among repeatedly joining identities.
@@ -165,10 +194,30 @@ This prevents returning peers from repeatedly skipping another advertised
 neighbor when local discovery gets a turn. It does not guarantee a discovery
 turn while other candidates occupy all transient slots.
 
+When an unanswered local attempt yields to incoming traffic, transport and LAN
+discovery give its selected identity one retry before the original attempt's
+deadline. The retry uses a fresh handshake and current discovery address, ACL and
+capacity checks. A missing or ineligible identity cannot block other candidates,
+and an interrupted retry cannot create another retry. The original discovery
+cursor remains intact. Nostr traversal events retain their existing arrival
+order; they do not use this candidate-list preference.
+
+After a successful incoming replacement, a node with automatic discovery reserves
+one local outgoing opportunity before another fresh incoming attempt. That
+preference ends when a new outgoing attempt starts, an eligible complete
+transport-only discovery scan finds no candidate, or a finite fallback expires.
+The fallback is `max(idle_secs, interval_secs) + handshake_timeout_secs` after the
+replacement. Empty or failed transport scans cannot cancel a turn still needed
+by separately polled LAN or Nostr discovery. Nodes without automatic discovery
+use only the normal cooldown. Existing candidate ownership and active-peer
+recovery are unaffected by this direction preference.
+
 Transport discovery defers refresh of an eligible idle replacement victim when
-it finds a new candidate or that candidate's fresh handshake is still pending.
-Without a new or pending candidate, normal refresh resumes. Current application
-demand is rechecked, and physical BLE reconnections retain normal priority.
+it finds a new candidate or that candidate's fresh handshake is still pending,
+including while the incumbent ages. Transport and LAN adverts also defer that
+refresh while a local outgoing turn is reserved. Without a new or pending
+candidate or reserved turn, normal refresh resumes. Current application demand
+is rechecked, and physical BLE reconnections retain normal priority.
 This prevents discovery's own refresh from invalidating its exploration attempt;
 other maintenance and incoming handshakes still share the existing limits.
 

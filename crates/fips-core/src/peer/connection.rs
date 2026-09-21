@@ -6,10 +6,14 @@
 
 use crate::PeerIdentity;
 use crate::noise::{self, NoiseError, NoiseSession};
-use crate::transport::{LinkDirection, LinkId, LinkStats, TransportAddr, TransportId};
+use crate::transport::{
+    LinkDirection, LinkId, LinkStats, ReceivedPacket, TransportAddr, TransportId,
+};
 use crate::utils::index::SessionIndex;
 use secp256k1::Keypair;
 use std::fmt;
+
+mod ready_heartbeat;
 
 /// Handshake protocol state machine.
 ///
@@ -89,6 +93,9 @@ pub struct PeerConnection {
     /// Completed Noise session (available after handshake complete).
     noise_session: Option<NoiseSession>,
 
+    /// One encrypted readiness frame and its accounting, retained until promotion.
+    ready_heartbeat: Option<ready_heartbeat::PendingReadyHeartbeat>,
+
     // === Timing ===
     /// When the connection attempt started (Unix milliseconds).
     started_at: u64,
@@ -131,6 +138,14 @@ pub struct PeerConnection {
     /// Wire-format msg2 bytes for resend (responder only).
     handshake_msg2: Option<Vec<u8>>,
 
+    /// Authenticated outbound reply waiting for local neighbor admission.
+    /// It follows this connection through cancellation and crossed promotion.
+    completed_handshake_response: Option<ReceivedPacket>,
+
+    /// First authenticated frame waiting for safe inbound promotion. Its wire
+    /// length is bounded by FMP's u16 length, and retries never replace it.
+    handshake_confirmation: Option<ReceivedPacket>,
+
     /// Number of resends performed so far.
     resend_count: u32,
 
@@ -155,6 +170,7 @@ impl PeerConnection {
             expected_identity: Some(expected_identity),
             noise_handshake: None,
             noise_session: None,
+            ready_heartbeat: None,
             started_at: current_time_ms,
             last_activity: current_time_ms,
 
@@ -167,6 +183,8 @@ impl PeerConnection {
             remote_epoch: None,
             handshake_msg1: None,
             handshake_msg2: None,
+            completed_handshake_response: None,
+            handshake_confirmation: None,
             resend_count: 0,
             next_resend_at_ms: 0,
         }
@@ -184,6 +202,7 @@ impl PeerConnection {
             expected_identity: None,
             noise_handshake: None,
             noise_session: None,
+            ready_heartbeat: None,
             started_at: current_time_ms,
             last_activity: current_time_ms,
 
@@ -196,6 +215,8 @@ impl PeerConnection {
             remote_epoch: None,
             handshake_msg1: None,
             handshake_msg2: None,
+            completed_handshake_response: None,
+            handshake_confirmation: None,
             resend_count: 0,
             next_resend_at_ms: 0,
         }
@@ -217,6 +238,7 @@ impl PeerConnection {
             expected_identity: None,
             noise_handshake: None,
             noise_session: None,
+            ready_heartbeat: None,
             started_at: current_time_ms,
             last_activity: current_time_ms,
 
@@ -229,6 +251,8 @@ impl PeerConnection {
             remote_epoch: None,
             handshake_msg1: None,
             handshake_msg2: None,
+            completed_handshake_response: None,
+            handshake_confirmation: None,
             resend_count: 0,
             next_resend_at_ms: 0,
         }
@@ -384,6 +408,31 @@ impl PeerConnection {
         self.handshake_msg2 = Some(msg2);
     }
 
+    pub(crate) fn completed_handshake_response(&self) -> Option<&ReceivedPacket> {
+        self.completed_handshake_response.as_ref()
+    }
+
+    pub(crate) fn handshake_confirmation(&self) -> Option<&ReceivedPacket> {
+        self.handshake_confirmation.as_ref()
+    }
+
+    pub(crate) fn retain_handshake_confirmation(&mut self, packet: &ReceivedPacket) {
+        if self.handshake_confirmation.is_none() {
+            self.handshake_confirmation = Some(packet.clone());
+        }
+    }
+
+    pub(crate) fn retain_completed_handshake_response(
+        &mut self,
+        packet: &ReceivedPacket,
+        attempt_started_ms: u64,
+    ) {
+        if self.completed_handshake_response.is_none() {
+            self.completed_handshake_response = Some(packet.clone());
+            self.last_activity = attempt_started_ms;
+        }
+    }
+
     /// Get the stored msg1 bytes (if any).
     pub fn handshake_msg1(&self) -> Option<&[u8]> {
         self.handshake_msg1.as_deref()
@@ -402,6 +451,18 @@ impl PeerConnection {
     /// When the next resend is scheduled (Unix ms).
     pub fn next_resend_at_ms(&self) -> u64 {
         self.next_resend_at_ms
+    }
+
+    /// Schedule a retained handshake flight without renewing its deadline.
+    /// Zero disables scheduled sends; duplicate requests can still be answered.
+    pub(crate) fn schedule_handshake_resend(&mut self, next_resend_at_ms: u64) {
+        self.next_resend_at_ms = next_resend_at_ms;
+    }
+
+    /// Start the confirmation resend budget without renewing the handshake deadline.
+    pub(crate) fn start_confirmation_retries(&mut self, now_ms: u64) {
+        self.resend_count = 0;
+        self.next_resend_at_ms = now_ms;
     }
 
     /// Record a resend and schedule the next one.

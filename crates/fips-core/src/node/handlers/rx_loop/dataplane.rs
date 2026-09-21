@@ -228,7 +228,7 @@ impl Node {
                 Box::pin(self.handle_msg2(packet)).await;
                 true
             }
-            PHASE_ESTABLISHED => Box::pin(self.confirm_inbound_handshake(packet)).await,
+            PHASE_ESTABLISHED => Box::pin(self.confirm_pending_handshake(packet)).await,
             _ => {
                 debug!(
                     phase = prefix.phase,

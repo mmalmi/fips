@@ -615,7 +615,7 @@ async fn losing_inbound_candidate_never_advertises_an_unowned_receiver_index() {
         .await
         .unwrap()
         .unwrap();
-    assert!(!responder.confirm_inbound_handshake(confirmation).await);
+    assert!(!responder.confirm_pending_handshake(confirmation).await);
     assert!(responder.get_connection(&pending_link).is_none());
     assert!(!responder.index_allocator.is_allocated(header.sender_idx));
     assert!(

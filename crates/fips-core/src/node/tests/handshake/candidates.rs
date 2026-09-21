@@ -480,8 +480,8 @@ fn inbound_candidate_confirmation_delivers_the_whole_captured_batch_once() {
         let first = pending.frame(node.transport_id, &heartbeat);
         let next = pending.frame(node.transport_id, &announce);
         // Both frames were already diverted before the first confirms.
-        assert!(node.node.confirm_inbound_handshake(first).await);
-        assert!(node.node.confirm_inbound_handshake(next).await);
+        assert!(node.node.confirm_pending_handshake(first).await);
+        assert!(node.node.confirm_pending_handshake(next).await);
         assert_eq!(node.node.connection_count(), 0);
         assert_eq!(
             node.node.get_peer(remote.node_addr()).unwrap().our_index(),
@@ -540,7 +540,7 @@ fn inbound_candidate_from_before_a_completed_restart_is_cleaned_up() {
         let current = connect(&mut node, &remote, &new_source, 32).await;
         let heartbeat = [crate::protocol::LinkMessageType::Heartbeat.to_byte()];
         let late_confirmation = pending.frame(node.transport_id, &heartbeat);
-        assert!(!node.node.confirm_inbound_handshake(late_confirmation).await);
+        assert!(!node.node.confirm_pending_handshake(late_confirmation).await);
         assert_eq!(node.node.connection_count(), 0);
         assert_eq!(node.node.index_allocator.count(), 1);
         assert_eq!(node.node.link_count(), 1);

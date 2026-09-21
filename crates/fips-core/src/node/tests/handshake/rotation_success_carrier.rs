@@ -6,6 +6,9 @@ use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
+#[path = "rotation_success_carrier/cancellation.rs"]
+mod cancellation;
+
 pub(super) async fn tcp_candidate(
     node: &mut TestNode,
     rx: &mut PacketRx,
@@ -114,7 +117,7 @@ fn successful_tcp_rotation_releases_old_pool_slot_and_keeps_new_carrier_live() {
             assert!(node.node.get_peer(newcomer.node_addr()).is_none());
             write_heartbeat(&mut new_stream, &mut candidate, tcp_id).await;
             let confirmation = next_packet(&mut rx).await;
-            assert!(node.node.confirm_inbound_handshake(confirmation).await);
+            assert!(node.node.confirm_pending_handshake(confirmation).await);
 
             // These assertions precede transport shutdown. Logical counts alone
             // would pass even with the displaced socket still in the TCP pool.

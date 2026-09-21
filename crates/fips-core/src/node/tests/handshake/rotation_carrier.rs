@@ -5,9 +5,9 @@ use crate::transport::{TransportHandle, packet_channel};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[test]
-fn rejected_tcp_rotation_closes_candidate_carrier_and_preserves_incumbent() {
+fn deferred_tcp_rotation_expires_candidate_carrier_and_preserves_incumbent() {
     super::super::super::super::session::run_large_stack_async_test(
-        "rotation-tcp-rejected-carrier",
+        "rotation-tcp-deferred-carrier",
         || async {
             let mut node = make_test_node().await;
             let old = make_node();
@@ -15,6 +15,7 @@ fn rejected_tcp_rotation_closes_candidate_carrier_and_preserves_incumbent() {
             let (_old_socket, old_source) = local_path().await;
             let mut owner = incumbent(&mut node, &old, &old_source, 80, 60_000).await;
             enable(&mut node, 1);
+            node.node.config.node.rate_limit.handshake_timeout_secs = 1;
             let original = node.node.get_peer(old.node_addr()).unwrap();
             let generation = original.session_generation();
             let epoch = original.remote_epoch();
@@ -68,6 +69,12 @@ fn rejected_tcp_rotation_closes_candidate_carrier_and_preserves_incumbent() {
             let header = Msg2Header::parse(&msg2).unwrap();
             handshake.read_message_2(header.noise_msg2(&msg2)).unwrap();
             let candidate_link = node.node.links.lookup_addr(tcp_id, &source).unwrap();
+            let deadline = node
+                .node
+                .get_connection(&candidate_link)
+                .unwrap()
+                .last_activity()
+                + 1_000;
             let mut candidate = Candidate {
                 link: candidate_link,
                 index: header.sender_idx,
@@ -95,7 +102,17 @@ fn rejected_tcp_rotation_closes_candidate_carrier_and_preserves_incumbent() {
                 8,
                 Some(1),
             );
-            assert!(!node.node.confirm_inbound_handshake(confirmation).await);
+            assert!(node.node.confirm_pending_handshake(confirmation).await);
+            assert_eq!(resources(&node), (1, 1, 2, 2));
+            assert_eq!(stats.snapshot().pool_inbound, 1);
+            assert!(node.node.index_allocator.is_allocated(candidate.index));
+            // Confirmed preparation owns the same physical slot until the
+            // original deadline; new demand never permits early eviction.
+            tokio::time::sleep(Duration::from_millis(
+                deadline.saturating_sub(Node::now_ms()) + 10,
+            ))
+            .await;
+            node.node.check_timeouts().await;
 
             tokio::time::timeout(Duration::from_secs(2), async {
                 while stats.snapshot().pool_inbound != 0 {
@@ -103,7 +120,7 @@ fn rejected_tcp_rotation_closes_candidate_carrier_and_preserves_incumbent() {
                 }
             })
             .await
-            .expect("rejected promotion must release the physical TCP pool slot");
+            .expect("expired preparation must release the physical TCP pool slot");
             let mut byte = [0u8; 1];
             let read = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut byte))
                 .await

@@ -2,6 +2,9 @@ use super::*;
 use crate::transport::{TransportHandle, udp::UdpTransport};
 use crate::{Config, Identity};
 
+#[path = "tests/preparation_retirement.rs"]
+mod preparation_retirement;
+
 fn make_node() -> Node {
     Node::new(Config::new()).unwrap()
 }

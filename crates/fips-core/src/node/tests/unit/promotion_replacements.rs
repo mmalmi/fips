@@ -27,7 +27,7 @@ pub(super) async fn confirm_inbound_candidate_for_test(
     let mut wire = aad.to_vec();
     wire.extend(session.encrypt_with_aad(&heartbeat, &aad).unwrap());
     assert!(
-        node.confirm_inbound_handshake(ReceivedPacket::with_timestamp(
+        node.confirm_pending_handshake(ReceivedPacket::with_timestamp(
             transport_id,
             source.clone(),
             crate::transport::PacketBuffer::new(wire),

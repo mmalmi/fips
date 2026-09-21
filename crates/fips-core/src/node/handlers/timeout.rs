@@ -145,7 +145,14 @@ impl Node {
         let stale: Vec<LinkId> = self
             .peers
             .connection_iter()
-            .filter(|(_, conn)| conn.is_timed_out(now_ms, timeout_ms) || conn.is_failed())
+            .filter(|(_, conn)| {
+                conn.is_timed_out(now_ms, timeout_ms)
+                    || conn.is_failed()
+                    || conn.expected_identity().is_some_and(|identity| {
+                        self.neighbor_rotation_deadline(identity.node_addr())
+                            .is_some_and(|deadline| now_ms >= deadline)
+                    })
+            })
             .map(|(link_id, _)| *link_id)
             .collect();
 
@@ -270,6 +277,10 @@ impl Node {
             return;
         }
 
+        self.resend_prepared_neighbor_response(now_ms).await;
+        self.retry_prepared_inbound_neighbors().await;
+        self.retry_prepared_outbound_neighbors().await;
+
         let max_resends = self.config.node.rate_limit.handshake_max_resends;
         let interval_ms = self.config.node.rate_limit.handshake_resend_interval_ms;
         let backoff = self.config.node.rate_limit.handshake_resend_backoff;
@@ -281,6 +292,10 @@ impl Node {
             .connection_iter()
             .filter(|(_, conn)| {
                 conn.is_outbound()
+                    && conn.expected_identity().is_none_or(|identity| {
+                        self.neighbor_rotation_deadline(identity.node_addr())
+                            .is_none_or(|deadline| now_ms < deadline)
+                    })
                     && conn.handshake_state() == HandshakeState::SentMsg1
                     && conn.resend_count() < max_resends
                     && conn.next_resend_at_ms() > 0

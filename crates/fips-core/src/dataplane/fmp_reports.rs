@@ -42,6 +42,29 @@ impl DataplaneLiveNode {
         self.note_fmp_report_deadline(due);
     }
 
+    /// Transfer the winning pending connection's sender before any active sends.
+    /// Refusal returns the state unchanged; this never sends or runs a report.
+    pub(crate) fn install_pending_fmp_sender(
+        &mut self,
+        node: &NodeAddr,
+        expected_generation: u64,
+        sender: crate::mmp::SenderState,
+    ) -> Result<(), crate::mmp::SenderState> {
+        let Some(owner) = self.driver.owner_mut(OwnerId::fmp_node(*node)) else {
+            return Err(sender);
+        };
+        if owner.generation != expected_generation {
+            return Err(sender);
+        }
+        let Some(mmp) = owner.fmp_mmp.as_mut() else {
+            return Err(sender);
+        };
+        mmp.sender.absorb_pending_sender(sender)?;
+        let due = owner.next_fmp_mmp_report_at(std::time::Instant::now());
+        self.note_fmp_report_deadline(due);
+        Ok(())
+    }
+
     pub(crate) fn process_fmp_mmp_receiver_report(
         &mut self,
         node_addr: &NodeAddr,
@@ -82,5 +105,122 @@ impl OwnerState {
             .then(|| mmp.receiver.next_report_at(now))
             .flatten();
         sender.into_iter().chain(receiver).min()
+    }
+}
+
+#[cfg(test)]
+mod pending_sender_tests {
+    use super::*;
+
+    #[test]
+    fn pending_fmp_sender_install_requires_exact_owner_and_empty_interval() {
+        let node = NodeAddr::from_bytes([9; 16]);
+        let owner = OwnerId::fmp_node(node);
+        let mut live = DataplaneLiveNode::new(AdmissionConfig::new(4, 8));
+        let mut sender = crate::mmp::SenderState::new();
+        sender.record_sent(0, 0, 37);
+        let sender = live
+            .install_pending_fmp_sender(&node, 3, sender)
+            .err()
+            .unwrap();
+        assert_eq!(sender.cumulative_packets_sent(), 1);
+        live.register_owner(owner, OwnerConfig::new(3, 8));
+        let sender = live
+            .install_pending_fmp_sender(&node, 3, sender)
+            .err()
+            .unwrap();
+        assert_eq!(live.fmp_report_deadline(), None);
+        live.unregister_owner(owner);
+        live.register_owner(
+            owner,
+            OwnerConfig::new(3, 8).with_fmp_mmp(crate::mmp::MmpConfig::default(), true),
+        );
+        let sender = live
+            .install_pending_fmp_sender(&node, 2, sender)
+            .err()
+            .unwrap();
+        assert_eq!(live.fmp_report_deadline(), None);
+        assert!(live.install_pending_fmp_sender(&node, 3, sender).is_ok());
+        assert!(live.fmp_report_deadline().is_some());
+        let mut second = crate::mmp::SenderState::new();
+        second.record_sent(10, 9, 80);
+        let second = live
+            .install_pending_fmp_sender(&node, 3, second)
+            .err()
+            .unwrap();
+        assert_eq!(second.cumulative_bytes_sent(), 80);
+        let installed = &live
+            .driver
+            .owner_mut(owner)
+            .unwrap()
+            .fmp_mmp
+            .as_ref()
+            .unwrap()
+            .sender;
+        assert_eq!(installed.cumulative_packets_sent(), 1);
+        assert_eq!(installed.cumulative_bytes_sent(), 37);
+        // Subsequent ordinary sends append to, rather than replace, pending history.
+        live.record_fmp_mmp_send_result(&node, 1, 20, 45);
+        let installed = &live
+            .driver
+            .owner_mut(owner)
+            .unwrap()
+            .fmp_mmp
+            .as_ref()
+            .unwrap()
+            .sender;
+        assert_eq!(installed.cumulative_packets_sent(), 2);
+        assert_eq!(installed.cumulative_bytes_sent(), 82);
+        // Real owner rekey preserves lifetime totals but empties the old interval.
+        live.driver.owner_mut(owner).unwrap().rekey(4);
+        let mut replacement = crate::mmp::SenderState::new();
+        replacement.record_sent(0, 0, 37);
+        assert!(
+            live.install_pending_fmp_sender(&node, 4, replacement)
+                .is_ok()
+        );
+        let installed = &live
+            .driver
+            .owner_mut(owner)
+            .unwrap()
+            .fmp_mmp
+            .as_ref()
+            .unwrap()
+            .sender;
+        assert_eq!(installed.cumulative_packets_sent(), 3);
+        assert_eq!(installed.cumulative_bytes_sent(), 119);
+    }
+    #[test]
+    fn pending_fmp_sender_install_respects_report_modes() {
+        use crate::mmp::{MmpConfig, MmpMode, SenderState};
+        for mode in [MmpMode::Full, MmpMode::Lightweight, MmpMode::Minimal] {
+            let node = NodeAddr::from_bytes([9; 16]);
+            let owner = OwnerId::fmp_node(node);
+            let mut live = DataplaneLiveNode::new(AdmissionConfig::new(4, 8));
+            live.register_owner(
+                owner,
+                OwnerConfig::new(1, 8).with_fmp_mmp(
+                    MmpConfig {
+                        mode,
+                        ..Default::default()
+                    },
+                    true,
+                ),
+            );
+            let mut sender = SenderState::new();
+            sender.record_sent(0, 0, 37);
+            assert!(live.install_pending_fmp_sender(&node, 1, sender).is_ok());
+            assert_eq!(live.fmp_report_deadline().is_some(), mode == MmpMode::Full);
+            let installed = &live
+                .driver
+                .owner_mut(owner)
+                .unwrap()
+                .fmp_mmp
+                .as_ref()
+                .unwrap()
+                .sender;
+            assert_eq!(installed.cumulative_packets_sent(), 1);
+            assert_eq!(installed.cumulative_bytes_sent(), 37);
+        }
     }
 }

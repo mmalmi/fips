@@ -143,9 +143,11 @@ pub struct ActivePeer {
     pending_filter_update: bool,
 
     // === Timing ===
-    /// Session start time for computing session-relative timestamps.
-    /// Used as the epoch for the 4-byte inner header timestamp field.
+    /// Active session start, also the default wire timestamp origin.
+    /// Kept fresh at promotion for link-dead fallback timing.
     session_start: Instant,
+    /// Earlier wire timestamp origin for a readiness frame sent before promotion.
+    pending_fmp_timestamp_origin: Option<Instant>,
     /// Local current-session generation for dataplane owner state.
     session_generation: u64,
 
@@ -252,6 +254,7 @@ impl ActivePeer {
             filter_received_at: 0,
             pending_filter_update: true, // Send filter on new connection
             session_start: now,
+            pending_fmp_timestamp_origin: None,
             session_generation: authenticated_at.max(1),
             link_stats: LinkStats::new(),
             authenticated_at,
@@ -332,6 +335,7 @@ impl ActivePeer {
             filter_received_at: 0,
             pending_filter_update: true,
             session_start: now,
+            pending_fmp_timestamp_origin: None,
             session_generation: authenticated_at.max(1),
             link_stats: session.link_stats,
             authenticated_at,
@@ -484,6 +488,7 @@ impl ActivePeer {
         self.their_index = Some(new_their_index);
         self.session_established_at = Instant::now();
         self.session_start = Instant::now();
+        self.pending_fmp_timestamp_origin = None;
         self.session_generation = self.session_generation.wrapping_add(1).max(1);
         self.rekey_in_progress = false;
         self.rekey_msg1_resend_count = 0;
@@ -734,7 +739,15 @@ impl ActivePeer {
     /// Returns milliseconds since session establishment, truncated to u32.
     /// Wraps at ~49.7 days which is acceptable for session-relative timing.
     pub fn session_elapsed_ms(&self) -> u32 {
-        self.session_start.elapsed().as_millis() as u32
+        self.pending_fmp_timestamp_origin
+            .unwrap_or(self.session_start)
+            .elapsed()
+            .as_millis() as u32
+    }
+
+    /// Preserve the pending frame's wire clock without aging the new active owner.
+    pub(crate) fn adopt_pending_fmp_timestamp_origin(&mut self, origin: Instant) {
+        self.pending_fmp_timestamp_origin = Some(origin);
     }
 
     /// Local dataplane generation for the current Noise session.
@@ -908,6 +921,9 @@ impl ActivePeer {
 }
 
 mod rekey;
+
+#[cfg(test)]
+mod pending_timestamp_tests;
 
 #[cfg(test)]
 mod tests;

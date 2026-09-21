@@ -184,6 +184,7 @@ impl ActivePeer {
         self.current_k_bit = received_k_bit;
         self.session_established_at = Instant::now();
         self.session_start = Instant::now();
+        self.pending_fmp_timestamp_origin = None;
         self.session_generation = self.session_generation.wrapping_add(1).max(1);
         self.rekey_in_progress = false;
         self.rekey_msg1_resend_count = 0;
