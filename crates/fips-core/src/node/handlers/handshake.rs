@@ -796,6 +796,24 @@ impl Node {
         // Note: we don't early-return if peer is already in self.peers here.
         // promote_connection handles cross-connection resolution via tie-breaker.
 
+        // Check admission before retiring a pending owner. Rejected restarts
+        // must leave its receiver index, Msg2 and original deadline usable.
+        if self.config.node.neighbor_rotation.is_some()
+            && self.neighbor_roster_full()
+            && !self.peers.contains_key(&peer_node_addr)
+            && !self
+                .begin_inbound_neighbor_rotation(
+                    peer_node_addr,
+                    packet.transport_id,
+                    &packet.remote_addr,
+                    superseded_candidate,
+                )
+                .await
+        {
+            self.close_unowned_handshake_carrier(packet.transport_id, &packet.remote_addr)
+                .await;
+            return;
+        }
         if let Some(old_link_id) = superseded_candidate {
             self.unregister_handshake_candidate(old_link_id);
             if let Some(old) = self.peers.remove_connection(&old_link_id)
@@ -811,23 +829,6 @@ impl Node {
             }
         }
 
-        // Existing owners remain usable until the replacement proves receipt
-        // of Msg2. Park it within the normal handshake and link limits.
-        if self.config.node.neighbor_rotation.is_some()
-            && self.neighbor_roster_full()
-            && !self.peers.contains_key(&peer_node_addr)
-            && !self
-                .begin_inbound_neighbor_rotation(
-                    peer_node_addr,
-                    packet.transport_id,
-                    &packet.remote_addr,
-                )
-                .await
-        {
-            self.close_unowned_handshake_carrier(packet.transport_id, &packet.remote_addr)
-                .await;
-            return;
-        }
         let await_confirmation = self
             .peers
             .get(&peer_node_addr)

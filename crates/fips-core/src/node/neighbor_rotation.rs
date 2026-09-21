@@ -132,7 +132,7 @@ impl Node {
         outbound: bool,
         now_ms: u64,
     ) -> bool {
-        let rejection = self.neighbor_rotation_rejection(peer, outbound, now_ms);
+        let rejection = self.neighbor_rotation_rejection(peer, outbound, now_ms, None);
         if let Some(reason) = rejection {
             self.observe_neighbor_rotation_rejection(peer, outbound, now_ms, reason);
         }
@@ -144,6 +144,7 @@ impl Node {
         peer: &NodeAddr,
         outbound: bool,
         now_ms: u64,
+        replacing: Option<LinkId>,
     ) -> Option<&'static str> {
         if let Some(reason) = self.rotation_new_peer_rejection(peer, now_ms) {
             return Some(reason);
@@ -158,11 +159,12 @@ impl Node {
             if !self.rotation_attempt_is_fresh(attempt, now_ms) {
                 return Some("candidate attempt expired");
             }
-            if self.peers.connection_values().any(|conn| {
-                conn.expected_identity().is_some_and(|id| {
-                    !self.peers.contains_key(id.node_addr())
-                        && (id.node_addr() != peer || conn.is_outbound() == outbound)
-                })
+            if self.peers.connection_iter().any(|(link, conn)| {
+                Some(*link) != replacing
+                    && conn.expected_identity().is_some_and(|id| {
+                        !self.peers.contains_key(id.node_addr())
+                            && (id.node_addr() != peer || conn.is_outbound() == outbound)
+                    })
             }) {
                 return Some("conflicting pending handshake");
             }

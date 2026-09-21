@@ -61,8 +61,24 @@ impl Node {
         peer: NodeAddr,
         transport: TransportId,
         remote: &TransportAddr,
+        replacing: Option<LinkId>,
     ) -> bool {
         let now_ms = Self::now_ms();
+        if let Some(link) = replacing {
+            // Decide while the old candidate still owns its index and deadline.
+            // A same-path restart continues that attempt without a new cooldown.
+            return self.peers.get_connection(&link).is_some_and(|conn| {
+                !conn.is_outbound()
+                    && conn.has_session()
+                    && conn.transport_id() == Some(transport)
+                    && conn.source_addr() == Some(remote)
+                    && conn
+                        .expected_identity()
+                        .is_some_and(|identity| *identity.node_addr() == peer)
+            }) && self
+                .neighbor_rotation_rejection(&peer, false, now_ms, Some(link))
+                .is_none();
+        }
         let Some(outgoing) = self.unanswered_rotation_for_transfer(&peer, now_ms) else {
             return self.begin_neighbor_rotation(peer, false, now_ms);
         };
