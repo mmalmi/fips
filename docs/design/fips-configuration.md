@@ -165,6 +165,13 @@ This prevents returning peers from repeatedly skipping another advertised
 neighbor when local discovery gets a turn. It does not guarantee a discovery
 turn while other candidates occupy all transient slots.
 
+Transport discovery defers refresh of an eligible idle replacement victim when
+it finds a new candidate or that candidate's fresh handshake is still pending.
+Without a new or pending candidate, normal refresh resumes. Current application
+demand is rechecked, and physical BLE reconnections retain normal priority.
+This prevents discovery's own refresh from invalidating its exploration attempt;
+other maintenance and incoming handshakes still share the existing limits.
+
 Disabling the section stops future optional replacements; it does not reconnect
 previously displaced peers. This is a local exploration policy, not a guarantee
 of topology preservation, newcomer fairness against hostile identities, or

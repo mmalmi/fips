@@ -100,6 +100,29 @@ impl Node {
             && self.rotation_victim(now_ms).is_some()
     }
 
+    /// Keep discovery from refreshing the idle peer that can make room for
+    /// exploration, including while that candidate's handshake is pending.
+    pub(in crate::node) fn discovery_rotation_victim(&self, now_ms: u64) -> Option<NodeAddr> {
+        if self.rotation_has_pending_candidate() {
+            let attempt = self.neighbor_rotation.attempt.as_ref()?;
+            if !self.rotation_attempt_is_fresh(attempt, now_ms)
+                || self.peers.contains_key(&attempt.peer)
+                || !(self.peers.connection_values().any(|conn| {
+                    conn.expected_identity()
+                        .is_some_and(|id| id.node_addr() == &attempt.peer)
+                }) || self
+                    .pending_connects
+                    .iter()
+                    .any(|pending| pending.peer_identity.node_addr() == &attempt.peer))
+            {
+                return None;
+            }
+        } else if now_ms < self.neighbor_rotation.next_attempt_ms {
+            return None;
+        }
+        self.rotation_victim(now_ms)
+    }
+
     /// At most one candidate identity, with one handshake in each direction
     /// for simultaneous dials. Active-peer path refresh keeps its own limits.
     pub(in crate::node) fn can_attempt_neighbor_rotation(

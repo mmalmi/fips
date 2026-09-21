@@ -19,6 +19,8 @@ impl Node {
         let mut connect_budget = self.discovery_connect_budget();
         let mut skipped_budget = 0usize;
         let mut rotation_candidate: Option<(TransportId, TransportAddr, PeerIdentity)> = None;
+        let rotation_victim = self.discovery_rotation_victim(Self::now_ms());
+        let mut deferred_refreshes = Vec::new();
 
         for transport in self.transports.values() {
             if !transport.is_operational() {
@@ -86,13 +88,25 @@ impl Node {
                         continue;
                     }
                     let queued_for_peer = queued_per_peer.get(&node_addr).copied().unwrap_or(0);
-                    if connect_budget == 0
-                        || self
-                            .path_candidate_attempt_budget(&node_addr)
-                            .saturating_sub(queued_for_peer)
-                            == 0
-                    {
+                    let peer_budget = self
+                        .path_candidate_attempt_budget(&node_addr)
+                        .saturating_sub(queued_for_peer);
+                    if connect_budget == 0 || peer_budget == 0 {
                         skipped_budget = skipped_budget.saturating_add(1);
+                        continue;
+                    }
+                    // A refresh would make this idle peer ineligible for
+                    // replacement. Keep its slots available for exploration;
+                    // physical BLE reconnections retain their normal priority.
+                    if !confirms_new_connection && rotation_victim == Some(node_addr) {
+                        if deferred_refreshes.len() < peer_budget.min(connect_budget) {
+                            deferred_refreshes.push((
+                                candidate_transport_id,
+                                remote_addr,
+                                identity,
+                                true,
+                            ));
+                        }
                         continue;
                     }
                     to_connect.push((candidate_transport_id, remote_addr, identity, true));
@@ -160,6 +174,17 @@ impl Node {
             && let Some((transport_id, remote_addr, identity)) = rotation_candidate
         {
             to_connect.push((transport_id, remote_addr, identity, false));
+        } else if !deferred_refreshes.is_empty()
+            && self.has_neighbor_rotation_opportunity(Self::now_ms())
+        {
+            // No new candidate and no pending exploration: ordinary refresh
+            // still runs, within the slots left by higher-priority refreshes.
+            let victim = rotation_victim.unwrap();
+            let budget = connect_budget.min(
+                self.path_candidate_attempt_budget(&victim)
+                    .saturating_sub(queued_per_peer.get(&victim).copied().unwrap_or(0)),
+            );
+            to_connect.extend(deferred_refreshes.into_iter().take(budget));
         }
         for (transport_id, remote_addr, identity, active_refresh) in to_connect {
             info!(
