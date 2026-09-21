@@ -1808,12 +1808,48 @@ The existing paid full-roster regression completes all-hop credit at 34.939 s,
 preserves the original eight channels and boundary-to-internal link epochs, and
 delivers 35/35 independent local packets in each direction (largest gap 1.016 s).
 All 1,536 test sats are collected. These observations are not a latency guarantee.
-Separate repeated-encounter experiments remain unaccepted: one joined and paid
-at 41.307 s but later exceeded the five-second local delivery-gap limit after
-splitting; another missed the first 60-second join deadline and subsequently
-timed out during settlement. Their evidence does not establish a loss cause or
-complete fund collection for those failed runs. Repeated crowded recovery and
-failure cleanup therefore remain open; hardware acceptance is unchanged.
+Those initial repeated-encounter experiments failed: one exceeded the five-second
+local delivery-gap limit after splitting; another missed the first 60-second
+join deadline and subsequently timed out during settlement. Their retained
+evidence does not establish complete fund collection for those failed runs.
+
+The unchanged repeated full-roster acceptance now passes (2026-09-21). Both
+boundaries keep four responsive candidates available throughout two encounters
+and the intervening partition. Independent local traffic and the original
+boundary-to-internal link identities remain protected. Elective neighbor removal
+preserves end-to-end sessions and queued traffic; fresh remote startup epochs
+still use the restart recovery path. Pending neighbors can prepare before an
+incumbent is old enough to replace, but activation requires fresh encrypted
+confirmation and current eligibility at both ends. An interrupted local discovery
+attempt gets one fresh retry within its original deadline. The existing heartbeat
+carries readiness; no new wire message or larger admission allowance is needed.
+See the [rotation policy](../../docs/design/fips-configuration.md#optional-neighbor-rotation-nodeneighbor_rotation)
+for exact pacing, demand protection and discovery-source limits.
+
+In the final run, the two encounters resume fresh bidirectional delivery and
+credit on all eight original directional channels at 40.327 s and 52.612 s,
+within each original 60-second deadline. The intervening split evicts the bridge,
+refills both rosters and restores separate component roots in 33.306 s. No
+competing candidate is forced to leave. Original funding/channel identities,
+capital and lifetime budgets remain intact; the independent local workload stays
+within its five-second maximum delivery-gap bound. Native resource observations
+retain their existing caps. Settlement and collection recover all 1,536 test sats;
+the complete test takes 211.38 s. An earlier accepted run also completes both
+encounters and collection. These timings are observations, not a latency bound.
+
+Focused checks cover retained proof and unique-frame accounting, crossed dials,
+reply reception on another local listener, original retry deadlines, restart
+recovery, routed sessions and Bluetooth reconnection. A real TCP regression also
+checks preparation ownership across cancelled rejection cleanup and confirms
+that a newly denied peer receives no Noise handshake. Strict core and relay
+linting and the source-size gate pass. The latest code has no matched physical
+router measurements; arbitrary encounter schedules, hostile-identity fairness,
+radio contention and channel handover remain separate acceptance work.
+
+Reproduce with `cargo test -p fips-relay --features measurements --test
+priced_paths merge_split::crowded::automatic::repeated::repeated_full_rosters_recover_paid_routes_without_candidate_departures
+-- --exact --test-threads=1 --nocapture`, using the development dependencies in
+[FUNDING-COSTS.md](FUNDING-COSTS.md).
 
 The `merge_split::brief` variant covers repeated short contacts (2026-09-20).
 Independent tasks change the bridge carrier and send single-attempt packets in
