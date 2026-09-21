@@ -17,6 +17,7 @@ mod admission;
 mod direct_endpoint;
 mod discovery_tun;
 mod entry_basics;
+mod fmp_rekey_forwarding;
 mod forwarded_edge;
 mod forwarding_policy;
 mod graph_fallback;
