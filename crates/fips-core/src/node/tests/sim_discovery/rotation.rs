@@ -5,6 +5,7 @@ use spanning_tree::process_available_packets;
 use std::time::Instant;
 
 mod cursor;
+mod demand;
 mod refresh;
 mod unconfirmed;
 

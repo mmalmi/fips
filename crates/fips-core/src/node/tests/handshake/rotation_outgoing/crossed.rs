@@ -106,7 +106,6 @@ async fn crossed(new_epoch: bool) {
         dial(&mut nodes, 1, 0).await;
         msg1(&mut nodes[0]).await
     };
-    let request_bytes = incoming.data.as_slice().to_vec();
     nodes[0].node.handle_msg1(incoming).await;
     assert_eq!(resources(&nodes[0]), (1, 2, 3, 3));
     assert_eq!(Owner::capture(&nodes[0], &old), incumbent);
@@ -118,10 +117,37 @@ async fn crossed(new_epoch: bool) {
         .unwrap()
         .link_id();
 
-    // A real incumbent departure frees capacity before either timer retries
-    // the old outgoing proof. The exact incoming request can then receive its
-    // stored response through normal duplicate handling, without direct
-    // promotion or a specially ordered partial maintenance callback.
+    let incoming_index = nodes[0]
+        .node
+        .get_connection(&incoming_link)
+        .unwrap()
+        .our_index()
+        .unwrap();
+    let remote_addr = nodes[1].addr.clone();
+    let is_confirmation = |packet: &ReceivedPacket| {
+        packet.remote_addr == remote_addr
+            && crate::dataplane::FmpWireHeader::parse_encrypted(packet.data.as_slice())
+                .is_ok_and(|header| header.receiver_idx() == incoming_index.as_u32())
+    };
+    // Msg2 already advertises the incoming reservation. Hold its genuine
+    // encrypted confirmation so Disconnect deterministically arrives first;
+    // a proof retained before departure instead needs ordinary maintenance.
+    let confirmation = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            process_available_packets(&mut nodes[1..]).await;
+            while let Ok(packet) = nodes[0].packet_rx.try_recv() {
+                if is_confirmation(&packet) {
+                    return packet;
+                }
+                process_dataplane_packet(&mut nodes[0], packet).await;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("remote sends a real encrypted incoming confirmation");
+    assert_eq!(Owner::capture(&nodes[0], &old), incumbent);
+    let mut delayed = vec![confirmation];
     let disconnect = crate::protocol::Disconnect::new(crate::protocol::DisconnectReason::Shutdown);
     nodes[2]
         .node
@@ -130,32 +156,22 @@ async fn crossed(new_epoch: bool) {
         .unwrap();
     tokio::time::timeout(Duration::from_secs(1), async {
         while nodes[0].node.get_peer(&old).is_some() {
-            process_available_packets(&mut nodes).await;
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            let packet = nodes[0].packet_rx.recv().await.unwrap();
+            if is_confirmation(&packet) {
+                assert!(delayed.len() < 32, "bounded held confirmation flights");
+                delayed.push(packet);
+            } else {
+                process_dataplane_packet(&mut nodes[0], packet).await;
+            }
         }
     })
     .await
     .expect("authenticated incumbent Disconnect frees the roster slot");
     assert!(nodes[0].node.get_peer(&remote).is_none());
-    nodes[1]
-        .node
-        .transports
-        .get(&nodes[1].transport_id)
-        .unwrap()
-        .send(&nodes[0].addr, &request_bytes)
-        .await
-        .unwrap();
-    let retry = msg1(&mut nodes[0]).await;
-    assert_eq!(retry.data.as_slice(), request_bytes);
-    nodes[0].node.handle_msg1(retry).await;
-    tokio::time::timeout(Duration::from_secs(1), async {
-        while nodes[0].node.get_peer(&remote).is_none() {
-            process_available_packets(&mut nodes).await;
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .expect("fresh encrypted confirmation installs the incoming owner");
+    for confirmation in delayed {
+        process_dataplane_packet(&mut nodes[0], confirmation).await;
+    }
+    assert!(nodes[0].node.get_peer(&remote).is_some());
     quiesce(&mut nodes).await;
     let winner = Owner::capture(&nodes[0], &remote);
     assert_eq!(winner.link, incoming_link);

@@ -16,6 +16,7 @@ pub(super) struct NeighborRotation {
     last_replacement_ms: Option<u64>,
     displaced: Option<(NodeAddr, u64)>,
     cursor: Option<NodeAddr>,
+    exploration_due: bool,
     outbound_turn_until_ms: u64,
     interrupted_outgoing: Option<InterruptedOutgoing>,
 }
@@ -333,9 +334,16 @@ impl Node {
             if outbound {
                 self.neighbor_rotation.outbound_turn_until_ms = 0;
             }
-            // The first inbound attempt seeds exploration past itself. Later
-            // inbound traffic must not rewind progress through local discovery.
-            if (outbound && !is_retry) || self.neighbor_rotation.cursor.is_none() {
+            if outbound && !is_retry {
+                // Spend a demand turn when it starts, even if no reply arrives.
+                // Only ordinary exploration advances the cursor.
+                let demand = self.neighbor_rotation_prefers_demand(peer);
+                self.neighbor_rotation.exploration_due = demand;
+                if !demand {
+                    self.neighbor_rotation.cursor = Some(peer);
+                }
+            } else if !outbound && self.neighbor_rotation.cursor.is_none() {
+                // Only the first inbound attempt can seed ordinary exploration.
                 self.neighbor_rotation.cursor = Some(peer);
             }
         }
@@ -519,23 +527,32 @@ impl Node {
             .map(|attempt| attempt.deadline_ms)
     }
 
-    /// Prefer only a presently offered, independently admissible retry. The raw
-    /// cursor ordering remains unchanged for normal exploration after this turn.
+    fn neighbor_rotation_prefers_demand(&self, peer: NodeAddr) -> bool {
+        !self.neighbor_rotation.exploration_due
+            && self.pending_session_traffic.has_traffic_for(&peer)
+    }
+
+    /// Retry a presently offered interrupted attempt first, then alternate
+    /// queued destination demand with ordinary cursor exploration.
     pub(in crate::node) fn neighbor_rotation_discovery_order(
         &self,
         peer: NodeAddr,
         now_ms: u64,
-    ) -> (bool, (bool, NodeAddr)) {
+    ) -> (bool, bool, (bool, NodeAddr)) {
         let preferred = self
             .neighbor_rotation
             .interrupted_outgoing
             .as_ref()
             .is_some_and(|retry| retry.peer == peer && now_ms < retry.deadline_ms);
-        (!preferred, self.neighbor_rotation_order(peer))
+        (
+            !preferred,
+            !self.neighbor_rotation_prefers_demand(peer),
+            self.neighbor_rotation_order(peer),
+        )
     }
 
-    /// Continue after the last locally attempted identity. A one-use retry
-    /// wraps this key without moving the ordinary discovery cursor.
+    /// Continue after the last ordinary outgoing identity. Demand and retries
+    /// wrap this key without moving the exploration cursor.
     pub(in crate::node) fn neighbor_rotation_order(&self, peer: NodeAddr) -> (bool, NodeAddr) {
         (
             self.neighbor_rotation

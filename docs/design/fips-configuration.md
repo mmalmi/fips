@@ -194,8 +194,8 @@ Existing authenticated peers and simultaneous outbound dials retain their normal
 recovery paths. Cleanup can admit a later attempt; this is not a fairness guarantee
 among repeatedly joining identities.
 
-Discovery continues after its last locally attempted identity. A first incoming
-attempt can seed that position; subsequent incoming attempts cannot reset it.
+Ordinary discovery continues after its last ordinary outgoing identity. A first
+incoming attempt can seed that position; subsequent incoming attempts cannot reset it.
 This prevents returning peers from repeatedly skipping another advertised
 neighbor when local discovery gets a turn. It does not guarantee a discovery
 turn while other candidates occupy all transient slots.
@@ -207,6 +207,23 @@ capacity checks. A missing or ineligible identity cannot block other candidates,
 and an interrupted retry cannot create another retry. The original discovery
 cursor remains intact. Nostr traversal events retain their existing arrival
 order; they do not use this candidate-list preference.
+
+Transport and LAN discovery alternate demand preference with ordinary exploration.
+When no ordinary turn is owed, an advertised identity with locally queued endpoint
+or TUN traffic takes priority over the cursor order. This uses the existing bounded
+destination queue; an advert alone cannot create demand. Starting that attempt
+consumes the preference, even if the peer never answers. The next new outgoing
+attempt uses ordinary cursor order and replenishes demand preference. A preferred
+attempt does not move the cursor. Empty or ineligible demand falls through, and
+incoming attempts or failed scans do not replenish preference. The one-use
+interrupted retry above stays ahead of both choices and continues its original
+turn without changing the cursor or the owed exploration turn.
+
+This preference applies to the queued destination itself, not inferred transit
+neighbors. It does not bypass ACLs, capacity, incumbent protection or handshake
+deadlines, grant paid forwarding authority, or guarantee admission time. Ordinary
+exploration still gets opportunities when a demanded peer remains unresponsive;
+changing candidate populations and incoming contention can still delay admission.
 
 After a successful incoming replacement, a node with automatic discovery reserves
 one local outgoing opportunity before another fresh incoming attempt. That

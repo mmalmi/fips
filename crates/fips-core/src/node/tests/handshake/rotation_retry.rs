@@ -11,6 +11,7 @@ use std::panic::AssertUnwindSafe;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Case {
     RetryOnce,
+    DemandRetryOnce,
     MissingTarget,
     PreparationExpires,
     HandshakeExpires,
@@ -19,6 +20,11 @@ enum Case {
 #[test]
 fn transferred_outgoing_gets_one_fresh_discovery_retry_with_original_deadline() {
     run(Case::RetryOnce);
+}
+
+#[test]
+fn interrupted_demand_retry_preserves_the_owed_exploration_turn() {
+    run(Case::DemandRetryOnce);
 }
 
 #[test]
@@ -60,7 +66,7 @@ async fn exercise(node: &mut TestNode, case: Case) {
     let mut target = make_node();
     let mut competitor = make_node();
     // Control the raw cursor's ordering, not the runtime policy or its clocks.
-    if target.node_addr() > competitor.node_addr() {
+    if (target.node_addr() > competitor.node_addr()) != (case == Case::DemandRetryOnce) {
         std::mem::swap(&mut target, &mut competitor);
     }
     let (_old_socket, old_source) = local_path().await;
@@ -76,6 +82,21 @@ async fn exercise(node: &mut TestNode, case: Case) {
     node.node.config.node.rate_limit.handshake_timeout_secs = 6;
     node.node.config.node.rekey.enabled = false;
     tokio::time::sleep(Duration::from_millis(1_050)).await;
+
+    if case == Case::DemandRetryOnce {
+        crate::node::tests::session::send_endpoint_data_via_dataplane(
+            &mut node.node,
+            identity(&target),
+            b"waiting for this discovered destination".to_vec(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            node.node
+                .pending_session_traffic
+                .has_traffic_for(target.node_addr())
+        );
+    }
 
     let wall_start = tokio::time::Instant::now();
     node.node
@@ -242,6 +263,13 @@ async fn exercise(node: &mut TestNode, case: Case) {
     );
     promote(node, &second, &mut second_owner).await;
     tokio::time::sleep_until(wall_start + Duration::from_millis(4_350)).await;
+    if case == Case::DemandRetryOnce {
+        assert!(
+            node.node
+                .pending_session_traffic
+                .has_traffic_for(target.node_addr())
+        );
+    }
     node.node.poll_transport_discovery().await;
     let next = node.node.peers.connection_values().next().unwrap();
     assert_eq!(

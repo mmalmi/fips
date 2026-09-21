@@ -1984,6 +1984,38 @@ priced_paths merge_split::crowded::automatic::repeated::repeated_full_rosters_re
 -- --exact --test-threads=1 --nocapture`, using the development dependencies in
 [FUNDING-COSTS.md](FUNDING-COSTS.md).
 
+Full-roster transport and LAN discovery now alternate queued-destination
+preference with ordinary exploration (2026-09-21). The policy adds one boolean
+and reads the existing bounded local endpoint/TUN queue; it adds no wire message
+or spending authority. It prioritizes the destination itself, not an inferred
+transit neighbor. See the [rotation policy](../../docs/design/fips-configuration.md#optional-neighbor-rotation-nodeneighbor_rotation)
+for cursor, retry, admission and discovery-source limits.
+
+A matched native fixture keeps all candidates advertised and queues one original
+payload before exposing them. Baseline discovery admits B, C, then destination D;
+the preference admits D first. Observed delivery changes from 3,027 to 1,021 ms
+and from three admissions to one. Only the production neighbor-selection source
+differs in that comparison. These are one-second idle/polling/maintenance fixture
+observations, not general latency bounds; observed refresh attempts are counted
+separately from admissions. Endpoint and TUN delivery both pass. An unresponsive
+D receives alternating D, B, D, C attempts while its original payload remains
+queued, and a transferred demand retry preserves the original deadline and the
+owed ordinary turn. Native caps and incumbent protection remain unchanged.
+
+All ten discovery tests, 89 handshake tests and strict core/relay lint pass.
+Broader verification exposed an existing crossed-handshake fixture's packet-order
+race: confirmation arriving before Disconnect required maintenance that its
+packet-only wait omitted. Those tests now delay genuine incoming confirmation
+until authenticated Disconnect, retaining their live stale-reply, epoch, FSP key,
+payload and cleanup assertions. This is a fixture correction, not a protocol fix.
+
+The repeated paid full-roster test also passes: both encounters resume delivery
+and all-hop credit at 40.749 and 46.421 seconds, within the original 60-second
+windows, and all 1,536 test sats are collected. This establishes compatibility,
+not faster transit-bridge discovery or physical-router acceptance of this policy.
+Run the focused cases with `cargo test -p nvpn-fips-core --all-features --lib
+node::tests::sim_discovery::rotation::demand:: -- --test-threads=1 --nocapture`.
+
 The `merge_split::brief` variant covers repeated short contacts (2026-09-20).
 Independent tasks change the bridge carrier and send single-attempt packets in
 both directions; actual contact intervals must remain within half to one-and-a-half
