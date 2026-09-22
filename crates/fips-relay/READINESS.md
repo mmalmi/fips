@@ -2342,18 +2342,19 @@ files. Reproduce with the `priced_paths` filter
 `merge_split::crowded::automatic::repeated::loss::`, using the development
 dependencies in [FUNDING-COSTS.md](FUNDING-COSTS.md).
 
-The finite-contact fixture, initially isolated as `1725169c`, reuses the independently timed
-contact driver with full neighbor tables and no reciprocal bridge at the first
-opening. Financial agreements and earlier session history are retained: this is
+The finite-contact fixture, initially isolated as `1725169c`, reuses the
+independently timed contact driver with full neighbor tables and no reciprocal
+bridge at the first opening. Financial agreements and earlier session history are retained: this is
 cold adjacency, not first-time funding. Complete application submission spans
 and receive observations must both precede the cut to count as finite-contact
 delivery; later receives and packets unobserved by the cohort deadline remain
 separate. The final sustained opening retains the original 60-second deadline,
 including time spent draining the cohort.
 
-Before the child-update repair below, seed 139 delivers **0/20** fresh in-window packets during cold openings lasting
-0.3–1.5 seconds. Sustained contact then restores delivery at 16.518 seconds and
-all-hop credit at 17.232 seconds. Subsequent warm windows deliver **31/33** fresh
+Before the child-update repair below, seed 139 delivers **0/20** fresh in-window
+packets during cold openings lasting 0.3–1.5 seconds. Sustained contact then
+restores delivery at 16.518 seconds and all-hop credit at 17.232 seconds.
+Subsequent warm windows deliver **31/33** fresh
 offers before their cuts, with progress in every direction/window and original
 authenticated owners retained. After a full split and native roster refill, the
 second encounter first observes a bridge at 49.765 seconds and a common tree at
@@ -2372,7 +2373,7 @@ same-root announcement. The repair retries missing or conflicting root state
 through the existing announcement exchange. A stale same-root announcement from
 the current parent elicits the child's current declaration only when the existing
 send rate permits an immediate reply. It neither accepts stale state nor queues
-an extra reply when rate-blocked. No messages, timers or limits are added.
+an extra reply when rate-blocked. No message types, timers or limits are added.
 
 The regression drops one genuine encrypted child update while preserving the
 live session and replay state. Before the repair, the parent remains obsolete
@@ -2400,6 +2401,38 @@ child-update repair fixes the separate late-admission failure. The earlier
 timeout remains evidence of an open crowded-recovery gap. No deadlines or safety
 limits were relaxed. Sim discovery does not model radio beacon airtime or RF
 loss, and these runs do not establish physical mobile-mesh readiness.
+
+#### Queued discovery after reordered reachability
+
+A filter can arrive while its authenticated sender is still a non-tree peer.
+Accepting a later child declaration previously made that filter usable without
+releasing a queued lookup that had never sent a request. The tree handler now
+reuses the filter handler's bounded wake-up helper after accepting the transition
+and recomputing coordinates. Already-sent requests retain their normal retry
+cadence. No queue, timer, message type or rate-limit exception is added.
+
+The native regression offers one original endpoint payload, delivers the filter
+and child declaration over existing encrypted carriers, and observes the first
+lookup on that carrier before the unchanged one-second retry deadline. It fails
+with zero requests before the fix and passes with exactly one afterward. Two
+stale signed declarations in fresh encrypted frames cannot send another lookup;
+owners, indexes, session generations, pending traffic and retry clocks remain
+unchanged. The triangle setup, advertised target and local parent choice are
+controlled: this proves the eligibility wake-up, not destination delivery or
+organic parent selection. Cancellation before the callback still falls back to
+the existing lookup deadline.
+
+All 23 focused routing checks, strict core lint, formatting and the 896-file size
+gate pass. Both paid brief-contact scenarios and the crowded seed-139 scenario
+also pass, collecting all 4608 issued test sats. The crowded run delivers at
+15.711/20.511 seconds and credits every hop at 16.423/21.223 seconds. Cold short
+contacts remain **0/18**, while warm contacts deliver **31/31**. Local streams
+deliver 98/98 per direction without duplicates; maximum gaps are 1.004/1.016
+seconds. These timings do not establish a general speedup or resolve the earlier
+crowded timeout. A preceding instrumented run showed several coordinate lookups
+rejected by the existing forwarding limits during recovery, without establishing
+that those rejections alone caused the paid-delivery delay. Reproduce the native
+regression with the `spanning_tree::reachability_wakeup::` core test filter.
 
 #### Earlier crowded-admission experiments
 
