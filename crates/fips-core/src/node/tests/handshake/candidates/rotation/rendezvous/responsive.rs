@@ -15,6 +15,9 @@ mod queued;
 #[path = "responsive_late.rs"]
 mod late;
 
+#[path = "responsive_brief.rs"]
+mod brief;
+
 const IDLE_SECS: u64 = 10;
 const INTERVAL_SECS: u64 = 2;
 const RESPONSIVE_ADDRESSES: [&str; 20] = [
@@ -140,7 +143,8 @@ fn run_population_with_demand(
                 "first_scalar":population.first_scalar,"reversed":population.reversed,
                 "idle_secs":population.idle_secs,"interval_secs":INTERVAL_SECS,
                 "max_connections":population.capacity.connections,"max_links":population.capacity.links,
-                "identity_order":identity_order,"maintenance_phase_ms":component_phase.as_millis()})
+                "identity_order":identity_order,"maintenance_phase_ms":component_phase.as_millis(),
+                "initial_brief_contact":population.initial_brief_contact})
         );
         let result = AssertUnwindSafe(exercise(
             &mut nodes,
@@ -152,6 +156,7 @@ fn run_population_with_demand(
                 component_phase,
                 demand,
                 diagnose_miss: population.diagnose_miss,
+                initial_brief_contact: population.initial_brief_contact,
                 capacity: population.capacity,
             },
         ))
@@ -532,6 +537,7 @@ struct EncounterOptions {
     component_phase: Duration,
     demand: Option<queued::Demand>,
     diagnose_miss: bool,
+    initial_brief_contact: bool,
     capacity: CapacityLimits,
 }
 
@@ -547,6 +553,7 @@ async fn exercise(
         component_phase,
         demand,
         diagnose_miss,
+        initial_brief_contact,
         capacity,
     } = options;
     let ids = identities(nodes);
@@ -562,6 +569,17 @@ async fn exercise(
     observation
         .round(nodes, &mut endpoints, &ids, &mut sequence, &LOCAL_FLOWS)
         .await;
+    if initial_brief_contact {
+        brief::mature_useful_owners(
+            &mut observation,
+            nodes,
+            &mut endpoints,
+            &ids,
+            &mut sequence,
+            &original,
+        )
+        .await;
+    }
     connect(&mut observation, nodes, &ids, network, addresses, 0, 4).await;
     let first = nodes[0]
         .node
@@ -604,6 +622,23 @@ async fn exercise(
             SimLink::default(),
         );
     }
+    let first_exposure_requests = observation.bridge_msg1;
+    if initial_brief_contact {
+        assert!(
+            demand.is_none(),
+            "brief admission control adds no queued cross demand"
+        );
+        brief::observe(
+            &mut observation,
+            nodes,
+            &mut endpoints,
+            &ids,
+            &mut sequence,
+            network,
+            addresses,
+        )
+        .await;
+    }
     let mut previous_bridge: Option<Vec<(LinkId, u64)>> = None;
     for encounter in 0..=usize::from(repeated) {
         eprintln!(
@@ -645,7 +680,13 @@ async fn exercise(
             observation.started,
             "responsive-bridge-exposed",
         );
-        let before_requests = observation.bridge_msg1;
+        // Preparation from the brief opening may finish after re-exposure
+        // without another Msg1. Count that genuine first discovery offer too.
+        let before_requests = if initial_brief_contact && encounter == 0 {
+            first_exposure_requests
+        } else {
+            observation.bridge_msg1
+        };
         let mut bridge_at = None;
         let mut delivery_at = None;
         let mut next_local_round = None;
@@ -726,6 +767,7 @@ async fn exercise(
                 "elapsed_ms":exposed.elapsed().as_millis(),"bridge_ms":bridge_at.map(|d|d.as_millis()),
                 "bridge_msg1":[observation.bridge_msg1[0]-before_requests[0],
                     observation.bridge_msg1[1]-before_requests[1]],
+                "includes_initial_brief_requests":initial_brief_contact && encounter == 0,
                 "delivery_ms":delivery_at.map(|d|d.as_millis()),"incumbent_changes":observation.replacements,
                 "maintenance_turns":observation.ticks,"completed_payload_rounds":sequence})
         );
@@ -735,7 +777,8 @@ async fn exercise(
             .zip(before_requests)
             .any(|(after, before)| *after > before);
         let accepted = bridge_at.is_some_and(|elapsed| elapsed < window)
-            && (!repeated || delivery_at.is_some_and(|elapsed| elapsed < window));
+            && (!(repeated || initial_brief_contact)
+                || delivery_at.is_some_and(|elapsed| elapsed < window));
         if diagnose_miss && !accepted {
             // Keep the original outcome above and assertions below immutable.
             // Later success is diagnostic evidence, never a new acceptance.
@@ -782,7 +825,7 @@ async fn exercise(
             bridge_at.is_some_and(|elapsed| elapsed < window),
             "encounter {encounter}: responsive local replacements must not prevent the offset rosters forming a reciprocal bridge within {window:?}"
         );
-        if repeated {
+        if repeated || initial_brief_contact {
             assert!(
                 delivery_at.is_some_and(|elapsed| elapsed < window),
                 "encounter {encounter}: both native payload directions must complete within the same {window:?}"

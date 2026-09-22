@@ -136,6 +136,23 @@ impl Probe {
                 "neighbor"
             };
             trace.record(node, kind, span, state);
+            if matches!(node, 2 | 3) {
+                let mut roster: Vec<_> = peers["peers"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|peer| {
+                        let mut state = select(
+                            Some(peer),
+                            &["connectivity", "link_id", "authenticated_at_ms"],
+                        );
+                        state["peer"] = self.node_label(&peer["node_addr"]);
+                        state
+                    })
+                    .collect();
+                roster.sort_by_key(|peer| peer["peer"].to_string());
+                trace.record(node, "roster", span, json!(roster));
+            }
             let mut announcements: Vec<_> = peers["peers"]
                 .as_array()
                 .unwrap()

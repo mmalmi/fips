@@ -2603,6 +2603,33 @@ paid case with the `priced_paths` filter
 `merge_split::crowded::automatic::repeated::loss::lossy_brief_contacts_and_long_absence_reuse_original_paid_routes`.
 Use the development dependencies in [FUNDING-COSTS.md](FUNDING-COSTS.md).
 
+The current-build finite-contact trace also records complete boundary rosters
+from the existing peer queries. Both idle incumbents remain young during the
+initial brief openings, and observed bridge requests meet an already-owned
+preparation attempt. Later paid delivery succeeds at 16.505/47.844 seconds and
+all 1,536 test sats are collected. This trace does not establish a missed
+admissible opportunity; its host-clock correlation is diagnostic evidence.
+
+A native-clock admission control now checks the corresponding exclusion without
+changing policy. Real local traffic first matures each useful owner; a younger
+idle owner then fills its boundary's second slot. During an independently cut
+1.502-second contact, both complete rosters stay retained, actual application or
+transit demand protects each useful owner at all 239 observations, and both idle
+owners remain below the ten-second minimum age through the cut. Four local
+payload rounds complete. No cross-boundary payload is offered during this
+admission-only phase. After the sustained opening, a reciprocal bridge appears
+at 8.807 seconds and both payload directions complete at 8.849 seconds, within
+the unchanged 60-second bound. Preparation from the short contact may finish
+without another handshake request.
+
+The new normal test and the original repeated paid-capacity native control pass,
+as do strict core/relay lint, formatting and the 917-file size gate. Reproduce
+with the core library filter `responsive::brief::`. Existing useful-owner,
+connection, link and timing limits remain enforced. This identifies one expected
+short-contact exclusion, not a universal minimum contact duration or convergence
+guarantee for already-admissible neighbors. No runtime policy or hardware changes
+are included; physical mobile-radio acceptance remains open.
+
 The finite-contact fixture, initially isolated as `1725169c`, reuses the
 independently timed contact driver with full neighbor tables and no reciprocal
 bridge at the first opening. Financial agreements and earlier session history are retained: this is

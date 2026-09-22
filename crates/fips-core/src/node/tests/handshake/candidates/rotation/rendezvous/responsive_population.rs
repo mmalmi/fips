@@ -8,6 +8,7 @@ pub(super) struct Population {
     pub reversed: bool,
     pub idle_secs: u64,
     pub diagnose_miss: bool,
+    pub initial_brief_contact: bool,
     pub capacity: CapacityLimits,
 }
 
@@ -19,6 +20,7 @@ impl Population {
             reversed: false,
             idle_secs: IDLE_SECS,
             diagnose_miss: false,
+            initial_brief_contact: false,
             capacity: CapacityLimits::ORIGINAL,
         }
     }
