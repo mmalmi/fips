@@ -10,6 +10,9 @@ mod loss;
 #[path = "repeated/finite.rs"]
 mod finite;
 
+#[path = "repeated/payment_snapshot.rs"]
+mod payment_snapshot;
+
 #[derive(Clone, Copy, Debug)]
 struct EncounterProfile {
     seed: u64,
@@ -235,6 +238,7 @@ async fn encounters(
                 }
             }
             previous_bridge = Some(bridge);
+            payment_snapshot::capture(bench, "before_fresh_traffic", Some(encounter)).await;
             for (source, destination, tag) in
                 [(0, 5, 230 + encounter * 2), (5, 0, 231 + encounter * 2)]
             {
@@ -246,6 +250,7 @@ async fn encounters(
                     timing.mark(&format!("traffic_{source}_{destination}_delivered"));
                 }
             }
+            payment_snapshot::capture(bench, "after_fresh_traffic", Some(encounter)).await;
             let delivery_ms = start.elapsed().as_millis();
             let paid = payments(bench).await;
             fresh_hops(&before, &hop_usage(bench).await);
@@ -386,6 +391,7 @@ async fn exercise_repeated(profile: EncounterProfile) {
             }),
     );
     if let Err(reason) = &outcome {
+        payment_snapshot::capture(&bench, "failure_before_drain", None).await;
         eprintln!("repeated full-roster bridge witness: {}", witness.summary());
         eprintln!("repeated full-roster failure before drain: {reason}");
         eprintln!(

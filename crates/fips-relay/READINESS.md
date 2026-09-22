@@ -2553,6 +2553,56 @@ files. Reproduce with the `priced_paths` filter
 `merge_split::crowded::automatic::repeated::loss::`, using the development
 dependencies in [FUNDING-COSTS.md](FUNDING-COSTS.md).
 
+The combined seed-139 case adds brief contacts and a 31-second absence after the
+bridge's authenticated owners are removed. Its original run failed the second
+encounter: the native tree recovered, but none of 12 fresh cross-component
+payloads arrived in the existing 20-second traffic window. A traced reproduction
+showed the first actual lookup request leaving with about 1.97 seconds left in
+the final attempt. The destination answered, but no verified response reached
+the source before expiry; fresh demand then met the normal 30-second backoff.
+The trace does not identify the exact lost reply hop. The source purchase stayed
+eligible and unrelated local payments advanced. A separate diagnostic run passed;
+that intermittent pass did not erase either failure.
+
+A three-node native UDP regression drops exactly that first genuine signed reply.
+Before the correction, fresh demand remains suppressed after the original lookup
+and packet expire. Discovery now records the first peer-selection phase before
+awaiting transport. If reachability delayed that selection beyond the initial
+phase, expiry grants the existing one-shot retry on usable reachability. An
+entirely unsent lookup retains the same exception. Normal admission still applies;
+the failure count and suppression deadline remain until verified success. The
+new lookup selects in its first phase, so its own timeout cannot rearm the
+exception. A request selected in the original first phase keeps ordinary backoff
+even if its route later disappears. Configured connection and session-recovery
+demand retain their existing behavior; routing announcements alone do not create
+fresh work. No message type, lookup deadline, transit interval or payment limit
+changes.
+
+The native case now delivers only the distinct fresh payload, with both original
+carrier owners retained. Offline and fully unanswered controls stay suppressed;
+the original packet remains discarded. Two combined paid runs after the
+correction recover delivery at 15.848/21.363 and 23.142/43.969 seconds from the
+two sustained openings. Every-hop credit follows at 17.266/22.279 and
+24.666/44.683 seconds. Loss stays active through acceptance, with 11/15 and 21/53
+actual dropped packets. Each local stream delivers all 131 or 160 originals
+without duplicates; the largest observed gap is 2.999 seconds. Both runs collect
+all 1,536 test sats after reliable-carrier cleanup. Initial crowded brief contacts
+still deliver none of 18 or 17 offered packets; warm contacts deliver 25/30 and
+29/32. These finite observations do not establish seamless short contacts, a
+general recovery bound or physical-radio acceptance.
+
+All 15 native contention cases, ten pending-lookup controls, 27 rate/backoff
+controls, two request-history tests and the lookup-cancellation regression pass.
+Strict core/relay lint, formatting and the 916-file source-size gate pass, with
+the four existing oversized-file exceptions unchanged. The shared encrypted-frame
+test helper removes duplicate interception plumbing. Each gate verifies frozen
+source/dependency/lock fingerprints and restores the portable workspace lock.
+Reproduce the native case with the `nvpn-fips-core` library filter
+`node::tests::discovery::forwarding_contention::late_reply_loss::`, and the combined
+paid case with the `priced_paths` filter
+`merge_split::crowded::automatic::repeated::loss::lossy_brief_contacts_and_long_absence_reuse_original_paid_routes`.
+Use the development dependencies in [FUNDING-COSTS.md](FUNDING-COSTS.md).
+
 The finite-contact fixture, initially isolated as `1725169c`, reuses the
 independently timed contact driver with full neighbor tables and no reciprocal
 bridge at the first opening. Financial agreements and earlier session history are retained: this is

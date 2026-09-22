@@ -6,8 +6,8 @@
 //!   suppression of fresh lookups after the per-attempt sequence in
 //!   `node.discovery.attempt_timeouts_secs` has been exhausted. Reset on
 //!   topology changes (parent change, new peer, first RTT, reconnection).
-//!   A lookup that never found an eligible peer may retry once when fresh
-//!   local demand finds a usable route, without clearing failure history.
+//!   A lookup whose first request was delayed by missing reachability may retry
+//!   once when local demand finds a usable route, without clearing failure history.
 //!
 //! - **`DiscoveryForwardRateLimiter`** (transit-side): Per-target minimum
 //!   interval plus a per-authenticated-ingress budget for forwarded requests.
@@ -50,7 +50,7 @@ struct BackoffEntry {
     suppress_until: Instant,
     /// Consecutive failures (drives exponential backoff).
     failures: u32,
-    /// The failed lookup never selected an eligible peer.
+    /// Missing reachability delayed the failed lookup's first request.
     retry_when_reachable: bool,
 }
 
@@ -89,8 +89,8 @@ impl DiscoveryBackoff {
         self.record_failure_with_reachability(target, false);
     }
 
-    /// Record exhaustion before any request could select an eligible peer.
-    pub(crate) fn record_unsent_failure(&mut self, target: &NodeAddr) {
+    /// Record failure when no peer was selected during the initial attempt.
+    pub(crate) fn record_delayed_failure(&mut self, target: &NodeAddr) {
         self.record_failure_with_reachability(target, true);
     }
 
@@ -117,7 +117,7 @@ impl DiscoveryBackoff {
     /// Spend one retry on newly usable reachability. The caller must apply
     /// normal lookup admission and peer selection first. A routing hint does
     /// not prove delivery, so the failure count and suppression deadline stay.
-    pub(crate) fn retry_unsent_with_route(&mut self, target: &NodeAddr) -> bool {
+    pub(crate) fn retry_delayed_with_route(&mut self, target: &NodeAddr) -> bool {
         self.entries
             .get_mut(target)
             .is_some_and(|entry| std::mem::take(&mut entry.retry_when_reachable))
@@ -577,14 +577,14 @@ mod tests {
     }
 
     #[test]
-    fn unsent_failure_allows_one_targeted_retry_without_erasing_history() {
+    fn delayed_failure_allows_one_targeted_retry_without_erasing_history() {
         let mut backoff = DiscoveryBackoff::new();
-        backoff.record_unsent_failure(&addr(1));
-        backoff.record_unsent_failure(&addr(2));
+        backoff.record_delayed_failure(&addr(1));
+        backoff.record_delayed_failure(&addr(2));
         let deadline = backoff.entries[&addr(1)].suppress_until;
 
-        assert!(backoff.retry_unsent_with_route(&addr(1)));
-        assert!(!backoff.retry_unsent_with_route(&addr(1)));
+        assert!(backoff.retry_delayed_with_route(&addr(1)));
+        assert!(!backoff.retry_delayed_with_route(&addr(1)));
         assert!(backoff.is_suppressed(&addr(1)));
         assert_eq!(backoff.failure_count(&addr(1)), 1);
         assert_eq!(backoff.entries[&addr(1)].suppress_until, deadline);
@@ -596,33 +596,33 @@ mod tests {
     #[test]
     fn unanswered_retry_restores_increasing_backoff_despite_repeated_hints() {
         let mut backoff = DiscoveryBackoff::new();
-        backoff.record_unsent_failure(&addr(1));
+        backoff.record_delayed_failure(&addr(1));
         let first_deadline = backoff.entries[&addr(1)].suppress_until;
-        assert!(backoff.retry_unsent_with_route(&addr(1)));
+        assert!(backoff.retry_delayed_with_route(&addr(1)));
         backoff.record_failure(&addr(1));
 
         assert_eq!(backoff.failure_count(&addr(1)), 2);
         assert!(backoff.entries[&addr(1)].suppress_until >= first_deadline + backoff.base);
         for _ in 0..100 {
-            assert!(!backoff.retry_unsent_with_route(&addr(1)));
+            assert!(!backoff.retry_delayed_with_route(&addr(1)));
             assert!(backoff.is_suppressed(&addr(1)));
         }
     }
 
     #[test]
-    fn sent_and_unknown_targets_never_gain_an_unsent_retry() {
+    fn ordinary_and_unknown_targets_never_gain_a_delayed_retry() {
         let mut backoff = DiscoveryBackoff::new();
         backoff.record_failure(&addr(1));
-        assert!(!backoff.retry_unsent_with_route(&addr(1)));
-        assert!(!backoff.retry_unsent_with_route(&addr(2)));
+        assert!(!backoff.retry_delayed_with_route(&addr(1)));
+        assert!(!backoff.retry_delayed_with_route(&addr(2)));
         assert_eq!(backoff.entry_count(), 1);
 
-        backoff.record_unsent_failure(&addr(2));
+        backoff.record_delayed_failure(&addr(2));
         backoff.record_success(&addr(2));
-        assert!(!backoff.retry_unsent_with_route(&addr(2)));
-        backoff.record_unsent_failure(&addr(2));
+        assert!(!backoff.retry_delayed_with_route(&addr(2)));
+        backoff.record_delayed_failure(&addr(2));
         backoff.reset_all();
-        assert!(!backoff.retry_unsent_with_route(&addr(2)));
+        assert!(!backoff.retry_delayed_with_route(&addr(2)));
         assert!(backoff.is_empty());
     }
 

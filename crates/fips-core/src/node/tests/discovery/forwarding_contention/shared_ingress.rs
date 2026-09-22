@@ -1,8 +1,7 @@
 //! Legitimate origins behind one ingress must share the next forwarding slot.
+use super::wire_tap::WireTap;
 use super::*;
-use crate::node::wire::{CommonPrefix, PHASE_ESTABLISHED};
 use crate::protocol::LinkMessageType;
-use crate::transport::PacketRx;
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
@@ -37,78 +36,34 @@ struct Observation {
 
 struct IngressWitness {
     requests: Arc<Mutex<Vec<Observation>>>,
-    stop: oneshot::Sender<()>,
-    task: tokio::task::JoinHandle<PacketRx>,
+    tap: WireTap,
 }
 
 impl IngressWitness {
     fn start(nodes: &mut [TestNode]) -> Self {
-        let remote = nodes[INGRESS].addr.clone();
         let target = *nodes[TARGET].node.node_addr();
-        let peer = nodes[TRANSIT]
-            .node
-            .get_peer(nodes[INGRESS].node.node_addr())
-            .unwrap();
-        let cipher = peer.noise_session().unwrap().recv_cipher_clone().unwrap();
-        let (tx, rx) = packet_channel(256);
-        let mut inbound = std::mem::replace(&mut nodes[TRANSIT].packet_rx, rx);
         let requests = Arc::new(Mutex::new(Vec::new()));
         let observed = requests.clone();
-        let (stop, mut stopped) = oneshot::channel();
-        let task = tokio::spawn(async move {
-            loop {
-                let packet = tokio::select! {
-                    packet = inbound.recv() => match packet {
-                        Some(packet) => packet,
-                        None => break,
-                    },
-                    _ = &mut stopped => break,
-                };
-                let wire = packet.data.as_slice();
-                if packet.remote_addr == remote
-                    && CommonPrefix::parse(wire).unwrap().phase == PHASE_ESTABLISHED
-                {
-                    // Read a copy with C's real B-session receive cipher. No
-                    // live crypto/replay state, packet or request is changed.
-                    let header = crate::dataplane::FmpWireHeader::parse_encrypted(wire).unwrap();
-                    let offset = usize::from(header.ciphertext_offset());
-                    let mut nonce = [0u8; 12];
-                    nonce[4..].copy_from_slice(&header.counter().to_le_bytes());
-                    let mut ciphertext = wire[offset..].to_vec();
-                    let plaintext = cipher
-                        .open_in_place(
-                            ring::aead::Nonce::assume_unique_for_key(nonce),
-                            ring::aead::Aad::from(&wire[..offset]),
-                            &mut ciphertext,
-                        )
-                        .unwrap();
-                    if plaintext[4] == LinkMessageType::LookupRequest.to_byte() {
-                        let request = LookupRequest::decode(&plaintext[5..]).unwrap();
-                        if request.target == target {
-                            let mut requests = observed.lock().unwrap();
-                            assert!(requests.len() < 8, "bounded complete wire witness");
-                            requests.push(Observation {
-                                origin: request.origin,
-                                request_id: request.request_id,
-                                received_ms: packet.timestamp_ms,
-                            });
-                        }
-                    }
+        let tap = WireTap::start(nodes, TRANSIT, INGRESS, move |message, received_ms| {
+            if message[0] == LinkMessageType::LookupRequest.to_byte() {
+                let request = LookupRequest::decode(&message[1..]).unwrap();
+                if request.target == target {
+                    let mut requests = observed.lock().unwrap();
+                    assert!(requests.len() < 8, "bounded complete wire witness");
+                    requests.push(Observation {
+                        origin: request.origin,
+                        request_id: request.request_id,
+                        received_ms,
+                    });
                 }
-                tx.send(packet).expect("observer preserves every datagram");
             }
-            inbound
+            true
         });
-        Self {
-            requests,
-            stop,
-            task,
-        }
+        Self { requests, tap }
     }
 
     async fn restore(self, nodes: &mut [TestNode]) {
-        let _ = self.stop.send(());
-        nodes[TRANSIT].packet_rx = self.task.await.unwrap();
+        self.tap.restore(nodes).await;
     }
 }
 

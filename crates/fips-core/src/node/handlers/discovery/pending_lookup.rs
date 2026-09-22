@@ -17,6 +17,7 @@ pub struct PendingLookup {
     /// This lookup was initiated because an established direct payload path
     /// stopped returning authenticated traffic.
     path_recovery: bool,
+    first_request_attempt: Option<u8>,
     origin_request_ids: Vec<u64>,
 }
 
@@ -32,7 +33,13 @@ impl PendingLookup {
     }
 
     pub(crate) fn awaiting_first_request(&self) -> bool {
-        self.origin_request_ids.is_empty()
+        self.first_request_attempt.is_none()
+    }
+
+    /// Missing reachability consumed the initial attempt before a peer could
+    /// be selected. Later route loss must not relabel an ordinary sent lookup.
+    pub(crate) fn first_request_was_delayed(&self) -> bool {
+        self.first_request_attempt.is_none_or(|attempt| attempt > 1)
     }
 
     pub fn new(now_ms: u64) -> Self {
@@ -41,11 +48,13 @@ impl PendingLookup {
             last_sent_ms: now_ms,
             attempt: 1,
             path_recovery: false,
+            first_request_attempt: None,
             origin_request_ids: Vec::new(),
         }
     }
 
     fn record_origin_request(&mut self, request_id: u64) {
+        self.first_request_attempt.get_or_insert(self.attempt);
         if self.origin_request_ids.contains(&request_id) {
             return;
         }
@@ -213,5 +222,23 @@ mod tests {
         assert!(!pending.matches_origin_request(0));
         assert!(pending.matches_origin_request(11));
         assert_eq!(pending.origin_request_ids.len(), MAX_ORIGIN_REQUEST_IDS);
+    }
+
+    #[test]
+    fn first_selection_owns_retry_permission_after_request_history_eviction() {
+        for first_attempt in [1, 4] {
+            let mut pending = PendingLookup::new(0);
+            assert!(pending.awaiting_first_request());
+            assert!(pending.first_request_was_delayed());
+            pending.attempt = first_attempt;
+            pending.record_origin_request(0);
+            assert!(!pending.awaiting_first_request());
+            for id in 1..12 {
+                pending.attempt += 1;
+                pending.record_origin_request(id);
+            }
+            assert!(!pending.matches_origin_request(0));
+            assert_eq!(pending.first_request_was_delayed(), first_attempt > 1);
+        }
     }
 }

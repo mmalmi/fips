@@ -75,7 +75,7 @@ async fn ineligible_positive_hint_preserves_unsent_failure_retry() {
             node.peers.get_mut(&peer).unwrap().mark_reconnecting();
             assert!(!node.get_peer(&peer).unwrap().can_send());
         }
-        node.discovery_backoff.record_unsent_failure(&target);
+        node.discovery_backoff.record_delayed_failure(&target);
         let initiated = node.stats().discovery.req_initiated;
         for _ in 0..2 {
             node.maybe_initiate_route_query_lookup(&target).await;
@@ -103,7 +103,7 @@ async fn pending_capacity_and_dedup_preserve_unsent_failure_retry() {
         let (mut node, peer, target) = positive_peer();
         make_child(&mut node, peer);
         node.config.node.session.pending_max_destinations = 1;
-        node.discovery_backoff.record_unsent_failure(&target);
+        node.discovery_backoff.record_delayed_failure(&target);
         // Controlled existing admission, independent of the recovery caller.
         // Exercise both the full-other-target and same-target dedup branches.
         let occupied = if deduplicated {

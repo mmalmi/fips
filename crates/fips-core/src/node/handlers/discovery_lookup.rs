@@ -259,9 +259,10 @@ impl Node {
         if self.discovery_backoff.is_suppressed(dest) {
             let plan = self.origin_lookup_peer_plan(dest, &self.lookup_peer_candidates(dest));
             // Downstream reachability can return without changing our parent
-            // or peers. Retry an unsent failure once, on local demand; an
-            // unanswered request retains its normal backoff.
-            if plan.peers.is_empty() || !self.discovery_backoff.retry_unsent_with_route(dest) {
+            // or peers. Retry once if missing reachability delayed the first
+            // request beyond the initial attempt. Ordinary unanswered lookups
+            // retain their backoff even if their route later disappears.
+            if plan.peers.is_empty() || !self.discovery_backoff.retry_delayed_with_route(dest) {
                 self.stats_mut().discovery.req_backoff_suppressed += 1;
                 debug!(target: "fips_core::route_recovery",
                     node = %self.node_addr(),
@@ -275,7 +276,7 @@ impl Node {
             debug!(target: "fips_core::route_recovery",
                 node = %self.node_addr(), target = %dest, peers = ?plan.peers,
                 failures = self.discovery_backoff.failure_count(dest),
-                "Retrying unsent discovery on usable reachability");
+                "Retrying delayed discovery on usable reachability");
         }
 
         // Queued traffic needs bounded lookup retries while reachability
@@ -298,7 +299,7 @@ impl Node {
             } else if !self.sessions.contains_key(dest) {
                 // As with lookup exhaustion, an existing FSP owns recovery.
                 // Missing Bloom information must not suppress its next data.
-                self.discovery_backoff.record_unsent_failure(dest);
+                self.discovery_backoff.record_delayed_failure(dest);
             }
             debug!(
                 node = %self.node_addr(),
@@ -612,13 +613,13 @@ impl Node {
         // Process timeouts
         for addr in to_timeout {
             self.stats_mut().discovery.resp_timed_out += 1;
-            let unsent = self
+            let delayed_start = self
                 .pending_lookups
                 .remove(&addr)
-                .is_some_and(|entry| entry.awaiting_first_request());
+                .is_some_and(|entry| entry.first_request_was_delayed());
 
-            if unsent {
-                self.discovery_backoff.record_unsent_failure(&addr);
+            if delayed_start {
+                self.discovery_backoff.record_delayed_failure(&addr);
             } else {
                 self.discovery_backoff.record_failure(&addr);
             }
@@ -633,7 +634,7 @@ impl Node {
                 queued_packets = pkt_count,
                 queued_endpoint_payloads = endpoint_count,
                 failures = failures,
-                unsent,
+                delayed_start,
                 "Discovery lookup timed out, destination unreachable"
             );
             if let Some(packets) = queued.into_tun_packets() {

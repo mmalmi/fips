@@ -1,10 +1,8 @@
 //! One lost reachability update must not strand a stable authenticated route.
+use super::wire_tap::WireTap;
 use super::*;
-use crate::node::wire::{CommonPrefix, PHASE_ESTABLISHED};
 use crate::protocol::{FilterAnnounce, LinkMessageType};
-use crate::transport::PacketRx;
 use std::sync::{Arc, Mutex};
-use tokio::sync::oneshot;
 
 const PARENT: usize = 0;
 const SOURCE: usize = 1;
@@ -49,91 +47,42 @@ struct Witness {
 
 struct FilterGate {
     witness: Arc<Mutex<Witness>>,
-    stop: oneshot::Sender<()>,
-    task: tokio::task::JoinHandle<PacketRx>,
+    tap: WireTap,
 }
 
 impl FilterGate {
     fn start(nodes: &mut [TestNode], lose_filter: bool) -> Self {
-        let remote = nodes[PARENT].addr.clone();
         let target = *nodes[TARGET].node.node_addr();
-        let peer = nodes[SOURCE]
-            .node
-            .get_peer(nodes[PARENT].node.node_addr())
-            .unwrap();
-        let cipher = peer.noise_session().unwrap().recv_cipher_clone().unwrap();
-        let (tx, rx) = packet_channel(256);
-        let mut inbound = std::mem::replace(&mut nodes[SOURCE].packet_rx, rx);
         let witness = Arc::new(Mutex::new(Witness::default()));
         let observed = witness.clone();
-        let (stop, mut stopped) = oneshot::channel();
-        let task = tokio::spawn(async move {
-            loop {
-                let packet = tokio::select! {
-                    packet = inbound.recv() => match packet {
-                        Some(packet) => packet,
-                        None => break,
-                    },
-                    _ = &mut stopped => break,
-                };
-                let mut drop_packet = false;
-                let wire = packet.data.as_slice();
-                if packet.remote_addr == remote
-                    && CommonPrefix::parse(wire).unwrap().phase == PHASE_ESTABLISHED
-                {
-                    // Inspect only a copy with the real established receive
-                    // cipher. Do not change live crypto/replay state, synthesize
-                    // a filter, re-encrypt a packet, or expose key material.
-                    let header = crate::dataplane::FmpWireHeader::parse_encrypted(wire).unwrap();
-                    let offset = usize::from(header.ciphertext_offset());
-                    let mut nonce = [0u8; 12];
-                    nonce[4..].copy_from_slice(&header.counter().to_le_bytes());
-                    let mut ciphertext = wire[offset..].to_vec();
-                    let plaintext = cipher
-                        .open_in_place(
-                            ring::aead::Nonce::assume_unique_for_key(nonce),
-                            ring::aead::Aad::from(&wire[..offset]),
-                            &mut ciphertext,
-                        )
-                        .unwrap();
-                    let kind = LinkMessageType::from_byte(plaintext[4]).unwrap();
-                    let mut witness = observed.lock().unwrap();
-                    if kind == LinkMessageType::FilterAnnounce {
-                        let announce = FilterAnnounce::decode(&plaintext[5..]).unwrap();
-                        assert!(announce.is_valid() && announce.is_v1_compliant());
-                        if announce.filter.contains(&target) {
-                            witness.target_announces += 1;
-                            if lose_filter && witness.dropped_sequence.is_none() {
-                                witness.dropped_sequence = Some(announce.sequence);
-                                drop_packet = true;
-                            }
-                        }
-                    } else if witness.dropped_sequence.is_some()
-                        && matches!(
-                            kind,
-                            LinkMessageType::SenderReport | LinkMessageType::ReceiverReport
-                        )
-                    {
-                        witness.reports_after_drop += 1;
+        let tap = WireTap::start(nodes, SOURCE, PARENT, move |message, _received_ms| {
+            let kind = LinkMessageType::from_byte(message[0]).unwrap();
+            let mut witness = observed.lock().unwrap();
+            if kind == LinkMessageType::FilterAnnounce {
+                let announce = FilterAnnounce::decode(&message[1..]).unwrap();
+                assert!(announce.is_valid() && announce.is_v1_compliant());
+                if announce.filter.contains(&target) {
+                    witness.target_announces += 1;
+                    if lose_filter && witness.dropped_sequence.is_none() {
+                        witness.dropped_sequence = Some(announce.sequence);
+                        return false;
                     }
                 }
-                if !drop_packet {
-                    tx.send(packet)
-                        .expect("loss gate must preserve every other datagram");
-                }
+            } else if witness.dropped_sequence.is_some()
+                && matches!(
+                    kind,
+                    LinkMessageType::SenderReport | LinkMessageType::ReceiverReport
+                )
+            {
+                witness.reports_after_drop += 1;
             }
-            inbound
+            true
         });
-        Self {
-            witness,
-            stop,
-            task,
-        }
+        Self { witness, tap }
     }
 
     async fn restore(self, nodes: &mut [TestNode]) {
-        let _ = self.stop.send(());
-        nodes[SOURCE].packet_rx = self.task.await.unwrap();
+        self.tap.restore(nodes).await;
     }
 }
 

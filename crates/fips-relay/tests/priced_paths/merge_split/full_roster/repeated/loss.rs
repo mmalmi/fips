@@ -1,8 +1,8 @@
 //! The same paid encounter with independent loss on its only inter-group link.
 use super::*;
 
-async fn lossy(seed: u64) {
-    run(EncounterProfile {
+fn lossy_profile(seed: u64) -> EncounterProfile {
+    EncounterProfile {
         seed,
         bridge_link: SimLink {
             latency_ms: 10,
@@ -11,16 +11,26 @@ async fn lossy(seed: u64) {
             ..Default::default()
         },
         ..EncounterProfile::baseline(false)
-    })
-    .await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn lossy_crowded_paid_encounters_seed_137() {
-    lossy(137).await;
+    run(lossy_profile(137)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn lossy_crowded_paid_encounters_seed_138() {
-    lossy(138).await;
+    run(lossy_profile(138)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lossy_brief_contacts_and_long_absence_reuse_original_paid_routes() {
+    assert_eq!(Config::new().node.rate_limit.handshake_timeout_secs, 30);
+    run(EncounterProfile {
+        finite_contacts: true,
+        post_split_absence: Duration::from_secs(31),
+        ..lossy_profile(139)
+    })
+    .await;
 }
