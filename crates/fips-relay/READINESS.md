@@ -2091,6 +2091,20 @@ original-owner retention assertion. This policy remains unmerged. The index
 failure led to the independently reproduced overlapping-rekey cleanup fix below;
 that correction does not establish convergence or validate the rejected policy.
 
+The native encounter fixture now tracks retained admissions independently of
+normal key renewal (2026-09-22). Its old snapshot included the current receive
+index and crypto generation, which legitimately change during periodic rekey.
+Long encounters could therefore fail even while the original neighbor stayed
+connected and delivered traffic. Retention now compares link, authentication
+time and remote startup epoch. Exact receive-index ownership, resource caps,
+continuous local delivery and encounter deadlines remain separate assertions.
+A native control reproduces the old false failure using real rekey and
+bidirectional endpoint data, then passes with the corrected snapshot. Its negative
+control sends encrypted Disconnects and performs a fresh Noise handshake with
+the same identity and process, proving that removal and re-admission still fail
+retention. Strict all-feature/all-target core lint also passes. Earlier retention
+failures require reevaluation; deadline failures remain routing evidence.
+
 Reproduce with `cargo test -p fips-relay --features measurements --test
 priced_paths merge_split::crowded::automatic::repeated::repeated_full_rosters_recover_paid_routes_without_candidate_departures
 -- --exact --test-threads=1 --nocapture`, using the development dependencies in

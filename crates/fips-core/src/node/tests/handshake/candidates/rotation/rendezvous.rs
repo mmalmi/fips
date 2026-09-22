@@ -19,6 +19,9 @@ mod preparation;
 #[path = "rendezvous/same_path_rejoin.rs"]
 mod same_path_rejoin;
 
+#[path = "rendezvous/retention.rs"]
+mod retention;
+
 const ADDRESSES: [&str; 8] = [
     "a", "b", "useful-a", "useful-b", "idle-a", "idle-b", "silent-a", "silent-b",
 ];
@@ -352,23 +355,27 @@ fn snapshot(nodes: &[TestNode], ids: &[PeerIdentity], started: tokio::time::Inst
     eprintln!("rotation rendezvous: {value}");
 }
 
-fn original_owner(
-    nodes: &[TestNode],
-    ids: &[PeerIdentity],
-    boundary: usize,
-) -> (LinkId, SessionIndex, u64) {
+// Rekey changes receive indices and crypto generations, not the admission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RetainedNeighbor {
+    link: LinkId,
+    authenticated_at: u64,
+    remote_epoch: Option<[u8; 8]>,
+}
+
+fn original_owner(nodes: &[TestNode], ids: &[PeerIdentity], boundary: usize) -> RetainedNeighbor {
     let p = nodes[boundary]
         .node
         .get_peer(ids[boundary + 2].node_addr())
         .unwrap();
-    (p.link_id(), p.our_index().unwrap(), p.session_generation())
+    RetainedNeighbor {
+        link: p.link_id(),
+        authenticated_at: p.authenticated_at(),
+        remote_epoch: p.remote_epoch(),
+    }
 }
 
-fn useful_retained(
-    nodes: &[TestNode],
-    ids: &[PeerIdentity],
-    original: &[(LinkId, SessionIndex, u64)],
-) {
+fn useful_retained(nodes: &[TestNode], ids: &[PeerIdentity], original: &[RetainedNeighbor]) {
     for i in 0..2 {
         assert_eq!(original_owner(nodes, ids, i), original[i]);
         let idle_ms = nodes[i]
