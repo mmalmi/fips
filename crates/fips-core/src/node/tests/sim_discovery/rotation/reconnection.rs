@@ -1,5 +1,5 @@
-//! Rediscovery after genuine link death distinguishes admitted transit from
-//! link maintenance. Neither case installs a source binding or a peer roster.
+//! Rediscovery after genuine link death distinguishes admitted application use
+//! from link maintenance. Neither case installs a source binding or a peer roster.
 use super::*;
 use crate::node::EndpointDataIo;
 use crate::node::tests::session::{run_large_stack_async_test, send_endpoint_data_via_dataplane};
@@ -20,19 +20,29 @@ type Owner = (LinkId, Option<SessionIndex>, Option<SessionIndex>, u64);
 
 #[test]
 fn recently_lost_transit_neighbor_precedes_ordinary_discovery() {
-    run(true);
+    run(Some((S, R)));
 }
 
 #[test]
 fn heartbeat_only_lost_neighbor_keeps_ordinary_discovery_order() {
-    run(false);
+    run(None);
 }
 
-fn run(transit: bool) {
+#[test]
+fn recently_lost_local_sender_neighbor_precedes_ordinary_discovery() {
+    run(Some((A, R)));
+}
+
+#[test]
+fn recently_lost_local_receiver_neighbor_precedes_ordinary_discovery() {
+    run(Some((R, A)));
+}
+
+fn run(before: Option<(usize, usize)>) {
     run_large_stack_async_test("discovered-neighbor-reconnection", move || async move {
         let _guard = spanning_tree::lock_large_network_test().await;
         let name = format!(
-            "discovered-neighbor-reconnection-{}-{transit}",
+            "discovered-neighbor-reconnection-{}-{before:?}",
             std::process::id()
         );
         let network = SimNetwork::new(107);
@@ -55,7 +65,7 @@ fn run(transit: bool) {
         for (index, identity) in identities.iter().enumerate().skip(I) {
             nodes.push(make_node(&name, index, identity).await);
         }
-        let result = AssertUnwindSafe(exercise(&mut nodes, &network, transit))
+        let result = AssertUnwindSafe(exercise(&mut nodes, &network, before))
             .catch_unwind()
             .await;
         cleanup_nodes(&mut nodes).await;
@@ -158,6 +168,7 @@ struct Traffic {
     offered: u32,
     received: BTreeSet<u32>,
     before_received: bool,
+    before: Option<(usize, usize)>,
     after_peer: Option<usize>,
     after_received: bool,
     next_payload: Instant,
@@ -165,7 +176,7 @@ struct Traffic {
 }
 
 impl Traffic {
-    fn new(nodes: &mut [TestNode]) -> Self {
+    fn new(nodes: &mut [TestNode], before: Option<(usize, usize)>) -> Self {
         let local_owner = [owner(nodes, S, A), owner(nodes, A, S)];
         let io = nodes
             .iter_mut()
@@ -177,6 +188,7 @@ impl Traffic {
             offered: 0,
             received: BTreeSet::new(),
             before_received: false,
+            before,
             after_peer: None,
             after_received: false,
             next_payload: Instant::now(),
@@ -234,8 +246,19 @@ impl Traffic {
                 };
                 io.event_rx.release_messages(event.message_count());
                 for message in event.messages {
-                    assert_eq!(message.source_peer.node_addr(), nodes[S].node.node_addr());
                     let payload = message.payload.as_slice();
+                    if payload == BEFORE {
+                        let (source, destination) = self.before.expect("initial application flow");
+                        assert_eq!(index, destination);
+                        assert_eq!(
+                            message.source_peer.node_addr(),
+                            nodes[source].node.node_addr()
+                        );
+                        assert!(!self.before_received, "duplicate initial original");
+                        self.before_received = true;
+                        continue;
+                    }
+                    assert_eq!(message.source_peer.node_addr(), nodes[S].node.node_addr());
                     if index == A {
                         assert_eq!(payload.len(), 5);
                         assert_eq!(payload[0], b'L');
@@ -279,7 +302,7 @@ async fn wait_for(
     }
 }
 
-async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, transit: bool) {
+async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, before: Option<(usize, usize)>) {
     network.set_link(NAMES[A], NAMES[S], SimLink::default());
     nodes[A].node.poll_transport_discovery().await;
     authenticate(nodes, S).await;
@@ -289,9 +312,9 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, transit: bool) {
     let returning = *nodes[R].node.node_addr();
     let stranger = *nodes[D].node.node_addr();
     let original = owner(nodes, A, R);
-    let mut traffic = Traffic::new(nodes);
-    // Both fixtures include genuine heartbeat exchanges and useful internal
-    // traffic. Only the positive case ever admits transit through R.
+    let mut traffic = Traffic::new(nodes, before);
+    // All cases include real heartbeats and useful internal traffic. Only
+    // application cases send the additional original across the returning link.
     let heartbeat_until = Instant::now() + Duration::from_millis(1_150);
     wait_for(
         nodes,
@@ -308,16 +331,16 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, transit: bool) {
             .unwrap()
             .current_epoch_authenticated
     );
-    if transit {
-        let target = identity(nodes, R);
-        send_endpoint_data_via_dataplane(&mut nodes[S].node, target, BEFORE.to_vec())
+    if let Some((source, destination)) = before {
+        let target = identity(nodes, destination);
+        send_endpoint_data_via_dataplane(&mut nodes[source].node, target, BEFORE.to_vec())
             .await
             .unwrap();
         wait_for(
             nodes,
             &mut traffic,
             15,
-            "real S-to-A-to-R payload",
+            "original application payload over the returning link",
             |_, traffic| traffic.before_received,
         )
         .await;
@@ -328,9 +351,12 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, transit: bool) {
             .get_peer(&returning)
             .unwrap()
             .has_recent_transit_demand(Node::now_ms(), 1_000),
-        transit
+        before == Some((S, R))
     );
-    assert!(!nodes[A].node.sessions.contains_key(&returning));
+    assert_eq!(
+        nodes[A].node.sessions.contains_key(&returning),
+        matches!(before, Some((A, R) | (R, A)))
+    );
     assert!(nodes[A].node.source_routes.is_empty());
     assert!(
         !nodes[A]
@@ -420,11 +446,11 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, transit: bool) {
     assert_eq!(nodes[A].node.connection_count(), 1);
     let candidate = nodes[A].node.peers.connection_values().next().unwrap();
     assert!(candidate.is_outbound() && !candidate.has_session());
-    let expected = if transit { R } else { D };
+    let expected = if before.is_some() { R } else { D };
     assert_eq!(
         candidate.expected_identity().unwrap().node_addr(),
         nodes[expected].node.node_addr(),
-        "transit={transit}: remembered admitted transit, not heartbeat history, must select the returning peer ahead of an earlier ordinary stranger"
+        "before={before:?}: admitted application use must select the returning peer ahead of an earlier ordinary stranger; heartbeat history must not"
     );
     assert_eq!(owner(nodes, A, I), refill, "discovery alone cannot evict");
     caps(nodes);
@@ -460,7 +486,7 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, transit: bool) {
         );
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    assert_eq!(traffic.before_received, transit);
+    assert_eq!(traffic.before_received, before.is_some());
     assert!(traffic.after_received);
     caps(nodes);
 }
