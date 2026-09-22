@@ -2240,7 +2240,8 @@ checkout, with no runtime integration or hardware changes. This rejects callback
 signalling alone as the crowded-admission solution; a useful next candidate must
 address both neighbor selection and compatible admission windows.
 
-A subsequent topology-discovery candidate remains unmerged (2026-09-22). A node
+A subsequent topology-discovery candidate was initially held for paid continuity
+(2026-09-22); the verified follow-up below is now integrated locally. A node
 with an active neighbor publishes its current connected-tree root; an isolated
 node publishes no hint. Ethernet appends an optional 18-byte trailer after scope
 (19 bytes when an empty scope prefix is needed). Sim discovery carries the same
@@ -2263,7 +2264,7 @@ Shifted crowded background discovery delivers at 10.986 seconds, then at
 21.225 seconds after a split and re-exposure; its earlier 60-second failure and
 180-second diagnostic disconnection are not reproduced in this candidate run.
 
-Paid continuity still blocks integration. The repeated paid fixture forms a
+The initial paid-continuity failure blocked integration. The repeated paid fixture forms a
 bridge at 19.839 seconds and a common tree at 21.482 seconds, but its existing
 local stream exceeds the five-second inactivity limit. At failure, 25 originals
 were submitted to the endpoint and only 20 reached the carrier and destination.
@@ -2278,6 +2279,52 @@ All 1536 test sats are collected. Source/dependency fingerprints stay stable and
 portable locks are restored. The population and warm-rejoin gates queued after
 the paid test did not run. No runtime merge or physical-router changes occurred;
 hostile-identity fairness, arbitrary mobility and hardware acceptance remain open.
+
+The follow-up traces retain that failure as evidence. A controlled first-root
+encounter observes a correctly rejected foreign-root reply, a one-second retry
+rejected by the existing two-second forwarding interval, and a later successful
+reply. Separately, an actual three-node UDP/Noise RX-loop regression proves a
+retry can wait 954 ms beyond its recorded deadline because lookup maintenance
+previously ran only on the one-second tick. The first response is actually lost;
+normal recovery, request correlation and unchanged authenticated link owners are
+checked before the timing assertion. This isolates a scheduling defect without
+claiming to reproduce every cause of the original 5.453-second gap.
+
+Lookup retries now use a cached earliest deadline, with constant-time selection
+and bounded scans only during lookup maintenance. The reserved turn precedes
+management requests and drains bounded data and status work afterward. A timed-out
+turn retains untouched due targets and waits one existing tick before another
+dedicated turn. Successful response removal can leave one harmless stale wake;
+an empty queue disables it. The existing retry ladder, forwarding limiter,
+request IDs, FSP timeout ownership and all financial/admission limits remain.
+The native timing cases observe retries within 4 and 6 ms of their deadlines;
+this is a loopback result, not a loaded-radio latency guarantee. A separate real
+Sim send-completion cancellation test proves the untouched second destination
+retains its due retry, resumes once and completes with the same link owners.
+
+Both repeated paid cases pass twice with the scheduler change. On the final
+source, the original case delivers all 84 local packets per component without
+duplicates (maximum gaps 1.005/1.015 seconds), and the controlled root-change case
+delivers all 106 per component (3.752/3.491 seconds). Both retain the original
+five-second continuity bound and collect all 1536 test sats. Cross-component
+paid delivery takes 22.021/27.540 seconds in the original case and
+34.241/37.663 seconds in the root-change case. All nine fixed population variants
+pass both encounters within their unchanged 60-second bound (18 deliveries,
+2.128–30.044 seconds). The warm-rejoin case delivers its one queued original
+once at 29.175 seconds; this run does not show improvement over the earlier
+20.093-second warm result. Joining crowded meshes still takes tens of seconds.
+
+The 77 discovery checks (one large case ignored), seven pending-lookup checks,
+18 RX-loop scheduling checks, strict core lint, default-feature build and final
+892-file size check also pass. Gate source/dependency fingerprints and tested
+locks remain stable; portable locks are restored. Local integration preserves
+all 935 checked source-file hashes. Reproduce the focused native checks with
+`cargo test -p nvpn-fips-core --all-features lookup_deadline -- --test-threads=1`,
+the population cases with the `responsive::population::` filter, and paid cases
+with the `priced_paths` test target's `repeated::` filter, using the dependencies
+in [FUNDING-COSTS.md](FUNDING-COSTS.md). No router services were changed. Hardware,
+arbitrary mobility, channel selection, hostile-identity fairness and broader
+performance acceptance remain open.
 
 #### Earlier crowded-admission experiments
 
