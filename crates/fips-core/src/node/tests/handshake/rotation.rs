@@ -8,6 +8,9 @@ mod rendezvous;
 #[path = "rotation_carrier.rs"]
 mod rotation_carrier;
 
+#[path = "rotation_lan_acl.rs"]
+mod rotation_lan_acl;
+
 #[cfg(feature = "sim-transport")]
 #[path = "rotation_direction.rs"]
 mod rotation_direction;

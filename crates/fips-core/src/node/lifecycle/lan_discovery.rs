@@ -11,7 +11,15 @@ impl Node {
         let Some(runtime) = self.lan_discovery.clone() else {
             return;
         };
-        let mut events = runtime.drain_events().await;
+        let events = runtime.drain_events().await;
+        self.process_lan_discovery_events(events).await;
+    }
+
+    /// Apply one event batch from the LAN discovery runtime.
+    pub(in crate::node) async fn process_lan_discovery_events(
+        &mut self,
+        mut events: Vec<crate::discovery::lan::LanEvent>,
+    ) {
         if events.is_empty() {
             return;
         }
@@ -45,6 +53,19 @@ impl Node {
             };
             let peer_node_addr = *identity.node_addr();
             let remote_addr = crate::transport::TransportAddr::from_string(&peer.addr.to_string());
+            // Rejected adverts must leave this poll's bounded dial budget for
+            // eligible peers. The connection path still rechecks current policy.
+            if self
+                .authorize_peer(
+                    &identity,
+                    PeerAclContext::OutboundConnect,
+                    transport_id,
+                    &remote_addr,
+                )
+                .is_err()
+            {
+                continue;
+            }
             if self.peers.contains_key(&peer_node_addr) {
                 let candidate = PeerAddress::new("udp", peer.addr.to_string()).learned();
                 if self.active_peer_candidate_is_fresh_enough_to_skip(

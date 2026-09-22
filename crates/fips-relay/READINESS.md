@@ -2016,6 +2016,20 @@ not faster transit-bridge discovery or physical-router acceptance of this policy
 Run the focused cases with `cargo test -p nvpn-fips-core --all-features --lib
 node::tests::sim_discovery::rotation::demand:: -- --test-threads=1 --nocapture`.
 
+LAN discovery checks the current outbound ACL for each advertised carrier before
+spending its connection-attempt budget (2026-09-22). Previously, a denied first
+candidate could consume the only available attempt on every poll, leaving an
+allowed candidate untried. A native loopback UDP regression reproduces that
+failure with a full roster and one spare candidate slot. After the fix, the
+allowed peer receives exactly one valid Noise request; a repeated event batch
+preserves its original pending owner and the established incumbent still delivers
+heartbeats. The test feeds the production LAN event-batch handler without starting
+mDNS; it does not establish multicast discovery or radio behavior. The default
+core test build, strict all-feature/all-target core lint, and all four existing
+queued-demand ordering controls pass. Reproduce with `cargo test -p nvpn-fips-core
+--all-features --lib denied_lan_candidate_cannot_consume_the_only_discovery_slot
+-- --test-threads=1 --nocapture`.
+
 Authenticated direct destinations now wake original queued first contact from
 the shared inbound/outbound handshake bootstrap (2026-09-21). The existing route
 selector must choose that destination itself; explicit other-carrier bindings
