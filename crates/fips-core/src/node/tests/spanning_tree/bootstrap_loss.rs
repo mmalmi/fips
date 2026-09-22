@@ -6,6 +6,7 @@ use std::panic::AssertUnwindSafe;
 use tokio::time::Instant;
 
 mod prompt;
+mod stale_child;
 
 #[tokio::test]
 async fn lost_initial_udp_announcements_recover_with_one_authenticated_neighbor() {

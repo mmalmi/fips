@@ -202,10 +202,14 @@ impl Node {
             "Processed ReceiverReport"
         );
 
-        // A successful local bootstrap send can still be lost. Authenticated
-        // link feedback with no remote declaration re-arms the existing bounded
-        // announcement exchange instead of waiting for periodic repair.
-        if self.tree_state.peer_declaration(from).is_none() {
+        // A successful local announcement can still be lost. Authenticated
+        // link feedback with missing or conflicting root information re-arms
+        // the existing bounded announcement exchange.
+        if self
+            .tree_state
+            .peer_coords(from)
+            .is_none_or(|coords| coords.root_id() != self.tree_state.root())
+        {
             self.mark_tree_announce_pending(from);
         }
 

@@ -298,16 +298,24 @@ impl Node {
             .tree_state
             .update_peer(announce.declaration.clone(), announce.ancestry.clone());
 
-        // Our previous response may have been lost even when this signed
-        // declaration is unchanged. Re-push within the existing peer rate limit
-        // without accepting stale routing state or starting same-root echoes.
-        if *announce.ancestry.root_id() > *self.tree_state.root()
+        // A duplicate from our current parent can mean our changed child
+        // declaration was lost. Repeat the current declaration within the peer
+        // rate limit; replies from children do not start a same-root echo.
+        // Healthy periodic duplicates must not queue a future extra reply.
+        let repeat_to_parent = !updated
+            && from == self.tree_state.my_declaration().parent_id()
+            && announce.ancestry.root_id() == self.tree_state.root()
+            && self
+                .peers
+                .get(from)
+                .is_some_and(|peer| peer.can_send_tree_announce(Self::now_ms()));
+        if (*announce.ancestry.root_id() > *self.tree_state.root() || repeat_to_parent)
             && let Err(e) = self.send_tree_announce_to_peer(from).await
         {
             debug!(
                 peer = %self.peer_display_name(from),
                 error = %e,
-                "Failed to re-push TreeAnnounce on root disagreement"
+                "Failed to re-push TreeAnnounce to repair peer state"
             );
         }
 
