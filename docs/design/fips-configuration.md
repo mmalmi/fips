@@ -206,11 +206,14 @@ handshake keeps the original deadline. Only successful promotion of the exact
 incoming replacement before that deadline earns a successor window, using the
 original timeout duration and starting at promotion. A later retry inherits that
 frozen window, including time spent preparing its carrier; configuration changes,
-replayed proof and unrelated promotions cannot renew it. An interrupted retry
-cannot earn another window. The successor deadline stays within two original
+replayed proof and unrelated promotions cannot renew it. Once that retry starts,
+another incoming identity cannot take its slot; same-identity crossed handshakes
+still use normal admission. Expiry releases the slot without another earned
+window. A silent retry can therefore delay unrelated incoming requests for its
+remaining frozen window. The successor deadline stays within two original
 timeout periods of the first attempt's start, while concurrent peer, connection
 and index caps stay unchanged. This gives the remote roster time to mature after
-the local exchange.
+the local exchange; it does not guarantee reciprocal admission at the remote end.
 
 The retry uses a fresh handshake and current discovery address, ACL and capacity
 checks. A missing or ineligible identity cannot block other candidates, including

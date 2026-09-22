@@ -2105,6 +2105,34 @@ the same identity and process, proving that removal and re-admission still fail
 retention. Strict all-feature/all-target core lint also passes. Earlier retention
 failures require reevaluation; deadline failures remain routing evidence.
 
+An earned outgoing retry now keeps its one frozen window against a second
+different-identity incoming requester (2026-09-22). Ordinary attempts may still
+yield; a retry has already spent that yield. No state, wire message, timeout or
+resource allowance is added. A silent retry can delay unrelated incoming requests
+until expiry, so this is a local service-order rule, not a rendezvous guarantee.
+Seven native controls cover real retry completion, expiry despite a configuration
+increase, cleanup, missing or ineligible targets, and the next actual discovery
+choice when ordinary exploration is owed. Three of those controls fail on the
+previous transfer behavior and all seven pass with the guard.
+
+All 100 handshake compatibility tests pass. The unchanged paid repeated-encounter
+fixture delivers at 29.354/20.387 seconds and credits every hop at 30.167/21.200
+seconds. Its 170 independent local originals arrive exactly once, with maximum
+gaps of 1.003/1.017 seconds below the five-second bound. Existing channels and
+budgets survive both encounters, and all 1,536 test sats are collected. These are
+compatibility results, not a matched performance comparison. Strict all-feature,
+all-target core lint, the default core build, formatting and source-size checks
+also pass with unchanged source/dependency fingerprints during the runtime gates.
+
+Five of the seven extended population diagnostics pass with this rule. The
+eight-candidate, ten-second minimum-age case still misses its first 60-second
+encounter. With a five-second minimum age, first delivery takes 46.068 seconds,
+but rejoin misses the same unchanged limit after the retention correction above.
+The two-second shifted and reversed identity layouts that previously failed now
+complete both encounters. These results do not establish general mobile mesh
+convergence: a remote boundary can still keep completed local candidates in its
+only admission slot while rejecting the connecting neighbor's requests.
+
 Reproduce with `cargo test -p fips-relay --features measurements --test
 priced_paths merge_split::crowded::automatic::repeated::repeated_full_rosters_recover_paid_routes_without_candidate_departures
 -- --exact --test-threads=1 --nocapture`, using the development dependencies in

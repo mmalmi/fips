@@ -329,50 +329,146 @@ async fn exercise(node: &mut TestNode, case: Case) {
         "replayed successful proof cannot renew the already consumed grant"
     );
 
-    if case == Case::HandshakeExpires {
-        node.node.config.node.rate_limit.handshake_timeout_secs = 60;
+    tokio::time::sleep_until(wall_start + Duration::from_millis(3_250)).await;
+    let _second_request = request(node, &second, &second_source, 604).await;
+    let retained = node
+        .node
+        .get_connection(&retry_link)
+        .expect("the one earned outgoing retry must survive another requester");
+    assert_eq!(retained.our_index(), Some(retry_index));
+    assert_eq!(retained.last_activity(), earned_start);
+    assert_eq!(
+        node.node.neighbor_rotation_deadline(target.node_addr()),
+        Some(earned_start + 6_000)
+    );
+    assert_eq!(
+        node.node.neighbor_rotation_order(*competitor.node_addr()),
+        original_cursor
+    );
+    assert_eq!(resources(node), (1, 1, 2, 2));
+    assert_eq!(heartbeat(node, &first, &mut first_owner, 2).await, 2);
+
+    if matches!(case, Case::HandshakeExpires | Case::DemandRetryOnce) {
+        if case == Case::HandshakeExpires {
+            node.node.config.node.rate_limit.handshake_timeout_secs = 60;
+        }
         sleep_until_ms(earned_start + 6_100).await;
         node.node.check_timeouts().await;
         assert_eq!(resources(node), (1, 0, 1, 1));
         assert!(!node.node.index_allocator.is_allocated(retry_index));
         assert!(node.node.pending_outbound.is_empty());
-        assert_eq!(heartbeat(node, &first, &mut first_owner, 2).await, 2);
+        assert_eq!(heartbeat(node, &first, &mut first_owner, 3).await, 3);
+        if case == Case::DemandRetryOnce {
+            assert!(
+                node.node
+                    .pending_session_traffic
+                    .has_traffic_for(target.node_addr())
+            );
+            node.node.poll_transport_discovery().await;
+            let next = node.node.peers.connection_values().next().unwrap();
+            assert_eq!(
+                next.expected_identity().unwrap().node_addr(),
+                competitor.node_addr(),
+                "an expired demand retry must give the next actual discovery turn to exploration"
+            );
+            assert_eq!(resources(node), (1, 1, 2, 2));
+        } else {
+            let mut next = connect(node, &second, &second_source, 605).await;
+            promote(node, &second, &mut next).await;
+        }
         return;
     }
 
-    tokio::time::sleep_until(wall_start + Duration::from_millis(3_250)).await;
-    let mut second_owner = connect(node, &second, &second_source, 604).await;
-    assert!(node.node.get_connection(&retry_link).is_none());
-    assert!(!node.node.index_allocator.is_allocated(retry_index));
+    finish_retry(
+        node,
+        &mut discovery,
+        &target,
+        &retry,
+        retry_link,
+        retry_index,
+    )
+    .await;
+    assert_eq!(resources(node), (1, 0, 1, 1));
     assert_eq!(
-        node.node.neighbor_rotation_started_at(second.node_addr()),
-        Some(earned_start)
+        node.node.get_peer(target.node_addr()).unwrap().link_id(),
+        retry_link
     );
     assert_eq!(
+        node.node.get_peer(target.node_addr()).unwrap().our_index(),
+        Some(retry_index)
+    );
+    assert!(node.node.get_peer(second.node_addr()).is_none());
+    assert!(
         node.node
-            .get_connection(&second_owner.link)
-            .unwrap()
-            .last_activity(),
-        earned_start
+            .neighbor_rotation_discovery_order(*target.node_addr(), Node::now_ms())
+            .0
     );
-    promote(node, &second, &mut second_owner).await;
-    tokio::time::sleep_until(wall_start + Duration::from_millis(4_350)).await;
-    if case == Case::DemandRetryOnce {
-        assert!(
-            node.node
-                .pending_session_traffic
-                .has_traffic_for(target.node_addr())
-        );
-    }
-    node.node.poll_transport_discovery().await;
-    let next = node.node.peers.connection_values().next().unwrap();
     assert_eq!(
-        next.expected_identity().unwrap().node_addr(),
-        competitor.node_addr(),
-        "a second transfer must not re-arm the consumed preference"
+        node.node.neighbor_rotation_order(*competitor.node_addr()),
+        original_cursor
     );
-    assert_eq!(resources(node), (1, 1, 2, 2));
-    assert_eq!(heartbeat(node, &second, &mut second_owner, 2).await, 2);
+}
+
+async fn finish_retry(
+    node: &mut TestNode,
+    discovery: &mut Discovery,
+    target: &Node,
+    request: &ReceivedPacket,
+    link: LinkId,
+    index: SessionIndex,
+) {
+    let header = Msg1Header::parse(request.data.as_slice()).unwrap();
+    let mut responder = HandshakeState::new_responder(target.identity.keypair());
+    responder.set_local_epoch(target.startup_epoch);
+    responder
+        .read_message_1(header.noise_msg1(request.data.as_slice()))
+        .unwrap();
+    let reply = build_msg2(
+        SessionIndex::new(607),
+        header.sender_idx,
+        &responder.write_message_2().unwrap(),
+    );
+    let source = TransportAddr::from_string("source");
+    discovery._target.send_async(&source, &reply).await.unwrap();
+    let reply = tokio::time::timeout(Duration::from_secs(1), discovery._source_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    crate::node::tests::spanning_tree::process_dataplane_packet(node, reply).await;
+    let ready = tokio::time::timeout(Duration::from_secs(1), discovery.target_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let header = crate::dataplane::FmpWireHeader::parse_encrypted(ready.data.as_slice()).unwrap();
+    assert_eq!(header.receiver_idx(), 607);
+    let offset = usize::from(header.ciphertext_offset());
+    let mut session = responder.into_session().unwrap();
+    session
+        .decrypt_with_replay_check_and_aad(
+            &ready.data.as_slice()[offset..],
+            header.counter(),
+            &ready.data.as_slice()[..offset],
+        )
+        .expect("target authenticates the retry's real readiness frame");
+    let mut owner = Candidate {
+        link,
+        index,
+        session,
+        source: TransportAddr::from_string("target"),
+    };
+    let heartbeat = [crate::protocol::LinkMessageType::Heartbeat.to_byte()];
+    let proof = owner.frame(TransportId::new(2), &heartbeat);
+    discovery
+        ._target
+        .send_async(&source, proof.data.as_slice())
+        .await
+        .unwrap();
+    let proof = tokio::time::timeout(Duration::from_secs(1), discovery._source_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    crate::node::tests::spanning_tree::process_dataplane_packet(node, proof).await;
+    assert_eq!(await_heartbeat(node, target, 1).await, 1);
 }
 
 fn identity(node: &Node) -> PeerIdentity {

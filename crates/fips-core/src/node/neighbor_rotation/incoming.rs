@@ -20,7 +20,11 @@ impl Node {
             return None;
         }
         let attempt = self.neighbor_rotation.attempt.as_ref()?;
+        // An earned retry gets its one uninterrupted, frozen window. Ordinary
+        // attempts may still yield, and same-identity crossed dials use the
+        // normal admission path below this transfer check.
         if attempt.peer == *peer
+            || attempt.is_retry
             || attempt.confirmed_inbound.is_some()
             || !self.rotation_attempt_is_fresh(attempt, now_ms)
             || self
@@ -124,15 +128,14 @@ impl Node {
             .saturating_mul(1000);
         let attempt = self.neighbor_rotation.attempt.as_mut().unwrap();
         let previous = attempt.peer;
-        // Only the original outgoing attempt earns one retry. A transferred
-        // retry is consumed, even if its new incoming owner later succeeds.
-        self.neighbor_rotation.interrupted_outgoing =
-            (!attempt.is_retry).then_some(InterruptedOutgoing {
-                peer: previous,
-                started_ms: attempt.started_ms,
-                deadline_ms: attempt.deadline_ms,
-                transferred_to: Some(peer),
-            });
+        // Only ordinary outgoing attempts can transfer their slot.
+        debug_assert!(!attempt.is_retry);
+        self.neighbor_rotation.interrupted_outgoing = Some(InterruptedOutgoing {
+            peer: previous,
+            started_ms: attempt.started_ms,
+            deadline_ms: attempt.deadline_ms,
+            transferred_to: Some(peer),
+        });
         attempt.peer = peer;
         // Preserve the original deadline and local discovery cursor. The new
         // identity still consumes the configured minimum attempt interval.
