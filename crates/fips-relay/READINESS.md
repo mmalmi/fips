@@ -2179,6 +2179,28 @@ node::tests::discovery::forwarding_contention::reachable_after_backoff::
 -- --test-threads=1`, using the development overrides in
 [FUNDING-COSTS.md](FUNDING-COSTS.md).
 
+The separate 400 ms cold-contact regression now passes. With an authenticated
+but unmeasured bridge, the first RTT report could re-arm an obsolete tree
+declaration just before the new parent's declaration arrived. That spent the
+unchanged 500 ms announcement interval; the corrected declaration arrived after
+the radio contact had closed. A smaller authenticated peer identity necessarily
+advertises a root below the local root. Only on that peer's first RTT, with its
+declaration still missing, the handler now defers this re-arm. It preserves
+already pending work; later reports and all root disagreements retain repair.
+There is no new timer, state or wire message, and both endpoints cannot defer.
+
+Both native UDP contact phases learn the current signed declarations in
+176.738 and 181.296 ms, within their original 400 ms openings. The three existing
+first-RTT cases also pass. Nine loss/bootstrap controls, the unchanged-refresh
+case and six deadline controls pass; a new control proves later reports create
+fresh repair after previous pending work clears, with periodic refresh disabled.
+Strict core lint, formatting and the 907-file source-size gate pass, with the
+source/dependency/lock guards intact. These checks establish declaration recovery
+for the tested schedules, not end-to-end delivery during arbitrary short contacts
+or physical mobile-radio acceptance. Reproduce with the core library filters
+`node::tests::spanning_tree::first_rtt::` and
+`node::tests::spanning_tree::bootstrap_loss::` using the same development overrides.
+
 The initial link-dead-only policy misses the dense eight-candidate repeat
 encounter. Cold delivery takes 51.004 seconds, but neither boundary attempts the
 bridge during the next 60-second window. During the split, ordinary promotion

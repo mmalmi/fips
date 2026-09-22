@@ -227,6 +227,130 @@ async fn lost_child_root_change_repairs_before_periodic_refresh_without_echo() {
 }
 
 #[tokio::test]
+async fn first_rtt_preserves_pending_and_later_reports_repair_without_periodic_refresh() {
+    let mut nodes = vec![make_test_node().await, make_test_node().await];
+    nodes.sort_by_key(|node| *node.node.node_addr());
+    let result = AssertUnwindSafe(async {
+        for node in &mut nodes {
+            node.node.config.node.tree.announce_refresh_interval_secs = 0;
+            assert_eq!(node.node.config.node.tree.announce_min_interval_ms, 500);
+        }
+        Box::pin(complete_direct_handshake(&mut nodes, 0, 1)).await;
+        let root = *nodes[0].node.node_addr();
+        let child = *nodes[1].node.node_addr();
+        let authenticated = edges(&nodes);
+        let indices: Vec<_> = nodes.iter().map(|node| {
+            node.node.peers.values().next().unwrap().our_index()
+        }).collect();
+        let mut sent = sent_counts(&nodes);
+        let mut timestamps: Vec<_> = nodes.iter().map(|node| {
+            node.node.peers.values().next().unwrap().last_tree_announce_sent_ms()
+        }).collect();
+        let mut lost_root_announcements = 0;
+        let mut pending_at_first_rtt = None;
+        let mut subsequent_report_rearmed = false;
+        let mut repeated_child_declaration = false;
+        let started = Instant::now();
+        let mut next_tick = started + Duration::from_secs(1);
+
+        // The root retains the child's real original self-root declaration.
+        // Drop root declarations until a report AFTER the first RTT has re-armed
+        // a cleared pending flag and caused another real child announcement.
+        // The first RTT must preserve any work already pending. Heartbeats and
+        // ReceiverReports remain genuine and flow
+        // throughout; no tree state, RTT, send time, or pending flag is injected.
+        while started.elapsed() < Duration::from_secs(3) {
+            for index in 0..2 {
+                while let Ok(packet) = nodes[index].packet_rx.try_recv() {
+                    let phase = CommonPrefix::parse(packet.data.as_slice()).unwrap().phase;
+                    if phase == PHASE_MSG2 {
+                        // The handshake helper already processed this queued copy.
+                        continue;
+                    }
+                    assert_eq!(phase, PHASE_ESTABLISHED);
+                    let remote = if index == 0 { child } else { root };
+                    let announce = announced_tree(&nodes[index], &remote, &packet);
+                    if index == 1 && announce.is_some() && !repeated_child_declaration {
+                        lost_root_announcements += 1;
+                        continue;
+                    }
+                    let repeated_old_child = index == 0 && announce.as_ref().is_some_and(|announce| {
+                        nodes[0].node.tree_state().peer_declaration(&child).is_some_and(|old| {
+                            old.is_root()
+                                && old.sequence() == announce.declaration.sequence()
+                                && *announce.ancestry.root_id() == child
+                        })
+                    });
+                    let was_measured = nodes[1].node.dataplane_fmp_has_srtt(&root);
+                    let was_pending = nodes[1].node.get_peer(&root).unwrap().has_pending_tree_announce();
+                    let child_sent_before = nodes[1].node.stats().tree.sent;
+                    let stale_before = nodes[0].node.stats().tree.stale;
+                    process_dataplane_packet(&mut nodes[index], packet).await;
+                    if index == 1 && !was_measured && nodes[1].node.dataplane_fmp_has_srtt(&root) {
+                        assert!(nodes[1].node.tree_state().peer_declaration(&root).is_none());
+                        assert_eq!(*nodes[1].node.tree_state().root(), child);
+                        assert_eq!(nodes[1].node.stats().tree.sent, child_sent_before);
+                        assert_eq!(nodes[1].node.get_peer(&root).unwrap().has_pending_tree_announce(), was_pending,
+                            "first-RTT deferral must neither create nor discard already-owned work");
+                        pending_at_first_rtt = Some(was_pending);
+                    } else if index == 1 && was_measured && !was_pending
+                        && nodes[1].node.tree_state().peer_declaration(&root).is_none()
+                        && nodes[1].node.get_peer(&root).unwrap().has_pending_tree_announce()
+                    {
+                        // All parent TreeAnnounces are still held. The incoming
+                        // report must create a new repair after an earlier send
+                        // cleared pending state; one old pending send is not enough.
+                        subsequent_report_rearmed = true;
+                    }
+                    if repeated_old_child {
+                        assert!(nodes[0].node.stats().tree.stale > stale_before,
+                            "fresh encrypted repair must reach the ordinary stale-declaration handler");
+                        repeated_child_declaration = subsequent_report_rearmed;
+                    }
+                }
+            }
+            for node in &mut nodes {
+                process_dataplane_completions(&mut node.node).await;
+                node.node.check_mmp_reports().await;
+                node.node.send_pending_tree_announces().await;
+            }
+            if Instant::now() >= next_tick {
+                production_tick(&mut nodes).await;
+                next_tick += Duration::from_secs(1);
+            }
+            assert_eq!(edges(&nodes), authenticated);
+            for (index, node) in nodes.iter().enumerate() {
+                let peer = node.node.peers.values().next().unwrap();
+                assert_eq!(peer.our_index(), indices[index]);
+                let current_sent = node.node.stats().tree.sent;
+                if current_sent != sent[index] {
+                    assert_eq!(current_sent, sent[index] + 1, "repair must not burst");
+                    assert!(peer.last_tree_announce_sent_ms().saturating_sub(timestamps[index]) >= 500);
+                    sent[index] = current_sent;
+                    timestamps[index] = peer.last_tree_announce_sent_ms();
+                }
+            }
+            if repeated_child_declaration && synchronized(&nodes) && measured(&nodes) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        eprintln!("first-RTT loss repair: elapsed_ms={}, lost_root_announcements={lost_root_announcements}, pending_at_first_rtt={pending_at_first_rtt:?}, subsequent_report_rearmed={subsequent_report_rearmed}, repeated_child={repeated_child_declaration}, synchronized={}, sent={sent:?}",
+            started.elapsed().as_millis(), synchronized(&nodes));
+        assert!(lost_root_announcements > 0);
+        assert!(pending_at_first_rtt.is_some() && subsequent_report_rearmed && repeated_child_declaration,
+            "later reports must re-arm repair after old pending work has cleared");
+        assert!(synchronized(&nodes) && measured(&nodes),
+            "lost declarations must recover with periodic refresh disabled");
+        verify_tree_convergence(&nodes);
+    }).catch_unwind().await;
+    cleanup_nodes(&mut nodes).await;
+    if let Err(error) = result {
+        std::panic::resume_unwind(error);
+    }
+}
+
+#[tokio::test]
 async fn invalid_parent_and_same_root_nonparent_announcements_do_not_repush() {
     let mut nodes = vec![make_test_node().await, make_test_node().await];
     nodes.sort_by_key(|node| *node.node.node_addr());

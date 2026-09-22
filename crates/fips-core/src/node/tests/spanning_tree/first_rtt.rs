@@ -13,6 +13,10 @@ use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 
+mod cold_contact;
+
+type PacketObserver = Box<dyn FnMut(&ReceivedPacket, bool) + Send>;
+
 #[test]
 fn live_udp_new_root_is_measured_between_maintenance_ticks() {
     run(Case::Measured);
@@ -78,15 +82,23 @@ struct Contact {
 
 impl Bench {
     async fn start(cut: bool) -> Self {
-        let root = tempfile::tempdir().unwrap();
         let mut nodes = vec![
             make_test_node().await,
             make_test_node().await,
             make_test_node().await,
         ];
         nodes.sort_by_key(|node| *node.node.node_addr());
+        Self::start_nodes(nodes, cut, true, Vec::new()).await
+    }
+
+    async fn start_nodes(
+        nodes: Vec<TestNode>,
+        cut: bool,
+        initially_up: bool,
+        observers: Vec<Option<PacketObserver>>,
+    ) -> Self {
         let mut bench = Self {
-            root,
+            root: tempfile::tempdir().unwrap(),
             peers: nodes
                 .iter()
                 .map(|node| PeerIdentity::from_pubkey_full(node.node.identity().pubkey_full()))
@@ -96,11 +108,12 @@ impl Bench {
             tasks: JoinSet::new(),
             stops: Vec::new(),
             contact: Arc::new(Contact {
-                up: AtomicBool::new(true),
+                up: AtomicBool::new(initially_up),
                 cut_us: AtomicU64::new(0),
                 dropped: AtomicU64::new(0),
             }),
         };
+        let mut observers = observers.into_iter();
         for (index, test) in nodes.into_iter().enumerate() {
             let TestNode {
                 mut node,
@@ -118,6 +131,7 @@ impl Bench {
             if cut {
                 let (tx, rx) = packet_channel(256);
                 let contact = bench.contact.clone();
+                let mut observer = observers.next().flatten();
                 let remote = match index {
                     0 => Some(bench.addrs[2].clone()),
                     2 => Some(bench.addrs[0].clone()),
@@ -126,9 +140,12 @@ impl Bench {
                 // Drop real received datagrams on only the encountered edge.
                 bench.tasks.spawn(async move {
                     while let Some(packet) = packet_rx.recv().await {
-                        if remote.as_ref() == Some(&packet.remote_addr)
-                            && !contact.up.load(Ordering::Relaxed)
-                        {
+                        let encountered = remote.as_ref() == Some(&packet.remote_addr);
+                        let delivered = !encountered || contact.up.load(Ordering::Relaxed);
+                        if encountered && let Some(observer) = &mut observer {
+                            observer(&packet, delivered);
+                        }
+                        if !delivered {
                             contact.dropped.fetch_add(1, Ordering::Relaxed);
                         } else if tx.send(packet).is_err() {
                             break;
@@ -210,6 +227,7 @@ impl Bench {
         json!({
             "link": peer.map(|peer| &peer["link_id"]),
             "authenticated_at_ms": peer.map(|peer| &peer["authenticated_at_ms"]),
+            "index": peer.map(|peer| &peer["our_session_index"]),
             "srtt_ms": peer.map(|peer| &peer["mmp"]["srtt_ms"]),
             "announce_pending": peer.map(|peer| &peer["tree_announce_pending"]),
             "last_announce_ms": peer.map(|peer| &peer["last_tree_announce_sent_ms"]),

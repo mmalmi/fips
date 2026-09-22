@@ -202,13 +202,17 @@ impl Node {
             "Processed ReceiverReport"
         );
 
-        // A successful local announcement can still be lost. Authenticated
-        // link feedback with missing or conflicting root information re-arms
-        // the existing bounded announcement exchange.
-        if self
-            .tree_state
-            .peer_coords(from)
-            .is_none_or(|coords| coords.root_id() != self.tree_state.root())
+        // A smaller authenticated identity must advertise a root smaller than
+        // ours. On its first RTT only, let its missing declaration arrive before
+        // spending our send interval on the old root. This cannot defer both
+        // ends; later reports still repair a lost declaration without refresh.
+        let peer_coords = self.tree_state.peer_coords(from);
+        let defer_first_missing =
+            processed.first_rtt && peer_coords.is_none() && from < self.tree_state.root();
+        // A successful local announcement can still be lost. All subsequent
+        // missing-state reports and all root disagreements retain normal repair.
+        if !defer_first_missing
+            && peer_coords.is_none_or(|coords| coords.root_id() != self.tree_state.root())
         {
             self.mark_tree_announce_pending(from);
         }
