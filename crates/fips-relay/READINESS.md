@@ -2326,6 +2326,52 @@ in [FUNDING-COSTS.md](FUNDING-COSTS.md). No router services were changed. Hardwa
 arbitrary mobility, channel selection, hostile-identity fairness and broader
 performance acceptance remain open.
 
+#### Crowded loss and finite-contact characterization
+
+The repeated paid fixture now also passes seeds 137 and 138 with a bridge limited
+to 1 Mbit/s, 10 ms one-way latency and 5% independent packet loss. Faults remain
+active through delivery and payment acceptance in both encounters; only financial
+collection restores a reliable carrier. Observed bridge losses are 18/37 and
+20/18 packets, respectively. Fresh cross-component delivery takes
+29.453/36.135 seconds and 35.150/37.140 seconds. Each run collects all 1536 test
+sats. Independent local streams deliver 100/100 and 106/106 packets per direction,
+without duplicates; their maximum gaps remain below the existing five-second
+bound. These tests add no runtime policy changes. The focused loss cases, strict
+relay lint and source-size gate pass; integration matches all 936 checked source
+files. Reproduce with the `priced_paths` filter
+`merge_split::crowded::automatic::repeated::loss::`, using the development
+dependencies in [FUNDING-COSTS.md](FUNDING-COSTS.md).
+
+An **unmerged diagnostic** (`1725169c`) reuses the existing independently timed
+contact driver with full neighbor tables and no reciprocal bridge at the first
+opening. Financial agreements and earlier session history are retained: this is
+cold adjacency, not first-time funding. Complete application submission spans
+and receive observations must both precede the cut to count as finite-contact
+delivery; later receives and packets unobserved by the cohort deadline remain
+separate. The final sustained opening retains the original 60-second deadline,
+including time spent draining the cohort.
+
+Seed 139 delivers **0/20** fresh in-window packets during cold openings lasting
+0.3–1.5 seconds. Sustained contact then restores delivery at 16.518 seconds and
+all-hop credit at 17.232 seconds. Subsequent warm windows deliver **31/33** fresh
+offers before their cuts, with progress in every direction/window and original
+authenticated owners retained. After a full split and native roster refill, the
+second encounter first observes a bridge at 49.765 seconds and a common tree at
+51.209 seconds, but **fails the unchanged 60-second paid-recovery bound**.
+Local streams still deliver all 138 packets per direction without duplicates
+(maximum gaps 1.562/3.995 seconds), and all 1536 test sats are collected after the
+failure. The late admission and subsequent route-lookup delay need separate
+diagnosis; the owner history alone does not establish their causes.
+
+The refactored original brief suite passes the opposite-root case but misses the
+first cold contact in the original-root case. Running that original-root test
+on unchanged `6b9d3fb8` also misses the first cold contact and collects all test
+funds. Thus this failure exists without the extraction; it remains an unresolved
+routing acceptance gap. The diagnostic's strict lint and size checks pass, but
+its failed mobility acceptance prevents integration. No deadlines or safety
+limits were relaxed. Sim discovery does not model radio beacon airtime or RF
+loss, and these runs do not establish physical mobile-mesh readiness.
+
 #### Earlier crowded-admission experiments
 
 Earlier native population diagnostics exposed the admission-latency gap.
