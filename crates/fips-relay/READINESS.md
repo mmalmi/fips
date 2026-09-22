@@ -2260,6 +2260,19 @@ The isolated implementation and diagnostic fixtures are retained for further
 work. Source, dependency and lock fingerprints remain stable throughout these
 checks. That incoming-service experiment is not integrated.
 
+A later first-arrival variant removes the separate service cursor and preserves
+one frozen requester across unrelated demand and an owed ordinary turn. Four
+native selection regressions fail on baseline; all five controls, including
+expiry/replay/configuration and corrupt/denied-request checks, pass with the
+variant. It is also rejected for integration: the dense queued-client fixture
+now misses its cold 60-second encounter, before reaching the queued warm phase.
+Preferred local requesters add service turns, delaying one boundary's first bridge
+request from 15.926 to 35.198 seconds. All eight bridge requests still meet a
+different completed candidate at the receiver. Retaining local requests does not
+ensure timely reciprocal discovery, and the original deadlines remain unchanged.
+The isolated branch also retains a reviewed spare-capacity consumption gap; it
+has not received the compatibility checks required for production integration.
+
 Ordinary exploration now uses a smaller change with a symmetric edge score:
 the XOR of the local and remote node identifiers. The stored cursor remains an
 identity, compared in the same edge order. Demand and earned retry precedence,
