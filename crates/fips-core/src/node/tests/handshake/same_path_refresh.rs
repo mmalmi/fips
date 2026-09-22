@@ -1,5 +1,6 @@
 use super::*;
 
+mod displaced;
 mod stale;
 use crate::dataplane::FmpWireHeader;
 use crate::node::tests::session::{
