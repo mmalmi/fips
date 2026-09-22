@@ -2434,6 +2434,50 @@ rejected by the existing forwarding limits during recovery, without establishing
 that those rejections alone caused the paid-delivery delay. Reproduce the native
 regression with the `spanning_tree::reachability_wakeup::` core test filter.
 
+#### Competing discovery requests
+
+A native four-node regression reproduces starvation under the existing global
+per-target forwarding limit: an authenticated neighbor requests the same target
+every 2.1 seconds, while another origin submits one application payload. All four
+normal lookup attempts are rejected, and the payload remains undelivered after
+its 15-second discovery ladder. The same target answers all eight competing
+requests; the quiet control delivers. Neither the retry ladder nor the two-second
+forwarding interval is changed.
+
+The relay now retains one waiting request per target from a different authenticated
+ingress than the last served peer. Retention is capped at 256 requests and 64 KiB
+of encoded payload, plus bounded metadata, with at most 64 requests and 16 KiB per
+ingress. A retained request gets first consideration at the next existing target
+slot, including when new traffic triggers dispatch. Fresh IDs cannot replace it
+or extend its captured expiry. Dispatch rechecks the route, original reverse-path
+admission generation, response ownership, connection admission and ingress budget.
+Eviction and same-millisecond ID reuse cannot revive an old payload. TTL is spent
+once, and the ordinary target slot and ingress token are charged before I/O.
+
+The existing lookup deadline turn also wakes transit-only work; an empty queue
+adds no polling. Local-origin retries run before deferred transport awaits. Each
+turn selects at most 16 deferred requests, and cancellation consumes only selected
+work while keeping untouched requests due. Capacity exhaustion falls back to the
+existing origin retries. Limits apply to authenticated ingress peers, which may
+aggregate many clients; this is not general multi-ingress or Sybil fairness.
+No wire messages, application spending permissions or bootstrap exemptions change.
+
+With the repair, an autonomous production relay RX loop delivers the original
+payload 2.058 seconds after the first competing request, at the next forwarding
+slot. Endpoints use real encrypted UDP with manually driven wall-clock maintenance.
+The 47 focused checks, 31 native simulation checks, 85 discovery-handler checks,
+normal build, strict core lint, formatting and source-size gate pass. The existing
+long-running 100-node discovery test remains ignored in the handler suite.
+
+Both paid short-contact scenarios and the crowded scenario pass and collect all
+4608 issued test sats. Crowded sustained delivery takes 26.452/31.354 seconds and
+all-hop credit 27.163/32.268 seconds; warm contacts deliver 32/32 offers, while cold
+short contacts remain 0/17. Independent local streams deliver 119/119 per direction
+without duplicates. These timings do not establish a general speedup, resolve the
+earlier crowded timeout, or prove radio mobility. The changes are local only.
+Reproduce with core filters `discovery::forwarding_contention::` and
+`sim_discovery::deferred_lookup_cancellation::`, and the paid filters above.
+
 #### Earlier crowded-admission experiments
 
 Earlier native population diagnostics exposed the admission-latency gap.
