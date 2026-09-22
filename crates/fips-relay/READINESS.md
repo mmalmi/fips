@@ -2094,6 +2094,17 @@ resource bounds are preserved. All six other fixed population variants pass both
 encounters under their original limits. These finite runs establish compatibility;
 some encounters take longer than before, so no general speedup is claimed.
 
+A separate, unmerged dense-client diagnostic submits one original endpoint payload
+after the same physical split and refill, before warm re-exposure. The payload
+really queues, and its first demanded bridge attempt starts at 8.543 seconds.
+All 13 received requests meet a different completed candidate at the destination;
+no reciprocal bridge forms, and the original remains queued at the unchanged
+60-second deadline. The destination prepares its next local candidate immediately
+after each promotion, while the new incumbent is still below its ten-second
+minimum age. This demonstrates receiver-admission contention even when the sender
+has real demand. The strict fixture lint passes; it does not make this failed
+encounter acceptable or establish physical-radio behavior.
+
 Extended native population diagnostics show that the admission-latency gap remains.
 They preserve the two-peer boundary cap, one pending candidate, original local
 links, 500-ms maintenance phase and 60-second encounter deadline. Two alternative
