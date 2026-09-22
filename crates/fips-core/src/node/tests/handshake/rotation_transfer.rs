@@ -17,7 +17,9 @@ fn reciprocal_transfer_preserves_deadline_acl_and_one_candidate_bound() {
             let mut silent = make_node();
             let mut ready = make_node();
             // Make the public ordering observation distinguish the two cursors.
-            if silent.node_addr() > ready.node_addr() {
+            if node.node.neighbor_rotation_order(*silent.node_addr())
+                > node.node.neighbor_rotation_order(*ready.node_addr())
+            {
                 std::mem::swap(&mut silent, &mut ready);
             }
             let denied = make_node();
