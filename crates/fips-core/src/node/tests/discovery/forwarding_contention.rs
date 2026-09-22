@@ -9,6 +9,7 @@ use std::panic::AssertUnwindSafe;
 use tokio::time::Instant;
 
 mod guards;
+mod reachable_after_backoff;
 mod rx_loop;
 
 #[test]

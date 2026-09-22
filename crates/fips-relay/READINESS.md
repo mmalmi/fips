@@ -2132,6 +2132,53 @@ evidence, not a reproduction of the late-selection schedule. The earlier crowded
 timeout and cold short-contact failures remain open; this does not establish
 physical mobile-radio readiness.
 
+An additional paid case holds the bridge absent for 31 seconds after both old
+owners disappear, beyond the default 30-second handshake deadline. One initial
+instrumented run passes, but two subsequent runs fail after the new bridge and
+common tree are already established. The traced failure shows repeated coordinate
+lookup attempts with no forwarding peer, followed by exhaustion and suppressed
+fresh demand. Existing channels still have credit; both bridge owners remain
+connected. This trace does not establish that every earlier attempt was unsent.
+
+A smaller three-node native UDP regression exposes an unsent-lookup recovery
+defect with real Noise
+handshakes, the default `[1, 2, 4, 8]` lookup ladder and an unchanged source parent.
+Both the eventual destination and an unrelated absent identity first exhaust
+their actual lookup attempts. The destination then joins downstream and a genuine
+filter update reaches the source. Before the fix, fresh demand is still suppressed;
+after it, the original fresh payload arrives exactly once while the unrelated
+destination remains suppressed.
+
+Backoff now retains whether the exhausted lookup ever selected a peer. For an
+unsent failure, fresh local demand can spend one early retry when normal peer
+selection finds a route. Admission capacity and deduplication still apply first;
+the failure count and suppression deadline are preserved. Request ownership is
+recorded before the send await, so an unanswered or cancelled send cannot regain
+the exception merely because its route disappears. Reachability announcements
+alone do not initiate traffic or clear other destinations' backoff. No wire type,
+retry deadline, forwarding interval or payment bound changes.
+
+All 89 enabled discovery-handler tests, 26 backoff/rate-limit controls and the
+native tree-reachability wake-up regression pass. One existing large-network
+discovery case remains ignored. The new component controls cover ineligible
+hints, full/deduplicated admission and an unanswered lookup whose route disappears;
+the separate UDP case establishes encrypted delivery. Strict core and relay lint
+and the 906-file source-size gate pass. These are local software results; the
+independent cold short-contact failure and physical mobile-radio acceptance remain
+open.
+
+The paid long-absence scenario still fails after this narrower fix. Its second
+bridge connects at 28.890 seconds and shares a tree at 29.506 seconds, but none of
+the 12 fresh source-to-destination payloads arrives during the existing traffic
+window. All 1,536 test sats are collected. Both local streams remain complete
+without duplicates, and all source/dependency/lock guards pass. The passing native
+case therefore does not establish recovery of the crowded paid mesh; that
+regression remains an unintegrated diagnostic. Reproduce the integrated native
+case with `cargo test -p nvpn-fips-core --all-features --lib
+node::tests::discovery::forwarding_contention::reachable_after_backoff::
+-- --test-threads=1`, using the development overrides in
+[FUNDING-COSTS.md](FUNDING-COSTS.md).
+
 The initial link-dead-only policy misses the dense eight-candidate repeat
 encounter. Cold delivery takes 51.004 seconds, but neither boundary attempts the
 bridge during the next 60-second window. During the split, ordinary promotion

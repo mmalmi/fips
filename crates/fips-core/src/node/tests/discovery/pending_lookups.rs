@@ -1,5 +1,7 @@
 use super::*;
 
+mod recovery_permission;
+
 #[tokio::test]
 async fn endpoint_route_queries_keep_bounded_discovery_without_queued_application_data() {
     let mut config = Config::new();

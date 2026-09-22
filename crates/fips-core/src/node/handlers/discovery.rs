@@ -7,7 +7,9 @@
 
 use crate::config::RoutingMode;
 use crate::node::{Node, PathMtuUpdate, RecentResponseForward};
-use crate::proto::lookup::{LookupPeerCandidate, plan_forward_peers, plan_initiate_peers};
+use crate::proto::lookup::{
+    LookupPeerCandidate, LookupPeerPlan, plan_forward_peers, plan_initiate_peers,
+};
 use crate::protocol::{LookupRequest, LookupResponse};
 use crate::transport::{TransportAddr, TransportId};
 use crate::{NodeAddr, NodeError, PeerIdentity};

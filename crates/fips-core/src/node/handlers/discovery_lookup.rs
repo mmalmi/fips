@@ -25,6 +25,22 @@ impl Node {
             .min();
     }
 
+    fn origin_lookup_peer_plan(
+        &self,
+        target: &NodeAddr,
+        candidates: &[LookupPeerCandidate],
+    ) -> LookupPeerPlan {
+        let reply_learned_fallback_enabled = self.config.node.routing.mode
+            == RoutingMode::ReplyLearned
+            && self.should_use_reply_learned_lookup_fallback_for_target(target);
+        plan_initiate_peers(
+            self.config.node.routing.mode,
+            reply_learned_fallback_enabled,
+            candidates,
+            MAX_REPLY_LEARNED_EXTRA_LOOKUP_PEERS,
+        )
+    }
+
     /// Initiate a discovery lookup for a target node.
     ///
     /// Creates a LookupRequest and sends it to tree peers whose bloom
@@ -39,15 +55,7 @@ impl Node {
         let request = LookupRequest::generate(*target, origin, origin_coords, ttl, 0);
 
         let candidates = self.lookup_peer_candidates(target);
-        let reply_learned_fallback_enabled = self.config.node.routing.mode
-            == RoutingMode::ReplyLearned
-            && self.should_use_reply_learned_lookup_fallback_for_target(target);
-        let plan = plan_initiate_peers(
-            self.config.node.routing.mode,
-            reply_learned_fallback_enabled,
-            &candidates,
-            MAX_REPLY_LEARNED_EXTRA_LOOKUP_PEERS,
-        );
+        let plan = self.origin_lookup_peer_plan(target, &candidates);
         let peer_addrs = plan.peers;
 
         let peer_count = peer_addrs.len();
@@ -249,14 +257,20 @@ impl Node {
         // a fresh network-wide discovery cycle immediately after timeout.
         // Operators can disable it by setting both backoff values to 0.
         if self.discovery_backoff.is_suppressed(dest) {
-            self.stats_mut().discovery.req_backoff_suppressed += 1;
-            debug!(
-                node = %self.node_addr(),
-                target_node = %self.peer_display_name(dest),
-                failures = self.discovery_backoff.failure_count(dest),
-                "Discovery lookup suppressed by backoff"
-            );
-            return;
+            let plan = self.origin_lookup_peer_plan(dest, &self.lookup_peer_candidates(dest));
+            // Downstream reachability can return without changing our parent
+            // or peers. Retry an unsent failure once, on local demand; an
+            // unanswered request retains its normal backoff.
+            if plan.peers.is_empty() || !self.discovery_backoff.retry_unsent_with_route(dest) {
+                self.stats_mut().discovery.req_backoff_suppressed += 1;
+                debug!(
+                    node = %self.node_addr(),
+                    target_node = %self.peer_display_name(dest),
+                    failures = self.discovery_backoff.failure_count(dest),
+                    "Discovery lookup suppressed by backoff"
+                );
+                return;
+            }
         }
 
         // Queued traffic needs bounded lookup retries while reachability
@@ -279,7 +293,7 @@ impl Node {
             } else if !self.sessions.contains_key(dest) {
                 // As with lookup exhaustion, an existing FSP owns recovery.
                 // Missing Bloom information must not suppress its next data.
-                self.discovery_backoff.record_failure(dest);
+                self.discovery_backoff.record_unsent_failure(dest);
             }
             debug!(
                 node = %self.node_addr(),
@@ -593,10 +607,16 @@ impl Node {
         // Process timeouts
         for addr in to_timeout {
             self.stats_mut().discovery.resp_timed_out += 1;
-            self.pending_lookups.remove(&addr);
+            let unsent = self
+                .pending_lookups
+                .remove(&addr)
+                .is_some_and(|entry| entry.awaiting_first_request());
 
-            // Record failure for optional backoff
-            self.discovery_backoff.record_failure(&addr);
+            if unsent {
+                self.discovery_backoff.record_unsent_failure(&addr);
+            } else {
+                self.discovery_backoff.record_failure(&addr);
+            }
             let failures = self.discovery_backoff.failure_count(&addr);
 
             let queued = self.pending_session_traffic.remove_destination(&addr);
