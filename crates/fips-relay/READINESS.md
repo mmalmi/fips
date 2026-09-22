@@ -2028,8 +2028,11 @@ failures. Reproduce the focused maturity cases with `cargo test -p nvpn-fips-cor
 --all-features --lib rotation_readiness::transferred:: -- --test-threads=1` and the
 same development dependencies.
 
+#### Crowded-neighbor recovery
+
 Recently used discovery-only neighbors receive one expiring discovery
-preference after physical link-dead removal (2026-09-22). The history retains only
+preference after physical link-dead removal or committed idle replacement
+(2026-09-22). The history retains only
 identity and a frozen handshake-window expiry, stays within the current peer cap,
 and spends the existing alternating demand turn. New advertisements, link
 maintenance and failed attempts cannot renew it. Admission still uses current
@@ -2064,8 +2067,9 @@ activity, frozen expiry, queue/report exclusions and unchanged active-peer
 protection. These controls do not claim wire replay rejection or exact
 connection-generation binding.
 
-Validation passes all 23 native discovery cases, seven reconnection-policy
-controls, six peer-activity controls, 107 handshake compatibility cases and four
+Validation of the initial link-dead-only history passes all 23 native discovery
+cases, seven reconnection-policy controls, six peer-activity controls,
+107 handshake compatibility cases and four
 original responsive-neighbor cases. The repeated paid encounter resumes delivery
 at 22.135/30.351 seconds and credits every hop at 22.848/30.962 seconds. Both
 independent local streams deliver all 87 original payloads exactly once; maximum
@@ -2081,31 +2085,60 @@ Reproduce the native cases with `cargo test -p nvpn-fips-core --all-features
 use `node::peer_activity::tests::` for the local-activity controls, with the same
 development dependencies in [FUNDING-COSTS.md](FUNDING-COSTS.md).
 
-This extension does not fix the dense eight-candidate repeat encounter. Its cold
-delivery is 51.004 seconds; neither boundary attempts the bridge during the next
-60-second window. During the split, candidate promotion electively replaces both
-bridge owners before link-dead detection. Elective removal intentionally creates
-no history, so a longer history timeout would not address this failure. The
-trace shows distinct ordinary candidates receiving their ten-second minimum age,
-with the previously serviced bridge later in the sweep; it shows no cursor rewind
-or different-identity takeover. This case supplies cross-component application
-traffic only after bridge restoration. The original failing acceptance and
-resource bounds are preserved. All six other fixed population variants pass both
-encounters under their original limits. These finite runs establish compatibility;
-some encounters take longer than before, so no general speedup is claimed.
+The initial link-dead-only policy misses the dense eight-candidate repeat
+encounter. Cold delivery takes 51.004 seconds, but neither boundary attempts the
+bridge during the next 60-second window. During the split, ordinary promotion
+replaces both bridge owners before link-dead detection; neither removal records
+their earlier application use. A longer history timeout cannot help when no
+history is created. Ordinary candidates receive their ten-second minimum age,
+without cursor rewind or different-identity takeover.
 
-A separate, unmerged dense-client diagnostic submits one original endpoint payload
-after the same physical split and refill, before warm re-exposure. The payload
-really queues, and its first demanded bridge attempt starts at 8.543 seconds.
-All 13 received requests meet a different completed candidate at the destination;
-no reciprocal bridge forms, and the original remains queued at the unchanged
-60-second deadline. The destination prepares its next local candidate immediately
-after each promotion, while the new incumbent is still below its ten-second
-minimum age. This demonstrates receiver-admission contention even when the sender
-has real demand. The strict fixture lint passes; it does not make this failed
-encounter acceptable or establish physical-radio behavior.
+The corresponding dense-client regression submits one original endpoint payload
+after physical split and refill, before warm re-exposure. On that baseline its
+first demanded bridge attempt starts at 8.543 seconds. All 13 received requests
+meet a different completed candidate at the destination, and the original remains
+queued at the 60-second deadline. This exposes receiver-admission contention even
+when the sender has real demand.
 
-Extended native population diagnostics show that the admission-latency gap remains.
+Committed replacement now preserves the same bounded recent-use preference for
+the exact validated victim. Qualification happens before cleanup, and history
+is recorded afterward without an intervening await. Generic administrative and
+failed-promotion cleanup remain excluded. This shares the existing qualification,
+expiry, cap and ordinary-turn alternation; no new state, message or timer
+configuration is introduced. Re-admission without new application use cannot
+renew old history.
+
+Four added native cases exercise real replacement before heartbeat expiry,
+distinguishing transit, local sender and local receiver traffic from heartbeat-only
+activity. The three application cases fail baseline candidate selection; all eight
+physical-loss/replacement cases pass with the change. A fixture guard checks the
+original owner before and after timeout/heartbeat maintenance, proving that
+replacement, rather than earlier local expiry, removed it. Original useful links,
+fresh proof, resource caps and payload delivery remain required.
+
+The unchanged dense case now delivers at 50.805 seconds cold and 19.160 seconds
+after re-exposure. The queued variant delivers at 50.803 seconds cold; its single
+waiting original arrives exactly once at 19.114 seconds after re-exposure, leaving
+no queued copy. Both retain eight local candidates, ten-second minimum age,
+500-ms maintenance offset, two-peer boundaries and the original 60-second limits.
+These finite runs establish recovery for these returning-neighbor scenarios,
+not a general cold-start convergence bound or physical mobile-radio acceptance.
+
+Compatibility passes all 27 native discovery cases, seven reconnection-policy
+controls, six activity controls, 107 handshake cases, four original responsive
+cases and all seven fixed population variants. The paid repeated encounter
+resumes delivery at 21.636/27.687 seconds and credits every hop at
+22.447/28.396 seconds. Both local streams deliver all 84 originals without
+duplicates; their maximum delivery gaps are 1.009/1.017 seconds. Existing
+channels and budgets survive, and all 1,536 test sats are collected.
+Strict core lint, default-feature compilation, formatting and the source-size
+check pass. Sources, dependencies and tested locks remain unchanged during each
+gate, and the portable lock is restored. No physical router is changed or tested
+by this validation.
+
+#### Earlier crowded-admission experiments
+
+Earlier native population diagnostics exposed the admission-latency gap.
 They preserve the two-peer boundary cap, one pending candidate, original local
 links, 500-ms maintenance phase and 60-second encounter deadline. Two alternative
 four-candidate identity layouts pass both encounters, with delivery at
@@ -2116,10 +2149,11 @@ passes one identity layout at 12.405/10.789 seconds but fails independent layout
 one joins at 6.772 seconds and misses rejoin; the reversed layout misses the first
 join. Bridge requests reach the remote boundary while other candidates own its
 admission slot. Local traffic, owner retention and resource-cap checks continue
-to pass, and the bounded transition records omit no changes. These seven cases
-are retained as unmerged diagnostic regressions, not part of the passing acceptance
-suite. No timer-only recommendation or runtime change follows from them; crowded
-admission progress needs further work before mobile readiness can be claimed.
+to pass, and the bounded transition records omit no changes. At that stage these
+seven cases remained isolated failing diagnostics. The later ordering and
+replacement-history changes above make all seven pass under their original
+limits; earlier checkouts remain as historical evidence. The failures do not
+support a timer-only recommendation or a general mobile-readiness claim.
 
 A separate bounded-displacement experiment kept the last elective victim from
 immediately taking an outgoing discovery slot back. Its three native controls
@@ -2353,8 +2387,9 @@ independent local streams deliver all 80 original payloads without duplicates;
 their maximum delivery gaps are 2.870 and 3.738 seconds. All 1,536 test sats are
 collected. Strict core lint, the default core build, formatting and the source
 size check pass. Source/dependency fingerprints are unchanged throughout the
-gates and the portable lock is restored. This remains software evidence; the
-original dense repeat-encounter target and physical Wi-Fi acceptance remain open.
+gates and the portable lock is restored. Those initialization controls alone left
+the dense repeat-encounter target unresolved; the later replacement-history
+acceptance above addresses that case. Physical mobile-radio acceptance remains open.
 
 Reproduce with `cargo test -p fips-relay --features measurements --test
 priced_paths merge_split::crowded::automatic::repeated::repeated_full_rosters_recover_paid_routes_without_candidate_departures
