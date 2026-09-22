@@ -666,6 +666,10 @@ async fn collect(bench: Bench, final_accounts: &[Account], credited: &BTreeMap<S
         assert!(bench.buyers[i].remaining_budget_sat().unwrap() <= final_accounts[i].remaining);
     }
     assert!(unsettled.is_empty());
+    // Drain controller wallet owners before the collection helpers reopen them.
+    for task in bench.tasks {
+        task.stop().await;
+    }
     let mut total = 0;
     for (i, wallet) in bench.wallets.iter().enumerate() {
         let balance = load_mint_balance(wallet, &bench.controller_policy.mint_url)
@@ -706,9 +710,6 @@ async fn collect(bench: Bench, final_accounts: &[Account], credited: &BTreeMap<S
         total
     );
     eprintln!("mesh: all {total} test sats collected");
-    for task in bench.tasks {
-        task.stop().await;
-    }
     for server in bench.quote_servers {
         server.stop().await;
     }

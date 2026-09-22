@@ -2151,6 +2151,13 @@ now keeps bounded neighbor-transition history from its existing queries and
 prints it on failure. Latest code has not received physical-router or mobile-radio
 acceptance.
 
+After every settlement and budget assertion, the fixture now drains controller
+workers before checking and collecting wallet balances. Periodic proof-history
+upkeep can otherwise own the same exclusive wallet while collection reopens it.
+The validation run retains its second-encounter 60-second failure, completes all
+six settlements, and collects all 1,536 test sats. Strict relay lint, formatting
+and source-size checks pass. Crowded recovery timing remains unresolved.
+
 Interrupted outgoing discovery retries now skip a candidate when the current
 full roster cannot satisfy minimum age or replacement spacing before its original
 deadline. The check preserves that deadline, peer limits and discovery fairness;
