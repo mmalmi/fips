@@ -1,6 +1,30 @@
 const MAX_ROUTE_LOOKUPS_PER_PASS: usize = 16;
 
 impl Node {
+    pub(in crate::node) fn pending_lookup_deadline_ms(&self) -> Option<u64> {
+        (self.pending_lookups.len() > 0)
+            .then_some(self.pending_lookup_deadline_ms)
+            .flatten()
+    }
+
+    fn note_pending_lookup_deadline(&mut self, target: &NodeAddr) {
+        if let Some(entry) = self.pending_lookups.get(target) {
+            let due = entry.deadline_ms(&self.config.node.discovery.attempt_timeouts_secs);
+            self.pending_lookup_deadline_ms = Some(
+                self.pending_lookup_deadline_ms
+                    .map_or(due, |previous| previous.min(due)),
+            );
+        }
+    }
+
+    fn refresh_pending_lookup_deadline(&mut self) {
+        self.pending_lookup_deadline_ms = self
+            .pending_lookups
+            .iter()
+            .map(|(_, entry)| entry.deadline_ms(&self.config.node.discovery.attempt_timeouts_secs))
+            .min();
+    }
+
     /// Initiate a discovery lookup for a target node.
     ///
     /// Creates a LookupRequest and sends it to tree peers whose bloom
@@ -27,6 +51,11 @@ impl Node {
         let peer_addrs = plan.peers;
 
         let peer_count = peer_addrs.len();
+
+        debug!(target: "fips_core::route_recovery",
+            node = %self.node_addr(), target = %target, request_id = request.request_id,
+            root = %self.tree_state.root(), peers = ?peer_addrs,
+            "Initiating coordinate lookup");
 
         debug!(
             target = %self.peer_display_name(target),
@@ -67,6 +96,7 @@ impl Node {
             Self::now_ms(),
             request.request_id,
         );
+        self.note_pending_lookup_deadline(target);
         let encoded = request.encode();
 
         for peer_addr in peer_addrs {
@@ -239,6 +269,7 @@ impl Node {
             self.stats_mut().discovery.req_bloom_miss += 1;
             if queued_lookup {
                 self.pending_lookups.insert_new(*dest, now_ms);
+                self.note_pending_lookup_deadline(dest);
                 if path_recovery {
                     self.pending_lookups.mark_path_recovery(dest);
                 }
@@ -256,6 +287,7 @@ impl Node {
         }
 
         self.pending_lookups.insert_new(*dest, now_ms);
+        self.note_pending_lookup_deadline(dest);
         if path_recovery {
             self.pending_lookups.mark_path_recovery(dest);
         }
@@ -393,6 +425,7 @@ impl Node {
             if let Some(entry) = self.pending_lookups.get_mut(&dest) {
                 entry.last_sent_ms = now_ms;
             }
+            self.note_pending_lookup_deadline(&dest);
             debug!(
                 target_node = %self.peer_display_name(&dest),
                 transit = %self.peer_display_name(&peer_addr),
@@ -472,7 +505,7 @@ impl Node {
 
     /// Check pending lookups for next-attempt or final timeout.
     ///
-    /// Called periodically from the tick handler. The lookup state machine
+    /// Called at the cached deadline. The lookup state machine
     /// runs through `node.discovery.attempt_timeouts_secs` (default
     /// `[1, 2, 4, 8]`): each entry is the deadline for one attempt. When the
     /// current attempt's deadline elapses:
@@ -488,15 +521,22 @@ impl Node {
         let timeouts = self.config.node.discovery.attempt_timeouts_secs.clone();
         let max_attempts = timeouts.len() as u8;
 
+        // Keep a conservative hint through every await. Cancellation must leave
+        // unprocessed due entries runnable without reserving their retry attempts.
+        self.pending_lookup_deadline_ms = None;
+
         // Collect targets needing action
         let mut to_retry: Vec<NodeAddr> = Vec::new();
         let mut to_session_handshake: Vec<NodeAddr> = Vec::new();
         let mut to_timeout: Vec<NodeAddr> = Vec::new();
 
         for (&target, entry) in self.pending_lookups.iter() {
-            let attempt_idx = (entry.attempt as usize).saturating_sub(1);
-            let attempt_timeout_ms = timeouts.get(attempt_idx).copied().unwrap_or(0) * 1000;
-            if now_ms.saturating_sub(entry.last_sent_ms) >= attempt_timeout_ms {
+            let due = entry.deadline_ms(&timeouts);
+            self.pending_lookup_deadline_ms = Some(
+                self.pending_lookup_deadline_ms
+                    .map_or(due, |previous| previous.min(due)),
+            );
+            if now_ms >= due {
                 if entry.attempt >= max_attempts {
                     if self.sessions.get(&target).is_some() {
                         to_session_handshake.push(target);
@@ -561,6 +601,7 @@ impl Node {
                 }
             }
         }
+        self.refresh_pending_lookup_deadline();
     }
 
     /// Release queued discovery when a tree peer gains reachability, including

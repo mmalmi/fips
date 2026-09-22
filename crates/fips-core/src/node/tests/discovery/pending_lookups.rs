@@ -23,6 +23,11 @@ async fn endpoint_route_queries_keep_bounded_discovery_without_queued_applicatio
         "need the public key to verify discovery"
     );
     assert!(node.pending_lookups.contains_key(&target));
+    assert_eq!(
+        node.pending_lookup_deadline_ms(),
+        Some(node.pending_lookups.get(&target).unwrap().last_sent_ms + 1_000),
+        "a route query without a known carrier still schedules its bounded retry"
+    );
     assert_eq!(node.stats().discovery.req_deduplicated, 2);
     assert!(!node.pending_session_traffic.has_traffic_for(&target));
     assert!(node.sessions.get(&target).is_none());
@@ -32,6 +37,7 @@ async fn endpoint_route_queries_keep_bounded_discovery_without_queued_applicatio
         !node.pending_lookups.contains_key(&target),
         "queries retain the existing finite retry ladder"
     );
+    assert_eq!(node.pending_lookup_deadline_ms(), None);
 }
 
 #[test]
@@ -76,6 +82,7 @@ async fn reply_learned_zero_peer_lookup_does_not_backoff_destination() {
         !node.pending_lookups.contains_key(&target),
         "a zero-carrier lookup must not remain pending"
     );
+    assert_eq!(node.pending_lookup_deadline_ms(), None);
     assert!(
         !node.discovery_backoff.is_suppressed(&target),
         "no lookup was put on the wire, so the destination must stay retryable"

@@ -9,6 +9,7 @@ mod cursor;
 mod demand;
 mod reconnection;
 mod refresh;
+mod topology;
 mod unconfirmed;
 
 fn assert_caps(nodes: &[TestNode]) {

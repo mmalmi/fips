@@ -6,9 +6,16 @@ mod witness;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn repeated_full_rosters_recover_paid_routes_without_candidate_departures() {
-    tokio::time::timeout(Duration::from_secs(480), Box::pin(exercise_repeated()))
+    tokio::time::timeout(Duration::from_secs(480), Box::pin(exercise_repeated(false)))
         .await
         .expect("repeated full-roster encounters and collection deadline");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn root_change_full_rosters_recover_paid_routes_without_candidate_departures() {
+    tokio::time::timeout(Duration::from_secs(480), Box::pin(exercise_repeated(true)))
+        .await
+        .expect("root-changing full-roster encounters and collection deadline");
 }
 
 async fn crowded_split(bench: &Bench, candidates: &[Candidate]) -> bool {
@@ -58,6 +65,7 @@ async fn encounters(
     bench: &mut Bench,
     anchor: &[Account],
     candidates: &[Candidate],
+    staged_root: bool,
 ) -> Result<(), &'static str> {
     let mut previous_bridge: Option<[(u64, u64); 2]> = None;
     let mut checkpoint = anchor.to_vec();
@@ -97,7 +105,40 @@ async fn encounters(
             .collect();
         assert!(occupied(&bench.nodes, &bench.peers, candidates).await);
         assert!(bridge_epochs(bench).await.is_none());
+        if encounter == 0 && staged_root {
+            let root = candidates
+                .iter()
+                .find(|c| c.address == "candidate-2-1")
+                .unwrap();
+            let root_addr = root.peer.node_addr().to_string();
+            for node in 0..3 {
+                assert_eq!(tree(bench, node).await["root"], root_addr);
+            }
+            let peers = bench.nodes[2].peers().await.unwrap();
+            assert!(
+                peers
+                    .iter()
+                    .any(|p| p.node_addr == *root.peer.node_addr() && p.connected)
+            );
+        }
         let start = Instant::now();
+        eprintln!(
+            "repeated full-roster exposure: {}",
+            serde_json::json!({
+                "encounter": encounter,
+                "unix_ms": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),
+                "nodes": bench.peers.iter().map(|peer| peer.node_addr().to_string()).collect::<Vec<_>>()
+            })
+        );
+        if encounter == 0 && staged_root {
+            // This controlled setup differs from the original startup race.
+            // All competitors remain present from exposure through acceptance.
+            for candidate in candidates {
+                bench
+                    .network
+                    .set_link_up(&candidate.address, candidate.bridge.to_string(), true);
+            }
+        }
         bench.network.set_link_up("2", "3", true);
         tokio::time::timeout(Duration::from_secs(60), async {
             let mut first_bridge_ms = None;
@@ -148,13 +189,14 @@ async fn encounters(
     Ok(())
 }
 
-async fn exercise_repeated() {
-    let (mut bench, mut observer, anchor, candidates) = Box::pin(setup_crowded(
+async fn exercise_repeated(staged_root: bool) {
+    let (mut bench, mut observer, anchor, candidates) = Box::pin(setup_crowded_with_staged_root(
         126,
         Some(fips_core::config::NeighborRotationConfig {
             idle_secs: 10,
             interval_secs: 2,
         }),
+        staged_root,
     ))
     .await;
     let root = bench.root.path().to_owned();
@@ -191,7 +233,7 @@ async fn exercise_repeated() {
     let outcome = observer
         .during(async {
             tokio::select! {
-                result = encounters(&mut bench, &anchor, &candidates) => result.map_err(str::to_owned),
+                result = encounters(&mut bench, &anchor, &candidates, staged_root) => result.map_err(str::to_owned),
                 failure = monitor => Err(failure),
             }
         })

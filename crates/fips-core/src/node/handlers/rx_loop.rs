@@ -220,6 +220,7 @@ impl Node {
         tick.tick().await;
         let mut nostr_event_turn_not_before = Instant::now();
         let mut mmp_report_not_before = Instant::now();
+        let mut lookup_not_before_ms = 0;
 
         loop {
             tokio::select! {
@@ -286,6 +287,29 @@ impl Node {
                     // and starve endpoint control, DNS identities and completions.
                     if scheduled_at.elapsed() >= tick.period() {
                         tick.reset();
+                    }
+                }
+                _ = wait_for_optional_epoch_deadline(
+                    self.pending_lookup_deadline_ms().map(|due| due.max(lookup_not_before_ms)),
+                ) => {
+                    let (completed, drained) = self.run_rx_loop_lookup_turn(
+                        &mut dataplane_runtime.io(),
+                    ).await;
+                    if drained.has_data_drained() {
+                        maintenance_state.record_data_activity(Instant::now());
+                    }
+                    self.drain_control_queries(
+                        &mut control_query_rx, None, CONTROL_QUERY_INTERLEAVE_BUDGET,
+                    ).await;
+                    if !completed {
+                        crate::perf_profile::record_event(
+                            crate::perf_profile::Event::RxLoopSlowMaintenanceTimeout,
+                        );
+                        self.mark_rx_loop_maintenance_timeout();
+                        lookup_not_before_ms = Self::now_ms().saturating_add(
+                            self.config.node.tick_interval_secs.saturating_mul(1000).max(1),
+                        );
+                        warn!("Pending lookup send timed out; continuing packet processing");
                     }
                 }
                 Some(message) = control_query_rx.recv() => {
@@ -533,6 +557,21 @@ impl Node {
             // hint must not cause repeated slow sends ahead of packet work.
             self.defer_tree_announce_retry();
         }
+        let drained = self
+            .drain_rx_loop_data_queues(io, PACKET_DRAIN_BUDGET)
+            .await;
+        (completed, drained)
+    }
+
+    async fn run_rx_loop_lookup_turn(
+        &mut self,
+        io: &mut RxLoopDataplaneIo<'_>,
+    ) -> (bool, RxLoopDataDrainStats) {
+        let completed =
+            rx_loop_fast_maintenance_within_budget(self.check_pending_lookups(Self::now_ms()))
+                .await;
+        // A cancelled batch leaves unprocessed retries due. Let queued data
+        // make bounded progress before another reserved lookup turn.
         let drained = self
             .drain_rx_loop_data_queues(io, PACKET_DRAIN_BUDGET)
             .await;
@@ -849,7 +888,6 @@ impl Node {
         self.check_session_mmp_reports().await;
         self.check_rekey().await;
         self.check_session_rekey().await;
-        self.check_pending_lookups(now_ms).await;
         self.poll_pending_connects().await;
         self.process_pending_retries(now_ms).await;
         self.poll_transport_discovery().await;
@@ -899,7 +937,7 @@ async fn wait_for_optional_epoch_deadline(deadline_ms: Option<u64>) {
     if remaining == 0 {
         return;
     }
-    // Tree rate limiting uses epoch milliseconds, including the simulation
+    // Protocol deadlines use epoch milliseconds, including the simulation
     // clock. This wake is advisory; dispatch rechecks that same clock.
     match tokio::time::Instant::now().checked_add(Duration::from_millis(remaining)) {
         Some(deadline) => tokio::time::sleep_until(deadline).await,

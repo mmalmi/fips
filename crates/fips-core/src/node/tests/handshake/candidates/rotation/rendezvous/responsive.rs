@@ -12,6 +12,9 @@ use population::Population;
 #[path = "responsive_queued.rs"]
 mod queued;
 
+#[path = "responsive_late.rs"]
+mod late;
+
 const IDLE_SECS: u64 = 10;
 const INTERVAL_SECS: u64 = 2;
 const RESPONSIVE_ADDRESSES: [&str; 20] = [
@@ -81,15 +84,15 @@ fn run_population(
     repeated: bool,
     component_phase: Duration,
 ) {
-    run_population_with_queued_rejoin(population, window, repeated, component_phase, false);
+    run_population_with_demand(population, window, repeated, component_phase, None);
 }
 
-fn run_population_with_queued_rejoin(
+fn run_population_with_demand(
     population: Population,
     window: Duration,
     repeated: bool,
     component_phase: Duration,
-    queued_rejoin: bool,
+    demand: Option<queued::Demand>,
 ) {
     run_large_stack_async_test("rotation-responsive-rendezvous", move || async move {
         let _guard = lock_large_network_test().await;
@@ -139,10 +142,13 @@ fn run_population_with_queued_rejoin(
             &mut nodes,
             &network,
             addresses,
-            window,
-            repeated,
-            component_phase,
-            queued_rejoin,
+            EncounterOptions {
+                window,
+                repeated,
+                component_phase,
+                demand,
+                diagnose_miss: population.diagnose_miss,
+            },
         ))
         .catch_unwind()
         .await;
@@ -155,6 +161,7 @@ fn run_population_with_queued_rejoin(
 }
 
 struct Observation {
+    post_deadline_diagnostic: bool,
     started: tokio::time::Instant,
     next_tick: [tokio::time::Instant; 2],
     component_phase: Duration,
@@ -164,7 +171,7 @@ struct Observation {
     replacements: [usize; 2],
     ticks: usize,
     timing: timing::Ledger,
-    queued_original: Option<queued::Original>,
+    queued_originals: Vec<queued::Original>,
 }
 
 fn pending_attempts(node: &Node, ids: &[PeerIdentity]) -> Value {
@@ -193,6 +200,7 @@ impl Observation {
     fn new(component_phase: Duration) -> Self {
         let started = tokio::time::Instant::now();
         Self {
+            post_deadline_diagnostic: false,
             started,
             next_tick: [started, started + component_phase],
             component_phase,
@@ -204,7 +212,7 @@ impl Observation {
             timing: timing::Ledger::with_maintenance_phase(
                 component_phase.as_millis().try_into().unwrap(),
             ),
-            queued_original: None,
+            queued_originals: Vec::new(),
         }
     }
 
@@ -239,6 +247,7 @@ impl Observation {
             eprintln!(
                 "responsive incumbent: {}",
                 json!({"observed_ms":self.started.elapsed().as_millis(),"boundary":i,
+                    "post_deadline_diagnostic":self.post_deadline_diagnostic,
                     "old":describe(self.incumbents[i]),"new":describe(current),
                     "attempts_before_packet":before_packet.as_ref()
                         .filter(|(boundary,_)|*boundary==i).map(|(_,attempts)|attempts)})
@@ -248,7 +257,7 @@ impl Observation {
     }
 
     async fn turn(&mut self, nodes: &mut [TestNode], ids: &[PeerIdentity]) {
-        if let Some(original) = &mut self.queued_original {
+        for original in &mut self.queued_originals {
             original.observe(nodes, ids, self.started);
         }
         self.timing.observe(nodes, ids, self.started, "turn-entry");
@@ -303,12 +312,21 @@ impl Observation {
                 n.node.send_pending_tree_announces().await;
             }
             self.incumbents(nodes, ids, None);
-            if let Some(original) = &mut self.queued_original {
+            for original in &mut self.queued_originals {
                 original.observe(nodes, ids, self.started);
             }
             self.timing
                 .observe(nodes, ids, self.started, "maintenance-completed");
-            snapshot(nodes, ids, self.started, "responsive-maintenance");
+            snapshot(
+                nodes,
+                ids,
+                self.started,
+                if self.post_deadline_diagnostic {
+                    "post-deadline-diagnostic-maintenance"
+                } else {
+                    "responsive-maintenance"
+                },
+            );
         }
         for destination in 0..nodes.len() {
             for _ in 0..256 {
@@ -362,11 +380,21 @@ impl Observation {
                     eprintln!(
                         "responsive incoming Msg1: {}",
                         json!({"source":source,"receiver":destination,"bridge":bridge,
+                            "post_deadline_diagnostic":self.post_deadline_diagnostic,
                             "sender_index":msg1.as_ref().map(|header|header.sender_idx.as_u32()),
                             "observed_ms":self.started.elapsed().as_millis(),"received_ms":packet.timestamp_ms,
                             "attempts_before":before_packet.as_ref().map(|(_,attempts)|attempts)})
                     );
-                    snapshot(nodes, ids, self.started, "responsive-msg1-before");
+                    snapshot(
+                        nodes,
+                        ids,
+                        self.started,
+                        if self.post_deadline_diagnostic {
+                            "post-deadline-diagnostic-msg1-before"
+                        } else {
+                            "responsive-msg1-before"
+                        },
+                    );
                 }
                 process_dataplane_packet(&mut nodes[destination], packet).await;
                 if let Some(response) = bridge_msg2.as_ref() {
@@ -375,6 +403,7 @@ impl Observation {
                     eprintln!(
                         "responsive bridge Msg2: {}",
                         json!({"source":1-destination,"receiver":destination,
+                            "post_deadline_diagnostic":self.post_deadline_diagnostic,
                             "sender_index":response.sender_idx.as_u32(),
                             "receiver_index":response.receiver_idx.as_u32(),
                             "received_ms":received_ms,
@@ -383,7 +412,16 @@ impl Observation {
                     );
                 }
                 if incoming {
-                    snapshot(nodes, ids, self.started, "responsive-msg1-after");
+                    snapshot(
+                        nodes,
+                        ids,
+                        self.started,
+                        if self.post_deadline_diagnostic {
+                            "post-deadline-diagnostic-msg1-after"
+                        } else {
+                            "responsive-msg1-after"
+                        },
+                    );
                 }
                 self.incumbents(nodes, ids, before_packet);
                 if destination < 2 {
@@ -398,7 +436,7 @@ impl Observation {
             }
         }
         caps(nodes);
-        if let Some(original) = &mut self.queued_original {
+        for original in &mut self.queued_originals {
             original.observe(nodes, ids, self.started);
         }
     }
@@ -425,7 +463,7 @@ impl Observation {
                 flows,
                 &mut received,
                 |destination, source, payload| {
-                    self.queued_original.as_mut().is_some_and(|original| {
+                    self.queued_originals.iter_mut().any(|original| {
                         original.receive(destination, source, payload, ids, self.started)
                     })
                 },
@@ -481,15 +519,27 @@ async fn connect(
     }
 }
 
+struct EncounterOptions {
+    window: Duration,
+    repeated: bool,
+    component_phase: Duration,
+    demand: Option<queued::Demand>,
+    diagnose_miss: bool,
+}
+
 async fn exercise(
     nodes: &mut [TestNode],
     network: &SimNetwork,
     addresses: &[&str],
-    window: Duration,
-    repeated: bool,
-    component_phase: Duration,
-    queued_rejoin: bool,
+    options: EncounterOptions,
 ) {
+    let EncounterOptions {
+        window,
+        repeated,
+        component_phase,
+        demand,
+        diagnose_miss,
+    } = options;
     let ids = identities(nodes);
     let mut observation = Observation::new(component_phase);
     connect(&mut observation, nodes, &ids, network, addresses, 0, 2).await;
@@ -565,15 +615,19 @@ async fn exercise(
             )
             .await;
             useful_retained(nodes, &ids, &original);
-            if queued_rejoin {
-                observation.queued_original =
-                    Some(queued::Original::offer(nodes, &ids, observation.started).await);
+        }
+        if let Some(demand) = demand.filter(|demand| demand.encounter == encounter) {
+            for &source in demand.sources {
+                observation.queued_originals.push(
+                    queued::Original::offer(nodes, &ids, observation.started, encounter, source)
+                        .await,
+                );
             }
         }
         network.set_link(addresses[0], addresses[1], SimLink::default());
         let exposed = tokio::time::Instant::now();
         observation.timing.exposed(observation.started);
-        if let Some(original) = &mut observation.queued_original {
+        for original in &mut observation.queued_originals {
             original.exposed(observation.started);
         }
         snapshot(
@@ -585,6 +639,7 @@ async fn exercise(
         let before_requests = observation.bridge_msg1;
         let mut bridge_at = None;
         let mut delivery_at = None;
+        let mut next_local_round = None;
         while exposed.elapsed() < window {
             observation
                 .round(nodes, &mut endpoints, &ids, &mut sequence, &LOCAL_FLOWS)
@@ -595,9 +650,9 @@ async fn exercise(
             }
             if reciprocal_bridge(nodes, &ids)
                 && observation
-                    .queued_original
-                    .as_ref()
-                    .is_none_or(queued::Original::delivered)
+                    .queued_originals
+                    .iter()
+                    .all(queued::Original::delivered)
             {
                 let owners: Vec<_> = (0..2)
                     .map(|i| {
@@ -633,6 +688,7 @@ async fn exercise(
             }
             // Continue processing between fresh half-second useful data rounds.
             let next_round = tokio::time::Instant::now() + Duration::from_millis(500);
+            next_local_round = Some(next_round);
             while tokio::time::Instant::now() < next_round && exposed.elapsed() < window {
                 observation.turn(nodes, &ids).await;
                 useful_retained(nodes, &ids, &original);
@@ -650,7 +706,7 @@ async fn exercise(
             .timing
             .observe(nodes, &ids, observation.started, "final");
         observation.timing.summary(observation.started);
-        if let Some(original) = &observation.queued_original {
+        for original in &observation.queued_originals {
             original.summary(nodes, &ids, observation.started);
         }
         eprintln!(
@@ -663,12 +719,53 @@ async fn exercise(
                 "delivery_ms":delivery_at.map(|d|d.as_millis()),"incumbent_changes":observation.replacements,
                 "maintenance_turns":observation.ticks,"completed_payload_rounds":sequence})
         );
+        let offered_bridge = observation
+            .bridge_msg1
+            .iter()
+            .zip(before_requests)
+            .any(|(after, before)| *after > before);
+        let accepted = bridge_at.is_some_and(|elapsed| elapsed < window)
+            && (!repeated || delivery_at.is_some_and(|elapsed| elapsed < window));
+        if diagnose_miss && !accepted {
+            // Keep the original outcome above and assertions below immutable.
+            // Later success is diagnostic evidence, never a new acceptance.
+            let diagnostic = AssertUnwindSafe(late::observe(
+                nodes,
+                &mut endpoints,
+                &ids,
+                &mut sequence,
+                &original,
+                &mut observation,
+                late::MissedAcceptance {
+                    encounter,
+                    exposed,
+                    window,
+                    bridge_at,
+                    delivery_at,
+                    next_local_round,
+                },
+            ))
+            .catch_unwind()
+            .await;
+            if let Err(panic) = diagnostic {
+                let reason = panic
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| panic.downcast_ref::<&str>().copied())
+                    .unwrap_or("non-string diagnostic panic");
+                eprintln!(
+                    "responsive post-deadline diagnostic aborted: {}",
+                    json!({
+                        "post_deadline_diagnostic":true,"encounter":encounter,
+                        "observed_ms":observation.started.elapsed().as_millis(),
+                        "native_now_ms":Node::now_ms(),"since_exposure_ms":exposed.elapsed().as_millis(),
+                        "original_acceptance_passed":false,"reason":reason
+                    })
+                );
+            }
+        }
         assert!(
-            observation
-                .bridge_msg1
-                .iter()
-                .zip(before_requests)
-                .any(|(after, before)| *after > before),
+            offered_bridge,
             "diagnostic premise: discovery must actually offer the exposed bridge"
         );
         assert!(
@@ -681,8 +778,8 @@ async fn exercise(
                 "encounter {encounter}: both native payload directions must complete within the same {window:?}"
             );
         }
-        if let Some(original) = &observation.queued_original {
-            original.assert_delivered_within(window);
+        for original in &observation.queued_originals {
+            original.assert_delivered_within(nodes, &ids, window);
         }
     }
 }

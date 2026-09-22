@@ -861,6 +861,9 @@ pub struct DiscoveredPeer {
     pub addr: TransportAddr,
     /// Optional hint about the peer's identity (if known from discovery).
     pub pubkey_hint: Option<XOnlyPublicKey>,
+    /// Unverified root advertised by a node that reports an active neighbor.
+    /// This is only a discovery preference, never admission or route authority.
+    pub connected_root_hint: Option<crate::NodeAddr>,
 }
 
 impl DiscoveredPeer {
@@ -870,6 +873,7 @@ impl DiscoveredPeer {
             transport_id,
             addr,
             pubkey_hint: None,
+            connected_root_hint: None,
         }
     }
 
@@ -883,6 +887,7 @@ impl DiscoveredPeer {
             transport_id,
             addr,
             pubkey_hint: Some(pubkey),
+            connected_root_hint: None,
         }
     }
 }

@@ -297,6 +297,8 @@ pub struct Node {
     // === Pending Discovery Lookups ===
     /// Tracks in-flight discovery lookups and owns dedupe/cap admission.
     pending_lookups: handlers::discovery::PendingDiscoveryLookups,
+    /// Conservative earliest retry/expiry hint, refreshed during lookup maintenance.
+    pending_lookup_deadline_ms: Option<u64>,
 
     // === Resource Limits ===
     /// Maximum connections (0 = unlimited).

@@ -7,6 +7,7 @@ pub(super) struct Population {
     pub first_scalar: u8,
     pub reversed: bool,
     pub idle_secs: u64,
+    pub diagnose_miss: bool,
 }
 
 impl Population {
@@ -16,6 +17,7 @@ impl Population {
             first_scalar: 1,
             reversed: false,
             idle_secs: IDLE_SECS,
+            diagnose_miss: false,
         }
     }
 
@@ -95,4 +97,27 @@ fn two_second_age_with_a_different_identity_population() {
         first_scalar: 33,
         ..Population::baseline(8)
     });
+}
+
+mod dense_identities {
+    use super::*;
+
+    // Keep the original dense population, timers, limits and traffic. Only the
+    // fixed identity assignment changes; no identity is chosen by its outcome.
+    #[test]
+    fn shifted_population() {
+        repeated(Population {
+            first_scalar: 33,
+            diagnose_miss: true,
+            ..Population::baseline(8)
+        });
+    }
+
+    #[test]
+    fn reversed_roles() {
+        repeated(Population {
+            reversed: true,
+            ..Population::baseline(8)
+        });
+    }
 }

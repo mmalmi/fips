@@ -53,6 +53,11 @@ impl Node {
         let now_ms = Self::now_ms();
         self.purge_expired_requests(now_ms);
 
+        debug!(target: "fips_core::route_recovery",
+            node = %self.node_addr(), from = %from, origin = %request.origin,
+            target = %request.target, request_id = request.request_id,
+            root = %self.tree_state.root(), "Received coordinate lookup");
+
         // A flooded request can return through a bloom false-positive path.
         // Its unsigned `origin` field is not safe to trust, but the random ID
         // and target pair are locally recorded for every outstanding attempt.
@@ -329,6 +334,11 @@ impl Node {
                             .find_next_hop(&target)
                             .is_none_or(|peer| peer.node_addr() != &target))
                 {
+                    debug!(target: "fips_core::route_recovery",
+                        node = %self.node_addr(), from = %from,
+                        target = %target, request_id = response.request_id,
+                        response_root = %response.target_coords.root_id(),
+                        root = %self.tree_state.root(), "Coordinate reply has a foreign root");
                     debug!(
                         target = %self.peer_display_name(&target),
                         response_root = %response.target_coords.root_id(),
@@ -368,6 +378,11 @@ impl Node {
                     );
                 }
                 if cache_coordinates {
+                    debug!(target: "fips_core::route_recovery",
+                        node = %self.node_addr(), from = %from,
+                        target = %target, request_id = response.request_id,
+                        coords = ?response.target_coords,
+                        "Caching verified coordinate reply");
                     if path_mtu_actionable {
                         self.coord_cache.insert_verified_with_path_mtu(
                             target,
@@ -519,6 +534,10 @@ impl Node {
     async fn send_lookup_response(&mut self, request: &LookupRequest) {
         let our_coords = self.tree_state().my_coords().clone();
 
+        debug!(target: "fips_core::route_recovery",
+            node = %self.node_addr(), origin = %request.origin, request_id = request.request_id,
+            coords = ?our_coords, "Answering coordinate lookup");
+
         // Sign proof: Identity::sign hashes with SHA-256 internally
         let proof_data =
             LookupResponse::proof_bytes(request.request_id, &request.target, &our_coords);
@@ -654,6 +673,9 @@ impl Node {
 
         if forward_to.is_empty() {
             self.stats_mut().discovery.req_no_tree_peer += 1;
+            debug!(target: "fips_core::route_recovery",
+                node = %self.node_addr(), from = %from, target = %request.target,
+                request_id = request.request_id, "Coordinate lookup has no forwarding peer");
             trace!(
                 request_id = request.request_id,
                 "No eligible peers to forward LookupRequest"
@@ -719,6 +741,9 @@ impl Node {
             target = %self.peer_display_name(&request.target),
             "Forward rate limited, suppressing LookupRequest"
         );
+        debug!(target: "fips_core::route_recovery",
+            node = %self.node_addr(), from = %from, target = %request.target,
+            request_id = request.request_id, "Coordinate lookup forwarding rate limited");
         false
     }
 
