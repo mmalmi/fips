@@ -18,6 +18,8 @@ mod convergent_paths_large;
 mod foreign_root_controls;
 mod foreign_root_origin;
 mod forwarding_basic;
+#[cfg(unix)]
+mod lookup_deadline_rx_loop;
 mod open_sweep;
 mod path_mtu;
 mod pending_lookups;
