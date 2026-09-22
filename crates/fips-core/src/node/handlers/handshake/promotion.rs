@@ -499,6 +499,8 @@ impl Node {
             // FMP-replay-window writer for this peer.
             self.sync_dataplane_fmp_owner(&peer_node_addr);
 
+            self.seed_initial_neighbor_rotation_cursor(peer_node_addr);
+
             info!(
                 peer = %self.peer_display_name(&peer_node_addr),
                 link_id = %link_id,

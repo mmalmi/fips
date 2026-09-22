@@ -60,6 +60,22 @@ impl Node {
         self.max_peers > 0 && self.peers.len() >= self.max_peers
     }
 
+    /// Count the learned admission that first fills the roster as service.
+    /// Later promotions and refreshes must not move ordinary exploration.
+    pub(in crate::node) fn seed_initial_neighbor_rotation_cursor(&mut self, peer: NodeAddr) {
+        if self.config.node.neighbor_rotation.is_some()
+            && self.neighbor_roster_full()
+            && self.neighbor_rotation.next_attempt_ms == 0
+            && self.neighbor_rotation.cursor.is_none()
+            && self
+                .peers
+                .get(&peer)
+                .is_some_and(|active| !self.is_configured_peer_identity(active.identity()))
+        {
+            self.neighbor_rotation.cursor = Some(peer);
+        }
+    }
+
     fn rotation_victim(&self, now_ms: u64) -> Option<NodeAddr> {
         self.rotation_victim_by(now_ms, Some(now_ms))
     }
@@ -338,6 +354,12 @@ impl Node {
             return false;
         }
         if !self.rotation_has_pending_candidate() {
+            // The first incoming attempt still counts as service even when an
+            // initial roster admission seeded the cursor. This timestamp never
+            // resets after an attempt, so later incoming retries cannot rewind it.
+            let seed_incoming = !outbound
+                && (self.neighbor_rotation.cursor.is_none()
+                    || self.neighbor_rotation.next_attempt_ms == 0);
             let interval_ms = self
                 .config
                 .node
@@ -385,7 +407,7 @@ impl Node {
                 if !demand {
                     self.neighbor_rotation.cursor = Some(peer);
                 }
-            } else if !outbound && self.neighbor_rotation.cursor.is_none() {
+            } else if seed_incoming {
                 // Only the first inbound attempt can seed ordinary exploration.
                 self.neighbor_rotation.cursor = Some(peer);
             }
