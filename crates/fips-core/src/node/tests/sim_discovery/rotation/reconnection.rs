@@ -265,10 +265,6 @@ impl Traffic {
                         let sequence = u32::from_be_bytes(payload[1..].try_into().unwrap());
                         assert!(sequence > 0 && sequence <= self.offered);
                         assert!(self.received.insert(sequence), "duplicate local original");
-                    } else if payload == BEFORE {
-                        assert_eq!(index, R);
-                        assert!(!self.before_received, "duplicate initial routed original");
-                        self.before_received = true;
                     } else {
                         assert_eq!(payload, AFTER);
                         assert_eq!(Some(index), self.after_peer);

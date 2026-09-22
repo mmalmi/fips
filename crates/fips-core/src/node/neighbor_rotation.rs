@@ -23,7 +23,7 @@ pub(super) struct NeighborRotation {
     exploration_due: bool,
     outbound_turn_until_ms: u64,
     interrupted_outgoing: Option<InterruptedOutgoing>,
-    lost_transit: std::collections::HashMap<NodeAddr, u64>,
+    lost_neighbors: std::collections::HashMap<NodeAddr, u64>,
 }
 
 struct Attempt {
@@ -576,13 +576,13 @@ impl Node {
             && (self.peer_has_queued_application_demand(&peer)
                 || self
                     .neighbor_rotation
-                    .lost_transit
+                    .lost_neighbors
                     .get(&peer)
                     .is_some_and(|deadline| now_ms < *deadline))
     }
 
     /// Retry a presently offered interrupted attempt first, then alternate
-    /// current local demand or recently lost transit with ordinary exploration.
+    /// current local demand or recently used lost neighbors with ordinary exploration.
     pub(in crate::node) fn neighbor_rotation_discovery_order(
         &self,
         peer: NodeAddr,

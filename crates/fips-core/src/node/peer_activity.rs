@@ -16,10 +16,20 @@ impl Node {
         };
         active.has_recent_transit_demand(now_ms, idle_ms)
             || self.deferred_session_forwards.has_demand_for(peer)
-            || self
-                .dataplane
-                .min_fsp_data_rx_age_for_next_hop(peer, now_ms)
-                .is_some_and(|age| age <= idle_ms)
+            || self.peer_has_recent_local_application_data(peer, now_ms, idle_ms)
+            || self.peer_has_queued_application_demand(peer)
+    }
+
+    /// Timed admitted local data only; queues and control traffic do not qualify.
+    pub(in crate::node) fn peer_has_recent_local_application_data(
+        &self,
+        peer: &NodeAddr,
+        now_ms: u64,
+        idle_ms: u64,
+    ) -> bool {
+        self.dataplane
+            .min_fsp_data_rx_age_for_next_hop(peer, now_ms)
+            .is_some_and(|age| age <= idle_ms)
             || self
                 .dataplane
                 .fsp_owner_destinations()
@@ -32,7 +42,6 @@ impl Node {
                                 && activity.has_recent_outbound_activity(now_ms, idle_ms)
                         })
                 })
-            || self.peer_has_queued_application_demand(peer)
     }
 
     /// Attribute local queues to their explicit or currently installed carrier.

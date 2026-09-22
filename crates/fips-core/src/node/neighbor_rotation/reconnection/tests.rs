@@ -61,7 +61,7 @@ fn old_transit_link_maintenance_and_unadmitted_queues_do_not_earn_history() {
         lose(&mut node, peer, 4_101);
         assert!(!preferred(&node, peer, 4_101));
     }
-    assert!(node.neighbor_rotation.lost_transit.is_empty());
+    assert!(node.neighbor_rotation.lost_neighbors.is_empty());
 }
 
 #[test]
@@ -85,7 +85,7 @@ fn configured_peers_disabled_rotation_and_unlimited_rosters_do_not_add_history()
     node.set_max_peers(0);
     let unlimited = add(&mut node, 3, Some(100));
     lose(&mut node, unlimited, 100);
-    assert!(node.neighbor_rotation.lost_transit.is_empty());
+    assert!(node.neighbor_rotation.lost_neighbors.is_empty());
 }
 
 #[test]
@@ -96,7 +96,7 @@ fn history_is_capped_pruned_and_requires_new_transit_after_reconnection() {
         let peer = add(&mut node, byte, Some(100));
         lose(&mut node, peer, 100 + u64::from(byte));
         peers.push(peer);
-        assert!(node.neighbor_rotation.lost_transit.len() <= 2);
+        assert!(node.neighbor_rotation.lost_neighbors.len() <= 2);
     }
     assert!(!preferred(&node, peers[0], 104));
     assert!(preferred(&node, peers[1], 104));
@@ -107,7 +107,7 @@ fn history_is_capped_pruned_and_requires_new_transit_after_reconnection() {
     assert!(!preferred(&node, peers[1], 104));
     let fresh = add(&mut node, 4, Some(7_000));
     lose(&mut node, fresh, 7_000);
-    assert_eq!(node.neighbor_rotation.lost_transit.len(), 1);
+    assert_eq!(node.neighbor_rotation.lost_neighbors.len(), 1);
     assert!(preferred(&node, fresh, 7_000));
 }
 
@@ -122,7 +122,12 @@ fn a_started_preference_is_consumed_and_ordinary_exploration_remains_owed() {
     assert!(node.begin_neighbor_rotation(returning, true, 2_000));
     assert!(node.neighbor_rotation.exploration_due);
     assert_eq!(node.neighbor_rotation.cursor, cursor);
-    assert!(!node.neighbor_rotation.lost_transit.contains_key(&returning));
+    assert!(
+        !node
+            .neighbor_rotation
+            .lost_neighbors
+            .contains_key(&returning)
+    );
     // Clearing a completed/failed attempt does not restore spent history.
     node.neighbor_rotation.attempt = None;
     node.neighbor_rotation.exploration_due = false;
@@ -136,7 +141,7 @@ fn administrative_and_elective_removal_never_create_a_preference() {
     let elective = add(&mut node, 2, Some(100));
     node.remove_active_peer(&administrative);
     node.remove_neighbor_for_rotation(&elective);
-    assert!(node.neighbor_rotation.lost_transit.is_empty());
+    assert!(node.neighbor_rotation.lost_neighbors.is_empty());
 }
 
 #[test]
@@ -150,8 +155,8 @@ fn reducing_the_live_cap_retires_oldest_history_and_zero_clears_it() {
         peers.push(peer);
     }
     node.set_max_peers(1);
-    assert_eq!(node.neighbor_rotation.lost_transit.len(), 1);
+    assert_eq!(node.neighbor_rotation.lost_neighbors.len(), 1);
     assert!(preferred(&node, peers[2], now + 3));
     node.set_max_peers(0);
-    assert!(node.neighbor_rotation.lost_transit.is_empty());
+    assert!(node.neighbor_rotation.lost_neighbors.is_empty());
 }
