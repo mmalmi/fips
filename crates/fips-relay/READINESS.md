@@ -2184,14 +2184,24 @@ seconds, and all 1,536 test sats are collected. Strict core lint, the default co
 build, formatting and source-size checks pass. The additional source-address
 control and strict lint pass after that test-only extension. Tested source and
 dependency fingerprints remain stable throughout each gate.
-On this runtime, the fixed eight-candidate population with a five-second minimum
-neighbor age delivers at 47.495/39.807 seconds across its two encounters. The
-ten-second-age population still misses its first 60-second deadline. Its trace
-shows one boundary repeatedly preparing completed local candidates while the
-other offers the cross-component bridge; no reciprocal bridge forms in that
-window. Both cases retain their original caps and deadlines. This closes the
-reproduced stale-refresh collision; broader crowded convergence and physical
-router validation remain open.
+Six of seven fixed population cases pass on this runtime. The eight-candidate,
+five-second-age case delivers at 47.495/39.807 seconds. All three two-second-age
+identity populations pass both encounters, with delivery ranging from 6.758 to
+46.225 seconds; both four-candidate identity variants also pass. The eight-candidate,
+ten-second-age case still misses its first 60-second deadline. Its trace shows
+each boundary preparing completed local candidates while the other offers the
+cross-component bridge.
+
+A separate diagnostic preserves that failed acceptance and continues the exact
+scenario for another 120 seconds, without resetting native state, traffic,
+maintenance cadence or limits. Neither a reciprocal bridge nor endpoint delivery
+appears by 180.016 seconds from the original exposure. Both boundaries attempt
+the bridge during this observation; every received request meets a completed
+local candidate. The trace has no omitted transitions, and the test still fails
+its original 60-second requirement. This is evidence of sustained admission
+starvation within the observed window, not proof of permanent failure. The
+reproduced stale-refresh collision is fixed; crowded admission fairness and
+physical-router validation remain open.
 
 Reproduce with `cargo test -p fips-relay --features measurements --test
 priced_paths merge_split::crowded::automatic::repeated::repeated_full_rosters_recover_paid_routes_without_candidate_departures
