@@ -5,6 +5,7 @@ const MAX_TRANSITIONS_PER_BOUNDARY: usize = 256;
 
 #[derive(Default)]
 pub(super) struct Ledger {
+    maintenance_phase_ms: u64,
     last: [Option<Value>; 2],
     previous_read: [Option<[u64; 2]>; 2],
     emitted: [usize; 2],
@@ -18,6 +19,13 @@ fn elapsed_ms(started: tokio::time::Instant) -> u64 {
 }
 
 impl Ledger {
+    pub(super) fn with_maintenance_phase(maintenance_phase_ms: u64) -> Self {
+        Self {
+            maintenance_phase_ms,
+            ..Self::default()
+        }
+    }
+
     pub(super) fn exposed(&mut self, started: tokio::time::Instant) {
         self.exposure_ms = Some(elapsed_ms(started));
     }
@@ -52,6 +60,7 @@ impl Ledger {
                 eprintln!(
                     "responsive timing transition: {}",
                     json!({"schema":1,"boundary":boundary,"phase":phase,
+                        "initial_maintenance_offset_ms":if boundary == 1 { self.maintenance_phase_ms } else { 0 },
                         "observation_ms":observed,
                         "previous_observation_ms":self.previous_read[boundary],
                         "bridge_exposure_ms":self.exposure_ms,"native_now_ms":now,
@@ -70,6 +79,7 @@ impl Ledger {
         eprintln!(
             "responsive timing summary: {}",
             json!({"schema":1,"observed_ms":elapsed_ms(started),
+                "maintenance_phase_ms":self.maintenance_phase_ms,
                 "bridge_exposure_ms":self.exposure_ms,"samples":self.samples,
                 "transitions_emitted":self.emitted,"transitions_omitted":self.omitted,
                 "complete":self.omitted == [0,0],"final_states":self.last})

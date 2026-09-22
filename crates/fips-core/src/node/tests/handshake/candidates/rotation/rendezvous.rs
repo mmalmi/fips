@@ -253,14 +253,21 @@ async fn send_round(
     sequence: u8,
     flows: &[(usize, usize)],
 ) {
+    send_round_with_tag(nodes, ids, &[sequence], flows).await;
+}
+
+async fn send_round_with_tag(
+    nodes: &mut [TestNode],
+    ids: &[PeerIdentity],
+    tag: &[u8],
+    flows: &[(usize, usize)],
+) {
     for &(source, destination) in flows {
-        send_endpoint_data_via_dataplane(
-            &mut nodes[source].node,
-            ids[destination],
-            vec![sequence, source as u8, destination as u8],
-        )
-        .await
-        .unwrap();
+        let mut payload = tag.to_vec();
+        payload.extend([source as u8, destination as u8]);
+        send_endpoint_data_via_dataplane(&mut nodes[source].node, ids[destination], payload)
+            .await
+            .unwrap();
     }
 }
 
@@ -271,18 +278,29 @@ fn receive_round(
     flows: &[(usize, usize)],
     received: &mut Vec<(usize, usize)>,
 ) {
+    receive_round_with_tag(endpoints, ids, &[sequence], flows, received);
+}
+
+fn receive_round_with_tag(
+    endpoints: &mut [EndpointDataIo],
+    ids: &[PeerIdentity],
+    tag: &[u8],
+    flows: &[(usize, usize)],
+    received: &mut Vec<(usize, usize)>,
+) {
     for (destination, endpoint) in endpoints.iter_mut().enumerate() {
         while let Ok(event) = endpoint.event_rx.try_recv() {
             let count = event.message_count();
             for message in event.messages {
                 let payload = message.payload.as_slice();
-                assert_eq!(payload.len(), 3);
+                assert_eq!(payload.len(), tag.len() + 2);
                 assert_eq!(
-                    payload[0], sequence,
+                    &payload[..tag.len()],
+                    tag,
                     "late packet from a prior observation turn"
                 );
-                let source = usize::from(payload[1]);
-                assert_eq!(usize::from(payload[2]), destination);
+                let source = usize::from(payload[tag.len()]);
+                assert_eq!(usize::from(payload[tag.len() + 1]), destination);
                 assert_eq!(message.source_peer.node_addr(), ids[source].node_addr());
                 assert!(flows.contains(&(source, destination)));
                 assert!(

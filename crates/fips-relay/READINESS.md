@@ -1979,6 +1979,26 @@ with `cargo test -p nvpn-fips-core --all-features --lib
 node::tests::handshake::candidates::rotation::rendezvous::responsive::
 -- --test-threads=1 --nocapture`, using the same development dependencies.
 
+The native fixture also covers a successful encounter, an actual simulated
+partition, and a second automatic encounter while all four local competitors per
+boundary stay available (2026-09-22). Re-exposure waits for both rosters to refill
+and the component trees to separate. The same identities, sessions, discovery
+cursors and retry state survive; both bridge owners must authenticate again and
+both payload directions must complete within the original 60-second window.
+Local traffic, peer/link/index caps and ordinary maintenance continue throughout.
+Shared payload checks use a longer sequence tag for this scenario without
+wrapping or weakening duplicate detection or receive-credit handling.
+
+With synchronized maintenance, the two native deliveries complete in 40.719 and
+40.203 seconds, separated by an 11.861-second split. A second case starts one
+component's maintenance half a second later, preserving one-second ticks and
+half-second local traffic rounds: delivery completes in 41.213 and 38.126 seconds
+with a 13.382-second split. Both timing ledgers report no omitted transitions.
+The original two responsive controls, four same-path rejoin controls and strict
+core lint pass. These fixed-identity native cases add repeated-contact coverage;
+they do not reproduce or resolve the larger paid scenario's second-encounter
+failure, nor establish a general rendezvous bound or physical mobility support.
+
 Reproduce with `cargo test -p fips-relay --features measurements --test
 priced_paths merge_split::crowded::automatic::repeated::repeated_full_rosters_recover_paid_routes_without_candidate_departures
 -- --exact --test-threads=1 --nocapture`, using the development dependencies in

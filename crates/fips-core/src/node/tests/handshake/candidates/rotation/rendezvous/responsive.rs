@@ -1,4 +1,4 @@
-//! Responsive local candidates compete with a permanently reachable bridge.
+//! Responsive local candidates compete through initial and repeated bridge contacts.
 use super::*;
 use crate::node::wire::Msg2Header;
 
@@ -32,7 +32,26 @@ fn offset_full_rosters_form_a_bridge_among_four_responsive_candidates() {
     run(4, Duration::from_secs(60));
 }
 
+#[test]
+fn repeated_full_rosters_recover_native_payload_without_explicit_dial() {
+    run_encounters(4, Duration::from_secs(60), true, Duration::ZERO);
+}
+
+#[test]
+fn repeated_full_rosters_recover_native_payload_with_staggered_maintenance() {
+    run_encounters(4, Duration::from_secs(60), true, Duration::from_millis(500));
+}
+
 fn run(candidates_per_boundary: usize, window: Duration) {
+    run_encounters(candidates_per_boundary, window, false, Duration::ZERO);
+}
+
+fn run_encounters(
+    candidates_per_boundary: usize,
+    window: Duration,
+    repeated: bool,
+    component_phase: Duration,
+) {
     run_large_stack_async_test("rotation-responsive-rendezvous", move || async move {
         let _guard = lock_large_network_test().await;
         let name = format!("rotation-responsive-rendezvous-{}", std::process::id());
@@ -67,9 +86,16 @@ fn run(candidates_per_boundary: usize, window: Duration) {
                 .await,
             );
         }
-        let result = AssertUnwindSafe(exercise(&mut nodes, &network, addresses, window))
-            .catch_unwind()
-            .await;
+        let result = AssertUnwindSafe(exercise(
+            &mut nodes,
+            &network,
+            addresses,
+            window,
+            repeated,
+            component_phase,
+        ))
+        .catch_unwind()
+        .await;
         cleanup_nodes(&mut nodes).await;
         unregister_sim_network(&name);
         if let Err(panic) = result {
@@ -80,7 +106,9 @@ fn run(candidates_per_boundary: usize, window: Duration) {
 
 struct Observation {
     started: tokio::time::Instant,
-    next_tick: tokio::time::Instant,
+    next_tick: [tokio::time::Instant; 2],
+    component_phase: Duration,
+    cohort_ticks: [usize; 2],
     bridge_msg1: [usize; 2],
     incumbents: [Option<(usize, LinkId, u64)>; 2],
     replacements: [usize; 2],
@@ -111,16 +139,20 @@ fn pending_attempts(node: &Node, ids: &[PeerIdentity]) -> Value {
 }
 
 impl Observation {
-    fn new() -> Self {
+    fn new(component_phase: Duration) -> Self {
         let started = tokio::time::Instant::now();
         Self {
             started,
-            next_tick: started,
+            next_tick: [started, started + component_phase],
+            component_phase,
+            cohort_ticks: [0; 2],
             bridge_msg1: [0; 2],
             incumbents: [None; 2],
             replacements: [0; 2],
             ticks: 0,
-            timing: timing::Ledger::default(),
+            timing: timing::Ledger::with_maintenance_phase(
+                component_phase.as_millis().try_into().unwrap(),
+            ),
         }
     }
 
@@ -165,12 +197,37 @@ impl Observation {
 
     async fn turn(&mut self, nodes: &mut [TestNode], ids: &[PeerIdentity]) {
         self.timing.observe(nodes, ids, self.started, "turn-entry");
-        if tokio::time::Instant::now() >= self.next_tick {
-            // One real maintenance/discovery turn per second, without catch-up
-            // bursts. All endpoints respond; no native request is held or lost.
-            self.next_tick = tokio::time::Instant::now() + Duration::from_secs(1);
+        let due = if self.component_phase.is_zero() {
+            // Preserve the original cold and repeated-control schedule/order.
+            let due = tokio::time::Instant::now() >= self.next_tick[0];
+            if due {
+                self.next_tick = [tokio::time::Instant::now() + Duration::from_secs(1); 2];
+            }
+            [due; 2]
+        } else {
+            // The actual fixture numbering alternates complete components:
+            // boundary, useful peer, and every responsive candidate. Offset
+            // only their initial timers; ordinary late ticks never catch up.
+            let now = tokio::time::Instant::now();
+            std::array::from_fn(|cohort| {
+                let due = now >= self.next_tick[cohort];
+                if due {
+                    self.next_tick[cohort] = now + Duration::from_secs(1);
+                }
+                due
+            })
+        };
+        if due.into_iter().any(|due| due) {
+            // Each node still performs one real maintenance turn per second.
+            // All endpoints respond; no native request is held or lost.
             self.ticks += 1;
-            for n in nodes.iter_mut() {
+            for (cohort, ready) in due.into_iter().enumerate() {
+                self.cohort_ticks[cohort] += usize::from(ready);
+            }
+            for (i, n) in nodes.iter_mut().enumerate() {
+                if !due[i % 2] {
+                    continue;
+                }
                 n.node.check_timeouts().await;
                 n.node.check_link_heartbeats().await;
                 let now = Node::now_ms();
@@ -290,17 +347,17 @@ impl Observation {
         nodes: &mut [TestNode],
         endpoints: &mut [EndpointDataIo],
         ids: &[PeerIdentity],
-        sequence: &mut u8,
+        sequence: &mut u16,
         flows: &[(usize, usize)],
     ) {
         let current = *sequence;
         *sequence = sequence.checked_add(1).expect("bounded unique payloads");
-        send_round(nodes, ids, current, flows).await;
+        send_round_with_tag(nodes, ids, &current.to_le_bytes(), flows).await;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         let mut received = Vec::new();
         loop {
             self.turn(nodes, ids).await;
-            receive_round(endpoints, ids, current, flows, &mut received);
+            receive_round_with_tag(endpoints, ids, &current.to_le_bytes(), flows, &mut received);
             if received.len() == flows.len() {
                 return;
             }
@@ -357,9 +414,11 @@ async fn exercise(
     network: &SimNetwork,
     addresses: &[&str],
     window: Duration,
+    repeated: bool,
+    component_phase: Duration,
 ) {
     let ids = identities(nodes);
-    let mut observation = Observation::new();
+    let mut observation = Observation::new(component_phase);
     connect(&mut observation, nodes, &ids, network, addresses, 0, 2).await;
     connect(&mut observation, nodes, &ids, network, addresses, 1, 3).await;
     let mut endpoints: Vec<_> = nodes
@@ -404,8 +463,8 @@ async fn exercise(
         .round(nodes, &mut endpoints, &ids, &mut sequence, &LOCAL_FLOWS)
         .await;
     useful_retained(nodes, &ids, &original);
-    // All local candidates and the bridge remain available through cleanup.
-    // Candidates have no configured peers, application load or forced departure.
+    // Local candidates remain available through every encounter and split.
+    // They have no configured peers, application load or forced departure.
     for candidate in 6..addresses.len() {
         network.set_link(
             addresses[candidate % 2],
@@ -413,71 +472,200 @@ async fn exercise(
             SimLink::default(),
         );
     }
-    network.set_link(addresses[0], addresses[1], SimLink::default());
-    let exposed = tokio::time::Instant::now();
-    observation.timing.exposed(observation.started);
-    snapshot(
-        nodes,
-        &ids,
-        observation.started,
-        "responsive-bridge-exposed",
-    );
-    let mut bridge_at = None;
-    while exposed.elapsed() < window {
-        observation
-            .round(nodes, &mut endpoints, &ids, &mut sequence, &LOCAL_FLOWS)
+    let mut previous_bridge: Option<Vec<(LinkId, u64)>> = None;
+    for encounter in 0..=usize::from(repeated) {
+        eprintln!(
+            "responsive encounter start: {}",
+            json!({"encounter":encounter,
+            "maintenance_phase_ms":component_phase.as_millis(),
+            "observed_ms":observation.started.elapsed().as_millis()})
+        );
+        if encounter > 0 {
+            partition_and_refill(
+                &mut observation,
+                nodes,
+                &mut endpoints,
+                &ids,
+                &mut sequence,
+                network,
+                addresses,
+            )
             .await;
-        useful_retained(nodes, &ids, &original);
-        if reciprocal_bridge(nodes, &ids) {
-            bridge_at = Some(exposed.elapsed());
-            observation
-                .round(
-                    nodes,
-                    &mut endpoints,
-                    &ids,
-                    &mut sequence,
-                    &[(0, 1), (1, 0)],
-                )
-                .await;
+            useful_retained(nodes, &ids, &original);
+        }
+        network.set_link(addresses[0], addresses[1], SimLink::default());
+        let exposed = tokio::time::Instant::now();
+        observation.timing.exposed(observation.started);
+        snapshot(
+            nodes,
+            &ids,
+            observation.started,
+            "responsive-bridge-exposed",
+        );
+        let before_requests = observation.bridge_msg1;
+        let mut bridge_at = None;
+        let mut delivery_at = None;
+        while exposed.elapsed() < window {
             observation
                 .round(nodes, &mut endpoints, &ids, &mut sequence, &LOCAL_FLOWS)
                 .await;
             useful_retained(nodes, &ids, &original);
-            assert!(reciprocal_bridge(nodes, &ids));
-            break;
+            if reciprocal_bridge(nodes, &ids) {
+                bridge_at = Some(exposed.elapsed());
+                let owners: Vec<_> = (0..2)
+                    .map(|i| {
+                        let peer = nodes[i].node.get_peer(ids[1 - i].node_addr()).unwrap();
+                        (peer.link_id(), peer.authenticated_at())
+                    })
+                    .collect();
+                if let Some(previous) = previous_bridge.as_ref() {
+                    for (old, new) in previous.iter().zip(&owners) {
+                        assert_ne!(
+                            old, new,
+                            "second encounter must authenticate new bridge owners"
+                        );
+                    }
+                }
+                previous_bridge = Some(owners);
+                observation
+                    .round(
+                        nodes,
+                        &mut endpoints,
+                        &ids,
+                        &mut sequence,
+                        &[(0, 1), (1, 0)],
+                    )
+                    .await;
+                observation
+                    .round(nodes, &mut endpoints, &ids, &mut sequence, &LOCAL_FLOWS)
+                    .await;
+                useful_retained(nodes, &ids, &original);
+                assert!(reciprocal_bridge(nodes, &ids));
+                delivery_at = Some(exposed.elapsed());
+                break;
+            }
+            // Continue processing between fresh half-second useful data rounds.
+            let next_round = tokio::time::Instant::now() + Duration::from_millis(500);
+            while tokio::time::Instant::now() < next_round && exposed.elapsed() < window {
+                observation.turn(nodes, &ids).await;
+                useful_retained(nodes, &ids, &original);
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
         }
-        // Continue processing between fresh half-second useful data rounds.
+        caps(nodes);
+        snapshot(
+            nodes,
+            &ids,
+            observation.started,
+            "responsive-final-before-cleanup",
+        );
+        observation
+            .timing
+            .observe(nodes, &ids, observation.started, "final");
+        observation.timing.summary(observation.started);
+        eprintln!(
+            "responsive rendezvous outcome: {}",
+            json!({"encounter":encounter,"maintenance_phase_ms":component_phase.as_millis(),
+                "cohort_maintenance_turns":observation.cohort_ticks,"candidates_per_boundary":(nodes.len()-4)/2,"window_ms":window.as_millis(),
+                "elapsed_ms":exposed.elapsed().as_millis(),"bridge_ms":bridge_at.map(|d|d.as_millis()),
+                "bridge_msg1":[observation.bridge_msg1[0]-before_requests[0],
+                    observation.bridge_msg1[1]-before_requests[1]],
+                "delivery_ms":delivery_at.map(|d|d.as_millis()),"incumbent_changes":observation.replacements,
+                "maintenance_turns":observation.ticks,"completed_payload_rounds":sequence})
+        );
+        assert!(
+            observation
+                .bridge_msg1
+                .iter()
+                .zip(before_requests)
+                .any(|(after, before)| *after > before),
+            "diagnostic premise: discovery must actually offer the exposed bridge"
+        );
+        assert!(
+            bridge_at.is_some_and(|elapsed| elapsed < window),
+            "encounter {encounter}: responsive local replacements must not prevent the offset rosters forming a reciprocal bridge within {window:?}"
+        );
+        if repeated {
+            assert!(
+                delivery_at.is_some_and(|elapsed| elapsed < window),
+                "encounter {encounter}: both native payload directions must complete within the same {window:?}"
+            );
+        }
+    }
+}
+
+/// Keep all ordinary state and local competitors alive across a physical split.
+/// Re-exposure requires two refilled rosters and genuinely separated local trees.
+async fn partition_and_refill(
+    observation: &mut Observation,
+    nodes: &mut [TestNode],
+    endpoints: &mut [EndpointDataIo],
+    ids: &[PeerIdentity],
+    sequence: &mut u16,
+    network: &SimNetwork,
+    addresses: &[&str],
+) {
+    let original: Vec<_> = (0..2).map(|i| original_owner(nodes, ids, i)).collect();
+    eprintln!(
+        "responsive split start: {}",
+        json!({"encounter":1,
+        "observed_ms":observation.started.elapsed().as_millis()})
+    );
+    network.set_link_up(addresses[0], addresses[1], false);
+    let started = tokio::time::Instant::now();
+    let window = Duration::from_secs(60);
+    loop {
+        observation
+            .round(nodes, endpoints, ids, sequence, &LOCAL_FLOWS)
+            .await;
+        useful_retained(nodes, ids, &original);
+        if refilled_components(nodes, ids) && started.elapsed() < window {
+            snapshot(nodes, ids, observation.started, "responsive-refilled-split");
+            eprintln!(
+                "responsive split outcome: {}",
+                json!({"encounter":1,
+                "elapsed_ms":started.elapsed().as_millis(),"refilled":true})
+            );
+            return;
+        }
+        if started.elapsed() >= window {
+            snapshot(nodes, ids, observation.started, "responsive-split-timeout");
+            observation.timing.summary(observation.started);
+            eprintln!(
+                "responsive split outcome: {}",
+                json!({"encounter":1,
+                "elapsed_ms":started.elapsed().as_millis(),"refilled":false})
+            );
+            panic!(
+                "physical split must evict the bridge and refill both rosters within {window:?}"
+            );
+        }
+        // Preserve the cold fixture's offered local traffic and maintenance cadence.
         let next_round = tokio::time::Instant::now() + Duration::from_millis(500);
-        while tokio::time::Instant::now() < next_round && exposed.elapsed() < window {
-            observation.turn(nodes, &ids).await;
-            useful_retained(nodes, &ids, &original);
+        while tokio::time::Instant::now() < next_round && started.elapsed() < window {
+            observation.turn(nodes, ids).await;
+            useful_retained(nodes, ids, &original);
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     }
-    caps(nodes);
-    snapshot(
-        nodes,
-        &ids,
-        observation.started,
-        "responsive-final-before-cleanup",
-    );
-    observation
-        .timing
-        .observe(nodes, &ids, observation.started, "final");
-    observation.timing.summary(observation.started);
-    eprintln!(
-        "responsive rendezvous outcome: {}",
-        json!({"candidates_per_boundary":(nodes.len()-4)/2,"window_ms":window.as_millis(),
-            "elapsed_ms":exposed.elapsed().as_millis(),"bridge_ms":bridge_at.map(|d|d.as_millis()),
-            "bridge_msg1":observation.bridge_msg1,"incumbent_changes":observation.replacements,
-            "maintenance_turns":observation.ticks,"completed_payload_rounds":sequence})
-    );
-    assert!(
-        observation.bridge_msg1.iter().sum::<usize>() > 0,
-        "diagnostic premise: discovery must actually offer the exposed bridge"
-    );
-    assert!(
-        bridge_at.is_some_and(|elapsed| elapsed < window),
-        "responsive local replacements must not prevent the offset rosters forming a reciprocal bridge within {window:?}"
-    );
+}
+
+fn refilled_components(nodes: &[TestNode], ids: &[PeerIdentity]) -> bool {
+    if nodes[0].node.tree_state().root() == nodes[1].node.tree_state().root() {
+        return false;
+    }
+    (0..2).all(|i| {
+        let node = &nodes[i].node;
+        let root = node.tree_state().root();
+        let local = |j: usize| j == i || j == i + 2 || (j >= 4 && j % 2 == i);
+        node.peer_count() == 2
+            && node.get_peer(ids[1 - i].node_addr()).is_none()
+            && node.get_peer(ids[i + 2].node_addr()).is_some()
+            && (4..nodes.len()).filter(|j| local(*j)).any(|j| {
+                node.get_peer(ids[j].node_addr())
+                    .is_some_and(|peer| peer.can_send())
+            })
+            && nodes[i + 2].node.tree_state().root() == root
+            && (0..nodes.len()).any(|j| local(j) && ids[j].node_addr() == root)
+    })
 }
