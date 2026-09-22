@@ -5,14 +5,16 @@ import json
 from collections import defaultdict
 from pathlib import Path
 from statistics import mean
+from costs import delta, node_costs, summarize_costs
+import prepaid_boundaries
 from native_counters import record as record_native_counters
-from service_carrier import record as record_service_carrier
+from service_carrier import measure_intervals, record as record_service_carrier
 from validation import (HARDWARE_SCHEDULE, HARDWARE_WORKLOADS, OS_IO_COUNTERS,
-                        PAYMENT_OPERATIONS, POLICIES, WORKLOADS, payment_counters, probe_delivery_loss,
+                        POLICIES, WORKLOADS, probe_delivery_loss,
                         post_gap_probes,
                         quiet_boundary, unsigned, validate_gap,
                         validate_hardware_schedule, validate_host_pair,
-                        validate_idle, validate_measurements, validate_probe)
+                        validate_idle, validate_probe)
 
 
 def paired(before, after):
@@ -21,57 +23,11 @@ def paired(before, after):
     return zip(before, after)
 
 
-def delta(before, after, key):
-    a, b = before[key], after[key]
-    if unsigned(b) < unsigned(a):
-        raise ValueError(f"missing or reset counter: {key}")
-    return b - a
-
-
 def summarize_node(before, after):
-    result = defaultdict(float)
-    a, b = before["measurements"], after["measurements"]
-    validate_measurements(a, b)
-    result["process_cpu_ms"] += delta(a, b, "process_cpu_ns") / 1e6
-    for name, prior in a["operations"].items():
-        current = b["operations"][name]
-        spans = delta(prior, current, "spans")
-        if delta(prior, current, "cpu_samples") != spans:
-            raise ValueError(f"missing thread CPU samples: {name}")
-        result["journal_writes"] += delta(prior, current, "journal_writes")
-        result["journal_bytes"] += delta(prior, current, "journal_bytes_written")
-        result["journal_syncs"] += delta(prior, current, "journal_syncs")
-        result["journal_commits"] += delta(prior, current, "journal_commits")
-        if name in PAYMENT_OPERATIONS:
-            result["payment_cpu_ms"] += delta(prior, current, "thread_cpu_ns") / 1e6
-            result["payment_journal_bytes"] += delta(prior, current, "journal_bytes_written")
-            result["payment_journal_writes"] += delta(prior, current, "journal_writes")
-            result["payment_journal_syncs"] += delta(prior, current, "journal_syncs")
-            result["payment_journal_commits"] += delta(prior, current, "journal_commits")
-            result["payment_spans"] += spans
-        if name == "payment_sign":
-            result["signs"] += spans
-        if name == "payment_usage":
-            result["usage_polls"] += spans
-        if name == "payment_update":
-            result["updates"] += spans
-    prior, current = payment_counters(before), payment_counters(after)
-    result["payment_record_bytes"] += delta(prior, current, "stream_bytes_sent")
-    result["payment_requests"] += delta(prior, current, "requests_started")
-    result["payment_received_bytes"] += delta(prior, current, "stream_bytes_received")
-    result["payment_received_requests"] += delta(prior, current, "requests_received")
-    peers_before = {p["npub"]: p for p in before["peers"] if p["connected"]}
-    peers_after = {p["npub"]: p for p in after["peers"] if p["connected"]}
-    if peers_before.keys() != peers_after.keys():
-        raise ValueError("connected topology changed during a matched run")
-    for identity, current in peers_after.items():
-        prior = peers_before[identity]
-        if prior["link_id"] != current["link_id"]:
-            raise ValueError("link counters changed epoch")
-        result["aggregate_link_bytes"] += delta(prior, current, "sent_bytes")
+    result = summarize_costs(node_costs(before, after))
     if after["last_error"]:
-        result["nodes_with_error"] += 1
-    return dict(result)
+        result["nodes_with_error"] = 1
+    return result
 
 
 def normalize_cpu(result, delivered_bytes):
@@ -83,7 +39,7 @@ def normalize_cpu(result, delivered_bytes):
         )
 
 
-def summarize(row, schema=2, delivery_rejections=None):
+def summarize(row, schema=2, delivery_rejections=None, observed_intervals=None):
     data = row["data"]
     counts = (HARDWARE_WORKLOADS if schema == 3 else WORKLOADS)[data["workload"]]
     if len(data["probes"]) != len(counts):
@@ -104,8 +60,9 @@ def summarize(row, schema=2, delivery_rejections=None):
         validate_hardware_schedule(data)
     if quiet_boundary(data["before"], schema) != quiet_boundary(data["after"], schema):
         raise ValueError("paying channels changed during measurement")
-    validate_gap(data["before_guard"], data["before"], schema)
-    validate_gap(data["after"], data["after_guard"], schema)
+    if observed_intervals is None:
+        validate_gap(data["before_guard"], data["before"], schema)
+        validate_gap(data["after"], data["after_guard"], schema)
     result = defaultdict(float)
     for key in ("submitted_packets", "unsubmitted_packets", "delivered_packets",
                 "delivered_bytes", "duplicates", "out_of_order_packets", "invalid_packets",
@@ -114,7 +71,9 @@ def summarize(row, schema=2, delivery_rejections=None):
     node_results = {}
     os_io = {key: 0 for key in OS_IO_COUNTERS}
     for before, after in paired(data["before"], data["after"]):
-        measured = summarize_node(before, after)
+        measured = (summarize_node(before, after) if observed_intervals is None else
+                    summarize_costs(observed_intervals['before_to_after']['nodes'][
+                        str(before['measurements']['process_id'])]))
         for key, value in measured.items():
             result[key] += value
         if schema == 3:
@@ -247,6 +206,7 @@ def validated_rows(rows, pilot, delivery_rejections=None):
     schema = metadata["schema"]
     if type(schema) is not int or schema not in (2, 3) or metadata["funded_directions"] != 2:
         raise ValueError("unsupported experiment schema or funding setup")
+    prepaid_usage = prepaid_boundaries.enabled(metadata)
     if type(pilot) is not bool:
         raise ValueError("pilot validation mode must be explicit")
     if pilot:
@@ -319,27 +279,41 @@ def validated_rows(rows, pilot, delivery_rejections=None):
         if [r["data"]["workload"] for r in trial_records] != ["idle", "bursty", "steady", "high_rate"]:
             raise ValueError("unmatched workload sequence")
         previous = None
+        observed_trial = []
         for row in trial_records:
             if row["max_delay_ms"] != delay:
                 raise ValueError("unmatched policy order")
-            result = summarize(row, schema, delivery_rejections)
+            carrier_intervals = (measure_intervals(row['data'], previous, True)
+                                 if prepaid_usage else None)
+            observed_intervals = (prepaid_boundaries.observe(row['data'], previous, carrier_intervals)
+                                  if prepaid_usage else None)
+            result = summarize(row, schema, delivery_rejections, observed_intervals)
             observations = post_gap_probes(row["data"], post_gap)
             if post_gap:
                 result["post_gap_probes"] = observations
             record_service_carrier(row["data"], result, previous, service_carrier,
-                                   native_ethernet=schema == 3)
-            if previous is not None:
+                                   native_ethernet=schema == 3,
+                                   interval_measurements=carrier_intervals)
+            if previous is not None and not prepaid_usage:
                 validate_gap(previous, row["data"]["before_guard"], schema)
             if schema == 3:
                 record_vmhwm(row["data"], result, previous)
                 record_native_counters(row["data"], result, previous, native_counters, log_filter)
+            if prepaid_usage:
+                result['observed_intervals'] = observed_intervals
             previous = row["data"]["after_guard"]
             trials.append({"trial":trial_id, "max_delay_ms":delay, "workload":row["data"]["workload"], **result})
             grouped[(row["data"]["workload"], delay)].append(result)
+            observed_trial.append(trials[-1])
+        if prepaid_usage:
+            prepaid_boundaries.finish_trial(observed_trial, trial_records[0]['data']['before_guard'],
+                                            trial_records[-1]['data']['after_guard'])
     return metadata, trials, grouped
 
 
 def markdown(metadata, grouped):
+    if prepaid_boundaries.enabled(metadata):
+        raise ValueError('prepaid boundary accounting requires JSON with interval and trial costs')
     if metadata.get("pilot") is True:
         raise ValueError("pilot output is not a policy comparison; use JSON")
     if metadata.get("post_gap_probes") is True:

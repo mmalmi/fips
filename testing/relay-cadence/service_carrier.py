@@ -77,31 +77,50 @@ def aggregate(nodes):
     return {'nodes': nodes, 'total': total}
 
 
-def record(data, result, previous, enabled, *, native_ethernet=False):
-    if type(enabled) is not bool:
-        raise ValueError('payment carrier measurement must be explicit')
+def boundaries(data, previous):
     boundaries = [(name, data[name]) for name in ('before_guard', 'before', 'after', 'after_guard')]
     if previous is not None:
         boundaries.insert(0, ('previous_after_guard', previous))
+    return boundaries
+
+
+def intervals(data, previous):
+    samples = boundaries(data, previous)
+    return [(f'{a}_to_{b}', before, after)
+            for (a, before), (b, after) in zip(samples, samples[1:])]
+
+
+def measure_intervals(data, previous, enabled, *, native_ethernet=False):
+    if type(enabled) is not bool:
+        raise ValueError('payment carrier measurement must be explicit')
     samples = []
     expected = None
-    for name, nodes in boundaries:
+    for name, nodes in boundaries(data, previous):
         identified = {identity(node): snapshot(node, enabled, native_ethernet=native_ethernet)
                       for node in nodes}
         if len(identified) != len(nodes) or (expected is not None and set(identified) != expected):
             raise ValueError('carrier node or process identities changed')
         expected = set(identified)
         samples.append((name, identified))
-    result['payment_service_carrier'] = None
     if not enabled:
-        return
-    measured = {'service_port': PAYMENT_PORT, 'physical_wire_bytes': None, 'outside_workload': {}}
+        return None
+    measured = {}
     for (a_name, before), (b_name, after) in zip(samples, samples[1:]):
-        value = aggregate({key[0]: difference(before[key], after[key]) for key in before})
-        if (a_name, b_name) == ('before', 'after'):
-            measured.update(value)
-        else:
-            measured['outside_workload'][f'{a_name}_to_{b_name}'] = value
+        measured[f'{a_name}_to_{b_name}'] = aggregate(
+            {key[0]: difference(before[key], after[key]) for key in before})
+    return measured
+
+
+def record(data, result, previous, enabled, *, native_ethernet=False, interval_measurements=None):
+    values = (measure_intervals(data, previous, enabled, native_ethernet=native_ethernet)
+              if interval_measurements is None else interval_measurements)
+    result['payment_service_carrier'] = None
+    if values is None:
+        return
+    measured = {'service_port': PAYMENT_PORT, 'physical_wire_bytes': None,
+                'outside_workload': {name: value for name, value in values.items()
+                                     if name != 'before_to_after'},
+                **values['before_to_after']}
     size = measured['total']['fips_payload_bytes'] + measured['total']['ethernet_framing_bytes']
     delivered = result['delivered_bytes']
     measured['bytes_per_delivered_byte'] = size / delivered if delivered else None

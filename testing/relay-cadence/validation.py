@@ -136,7 +136,7 @@ def payment_counters(node):
     return next(s["counters"] for s in services if s["service_port"] == PAYMENT_PORT)
 
 
-def validate_gap(previous, current, schema=2):
+def validate_gap(previous, current, schema=2, *, prepaid_usage=False):
     """No payment or durability work may escape into the unmeasured gap."""
     if quiet_boundary(previous, schema) != quiet_boundary(current, schema):
         raise ValueError("paying channels changed between workloads")
@@ -144,13 +144,22 @@ def validate_gap(previous, current, schema=2):
         if schema == 3:
             validate_host_pair(before, after)
         validate_measurements(before["measurements"], after["measurements"])
-        if before["payment_progress"] != after["payment_progress"]:
+        if prepaid_usage:
+            for channel, prior in before['payment_progress'].items():
+                latest = after['payment_progress'][channel]
+                if (prior.keys() != latest.keys()
+                        or any(prior[key] != latest[key] for key in prior if key != 'evidence_msat')
+                        or not prior['evidence_msat'] <= latest['evidence_msat'] <= prior['acknowledged_msat']):
+                    raise ValueError('gap usage is not covered by unchanged prior acknowledgment')
+        elif before["payment_progress"] != after["payment_progress"]:
             raise ValueError("payment evidence changed outside measurement windows")
         if payment_counters(before) != payment_counters(after):
             raise ValueError("payment traffic outside measurement windows")
         for name, counters in before["measurements"]["operations"].items():
             latest = after["measurements"]["operations"][name]
-            if name in PAYMENT_OPERATIONS and counters != latest:
+            payment_work = name in PAYMENT_OPERATIONS or (
+                prepaid_usage and name in ('payment_open', 'payment_stop'))
+            if payment_work and counters != latest:
                 raise ValueError("payment work outside measurement windows")
             for key in ("journal_writes", "journal_bytes_written", "journal_syncs", "journal_commits"):
                 if counters[key] != latest[key]:
