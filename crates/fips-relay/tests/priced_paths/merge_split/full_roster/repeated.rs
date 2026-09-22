@@ -156,6 +156,13 @@ async fn encounters(
                     .any(|p| p.node_addr == *root.peer.node_addr() && p.connected)
             );
         }
+        // Opt-in passive queries can perturb scheduling; retain ordinary runs
+        // as the acceptance evidence for latency and bounded admission.
+        let timing = if std::env::var("FIPS_CROWDED_TIMING").as_deref() == Ok("1") {
+            Some(timing::Timing::start(bench, "crowded").await)
+        } else {
+            None
+        };
         let network_before = bench.network.stats();
         let start = if profile.finite_contacts && encounter == 0 {
             // No bridge is established before these independently timed cuts.
@@ -185,7 +192,10 @@ async fn encounters(
         if !profile.finite_contacts || encounter > 0 {
             bench.network.set_link_up("2", "3", true);
         }
-        tokio::time::timeout_at(start + Duration::from_secs(60), async {
+        if let Some(timing) = &timing {
+            timing.mark(&format!("encounter_{encounter}_exposure_observed"));
+        }
+        let recovered = tokio::time::timeout_at(start + Duration::from_secs(60), async {
             let mut first_bridge_ms = None;
             loop {
                 if first_bridge_ms.is_none() && bridge_epochs(bench).await.is_some() {
@@ -201,6 +211,9 @@ async fn encounters(
             let bridge = bridge_epochs(bench).await.unwrap();
             first_bridge_ms.get_or_insert(start.elapsed().as_millis());
             eprintln!("repeated full-roster encounter={encounter} tree_ms={tree_ms}");
+            if let Some(timing) = &timing {
+                timing.mark("tree_converged");
+            }
             if let Some(previous) = previous_bridge {
                 for (old, new) in previous.into_iter().zip(bridge) {
                     assert_ne!(old, new, "the departed bridge must authenticate again");
@@ -210,7 +223,13 @@ async fn encounters(
             for (source, destination, tag) in
                 [(0, 5, 230 + encounter * 2), (5, 0, 231 + encounter * 2)]
             {
+                if let Some(timing) = &timing {
+                    timing.mark(&format!("traffic_{source}_{destination}_started"));
+                }
                 traffic(bench, source, destination, tag).await;
+                if let Some(timing) = &timing {
+                    timing.mark(&format!("traffic_{source}_{destination}_delivered"));
+                }
             }
             let delivery_ms = start.elapsed().as_millis();
             let paid = payments(bench).await;
@@ -228,8 +247,13 @@ async fn encounters(
                 start.elapsed().as_millis()
             );
         })
-        .await
-        .map_err(|_| "crowded encounter must resume delivery and all-hop credit within 60s")?;
+        .await;
+        if let Some(timing) = timing {
+            timing.mark("recovery_wait_finished");
+            timing.finish(recovered.is_ok()).await;
+        }
+        recovered
+            .map_err(|_| "crowded encounter must resume delivery and all-hop credit within 60s")?;
         let network = bench.network.stats().delta_since(&network_before);
         eprintln!(
             "repeated full-roster network: {}",

@@ -539,7 +539,7 @@ async fn exercise_brief(root_node: usize, seed: u64) {
     no_cross_delivery(&mut bench, 180).await;
     retain(&anchor, &accounts(&bench).await, true);
 
-    let timing = timing::Timing::start(&bench).await;
+    let timing = timing::Timing::start(&bench, "brief").await;
     let encounter_started = Instant::now();
     bench.network.set_link_up("2", "3", true);
     timing.mark("initial_link_up_observed");
@@ -569,7 +569,7 @@ async fn exercise_brief(root_node: usize, seed: u64) {
     let cold_up = interrupted(&bench, &mut observer, &anchor, false, Some(timing.origin)).await;
     let paid = recovered(&mut bench, &mut observer, 174).await;
     timing.mark("fresh_bidirectional_payloads_and_all_hop_credit_observed");
-    timing.finish().await;
+    timing.finish(true).await;
     eprintln!(
         "brief cold: elapsed from recorded link-up observation to fresh bidirectional payloads and all-hop credit {:.3}s (includes cohort/drain/polling)",
         cold_up.last_up().elapsed().as_secs_f64()

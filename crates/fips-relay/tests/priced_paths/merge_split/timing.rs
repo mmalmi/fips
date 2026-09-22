@@ -1,11 +1,12 @@
 //! Bounded passive observations; query spans are not exact protocol event times.
 use super::*;
 use serde_json::json;
-use std::path::PathBuf;
+use std::{io::Write as _, path::PathBuf};
 use tokio::{sync::oneshot, task::JoinSet};
 
 pub(super) struct Timing {
     pub(super) origin: Instant,
+    label: &'static str,
     stop: oneshot::Sender<()>,
     task: JoinSet<Trace>,
 }
@@ -16,8 +17,9 @@ struct Probe {
     controllers: Vec<Arc<Controller>>,
 }
 
-#[derive(Default)]
 struct Trace {
+    label: &'static str,
+    recovery_wait_ok: Option<bool>,
     last: BTreeMap<(usize, &'static str), (u64, Value)>,
     changes: Vec<Value>,
     rounds: u64,
@@ -40,6 +42,19 @@ fn select(value: Option<&Value>, fields: &[&str]) -> Value {
 }
 
 impl Trace {
+    fn new(label: &'static str) -> Self {
+        Self {
+            label,
+            recovery_wait_ok: None,
+            last: BTreeMap::new(),
+            changes: Vec::new(),
+            rounds: 0,
+            max_round_us: 0,
+            max_round_gap_us: 0,
+            last_round_us: None,
+        }
+    }
+
     fn record(&mut self, node: usize, kind: &'static str, span: [u64; 2], state: Value) {
         assert!(span[1] >= span[0]);
         let previous = self.last.insert((node, kind), (span[0], state.clone()));
@@ -59,20 +74,38 @@ impl Trace {
     }
 }
 
+// Emit even if an assertion unwinds or the owning encounter is cancelled.
+// The sampler owns this value until completion, so abort can print during cleanup.
+impl Drop for Trace {
+    fn drop(&mut self) {
+        let mut output = std::io::stderr().lock();
+        let _ = writeln!(
+            output,
+            "{} timing summary {}",
+            self.label,
+            json!({"rounds": self.rounds, "recovery_wait_ok": self.recovery_wait_ok,
+            "max_round_us": self.max_round_us, "max_round_gap_us": self.max_round_gap_us,
+            "changes": self.changes.len()})
+        );
+        for change in &self.changes {
+            let _ = writeln!(output, "{} timing observation {change}", self.label);
+        }
+    }
+}
+
 impl Probe {
     fn address(&self, node: usize) -> String {
         self.peers[node].node_addr().to_string()
     }
 
     fn node_index(&self, address: &Value) -> Option<usize> {
-        if address.is_null() {
-            return None;
-        }
-        Some(
-            (0..self.peers.len())
-                .find(|&i| address.as_str() == Some(self.address(i).as_str()))
-                .unwrap(),
-        )
+        (0..self.peers.len()).find(|&i| address.as_str() == Some(self.address(i).as_str()))
+    }
+
+    fn node_label(&self, address: &Value) -> Value {
+        // Crowded fixtures include identities outside the six paid-path nodes.
+        self.node_index(address)
+            .map_or_else(|| address.clone(), |i| json!(i))
     }
 
     async fn native(&self, node: usize, command: &str, origin: Instant) -> ([u64; 2], Value) {
@@ -103,16 +136,17 @@ impl Probe {
                 "neighbor"
             };
             trace.record(node, kind, span, state);
-            let announcements: Vec<_> = peers["peers"]
+            let mut announcements: Vec<_> = peers["peers"]
                 .as_array()
                 .unwrap()
                 .iter()
                 .map(|peer| {
-                    json!({"peer": self.node_index(&peer["node_addr"]),
+                    json!({"peer": self.node_label(&peer["node_addr"]),
                     "pending": peer["tree_announce_pending"],
                     "last_sent_ms": peer["last_tree_announce_sent_ms"]})
                 })
                 .collect();
+            announcements.sort_by_key(|peer| peer["peer"].to_string());
             trace.record(node, "announcements", span, json!(announcements));
 
             let (span, tree) = self.native(node, "show_tree", origin).await;
@@ -126,12 +160,12 @@ impl Probe {
                 "tree",
                 span,
                 json!({
-                    "root": self.node_index(&tree["root"]),
-                    "parent": self.node_index(&tree["parent"]),
+                    "root": self.node_label(&tree["root"]),
+                    "parent": self.node_label(&tree["parent"]),
                     "depth": tree["depth"], "sequence": tree["declaration_sequence"],
                     "coords": tree["my_coords"].as_array().unwrap().iter()
-                        .map(|address| self.node_index(address)).collect::<Vec<_>>(),
-                    "remote_root": remote_tree.and_then(|peer| self.node_index(&peer["root"])),
+                        .map(|address| self.node_label(address)).collect::<Vec<_>>(),
+                    "remote_root": remote_tree.map(|peer| self.node_label(&peer["root"])),
                     "remote_depth": remote_tree.map(|peer| &peer["depth"]),
                     "remote_sequence": remote_tree.map(|peer| &peer["declaration_sequence"]),
                 }),
@@ -145,6 +179,19 @@ impl Probe {
                     "forwarding": routing["forwarding"], "errors": routing["error_signals"],
                 }),
             );
+            let mut lookups: Vec<_> = routing["pending_lookups"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|lookup| {
+                    let mut state =
+                        select(Some(lookup), &["initiated_ms", "last_sent_ms", "attempt"]);
+                    state["target"] = self.node_label(&lookup["target"]);
+                    state
+                })
+                .collect();
+            lookups.sort_by_key(|lookup| lookup["target"].to_string());
+            trace.record(node, "lookups", span, json!(lookups));
             let (span, cache) = self.native(node, "show_cache", origin).await;
             let mut entries: Vec<_> = cache["entries"]
                 .as_array()
@@ -156,7 +203,7 @@ impl Probe {
                         json!({
                             "destination": destination,
                             "coords": entry["coords"].as_array().unwrap().iter()
-                                .map(|address| self.node_index(address)).collect::<Vec<_>>(),
+                                .map(|address| self.node_label(address)).collect::<Vec<_>>(),
                         })
                     })
                 })
@@ -236,14 +283,14 @@ impl Probe {
 }
 
 impl Timing {
-    pub(super) async fn start(bench: &Bench) -> Self {
+    pub(super) async fn start(bench: &Bench, label: &'static str) -> Self {
         let probe = Probe {
             root: bench.root.path().into(),
             peers: bench.peers.clone(),
             controllers: bench.controllers.clone(),
         };
         let origin = Instant::now();
-        let mut trace = Trace::default();
+        let mut trace = Trace::new(label);
         // Establish the disconnected baseline before the first returning contact.
         probe.sample(&mut trace, origin).await;
         for node in [2, 3] {
@@ -263,46 +310,46 @@ impl Timing {
             probe.sample(&mut trace, origin).await;
             trace
         });
-        Self { origin, stop, task }
+        Self {
+            origin,
+            label,
+            stop,
+            task,
+        }
     }
 
     pub(super) fn mark(&self, name: &str) {
         eprintln!(
-            "brief timing marker {}",
+            "{} timing marker {}",
+            self.label,
             json!({"name": name, "observed_us": micros(self.origin)})
         );
     }
 
-    pub(super) async fn finish(mut self) {
+    pub(super) async fn finish(mut self, recovered: bool) {
         let _ = self.stop.send(());
-        let trace = self.task.join_next().await.unwrap().unwrap();
-        for node in [2, 3] {
-            let bridge = &trace.last[&(node, "bridge")].1;
-            assert_eq!(bridge["connectivity"], "connected");
-            assert!(bridge["srtt_ms"].as_f64().is_some_and(|rtt| rtt > 0.0));
-        }
-        assert_eq!(
-            trace.last[&(2, "tree")].1["root"],
-            trace.last[&(3, "tree")].1["root"]
-        );
-        for node in [0, 5] {
-            assert_eq!(trace.last[&(node, "session")].1["state"], "established");
-            assert!(
-                !trace.last[&(node, "eligible_purchases")]
-                    .1
-                    .as_array()
-                    .unwrap()
-                    .is_empty()
+        let mut trace = self.task.join_next().await.unwrap().unwrap();
+        trace.recovery_wait_ok = Some(recovered);
+        if recovered {
+            for node in [2, 3] {
+                let bridge = &trace.last[&(node, "bridge")].1;
+                assert_eq!(bridge["connectivity"], "connected");
+                assert!(bridge["srtt_ms"].as_f64().is_some_and(|rtt| rtt > 0.0));
+            }
+            assert_eq!(
+                trace.last[&(2, "tree")].1["root"],
+                trace.last[&(3, "tree")].1["root"]
             );
-        }
-        eprintln!(
-            "brief timing summary {}",
-            json!({"rounds": trace.rounds,
-            "max_round_us": trace.max_round_us, "max_round_gap_us": trace.max_round_gap_us,
-            "changes": trace.changes.len()})
-        );
-        for change in trace.changes {
-            eprintln!("brief timing observation {change}");
+            for node in [0, 5] {
+                assert_eq!(trace.last[&(node, "session")].1["state"], "established");
+                assert!(
+                    !trace.last[&(node, "eligible_purchases")]
+                        .1
+                        .as_array()
+                        .unwrap()
+                        .is_empty()
+                );
+            }
         }
     }
 }

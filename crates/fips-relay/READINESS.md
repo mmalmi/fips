@@ -2478,6 +2478,49 @@ earlier crowded timeout, or prove radio mobility. The changes are local only.
 Reproduce with core filters `discovery::forwarding_contention::` and
 `sim_discovery::deferred_lookup_cancellation::`, and the paid filters above.
 
+#### Observing recovery after the tree connects
+
+The crowded fixture can reuse the bounded brief-contact observer with
+`FIPS_CROWDED_TIMING=1`. It preserves unfamiliar candidate identities and records
+pending lookup changes alongside coordinates, session epochs, watches and
+purchases. Packet submission spans distinguish a blocked application call from
+subsequent delivery delay. Query spans are conservative observation brackets,
+not exact protocol event times. The existing 4096-change/2048-round bounds remain;
+trace destruction also emits retained observations on Rust unwinding or task
+cancellation. `recovery_wait_ok` describes the deadline result, not whole-test
+success. Cancellation output can arrive during cleanup. Submission spans print
+only when the inner traffic operation returns; their absence after cancellation
+does not prove that no packets were offered.
+
+A seed-139 observation recovered its second tree at 40.249 seconds, but the first
+batch completed at 43.153 seconds. All twelve originals were submitted in
+0.344 seconds, with no call taking more than 44 microseconds. The source's missing
+destination coordinates appeared within the observed 43.020–43.217 second bracket;
+session epoch, watch and purchased allowance remained unchanged. Its original
+attempt-four lookup remained pending. This favors recovery through incoming
+coordinate-bearing traffic rather than that source accepting a lookup response,
+but does not identify the insertion event or prove a lost wake-up.
+
+Final validation keeps failures visible. Strict relay lint passes. With the
+optional crowded observer disabled, both crowded encounters complete and all
+1536 test sats are collected; the second takes 47.730 seconds, including three
+payload retries in the existing seven-second retry round. An instrumented run
+instead misses the unchanged 60-second second-encounter limit and still collects
+all 1536 test sats. Its boundary candidates had completed handshakes before the
+deadline, but no bridge was observed during acceptance. Bridge admission seen
+after the local traffic pump stopped is cleanup evidence only. The final brief
+suite passes the opposite-root case but fails the other case's first 400 ms cold
+window, after collecting all 3072 test sats. An earlier instrumented build passed
+both brief cases; these variable outcomes do not establish an improvement or a
+regression caused by observation. No routing, payment or admission policy changes
+in this diagnostic work, and none of these results proves mobile readiness.
+
+Reproduce observations with the existing `priced_paths` test and the
+`merge_split::crowded::automatic::repeated::finite::` filter, adding
+`FIPS_CROWDED_TIMING=1` and `--nocapture`; use the same dependency configuration as
+the preceding acceptance runs. Coordinate insertion and admission readiness need
+separate controlled native regressions before changing scheduling policy.
+
 #### Earlier crowded-admission experiments
 
 Earlier native population diagnostics exposed the admission-latency gap.

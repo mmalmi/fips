@@ -245,6 +245,7 @@ async fn traffic(bench: &mut Bench, source: usize, destination: usize, tag: u8) 
     let started = Instant::now();
     let mut received = [false; 12];
     let mut attempts = [0; 12];
+    let mut submissions = Vec::with_capacity(36);
     let mut next_attempt = started;
     let mut rounds = 0;
     let mut first_delivery_ms = None;
@@ -256,11 +257,18 @@ async fn traffic(bench: &mut Bench, source: usize, destination: usize, tag: u8) 
                 if retry_due && !found && *attempt < 3 {
                     let mut payload = vec![tag; 900];
                     payload[0] = i as u8;
+                    let submitted_us = started.elapsed().as_micros();
                     bench.nodes[source]
                         .send_datagram(bench.peers[destination], 44_740, 44_740, payload)
                         .await
                         .unwrap();
                     *attempt += 1;
+                    submissions.push([
+                        i as u128,
+                        *attempt as u128,
+                        submitted_us,
+                        started.elapsed().as_micros(),
+                    ]);
                     tokio::time::sleep(Duration::from_millis(30)).await;
                 }
             }
@@ -301,6 +309,14 @@ async fn traffic(bench: &mut Bench, source: usize, destination: usize, tag: u8) 
         }
     })
     .await;
+    eprintln!(
+        "mesh traffic submissions: {}",
+        serde_json::json!({
+            "source": source, "destination": destination, "tag": tag,
+            "columns": ["packet", "attempt", "started_us", "completed_us"],
+            "submissions": submissions,
+        })
+    );
     if result.is_err() {
         for (pair, usage) in hop_usage(bench).await {
             eprintln!(
