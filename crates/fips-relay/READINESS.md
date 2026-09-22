@@ -2136,6 +2136,30 @@ check pass. Sources, dependencies and tested locks remain unchanged during each
 gate, and the portable lock is restored. No physical router is changed or tested
 by this validation.
 
+Subsequent dense first-contact coverage adds two fixed identity assignments chosen
+before testing, retaining eight candidates, ten-second minimum age, two-peer
+boundaries, the same maintenance phase and 60-second encounter limits. Reversing
+the boundary roles delivers at 10.895 seconds cold and 20.128 seconds after
+re-exposure. Shifting the identity population misses its first encounter: four
+bridge requests in one direction and nine in the other all meet occupied remote
+admission slots. The repeat encounter cannot run because cold acceptance fails.
+The endpoints take turns among local candidates, but their bridge service windows
+do not overlap. Recent-use history cannot prioritize an edge that has never
+carried application traffic.
+
+An observation-only continuation preserves that failure and follows the same
+shifted population for another 120 seconds, without resetting state, submitting
+new demand, dialing explicitly or changing traffic cadence. It still observes no
+reciprocal bridge or delivery at 180.017 seconds from initial exposure. This is
+finite evidence of sustained missed opportunities, not proof of permanent
+starvation. The original 60-second assertion remains failed. Resource caps and
+the useful local traffic checks continue to hold. The isolated diagnostic source
+passes strict core lint and the 889-file size check; sources, dependencies and
+tested locks remain unchanged during the gates, and the portable lock is restored.
+These tests remain separate from the integrated runtime fix. The next bounded
+experiment compares one-way and reciprocal queued application demand under the
+same identities and limits; neither replaces background-discovery acceptance.
+
 #### Earlier crowded-admission experiments
 
 Earlier native population diagnostics exposed the admission-latency gap.
