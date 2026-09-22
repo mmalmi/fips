@@ -92,7 +92,7 @@ pub(super) async fn observe(
         .await
         .is_ok();
     }
-    caps(nodes);
+    caps_with_limits(nodes, observation.capacity);
     snapshot(
         nodes,
         ids,

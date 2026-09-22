@@ -514,7 +514,7 @@ impl Node {
     /// Set the maximum number of peers (authenticated).
     pub fn set_max_peers(&mut self, max: usize) {
         self.max_peers = max;
-        self.prune_neighbor_reconnections(Self::now_ms());
+        self.prune_neighbor_reconnections();
     }
 
     /// Returns false when starting more outbound work would exceed a resource

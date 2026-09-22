@@ -2050,13 +2050,15 @@ same development dependencies.
 
 #### Crowded-neighbor recovery
 
-Recently used discovery-only neighbors receive one expiring discovery
+Recently used discovery-only neighbors receive one bounded, one-use discovery
 preference after physical link-dead removal or committed idle replacement
 (2026-09-22). The history retains only
-identity and a frozen handshake-window expiry, stays within the current peer cap,
+identity and remembrance time, stays within the current peer cap,
 and spends the existing alternating demand turn. New advertisements, link
-maintenance and failed attempts cannot renew it. Admission still uses current
-addresses, ACLs, capacity and fresh Noise proof; no route or paid authority is
+maintenance and failed attempts cannot renew it. Unused history survives waiting
+behind other admissions until consumed or displaced by newer entries;
+the actual connection attempt keeps its normal frozen deadline. Admission still
+uses current addresses, ACLs, capacity and fresh Noise proof; no route or paid authority is
 retained by this history. Recent admitted transit and local application RX/TX
 qualify through their actual carrier. Local activity must be strictly newer than
 the current adjacency's admission, including at millisecond boundaries. This
@@ -2083,8 +2085,8 @@ the recently used neighbor with the extension. All four cases pass with real
 authentication, native heartbeat removal, ordinary refill, fresh re-admission and
 original routed payload delivery. Component controls cover direct and routed
 carriers, the exact activity cutoff, old/equal-admission observations, new-owner
-activity, frozen expiry, queue/report exclusions and unchanged active-peer
-protection. These controls do not claim wire replay rejection or exact
+activity, the original frozen expiry, queue/report exclusions and unchanged
+active-peer protection. These controls do not claim wire replay rejection or exact
 connection-generation binding.
 
 Validation of the initial link-dead-only history passes all 23 native discovery
@@ -2104,6 +2106,31 @@ Reproduce the native cases with `cargo test -p nvpn-fips-core --all-features
 --lib node::tests::sim_discovery::rotation::reconnection:: -- --test-threads=1`;
 use `node::peer_activity::tests::` for the local-activity controls, with the same
 development dependencies in [FUNDING-COSTS.md](FUNDING-COSTS.md).
+
+The original history expiry could spend a preference before discovery used it.
+A paid seed-139 trace misses the unchanged second-encounter 60-second deadline:
+one boundary's unused preference expires at 27.812 seconds, before its preferred
+outgoing turn at 29.814 seconds. It chooses a local foreign-root hint instead.
+A focused native regression independently reproduces the premature loss: genuine
+transit earns history, heartbeat cleanup removes both old owners, and the peer
+stays absent for 6.1 seconds, beyond the configured six-second history window,
+while maintenance and local traffic continue. No queued returning-peer demand
+forces the choice. The original policy selects an ordinary stranger; bounded
+one-use retention selects the returning peer, authenticates it and delivers the
+original routed payload. The new attempt still has its six-second deadline.
+
+With this change, all seven policy controls and 35 native discovery cases pass,
+including the nine reconnection cases. The policy controls retain oldest-entry
+eviction, single-use consumption, ordinary exploration and frozen attempt deadlines.
+Both the original staggered four-candidate fixture and a variant with the paid
+fixture's connection/link caps pass both encounters; peer caps and receive-index
+ownership checks remain unchanged. Strict core lint, formatting and source limits
+pass. The paid finite-contact compatibility run delivers at 15.823/21.298 seconds,
+credits every hop at 16.635/22.007 seconds and collects all 1,536 test sats. Its
+returning bridge is selected before the former expiry, so it is compatibility
+evidence, not a reproduction of the late-selection schedule. The earlier crowded
+timeout and cold short-contact failures remain open; this does not establish
+physical mobile-radio readiness.
 
 The initial link-dead-only policy misses the dense eight-candidate repeat
 encounter. Cold delivery takes 51.004 seconds, but neither boundary attempts the

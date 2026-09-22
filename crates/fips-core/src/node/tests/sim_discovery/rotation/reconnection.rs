@@ -24,6 +24,11 @@ fn recently_lost_transit_neighbor_precedes_ordinary_discovery() {
 }
 
 #[test]
+fn delayed_transit_neighbor_retains_one_discovery_preference() {
+    run_with_return_delay(Some((S, R)), false, Duration::from_millis(6_100));
+}
+
+#[test]
 fn heartbeat_only_lost_neighbor_keeps_ordinary_discovery_order() {
     run(None, false);
 }
@@ -59,6 +64,14 @@ fn heartbeat_only_replaced_neighbor_keeps_ordinary_discovery_order() {
 }
 
 fn run(before: Option<(usize, usize)>, replace_before_timeout: bool) {
+    run_with_return_delay(before, replace_before_timeout, Duration::ZERO);
+}
+
+fn run_with_return_delay(
+    before: Option<(usize, usize)>,
+    replace_before_timeout: bool,
+    return_delay: Duration,
+) {
     run_large_stack_async_test("discovered-neighbor-reconnection", move || async move {
         let _guard = spanning_tree::lock_large_network_test().await;
         let name = format!(
@@ -90,6 +103,7 @@ fn run(before: Option<(usize, usize)>, replace_before_timeout: bool) {
             &network,
             before,
             replace_before_timeout,
+            return_delay,
         ))
         .catch_unwind()
         .await;
@@ -351,6 +365,7 @@ async fn exercise(
     network: &SimNetwork,
     before: Option<(usize, usize)>,
     replace_before_timeout: bool,
+    return_delay: Duration,
 ) {
     network.set_link(NAMES[A], NAMES[S], SimLink::default());
     nodes[A].node.poll_transport_discovery().await;
@@ -460,6 +475,10 @@ async fn exercise(
         },
     )
     .await;
+    // A remembered the loss no later than this observed removal of both real
+    // owners. Delayed rediscovery must therefore outlive its original history
+    // window without changing any owned handshake's deadline.
+    let owners_removed = Instant::now();
     assert!(nodes[A].node.get_link(&original.0).is_none());
     assert!(
         !nodes[A]
@@ -499,6 +518,26 @@ async fn exercise(
         |_, _| Node::now_ms().saturating_sub(admitted) >= 1_100,
     )
     .await;
+    if !return_delay.is_zero() {
+        assert_eq!(
+            nodes[A].node.config.node.rate_limit.handshake_timeout_secs,
+            6
+        );
+        assert!(return_delay > Duration::from_secs(6));
+        wait_for(
+            nodes,
+            &mut traffic,
+            return_delay.as_secs() + 2,
+            "unconsumed returning neighbor remains absent past its history window",
+            |nodes, _| {
+                assert!(nodes[A].node.get_peer(&returning).is_none());
+                assert!(nodes[R].node.get_peer(nodes[A].node.node_addr()).is_none());
+                assert!(!nodes[A].node.peer_has_queued_application_demand(&returning));
+                owners_removed.elapsed() >= return_delay
+            },
+        )
+        .await;
+    }
     assert_eq!(nodes[A].node.peer_count(), 2);
     assert!(
         nodes[A]
@@ -538,6 +577,17 @@ async fn exercise(
         nodes[expected].node.node_addr(),
         "before={before:?}: admitted application use must select the returning peer ahead of an earlier ordinary stranger; heartbeat history must not"
     );
+    if !return_delay.is_zero() {
+        let started = nodes[A]
+            .node
+            .neighbor_rotation_started_at(&returning)
+            .unwrap();
+        assert_eq!(
+            nodes[A].node.neighbor_rotation_deadline(&returning),
+            Some(started + 6_000),
+            "retained identity preference must not lengthen the owned handshake"
+        );
+    }
     assert_eq!(owner(nodes, A, I), refill, "discovery alone cannot evict");
     caps(nodes);
     wait_for(

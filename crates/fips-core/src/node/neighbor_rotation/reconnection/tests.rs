@@ -36,13 +36,14 @@ fn preferred(node: &Node, peer: NodeAddr, at: u64) -> bool {
 }
 
 #[test]
-fn transit_before_detection_gets_a_frozen_window_without_route_or_retry_authority() {
+fn unused_transit_history_survives_waiting_without_route_or_retry_authority() {
     let mut node = node(2);
     let peer = add(&mut node, 1, Some(100));
     lose(&mut node, peer, 4_100);
-    assert!(preferred(&node, peer, 10_099));
+    // Time waiting behind other admissions must not spend the earned preference.
+    assert!(preferred(&node, peer, 10_100));
     node.config.node.rate_limit.handshake_timeout_secs = 60;
-    assert!(!preferred(&node, peer, 10_100));
+    assert!(preferred(&node, peer, 700_000));
     assert!(!node.retry_pending.contains_key(&peer));
     assert!(!node.source_routes.contains_key(&peer));
     assert_eq!(node.connection_count(), 0);
@@ -101,14 +102,21 @@ fn history_is_capped_pruned_and_requires_new_transit_after_reconnection() {
     assert!(!preferred(&node, peers[0], 104));
     assert!(preferred(&node, peers[1], 104));
     // A new authenticated owner starts without transit demand. Its later loss
-    // cannot inherit the first owner's activity, even before the old expiry.
+    // cannot inherit the first owner's activity or its unused preference.
     assert_eq!(add(&mut node, 2, None), peers[1]);
     lose(&mut node, peers[1], 104);
     assert!(!preferred(&node, peers[1], 104));
     let fresh = add(&mut node, 4, Some(7_000));
     lose(&mut node, fresh, 7_000);
-    assert_eq!(node.neighbor_rotation.lost_neighbors.len(), 1);
+    assert_eq!(node.neighbor_rotation.lost_neighbors.len(), 2);
+    assert!(preferred(&node, peers[2], 7_000));
     assert!(preferred(&node, fresh, 7_000));
+    let newest = add(&mut node, 5, Some(7_001));
+    lose(&mut node, newest, 7_001);
+    assert_eq!(node.neighbor_rotation.lost_neighbors.len(), 2);
+    assert!(!preferred(&node, peers[2], 7_001));
+    assert!(preferred(&node, fresh, 7_001));
+    assert!(preferred(&node, newest, 7_001));
 }
 
 #[test]
@@ -117,9 +125,12 @@ fn a_started_preference_is_consumed_and_ordinary_exploration_remains_owed() {
     let returning = add(&mut node, 1, Some(100));
     lose(&mut node, returning, 100);
     add(&mut node, 2, None);
-    assert!(preferred(&node, returning, 2_000));
+    assert!(preferred(&node, returning, 20_000));
     let cursor = node.neighbor_rotation.cursor;
-    assert!(node.begin_neighbor_rotation(returning, true, 2_000));
+    assert!(node.begin_neighbor_rotation(returning, true, 20_000));
+    assert_eq!(node.neighbor_rotation_deadline(&returning), Some(26_000));
+    node.config.node.rate_limit.handshake_timeout_secs = 60;
+    assert_eq!(node.neighbor_rotation_deadline(&returning), Some(26_000));
     assert!(node.neighbor_rotation.exploration_due);
     assert_eq!(node.neighbor_rotation.cursor, cursor);
     assert!(
@@ -131,7 +142,7 @@ fn a_started_preference_is_consumed_and_ordinary_exploration_remains_owed() {
     // Clearing a completed/failed attempt does not restore spent history.
     node.neighbor_rotation.attempt = None;
     node.neighbor_rotation.exploration_due = false;
-    assert!(!preferred(&node, returning, 3_000));
+    assert!(!preferred(&node, returning, 27_000));
 }
 
 #[test]

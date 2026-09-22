@@ -115,6 +115,9 @@ fn run_population_with_demand(
                     // unanswered-dial fixture's deliberately short timeout.
                     config.node.rate_limit = Config::new().node.rate_limit;
                     assert_eq!(config.node.rate_limit.handshake_timeout_secs, 30);
+                    let role = usize::from(i >= 2);
+                    config.node.limits.max_connections = population.capacity.connections[role];
+                    config.node.limits.max_links = population.capacity.links[role];
                     config.node.neighbor_rotation = (i < 2).then_some(NeighborRotationConfig {
                         idle_secs: population.idle_secs,
                         interval_secs: INTERVAL_SECS,
@@ -136,6 +139,7 @@ fn run_population_with_demand(
             json!({"candidates_per_boundary":population.candidates_per_boundary,
                 "first_scalar":population.first_scalar,"reversed":population.reversed,
                 "idle_secs":population.idle_secs,"interval_secs":INTERVAL_SECS,
+                "max_connections":population.capacity.connections,"max_links":population.capacity.links,
                 "identity_order":identity_order,"maintenance_phase_ms":component_phase.as_millis()})
         );
         let result = AssertUnwindSafe(exercise(
@@ -148,6 +152,7 @@ fn run_population_with_demand(
                 component_phase,
                 demand,
                 diagnose_miss: population.diagnose_miss,
+                capacity: population.capacity,
             },
         ))
         .catch_unwind()
@@ -161,6 +166,7 @@ fn run_population_with_demand(
 }
 
 struct Observation {
+    capacity: CapacityLimits,
     post_deadline_diagnostic: bool,
     started: tokio::time::Instant,
     next_tick: [tokio::time::Instant; 2],
@@ -197,9 +203,10 @@ fn pending_attempts(node: &Node, ids: &[PeerIdentity]) -> Value {
 }
 
 impl Observation {
-    fn new(component_phase: Duration) -> Self {
+    fn new(component_phase: Duration, capacity: CapacityLimits) -> Self {
         let started = tokio::time::Instant::now();
         Self {
+            capacity,
             post_deadline_diagnostic: false,
             started,
             next_tick: [started, started + component_phase],
@@ -435,7 +442,7 @@ impl Observation {
                 }
             }
         }
-        caps(nodes);
+        caps_with_limits(nodes, self.capacity);
         for original in &mut self.queued_originals {
             original.observe(nodes, ids, self.started);
         }
@@ -525,6 +532,7 @@ struct EncounterOptions {
     component_phase: Duration,
     demand: Option<queued::Demand>,
     diagnose_miss: bool,
+    capacity: CapacityLimits,
 }
 
 async fn exercise(
@@ -539,9 +547,10 @@ async fn exercise(
         component_phase,
         demand,
         diagnose_miss,
+        capacity,
     } = options;
     let ids = identities(nodes);
-    let mut observation = Observation::new(component_phase);
+    let mut observation = Observation::new(component_phase, capacity);
     connect(&mut observation, nodes, &ids, network, addresses, 0, 2).await;
     connect(&mut observation, nodes, &ids, network, addresses, 1, 3).await;
     let mut endpoints: Vec<_> = nodes
@@ -695,7 +704,7 @@ async fn exercise(
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         }
-        caps(nodes);
+        caps_with_limits(nodes, observation.capacity);
         snapshot(
             nodes,
             &ids,
@@ -712,6 +721,7 @@ async fn exercise(
         eprintln!(
             "responsive rendezvous outcome: {}",
             json!({"encounter":encounter,"maintenance_phase_ms":component_phase.as_millis(),
+                "max_connections":observation.capacity.connections,"max_links":observation.capacity.links,
                 "cohort_maintenance_turns":observation.cohort_ticks,"candidates_per_boundary":(nodes.len()-4)/2,"window_ms":window.as_millis(),
                 "elapsed_ms":exposed.elapsed().as_millis(),"bridge_ms":bridge_at.map(|d|d.as_millis()),
                 "bridge_msg1":[observation.bridge_msg1[0]-before_requests[0],

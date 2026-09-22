@@ -8,6 +8,7 @@ pub(super) struct Population {
     pub reversed: bool,
     pub idle_secs: u64,
     pub diagnose_miss: bool,
+    pub capacity: CapacityLimits,
 }
 
 impl Population {
@@ -18,6 +19,7 @@ impl Population {
             reversed: false,
             idle_secs: IDLE_SECS,
             diagnose_miss: false,
+            capacity: CapacityLimits::ORIGINAL,
         }
     }
 
@@ -47,6 +49,19 @@ fn repeated(population: Population) {
 #[test]
 fn repeated_full_rosters_with_eight_responsive_candidates() {
     repeated(Population::baseline(8));
+}
+
+#[test]
+fn repeated_full_rosters_with_paid_boundary_capacity() {
+    // Match the four-candidate staggered control; only allocation limits change.
+    // This is native admission coverage, not the paid topology or RX-loop fixture.
+    repeated(Population {
+        capacity: CapacityLimits {
+            connections: [4, 2],
+            links: [4, 2],
+        },
+        ..Population::baseline(4)
+    });
 }
 
 #[test]

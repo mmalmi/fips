@@ -259,18 +259,19 @@ death, or the configured normal link-dead timeout plus `idle_secs` for replaceme
 Link maintenance, FSP reports and unadmitted local queues do not qualify.
 Local data must be newer than the
 current neighbor admission, including at millisecond boundaries. This uses existing
-activity timestamps. This history contains only identities and frozen expiries,
-capped by `max_peers`. Each entry expires one handshake timeout
-after removal, regardless of later configuration changes. A current advertisement
+activity timestamps. This history contains only identities and remembrance times,
+capped by `max_peers`, with the oldest remembrance evicted first. Waiting behind
+other admissions does not consume or expire the preference. A current advertisement
 can use it on the same alternating demand turn above, and starting an outgoing
-full-roster rotation attempt consumes it. Replacement history is granted only to
-the exact validated victim; administrative removal and failed-promotion
+full-roster rotation attempt consumes it, even if the peer never answers. That
+attempt keeps its normal frozen handshake deadline. Replacement history is granted
+only to the exact validated victim; administrative removal and failed-promotion
 cleanup do not create history. A new connection needs new qualifying activity
 before another removal can renew the preference. Opaque transit and local
 application payloads can include higher-level control. Outbound local activity
-records an admitted send attempt, not successful delivery. Expired entries have
-no selection effect and are pruned on subsequent history insertion or peer-limit
-changes.
+records an admitted send attempt, not successful delivery. An old identity can
+therefore earn one bounded attempt if it returns before eviction; advertisements
+alone cannot renew the history or retain a carrier, route or spending authority.
 Reducing the peer limit immediately trims this history; a zero limit clears it.
 
 Historical routes are not consulted. The preference does not bypass ACLs,

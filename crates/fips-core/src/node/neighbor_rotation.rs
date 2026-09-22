@@ -23,6 +23,7 @@ pub(super) struct NeighborRotation {
     exploration_due: bool,
     outbound_turn_until_ms: u64,
     interrupted_outgoing: Option<InterruptedOutgoing>,
+    // One-use preferences, ordered for eviction by the time usefulness was remembered.
     lost_neighbors: std::collections::HashMap<NodeAddr, u64>,
 }
 
@@ -364,6 +365,7 @@ impl Node {
             return false;
         }
         if !self.rotation_has_pending_candidate() {
+            let exploration_due_before = self.neighbor_rotation.exploration_due;
             // The first incoming attempt still counts as service even when an
             // initial roster admission seeded the cursor. This timestamp never
             // resets after an attempt, so later incoming retries cannot rewind it.
@@ -412,7 +414,7 @@ impl Node {
             if outbound && !is_retry {
                 // Spend a preferred turn when it starts, even if no reply arrives.
                 // Only ordinary exploration advances the cursor.
-                let preferred = self.neighbor_rotation_prefers_demand(peer, now_ms)
+                let preferred = self.neighbor_rotation_prefers_demand(peer)
                     || self.neighbor_rotation_prefers_topology(connected_root_hint);
                 self.neighbor_rotation.exploration_due = preferred;
                 if !preferred {
@@ -425,9 +427,13 @@ impl Node {
             tracing::debug!(
                 node = %self.node_addr(), %peer, outbound, now_ms,
                 started_ms, deadline_ms, is_retry,
+                exploration_due_before,
                 exploration_due = self.neighbor_rotation.exploration_due,
                 cursor = ?self.neighbor_rotation.cursor,
-                reconnection_deadline_ms = ?self.neighbor_rotation.lost_neighbors.get(&peer),
+                queued_demand = self.peer_has_queued_application_demand(&peer),
+                reconnection_remembered_ms = ?self.neighbor_rotation.lost_neighbors.get(&peer),
+                connected_root_hint = ?connected_root_hint,
+                local_root = %self.tree_state().root(),
                 "Started neighbor rotation attempt"
             );
             if outbound {
@@ -601,14 +607,10 @@ impl Node {
             .map(|attempt| attempt.deadline_ms)
     }
 
-    fn neighbor_rotation_prefers_demand(&self, peer: NodeAddr, now_ms: u64) -> bool {
+    fn neighbor_rotation_prefers_demand(&self, peer: NodeAddr) -> bool {
         !self.neighbor_rotation.exploration_due
             && (self.peer_has_queued_application_demand(&peer)
-                || self
-                    .neighbor_rotation
-                    .lost_neighbors
-                    .get(&peer)
-                    .is_some_and(|deadline| now_ms < *deadline))
+                || self.neighbor_rotation.lost_neighbors.contains_key(&peer))
     }
 
     /// Retry a presently offered interrupted attempt first, then alternate
@@ -625,7 +627,7 @@ impl Node {
             .is_some_and(|retry| retry.peer == peer && now_ms < retry.deadline_ms);
         (
             !preferred,
-            !self.neighbor_rotation_prefers_demand(peer, now_ms),
+            !self.neighbor_rotation_prefers_demand(peer),
             self.neighbor_rotation_order(peer),
         )
     }

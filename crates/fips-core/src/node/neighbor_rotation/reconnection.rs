@@ -54,35 +54,28 @@ impl Node {
 
     /// The caller qualified the old owner before normal cleanup removed it.
     pub(super) fn remember_neighbor_reconnection(&mut self, peer: NodeAddr, now_ms: u64) {
-        // Freeze one existing handshake window. Advertisements, later config
-        // changes and failed attempts cannot extend it. No address is retained.
-        let deadline = now_ms.saturating_add(
-            self.config
-                .node
-                .rate_limit
-                .handshake_timeout_secs
-                .saturating_mul(1000),
-        );
-        self.neighbor_rotation.lost_neighbors.insert(peer, deadline);
-        tracing::debug!(node = %self.node_addr(), %peer, now_ms, deadline_ms = deadline,
+        // Waiting behind other admissions must not spend this one preference.
+        // Retain only identity and remembrance time within the existing peer cap;
+        // a started outbound attempt consumes it and keeps its normal deadline.
+        self.neighbor_rotation.lost_neighbors.insert(peer, now_ms);
+        tracing::debug!(node = %self.node_addr(), %peer, remembered_ms = now_ms,
             "Remembered recently used neighbor for reconnection");
-        self.prune_neighbor_reconnections(now_ms);
+        self.prune_neighbor_reconnections();
     }
 
     pub(in crate::node) fn forget_neighbor_reconnection(&mut self, peer: &NodeAddr) {
-        if let Some(deadline_ms) = self.neighbor_rotation.lost_neighbors.remove(peer) {
-            tracing::debug!(node = %self.node_addr(), %peer, deadline_ms,
+        if let Some(remembered_ms) = self.neighbor_rotation.lost_neighbors.remove(peer) {
+            tracing::debug!(node = %self.node_addr(), %peer, remembered_ms,
                 "Consumed neighbor reconnection preference");
         }
     }
 
-    pub(in crate::node) fn prune_neighbor_reconnections(&mut self, now_ms: u64) {
+    pub(in crate::node) fn prune_neighbor_reconnections(&mut self) {
         let history = &mut self.neighbor_rotation.lost_neighbors;
-        history.retain(|_, deadline| now_ms < *deadline);
         while history.len() > self.max_peers {
             let oldest = *history
                 .iter()
-                .min_by_key(|(identity, deadline)| (**deadline, **identity))
+                .min_by_key(|(identity, remembered_ms)| (**remembered_ms, **identity))
                 .unwrap()
                 .0;
             history.remove(&oldest);

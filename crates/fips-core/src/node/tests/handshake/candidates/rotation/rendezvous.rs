@@ -126,13 +126,37 @@ async fn dial(nodes: &mut [TestNode], source: usize, destination: usize) {
         .unwrap();
 }
 
+#[derive(Clone, Copy)]
+struct CapacityLimits {
+    // Boundary nodes first, then every non-boundary node.
+    connections: [usize; 2],
+    links: [usize; 2],
+}
+
+impl CapacityLimits {
+    const ORIGINAL: Self = Self {
+        connections: [1, 1],
+        links: [3, 2],
+    };
+}
+
 fn caps(nodes: &[TestNode]) {
+    caps_with_limits(nodes, CapacityLimits::ORIGINAL);
+}
+
+fn caps_with_limits(nodes: &[TestNode], limits: CapacityLimits) {
     for (i, n) in nodes.iter().enumerate() {
         let peers = if i < 2 { 2 } else { 1 };
-        let links = if i < 2 { 3 } else { 2 };
+        let role = usize::from(i >= 2);
         assert!(n.node.peer_count() <= peers, "hard peer cap at {i}");
-        assert!(n.node.connection_count() <= 1, "hard pending cap at {i}");
-        assert!(n.node.link_count() <= links, "hard link cap at {i}");
+        assert!(
+            n.node.connection_count() <= limits.connections[role],
+            "hard pending cap at {i}"
+        );
+        assert!(
+            n.node.link_count() <= limits.links[role],
+            "hard link cap at {i}"
+        );
         let (owned, evidence) = index_owners(nodes, i);
         let allocated = owned
             .iter()
