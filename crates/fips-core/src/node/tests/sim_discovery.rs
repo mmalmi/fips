@@ -3,6 +3,7 @@ use crate::config::{SimTransportConfig, TransportInstances};
 use crate::{SimLink, SimNetwork, register_sim_network, unregister_sim_network};
 use spanning_tree::{TestNode, cleanup_nodes, drain_all_packets};
 
+mod lookup_deadline_cancellation;
 mod rotation;
 
 async fn discovering_node(network: &str, addr: &str, auto_connect: bool) -> TestNode {

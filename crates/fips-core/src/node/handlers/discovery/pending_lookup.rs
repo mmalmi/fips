@@ -21,6 +21,16 @@ pub struct PendingLookup {
 }
 
 impl PendingLookup {
+    pub(crate) fn deadline_ms(&self, timeouts_secs: &[u64]) -> u64 {
+        let index = (self.attempt as usize).saturating_sub(1);
+        let timeout_ms = timeouts_secs
+            .get(index)
+            .copied()
+            .unwrap_or(0)
+            .saturating_mul(1000);
+        self.last_sent_ms.saturating_add(timeout_ms)
+    }
+
     pub(crate) fn awaiting_first_request(&self) -> bool {
         self.origin_request_ids.is_empty()
     }
@@ -166,7 +176,6 @@ impl PendingDiscoveryLookups {
             .is_some_and(|entry| entry.path_recovery)
     }
 
-    #[cfg(test)]
     pub(crate) fn get(&self, dest: &NodeAddr) -> Option<&PendingLookup> {
         self.entries.get(dest)
     }
