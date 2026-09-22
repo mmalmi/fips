@@ -175,6 +175,12 @@ impl Node {
         retry.transferred_to = None;
         retry.started_ms = now_ms;
         retry.deadline_ms = now_ms.saturating_add(duration_ms);
+        tracing::debug!(
+            node = %self.identity.node_addr(), promoted = %peer,
+            retry_peer = %retry.peer, started_ms = retry.started_ms,
+            deadline_ms = retry.deadline_ms,
+            "Earned interrupted neighbor retry after incoming promotion"
+        );
     }
 
     pub(in crate::node) fn neighbor_rotation_started_at(&self, peer: &NodeAddr) -> Option<u64> {

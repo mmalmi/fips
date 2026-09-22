@@ -422,6 +422,14 @@ impl Node {
                 // Only the first inbound attempt can seed ordinary exploration.
                 self.neighbor_rotation.cursor = Some(peer);
             }
+            tracing::debug!(
+                node = %self.node_addr(), %peer, outbound, now_ms,
+                started_ms, deadline_ms, is_retry,
+                exploration_due = self.neighbor_rotation.exploration_due,
+                cursor = ?self.neighbor_rotation.cursor,
+                reconnection_deadline_ms = ?self.neighbor_rotation.lost_neighbors.get(&peer),
+                "Started neighbor rotation attempt"
+            );
             if outbound {
                 self.forget_neighbor_reconnection(&peer);
             }

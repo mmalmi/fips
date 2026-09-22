@@ -64,11 +64,16 @@ impl Node {
                 .saturating_mul(1000),
         );
         self.neighbor_rotation.lost_neighbors.insert(peer, deadline);
+        tracing::debug!(node = %self.node_addr(), %peer, now_ms, deadline_ms = deadline,
+            "Remembered recently used neighbor for reconnection");
         self.prune_neighbor_reconnections(now_ms);
     }
 
     pub(in crate::node) fn forget_neighbor_reconnection(&mut self, peer: &NodeAddr) {
-        self.neighbor_rotation.lost_neighbors.remove(peer);
+        if let Some(deadline_ms) = self.neighbor_rotation.lost_neighbors.remove(peer) {
+            tracing::debug!(node = %self.node_addr(), %peer, deadline_ms,
+                "Consumed neighbor reconnection preference");
+        }
     }
 
     pub(in crate::node) fn prune_neighbor_reconnections(&mut self, now_ms: u64) {

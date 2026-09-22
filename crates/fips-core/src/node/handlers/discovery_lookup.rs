@@ -225,6 +225,7 @@ impl Node {
             }
             self.stats_mut().discovery.req_deduplicated += 1;
             debug!(
+                node = %self.node_addr(),
                 target_node = %self.peer_display_name(dest),
                 "Discovery lookup deduplicated, already pending"
             );
@@ -233,6 +234,7 @@ impl Node {
 
         if admission.queue_full() {
             debug!(
+                node = %self.node_addr(),
                 target_node = %self.peer_display_name(dest),
                 max_pending,
                 "Discovery lookup suppressed, pending lookup queue full"
@@ -249,6 +251,7 @@ impl Node {
         if self.discovery_backoff.is_suppressed(dest) {
             self.stats_mut().discovery.req_backoff_suppressed += 1;
             debug!(
+                node = %self.node_addr(),
                 target_node = %self.peer_display_name(dest),
                 failures = self.discovery_backoff.failure_count(dest),
                 "Discovery lookup suppressed by backoff"
@@ -279,6 +282,7 @@ impl Node {
                 self.discovery_backoff.record_failure(dest);
             }
             debug!(
+                node = %self.node_addr(),
                 target_node = %self.peer_display_name(dest),
                 queued_lookup,
                 "Discovery has no target in any peer bloom filter"
@@ -302,6 +306,7 @@ impl Node {
                 self.pending_lookups.remove(dest);
             }
             debug!(
+                node = %self.node_addr(),
                 target_node = %self.peer_display_name(dest),
                 "Discovery deferred, no eligible lookup peers"
             );
@@ -316,6 +321,7 @@ impl Node {
     pub(in crate::node) async fn maybe_initiate_path_recovery_lookup(&mut self, dest: &NodeAddr) {
         if !self.has_sendable_fallback_lookup_peer(dest) {
             debug!(
+                node = %self.node_addr(),
                 target_node = %self.peer_display_name(dest),
                 "Skipping path-recovery lookup, no sendable fallback peer"
             );
@@ -427,6 +433,7 @@ impl Node {
             }
             self.note_pending_lookup_deadline(&dest);
             debug!(
+                node = %self.node_addr(),
                 target_node = %self.peer_display_name(&dest),
                 transit = %self.peer_display_name(&peer_addr),
                 "Retried degraded route lookup after transit authenticated"
@@ -452,6 +459,7 @@ impl Node {
 
         if !self.has_sendable_fallback_lookup_peer(dest) {
             debug!(
+                node = %self.node_addr(),
                 target_node = %self.peer_display_name(dest),
                 "Skipping direct-path fallback lookup, no sendable fallback peer"
             );
@@ -470,6 +478,7 @@ impl Node {
                 match self.initiate_session(*dest, pubkey).await {
                     Ok(()) => {
                         debug!(
+                            node = %self.node_addr(),
                             target_node = %self.peer_display_name(dest),
                             "Warmed fallback session after suspect direct path"
                         );
@@ -479,12 +488,14 @@ impl Node {
                         if node_addr == *dest && reason == "no route to destination" =>
                     {
                         debug!(
+                            node = %self.node_addr(),
                             target_node = %self.peer_display_name(dest),
                             "Fallback route disappeared while warming direct-path fallback session"
                         );
                     }
                     Err(error) => {
                         debug!(
+                            node = %self.node_addr(),
                             target_node = %self.peer_display_name(dest),
                             error = %error,
                             "Failed to warm fallback session after suspect direct path"
@@ -493,6 +504,7 @@ impl Node {
                 }
             } else {
                 debug!(
+                    node = %self.node_addr(),
                     target_node = %self.peer_display_name(dest),
                     "Cannot warm fallback session after suspect direct path without cached identity"
                 );
@@ -552,6 +564,7 @@ impl Node {
         for target in to_session_handshake {
             self.pending_lookups.remove(&target);
             debug!(
+                node = %self.node_addr(),
                 target_node = %self.peer_display_name(&target),
                 "Discovery lookup exhausted while FSP session retains queued traffic"
             );
@@ -568,6 +581,7 @@ impl Node {
                 let sent = self.initiate_lookup(&target, ttl).await;
                 if sent > 0 {
                     info!(
+                        node = %self.node_addr(),
                         target_node = %self.peer_display_name(&target),
                         attempt = attempt,
                         "Discovery retry sent"
@@ -589,6 +603,7 @@ impl Node {
             let pkt_count = queued.tun_packets().map_or(0, |p| p.len());
             let endpoint_count = queued.endpoint_data().map_or(0, |p| p.len());
             info!(
+                node = %self.node_addr(),
                 target_node = %self.peer_display_name(&addr),
                 queued_packets = pkt_count,
                 queued_endpoint_payloads = endpoint_count,
