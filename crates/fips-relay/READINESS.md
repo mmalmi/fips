@@ -2090,7 +2090,9 @@ trace shows distinct ordinary candidates receiving their ten-second minimum age,
 with the previously serviced bridge later in the sweep; it shows no cursor rewind
 or different-identity takeover. This case supplies cross-component application
 traffic only after bridge restoration. The original failing acceptance and
-resource bounds are preserved.
+resource bounds are preserved. All six other fixed population variants pass both
+encounters under their original limits. These finite runs establish compatibility;
+some encounters take longer than before, so no general speedup is claimed.
 
 Extended native population diagnostics show that the admission-latency gap remains.
 They preserve the two-peer boundary cap, one pending candidate, original local
