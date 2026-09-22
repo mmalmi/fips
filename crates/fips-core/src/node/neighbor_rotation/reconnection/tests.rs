@@ -135,7 +135,7 @@ fn a_started_preference_is_consumed_and_ordinary_exploration_remains_owed() {
 }
 
 #[test]
-fn administrative_and_elective_removal_never_create_a_preference() {
+fn direct_removal_without_committed_rotation_never_creates_a_preference() {
     let mut node = node(2);
     let administrative = add(&mut node, 1, Some(100));
     let elective = add(&mut node, 2, Some(100));

@@ -1,5 +1,5 @@
-//! Rediscovery after genuine link death distinguishes admitted application use
-//! from link maintenance. Neither case installs a source binding or a peer roster.
+//! Rediscovery after link death or committed replacement distinguishes admitted
+//! application use from link maintenance, without a source binding or peer roster.
 use super::*;
 use crate::node::EndpointDataIo;
 use crate::node::tests::session::{run_large_stack_async_test, send_endpoint_data_via_dataplane};
@@ -133,9 +133,12 @@ fn identity(nodes: &[TestNode], index: usize) -> PeerIdentity {
 }
 
 fn owner(nodes: &[TestNode], local: usize, remote: usize) -> Owner {
-    let peer = nodes[local]
-        .node
-        .get_peer(nodes[remote].node.node_addr())
+    node_owner(&nodes[local].node, nodes[remote].node.node_addr())
+}
+
+fn node_owner(node: &Node, remote: &NodeAddr) -> Owner {
+    let peer = node
+        .get_peer(remote)
         .expect("real authenticated owner must remain present");
     (
         peer.link_id(),
@@ -196,6 +199,7 @@ struct Traffic {
     before: Option<(usize, usize)>,
     after_peer: Option<usize>,
     after_received: bool,
+    replacement_guard: Option<(NodeAddr, Owner)>,
     next_payload: Instant,
     next_tick: Instant,
 }
@@ -216,6 +220,7 @@ impl Traffic {
             before,
             after_peer: None,
             after_received: false,
+            replacement_guard: None,
             next_payload: Instant::now(),
             next_tick: Instant::now(),
         }
@@ -237,9 +242,27 @@ impl Traffic {
         // be inspected before its remote processes Msg1.
         if Instant::now() >= self.next_tick {
             self.next_tick = Instant::now() + Duration::from_secs(1);
-            for node in nodes.iter_mut() {
+            let guarded = self
+                .replacement_guard
+                .filter(|_| nodes[A].node.get_peer(nodes[I].node.node_addr()).is_none());
+            let check = |node: &Node| {
+                if let Some((peer, expected)) = guarded {
+                    assert_eq!(
+                        node_owner(node, &peer),
+                        expected,
+                        "timeout maintenance must retain the original replacement victim"
+                    );
+                }
+            };
+            for (index, node) in nodes.iter_mut().enumerate() {
+                if index == A {
+                    check(&node.node);
+                }
                 node.node.check_timeouts().await;
                 node.node.check_link_heartbeats().await;
+                if index == A {
+                    check(&node.node);
+                }
                 let now = Node::now_ms();
                 node.node.resend_pending_handshakes(now).await;
                 node.node.resend_pending_rekeys(now).await;
@@ -395,6 +418,7 @@ async fn exercise(
     // a real candidate commits before the remote's native link-death cleanup.
     network.set_link_up(NAMES[A], NAMES[R], false);
     if replace_before_timeout {
+        traffic.replacement_guard = Some((returning, original));
         wait_for(
             nodes,
             &mut traffic,
@@ -423,6 +447,7 @@ async fn exercise(
             original.2,
             "the remote still owns its original adjacency before heartbeat expiry"
         );
+        traffic.replacement_guard = None;
     }
     wait_for(
         nodes,
