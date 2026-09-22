@@ -51,6 +51,11 @@ mod cold {
     }
 
     #[test]
+    fn reverse_one_way_original() {
+        run(&[1]);
+    }
+
+    #[test]
     fn reciprocal_originals() {
         run(&[0, 1]);
     }
