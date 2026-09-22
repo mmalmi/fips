@@ -391,6 +391,10 @@ pub struct BloomConfig {
     /// Debounce interval for filter updates in ms (`node.bloom.update_debounce_ms`).
     #[serde(default = "BloomConfig::default_update_debounce_ms")]
     pub update_debounce_ms: u64,
+    /// Refresh unchanged filters to repair datagram loss. Zero disables periodic
+    /// refresh; content changes retain the update debounce.
+    #[serde(default = "BloomConfig::default_announce_refresh_interval_secs")]
+    pub announce_refresh_interval_secs: u64,
     /// Antipoison cap: reject inbound FilterAnnounce whose FPR exceeds
     /// this value (`node.bloom.max_inbound_fpr`). Valid range `(0.0, 1.0)`.
     /// Default `0.20` ≈ fill 0.7248 at k=5 ≈ ~2,114 entries on the 1 KB
@@ -406,6 +410,7 @@ impl Default for BloomConfig {
     fn default() -> Self {
         Self {
             update_debounce_ms: Self::default_update_debounce_ms(),
+            announce_refresh_interval_secs: Self::default_announce_refresh_interval_secs(),
             max_inbound_fpr: Self::default_max_inbound_fpr(),
         }
     }
@@ -414,6 +419,9 @@ impl Default for BloomConfig {
 impl BloomConfig {
     fn default_update_debounce_ms() -> u64 {
         500
+    }
+    fn default_announce_refresh_interval_secs() -> u64 {
+        5
     }
     fn default_max_inbound_fpr() -> f64 {
         0.20

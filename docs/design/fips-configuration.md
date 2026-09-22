@@ -493,10 +493,26 @@ calculations, not CPU measurements or a recovery-time guarantee.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `node.bloom.update_debounce_ms` | u64 | `500` | Debounce interval for filter update propagation |
+| `node.bloom.announce_refresh_interval_secs` | u64 | `5` | Refresh unchanged filters to repair datagram loss; `0` disables periodic refresh. Content changes still use the update debounce. |
 | `node.bloom.max_inbound_fpr` | f64 | `0.20` | Antipoison cap: reject inbound `FilterAnnounce` frames whose derived false-positive rate exceeds this value. Valid range `(0.0, 1.0)`. The default accepts legitimate aggregates of roughly 2,114 entries on the fixed 1 KB, k=5 filter while saturated or poisoned filters remain rejected. |
 
 Bloom filter size (1 KB), hash count (5), and size classes are protocol
 constants and not configurable.
+
+Refresh uses ordinary maintenance and the existing per-peer successful-send
+history. It sends the current filter with a fresh sequence, respecting the same
+debounce as content changes. Receiving unchanged content does not cascade more
+updates. A lost update gets another send opportunity after the refresh interval
+plus maintenance/debounce delay; repeated loss, cancellation or slow maintenance
+can delay recovery further. This is not a delivery-time guarantee.
+
+Each v1 FilterAnnounce contains 1,024 filter bytes and 11 message bytes: 1,035
+bytes of link plaintext. The 16-byte FMP header, 4-byte timestamp and 16-byte
+authentication tag bring this to 1,071 FMP bytes. At five seconds this is 214.2
+bytes/second per outgoing peer, or 27,417.6 bytes/second for 128 peers. These
+encoded-size calculations exclude transport/radio overhead, MMP and content
+changes; they are not measured CPU or throughput results. Increase the interval
+or disable refresh when idle bandwidth matters more than loss-repair latency.
 
 ### ECN Signaling (`node.ecn.*`)
 
@@ -1047,6 +1063,7 @@ node:
     learned_fallback_explore_interval: 16 # try coord/bloom/tree route every N learned sends (0 = disabled)
   bloom:
     update_debounce_ms: 500
+    announce_refresh_interval_secs: 5 # unchanged-filter loss repair (0 = disabled)
     max_inbound_fpr: 0.20              # antipoison cap on inbound FilterAnnounce FPR
   session:
     default_ttl: 64

@@ -128,6 +128,16 @@ impl BloomState {
         }
     }
 
+    /// Whether a previously sent filter needs periodic loss repair. Content
+    /// changes and initial announcements remain independently pending/debounced.
+    pub(crate) fn refresh_due(&self, peer_id: &NodeAddr, now_ms: u64, interval_ms: u64) -> bool {
+        interval_ms > 0
+            && self
+                .last_update_sent
+                .get(peer_id)
+                .is_some_and(|last| now_ms.saturating_sub(*last) >= interval_ms)
+    }
+
     /// Record that we sent an update to a peer.
     pub fn record_update_sent(&mut self, peer_id: NodeAddr, current_time_ms: u64) {
         self.last_update_sent.insert(peer_id, current_time_ms);

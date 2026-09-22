@@ -399,6 +399,27 @@ fn test_bloom_state_sequence() {
 }
 
 #[test]
+fn bloom_refresh_history_respects_disable_clock_rollback_and_removal() {
+    let mut state = BloomState::new(make_node_addr(0));
+    let peer = make_node_addr(1);
+    assert!(!state.refresh_due(&peer, 10_000, 5_000));
+    state.record_update_sent(peer, 1_000);
+    assert!(!state.refresh_due(&peer, 999, 5_000));
+    assert!(!state.refresh_due(&peer, 5_999, 5_000));
+    assert!(state.refresh_due(&peer, 6_000, 5_000));
+    assert!(!state.refresh_due(&peer, u64::MAX, 0));
+    state.record_sent_filter(peer, state.base_filter());
+    state.mark_update_needed(peer);
+    state.remove_peer_state(&peer);
+    assert!(!state.needs_update(&peer));
+    assert!(!state.refresh_due(&peer, u64::MAX, 5_000));
+    // Removal forgets the old content too: the same value on re-admission
+    // must be advertised instead of being mistaken for an already-sent filter.
+    state.mark_changed_peers(&make_node_addr(2), &[peer], &HashMap::new());
+    assert!(state.needs_update(&peer));
+}
+
+#[test]
 fn test_bloom_state_pending_updates() {
     let node = make_node_addr(0);
     let mut state = BloomState::new(node);

@@ -28,6 +28,23 @@ fn test_bloom_config_defaults_match_upstream_0_4_1() {
 }
 
 #[test]
+fn bloom_refresh_defaults_and_explicit_disable() {
+    let direct = BloomConfig::default();
+    let omitted: BloomConfig = serde_yaml::from_str("{}").unwrap();
+    assert_eq!(direct.announce_refresh_interval_secs, 5);
+    assert_eq!(
+        omitted.announce_refresh_interval_secs,
+        direct.announce_refresh_interval_secs
+    );
+    let disabled: BloomConfig =
+        serde_yaml::from_str("announce_refresh_interval_secs: 0\n").unwrap();
+    let restored: BloomConfig =
+        serde_yaml::from_str(&serde_yaml::to_string(&disabled).unwrap()).unwrap();
+    assert_eq!(restored.announce_refresh_interval_secs, 0);
+    assert_eq!(restored.update_debounce_ms, 500);
+}
+
+#[test]
 fn test_ecn_config_defaults() {
     let c = EcnConfig::default();
     assert!(c.enabled);

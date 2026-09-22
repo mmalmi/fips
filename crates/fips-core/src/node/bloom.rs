@@ -259,8 +259,26 @@ impl Node {
 
     /// Check bloom filter state on tick (called from event loop).
     ///
-    /// Sends any pending debounced filter announces.
+    /// Refresh unchanged filters to repair loss, then send pending debounced
+    /// announcements. Refresh shares the successful-send history and rate limit.
     pub(super) async fn check_bloom_state(&mut self) {
+        let now_ms = Self::now_ms();
+        let refresh_ms = self
+            .config
+            .node
+            .bloom
+            .announce_refresh_interval_secs
+            .saturating_mul(1000);
+        for peer in self.peers.keys() {
+            if self.bloom_state.refresh_due(peer, now_ms, refresh_ms) {
+                // Mark before any send await so failure/cancellation retains the
+                // update. Only a successful send advances its refresh history.
+                self.bloom_state.mark_update_needed(*peer);
+            }
+        }
         self.send_pending_filter_announces().await;
     }
 }
+
+#[cfg(test)]
+mod tests;

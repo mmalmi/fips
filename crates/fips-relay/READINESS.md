@@ -2231,6 +2231,39 @@ or physical mobile-radio acceptance. Reproduce with the core library filters
 `node::tests::spanning_tree::first_rtt::` and
 `node::tests::spanning_tree::bootstrap_loss::` using the same development overrides.
 
+A separate native UDP case exposes lost reachability on a stable tree. It drops
+only the first genuine positive FilterAnnounce after a downstream join. Without
+refresh, 31 subsequent link-metric reports arrive but reachability and delivery
+remain absent through the unchanged 15-second lookup ladder. The undropped
+control delivers normally. This is independent of the shared-ingress paid failure,
+whose trace already contained positive reachability.
+
+Bloom maintenance now refreshes unchanged filters every five seconds by default,
+using existing successful-send history, pending updates and debounce. No new
+message, acknowledgement or per-peer timer is added. A fresh sequence permits
+acceptance; unchanged content does not cascade updates. Failed or cancelled sends
+remain pending, removed peers lose their history, and setting
+`node.bloom.announce_refresh_interval_secs` to `0` disables periodic refresh.
+The native dropped-advertisement case then delivers after 6.049 seconds without
+extending the lookup deadline. All 44 focused Bloom checks pass, including actual
+encrypted refresh/cancellation, stricter debounce, disable and failure controls.
+The [configuration reference](../../docs/design/fips-configuration.md#bloom-filters-nodebloom)
+documents the calculated 1,071 FMP bytes per announcement: 214.2 bytes/second per
+outgoing peer at the default interval, excluding transport overhead. CPU and
+radio costs remain unmeasured.
+
+The combined tree, shared-ingress and Bloom fixes pass all 12 discovery-contention
+cases and four first-RTT cases. Both short-contact phases learn declarations in
+180.089/159.402 ms. The combined paid long-absence run delivers at 16.904/38.207
+seconds and credits every hop at 17.817/39.122 seconds across its two encounters.
+Both independent local streams deliver all 148 originals without duplicates;
+maximum gaps are 2.622/1.018 seconds within the original five-second limit.
+All 1,536 test sats are collected. Strict core/relay lint, formatting and the
+912-file source-size gate pass, with source/dependency/lock guards intact.
+These fixes are integrated locally; they have not been deployed to the routers.
+The observed timing varies between runs and does not establish arbitrary mobility,
+loss-free short contacts, adversarial fairness or physical-router performance.
+
 The initial link-dead-only policy misses the dense eight-candidate repeat
 encounter. Cold delivery takes 51.004 seconds, but neither boundary attempts the
 bridge during the next 60-second window. During the split, ordinary promotion
