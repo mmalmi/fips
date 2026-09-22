@@ -2220,7 +2220,35 @@ remain out of phase. This falsifies the candidate as a sufficient fix for this
 crowded scenario; the focused fairness checks do not establish convergence.
 The isolated implementation and diagnostic fixtures are retained for further
 work. Source, dependency and lock fingerprints remain stable throughout these
-checks. Physical devices and the integrated routing behavior are unchanged.
+checks. That incoming-service experiment is not integrated.
+
+Ordinary exploration now uses a smaller change with a symmetric edge score:
+the XOR of the local and remote node identifiers. The stored cursor remains an
+identity, compared in the same edge order. Demand and earned retry precedence,
+first-inbound cursor seeding and subsequent incoming-cursor protection retain
+their existing rules. This adds no state, wire message, timeout or resource limit.
+
+In the original ordering and the separate incoming-service experiment, the
+observed bridge-candidate ownership windows never overlap during the three-minute
+diagnostic. With symmetric ordering they overlap for about ten seconds, followed
+by reciprocal bridge authentication at 61.117 seconds and endpoint delivery at
+61.160 seconds from exposure. The original 60-second assertion remains failing.
+All six other fixed population variants pass both encounters with their original
+limits, useful-owner retention and payload requirements. These finite runs show
+an improved rendezvous outcome, not a universal convergence bound or an overall
+performance comparison; some passing encounters take longer than before.
+
+Compatibility checks pass: 19 native discovery controls, 107 handshake controls,
+the four original responsive-neighbor cases, strict core lint and the default
+core build. One handshake fixture initially assigned roles by raw identity; its
+setup now uses the actual discovery order, preserving its acceptance assertions.
+The repeated paid encounter delivers in 21.953 and 31.950 seconds and credits
+every hop in 22.765 and 32.662 seconds. Both independent local streams deliver all
+88 original payloads without duplicates; their maximum delivery gaps are 4.001
+and 1.015 seconds. All 1,536 test sats are collected. Source, dependency and lock
+fingerprints remain stable during these checks, and the portable lock is
+restored. This is native simulation and loopback payment evidence; physical
+Wi-Fi discovery, roaming and radio performance remain unverified for this change.
 
 Reproduce with `cargo test -p fips-relay --features measurements --test
 priced_paths merge_split::crowded::automatic::repeated::repeated_full_rosters_recover_paid_routes_without_candidate_departures

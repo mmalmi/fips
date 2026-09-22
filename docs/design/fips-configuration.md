@@ -202,8 +202,11 @@ Existing authenticated peers and simultaneous outbound dials retain their normal
 recovery paths. Cleanup can admit a later attempt; this is not a fairness guarantee
 among repeatedly joining identities.
 
-Ordinary discovery continues after its last ordinary outgoing identity. A first
-incoming attempt can seed that position; subsequent incoming attempts cannot reset it.
+Ordinary discovery orders edges by the XOR of the two node identifiers, then
+continues cyclically after its last ordinary outgoing identity in that order.
+Both endpoints compute the same edge score; their candidate sets, cursors and
+admission windows remain independent. A first incoming attempt can seed that
+position; subsequent incoming attempts cannot reset it.
 This prevents returning peers from repeatedly skipping another advertised
 neighbor when local discovery gets a turn. It does not guarantee a discovery
 turn while other candidates occupy all transient slots.
