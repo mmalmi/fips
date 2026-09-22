@@ -1,5 +1,24 @@
 # Paid-relay cadence measurements
 
+## Latest loopback refresh — 22 September 2026
+
+The refresh on the integrated routing fixes **failed strict measurement
+acceptance**. All 285,696 original payloads arrived and all 40,960 test sats were
+collected, but the report omitted the metadata declaration for payment-service
+carrier counters already present in its snapshots. The harness now declares
+that instrumentation and its local-submission scope. The original raw report
+remains unchanged and rejected.
+
+A diagnostic replay with only that declaration supplied still fails: buyer
+usage evidence advances by one msat between idle and bursty in trials 4 and 6.
+Payment-port traffic and payment-operation counters do not change across either
+gap. Periodic end-to-end path-MTU checks are a source-level candidate: they use
+billed session envelopes, and their ten-second interval coincides with setup
+plus idle and its tail. The aggregate snapshots do not identify those packets,
+so that cause remains unconfirmed. All workload, tail and acceptance rules are
+unchanged; this run establishes no current cadence or CPU comparison. The
+accepted results below describe their dated builds, not the latest routing code.
+
 ## Accepted loopback comparison — 17 September 2026
 
 Optimized build: **True**. Two opposite-order repetitions; five real service processes and three paid relays over loopback UDP.

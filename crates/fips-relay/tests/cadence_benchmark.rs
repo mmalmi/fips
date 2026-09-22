@@ -335,8 +335,9 @@ async fn matched_cadence_matrix() {
         "nodes":5, "paid_relays":3, "funded_directions":2, "transport":"UDP loopback",
         "repeats":2, "unpaid_percent":50, "window_msat":4_000, "grace_msat":8_000,
         "channel_capacity_sat":256, "fee_msat_per_kib":1,
-        "scope":"synchronous payment CPU; logical relay journal I/O; framed control bytes; aggregate link bytes",
-        "excludes":"Cashu SQLite/physical writes, payment-specific full carrier bytes, impaired links, radio performance"})).unwrap();
+        "payment_service_carrier":true,
+        "scope":"synchronous payment CPU; logical relay journal I/O; framed control bytes; local payment-service carrier submissions; aggregate link bytes",
+        "excludes":"Cashu SQLite/physical writes, whole-network/physical carrier bytes, impaired links, radio performance"})).unwrap();
     for (trial_id, delay) in [250, 500, 1_000, 2_000, 2_000, 1_000, 500, 250]
         .into_iter()
         .enumerate()

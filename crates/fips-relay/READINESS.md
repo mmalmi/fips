@@ -871,14 +871,21 @@ mobility, arbitrary mesh merge/split, throughput or production readiness.
 
 ## Guarded cadence measurement
 
-The optimized loopback comparison covers 250/500/1000/2000-ms policies with two
-opposite-order repetitions. All 285,696 packets arrived and all 40,960 test sats
+The accepted 17 September optimized loopback comparison covers
+250/500/1000/2000-ms policies with two opposite-order repetitions.
+All 285,696 packets arrived and all 40,960 test sats
 were conserved. Both sampling passes at every boundary show all six paying
 channels reconciled, with no pending payment or unmeasured payment/journal activity
 between windows. The validator rejects missing evidence, delivery loss, controller
 errors and unexpected idle work. Optional diagnostics add no financial authority.
 
-At high rate, 1 s/2 s produced 40 updates versus 59 at 250 ms, but CPU varied
+The 22 September refresh delivers all originals and collects all test funds,
+but fails strict measurement acceptance: its carrier metadata is incomplete,
+and a diagnostic replay also detects buyer usage advancing between windows.
+The harness metadata is corrected; the original failed run remains rejected.
+The latest code has no accepted cadence comparison yet.
+
+At high rate in the accepted run, 1 s/2 s produced 40 updates versus 59 at 250 ms, but CPU varied
 substantially across repeats; the 500-ms default remains unchanged. These are
 loopback observations with partial synchronous CPU, logical relay journal and
 application-record attribution. Full carrier cost,
@@ -2263,6 +2270,18 @@ All 1,536 test sats are collected. Strict core/relay lint, formatting and the
 These fixes are integrated locally; they have not been deployed to the routers.
 The observed timing varies between runs and does not establish arbitrary mobility,
 loss-free short contacts, adversarial fairness or physical-router performance.
+
+A fresh combined-source check also passes both paid short-contact root placements:
+all 24 direction/contact checks deliver fresh traffic before their respective
+cuts, including each first 400-ms contact after bidirectional authentication.
+Each scenario collects all 1,536 test sats. Two crowded-recovery seeds retain
+1 Mbit/s, 10-ms one-way delay and 5% independent packet loss throughout delivery
+and payment acceptance. All four encounters recover within the original
+60-second bound; their latest delivery and every-hop credit observations are
+34.596 and 35.208 seconds. Both local streams in each run deliver every original
+without duplicates or breaching the five-second maximum gap. Each seed collects
+all 1,536 test sats. The source, dependency and lock guards remain intact. These
+software checks do not extend the physical-router acceptance scope.
 
 The initial link-dead-only policy misses the dense eight-candidate repeat
 encounter. Cold delivery takes 51.004 seconds, but neither boundary attempts the

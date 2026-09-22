@@ -35,6 +35,14 @@ The original run predated bounded return-bootstrap support and required this
 reverse funding; unfunded recipient setup now has separate acceptance coverage.
 This experiment measures the same two funded directions throughout.
 
+Loopback metadata declares `payment_service_carrier: true` because service
+snapshots include locally attributed payment-service carrier submissions.
+These include inner TCP segments, acknowledgments and retransmissions; they
+exclude opaque transit, shared link control, kernel overhead and radio airtime.
+The analyzer retains workload and guard-gap deltas separately. They are not
+whole-network or physical-wire measurements. Undeclared instrumentation rejects
+the report, including when every payload and financial check succeeds.
+
 Each trial records bounded setup/warmup attempts separately, followed by:
 
 | Workload | Offered application traffic |
