@@ -30,6 +30,9 @@ mod rotation_overlap;
 #[path = "rotation_outgoing.rs"]
 mod rotation_outgoing;
 
+#[path = "rotation_crossed_resend.rs"]
+mod rotation_crossed_resend;
+
 #[path = "rotation_incoming_proof.rs"]
 mod rotation_incoming_proof;
 

@@ -832,6 +832,7 @@ impl Node {
         {
             self.close_unowned_handshake_carrier(packet.transport_id, &packet.remote_addr)
                 .await;
+            self.resend_crossed_rotation_request(&peer_node_addr).await;
             return;
         }
 

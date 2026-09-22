@@ -159,6 +159,14 @@ candidate. Only one candidate identity is explored at a time, with a bounded
 opposite-direction handshake for simultaneous dials. No new wire messages or
 unbounded candidate history are introduced.
 
+When simultaneous dials compete for the last candidate slot, the node keeping
+its outbound handshake may resend that exact Msg1 once after an incoming request
+passes identity, ACL and admission checks. This spends the ordinary remaining
+retry budget and keeps the original deadline, index and outbound carrier. An
+earlier scheduled future retry remains available within the shared budget.
+Repeated requests cannot earn another early resend; an exhausted or expired
+attempt cannot send one.
+
 Either direction can prepare a handshake when only the incumbent's minimum age
 prevents replacement. Preparation still requires an unconfigured incumbent with
 no current application or transit demand. An incoming Msg2 acknowledges its

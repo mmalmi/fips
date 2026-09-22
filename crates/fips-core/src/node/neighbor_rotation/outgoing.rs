@@ -2,6 +2,71 @@ use super::*;
 use crate::transport::ReceivedPacket;
 
 impl Node {
+    /// A crossed Msg1 may be the first indication that the other side is ready.
+    /// Answer on the owned outbound carrier, never the replay's source address.
+    pub(in crate::node) async fn resend_crossed_rotation_request(&mut self, peer: &NodeAddr) {
+        let now = Self::now_ms();
+        let node_addr = *self.node_addr();
+        let deadline = self.neighbor_rotation_deadline(peer);
+        if !crate::peer::cross_connection_winner(self.node_addr(), peer, true)
+            || deadline.is_none_or(|deadline| now >= deadline)
+        {
+            return;
+        }
+        let Some(link) = self.peers.connection_iter().find_map(|(link, conn)| {
+            (conn.is_outbound()
+                && conn
+                    .expected_identity()
+                    .is_some_and(|id| id.node_addr() == peer))
+            .then_some(*link)
+        }) else {
+            return;
+        };
+        let policy = &self.config.node.rate_limit;
+        let conn = self.peers.get_connection_mut(&link).unwrap();
+        if conn.is_timed_out(now, policy.handshake_timeout_secs.saturating_mul(1000)) {
+            return;
+        }
+        let Some((transport_id, remote)) = conn.transport_id().zip(conn.source_addr().cloned())
+        else {
+            return;
+        };
+        let delay = policy.handshake_resend_interval_ms as f64
+            * policy
+                .handshake_resend_backoff
+                .powi(conn.resend_count().saturating_add(1) as i32);
+        let mut next_due = now.saturating_add(delay as u64);
+        // An early response must not postpone an already-scheduled opportunity.
+        if conn.next_resend_at_ms() > now {
+            next_due = next_due.min(conn.next_resend_at_ms());
+        }
+        // Consume the allowance before I/O; cancellation and send errors cannot
+        // enable another immediate reply or extend the original attempt.
+        let Some(wire) = conn
+            .reserve_crossed_msg1_resend(policy.handshake_max_resends, next_due)
+            .map(<[u8]>::to_vec)
+        else {
+            return;
+        };
+        tracing::debug!(
+            node = %node_addr, peer = %peer, %link, sender_index = ?conn.our_index(),
+            resend = conn.resend_count(), deadline_ms = ?deadline, reserved_ms = now,
+            "Reserved crossed handshake request resend"
+        );
+        if let Some(transport) = self.transports.get(&transport_id) {
+            match transport.send(&remote, &wire).await {
+                Ok(bytes) => tracing::debug!(
+                    node = %node_addr, peer = %peer, %link, bytes,
+                    "Sent crossed handshake request resend"
+                ),
+                Err(error) => tracing::debug!(
+                    node = %node_addr, peer = %peer, %link, %error,
+                    "Crossed handshake request resend failed"
+                ),
+            }
+        }
+    }
+
     pub(in crate::node) async fn retain_outbound_neighbor_response(
         &mut self,
         link: LinkId,

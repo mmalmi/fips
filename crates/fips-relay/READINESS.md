@@ -2133,6 +2133,35 @@ complete both encounters. These results do not establish general mobile mesh
 convergence: a remote boundary can still keep completed local candidates in its
 only admission slot while rejecting the connecting neighbor's requests.
 
+The corrected five-second-age rejoin trace also reveals a crossed-handshake
+backoff gap. Both boundaries eventually own outgoing attempts to one another.
+The deterministic outbound winner has spent four of five resends, but its next
+scheduled send falls after its frozen deadline. Capacity correctly prevents it
+from accepting a second handshake; repeated incoming requests receive no reply.
+An authenticated, permitted crossed request can now spend one remaining resend
+early on the exact existing outbound carrier, without a new index, handshake or
+deadline. Replays cannot obtain another early send, and an earlier scheduled
+future retry is preserved within the same shared budget.
+
+Six native controls exercise actual UDP/Noise handshakes, reciprocal readiness
+and bidirectional endpoint delivery. They cover the backoff gap, loss of the early
+packet followed by the original scheduled retry, duplicate requests, exhausted
+credit, invalid or denied requests, and frozen expiry after a configuration
+increase. The original code fails the two prompt-response controls; a draft that
+postpones the scheduled retry fails the lost-early-packet control. All six pass
+with the bounded resend and preserved earlier schedule; strict core lint passes.
+
+All 106 handshake compatibility tests and the default core build pass with the
+same frozen source and development dependencies. The paid repeated encounter
+delivers at 22.278/27.630 seconds and credits every hop at 22.787/28.240 seconds.
+All 168 independent local originals arrive once, maximum local gaps remain
+1.003/2.311 seconds, and all 1,536 test sats are collected. The extended
+eight-candidate, five-second-age diagnostic still misses its first 60-second
+encounter, so it does not reach the former rejoin stall. Its trace instead shows
+a boundary waiting on a previously displaced local neighbor while rejecting the
+connecting router. The repair closes the demonstrated crossed-handshake gap;
+it does not establish crowded admission convergence or physical mobile readiness.
+
 Reproduce with `cargo test -p fips-relay --features measurements --test
 priced_paths merge_split::crowded::automatic::repeated::repeated_full_rosters_recover_paid_routes_without_candidate_departures
 -- --exact --test-threads=1 --nocapture`, using the development dependencies in

@@ -153,6 +153,9 @@ pub struct PeerConnection {
     /// Number of resends performed so far.
     resend_count: u32,
 
+    /// Whether a crossed request already consumed its one early Msg1 resend.
+    crossed_msg1_resent: bool,
+
     /// When the next resend should fire (Unix ms). 0 = no resend scheduled.
     next_resend_at_ms: u64,
 }
@@ -191,6 +194,7 @@ impl PeerConnection {
             handshake_confirmation: None,
             refresh_owner: None,
             resend_count: 0,
+            crossed_msg1_resent: false,
             next_resend_at_ms: 0,
         }
     }
@@ -224,6 +228,7 @@ impl PeerConnection {
             handshake_confirmation: None,
             refresh_owner: None,
             resend_count: 0,
+            crossed_msg1_resent: false,
             next_resend_at_ms: 0,
         }
     }
@@ -261,6 +266,7 @@ impl PeerConnection {
             handshake_confirmation: None,
             refresh_owner: None,
             resend_count: 0,
+            crossed_msg1_resent: false,
             next_resend_at_ms: 0,
         }
     }
@@ -406,6 +412,7 @@ impl PeerConnection {
     /// Store the wire-format msg1 bytes for resend and schedule the first resend.
     pub fn set_handshake_msg1(&mut self, msg1: Vec<u8>, first_resend_at_ms: u64) {
         self.handshake_msg1 = Some(msg1);
+        self.crossed_msg1_resent = false;
         self.resend_count = 0;
         self.next_resend_at_ms = first_resend_at_ms;
     }
@@ -491,6 +498,26 @@ impl PeerConnection {
     pub fn record_resend(&mut self, next_resend_at_ms: u64) {
         self.resend_count += 1;
         self.next_resend_at_ms = next_resend_at_ms;
+    }
+
+    /// Reserve one early reply to a crossed request from the expected peer.
+    /// Replays share the ordinary resend budget and cannot reset this allowance.
+    pub(crate) fn reserve_crossed_msg1_resend(
+        &mut self,
+        max_resends: u32,
+        next_resend_at_ms: u64,
+    ) -> Option<&[u8]> {
+        if self.crossed_msg1_resent
+            || !self.is_outbound()
+            || self.handshake_state != HandshakeState::SentMsg1
+            || self.resend_count >= max_resends
+            || self.handshake_msg1.is_none()
+        {
+            return None;
+        }
+        self.crossed_msg1_resent = true;
+        self.record_resend(next_resend_at_ms);
+        self.handshake_msg1()
     }
 
     /// Re-arm an outbound Msg1 after stronger path-recovery evidence.
