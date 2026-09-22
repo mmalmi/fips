@@ -221,6 +221,7 @@ pub struct Node {
     session_direct_degradation: SessionDirectDegradation,
     /// Recent discovery requests for dedup and reverse-path forwarding.
     recent_requests: RecentDiscoveryRequests,
+    deferred_discovery_forwards: handlers::discovery::DeferredDiscoveryForwards,
     /// Per-destination path MTU lookup, keyed by FipsAddress (mirrors
     /// `coord_cache.entries[*].path_mtu`). Sync read-only access from
     /// the TUN reader/writer threads at TCP MSS clamp time so the

@@ -3,6 +3,7 @@ use crate::config::{SimTransportConfig, TransportInstances};
 use crate::{SimLink, SimNetwork, register_sim_network, unregister_sim_network};
 use spanning_tree::{TestNode, cleanup_nodes, drain_all_packets};
 
+mod deferred_lookup_cancellation;
 mod lookup_deadline_cancellation;
 mod rotation;
 

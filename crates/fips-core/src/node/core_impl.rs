@@ -121,6 +121,7 @@ impl Node {
             learned_routes: LearnedRouteTable::default(),
             session_direct_degradation: SessionDirectDegradation::default(),
             recent_requests: RecentDiscoveryRequests::default(),
+            deferred_discovery_forwards: handlers::discovery::DeferredDiscoveryForwards::default(),
             transports: HashMap::new(),
             transport_rebind_packet_cutoffs_ms: HashMap::new(),
             #[cfg(feature = "host-ble-transport")]
@@ -278,6 +279,7 @@ impl Node {
             learned_routes: LearnedRouteTable::default(),
             session_direct_degradation: SessionDirectDegradation::default(),
             recent_requests: RecentDiscoveryRequests::default(),
+            deferred_discovery_forwards: handlers::discovery::DeferredDiscoveryForwards::default(),
             transports: HashMap::new(),
             transport_rebind_packet_cutoffs_ms: HashMap::new(),
             #[cfg(feature = "host-ble-transport")]

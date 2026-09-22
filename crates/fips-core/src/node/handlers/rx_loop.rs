@@ -290,7 +290,7 @@ impl Node {
                     }
                 }
                 _ = wait_for_optional_epoch_deadline(
-                    self.pending_lookup_deadline_ms().map(|due| due.max(lookup_not_before_ms)),
+                    self.discovery_work_deadline_ms().map(|due| due.max(lookup_not_before_ms)),
                 ) => {
                     let (completed, drained) = self.run_rx_loop_lookup_turn(
                         &mut dataplane_runtime.io(),
@@ -568,8 +568,7 @@ impl Node {
         io: &mut RxLoopDataplaneIo<'_>,
     ) -> (bool, RxLoopDataDrainStats) {
         let completed =
-            rx_loop_fast_maintenance_within_budget(self.check_pending_lookups(Self::now_ms()))
-                .await;
+            rx_loop_fast_maintenance_within_budget(self.check_discovery_work(Self::now_ms())).await;
         // A cancelled batch leaves unprocessed retries due. Let queued data
         // make bounded progress before another reserved lookup turn.
         let drained = self

@@ -9,6 +9,8 @@ use std::collections::{HashMap, VecDeque};
 /// The `response_forwarded` flag prevents response routing loops.
 #[derive(Clone, Debug)]
 pub(crate) struct RecentRequest {
+    /// Unique admission within this node lifetime, including same-ms ID reuse.
+    pub(crate) admission_generation: u64,
     /// The peer who sent this request to us.
     pub(crate) from_peer: NodeAddr,
     /// Target named by the authenticated request carrying this ID.
@@ -24,6 +26,7 @@ pub(crate) struct RecentRequest {
 impl RecentRequest {
     pub(crate) fn new(from_peer: NodeAddr, target: NodeAddr, timestamp_ms: u64) -> Self {
         Self {
+            admission_generation: 0,
             from_peer,
             target,
             timestamp_ms,
@@ -89,6 +92,7 @@ pub(crate) enum RecentResponseForward {
 #[derive(Debug, Default)]
 pub(crate) struct RecentDiscoveryRequests {
     entries: HashMap<u64, RecentRequest>,
+    last_admission_generation: u64,
     /// Arrival order partitioned by authenticated ingress peer. This lets a
     /// heavy peer pay for its own admission instead of evicting a light
     /// peer's response path.
@@ -120,6 +124,13 @@ impl RecentDiscoveryRequests {
             };
         }
 
+        let Some(generation) = self.last_admission_generation.checked_add(1) else {
+            return RecentDiscoveryRequestAdmission {
+                accepted: false,
+                deduplicated: false,
+                evicted: false,
+            };
+        };
         let share = (limits.max_entries / limits.peer_count.max(1)).max(limits.min_per_peer);
         let over_share = self
             .by_peer
@@ -137,8 +148,10 @@ impl RecentDiscoveryRequests {
         };
         let evicted = victim.is_some_and(|peer| self.evict_oldest(peer));
 
-        self.entries
-            .insert(request_id, RecentRequest::new(from_peer, target, now_ms));
+        self.last_admission_generation = generation;
+        let mut request = RecentRequest::new(from_peer, target, now_ms);
+        request.admission_generation = generation;
+        self.entries.insert(request_id, request);
         self.by_peer
             .entry(from_peer)
             .or_default()
@@ -217,8 +230,13 @@ impl RecentDiscoveryRequests {
     pub(crate) fn insert(
         &mut self,
         request_id: u64,
-        request: RecentRequest,
+        mut request: RecentRequest,
     ) -> Option<RecentRequest> {
+        self.last_admission_generation = self
+            .last_admission_generation
+            .checked_add(1)
+            .expect("test request admission generation exhausted");
+        request.admission_generation = self.last_admission_generation;
         let from_peer = request.from_peer;
         let previous = self.entries.insert(request_id, request);
         if previous.is_none() {
@@ -256,5 +274,64 @@ impl RecentDiscoveryRequests {
     #[cfg(test)]
     pub(crate) fn indexed_len(&self) -> usize {
         self.by_peer.values().map(VecDeque::len).sum()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_millisecond_id_readmission_has_a_new_owner() {
+        let mut recent = RecentDiscoveryRequests::default();
+        let peer = NodeAddr::from_bytes([1; 16]);
+        let target = NodeAddr::from_bytes([2; 16]);
+        let limits = RecentDiscoveryRequestLimits::new(1, 1, 1);
+        assert!(
+            recent
+                .record_request(10, peer, target, 7, limits)
+                .accepted()
+        );
+        let owner = recent.get(&10).unwrap().admission_generation;
+        assert!(
+            recent
+                .record_request(10, peer, target, 7, limits)
+                .deduplicated()
+        );
+        assert_eq!(recent.get(&10).unwrap().admission_generation, owner);
+        assert!(recent.record_request(11, peer, target, 7, limits).evicted());
+        assert!(recent.record_request(10, peer, target, 7, limits).evicted());
+        let replacement = recent.get(&10).unwrap();
+        assert_eq!(
+            (
+                replacement.from_peer,
+                replacement.target,
+                replacement.timestamp_ms
+            ),
+            (peer, target, 7)
+        );
+        assert_ne!(replacement.admission_generation, owner);
+        assert_eq!(recent.len(), 1);
+    }
+
+    #[test]
+    fn admission_generation_cannot_wrap_or_evict_on_exhaustion() {
+        let mut recent = RecentDiscoveryRequests::default();
+        let peer = NodeAddr::from_bytes([1; 16]);
+        let target = NodeAddr::from_bytes([2; 16]);
+        let limits = RecentDiscoveryRequestLimits::new(1, 1, 1);
+        recent.last_admission_generation = u64::MAX - 1;
+        assert!(
+            recent
+                .record_request(10, peer, target, 7, limits)
+                .accepted()
+        );
+        assert!(
+            !recent
+                .record_request(11, peer, target, 7, limits)
+                .accepted()
+        );
+        assert_eq!(recent.get(&10).unwrap().admission_generation, u64::MAX);
+        assert_eq!(recent.len(), 1);
     }
 }

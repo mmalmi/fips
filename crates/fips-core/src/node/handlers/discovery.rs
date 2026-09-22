@@ -23,7 +23,10 @@ enum LookupForwardOutcome {
     NoPeer,
 }
 
+mod deferred_forward;
 mod pending_lookup;
+
+pub(in crate::node) use deferred_forward::DeferredDiscoveryForwards;
 
 pub(crate) use pending_lookup::PendingDiscoveryLookups;
 pub use pending_lookup::PendingLookup;
@@ -610,6 +613,17 @@ impl Node {
         if !request.forward() {
             return LookupForwardOutcome::NoPeer;
         }
+        self.forward_due_lookup_for_target(&request.target).await;
+        self.forward_ready_lookup_request(from, request, true).await
+    }
+
+    // Requests here have already spent this hop's TTL, including deferred ones.
+    async fn forward_ready_lookup_request(
+        &mut self,
+        from: &NodeAddr,
+        request: LookupRequest,
+        allow_deferral: bool,
+    ) -> LookupForwardOutcome {
         let mut forward_limiter_checked = false;
 
         let candidates = self.lookup_peer_candidates(&request.target);
@@ -643,7 +657,7 @@ impl Node {
                 peer.can_send() && (peer.is_healthy() || stale_direct_probe_allowed)
             });
         if direct_target_sendable {
-            if !self.should_forward_lookup_for_target(from, &request) {
+            if !self.should_forward_lookup_for_target(from, &request, allow_deferral) {
                 return LookupForwardOutcome::RateLimited;
             }
             forward_limiter_checked = true;
@@ -683,7 +697,9 @@ impl Node {
             return LookupForwardOutcome::NoPeer;
         }
 
-        if !forward_limiter_checked && !self.should_forward_lookup_for_target(from, &request) {
+        if !forward_limiter_checked
+            && !self.should_forward_lookup_for_target(from, &request, allow_deferral)
+        {
             return LookupForwardOutcome::RateLimited;
         }
 
@@ -728,6 +744,7 @@ impl Node {
         &mut self,
         from: &NodeAddr,
         request: &LookupRequest,
+        allow_deferral: bool,
     ) -> bool {
         if self
             .discovery_forward_limiter
@@ -736,10 +753,13 @@ impl Node {
             return true;
         }
 
+        if allow_deferral {
+            self.defer_lookup_forward(from, request);
+        }
         debug!(
             request_id = request.request_id,
             target = %self.peer_display_name(&request.target),
-            "Forward rate limited, suppressing LookupRequest"
+            "Forward rate limited, suppressing immediate LookupRequest"
         );
         debug!(target: "fips_core::route_recovery",
             node = %self.node_addr(), from = %from, target = %request.target,
