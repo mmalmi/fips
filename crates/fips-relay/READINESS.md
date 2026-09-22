@@ -2203,6 +2203,25 @@ starvation within the observed window, not proof of permanent failure. The
 reproduced stale-refresh collision is fixed; crowded admission fairness and
 physical-router validation remain open.
 
+A separate incoming-service experiment retains one authenticated requester with
+a frozen expiry and a cursor independent of ordinary exploration. Two native
+arrival-order regressions fail on the current runtime and pass with that policy.
+Five native cases then pass, including real endpoint delivery, preservation
+through unrelated demand and an owed ordinary turn, consumption by matching
+demand, and replay/replacement expiry with no pending connection. Corrupt or
+inbound-denied requests leave the completed candidate and active owner intact.
+
+That policy is not integrated: the unchanged eight-candidate, ten-second-age
+case still misses its first 60-second encounter. Continuing it without resetting
+state produces no bridge or endpoint delivery by 180.012 seconds. The complete
+trace shows bridge requests receiving a preference, then being superseded by
+other requesters in the cyclic order while the boundaries' admission windows
+remain out of phase. This falsifies the candidate as a sufficient fix for this
+crowded scenario; the focused fairness checks do not establish convergence.
+The isolated implementation and diagnostic fixtures are retained for further
+work. Source, dependency and lock fingerprints remain stable throughout these
+checks. Physical devices and the integrated routing behavior are unchanged.
+
 Reproduce with `cargo test -p fips-relay --features measurements --test
 priced_paths merge_split::crowded::automatic::repeated::repeated_full_rosters_recover_paid_routes_without_candidate_departures
 -- --exact --test-threads=1 --nocapture`, using the development dependencies in
