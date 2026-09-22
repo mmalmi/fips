@@ -2518,8 +2518,29 @@ in this diagnostic work, and none of these results proves mobile readiness.
 Reproduce observations with the existing `priced_paths` test and the
 `merge_split::crowded::automatic::repeated::finite::` filter, adding
 `FIPS_CROWDED_TIMING=1` and `--nocapture`; use the same dependency configuration as
-the preceding acceptance runs. Coordinate insertion and admission readiness need
-separate controlled native regressions before changing scheduling policy.
+the preceding acceptance runs. Coordinate insertion and autonomous discovery
+selection still need controlled evidence before changing scheduling policy.
+
+A six-node localhost-UDP readiness regression now keeps four local streams (two bidirectional
+pairs) running across staggered full rosters. Each boundary retains a useful
+neighbor and an idle elective neighbor. Real delivered data, useful-peer age and
+the actual victim selector establish that application demand protects the useful
+neighbor. Both boundaries retain one complete incoming and one complete outgoing
+bridge handshake, with unchanged original attempt deadlines. The fixture retains
+the crowded profile's ten-second minimum age, two-second rotation spacing and
+thirty-second handshake timeout, with one-second maintenance ticks offset by
+500 ms. No timestamp, peer, proof or coordinate is injected.
+
+The final run admits the original candidates 539 ms after the younger incumbent
+becomes eligible. All 676 local originals and both fresh bridge payloads arrive
+exactly once; the largest local inter-delivery gap is 121 ms. A final bounded drain
+starts only after admission and another second of uninterrupted local offers.
+Strict core lint, formatting and source limits pass, alongside the five existing
+readiness cases. This isolates retained-proof service under continuing application
+load; it does not reproduce autonomous discovery ordering or the full RX loop.
+Initial dials are explicit and rekey is disabled. The crowded timeout and cold
+contact failures above remain open. Reproduce with core test filter
+`rotation_readiness::loaded::` and the same development dependency configuration.
 
 #### Earlier crowded-admission experiments
 

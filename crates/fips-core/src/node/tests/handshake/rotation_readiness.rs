@@ -13,6 +13,9 @@ use std::panic::AssertUnwindSafe;
 const IDLE_MS: u64 = 2_000;
 const TIMEOUT_MS: u64 = 6_000;
 
+#[path = "rotation_readiness/loaded.rs"]
+mod loaded;
+
 #[path = "rotation_readiness/expired.rs"]
 mod expired;
 
