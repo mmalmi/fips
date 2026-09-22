@@ -2028,14 +2028,18 @@ failures. Reproduce the focused maturity cases with `cargo test -p nvpn-fips-cor
 --all-features --lib rotation_readiness::transferred:: -- --test-threads=1` and the
 same development dependencies.
 
-Recently used discovery-only transit neighbors now receive one expiring discovery
+Recently used discovery-only neighbors receive one expiring discovery
 preference after physical link-dead removal (2026-09-22). The history retains only
 identity and a frozen handshake-window expiry, stays within the current peer cap,
 and spends the existing alternating demand turn. New advertisements, link
 maintenance and failed attempts cannot renew it. Admission still uses current
 addresses, ACLs, capacity and fresh Noise proof; no route or paid authority is
-retained by this history. Admitted opaque transit is evidence of demand, not
-delivery. See the configuration policy for its qualification and retirement rules.
+retained by this history. Recent admitted transit and local application RX/TX
+qualify through their actual carrier. Local activity must be strictly newer than
+the current adjacency's admission, including at millisecond boundaries. This
+reuses existing activity timestamps; it does not add generation tracking or
+per-packet work. Outbound activity records an admitted attempt, not delivery.
+See the configuration policy for qualification and retirement rules.
 
 Two native five-node cases distinguish a former transit relay from a heartbeat-only
 neighbor after simulated link loss, heartbeat cleanup and a refilled roster.
@@ -2050,22 +2054,43 @@ create no requests or pending lookups, and exhausted recovery does not restart
 through maintenance. Both unchanged native traffic/deadline cases then authenticate
 and deliver their original routed payload, without an extra submission.
 
-The full paid repeated-encounter run passes with bridge discovery at
-20.769/29.877 seconds, payload delivery at 29.003/32.766 seconds, and all-hop credit
-at 29.513/33.274 seconds. All 192 local originals arrive exactly once; maximum local
-gaps are 4.336/4.001 seconds under the unchanged five-second limit. All original
-channels and budgets are retained and all 1,536 test sats are collected. This
-addresses demonstrated selection and queue-recovery mechanisms. It does not
-establish general crowded convergence, performance across identity populations,
-or physical mobile-radio acceptance; earlier failed schedules remain evidence.
+The local-use extension adds native sender-only and receiver-only cases to the
+same five-node fixture. Both select an ordinary stranger on baseline and select
+the recently used neighbor with the extension. All four cases pass with real
+authentication, native heartbeat removal, ordinary refill, fresh re-admission and
+original routed payload delivery. Component controls cover direct and routed
+carriers, the exact activity cutoff, old/equal-admission observations, new-owner
+activity, frozen expiry, queue/report exclusions and unchanged active-peer
+protection. These controls do not claim wire replay rejection or exact
+connection-generation binding.
 
-The same frozen source and development dependencies pass 19 native discovery
-simulations, 75 lookup tests (one pre-existing 100-node case remains ignored),
-seven reconnection-policy controls, four carrier-demand controls, 99 handshake
-compatibility tests and the repeated native encounter with staggered maintenance.
-Strict all-feature/all-target core lint and the default core build also pass.
-Reproduce the new native cases with `cargo test -p nvpn-fips-core --all-features
---lib node::tests::sim_discovery::rotation::reconnection:: -- --test-threads=1`.
+Validation passes all 23 native discovery cases, seven reconnection-policy
+controls, six peer-activity controls, 107 handshake compatibility cases and four
+original responsive-neighbor cases. The repeated paid encounter resumes delivery
+at 22.135/30.351 seconds and credits every hop at 22.848/30.962 seconds. Both
+independent local streams deliver all 87 original payloads exactly once; maximum
+delivery gaps are 1.043/2.285 seconds within the unchanged five-second limit.
+Existing channels, resource caps and budgets are retained, and all 1,536 test sats
+are collected. Strict core lint, default-feature compilation and the source-size
+check pass. Source, dependency and lock fingerprints stay unchanged during the
+gates, and the portable lock is restored. This is simulation and loopback payment
+evidence; physical mobile-radio acceptance remains open.
+
+Reproduce the native cases with `cargo test -p nvpn-fips-core --all-features
+--lib node::tests::sim_discovery::rotation::reconnection:: -- --test-threads=1`;
+use `node::peer_activity::tests::` for the local-activity controls, with the same
+development dependencies in [FUNDING-COSTS.md](FUNDING-COSTS.md).
+
+This extension does not fix the dense eight-candidate repeat encounter. Its cold
+delivery is 51.004 seconds; neither boundary attempts the bridge during the next
+60-second window. During the split, candidate promotion electively replaces both
+bridge owners before link-dead detection. Elective removal intentionally creates
+no history, so a longer history timeout would not address this failure. The
+trace shows distinct ordinary candidates receiving their ten-second minimum age,
+with the previously serviced bridge later in the sweep; it shows no cursor rewind
+or different-identity takeover. This case supplies cross-component application
+traffic only after bridge restoration. The original failing acceptance and
+resource bounds are preserved.
 
 Extended native population diagnostics show that the admission-latency gap remains.
 They preserve the two-peer boundary cap, one pending candidate, original local

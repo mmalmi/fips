@@ -252,18 +252,22 @@ one-use interrupted retry above stays ahead of both choices and continues its
 original turn without changing the cursor or the owed exploration turn.
 
 An unconfigured neighbor removed after physical link-dead detection can earn one
-rediscovery preference from recent admitted transit. The activity window includes
-the effective failure-detection timeout plus `idle_secs`; link maintenance and
-unadmitted local queues do not qualify. This history contains only identities and
-frozen expiries, capped by `max_peers`. Each entry expires one handshake timeout
+rediscovery preference from recent admitted transit or locally sent/received
+application data carried by that neighbor. The activity window includes the
+effective failure-detection timeout plus `idle_secs`; link maintenance, FSP reports
+and unadmitted local queues do not qualify. Local data must be newer than the
+current neighbor admission, including at millisecond boundaries. This uses existing
+activity timestamps. This history contains only identities and frozen expiries,
+capped by `max_peers`. Each entry expires one handshake timeout
 after detection, regardless of later configuration changes. A current advertisement
 can use it on the same alternating demand turn above, and starting an outgoing
 full-roster rotation attempt consumes it. Administrative removal and elective
-rotation do not create history. A new connection must carry new admitted transit
-before another physical loss can renew the preference. Opaque transit may include
-end-to-end control; this is evidence of demand, not successful delivery. Expired
-entries have no selection
-effect and are pruned on subsequent history insertion or peer-limit changes.
+rotation do not create history. A new connection needs new qualifying activity
+before another physical loss can renew the preference. Opaque transit and local
+application payloads can include higher-level control. Outbound local activity
+records an admitted send attempt, not successful delivery. Expired entries have
+no selection effect and are pruned on subsequent history insertion or peer-limit
+changes.
 Reducing the peer limit immediately trims this history; a zero limit clears it.
 
 Historical routes are not consulted. The preference does not bypass ACLs,
