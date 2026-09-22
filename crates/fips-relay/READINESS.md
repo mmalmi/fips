@@ -2178,11 +2178,28 @@ passes after the shared fixture refactor, delivering its one original at 20.093
 seconds after re-exposure. Strict core lint and file-size checks pass, and all gate
 fingerprints remain stable. No runtime policy or physical router changes.
 
-A discovery-only listening interval remains an unimplemented experiment. It must
-preserve traffic-driven attempts, earned retries and reserved outbound turns;
-pausing those could merely reverse the directional failure or block both sides.
-It must also retain deferred one-time BLE/LAN discoveries while continuing active
-path maintenance. Repeated Sim advertisements alone cannot verify that contract.
+A subsequent unmerged listening experiment delays ordinary automatic discovery
+for the existing attempt interval after initial learned fill or committed ordinary
+outgoing replacement. Current demand/history, earned retries and reserved outgoing
+starts remain exempt. One frozen-expiry deferred hint preserves an advertisement
+while active-path refreshes continue; consumption rechecks policy and capacity.
+Two native UDP controls fail the old immediate-dial behavior and pass with the
+experiment, establishing one-time LAN advertisement survival through an actual
+Noise request, including concurrent active-path refresh. They do not establish
+full newcomer promotion or the complete expiry/replay contract. Strict core lint
+and the 891-file size check also pass.
+
+The experiment does not fix cold convergence. Source-0-only still fails at
+60 seconds and loses its original at 16.048 seconds. During listening, a local
+peer's unsolicited Msg1 occupies the remote slot at 0.660 seconds and supplies
+fresh encrypted proof; the desired bridge request arrives 378 ms later. Reciprocal
+originals pass at 10.838 seconds, while the reverse one-way original takes 15.474
+seconds. Background discovery again misses 60 seconds and remains disconnected
+at 180.023 seconds during observation-only continuation. Original caps, ages,
+lookup retirement and acceptance deadlines remain unchanged; all gate fingerprints
+remain stable and portable locks are restored. The listening code and its isolated
+tests remain unmerged: an open receiver slot can be taken by local incoming
+competition, so a listening delay alone does not coordinate service of an edge.
 
 #### Earlier crowded-admission experiments
 
