@@ -2240,6 +2240,45 @@ checkout, with no runtime integration or hardware changes. This rejects callback
 signalling alone as the crowded-admission solution; a useful next candidate must
 address both neighbor selection and compatible admission windows.
 
+A subsequent topology-discovery candidate remains unmerged (2026-09-22). A node
+with an active neighbor publishes its current connected-tree root; an isolated
+node publishes no hint. Ethernet appends an optional 18-byte trailer after scope
+(19 bytes when an empty scope prefix is needed). Sim discovery carries the same
+Node-published value without inferring components from its network map. A foreign
+root ranks below earned retries and local demand/history, and alternates with
+ordinary exploration. The actual attempt consumes its preferred turn before I/O.
+Hints do not authorize admission, routes or payments, and do not change caps,
+minimum ages, lookup retirement or frozen attempt deadlines. Missing, malformed
+and same-root hints retain ordinary service. LAN/mDNS has no new hint support.
+
+The focused native case fails baseline selection and passes with the candidate:
+real authentication and TreeAnnounce form a separate tree, discovery chooses its
+bridge ahead of an isolated candidate, and normal Noise precedes payload delivery.
+A visible but silent advertiser cannot extend its original deadline or take the
+next ordinary turn. Both native cases, five demand/priority controls, 52 Ethernet
+tests, 29 discovery tests and 107 handshake compatibility tests pass. Strict lint,
+the default-feature build and the 890-file size check also pass. The unchanged
+three cold-demand controls deliver each original once in 10.885–10.927 seconds.
+Shifted crowded background discovery delivers at 10.986 seconds, then at
+21.225 seconds after a split and re-exposure; its earlier 60-second failure and
+180-second diagnostic disconnection are not reproduced in this candidate run.
+
+Paid continuity still blocks integration. The repeated paid fixture forms a
+bridge at 19.839 seconds and a common tree at 21.482 seconds, but its existing
+local stream exceeds the five-second inactivity limit. At failure, 25 originals
+were submitted to the endpoint and only 20 reached the carrier and destination.
+All five queued originals subsequently arrive once, with a 5.453-second delivery
+gap. The same internal links, session indices and established end-to-end session
+survive; the local purchase remains eligible with ample credit. Source coordinates
+are absent while a lookup is pending, then appear as the queue drains. These
+snapshots localize the pause to route readiness but do not prove why coordinate
+recovery took about 4.46 seconds or that the new preference caused it. The next
+check needs correlated tree, lookup and queue transitions before changing policy.
+All 1536 test sats are collected. Source/dependency fingerprints stay stable and
+portable locks are restored. The population and warm-rejoin gates queued after
+the paid test did not run. No runtime merge or physical-router changes occurred;
+hostile-identity fairness, arbitrary mobility and hardware acceptance remain open.
+
 #### Earlier crowded-admission experiments
 
 Earlier native population diagnostics exposed the admission-latency gap.
