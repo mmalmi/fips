@@ -16,6 +16,9 @@ const TIMEOUT_MS: u64 = 6_000;
 #[path = "rotation_readiness/expired.rs"]
 mod expired;
 
+#[path = "rotation_readiness/transferred.rs"]
+mod transferred;
+
 #[derive(Debug, PartialEq, Eq)]
 struct Owner {
     link: LinkId,

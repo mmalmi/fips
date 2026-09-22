@@ -1917,8 +1917,8 @@ boundary-to-internal link identities remain protected. Elective neighbor removal
 preserves end-to-end sessions and queued traffic; fresh remote startup epochs
 still use the restart recovery path. Pending neighbors can prepare before an
 incumbent is old enough to replace, but activation requires fresh encrypted
-confirmation and current eligibility at both ends. An interrupted local discovery
-attempt gets one eligible fresh retry within its original deadline. The existing
+confirmation and current eligibility at both ends. That revision gave an interrupted
+local discovery attempt one fresh retry within its original deadline. The existing
 heartbeat carries readiness; no new wire message or larger admission allowance is needed.
 See the [rotation policy](../../docs/design/fips-configuration.md#optional-neighbor-rotation-nodeneighbor_rotation)
 for exact pacing, demand protection and discovery-source limits.
@@ -1999,6 +1999,35 @@ core lint pass. These fixed-identity native cases add repeated-contact coverage;
 they do not reproduce or resolve the larger paid scenario's second-encounter
 failure, nor establish a general rendezvous bound or physical mobility support.
 
+A separate two-boundary UDP regression reproduces a transferred retry expiring
+before the remote incumbent becomes eligible (2026-09-22). The retry exchanges
+real Noise messages, but the original policy releases one candidate before the
+other side can promote it. The control with earlier remote maturity passes. The current
+policy lets the exact successful incoming replacement earn one bounded successor
+window, anchored at its promotion; see the
+[rotation policy](../../docs/design/fips-configuration.md#optional-neighbor-rotation-nodeneighbor_rotation)
+for its ownership, expiry and fairness limits. Both maturity cases now establish
+reciprocal keys and deliver payloads in both directions without another repair
+dial. Seven retry controls cover frozen expiry across configuration changes,
+replayed proof, unrelated promotion, missing targets, local infeasibility,
+second-transfer consumption and preservation of the owed exploration turn.
+The 99-test handshake compatibility group, strict core lint, default-feature
+compilation and source-size checks pass. The repeated native contact with
+half-second-offset maintenance restores delivery in 40.888 and 39.164 seconds,
+with a 12.400-second split, within the same 60-second encounter windows.
+
+This addresses one readiness race, not general crowded rendezvous. An unchanged
+policy trace separately forms its second bridge at 50.783 seconds and joins the
+tree at 51.814 seconds, but misses the original 60-second delivery/credit target;
+all 1,536 test sats are collected. That encounter uses fresh ordinary attempts,
+so additional interrupted-retry time does not address its late bridge selection.
+With the earned-window change, one full paid compatibility run completes delivery
+in 32.736/39.153 seconds and all-hop credit in 33.547/40.067 seconds, then collects
+all 1,536 test sats. This passing run does not resolve the earlier schedule-dependent
+failures. Reproduce the focused maturity cases with `cargo test -p nvpn-fips-core
+--all-features --lib rotation_readiness::transferred:: -- --test-threads=1` and the
+same development dependencies.
+
 Reproduce with `cargo test -p fips-relay --features measurements --test
 priced_paths merge_split::crowded::automatic::repeated::repeated_full_rosters_recover_paid_routes_without_candidate_departures
 -- --exact --test-threads=1 --nocapture`, using the development dependencies in
@@ -2019,8 +2048,8 @@ differs in that comparison. These are one-second idle/polling/maintenance fixtur
 observations, not general latency bounds; observed refresh attempts are counted
 separately from admissions. Endpoint and TUN delivery both pass. An unresponsive
 D receives alternating D, B, D, C attempts while its original payload remains
-queued, and a transferred demand retry preserves the original deadline and the
-owed ordinary turn. Native caps and incumbent protection remain unchanged.
+queued, and that revision's transferred demand retry preserved the original
+deadline and owed ordinary turn. Native caps and incumbent protection remain unchanged.
 
 All ten discovery tests, 89 handshake tests and strict core/relay lint pass.
 Broader verification exposed an existing crossed-handshake fixture's packet-order
@@ -2179,7 +2208,7 @@ six settlements, and collects all 1,536 test sats. Strict relay lint, formatting
 and source-size checks pass. Crowded recovery timing remains unresolved.
 
 Interrupted outgoing discovery retries now skip a candidate when the current
-full roster cannot satisfy minimum age or replacement spacing before its original
+full roster cannot satisfy minimum age or replacement spacing before its frozen
 deadline. The check preserves that deadline, peer limits and discovery fairness;
 it does not predict later disconnects or remote progress. Two production-path
 regressions independently cover age and spacing, confirm another discovered peer

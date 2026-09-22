@@ -131,6 +131,7 @@ impl Node {
                 peer: previous,
                 started_ms: attempt.started_ms,
                 deadline_ms: attempt.deadline_ms,
+                transferred_to: Some(peer),
             });
         attempt.peer = peer;
         // Preserve the original deadline and local discovery cursor. The new
@@ -146,6 +147,31 @@ impl Node {
             "Transferred unanswered neighbor attempt to authenticated incoming request"
         );
         true
+    }
+
+    pub(super) fn grant_interrupted_retry_after_promotion(&mut self, peer: &NodeAddr, now_ms: u64) {
+        let Some(attempt) = self.neighbor_rotation.attempt.as_ref() else {
+            return;
+        };
+        let Some(retry) = self.neighbor_rotation.interrupted_outgoing.as_mut() else {
+            return;
+        };
+        if attempt.is_retry
+            || attempt.peer != *peer
+            || retry.transferred_to != Some(*peer)
+            || retry.started_ms != attempt.started_ms
+            || retry.deadline_ms != attempt.deadline_ms
+            || now_ms >= retry.deadline_ms
+        {
+            return;
+        }
+        // Only the exact incoming promotion earns this one successor window.
+        // Anchor it here, not at the later dial; replay, carrier preparation
+        // and timeout configuration changes cannot extend either window.
+        let duration_ms = retry.deadline_ms.saturating_sub(retry.started_ms);
+        retry.transferred_to = None;
+        retry.started_ms = now_ms;
+        retry.deadline_ms = now_ms.saturating_add(duration_ms);
     }
 
     pub(in crate::node) fn neighbor_rotation_started_at(&self, peer: &NodeAddr) -> Option<u64> {

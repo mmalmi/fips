@@ -20,7 +20,7 @@ enum Case {
 }
 
 #[test]
-fn transferred_outgoing_gets_one_fresh_discovery_retry_with_original_deadline() {
+fn transferred_outgoing_gets_one_discovery_retry_with_promotion_anchored_deadline() {
     run(Case::RetryOnce);
 }
 
@@ -35,12 +35,12 @@ fn missing_interrupted_target_does_not_block_other_discovery() {
 }
 
 #[test]
-fn retried_hostname_preparation_expires_at_original_deadline() {
+fn retried_hostname_preparation_expires_at_earned_deadline() {
     run(Case::PreparationExpires);
 }
 
 #[test]
-fn retried_noise_expires_at_original_deadline_after_timeout_increase() {
+fn retried_noise_expires_at_earned_deadline_after_timeout_increase() {
     run(Case::HandshakeExpires);
 }
 
@@ -160,12 +160,17 @@ async fn exercise(node: &mut TestNode, case: Case) {
     );
     assert_eq!(heartbeat(node, &old, &mut old_owner, 2).await, 2);
     if short_retry {
-        // The incoming peer supplies its fresh proof late in the transferred
-        // attempt. Exactly one of minimum age and replacement interval cannot
-        // elapse before the interrupted attempt's original six-second deadline.
+        // A late but valid proof earns a window from its actual promotion.
         tokio::time::sleep_until(wall_start + Duration::from_millis(4_500)).await;
     }
-    promote(node, &first, &mut first_owner).await;
+    if case == Case::PreparationExpires {
+        // The grant must use the original duration, even if configuration
+        // changed while the incoming replacement was still pending.
+        node.node.config.node.rate_limit.handshake_timeout_secs = 60;
+    }
+    let promotion_before = Node::now_ms();
+    let first_proof = promote(node, &first, &mut first_owner).await;
+    let promotion_after = Node::now_ms();
     assert_eq!(
         node.node.neighbor_rotation_order(*competitor.node_addr()),
         original_cursor
@@ -184,14 +189,16 @@ async fn exercise(node: &mut TestNode, case: Case) {
             .unwrap();
         assert_eq!(node.node.pending_connects.len(), 1);
         assert_eq!(node.node.connection_count(), 0);
+        let earned_start = node
+            .node
+            .neighbor_rotation_started_at(target.node_addr())
+            .unwrap();
+        assert!((promotion_before..=promotion_after).contains(&earned_start));
         assert_eq!(
-            node.node.neighbor_rotation_started_at(target.node_addr()),
-            Some(original_start),
-            "retry must retain the original attempt before DNS is polled"
+            node.node.neighbor_rotation_deadline(target.node_addr()),
+            Some(earned_start + 6_000)
         );
-        // A later configuration increase cannot renew an already owned attempt.
-        node.node.config.node.rate_limit.handshake_timeout_secs = 60;
-        tokio::time::sleep_until(wall_start + Duration::from_millis(6_100)).await;
+        sleep_until_ms(earned_start + 6_100).await;
         node.node.poll_pending_connects().await;
         assert!(node.node.pending_connects.is_empty());
         assert_eq!(resources(node), (1, 0, 1, 1));
@@ -203,6 +210,22 @@ async fn exercise(node: &mut TestNode, case: Case) {
         return;
     }
 
+    if short_retry {
+        // An unrelated incoming exchange near the earned deadline creates a
+        // genuinely young incumbent. Its proof must not renew the old grant.
+        sleep_until_ms(promotion_after + 3_500).await;
+        let mut second_owner = connect(node, &second, &second_source, 605).await;
+        sleep_until_ms(promotion_after + 4_500).await;
+        promote(node, &second, &mut second_owner).await;
+        // Both attempt cooldowns have elapsed, but the grant is still live.
+        sleep_until_ms(promotion_after + 5_600).await;
+        assert!(
+            !node
+                .node
+                .neighbor_rotation_discovery_order(*target.node_addr(), Node::now_ms())
+                .0
+        );
+    }
     let mut discovery = Discovery::new(node, &target, &competitor, case).await;
     node.node.poll_transport_discovery().await;
     let expected = if case == Case::MissingTarget || short_retry {
@@ -225,24 +248,28 @@ async fn exercise(node: &mut TestNode, case: Case) {
     if short_retry {
         let admitted = node
             .node
-            .get_peer(first.node_addr())
+            .get_peer(second.node_addr())
             .unwrap()
             .authenticated_at();
         let policy = node.node.config.node.neighbor_rotation.as_ref().unwrap();
-        let deadline = original_start + 6_000;
-        assert_eq!(
-            admitted + policy.idle_secs * 1000 >= deadline,
-            case == Case::RetryCannotMature
-        );
-        assert_eq!(
-            admitted + policy.interval_secs * 1000 >= deadline,
-            case == Case::RetryCannotPace
-        );
-        assert!(Node::now_ms() < original_start + 6_000);
-        assert_ne!(
+        let earliest_deadline = promotion_before + 6_000;
+        let latest_deadline = promotion_after + 6_000;
+        let age_ready = admitted + policy.idle_secs * 1000;
+        let pacing_ready = admitted + policy.interval_secs * 1000;
+        // Establish each premise across the entire promotion-time bracket.
+        if case == Case::RetryCannotMature {
+            assert!(age_ready >= latest_deadline);
+            assert!(pacing_ready < earliest_deadline);
+        } else {
+            assert!(pacing_ready >= latest_deadline);
+            assert!(age_ready < earliest_deadline);
+        }
+        assert!(Node::now_ms() < promotion_before + 6_000);
+        assert!(
             node.node
-                .neighbor_rotation_started_at(competitor.node_addr()),
-            Some(original_start),
+                .neighbor_rotation_started_at(competitor.node_addr())
+                .unwrap()
+                > promotion_after,
             "the other peer gets its own ordinary attempt, not a renewed interrupted retry"
         );
         assert!(
@@ -257,11 +284,16 @@ async fn exercise(node: &mut TestNode, case: Case) {
 
     let retry_link = pending.link_id();
     let retry_index = pending.our_index().unwrap();
+    let earned_start = node
+        .node
+        .neighbor_rotation_started_at(target.node_addr())
+        .unwrap();
     assert_ne!(retry_link, original_link);
-    assert_eq!(pending.last_activity(), original_start);
+    assert!((promotion_before..=promotion_after).contains(&earned_start));
+    assert_eq!(pending.last_activity(), earned_start);
     assert_eq!(
-        node.node.neighbor_rotation_started_at(target.node_addr()),
-        Some(original_start)
+        node.node.neighbor_rotation_deadline(target.node_addr()),
+        Some(earned_start + 6_000)
     );
     assert_eq!(
         node.node.neighbor_rotation_order(*competitor.node_addr()),
@@ -287,10 +319,19 @@ async fn exercise(node: &mut TestNode, case: Case) {
         Some(retry_index)
     );
     assert!(node.node.get_peer(target.node_addr()).is_none());
+    // Already-active proof is handed to the normal replay-checking owner;
+    // recognizing that owner does not perform a second promotion.
+    assert!(node.node.confirm_pending_handshake(first_proof).await);
+    process_available_packets(std::slice::from_mut(node)).await;
+    assert_eq!(
+        node.node.neighbor_rotation_deadline(target.node_addr()),
+        Some(earned_start + 6_000),
+        "replayed successful proof cannot renew the already consumed grant"
+    );
 
     if case == Case::HandshakeExpires {
         node.node.config.node.rate_limit.handshake_timeout_secs = 60;
-        tokio::time::sleep_until(wall_start + Duration::from_millis(6_100)).await;
+        sleep_until_ms(earned_start + 6_100).await;
         node.node.check_timeouts().await;
         assert_eq!(resources(node), (1, 0, 1, 1));
         assert!(!node.node.index_allocator.is_allocated(retry_index));
@@ -305,14 +346,14 @@ async fn exercise(node: &mut TestNode, case: Case) {
     assert!(!node.node.index_allocator.is_allocated(retry_index));
     assert_eq!(
         node.node.neighbor_rotation_started_at(second.node_addr()),
-        Some(original_start)
+        Some(earned_start)
     );
     assert_eq!(
         node.node
             .get_connection(&second_owner.link)
             .unwrap()
             .last_activity(),
-        original_start
+        earned_start
     );
     promote(node, &second, &mut second_owner).await;
     tokio::time::sleep_until(wall_start + Duration::from_millis(4_350)).await;
@@ -348,14 +389,19 @@ async fn receive_wire(socket: &tokio::net::UdpSocket) -> Vec<u8> {
     wire
 }
 
-async fn promote(node: &mut TestNode, remote: &Node, candidate: &mut Candidate) {
+async fn sleep_until_ms(at_ms: u64) {
+    tokio::time::sleep(Duration::from_millis(at_ms.saturating_sub(Node::now_ms()))).await;
+}
+
+async fn promote(node: &mut TestNode, remote: &Node, candidate: &mut Candidate) -> ReceivedPacket {
     let proof = candidate.frame(
         node.transport_id,
         &[crate::protocol::LinkMessageType::Heartbeat.to_byte()],
     );
-    assert!(node.node.confirm_pending_handshake(proof).await);
+    assert!(node.node.confirm_pending_handshake(proof.clone()).await);
     assert_eq!(await_heartbeat(node, remote, 1).await, 1);
     assert_eq!(resources(node), (1, 0, 1, 1));
+    proof
 }
 
 struct Discovery {

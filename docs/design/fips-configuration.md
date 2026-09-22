@@ -201,14 +201,24 @@ neighbor when local discovery gets a turn. It does not guarantee a discovery
 turn while other candidates occupy all transient slots.
 
 When an unanswered local attempt yields to incoming traffic, transport and LAN
-discovery give its selected identity one retry before the original attempt's
-deadline. The retry uses a fresh handshake and current discovery address, ACL and
-capacity checks. A missing or ineligible identity cannot block other candidates,
-including when the current full roster cannot satisfy minimum age or replacement
-spacing before the original deadline. This check does not predict future
-disconnects. An interrupted retry cannot create another retry. The original
-discovery cursor remains intact. Nostr traversal events retain their existing arrival
-order; they do not use this candidate-list preference.
+discovery retain a one-use preference for its selected identity. The transferred
+handshake keeps the original deadline. Only successful promotion of the exact
+incoming replacement before that deadline earns a successor window, using the
+original timeout duration and starting at promotion. A later retry inherits that
+frozen window, including time spent preparing its carrier; configuration changes,
+replayed proof and unrelated promotions cannot renew it. An interrupted retry
+cannot earn another window. The successor deadline stays within two original
+timeout periods of the first attempt's start, while concurrent peer, connection
+and index caps stay unchanged. This gives the remote roster time to mature after
+the local exchange.
+
+The retry uses a fresh handshake and current discovery address, ACL and capacity
+checks. A missing or ineligible identity cannot block other candidates, including
+when the current full roster cannot satisfy minimum age or replacement spacing
+before the frozen deadline. This check does not predict future disconnects or
+remote progress. The original discovery cursor remains intact. Nostr traversal
+events retain their existing arrival order; they do not use this candidate-list
+preference.
 
 Transport and LAN discovery alternate demand preference with ordinary exploration.
 When no ordinary turn is owed, an advertised identity with locally queued endpoint

@@ -32,12 +32,13 @@ struct Attempt {
     confirmed_inbound: Option<LinkId>,
 }
 
-/// A transferred, unanswered outgoing attempt gets one fresh discovery dial.
-/// No address or Noise state is retained, and its original budget never renews.
+/// A transferred outgoing attempt may earn one fresh discovery window when
+/// its exact incoming replacement promotes. No address or Noise state survives.
 struct InterruptedOutgoing {
     peer: NodeAddr,
     started_ms: u64,
     deadline_ms: u64,
+    transferred_to: Option<NodeAddr>,
 }
 
 /// An admission decision owned by one uninterrupted promotion operation.
@@ -211,7 +212,7 @@ impl Node {
         } else if !outbound && self.neighbor_rotation_discovery_turn_reserved(now_ms) {
             return Some("local discovery turn reserved");
         }
-        // An interrupted retry keeps its original deadline. Do not spend a
+        // An interrupted retry keeps its frozen deadline. Do not spend a
         // discovery turn on it if this roster cannot become eligible in time.
         // This does not predict later disconnects. A rejected candidate keeps
         // its original deadline and one-use preference.
@@ -495,6 +496,9 @@ impl Node {
         // authenticated decision after its carrier has already been closed.
         let victim = prepared.victim;
         let now_ms = Self::now_ms().max(prepared.decided_ms);
+        if !prepared.outbound {
+            self.grant_interrupted_retry_after_promotion(peer, now_ms);
+        }
         let config = self.config.node.neighbor_rotation.as_ref().unwrap();
         let interval_ms = config.interval_secs.saturating_mul(1000);
         if !prepared.outbound

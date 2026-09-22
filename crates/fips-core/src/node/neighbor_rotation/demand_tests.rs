@@ -123,6 +123,7 @@ fn carrier_demand_keeps_ordinary_exploration_and_interrupted_retry_precedence() 
         peer: ordinary,
         started_ms: 1,
         deadline_ms: 200,
+        transferred_to: None,
     });
     assert!(
         node.neighbor_rotation_discovery_order(ordinary, 100)
