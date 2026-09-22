@@ -175,23 +175,42 @@ async fn exercise(nodes: &mut [TestNode; 2], replacement: &mut TestNode) {
         winning_index
     );
 
-    // A corrupt Noise request must not reclaim capacity before authentication.
-    let mut invalid = request.data.as_slice().to_vec();
-    *invalid.last_mut().unwrap() ^= 1;
-    send_wire(nodes, 0, &invalid).await;
-    let invalid = next_matching(&mut nodes[1], |packet| {
-        packet.data.as_slice() == invalid.as_slice()
-    })
-    .await;
-    nodes[1].node.handle_msg1(invalid).await;
-    assert_eq!(owner(&nodes[1], &a), old_b);
-    let retained = nodes[1].node.get_connection(&losing_link).unwrap();
-    assert_eq!(retained.our_index(), Some(losing_index));
-    assert_eq!(
-        (retained.started_at(), retained.last_activity()),
-        (losing_start, losing_activity)
-    );
-    assert_eq!(resources(&nodes[1]), (1, 1, 2, 2));
+    // Neither corrupt Noise on the original carrier nor the genuine request
+    // replayed from another UDP carrier may reclaim this pending refresh.
+    for different_source in [false, true] {
+        let source = if different_source {
+            &*replacement
+        } else {
+            &nodes[0]
+        };
+        let expected_source = source.addr.clone();
+        let mut wire = request.data.as_slice().to_vec();
+        if !different_source {
+            *wire.last_mut().unwrap() ^= 1;
+        }
+        source
+            .node
+            .transports
+            .get(&source.transport_id)
+            .unwrap()
+            .send(&nodes[1].addr, &wire)
+            .await
+            .unwrap();
+        let rejected = next_matching(&mut nodes[1], |packet| {
+            packet.data.as_slice() == wire.as_slice()
+        })
+        .await;
+        assert_eq!(rejected.remote_addr, expected_source);
+        nodes[1].node.handle_msg1(rejected).await;
+        assert_eq!(owner(&nodes[1], &a), old_b);
+        let retained = nodes[1].node.get_connection(&losing_link).unwrap();
+        assert_eq!(retained.our_index(), Some(losing_index));
+        assert_eq!(
+            (retained.started_at(), retained.last_activity()),
+            (losing_start, losing_activity)
+        );
+        assert_eq!(resources(&nodes[1]), (1, 1, 2, 2));
+    }
 
     nodes[1].node.handle_msg1(request.clone()).await;
     assert!(

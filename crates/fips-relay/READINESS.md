@@ -2162,6 +2162,31 @@ a boundary waiting on a previously displaced local neighbor while rejecting the
 connecting router. The repair closes the demonstrated crossed-handshake gap;
 it does not establish crowded admission convergence or physical mobile readiness.
 
+A focused regression reproduces a second capacity conflict after elective UDP
+neighbor replacement. The displaced endpoint retains its old active peer and
+starts a full refresh. If the returning peer's simultaneous request wins the
+identity tie-break, the losing refresh still occupies the only candidate slot.
+The original code refuses that request until old state expires. Admission now
+reuses the existing candidate cleanup to retire that unanswered outgoing refresh
+only when identity, active carrier and pending carrier match the incoming request.
+Completed candidates and active keys remain protected; fresh encrypted proof is
+still required before replacement. No messages, timers or resource limits change.
+
+The native UDP/Noise regression fails before this fix and passes afterward. It
+checks corrupt requests, genuine requests replayed from another source address,
+exact request replay, old-frame replay rejection,
+continued decryption with the retained old keys, reciprocal fresh indices,
+unchanged attempt deadlines, bounded resources and bidirectional endpoint data.
+All 107 handshake compatibility tests pass. The repeated paid encounter delivers
+at 29.024/20.469 seconds and credits every hop at 29.835/21.078 seconds. All 168
+independent local originals arrive once, maximum local gaps are 1.133/4.001
+seconds, and all 1,536 test sats are collected. Strict core lint, the default core
+build, formatting and source-size checks pass. The additional source-address
+control and strict lint pass after that test-only extension. Tested source and
+dependency fingerprints remain stable throughout each gate.
+This closes the reproduced stale-refresh collision; broader crowded convergence
+and physical-router validation remain open.
+
 Reproduce with `cargo test -p fips-relay --features measurements --test
 priced_paths merge_split::crowded::automatic::repeated::repeated_full_rosters_recover_paid_routes_without_candidate_departures
 -- --exact --test-threads=1 --nocapture`, using the development dependencies in

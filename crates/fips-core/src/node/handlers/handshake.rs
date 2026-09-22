@@ -816,7 +816,7 @@ impl Node {
         // Keep the ordinary crossed-dial capacity rule independent of proof.
         let await_confirmation = replacing_neighbor || self.sessions.contains_key(&peer_node_addr);
         let rotation_started_at = self.neighbor_rotation_started_at(&peer_node_addr);
-        self.reclaim_crossed_rotation_dial(
+        self.reclaim_crossed_handshake_slot(
             &peer_node_addr,
             packet.transport_id,
             &packet.remote_addr,

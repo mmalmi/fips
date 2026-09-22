@@ -3,6 +3,45 @@ use crate::dataplane::FmpWireHeader;
 use crate::transport::{TransportAddr, TransportId};
 
 impl Node {
+    /// Make room for the winning crossed request within the existing limits.
+    /// An active peer keeps its keys until the fresh candidate proves them;
+    /// only its unanswered full refresh on the same carrier can be retired.
+    pub(super) async fn reclaim_crossed_handshake_slot(
+        &mut self,
+        peer: &NodeAddr,
+        transport: TransportId,
+        remote: &TransportAddr,
+    ) {
+        if !cross_connection_winner(self.node_addr(), peer, false)
+            || (self.outbound_handshake_slots() > 0 && self.outbound_link_slots() > 0)
+        {
+            return;
+        }
+        let rotating = self.neighbor_rotation_awaits_confirmation(peer);
+        let refreshing = self.peers.get(peer).is_some_and(|active| {
+            active.has_session()
+                && active.transport_id() == Some(transport)
+                && active.current_addr() == Some(remote)
+        });
+        let loser = self.peers.connection_iter().find_map(|(link, conn)| {
+            (conn.is_outbound()
+                && conn
+                    .expected_identity()
+                    .is_some_and(|id| id.node_addr() == peer)
+                && (rotating
+                    || (refreshing
+                        && conn.transport_id() == Some(transport)
+                        && conn.source_addr() == Some(remote)
+                        && conn.handshake_state() == crate::peer::HandshakeState::SentMsg1
+                        && !conn.has_session())))
+            .then_some(*link)
+        });
+        if let Some(link) = loser {
+            self.retire_connection_candidate(link, Some((transport, remote.clone())))
+                .await;
+        }
+    }
+
     /// Advertise a bounded incoming handshake reservation without activating it.
     /// Failed advertisements use the existing retry budget without renewing
     /// the candidate's original timeout; successful ones need only duplicate

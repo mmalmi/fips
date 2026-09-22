@@ -405,33 +405,6 @@ impl Node {
             && !self.peers.contains_key(peer)
     }
 
-    /// Resolve a crossed exploratory dial within the existing transient slots.
-    /// Only the losing pending handshake retires; no active peer is displaced.
-    pub(in crate::node) async fn reclaim_crossed_rotation_dial(
-        &mut self,
-        peer: &NodeAddr,
-        transport: TransportId,
-        remote: &TransportAddr,
-    ) {
-        if !self.neighbor_rotation_awaits_confirmation(peer)
-            || !crate::peer::cross_connection_winner(self.node_addr(), peer, false)
-            || (self.outbound_handshake_slots() > 0 && self.outbound_link_slots() > 0)
-        {
-            return;
-        }
-        let loser = self.peers.connection_iter().find_map(|(link, conn)| {
-            (conn.is_outbound()
-                && conn
-                    .expected_identity()
-                    .is_some_and(|id| id.node_addr() == peer))
-            .then_some(*link)
-        });
-        if let Some(link) = loser {
-            self.retire_connection_candidate(link, Some((transport, remote.clone())))
-                .await;
-        }
-    }
-
     /// Called only after an encrypted response to this fresh Msg2 authenticates
     /// and the inbound ACL is rechecked. Msg1 by itself is replayable.
     pub(in crate::node) fn confirm_neighbor_rotation_candidate(
