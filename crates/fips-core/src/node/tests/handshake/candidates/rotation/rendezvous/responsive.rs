@@ -5,9 +5,13 @@ use crate::node::wire::Msg2Header;
 #[path = "responsive_timing.rs"]
 mod timing;
 
+#[path = "responsive_population.rs"]
+mod population;
+use population::Population;
+
 const IDLE_SECS: u64 = 10;
 const INTERVAL_SECS: u64 = 2;
-const RESPONSIVE_ADDRESSES: [&str; 12] = [
+const RESPONSIVE_ADDRESSES: [&str; 20] = [
     "a",
     "b",
     "useful-a",
@@ -20,6 +24,14 @@ const RESPONSIVE_ADDRESSES: [&str; 12] = [
     "candidate-b-2",
     "candidate-a-3",
     "candidate-b-3",
+    "candidate-a-4",
+    "candidate-b-4",
+    "candidate-a-5",
+    "candidate-b-5",
+    "candidate-a-6",
+    "candidate-b-6",
+    "candidate-a-7",
+    "candidate-b-7",
 ];
 
 #[test]
@@ -52,6 +64,20 @@ fn run_encounters(
     repeated: bool,
     component_phase: Duration,
 ) {
+    run_population(
+        Population::baseline(candidates_per_boundary),
+        window,
+        repeated,
+        component_phase,
+    );
+}
+
+fn run_population(
+    population: Population,
+    window: Duration,
+    repeated: bool,
+    component_phase: Duration,
+) {
     run_large_stack_async_test("rotation-responsive-rendezvous", move || async move {
         let _guard = lock_large_network_test().await;
         let name = format!("rotation-responsive-rendezvous-{}", std::process::id());
@@ -61,19 +87,20 @@ fn run_encounters(
             ..Default::default()
         });
         register_sim_network(name.clone(), network.clone());
-        let addresses = &RESPONSIVE_ADDRESSES[..4 + 2 * candidates_per_boundary];
+        let addresses = &RESPONSIVE_ADDRESSES[..4 + 2 * population.candidates_per_boundary];
         let mut nodes = Vec::new();
         for (i, address) in addresses.iter().enumerate() {
             nodes.push(
                 make_node_with(&name, address, i < 2, |config| {
                     // Public test-only scalars keep identity-based discovery order reproducible.
-                    config.node.identity.nsec = Some(format!("{:02x}", i + 1).repeat(32));
+                    config.node.identity.nsec =
+                        Some(format!("{:02x}", population.scalar(i, addresses.len())).repeat(32));
                     // Keep normal handshake/retry policy, independently from the
                     // unanswered-dial fixture's deliberately short timeout.
                     config.node.rate_limit = Config::new().node.rate_limit;
                     assert_eq!(config.node.rate_limit.handshake_timeout_secs, 30);
                     config.node.neighbor_rotation = (i < 2).then_some(NeighborRotationConfig {
-                        idle_secs: IDLE_SECS,
+                        idle_secs: population.idle_secs,
                         interval_secs: INTERVAL_SECS,
                     });
                     config.transports.sim = TransportInstances::Single(SimTransportConfig {
@@ -86,6 +113,15 @@ fn run_encounters(
                 .await,
             );
         }
+        let mut identity_order: Vec<_> = (0..nodes.len()).collect();
+        identity_order.sort_unstable_by_key(|&i| *nodes[i].node.node_addr());
+        eprintln!(
+            "responsive population setup: {}",
+            json!({"candidates_per_boundary":population.candidates_per_boundary,
+                "first_scalar":population.first_scalar,"reversed":population.reversed,
+                "idle_secs":population.idle_secs,"interval_secs":INTERVAL_SECS,
+                "identity_order":identity_order,"maintenance_phase_ms":component_phase.as_millis()})
+        );
         let result = AssertUnwindSafe(exercise(
             &mut nodes,
             &network,
