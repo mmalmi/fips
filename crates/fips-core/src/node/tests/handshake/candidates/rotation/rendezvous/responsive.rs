@@ -9,6 +9,9 @@ mod timing;
 mod population;
 use population::Population;
 
+#[path = "responsive_queued.rs"]
+mod queued;
+
 const IDLE_SECS: u64 = 10;
 const INTERVAL_SECS: u64 = 2;
 const RESPONSIVE_ADDRESSES: [&str; 20] = [
@@ -78,6 +81,16 @@ fn run_population(
     repeated: bool,
     component_phase: Duration,
 ) {
+    run_population_with_queued_rejoin(population, window, repeated, component_phase, false);
+}
+
+fn run_population_with_queued_rejoin(
+    population: Population,
+    window: Duration,
+    repeated: bool,
+    component_phase: Duration,
+    queued_rejoin: bool,
+) {
     run_large_stack_async_test("rotation-responsive-rendezvous", move || async move {
         let _guard = lock_large_network_test().await;
         let name = format!("rotation-responsive-rendezvous-{}", std::process::id());
@@ -129,6 +142,7 @@ fn run_population(
             window,
             repeated,
             component_phase,
+            queued_rejoin,
         ))
         .catch_unwind()
         .await;
@@ -150,6 +164,7 @@ struct Observation {
     replacements: [usize; 2],
     ticks: usize,
     timing: timing::Ledger,
+    queued_original: Option<queued::Original>,
 }
 
 fn pending_attempts(node: &Node, ids: &[PeerIdentity]) -> Value {
@@ -189,6 +204,7 @@ impl Observation {
             timing: timing::Ledger::with_maintenance_phase(
                 component_phase.as_millis().try_into().unwrap(),
             ),
+            queued_original: None,
         }
     }
 
@@ -232,6 +248,9 @@ impl Observation {
     }
 
     async fn turn(&mut self, nodes: &mut [TestNode], ids: &[PeerIdentity]) {
+        if let Some(original) = &mut self.queued_original {
+            original.observe(nodes, ids, self.started);
+        }
         self.timing.observe(nodes, ids, self.started, "turn-entry");
         let due = if self.component_phase.is_zero() {
             // Preserve the original cold and repeated-control schedule/order.
@@ -284,6 +303,9 @@ impl Observation {
                 n.node.send_pending_tree_announces().await;
             }
             self.incumbents(nodes, ids, None);
+            if let Some(original) = &mut self.queued_original {
+                original.observe(nodes, ids, self.started);
+            }
             self.timing
                 .observe(nodes, ids, self.started, "maintenance-completed");
             snapshot(nodes, ids, self.started, "responsive-maintenance");
@@ -376,6 +398,9 @@ impl Observation {
             }
         }
         caps(nodes);
+        if let Some(original) = &mut self.queued_original {
+            original.observe(nodes, ids, self.started);
+        }
     }
 
     async fn round(
@@ -393,7 +418,18 @@ impl Observation {
         let mut received = Vec::new();
         loop {
             self.turn(nodes, ids).await;
-            receive_round_with_tag(endpoints, ids, &current.to_le_bytes(), flows, &mut received);
+            receive_round_with_tag_and_observer(
+                endpoints,
+                ids,
+                &current.to_le_bytes(),
+                flows,
+                &mut received,
+                |destination, source, payload| {
+                    self.queued_original.as_mut().is_some_and(|original| {
+                        original.receive(destination, source, payload, ids, self.started)
+                    })
+                },
+            );
             if received.len() == flows.len() {
                 return;
             }
@@ -452,6 +488,7 @@ async fn exercise(
     window: Duration,
     repeated: bool,
     component_phase: Duration,
+    queued_rejoin: bool,
 ) {
     let ids = identities(nodes);
     let mut observation = Observation::new(component_phase);
@@ -528,10 +565,17 @@ async fn exercise(
             )
             .await;
             useful_retained(nodes, &ids, &original);
+            if queued_rejoin {
+                observation.queued_original =
+                    Some(queued::Original::offer(nodes, &ids, observation.started).await);
+            }
         }
         network.set_link(addresses[0], addresses[1], SimLink::default());
         let exposed = tokio::time::Instant::now();
         observation.timing.exposed(observation.started);
+        if let Some(original) = &mut observation.queued_original {
+            original.exposed(observation.started);
+        }
         snapshot(
             nodes,
             &ids,
@@ -547,7 +591,14 @@ async fn exercise(
                 .await;
             useful_retained(nodes, &ids, &original);
             if reciprocal_bridge(nodes, &ids) {
-                bridge_at = Some(exposed.elapsed());
+                bridge_at.get_or_insert_with(|| exposed.elapsed());
+            }
+            if reciprocal_bridge(nodes, &ids)
+                && observation
+                    .queued_original
+                    .as_ref()
+                    .is_none_or(queued::Original::delivered)
+            {
                 let owners: Vec<_> = (0..2)
                     .map(|i| {
                         let peer = nodes[i].node.get_peer(ids[1 - i].node_addr()).unwrap();
@@ -599,6 +650,9 @@ async fn exercise(
             .timing
             .observe(nodes, &ids, observation.started, "final");
         observation.timing.summary(observation.started);
+        if let Some(original) = &observation.queued_original {
+            original.summary(nodes, &ids, observation.started);
+        }
         eprintln!(
             "responsive rendezvous outcome: {}",
             json!({"encounter":encounter,"maintenance_phase_ms":component_phase.as_millis(),
@@ -626,6 +680,9 @@ async fn exercise(
                 delivery_at.is_some_and(|elapsed| elapsed < window),
                 "encounter {encounter}: both native payload directions must complete within the same {window:?}"
             );
+        }
+        if let Some(original) = &observation.queued_original {
+            original.assert_delivered_within(window);
         }
     }
 }
