@@ -1683,6 +1683,26 @@ optimal monetary routes or malicious-relay resistance:
 - Keep normal management/Internet access separate from customer/relay discovery.
   Test new admission on isolated interfaces before changing the physical bench.
 
+### Denied discovery advertisements
+
+Transport discovery now checks outbound permission before reserving its bounded
+dial budget, matching LAN discovery. Previously, a denied new peer or denied
+alternate advertisement for an existing peer could consume the only poll slot;
+the later connection check rejected it, leaving an allowed neighbor undialed
+despite free capacity. The final connection path still rechecks permission.
+
+Three native Sim regressions reproduce that failure on the previous code and
+pass with the common prefilter. They cover an empty roster, an active refresh
+with spare peer capacity, and full-roster rotation with a separate idle victim.
+Each authenticates the allowed neighbor and delivers a fresh application payload;
+the active owner is retained and the denied advertiser's undrained receive queue
+stays empty. Repeated adverts retain the same pending attempt and resource caps.
+All 34 simulated discovery tests, the LAN regression, nine Bluetooth tests and
+strict core lint pass. Reproduce with core test filter
+`node::tests::sim_discovery::discovery_acl::` and the existing development dependency
+configuration. No timers, admission allowances or wire messages change. This
+fix does not explain the default-allow crowded timeout or establish radio mobility.
+
 ## Mobile routers are a first-class case
 
 A neighborhood means the currently reachable peers, not a fixed region or a

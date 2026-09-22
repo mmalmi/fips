@@ -71,6 +71,21 @@ impl Node {
                     continue;
                 };
 
+                // Denied new peers and active-path refreshes must leave this
+                // poll's bounded dial budget for eligible advertisements.
+                // Initiation still rechecks policy before allocating a carrier.
+                if self
+                    .authorize_peer(
+                        &identity,
+                        PeerAclContext::OutboundConnect,
+                        candidate_transport_id,
+                        &remote_addr,
+                    )
+                    .is_err()
+                {
+                    continue;
+                }
+
                 if self.peers.contains_key(&node_addr) {
                     let candidate = PeerAddress::new(
                         transport_name,
@@ -156,17 +171,6 @@ impl Node {
                 }
 
                 if self.neighbor_roster_full() && self.config.node.neighbor_rotation.is_some() {
-                    if self
-                        .authorize_peer(
-                            &identity,
-                            PeerAclContext::OutboundConnect,
-                            candidate_transport_id,
-                            &remote_addr,
-                        )
-                        .is_err()
-                    {
-                        continue;
-                    }
                     if connect_budget > 0 && self.path_candidate_attempt_budget(&node_addr) > 0 {
                         let now_ms = Self::now_ms();
                         let key = self.neighbor_rotation_discovery_order_with_hint(
