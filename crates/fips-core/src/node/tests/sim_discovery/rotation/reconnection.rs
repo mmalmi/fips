@@ -20,29 +20,49 @@ type Owner = (LinkId, Option<SessionIndex>, Option<SessionIndex>, u64);
 
 #[test]
 fn recently_lost_transit_neighbor_precedes_ordinary_discovery() {
-    run(Some((S, R)));
+    run(Some((S, R)), false);
 }
 
 #[test]
 fn heartbeat_only_lost_neighbor_keeps_ordinary_discovery_order() {
-    run(None);
+    run(None, false);
 }
 
 #[test]
 fn recently_lost_local_sender_neighbor_precedes_ordinary_discovery() {
-    run(Some((A, R)));
+    run(Some((A, R)), false);
 }
 
 #[test]
 fn recently_lost_local_receiver_neighbor_precedes_ordinary_discovery() {
-    run(Some((R, A)));
+    run(Some((R, A)), false);
 }
 
-fn run(before: Option<(usize, usize)>) {
+#[test]
+fn replaced_transit_neighbor_precedes_ordinary_discovery() {
+    run(Some((S, R)), true);
+}
+
+#[test]
+fn replaced_local_sender_neighbor_precedes_ordinary_discovery() {
+    run(Some((A, R)), true);
+}
+
+#[test]
+fn replaced_local_receiver_neighbor_precedes_ordinary_discovery() {
+    run(Some((R, A)), true);
+}
+
+#[test]
+fn heartbeat_only_replaced_neighbor_keeps_ordinary_discovery_order() {
+    run(None, true);
+}
+
+fn run(before: Option<(usize, usize)>, replace_before_timeout: bool) {
     run_large_stack_async_test("discovered-neighbor-reconnection", move || async move {
         let _guard = spanning_tree::lock_large_network_test().await;
         let name = format!(
-            "discovered-neighbor-reconnection-{}-{before:?}",
+            "discovered-neighbor-reconnection-{}-{before:?}-{replace_before_timeout}",
             std::process::id()
         );
         let network = SimNetwork::new(107);
@@ -65,9 +85,14 @@ fn run(before: Option<(usize, usize)>) {
         for (index, identity) in identities.iter().enumerate().skip(I) {
             nodes.push(make_node(&name, index, identity).await);
         }
-        let result = AssertUnwindSafe(exercise(&mut nodes, &network, before))
-            .catch_unwind()
-            .await;
+        let result = AssertUnwindSafe(exercise(
+            &mut nodes,
+            &network,
+            before,
+            replace_before_timeout,
+        ))
+        .catch_unwind()
+        .await;
         cleanup_nodes(&mut nodes).await;
         unregister_sim_network(&name);
         if let Err(panic) = result {
@@ -298,7 +323,12 @@ async fn wait_for(
     }
 }
 
-async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, before: Option<(usize, usize)>) {
+async fn exercise(
+    nodes: &mut [TestNode],
+    network: &SimNetwork,
+    before: Option<(usize, usize)>,
+    replace_before_timeout: bool,
+) {
     network.set_link(NAMES[A], NAMES[S], SimLink::default());
     nodes[A].node.poll_transport_discovery().await;
     authenticate(nodes, S).await;
@@ -361,9 +391,39 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, before: Option<(
             .has_traffic_for(&returning)
     );
 
-    // Only the physical link changes. Heartbeat maintenance, not explicit
-    // Disconnect or direct peer removal, retires both real authenticated owners.
+    // No explicit Disconnect or direct peer removal. In the replacement case,
+    // a real candidate commits before the remote's native link-death cleanup.
     network.set_link_up(NAMES[A], NAMES[R], false);
+    if replace_before_timeout {
+        wait_for(
+            nodes,
+            &mut traffic,
+            3,
+            "application use ages enough to prepare a replacement",
+            |nodes, _| {
+                nodes[A]
+                    .node
+                    .has_neighbor_preparation_opportunity(Node::now_ms())
+            },
+        )
+        .await;
+        network.set_link(NAMES[A], NAMES[I], SimLink::default());
+        nodes[A].node.poll_transport_discovery().await;
+        wait_for(
+            nodes,
+            &mut traffic,
+            3,
+            "real replacement promotes before link-death detection",
+            |nodes, _| reciprocal(nodes, A, I) && nodes[A].node.connection_count() == 0,
+        )
+        .await;
+        assert!(nodes[A].node.get_peer(&returning).is_none());
+        assert_eq!(
+            owner(nodes, R, A).1,
+            original.2,
+            "the remote still owns its original adjacency before heartbeat expiry"
+        );
+    }
     wait_for(
         nodes,
         &mut traffic,
@@ -382,11 +442,16 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, before: Option<(
             .index_allocator
             .is_allocated(original.1.unwrap())
     );
-    assert_eq!(nodes[A].node.peer_count(), 1);
+    assert_eq!(
+        nodes[A].node.peer_count(),
+        if replace_before_timeout { 2 } else { 1 }
+    );
     assert_eq!(nodes[A].node.connection_count(), 0);
 
-    network.set_link(NAMES[A], NAMES[I], SimLink::default());
-    nodes[A].node.poll_transport_discovery().await;
+    if !replace_before_timeout {
+        network.set_link(NAMES[A], NAMES[I], SimLink::default());
+        nodes[A].node.poll_transport_discovery().await;
+    }
     wait_for(
         nodes,
         &mut traffic,
