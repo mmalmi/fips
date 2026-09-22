@@ -444,6 +444,7 @@ pub(super) async fn capture_failure(
             "show_connections",
             "show_sessions",
             "show_cache",
+            "show_bloom",
             "show_routing",
         ] {
             let before_ms = start.elapsed().as_millis();
@@ -564,10 +565,12 @@ pub(super) async fn capture_failure(
                     .take(6)
                     .map(|entry| fields(entry, &["node_addr", "coords"]))
                     .collect(),
+                "show_bloom" => fields(&value, &["sequence", "peer_filters", "stats"]),
                 "show_routing" => fields(
                     &value,
                     &[
                         "forwarding",
+                        "discovery",
                         "error_signals",
                         "pending_lookups",
                         "pending_tun_packets",

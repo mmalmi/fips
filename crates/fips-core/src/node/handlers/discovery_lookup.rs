@@ -263,14 +263,19 @@ impl Node {
             // unanswered request retains its normal backoff.
             if plan.peers.is_empty() || !self.discovery_backoff.retry_unsent_with_route(dest) {
                 self.stats_mut().discovery.req_backoff_suppressed += 1;
-                debug!(
+                debug!(target: "fips_core::route_recovery",
                     node = %self.node_addr(),
                     target_node = %self.peer_display_name(dest),
+                    eligible_peers = ?plan.peers,
                     failures = self.discovery_backoff.failure_count(dest),
                     "Discovery lookup suppressed by backoff"
                 );
                 return;
             }
+            debug!(target: "fips_core::route_recovery",
+                node = %self.node_addr(), target = %dest, peers = ?plan.peers,
+                failures = self.discovery_backoff.failure_count(dest),
+                "Retrying unsent discovery on usable reachability");
         }
 
         // Queued traffic needs bounded lookup retries while reachability
@@ -628,6 +633,7 @@ impl Node {
                 queued_packets = pkt_count,
                 queued_endpoint_payloads = endpoint_count,
                 failures = failures,
+                unsent,
                 "Discovery lookup timed out, destination unreachable"
             );
             if let Some(packets) = queued.into_tun_packets() {

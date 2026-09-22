@@ -16,6 +16,7 @@ struct EncounterProfile {
     staged_root: bool,
     bridge_link: SimLink,
     finite_contacts: bool,
+    post_split_absence: Duration,
 }
 
 impl EncounterProfile {
@@ -24,6 +25,7 @@ impl EncounterProfile {
             seed: 126,
             staged_root,
             finite_contacts: false,
+            post_split_absence: Duration::ZERO,
             bridge_link: SimLink {
                 latency_ms: 2,
                 ..Default::default()
@@ -50,6 +52,18 @@ async fn repeated_full_rosters_recover_paid_routes_without_candidate_departures(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn root_change_full_rosters_recover_paid_routes_without_candidate_departures() {
     run(EncounterProfile::baseline(true)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn long_absence_reuses_paid_routes_with_full_rosters() {
+    assert_eq!(Config::new().node.rate_limit.handshake_timeout_secs, 30);
+    run(EncounterProfile {
+        seed: 139,
+        finite_contacts: true,
+        post_split_absence: Duration::from_secs(31),
+        ..EncounterProfile::baseline(false)
+    })
+    .await;
 }
 
 async fn crowded_split(bench: &Bench, candidates: &[Candidate]) -> bool {
@@ -120,6 +134,7 @@ async fn encounters(
                 "repeated full-roster split_ms={}",
                 start.elapsed().as_millis()
             );
+            hold_split(bench, profile.post_split_absence).await;
             let current = accounts(bench).await;
             retain(&checkpoint, &current, true);
             checkpoint = current;
@@ -270,6 +285,37 @@ async fn encounters(
         }
     }
     Ok(())
+}
+
+async fn hold_split(bench: &Bench, duration: Duration) {
+    if duration.is_zero() {
+        return;
+    }
+    // crowded_split already observed both former owners removed and both
+    // rosters refilled. Keep the physical link down beyond the former history
+    // expiry; the outer monitors continue local traffic and all resource checks.
+    let start = Instant::now();
+    loop {
+        for (boundary, remote) in [(2, 3), (3, 2)] {
+            assert!(
+                bench.nodes[boundary]
+                    .peers()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .all(|peer| peer.node_addr != *bench.peers[remote].node_addr()),
+                "an absent bridge must not regain an authenticated owner"
+            );
+        }
+        if start.elapsed() >= duration {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    eprintln!(
+        "repeated full-roster absence after owner removal_ms={}",
+        start.elapsed().as_millis()
+    );
 }
 
 async fn exercise_repeated(profile: EncounterProfile) {

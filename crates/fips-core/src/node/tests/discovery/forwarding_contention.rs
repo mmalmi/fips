@@ -11,6 +11,7 @@ use tokio::time::Instant;
 mod guards;
 mod reachable_after_backoff;
 mod rx_loop;
+mod shared_ingress;
 
 #[test]
 fn original_payload_crosses_uncontended_lookup() {

@@ -107,6 +107,7 @@ impl Node {
 
         // Record send and store the filter for change detection
         debug!(
+            node = %self.node_addr(),
             peer = %self.peer_display_name(peer_addr),
             seq = announce.sequence,
             est_entries = match sent_filter.estimated_count(max_fpr) {
@@ -228,6 +229,7 @@ impl Node {
         let now_ms = Self::now_ms();
 
         debug!(
+            node = %self.node_addr(),
             from = %self.peer_display_name(from),
             seq = announce.sequence,
             est_entries = match announce.filter.estimated_count(max_fpr) {

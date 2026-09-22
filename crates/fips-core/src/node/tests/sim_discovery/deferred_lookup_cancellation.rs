@@ -380,7 +380,8 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork) {
         "canceled selected waiter is not retried"
     );
 
-    // Same-ingress fresh traffic cannot reclaim the selected target's slot.
+    // Same-ingress fresh traffic waits for a new slot; it cannot reclaim the
+    // already charged slot of the canceled completion.
     let forwarded = nodes[0].node.stats().discovery.req_forwarded;
     let limited = nodes[0].node.stats().discovery.req_forward_rate_limited;
     send_request(nodes, 2, selected, 900).await;
@@ -422,6 +423,102 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork) {
             .coord_cache()
             .contains(&ids[1], Node::now_ms())
     );
-    assert_eq!(nodes[0].node.discovery_work_deadline_ms(), None);
+    finish_fresh_waiter(nodes, selected, forwarded).await;
     assert_eq!(owners(nodes), before_owners);
+}
+
+async fn finish_fresh_waiter(nodes: &mut [TestNode], selected: usize, forwarded: u64) {
+    let due = nodes[0]
+        .node
+        .discovery_work_deadline_ms()
+        .expect("fresh request owns the next permitted slot");
+    assert!(
+        due > Node::now_ms(),
+        "the canceled send's interval stays charged"
+    );
+    let original = nodes[0].node.recent_requests.get(&900).unwrap().clone();
+    let limited = nodes[0].node.stats().discovery.req_forward_rate_limited;
+    let duplicates = nodes[0].node.stats().discovery.req_duplicate;
+    send_request(nodes, 2, selected, 900).await;
+    send_request(nodes, 2, selected, 901).await;
+    let until = tokio::time::Instant::now() + Duration::from_millis(500);
+    loop {
+        process_available_packets(&mut nodes[..1]).await;
+        let stats = &nodes[0].node.stats().discovery;
+        if stats.req_duplicate == duplicates + 1 && stats.req_forward_rate_limited == limited + 1 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < until,
+            "repeated and fresh IDs reach relay"
+        );
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    let next = nodes[0].node.discovery_work_deadline_ms().unwrap();
+    assert!(
+        next.abs_diff(due) <= 2,
+        "a later ID cannot extend the first reservation"
+    );
+    assert!(
+        Node::now_ms() < due,
+        "both arrivals precede the reserved slot"
+    );
+    let retained = nodes[0].node.recent_requests.get(&900).unwrap();
+    assert_eq!(retained.admission_generation, original.admission_generation);
+    assert_eq!(retained.timestamp_ms, original.timestamp_ms);
+    assert_eq!(retained.from_peer, original.from_peer);
+    assert!(!retained.response_forwarded);
+    let received = nodes[selected].node.stats().discovery.req_received;
+    let duplicate_forwards = nodes[selected].node.stats().discovery.req_duplicate;
+    nodes[0].node.check_discovery_work(Node::now_ms()).await;
+    process_available_packets(nodes).await;
+    assert_eq!(nodes[0].node.stats().discovery.req_forwarded, forwarded);
+    assert!(!nodes[selected].node.recent_requests.contains_key(&900));
+    assert!(!nodes[selected].node.recent_requests.contains_key(&901));
+
+    let until = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        // Service actual production deadlines. No limiter, timer or queue
+        // state is advanced to make the reserved slot artificially available.
+        nodes[0].node.check_discovery_work(Node::now_ms()).await;
+        process_available_packets(nodes).await;
+        if nodes[0]
+            .node
+            .recent_requests
+            .get(&900)
+            .unwrap()
+            .response_forwarded
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < until,
+            "fresh request dispatches at its slot"
+        );
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    let target_received = nodes[selected].node.recent_requests.get(&900).unwrap();
+    assert!(
+        target_received.timestamp_ms + 2 >= due,
+        "reserved request was not forwarded early"
+    );
+    for _ in 0..2 {
+        nodes[0].node.check_discovery_work(Node::now_ms()).await;
+        process_available_packets(nodes).await;
+    }
+    assert_eq!(nodes[0].node.stats().discovery.req_forwarded, forwarded + 1);
+    assert_eq!(
+        nodes[selected].node.stats().discovery.req_received,
+        received + 1
+    );
+    assert_eq!(
+        nodes[selected].node.stats().discovery.req_duplicate,
+        duplicate_forwards,
+        "the canceled original and newly completed waiter are never resent"
+    );
+    assert!(
+        !nodes[selected].node.recent_requests.contains_key(&901),
+        "a fresh ID cannot replace the first waiting request"
+    );
+    assert_eq!(nodes[0].node.discovery_work_deadline_ms(), None);
 }

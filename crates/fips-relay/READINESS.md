@@ -2167,17 +2167,47 @@ and the 906-file source-size gate pass. These are local software results; the
 independent cold short-contact failure and physical mobile-radio acceptance remain
 open.
 
-The paid long-absence scenario still fails after this narrower fix. Its second
+Before the shared-ingress correction below, the paid long-absence scenario still
+failed after this narrower fix. Its second
 bridge connects at 28.890 seconds and shares a tree at 29.506 seconds, but none of
 the 12 fresh source-to-destination payloads arrives during the existing traffic
 window. All 1,536 test sats are collected. Both local streams remain complete
 without duplicates, and all source/dependency/lock guards pass. The passing native
 case therefore does not establish recovery of the crowded paid mesh; that
-regression remains an unintegrated diagnostic. Reproduce the integrated native
+regression was still an unintegrated diagnostic. Reproduce the integrated native
 case with `cargo test -p nvpn-fips-core --all-features --lib
 node::tests::discovery::forwarding_contention::reachable_after_backoff::
 -- --test-threads=1`, using the development overrides in
 [FUNDING-COSTS.md](FUNDING-COSTS.md).
+
+A detailed paid trace then shows the missing response despite genuine positive
+reachability. Two origins' requests reach a transit through the same authenticated
+neighbor, 33 ms apart. The first takes the target's forwarding slot; the second
+cannot join the deferred queue because it shares that ingress. Its final attempt
+expires before another request is permitted. The new four-node native UDP case
+reproduces this failure with a 17 ms collision and the original lookup deadline.
+
+The bounded deferred queue now accepts an ingress that aggregates multiple
+origins, preserving the two-second target interval, ingress tokens, one waiter
+per target, original request/carrier ownership and expiry. Dispatch still consumes
+the normal slot and token before awaiting transport. The unused previous-ingress
+field is removed. Repeated IDs cannot replace a waiter or extend its slot;
+cancellation cannot replay the charged send. First-waiter scheduling does not
+guarantee fairness against a continuously competing ingress.
+
+All ten native contention cases, 27 rate/backoff controls, three queue-bound
+controls and the strengthened real-send cancellation case pass, as do strict core
+lint and the 909-file source-size gate. The final-attempt native case delivers
+with 1.902 seconds remaining. The integrated paid long-absence case also passes:
+delivery resumes at 17.168/33.919 seconds and every-hop credit at 17.980/34.733
+seconds for the two encounters. Both local streams deliver all 143 originals
+without duplicates, with maximum gaps of 1.969/1.309 seconds. Channel identities,
+caps and budgets remain intact; all 1,536 test sats are collected. The existing
+60-second encounter limit and all source/dependency/lock guards are preserved.
+These are controlled software observations, not mobile-radio latency guarantees.
+Run the relay `priced_paths` filter
+`merge_split::crowded::automatic::repeated::long_absence_reuses_paid_routes_with_full_rosters`
+with the same development overrides to reproduce the paid scenario.
 
 The separate 400 ms cold-contact regression now passes. With an authenticated
 but unmeasured bridge, the first RTT report could re-arm an obsolete tree
