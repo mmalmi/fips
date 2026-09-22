@@ -228,40 +228,18 @@ pub(super) async fn finish(mut bench: bench::Bench, gate: ResponseGate) {
         (64 * funded.len() as u64, refunded)
     );
     let expected = [256 - paid, 1 + paid, 1, 1];
-    let collector = bench.root.path().join("collector");
-    for (wallet, expected) in bench.wallets.iter().zip(expected) {
-        let balance = load_mint_balance(wallet, bench.mint.url())
-            .await
-            .unwrap()
-            .balance_sat;
-        assert_eq!(balance, expected);
-        if balance != 0 {
-            let token = send_payment_token(wallet, bench.mint.url(), balance)
-                .await
-                .unwrap();
-            receive_payment_token(&collector, &token.token)
-                .await
-                .unwrap();
-        }
-        assert_eq!(
-            load_mint_balance(wallet, bench.mint.url())
-                .await
-                .unwrap()
-                .balance_sat,
-            0
-        );
-    }
-    assert_eq!(
-        load_mint_balance(&collector, bench.mint.url())
-            .await
-            .unwrap()
-            .balance_sat,
-        259
-    );
-    gate.stop().await;
     for task in bench.tasks.drain(..) {
         task.stop().await;
     }
+    assert_eq!(expected.iter().sum::<u64>(), 259);
+    bench::collect_wallets(
+        bench.root.path(),
+        &bench.wallets,
+        bench.mint.url(),
+        &expected,
+    )
+    .await;
+    gate.stop().await;
     drop(bench.controllers);
     drop(bench.services);
     for server in bench.quote_servers {

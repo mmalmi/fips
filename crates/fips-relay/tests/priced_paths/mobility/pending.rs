@@ -6,12 +6,20 @@ mod gate;
 pub(crate) use gate::{ResponseGate, interpose, interpose_promotion};
 #[path = "pending/promotion.rs"]
 mod promotion;
+#[path = "pending/settlement.rs"]
+mod settlement;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn lost_acceptance_does_not_pin_a_mobile_source_or_release_its_funding() {
     tokio::time::timeout(
         Duration::from_secs(300),
-        run(0, Scenario::InterruptedMobility, 114),
+        run(
+            0,
+            Scenario::InterruptedMobility {
+                lose_settlement: false,
+            },
+            114,
+        ),
     )
     .await
     .expect("interrupted paid mobility scenario deadline");
@@ -236,6 +244,16 @@ pub(crate) async fn exercise(
     // Link eviction can already have canceled the old TCP/FIPS responder. Do
     // not claim its reply reached the caller merely because we attempted it.
     eprintln!("interrupted mobility: late response release {released:?}");
+    let mut captured_settlement = if gate.holds_settlement() {
+        Some(settlement::interrupt(&mut driver, network, gate, &accepted, first).await)
+    } else {
+        None
+    };
+    let rejoined = if captured_settlement.is_some() {
+        Instant::now()
+    } else {
+        rejoined
+    };
     let started = Instant::now();
     let mut delivered = false;
     while started.elapsed() < Duration::from_secs(12) {
@@ -304,6 +322,15 @@ pub(crate) async fn exercise(
         "interrupted mobility: automatic refund observed {:.2}s after authenticated rejoin",
         automatic_refund_observed.unwrap().as_secs_f64()
     );
+    if let Some(captured) = &mut captured_settlement {
+        captured
+            .completed(&driver, rejoined + Duration::from_secs(30))
+            .await;
+        eprintln!(
+            "lost settlement report: automatic report, refund and both durable releases verified before explicit replay, rejoin_elapsed_ms={}",
+            rejoined.elapsed().as_millis()
+        );
+    }
     // Only after automatic completion, verify that an explicit replay returns
     // the same final report without another debit or refund.
     let report = tokio::time::timeout(
@@ -329,6 +356,9 @@ pub(crate) async fn exercise(
     assert_eq!(capital.wallet_debited_sat, 128);
     assert_eq!(capital.wallet_refunded_sat, report.refunded_sat);
     assert_eq!(capital.locked_sat, 64);
+    if let Some(captured) = &mut captured_settlement {
+        captured.replayed(&driver, &report).await;
+    }
     // The enclosing fixture reloads the source, delivers again, then settles
     // the original account and requires all 259 test sats to be conserved.
 }

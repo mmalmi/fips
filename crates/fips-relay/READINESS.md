@@ -1621,6 +1621,34 @@ call; reload and final collection conserve all 259 test sats. The held response 
 canceled by disconnection, so a consumed late success is covered separately by
 deterministic journal tests, not claimed for this network run.
 
+The lost-settlement-reply variant extends that same abandoned-account scenario.
+It holds every successful `Settled` reply after the real provider has closed at
+the test mint, imported its proceeds and saved its report. The buyer still has
+no report or refund. Both carrier edges to that provider are then cut and the
+held responses discarded. All four directed native memberships must become
+disconnected. The original provider continues delivering fresh traffic and its
+automatic payment is acknowledged while the unresolved channel remains locked.
+
+After native rejoin, the existing workers must recover the identical report,
+refund once and persist release on both sides within 30 seconds, before any
+explicit settlement replay or cleanup. Final signed payments, funding/channel
+and wallet-operation identities, policy and lifetime spending bounds remain
+unchanged. The explicit replay then returns the same report and financial totals.
+Controller/selector reload preserves the remaining route. Final settlement
+checks each wallet's expected proceeds and collects all 259 test sats, leaving
+every node wallet empty. Independent wallet inspection waits until controller
+workers stop, avoiding contention with background history retirement; automatic
+recovery acceptance happens before that shutdown.
+
+The new case, the original lost-acceptance case and both interrupted-promotion
+cases pass, alongside strict relay lint, formatting and the source-size gate.
+The response gate and wallet collector are shared with the existing fixtures.
+No production behavior or wire messages change. This is software evidence for
+two specific lost-reply boundaries with isolated test money, not physical-radio
+or power-loss acceptance. Reproduce with `cargo test -p fips-relay --features
+measurements --test priced_paths mobility::pending::settlement::`, using the
+development dependencies in [FUNDING-COSTS.md](FUNDING-COSTS.md).
+
 Review also reproduced two branches where equivalent concurrent source/transit
 offers could bind a watch to an unsaved offer ID. Both now bind the retained
 purchase; successful completion rechecks that exact purchase and the captured

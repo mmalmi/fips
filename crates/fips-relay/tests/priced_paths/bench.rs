@@ -1,8 +1,39 @@
 //! Shared real controller and test-money assembly for simulated carrier scenarios.
 use super::*;
-use cashu_service::simulation::MintProxy;
+use cashu_service::{receive_payment_token, send_payment_token, simulation::MintProxy};
 use fips_core::{FipsEndpointServiceReceiver, config::NeighborRotationConfig};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+pub(super) async fn collect_wallets(
+    root: &Path,
+    wallets: &[PathBuf],
+    mint: &str,
+    expected: &[u64],
+) {
+    assert_eq!(wallets.len(), expected.len());
+    let collector = root.join("collector");
+    for (wallet, expected) in wallets.iter().zip(expected) {
+        let balance = load_mint_balance(wallet, mint).await.unwrap().balance_sat;
+        assert_eq!(balance, *expected);
+        if balance != 0 {
+            let token = send_payment_token(wallet, mint, balance).await.unwrap();
+            receive_payment_token(&collector, &token.token)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            load_mint_balance(wallet, mint).await.unwrap().balance_sat,
+            0
+        );
+    }
+    assert_eq!(
+        load_mint_balance(&collector, mint)
+            .await
+            .unwrap()
+            .balance_sat,
+        expected.iter().sum::<u64>()
+    );
+}
 
 pub(super) struct Bench {
     pub root: tempfile::TempDir,
@@ -85,8 +116,11 @@ async fn start_inner(
     );
     let mesh = saturation || matches!(scenario, Scenario::MergeSplit);
     let recovery_timing = matches!(scenario, Scenario::RecoveryTiming);
-    let interrupted = matches!(scenario, Scenario::InterruptedMobility);
-    let mobile = matches!(scenario, Scenario::Mobility | Scenario::InterruptedMobility);
+    let interrupted = matches!(scenario, Scenario::InterruptedMobility { .. });
+    let mobile = matches!(
+        scenario,
+        Scenario::Mobility | Scenario::InterruptedMobility { .. }
+    );
     let changing_neighbors = mobile || matches!(scenario, Scenario::QualityChurn);
     let selection = scenario.selection_policy();
     let _ = tracing_subscriber::fmt()
@@ -412,7 +446,16 @@ async fn start_inner(
             interrupted_acceptance = Some(gate);
             incoming
         } else if interrupted && i == 2 {
-            let (incoming, gate) = mobility::pending::interpose(incoming, peers[0]);
+            let (incoming, gate) = mobility::pending::interpose(
+                incoming,
+                peers[0],
+                matches!(
+                    scenario,
+                    Scenario::InterruptedMobility {
+                        lose_settlement: true
+                    }
+                ),
+            );
             interrupted_acceptance = Some(gate);
             incoming
         } else {

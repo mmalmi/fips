@@ -1,6 +1,5 @@
 //! A withdrawn full promotion cannot strand its retired, already-used trial.
 use super::*;
-use cashu_service::{receive_payment_token, send_payment_token};
 use fips_relay::route_quotes::RouteOffer;
 use serde_json::Value;
 use std::collections::BTreeSet;

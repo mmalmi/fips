@@ -147,8 +147,11 @@ fn errors(controllers: &[Arc<Controller>]) -> Vec<(usize, String)> {
 async fn run(root_index: usize, scenario: Scenario, seed: u64) {
     let recovery_timing = matches!(scenario, Scenario::RecoveryTiming);
     let exhaust_trial = matches!(scenario, Scenario::Exhaustion);
-    let interrupted = matches!(scenario, Scenario::InterruptedMobility);
-    let mobile = matches!(scenario, Scenario::Mobility | Scenario::InterruptedMobility);
+    let interrupted = matches!(scenario, Scenario::InterruptedMobility { .. });
+    let mobile = matches!(
+        scenario,
+        Scenario::Mobility | Scenario::InterruptedMobility { .. }
+    );
     let selection = scenario.selection_policy();
     let bench::Bench {
         root,
@@ -650,27 +653,55 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
     // Settle both used neighbor channels, including the retired path. Their
     // accounting is retained across replacement; no source budget is reset.
     let channels: std::collections::BTreeSet<_> = history.iter().map(|p| &p.channel.id).collect();
+    let mut expected_balances = [256_u64, 1, 1, 1];
     for channel in channels {
-        controllers[0].settle_channel(channel).await.unwrap();
+        let report = controllers[0].settle_channel(channel).await.unwrap();
+        assert_eq!(report.fee_sat + report.receiver_fee_reserve_sat, 0);
+        let provider = history
+            .iter()
+            .find(|p| &p.channel.id == channel)
+            .unwrap()
+            .provider;
+        let provider = peers
+            .iter()
+            .position(|peer| *peer.node_addr() == provider)
+            .unwrap();
+        expected_balances[0] -= report.paid_sat;
+        expected_balances[provider] += report.paid_sat;
     }
     assert!(buyers[0].remaining_budget_sat().unwrap() <= remaining);
     assert_eq!(controllers[0].locked_capital_sat().await.unwrap(), 0);
+    // Recovery must finish before shutdown; independent wallet inspection
+    // then has exclusive ownership, including against history-retirement upkeep.
+    for task in tasks.drain(..) {
+        task.stop().await;
+    }
     let mut total = 0;
+    let mut balances = Vec::new();
     for wallet in &wallets {
-        total += load_mint_balance(wallet, mint.url())
+        let balance = load_mint_balance(wallet, mint.url())
             .await
             .unwrap()
             .balance_sat;
+        total += balance;
+        balances.push(balance);
     }
     assert_eq!(
         total, 259,
         "all isolated test money is conserved after settlement"
     );
+    assert_eq!(balances, expected_balances);
+    if matches!(
+        scenario,
+        Scenario::InterruptedMobility {
+            lose_settlement: true
+        }
+    ) {
+        bench::collect_wallets(root.path(), &wallets, mint.url(), &balances).await;
+        eprintln!("lost settlement report: all 259 test sats collected; all node wallets empty");
+    }
     if let Some(gate) = interrupted_acceptance {
         gate.stop().await;
-    }
-    for task in tasks.drain(..) {
-        task.stop().await;
     }
     drop(controllers);
     drop(services);
