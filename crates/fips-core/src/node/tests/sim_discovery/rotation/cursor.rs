@@ -51,10 +51,10 @@ async fn initial_full_roster_neighbor_is_not_repeated_before_other_candidates() 
             .unwrap();
         observed.push(selected);
         assert_caps(&nodes);
-        authenticate(&mut nodes, selected).await;
         if selected == initial {
             break;
         }
+        authenticate(&mut nodes, selected).await;
     }
     assert!(nodes.iter().all(|node| node.node.config.peers.is_empty()));
     cleanup_nodes(&mut nodes).await;
