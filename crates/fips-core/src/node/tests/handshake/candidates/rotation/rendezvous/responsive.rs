@@ -84,15 +84,15 @@ fn run_population(
     repeated: bool,
     component_phase: Duration,
 ) {
-    run_population_with_queued_rejoin(population, window, repeated, component_phase, false);
+    run_population_with_demand(population, window, repeated, component_phase, None);
 }
 
-fn run_population_with_queued_rejoin(
+fn run_population_with_demand(
     population: Population,
     window: Duration,
     repeated: bool,
     component_phase: Duration,
-    queued_rejoin: bool,
+    demand: Option<queued::Demand>,
 ) {
     run_large_stack_async_test("rotation-responsive-rendezvous", move || async move {
         let _guard = lock_large_network_test().await;
@@ -146,7 +146,7 @@ fn run_population_with_queued_rejoin(
                 window,
                 repeated,
                 component_phase,
-                queued_rejoin,
+                demand,
                 diagnose_miss: population.diagnose_miss,
             },
         ))
@@ -171,7 +171,7 @@ struct Observation {
     replacements: [usize; 2],
     ticks: usize,
     timing: timing::Ledger,
-    queued_original: Option<queued::Original>,
+    queued_originals: Vec<queued::Original>,
 }
 
 fn pending_attempts(node: &Node, ids: &[PeerIdentity]) -> Value {
@@ -212,7 +212,7 @@ impl Observation {
             timing: timing::Ledger::with_maintenance_phase(
                 component_phase.as_millis().try_into().unwrap(),
             ),
-            queued_original: None,
+            queued_originals: Vec::new(),
         }
     }
 
@@ -257,7 +257,7 @@ impl Observation {
     }
 
     async fn turn(&mut self, nodes: &mut [TestNode], ids: &[PeerIdentity]) {
-        if let Some(original) = &mut self.queued_original {
+        for original in &mut self.queued_originals {
             original.observe(nodes, ids, self.started);
         }
         self.timing.observe(nodes, ids, self.started, "turn-entry");
@@ -312,7 +312,7 @@ impl Observation {
                 n.node.send_pending_tree_announces().await;
             }
             self.incumbents(nodes, ids, None);
-            if let Some(original) = &mut self.queued_original {
+            for original in &mut self.queued_originals {
                 original.observe(nodes, ids, self.started);
             }
             self.timing
@@ -436,7 +436,7 @@ impl Observation {
             }
         }
         caps(nodes);
-        if let Some(original) = &mut self.queued_original {
+        for original in &mut self.queued_originals {
             original.observe(nodes, ids, self.started);
         }
     }
@@ -463,7 +463,7 @@ impl Observation {
                 flows,
                 &mut received,
                 |destination, source, payload| {
-                    self.queued_original.as_mut().is_some_and(|original| {
+                    self.queued_originals.iter_mut().any(|original| {
                         original.receive(destination, source, payload, ids, self.started)
                     })
                 },
@@ -523,7 +523,7 @@ struct EncounterOptions {
     window: Duration,
     repeated: bool,
     component_phase: Duration,
-    queued_rejoin: bool,
+    demand: Option<queued::Demand>,
     diagnose_miss: bool,
 }
 
@@ -537,7 +537,7 @@ async fn exercise(
         window,
         repeated,
         component_phase,
-        queued_rejoin,
+        demand,
         diagnose_miss,
     } = options;
     let ids = identities(nodes);
@@ -615,15 +615,19 @@ async fn exercise(
             )
             .await;
             useful_retained(nodes, &ids, &original);
-            if queued_rejoin {
-                observation.queued_original =
-                    Some(queued::Original::offer(nodes, &ids, observation.started).await);
+        }
+        if let Some(demand) = demand.filter(|demand| demand.encounter == encounter) {
+            for &source in demand.sources {
+                observation.queued_originals.push(
+                    queued::Original::offer(nodes, &ids, observation.started, encounter, source)
+                        .await,
+                );
             }
         }
         network.set_link(addresses[0], addresses[1], SimLink::default());
         let exposed = tokio::time::Instant::now();
         observation.timing.exposed(observation.started);
-        if let Some(original) = &mut observation.queued_original {
+        for original in &mut observation.queued_originals {
             original.exposed(observation.started);
         }
         snapshot(
@@ -646,9 +650,9 @@ async fn exercise(
             }
             if reciprocal_bridge(nodes, &ids)
                 && observation
-                    .queued_original
-                    .as_ref()
-                    .is_none_or(queued::Original::delivered)
+                    .queued_originals
+                    .iter()
+                    .all(queued::Original::delivered)
             {
                 let owners: Vec<_> = (0..2)
                     .map(|i| {
@@ -702,7 +706,7 @@ async fn exercise(
             .timing
             .observe(nodes, &ids, observation.started, "final");
         observation.timing.summary(observation.started);
-        if let Some(original) = &observation.queued_original {
+        for original in &observation.queued_originals {
             original.summary(nodes, &ids, observation.started);
         }
         eprintln!(
@@ -774,8 +778,8 @@ async fn exercise(
                 "encounter {encounter}: both native payload directions must complete within the same {window:?}"
             );
         }
-        if let Some(original) = &observation.queued_original {
-            original.assert_delivered_within(window);
+        for original in &observation.queued_originals {
+            original.assert_delivered_within(nodes, &ids, window);
         }
     }
 }
