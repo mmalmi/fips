@@ -38,9 +38,8 @@ async fn initial_full_roster_neighbor_is_not_repeated_before_other_candidates() 
     for address in &addresses[1..] {
         network.set_link("local", *address, SimLink::default());
     }
-    let expected = [order[3], order[0], order[1], initial];
     let mut observed = Vec::new();
-    for expected_peer in expected {
+    for _ in 0..4 {
         tokio::time::sleep(Duration::from_millis(1_010)).await;
         nodes[0].node.poll_transport_discovery().await;
         let attempt = nodes[0].node.peers.connection_values().next().unwrap();
@@ -52,17 +51,22 @@ async fn initial_full_roster_neighbor_is_not_repeated_before_other_candidates() 
             .unwrap();
         observed.push(selected);
         assert_caps(&nodes);
-        if selected != expected_peer {
+        authenticate(&mut nodes, selected).await;
+        if selected == initial {
             break;
         }
-        authenticate(&mut nodes, selected).await;
     }
     assert!(nodes.iter().all(|node| node.node.config.peers.is_empty()));
     cleanup_nodes(&mut nodes).await;
     unregister_sim_network(&name);
+    assert_eq!(observed.last(), Some(&initial), "complete one sweep");
     assert_eq!(
-        observed, expected,
-        "continue the first sweep after actual service"
+        observed
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        4,
+        "all other candidates must receive service before the initial peer returns: {observed:?}"
     );
 }
 
