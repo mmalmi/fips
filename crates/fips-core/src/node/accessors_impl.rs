@@ -149,16 +149,23 @@ impl Node {
         }
     }
 
+    pub(in crate::node) fn free_retired_peer_session_indices(
+        &mut self,
+        retired: &[PeerSessionIndex],
+    ) {
+        for retired in retired {
+            self.pending_outbound.remove(&retired.key);
+            let _ = self.index_allocator.free(retired.index);
+        }
+    }
+
     pub(in crate::node) fn finish_active_peer_session_replacement(
         &mut self,
         node_addr: &NodeAddr,
         replacement: &ReplacedActivePeerCurrentSession,
         context: &'static str,
     ) {
-        for retired in &replacement.retired_session_indices {
-            self.pending_outbound.remove(&retired.key);
-            let _ = self.index_allocator.free(retired.index);
-        }
+        self.free_retired_peer_session_indices(&replacement.retired_session_indices);
         if replacement.replay_suppressed_count > 0 {
             debug!(
                 peer = %self.peer_display_name(node_addr),

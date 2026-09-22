@@ -358,7 +358,11 @@ fn peer_lifecycle_registry_owns_fmp_rekey_tick_cutover_and_drain_mutation() {
     peers.insert(*drain_peer.node_addr(), drain);
     peers.insert(*early_drain_peer.node_addr(), early_drain);
 
-    assert!(peers.cutover_due_fmp_rekey(cutover_peer.node_addr(), Duration::ZERO));
+    assert!(
+        peers
+            .cutover_due_fmp_rekey(cutover_peer.node_addr(), Duration::ZERO)
+            .is_some()
+    );
     let cutover = peers
         .get(cutover_peer.node_addr())
         .expect("cutover peer should remain");
@@ -366,7 +370,11 @@ fn peer_lifecycle_registry_owns_fmp_rekey_tick_cutover_and_drain_mutation() {
     assert!(cutover.is_draining());
     assert_eq!(cutover.current_k_bit(), !cutover_k_bit);
 
-    assert!(!peers.cutover_due_fmp_rekey(responder_pending_peer.node_addr(), Duration::ZERO));
+    assert!(
+        peers
+            .cutover_due_fmp_rekey(responder_pending_peer.node_addr(), Duration::ZERO)
+            .is_none()
+    );
     assert!(
         peers
             .get(responder_pending_peer.node_addr())
@@ -375,7 +383,11 @@ fn peer_lifecycle_registry_owns_fmp_rekey_tick_cutover_and_drain_mutation() {
             .is_some()
     );
 
-    assert!(!peers.cutover_due_fmp_rekey(early_cutover_peer.node_addr(), Duration::from_secs(60)));
+    assert!(
+        peers
+            .cutover_due_fmp_rekey(early_cutover_peer.node_addr(), Duration::from_secs(60))
+            .is_none()
+    );
     assert!(
         peers
             .get(early_cutover_peer.node_addr())

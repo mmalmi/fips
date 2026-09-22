@@ -349,6 +349,30 @@ impl PeerLifecycleRegistry {
             )
         };
 
+        let retired_session_indices =
+            self.retire_superseded_session_indices(node_addr, old_indices, retained_indices);
+
+        let previous_owner = self
+            .active
+            .insert_session_index(new_session_index.key, *node_addr);
+        Some(ReplacedActivePeerCurrentSession {
+            old_link_id,
+            old_session_index,
+            retired_session_indices,
+            new_session_index: RegisteredPeerSessionIndex {
+                session_index: new_session_index,
+                previous_owner,
+            },
+            replay_suppressed_count,
+        })
+    }
+
+    fn retire_superseded_session_indices(
+        &mut self,
+        node_addr: &NodeAddr,
+        old_indices: Vec<PeerSessionIndex>,
+        retained_indices: Vec<PeerSessionIndex>,
+    ) -> Vec<PeerSessionIndex> {
         let mut retired_session_indices: Vec<PeerSessionIndex> = Vec::new();
         for old in old_indices {
             if !retained_indices
@@ -370,19 +394,20 @@ impl PeerLifecycleRegistry {
             }
         }
 
-        let previous_owner = self
-            .active
-            .insert_session_index(new_session_index.key, *node_addr);
-        Some(ReplacedActivePeerCurrentSession {
-            old_link_id,
-            old_session_index,
-            retired_session_indices,
-            new_session_index: RegisteredPeerSessionIndex {
-                session_index: new_session_index,
-                previous_owner,
-            },
-            replay_suppressed_count,
-        })
+        retired_session_indices
+    }
+
+    // A fresh handshake can cut over before an older receive epoch has drained.
+    pub(in crate::node) fn confirm_pending_peer_session(
+        &mut self,
+        node_addr: &NodeAddr,
+        received_k_bit: bool,
+    ) -> Option<Vec<PeerSessionIndex>> {
+        let peer = self.active.get_mut(node_addr)?;
+        let old_indices = Self::active_peer_session_indices(peer);
+        peer.confirm_pending_session(received_k_bit)?;
+        let retained_indices = Self::active_peer_session_indices(peer);
+        Some(self.retire_superseded_session_indices(node_addr, old_indices, retained_indices))
     }
 
     pub(in crate::node) fn install_pending_rekey_session_and_index(

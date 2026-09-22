@@ -409,17 +409,23 @@ impl Node {
         node_addr: &NodeAddr,
         received_k_bit: bool,
     ) -> bool {
-        let Some(peer) = self.peers.get_mut(node_addr) else {
-            return false;
-        };
-        if peer.pending_new_session().is_none()
+        if self
+            .peers
+            .get(node_addr)
+            .is_none_or(|peer| peer.pending_new_session().is_none())
             || !self
                 .dataplane
                 .confirm_fmp_owner_pending_receive_epoch(node_addr, received_k_bit)
-            || peer.confirm_pending_session(received_k_bit).is_none()
         {
             return false;
         }
+        let Some(retired) = self
+            .peers
+            .confirm_pending_peer_session(node_addr, received_k_bit)
+        else {
+            return false;
+        };
+        self.free_retired_peer_session_indices(&retired);
         self.ensure_current_session_index_registered(
             node_addr,
             "responder authenticated FMP rekey cutover",

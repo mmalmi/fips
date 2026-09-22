@@ -256,17 +256,20 @@ impl crate::node::PeerLifecycleRegistry {
         plan
     }
 
-    fn cutover_due_fmp_rekey(&mut self, node_addr: &NodeAddr, cutover_delay: Duration) -> bool {
-        let Some(peer) = self.active.get_mut(node_addr) else {
-            return false;
-        };
+    fn cutover_due_fmp_rekey(
+        &mut self,
+        node_addr: &NodeAddr,
+        cutover_delay: Duration,
+    ) -> Option<Vec<crate::node::PeerSessionIndex>> {
+        let peer = self.active.get(node_addr)?;
         if peer.pending_new_session().is_none()
             || peer.rekey_in_progress()
             || !peer.pending_rekey_cutover_due(cutover_delay)
         {
-            return false;
+            return None;
         }
-        peer.cutover_to_new_session().is_some()
+        let next_k_bit = !peer.current_k_bit();
+        self.confirm_pending_peer_session(node_addr, next_k_bit)
     }
 
     fn complete_due_fmp_rekey_drain(
@@ -527,12 +530,11 @@ impl Node {
 
         // Execute cutover for initiator side
         for node_addr in plan.cutover {
-            // Refresh the dataplane FMP owner with the now-current
-            // session so owner crypto/replay state follows the cutover.
-            if self
+            if let Some(retired) = self
                 .peers
                 .cutover_due_fmp_rekey(&node_addr, Duration::from_millis(FMP_CUTOVER_DELAY_MS))
             {
+                self.free_retired_peer_session_indices(&retired);
                 debug!(
                     peer = %self.peer_display_name(&node_addr),
                     "Rekey cutover complete (initiator), K-bit flipped"

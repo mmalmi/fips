@@ -147,6 +147,14 @@ async fn exercise_stale(nodes: &mut [TestNode; 2]) {
         Some(c_index)
     );
     assert!(nodes[0].node.get_peer(&b).unwrap().is_draining());
+    let superseded_a = nodes[0]
+        .node
+        .get_peer(&b)
+        .unwrap()
+        .previous_our_index()
+        .unwrap();
+    let refreshed_a = owner(&nodes[0], &b).our;
+    assert!(nodes[0].node.index_allocator.is_allocated(superseded_a));
     let c_proof = next_matching(&mut nodes[1], |packet| {
         FmpWireHeader::parse_encrypted(packet.data.as_slice())
             .is_ok_and(|header| header.receiver_idx() == c_index.as_u32())
@@ -208,6 +216,7 @@ async fn exercise_stale(nodes: &mut [TestNode; 2]) {
     .await
     .expect("the already-started D rekey must authenticate both current owners");
     assert_pair(nodes);
+    assert_retained_indices(&nodes[0], &b, superseded_a, refreshed_a);
     let current_a = owner(&nodes[0], &b);
     let current_b = owner(&nodes[1], &a);
     assert_eq!(current_b.link, original_b.link);
@@ -276,9 +285,79 @@ async fn exercise_stale(nodes: &mut [TestNode; 2]) {
     );
     assert_pair(nodes);
 
+    // Another real rekey starts while both peers still retain a draining
+    // epoch. Exercise retirement on the initiator as well as the responder.
+    assert!(nodes[0].node.get_peer(&b).unwrap().is_draining());
+    assert!(nodes[1].node.get_peer(&a).unwrap().is_draining());
+    let previous_b = nodes[1]
+        .node
+        .get_peer(&a)
+        .unwrap()
+        .previous_our_index()
+        .unwrap();
+    assert!(nodes[0].node.initiate_rekey(&b).await);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            for node in nodes.iter_mut() {
+                node.node.check_rekey().await;
+            }
+            heartbeat(nodes, 0).await;
+            heartbeat(nodes, 1).await;
+            process_available_packets(nodes).await;
+            if owner(&nodes[0], &b).our != current_a.our
+                && owner(&nodes[1], &a).our != current_b.our
+                && current_authenticated(&nodes[0], &b)
+                && current_authenticated(&nodes[1], &a)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("a subsequent real rekey must retire both superseded drain epochs");
+    assert_retained_indices(&nodes[0], &b, refreshed_a, current_a.our);
+    assert_retained_indices(&nodes[1], &a, previous_b, current_b.our);
+    let current_a = owner(&nodes[0], &b);
+    let current_b = owner(&nodes[1], &a);
+
     // First application sessions are created only after the stale-proof
-    // decision; actual bidirectional payload then uses the retained D owners.
+    // decision; actual bidirectional payload uses the latest rekey owners.
     deliver_both_directions(nodes).await;
     assert_eq!(owner(&nodes[0], &b), current_a);
     assert_eq!(owner(&nodes[1], &a), current_b);
+}
+
+fn assert_retained_indices(
+    node: &TestNode,
+    remote: &NodeAddr,
+    retired: SessionIndex,
+    previous: SessionIndex,
+) {
+    let peer = node.node.get_peer(remote).unwrap();
+    assert_eq!(peer.previous_our_index(), Some(previous));
+    assert!(
+        !node.node.index_allocator.is_allocated(retired),
+        "superseded drain index must be freed"
+    );
+    assert_eq!(
+        node.node
+            .peers
+            .lookup_session_index((node.transport_id, retired.as_u32())),
+        None
+    );
+    for index in [peer.our_index().unwrap(), previous] {
+        assert!(node.node.index_allocator.is_allocated(index));
+        assert_eq!(
+            node.node
+                .peers
+                .lookup_session_index((node.transport_id, index.as_u32())),
+            Some(*remote)
+        );
+    }
+    assert_eq!(
+        node.node.index_allocator.count(),
+        2,
+        "only current and draining FMP epochs remain"
+    );
 }

@@ -2083,6 +2083,14 @@ are retained as unmerged diagnostic regressions, not part of the passing accepta
 suite. No timer-only recommendation or runtime change follows from them; crowded
 admission progress needs further work before mobile readiness can be claimed.
 
+A separate bounded-displacement experiment kept the last elective victim from
+immediately taking an outgoing discovery slot back. Its three native controls
+pass, but only two of the seven population cases complete: three miss an
+encounter deadline, one finds an orphaned receive index, and one violates the
+original-owner retention assertion. This policy remains unmerged. The index
+failure led to the independently reproduced overlapping-rekey cleanup fix below;
+that correction does not establish convergence or validate the rejected policy.
+
 Reproduce with `cargo test -p fips-relay --features measurements --test
 priced_paths merge_split::crowded::automatic::repeated::repeated_full_rosters_recover_paid_routes_without_candidate_departures
 -- --exact --test-threads=1 --nocapture`, using the development dependencies in
@@ -2232,6 +2240,19 @@ cannot roll back a completed rekey. Disabling periodic rekeys still permits
 normal pending-session maintenance and ten-second retirement of old indices.
 Real UDP regressions cover quiet and healthy controls in both directions,
 obsolete proof after an actual overlapping rekey, and index retirement.
+
+An overlapping rekey could overwrite an already-draining receive epoch without
+releasing its index. The existing real-UDP stale-proof regression reproduces
+this on the unchanged runtime: the current and newest draining epochs own two
+indices while the allocator retains three. Rekey cutover now shares the same
+old-versus-retained index reconciliation as full-session replacement, on both
+initiator and authenticated responder paths. The regression checks dispatch and
+allocation retirement, preserves both retained indices, performs another real
+rekey while both peers drain, and delivers payload in both directions afterward.
+The final source passes 18 registry tests, 16 rekey-policy tests, 99 handshake
+tests (including all five same-path refresh controls), six direct/routed rekey
+tests and strict core lint. This fixes a resource leak under connection churn;
+it does not prove the larger crowding failure had this cause.
 
 Readiness proves possession of candidate keys, not continued remote admission.
 A four-node UDP regression delays a real request until the initiator's original
