@@ -7,11 +7,15 @@ mod witness;
 #[path = "repeated/loss.rs"]
 mod loss;
 
+#[path = "repeated/finite.rs"]
+mod finite;
+
 #[derive(Clone, Copy, Debug)]
 struct EncounterProfile {
     seed: u64,
     staged_root: bool,
     bridge_link: SimLink,
+    finite_contacts: bool,
 }
 
 impl EncounterProfile {
@@ -19,6 +23,7 @@ impl EncounterProfile {
         Self {
             seed: 126,
             staged_root,
+            finite_contacts: false,
             bridge_link: SimLink {
                 latency_ms: 2,
                 ..Default::default()
@@ -151,13 +156,20 @@ async fn encounters(
                     .any(|p| p.node_addr == *root.peer.node_addr() && p.connected)
             );
         }
-        let start = Instant::now();
         let network_before = bench.network.stats();
+        let start = if profile.finite_contacts && encounter == 0 {
+            // No bridge is established before these independently timed cuts.
+            // Cohort draining consumes part of the same sustained-contact limit.
+            finite::contacts(bench, &checkpoint, false).await.last_up()
+        } else {
+            Instant::now()
+        };
         eprintln!(
             "repeated full-roster exposure: {}",
             serde_json::json!({
                 "encounter": encounter,
-                "unix_ms": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),
+                "observed_unix_ms": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),
+                "elapsed_since_opening_ms": start.elapsed().as_millis(),
                 "nodes": bench.peers.iter().map(|peer| peer.node_addr().to_string()).collect::<Vec<_>>()
             })
         );
@@ -170,8 +182,10 @@ async fn encounters(
                     .set_link_up(&candidate.address, candidate.bridge.to_string(), true);
             }
         }
-        bench.network.set_link_up("2", "3", true);
-        tokio::time::timeout(Duration::from_secs(60), async {
+        if !profile.finite_contacts || encounter > 0 {
+            bench.network.set_link_up("2", "3", true);
+        }
+        tokio::time::timeout_at(start + Duration::from_secs(60), async {
             let mut first_bridge_ms = None;
             loop {
                 if first_bridge_ms.is_none() && bridge_epochs(bench).await.is_some() {
@@ -226,6 +240,9 @@ async fn encounters(
         );
         if profile.bridge_link.loss_probability > 0.0 && network.packets_dropped_loss == 0 {
             return Err("lossy encounter must observe actual transport loss before acceptance");
+        }
+        if profile.finite_contacts && encounter == 0 {
+            finite::contacts(bench, &checkpoint, true).await;
         }
     }
     Ok(())

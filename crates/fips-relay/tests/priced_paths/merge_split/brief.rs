@@ -62,22 +62,39 @@ struct Cohort {
 }
 
 #[derive(Debug, serde::Serialize)]
-struct ContactProgress {
-    warm: bool,
-    direction: usize,
-    window_us: [u64; 2],
-    offered_ids: Vec<u8>,
-    received_before_cut: BTreeMap<u8, u64>,
+pub(super) struct ContactProgress {
+    pub(super) warm: bool,
+    pub(super) direction: usize,
+    pub(super) window_us: [u64; 2],
+    pub(super) offered_ids: Vec<u8>,
+    pub(super) received_before_cut: BTreeMap<u8, u64>,
+    pub(super) received_after_cut: BTreeMap<u8, u64>,
+    pub(super) unobserved_at_deadline: Vec<u8>,
 }
 
-struct ContactResult {
+pub(super) struct ContactResult {
     last_up: Instant,
     contacts: Vec<ContactProgress>,
     duplicates: [usize; 2],
+    received_at_first_cut: [u64; 2],
+    dropped_while_down: u64,
 }
 
 impl ContactResult {
-    fn assert_progress(&self) {
+    pub(super) fn assert_carrier_interrupted(&self) {
+        assert!(
+            self.dropped_while_down > 0,
+            "the carrier schedule must interrupt real network traffic"
+        );
+    }
+
+    pub(super) fn last_up(&self) -> Instant {
+        self.last_up
+    }
+
+    /// Validate offered traffic without requiring every short contact to deliver.
+    /// Receives after its cut remain separate from before-cut progress.
+    pub(super) fn validate_offers(&self) -> &[ContactProgress] {
         assert_eq!(self.duplicates, [0, 0]);
         assert_eq!(
             self.contacts.len(),
@@ -89,6 +106,12 @@ impl ContactResult {
                 !contact.offered_ids.is_empty(),
                 "no fresh offer: {contact:?}"
             );
+        }
+        &self.contacts
+    }
+
+    fn assert_progress(&self) {
+        for contact in self.validate_offers() {
             assert!(
                 !contact.received_before_cut.is_empty(),
                 "contact ended without fresh payload delivery: {contact:?}"
@@ -250,6 +273,41 @@ async fn interrupted(
     warm: bool,
     clock: Option<Instant>,
 ) -> ContactResult {
+    let original_bridge = if warm {
+        Some(bridge(bench).await.unwrap())
+    } else {
+        None
+    };
+    let result = observer
+        .during_checked(contact_cohort(bench, warm, clock), || async {
+            retain(anchor, &accounts(bench).await, true);
+            assert_watches(bench).await;
+            if let Some(expected) = &original_bridge {
+                assert_eq!(
+                    bridge(bench).await.as_ref(),
+                    Some(expected),
+                    "warm flaps recreated an authenticated bridge peer"
+                );
+            }
+        })
+        .await;
+    result.assert_carrier_interrupted();
+    if warm {
+        assert!(result.received_at_first_cut.iter().all(|&n| n > 0));
+    }
+    result
+}
+
+/// Run the existing timed cuts and one-shot cohort without owning an observer.
+/// The caller supplies the initial link state: up for warm, down for cold.
+/// Crowded cold callers must also establish that no reciprocal bridge exists.
+/// Final link-up is followed by the existing cohort drain; use `last_up()` to
+/// anchor a recovery deadline to the physical opening, not this return time.
+pub(super) async fn contact_cohort(
+    bench: &Bench,
+    warm: bool,
+    clock: Option<Instant>,
+) -> ContactResult {
     let nodes = [bench.nodes[0].clone(), bench.nodes[5].clone()];
     let peers = [bench.peers[0], bench.peers[5]];
     let (port, tag, count, schedule) = if warm {
@@ -261,11 +319,6 @@ async fn interrupted(
         nodes[0].register_service_receiver(port).await.unwrap(),
         nodes[1].register_service_receiver(port).await.unwrap(),
     ];
-    let original_bridge = if warm {
-        Some(bridge(bench).await.unwrap())
-    } else {
-        None
-    };
     let before = bench.network.stats();
     let start = Instant::now() + Duration::from_millis(250);
     let cohort_start_us = start.duration_since(clock.unwrap_or(start)).as_micros() as u64;
@@ -295,29 +348,12 @@ async fn interrupted(
         )
     });
     let (mut events, mut traffic) = (None, None);
-    observer
-        .during_checked(
-            async {
-                while let Some(result) = drivers.join_next().await {
-                    match result.unwrap() {
-                        Finished::Flaps(value) => events = Some(value),
-                        Finished::Traffic(value) => traffic = Some(value),
-                    }
-                }
-            },
-            || async {
-                retain(anchor, &accounts(bench).await, true);
-                assert_watches(bench).await;
-                if let Some(expected) = &original_bridge {
-                    assert_eq!(
-                        bridge(bench).await.as_ref(),
-                        Some(expected),
-                        "warm flaps recreated an authenticated bridge peer"
-                    );
-                }
-            },
-        )
-        .await;
+    while let Some(result) = drivers.join_next().await {
+        match result.unwrap() {
+            Finished::Flaps(value) => events = Some(value),
+            Finished::Traffic(value) => traffic = Some(value),
+        }
+    }
     let events = events.unwrap();
     let traffic = traffic.unwrap();
     for pair in events.windows(2) {
@@ -327,9 +363,6 @@ async fn interrupted(
             actual >= planned / 2 && actual <= planned + planned / 2,
             "scheduled mesh interval collapsed or stretched: {pair:?}"
         );
-    }
-    if warm {
-        assert!(events[0].received.iter().all(|&n| n > 0));
     }
     for event in &events {
         assert!(event.mutation_us[0] <= event.mutation_us[1]);
@@ -363,10 +396,6 @@ async fn interrupted(
         );
     }
     let delta = bench.network.stats().delta_since(&before);
-    assert!(
-        delta.packets_dropped_down > 0,
-        "the carrier schedule must interrupt real network traffic"
-    );
     eprintln!(
         "brief carrier observations {}",
         serde_json::json!({
@@ -383,6 +412,8 @@ async fn interrupted(
         last_up: start + Duration::from_millis(last.actual_ms),
         contacts,
         duplicates: traffic.duplicates,
+        received_at_first_cut: events.iter().find(|event| !event.up).unwrap().received,
+        dropped_while_down: delta.packets_dropped_down,
     }
 }
 
@@ -416,12 +447,27 @@ fn contact_progress(warm: bool, events: &[Event], traffic: &Cohort) -> Vec<Conta
                         .and_then(|&at| (at >= start && at < end).then_some((*id, at)))
                 })
                 .collect();
+            let received_after_cut = offered_ids
+                .iter()
+                .filter_map(|id| {
+                    traffic.received[direction]
+                        .get(id)
+                        .and_then(|&at| (at >= end).then_some((*id, at)))
+                })
+                .collect();
+            let unobserved_at_deadline = offered_ids
+                .iter()
+                .filter(|id| !traffic.received[direction].contains_key(*id))
+                .copied()
+                .collect();
             let progress = ContactProgress {
                 warm,
                 direction,
                 window_us: [start, end],
                 offered_ids,
                 received_before_cut,
+                received_after_cut,
+                unobserved_at_deadline,
             };
             eprintln!(
                 "brief contact progress {}",
@@ -480,7 +526,7 @@ async fn exercise_brief(root_node: usize, seed: u64) {
     let warm_paid = recovered(&mut bench, &mut observer, 172).await;
     eprintln!(
         "brief warm: elapsed from recorded link-up observation to fresh bidirectional payloads and all-hop credit {:.3}s (includes cohort/drain/polling)",
-        warm_up.last_up.elapsed().as_secs_f64()
+        warm_up.last_up().elapsed().as_secs_f64()
     );
     for (channel, prior) in initial_paid {
         assert!(warm_paid[&channel] > prior);
@@ -526,7 +572,7 @@ async fn exercise_brief(root_node: usize, seed: u64) {
     timing.finish().await;
     eprintln!(
         "brief cold: elapsed from recorded link-up observation to fresh bidirectional payloads and all-hop credit {:.3}s (includes cohort/drain/polling)",
-        cold_up.last_up.elapsed().as_secs_f64()
+        cold_up.last_up().elapsed().as_secs_f64()
     );
     for (channel, prior) in warm_paid {
         assert!(paid[&channel] > prior);
