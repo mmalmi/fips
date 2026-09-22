@@ -7,6 +7,7 @@ pub(super) struct Population {
     pub first_scalar: u8,
     pub reversed: bool,
     pub idle_secs: u64,
+    pub diagnose_miss: bool,
 }
 
 impl Population {
@@ -16,6 +17,7 @@ impl Population {
             first_scalar: 1,
             reversed: false,
             idle_secs: IDLE_SECS,
+            diagnose_miss: false,
         }
     }
 
@@ -106,6 +108,7 @@ mod dense_identities {
     fn shifted_population() {
         repeated(Population {
             first_scalar: 33,
+            diagnose_miss: true,
             ..Population::baseline(8)
         });
     }

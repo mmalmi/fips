@@ -5,6 +5,7 @@ const MAX_TRANSITIONS_PER_BOUNDARY: usize = 256;
 
 #[derive(Default)]
 pub(super) struct Ledger {
+    pub(super) post_deadline_diagnostic: bool,
     maintenance_phase_ms: u64,
     last: [Option<Value>; 2],
     previous_read: [Option<[u64; 2]>; 2],
@@ -60,6 +61,7 @@ impl Ledger {
                 eprintln!(
                     "responsive timing transition: {}",
                     json!({"schema":1,"boundary":boundary,"phase":phase,
+                        "post_deadline_diagnostic":self.post_deadline_diagnostic,
                         "initial_maintenance_offset_ms":if boundary == 1 { self.maintenance_phase_ms } else { 0 },
                         "observation_ms":observed,
                         "previous_observation_ms":self.previous_read[boundary],
@@ -79,6 +81,7 @@ impl Ledger {
         eprintln!(
             "responsive timing summary: {}",
             json!({"schema":1,"observed_ms":elapsed_ms(started),
+                "post_deadline_diagnostic":self.post_deadline_diagnostic,
                 "maintenance_phase_ms":self.maintenance_phase_ms,
                 "bridge_exposure_ms":self.exposure_ms,"samples":self.samples,
                 "transitions_emitted":self.emitted,"transitions_omitted":self.omitted,
