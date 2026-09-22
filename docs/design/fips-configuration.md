@@ -205,8 +205,11 @@ among repeatedly joining identities.
 Ordinary discovery orders edges by the XOR of the two node identifiers, then
 continues cyclically after its last ordinary outgoing identity in that order.
 Both endpoints compute the same edge score; their candidate sets, cursors and
-admission windows remain independent. A first incoming attempt can seed that
-position; subsequent incoming attempts cannot reset it.
+admission windows remain independent. The learned admission that first fills the
+roster initializes the cursor, so an uninterrupted ordinary sweep visits the
+other candidates before returning to that initial neighbor. If the first rotation
+attempt is incoming, it sets the starting position instead. Later incoming
+attempts, including after expiry, cannot reset discovery progress.
 This prevents returning peers from repeatedly skipping another advertised
 neighbor when local discovery gets a turn. It does not guarantee a discovery
 turn while other candidates occupy all transient slots.

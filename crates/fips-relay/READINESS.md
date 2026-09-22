@@ -2250,6 +2250,43 @@ fingerprints remain stable during these checks, and the portable lock is
 restored. This is native simulation and loopback payment evidence; physical
 Wi-Fi discovery, roaming and radio performance remain unverified for this change.
 
+The accepted learned admission that first fills a roster now initializes the
+ordinary cursor. A native four-candidate control previously selected that initial
+neighbor again after authenticating only two alternatives; it now authenticates
+all three alternatives before selecting it again. The first incoming rotation can
+still replace this initial position, preserving escape from an unconfirmed
+request. Its existing pacing timestamp distinguishes the first attempt from later
+attempts, including after
+expiry. Later incoming attempts and promotions cannot rewind ordinary progress.
+This uses existing state and changes no messages, limits or deadlines. Initial
+spare-capacity inbound admission is not proof of fresh reciprocal ownership.
+
+With this initialization, the eight-candidate, ten-second-minimum-age cold
+encounter delivers at 51.127 seconds within its original 60-second window. The
+repeat encounter still fails that window: neither boundary attempts the bridge
+before the deadline while other candidates consume their ordinary turns. A
+diagnostic continuation observes the bridge at 79.011 seconds and original
+endpoint delivery at 79.046 seconds from the repeat exposure; it preserves the
+failed original assertion. All six other fixed population variants pass both
+encounters. The initialization improves first-sweep service, but does not supply
+a universal encounter bound; some other identity populations take longer.
+
+All 21 native discovery controls, 107 handshake controls and four original
+responsive-neighbor cases pass. The added expiry
+control sends two distinct unconfirmed incoming attempts with no outgoing turn
+between them. Both expire and release their indexes while preserving the initial
+neighbor's exact link, index and authentication time. The next ordinary attempt
+authenticates the healthy candidate that a repeated cursor reset would skip.
+
+The paid repeated-encounter regression also passes: delivery resumes at 21.899
+and 23.828 seconds, with credit on every hop at 22.818 and 24.438 seconds. Both
+independent local streams deliver all 80 original payloads without duplicates;
+their maximum delivery gaps are 2.870 and 3.738 seconds. All 1,536 test sats are
+collected. Strict core lint, the default core build, formatting and the source
+size check pass. Source/dependency fingerprints are unchanged throughout the
+gates and the portable lock is restored. This remains software evidence; the
+original dense repeat-encounter target and physical Wi-Fi acceptance remain open.
+
 Reproduce with `cargo test -p fips-relay --features measurements --test
 priced_paths merge_split::crowded::automatic::repeated::repeated_full_rosters_recover_paid_routes_without_candidate_departures
 -- --exact --test-threads=1 --nocapture`, using the development dependencies in
