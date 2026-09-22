@@ -2156,9 +2156,33 @@ starvation. The original 60-second assertion remains failed. Resource caps and
 the useful local traffic checks continue to hold. The isolated diagnostic source
 passes strict core lint and the 889-file size check; sources, dependencies and
 tested locks remain unchanged during the gates, and the portable lock is restored.
-These tests remain separate from the integrated runtime fix. The next bounded
-experiment compares one-way and reciprocal queued application demand under the
-same identities and limits; neither replaces background-discovery acceptance.
+These tests remain separate from the integrated runtime fix.
+
+Cold endpoint-demand controls retain that shifted population and all original
+limits. One original from boundary 0 starts a bridge attempt at 0.875 seconds,
+after boundary 1 selected a local candidate at 0.446 seconds. Lookup exhaustion
+removes the original at 15.932 seconds without an FSP session. The peers later
+complete matching Noise handshakes, but the remote incumbent does not mature until
+60.615 seconds; no reciprocal adjacency or delivery exists at the 60-second
+deadline. This is late admission, not an observed cryptographic failure.
+
+One original each way succeeds: both arrive exactly once at 10.816 seconds, with
+established FSP sessions and empty queues. The reverse one-way control also
+succeeds at 10.822 seconds. Boundary 1 starts first in both passing cases and
+reaches boundary 0 before it chooses another candidate. Mutual demand is therefore
+not required by these runs; the available receiver slot explains the directional
+difference. Queue, carrier, lookup and session transitions are observed without
+extending lookup lifetime, resubmitting originals or claiming that a post-start
+observation proves the selection reason. The original warm queued control still
+passes after the shared fixture refactor, delivering its one original at 20.093
+seconds after re-exposure. Strict core lint and file-size checks pass, and all gate
+fingerprints remain stable. No runtime policy or physical router changes.
+
+A discovery-only listening interval remains an unimplemented experiment. It must
+preserve traffic-driven attempts, earned retries and reserved outbound turns;
+pausing those could merely reverse the directional failure or block both sides.
+It must also retain deferred one-time BLE/LAN discoveries while continuing active
+path maintenance. Repeated Sim advertisements alone cannot verify that contract.
 
 #### Earlier crowded-admission experiments
 
