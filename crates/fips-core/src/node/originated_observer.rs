@@ -102,6 +102,7 @@ impl OriginatedSessionObservation {
             self.0
                 .observer
                 .complete(self.0.token, ForwardingOutcome::Submitted);
+            tracing::trace!(token = self.0.token, "Tracked session submission completed");
         }
     }
 }
@@ -124,10 +125,20 @@ impl OriginatedSessionPreparation {
         match self.0.prepare(intent) {
             OriginatedSessionAdmission::Defer => Ok((false, None)),
             OriginatedSessionAdmission::Untracked => Ok((true, None)),
-            OriginatedSessionAdmission::Track(token) => Ok((
-                true,
-                Some(OriginatedSessionObservation::from_token(&self.0, token)),
-            )),
+            OriginatedSessionAdmission::Track(token) => {
+                tracing::trace!(
+                    source = %intent.source,
+                    dest = %intent.destination,
+                    next_hop = %intent.next_hop,
+                    token,
+                    session_bytes = intent.session_bytes,
+                    "Tracked session submission reserved"
+                );
+                Ok((
+                    true,
+                    Some(OriginatedSessionObservation::from_token(&self.0, token)),
+                ))
+            }
             OriginatedSessionAdmission::Reject => Err(()),
         }
     }

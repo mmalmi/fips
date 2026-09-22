@@ -53,8 +53,17 @@ impl Node {
         msg_type: u8,
         payload: &[u8],
     ) -> Result<(), NodeError> {
-        self.send_dataplane_fsp_session_msg(dest_addr, msg_type, payload)
-            .await
+        let result = self
+            .send_dataplane_fsp_session_msg(dest_addr, msg_type, payload)
+            .await;
+        trace!(
+            dest = %dest_addr,
+            msg_type,
+            body_bytes = payload.len(),
+            submitted = result.is_ok(),
+            "Session control submission"
+        );
+        result
     }
 
     /// Send a standalone CoordsWarmup message to warm transit node caches.

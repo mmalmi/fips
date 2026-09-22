@@ -871,25 +871,38 @@ mobility, arbitrary mesh merge/split, throughput or production readiness.
 
 ## Guarded cadence measurement
 
-The accepted 17 September optimized loopback comparison covers
-250/500/1000/2000-ms policies with two opposite-order repetitions.
-All 285,696 packets arrived and all 40,960 test sats
-were conserved. Both sampling passes at every boundary show all six paying
-channels reconciled, with no pending payment or unmeasured payment/journal activity
-between windows. The validator rejects missing evidence, delivery loss, controller
-errors and unexpected idle work. Optional diagnostics add no financial authority.
+The accepted 23 September optimized loopback comparison covers
+250/500/1000/2000-ms policies with two opposite-order repetitions. All 285,696
+original packets arrived, all six channels settled in each trial, and all 40,960
+test sats were collected. Source, dependency, lock, analyzer and executable guards
+remain unchanged throughout measurement. All eight idle windows show no payment
+polling, signing, updates, payment records, attributed carriers or journal writes.
 
-The 22 September refresh delivers all originals and collects all test funds,
-but fails strict measurement acceptance: its carrier metadata is incomplete,
-and a diagnostic replay also detects buyer usage advancing between windows.
-The harness metadata is corrected; the original failed run remains rejected.
-The latest code has no accepted cadence comparison yet.
+The explicit schema-2 contract `boundary_accounting: "prepaid-usage-v1"` retains
+15 disjoint intervals per trial, including guards and gaps; integer costs
+reconcile exactly from first to last observation. Only monotonic usage covered
+by prior unchanged acknowledged credit may advance between windows. Payment,
+open/stop operations, journal activity, changed authorization or acknowledgments,
+and pending payments still reject the comparison. Delivery, credit limits and
+the common three-second tail are unchanged. Reports without this declaration
+retain strict usage equality; hardware reports keep their existing validation.
+All 120 analyzer tests and an independent static review pass.
 
-At high rate in the accepted run, 1 s/2 s produced 40 updates versus 59 at 250 ms, but CPU varied
-substantially across repeats; the 500-ms default remains unchanged. These are
-loopback observations with partial synchronous CPU, logical relay journal and
-application-record attribution. Full carrier cost,
-sustained capacity and impaired hardware measurements remain open. See
+A native idle diagnostic confirms that path-MTU confirmations and session reports
+consume 216 billable bytes per endpoint without new payment or journal work.
+That explains a legitimate class of prepaid usage growth; it does not identify
+the exact frames in the untraced 22 September report, which remains rejected.
+The fresh accepted matrix has no guard/gap usage increments, but includes all
+188.895 ms of guard/gap process CPU and 668 aggregate link bytes.
+
+At high rate, 500 ms averages 44 updates, 359.62 ms of payment CPU and 101.63 KiB
+of locally attributed payment carrier submissions; 1 s averages 40 updates,
+327.42 ms and 92.39 KiB, about 9% less in this workload. The 500-ms default remains
+unchanged. Two repetitions on a shared host do not establish an optimal policy.
+CPU attribution covers synchronous payment spans, storage covers logical relay
+journals, and carrier counters cover local submissions rather than full physical
+wire cost. Sustained capacity and impaired hardware measurements remain open;
+this software comparison does not revalidate the routers. See
 [the results and boundaries](CADENCE-RESULTS.md).
 
 The guarded hardware runner now has an accepted 250-ms pilot on three ARM64

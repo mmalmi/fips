@@ -1,6 +1,117 @@
 # Paid-relay cadence measurements
 
-## Latest loopback refresh — 22 September 2026
+## Accepted loopback comparison — 23 September 2026
+
+Five optimized relay processes run three paid forwarding hops over loopback UDP,
+with both directions funded. The four policies run twice in opposite order.
+All 285,696 original payloads arrive, with no loss, duplicates, reordering, invalid
+packets or rejected timestamps. All eight trials settle six channels each and
+collect all 40,960 test sats. Source, dependency, lock, analyzer and executable
+guards pass unchanged throughout the build and measurement.
+
+Costs below sum the five relay processes. Payment CPU covers synchronous signing,
+usage and update spans; process CPU includes their other work. Relay journal I/O
+is logical and excludes Cashu SQLite and physical writes. Payment-record bytes
+exclude their carrier. Locally attributed payment-service carrier submissions
+include inner TCP segments, acknowledgments and retransmissions, but exclude
+opaque transit, shared native control, kernel encapsulation and radio airtime.
+They are not complete network or physical-wire bytes.
+
+| Workload | Limit ms | Delivered / submitted | Payment CPU ms | Process CPU ms | Updates | Records KiB | Payment journal KiB | Local carrier KiB | Mean delay ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| idle | 250 | 0 / 0 | 0.00 | 446.65 | 0.0 | 0.00 | 0.00 | 0.00 | — |
+| idle | 500 | 0 / 0 | 0.00 | 451.46 | 0.0 | 0.00 | 0.00 | 0.00 | — |
+| idle | 1000 | 0 / 0 | 0.00 | 440.91 | 0.0 | 0.00 | 0.00 | 0.00 | — |
+| idle | 2000 | 0 / 0 | 0.00 | 392.13 | 0.0 | 0.00 | 0.00 | 0.00 | — |
+| bursty | 250 | 1024 / 1024 | 26.56 | 979.88 | 2.0 | 1.60 | 18.02 | 4.61 | 0.978 |
+| bursty | 500 | 1024 / 1024 | 23.13 | 1010.46 | 2.0 | 1.60 | 18.05 | 4.61 | 0.904 |
+| bursty | 1000 | 1024 / 1024 | 29.16 | 1048.83 | 2.0 | 1.60 | 18.11 | 4.61 | 0.866 |
+| bursty | 2000 | 1024 / 1024 | 27.04 | 960.26 | 2.0 | 1.60 | 18.12 | 4.61 | 0.871 |
+| steady | 250 | 6400 / 6400 | 228.72 | 3797.88 | 19.0 | 15.19 | 175.39 | 43.77 | 0.928 |
+| steady | 500 | 6400 / 6400 | 226.63 | 3773.42 | 19.0 | 15.19 | 175.66 | 43.77 | 0.919 |
+| steady | 1000 | 6400 / 6400 | 162.17 | 3446.81 | 14.0 | 11.19 | 130.75 | 32.25 | 0.894 |
+| steady | 2000 | 6400 / 6400 | 118.64 | 3471.00 | 10.0 | 8.00 | 94.50 | 23.04 | 0.828 |
+| high_rate | 250 | 64000 / 64000 | 527.73 | 6607.76 | 60.5 | 48.74 | 572.56 | 139.73 | 0.735 |
+| high_rate | 500 | 64000 / 64000 | 359.62 | 6206.70 | 44.0 | 35.46 | 414.91 | 101.63 | 0.729 |
+| high_rate | 1000 | 64000 / 64000 | 327.42 | 5897.56 | 40.0 | 32.24 | 374.97 | 92.39 | 0.726 |
+| high_rate | 2000 | 64000 / 64000 | 357.53 | 6498.45 | 40.0 | 32.24 | 376.59 | 92.39 | 0.769 |
+
+Delivery totals combine both repetitions; other values are means per workload
+window. All windows include the same three-second payment tail; idle also
+includes four quiet application seconds. These are offered workloads, not maximum
+capacity. The eight idle windows produce no payment polling, signing, updates,
+payment records, attributed payment carriers or relay-journal writes.
+
+### Complete observation boundaries
+
+This run explicitly declares `boundary_accounting: "prepaid-usage-v1"`.
+Each trial retains 15 disjoint intervals from the first idle guard through the
+final high-rate guard. Per-node and total integer counters reconcile exactly
+with the first-to-last readings. Setup, funding and settlement stay outside
+these observation bounds. Snapshots are non-atomic observations.
+
+Between workload windows, only monotonic usage already covered by unchanged
+acknowledged credit is permitted; authorization, acknowledgments and membership
+must remain unchanged, with no payment in flight. All payment/open/stop operations
+and journal changes remain rejected. Delivery, credit limits and the common tail
+are unchanged. Original reports without this contract retain strict equality.
+Hardware reports retain their existing validation and cannot opt into this
+schema-2 contract. JSON retains the complete costs; the old Markdown generator
+rejects this contract rather than omit its additional intervals.
+
+| Policy ms | Complete observed process CPU ms | Guard/gap CPU ms | Guard/gap link bytes |
+| --- | ---: | ---: | ---: |
+| 250 | 11856.829 | 24.654 | 0 |
+| 500 | 11467.135 | 25.096 | 0 |
+| 1000 | 10855.390 | 21.277 | 334 |
+| 2000 | 11345.270 | 23.420 | 0 |
+
+These are means per complete trial. Across eight trials the guards and gaps add
+188.895 ms of process CPU and 668 aggregate link bytes. They contain no payment
+carrier or prepaid-usage increments in this fresh run; the separate native idle
+diagnostic below and boundary tests exercise covered usage growth. Complete
+observed process CPU totals 91,049.249 ms. Payment CPU is part of process CPU,
+and journal details are already included in operation totals; do not add them
+again. The 120 analyzer tests and an independent static review pass.
+
+### Conclusions and limits
+
+At high rate the 500-ms policy averages 44 updates, 359.62 ms of measured payment
+CPU and 101.63 KiB of locally attributed payment carrier submissions. The 1-s
+policy averages 40 updates, 327.42 ms and 92.39 KiB: about 9% fewer updates/carrier
+bytes and 9% less measured payment CPU in this workload. The corresponding total
+process costs are 0.203 and 0.193 CPU-seconds per delivered MiB, including the
+common tail and all five processes. This does not establish a router cost.
+
+The 250-ms policy uses 60/61 high-rate updates; both 1-s and 2-s runs use 40.
+All high-rate p95 one-way delay histogram bounds are 2 ms. Monetary thresholds
+can trigger before the maximum payment age; a 2-s policy does not imply waiting
+two seconds under growing debt. Hard credit and spending bounds stay unchanged.
+
+| Maximum age | Payment CPU ms, two runs | Process CPU ms, two runs | All journal writes, two runs |
+| --- | --- | --- | --- |
+| 250 ms | 533.17 / 522.30 | 6,681.43 / 6,534.09 | 284 / 283 |
+| 500 ms | 360.61 / 358.64 | 6,171.45 / 6,241.96 | 236 / 236 |
+| 1000 ms | 301.70 / 353.13 | 5,485.77 / 6,309.36 | 221 / 221 |
+| 2000 ms | 340.21 / 374.84 | 6,144.33 / 6,852.57 | 222 / 221 |
+
+The run uses macOS ARM64, 14 logical CPUs and Rust 1.96.0. Compilation completes
+before measurement, with no concurrent tests/builds from this task. Unrelated
+host activity remains: initial load averages are 14.75/7.95/6.31, falling to
+4.19/5.29/5.61. Two repetitions on a shared host do not establish an optimal
+policy or attribute changes since the older build to an individual optimization.
+The 500-ms production default remains unchanged. Physical-device performance,
+impaired-link costs and complete payment wire attribution remain separate work.
+
+The matrix takes 432.97 seconds including setup and financial cleanup. Executable
+SHA-256: `36f174e1dc5ab04e2ece5b643f015b63db8f5e9249b36b722fc74080e206b5b8`.
+Raw report SHA-256:
+`81cb100ef84abafd0ba06be7fe1aeb2e632392bd32866e10699e53e453b99189`.
+This replaces the 17 September loopback table; its historical raw evidence and
+prior document revision remain retained. Unfunded return bootstrap has separate
+acceptance coverage.
+
+## Rejected loopback refresh — 22 September 2026
 
 The refresh on the integrated routing fixes **failed strict measurement
 acceptance**. All 285,696 original payloads arrived and all 40,960 test sats were
@@ -15,85 +126,21 @@ Payment-port traffic and payment-operation counters do not change across either
 gap. Periodic end-to-end path-MTU checks are a source-level candidate: they use
 billed session envelopes, and their ten-second interval coincides with setup
 plus idle and its tail. The aggregate snapshots do not identify those packets,
-so that cause remains unconfirmed. All workload, tail and acceptance rules are
-unchanged; this run establishes no current cadence or CPU comparison. The
-accepted results below describe their dated builds, not the latest routing code.
+so the exact cause in that untraced report remains unconfirmed. Neither replay
+alters its raw evidence or rejected status. The subsequent comparison above
+declares its accounting contract before measurement and uses fresh accounts.
 
-## Accepted loopback comparison — 17 September 2026
-
-Optimized build: **True**. Two opposite-order repetitions; five real service processes and three paid relays over loopback UDP.
-
-All costs below sum the five service processes. CPU is measured CPU time. Payment CPU covers synchronous signing, usage handling and balance update handling; it excludes scheduler, control-envelope serialization outside those spans, and transport CPU. Storage is logical relay journal I/O, excluding Cashu SQLite and physical writes. Record bytes exclude TCP/FIPS/carrier overhead. These are offered workloads, not maximum throughput.
-
-| Workload | Limit ms | Delivered / submitted | Payment CPU ms | All CPU ms | Updates | Payment records KiB | Payment journal writes | Mean delay ms |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| idle | 250 | 0 / 0 | 0.00 | 355.77 | 0.0 | 0.00 | 0.0 | — |
-| idle | 500 | 0 / 0 | 0.00 | 349.91 | 0.0 | 0.00 | 0.0 | — |
-| idle | 1000 | 0 / 0 | 0.00 | 365.48 | 0.0 | 0.00 | 0.0 | — |
-| idle | 2000 | 0 / 0 | 0.00 | 373.68 | 0.0 | 0.00 | 0.0 | — |
-| bursty | 250 | 1024 / 1024 | 31.68 | 953.90 | 2.0 | 1.60 | 8.0 | 0.828 |
-| bursty | 500 | 1024 / 1024 | 32.34 | 884.70 | 2.0 | 1.60 | 8.0 | 0.736 |
-| bursty | 1000 | 1024 / 1024 | 32.70 | 892.82 | 2.0 | 1.60 | 8.0 | 0.819 |
-| bursty | 2000 | 1024 / 1024 | 29.20 | 917.43 | 2.0 | 1.60 | 8.0 | 0.749 |
-| steady | 250 | 6400 / 6400 | 229.44 | 3241.05 | 19.0 | 15.19 | 76.0 | 0.739 |
-| steady | 500 | 6400 / 6400 | 228.57 | 3281.94 | 19.0 | 15.19 | 76.0 | 0.741 |
-| steady | 1000 | 6400 / 6400 | 151.80 | 3105.35 | 14.0 | 11.19 | 56.0 | 0.748 |
-| steady | 2000 | 6400 / 6400 | 105.50 | 3202.93 | 10.0 | 8.00 | 40.0 | 0.753 |
-| high_rate | 250 | 64000 / 64000 | 463.01 | 5634.83 | 59.0 | 47.53 | 236.0 | 0.592 |
-| high_rate | 500 | 64000 / 64000 | 423.98 | 6669.71 | 44.0 | 35.46 | 176.0 | 0.746 |
-| high_rate | 1000 | 64000 / 64000 | 315.20 | 5422.73 | 40.0 | 32.24 | 160.0 | 0.623 |
-| high_rate | 2000 | 64000 / 64000 | 359.65 | 6278.98 | 40.0 | 32.24 | 160.0 | 0.698 |
-
-Delivery totals combine both repetitions; other values are arithmetic means per observation window. Idle includes 4 seconds plus the common 3-second tail. Other windows include traffic, a bounded receive drain and the same tail. Raw trial summaries retain loss, CPU/GiB, timing quality and aggregate link counters. Impaired links, complete payment wire attribution and physical device performance remain separate work.
-
-## Verified payment boundaries
-
-This schema-2 experiment includes two complete status passes at every boundary.
-All six paying channels were reconciled, with no in-flight payment and no unknown
-acknowledgment. No payment activity or journal counter changes appeared between
-the guarded snapshots or workload windows. Every policy retained the same three-second tail;
-there was no forced flush or selective extension. The validator rejects incomplete
-delivery, controller errors, counter resets and unexpected idle work.
-
-All 285,696 measured packets (285,696,000 application bytes) arrived, with no
-observed duplicates, reordering, invalid packets or rejected timestamps. There
-were no controller errors. All eight idle windows had zero payment requests,
-updates, payment record bytes and journal writes. Each trial settled six channels
-and collected all 5,120 test sats; the complete matrix conserved 40,960 test sats.
-
-## Conclusions and limits
-
-Both high-rate repetitions used 59 updates at 250 ms, 44 at 500 ms and 40 at
-1 s or 2 s. The 1 s/2 s runs therefore used about 32% fewer payment updates and
-attributed payment journal writes than 250 ms. Total journal writes fell less,
-because independent durable-window checkpoints still preserve allowance.
-Monetary thresholds can trigger before the age limit; two seconds does not imply
-waiting two seconds under high debt growth. Hard credit and spending bounds are
-unchanged.
-
-CPU varied substantially between repeats. Preserve the ranges instead of treating
-the averages as evidence of an optimal policy:
-
-| Maximum age | Payment CPU ms, two runs | All service CPU ms, two runs | All journal writes, two runs | p95 one-way delay upper bound, two runs |
-| --- | --- | --- | --- | --- |
-| 250 ms | 379.05 / 546.97 | 4,484.63 / 6,785.03 | 281 / 279 | 1.00 / 2.00 ms |
-| 500 ms | 397.71 / 450.25 | 6,286.49 / 7,052.94 | 237 / 236 | 2.00 / 2.00 ms |
-| 1000 ms | 226.33 / 404.07 | 3,945.14 / 6,900.32 | 223 / 223 | 1.00 / 2.00 ms |
-| 2000 ms | 367.25 / 352.06 | 6,486.43 / 6,071.53 | 220 / 223 | 2.00 / 2.00 ms |
-
-This was macOS ARM64 on a 14-logical-CPU host, Rust 1.96.0, using an optimized
-release build with optional measurements. The run started after compilation,
-without concurrent builds or tests from this task. Unrelated host activity
-remained; initial one/five/fifteen-minute load averages were 9.29/7.64/6.36.
-Two repetitions on a shared host do not establish statistical significance or
-router performance. The 500-ms production default remains unchanged.
-
-The executable and all five repository input trees were unchanged throughout
-build and measurement. Executable SHA-256:
-`f6ae0d23196543351a82dbd477f4d8ec8ba650fd4dee1445e97ce2c794b755b9`.
-The matrix took 440.01 seconds including setup, warmup, observations and financial
-cleanup. Both directions were explicitly funded to keep the historical workload
-matched. Unfunded recipient bootstrap has separate acceptance coverage.
+A 23 September native idle diagnostic reproduces this kind of accounting change.
+Each endpoint completes 216 tracked session bytes: a 36-byte path-MTU
+confirmation, an 80-byte sender report and a 100-byte receiver report. Across
+137 observations over sixteen seconds, three buyers consume one additional msat
+of previously acknowledged credit. Authorizations and acknowledgments remain
+unchanged, as do all payment records, attributed carriers, measured operations
+and journal counters. All six channels settle and all 5,120 test sats are
+collected. This trace identifies actual billable upkeep in the diagnostic; it
+does not identify the packets in the earlier untraced report or retrospectively
+accept that matrix. The reproducible command is in the
+[experiment instructions](../../testing/relay-cadence/README.md#native-idle-control-diagnostic).
 
 ## Hardware comparison — 18 September 2026
 

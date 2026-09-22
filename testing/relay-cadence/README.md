@@ -21,7 +21,6 @@ FIPS_CADENCE_REPORT=/absolute/new-report.jsonl \
   cargo test -p fips-relay --release --features measurements \
   --test cadence_benchmark matched_cadence_matrix -- --ignored --exact --nocapture
 python3 testing/relay-cadence/analyze.py /absolute/new-report.jsonl > summary.json
-python3 testing/relay-cadence/analyze.py /absolute/new-report.jsonl --markdown > summary.md
 ```
 
 The output must not already exist. Each trial uses new isolated accounts; no
@@ -66,12 +65,21 @@ records issued/collected totals and the test network's conservation assertion.
 An incomplete run without those records is not an accepted matrix. Schema 2
 requires all six paying channels at both boundaries: acknowledged credit must
 cover current local usage and signed liability, with no payment job in flight.
-Each boundary has two complete sampling passes; progress, payment counters and
-journal counters must remain unchanged between them. This catches provider work
-finishing after an earlier provider snapshot but before a later buyer snapshot,
+Each boundary has two complete sampling passes. The loopback report declares
+`boundary_accounting: "prepaid-usage-v1"`: usage may increase between those passes
+only within previously acknowledged credit, with unchanged authorization and
+acknowledgment and no payment in flight. Payment and journal counters must remain
+unchanged. This catches provider work finishing after an earlier provider
+snapshot but before a later buyer snapshot,
 including at the last workload. Unknown acknowledgments, changed membership, and
-work observed between workload windows reject the comparison. The tail remains three seconds for every policy;
-no flush or selective extension makes a slow policy look complete.
+payment or durable work between workload windows reject the comparison. Every
+adjacent sampling interval retains its CPU, operation, journal, link, carrier
+and prepaid-usage deltas. Observed-trial totals include each interval once;
+workload rows retain their original bounds. Reports without this declared
+contract retain the older rule that any usage change in a gap rejects the run.
+The new contract applies to schema 2; hardware retains its existing acceptance.
+Use JSON to retain the complete interval evidence. The tail remains three seconds
+for every policy; no flush or selective extension makes a slow policy look complete.
 
 The clean-link validator also rejects partial submission, packet loss, duplicates,
 invalid data or timestamps, controller errors, and payment or journal activity
@@ -81,6 +89,30 @@ Raw failed reports remain available; a valid JSON report alone is not acceptance
 Two repetitions show variation but are not enough for statistical claims of an
 optimal policy. Historical schema-1 results lack the payment-boundary evidence
 and must be analyzed with their original analyzer revision.
+
+### Native idle-control diagnostic
+
+An ignored diagnostic reuses the same five-process funding, warmup and collection
+without offering the matrix workloads. It records sixteen seconds of idle
+status observations and retains private process traces. This is not a cadence
+comparison and the cadence analyzer must not accept it as one.
+
+```sh
+FIPS_RELAY_TEST_LOG=warn,fips_core::node::handlers::session=trace,fips_core::node::originated_observer=trace \
+FIPS_CADENCE_REPORT=/absolute/new-idle.jsonl \
+FIPS_CADENCE_DIAGNOSTIC_DIR=/absolute/new-idle-logs \
+  cargo test -p fips-relay --release --features measurements \
+  --test cadence_benchmark idle::observe_native_session_upkeep_accounting \
+  -- --ignored --exact --test-threads=1 --nocapture
+```
+
+The report and log directory must not already exist. Source traces identify
+control type/body length and tracked reservation bytes/token/completion; the
+snapshots retain buyer evidence and payment counters. Status reads are not
+atomic packet captures, so use the trace to identify actual submitted controls.
+Periodic native upkeep is billable session traffic under the negotiated tariff,
+even when it creates no new payment. Do not alter its timers to obtain a quiet
+benchmark boundary.
 
 ## Hardware report contract (schema 3)
 

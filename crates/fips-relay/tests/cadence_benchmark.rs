@@ -1,6 +1,8 @@
 //! Opt-in experiment over real service processes and isolated simulated money.
 #![cfg(all(unix, feature = "measurements"))]
 
+#[path = "cadence_benchmark/idle.rs"]
+mod idle;
 mod process_support;
 use cashu_service::{
     create_topup_quote, load_mint_balance, load_wallet_overview, receive_payment_token,
@@ -24,6 +26,12 @@ use std::{
 };
 
 const FUNDING: u64 = 1_024;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TrialMode {
+    Matrix,
+    IdleControl,
+}
 
 async fn sample(configs: &[ServiceConfig]) -> Vec<Value> {
     let mut values = Vec::new();
@@ -128,7 +136,7 @@ async fn workload(configs: &[ServiceConfig], npubs: &[String], name: &str, id: u
         "after_guard":after_guard, "probes":probes})
 }
 
-async fn trial(delay: u64, trial_id: usize, output: &mut std::fs::File) {
+async fn trial(delay: u64, trial_id: usize, output: &mut std::fs::File, mode: TrialMode) {
     let root = tempfile::tempdir().unwrap();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -250,19 +258,23 @@ async fn trial(delay: u64, trial_id: usize, output: &mut std::fs::File) {
         "native session warmup failed"
     );
     tokio::time::sleep(Duration::from_secs(3)).await;
-    for (index, name) in ["idle", "bursty", "steady", "high_rate"]
-        .into_iter()
-        .enumerate()
-    {
-        let data = workload(&configs, &npubs, name, (index as u64 + 1) * 100).await;
-        writeln!(
-            output,
-            "{}",
-            json!({"trial":trial_id, "max_delay_ms":delay, "data":data})
-        )
-        .unwrap();
-        output.flush().unwrap();
-        eprintln!("cadence={delay} trial={trial_id} workload={name} recorded");
+    if mode == TrialMode::IdleControl {
+        idle::observe(&configs, output).await;
+    } else {
+        for (index, name) in ["idle", "bursty", "steady", "high_rate"]
+            .into_iter()
+            .enumerate()
+        {
+            let data = workload(&configs, &npubs, name, (index as u64 + 1) * 100).await;
+            writeln!(
+                output,
+                "{}",
+                json!({"trial":trial_id, "max_delay_ms":delay, "data":data})
+            )
+            .unwrap();
+            output.flush().unwrap();
+            eprintln!("cadence={delay} trial={trial_id} workload={name} recorded");
+        }
     }
     // Settlement is outside the measurement windows, but conservation is required.
     let mut settled = 0;
@@ -273,6 +285,9 @@ async fn trial(delay: u64, trial_id: usize, output: &mut std::fs::File) {
     assert_eq!(settled, 6);
     for child in &mut children {
         stop(child).await;
+    }
+    if mode == TrialMode::IdleControl {
+        idle::retain_logs(&paths);
     }
     let redeemed = root.path().join("redeemed");
     let mut total = 0;
@@ -319,23 +334,28 @@ async fn trial(delay: u64, trial_id: usize, output: &mut std::fs::File) {
     output.flush().unwrap();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "matched multi-process measurement; run alone with --release and FIPS_CADENCE_REPORT"]
-async fn matched_cadence_matrix() {
+fn new_report() -> std::fs::File {
     use std::os::unix::fs::OpenOptionsExt;
     let path = std::env::var_os("FIPS_CADENCE_REPORT").expect("set a new output JSONL path");
-    let mut output = OpenOptions::new()
+    OpenOptions::new()
         .create_new(true)
         .write(true)
         .mode(0o600)
         .open(path)
-        .unwrap();
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "matched multi-process measurement; run alone with --release and FIPS_CADENCE_REPORT"]
+async fn matched_cadence_matrix() {
+    let mut output = new_report();
     writeln!(output, "{}", json!({"schema":2, "optimized":!cfg!(debug_assertions),
         "platform":std::env::consts::OS, "architecture":std::env::consts::ARCH,
         "nodes":5, "paid_relays":3, "funded_directions":2, "transport":"UDP loopback",
         "repeats":2, "unpaid_percent":50, "window_msat":4_000, "grace_msat":8_000,
         "channel_capacity_sat":256, "fee_msat_per_kib":1,
         "payment_service_carrier":true,
+        "boundary_accounting":"prepaid-usage-v1",
         "scope":"synchronous payment CPU; logical relay journal I/O; framed control bytes; local payment-service carrier submissions; aggregate link bytes",
         "excludes":"Cashu SQLite/physical writes, whole-network/physical carrier bytes, impaired links, radio performance"})).unwrap();
     for (trial_id, delay) in [250, 500, 1_000, 2_000, 2_000, 1_000, 500, 250]
@@ -344,7 +364,7 @@ async fn matched_cadence_matrix() {
     {
         tokio::time::timeout(
             Duration::from_secs(180),
-            trial(delay, trial_id, &mut output),
+            trial(delay, trial_id, &mut output, TrialMode::Matrix),
         )
         .await
         .expect("cadence trial deadline");
