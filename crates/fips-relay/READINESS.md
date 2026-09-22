@@ -2201,6 +2201,45 @@ remain stable and portable locks are restored. The listening code and its isolat
 tests remain unmerged: an open receiver slot can be taken by local incoming
 competition, so a listening delay alone does not coordinate service of an edge.
 
+A separate signed-callback experiment also remains unmerged (2026-09-22). It
+adds one 104-byte advisory response bound to the exact outstanding Msg1 and the
+expected responder identity. A busy receiver retains one permitted UDP/Sim
+return path under its completed candidate's original lease, then dials it after
+that candidate commits. The requester protects its existing attempt without
+changing Noise state, indices, resend credit or expiry. Invitations cannot chain,
+displace an earned retry, or obtain a renewed window through incoming transfer.
+This is an experimental datagram mechanism, not a released wire extension or a
+general policy for stream addresses.
+
+The native UDP control fails on baseline's absent reply and passes with the
+experiment. It captures the receiver's actual callback Msg1 before polling the
+requester's resend timer, checks exact resource ownership and inherited deadlines,
+rejects a forged signature and a signed response for a different request before
+accepting the genuine reply, and completes normal reciprocal authentication.
+It does not establish payload delivery, hostile-load behavior, complete expiry
+coverage or compatibility of a new wire phase across all transports.
+
+The unchanged cold-demand population still passes two cases and fails one.
+Reciprocal originals arrive once at 10.783 seconds; the reverse unilateral
+original arrives once at 10.754 seconds. For the failing unilateral direction,
+reciprocal admission now appears at 20.597 seconds (the bridge observation is
+20.997 seconds), but lookup exhaustion already removed the original at 16.026
+seconds. Serving the completed local candidate and then the callback incurs two
+ten-second minimum-age periods. The original remains undelivered at 60 seconds;
+neither its lifetime nor the admission ages were changed.
+
+Background discovery still has no bridge or endpoint delivery at 60.007 seconds
+or after the unchanged continuation through 180.017 seconds. Its first accepted
+cross-component invitation also demonstrates incompatible remaining lifetimes:
+the requester expires before the receiver's newly promoted incumbent becomes
+eligible for replacement. Merely acknowledging a future callback does not align
+those windows. Strict core lint, formatting and the 892-file size check pass;
+source/dependency fingerprints remain stable during each gate and portable locks
+are restored. The implementation and diagnostics are preserved in an isolated
+checkout, with no runtime integration or hardware changes. This rejects callback
+signalling alone as the crowded-admission solution; a useful next candidate must
+address both neighbor selection and compatible admission windows.
+
 #### Earlier crowded-admission experiments
 
 Earlier native population diagnostics exposed the admission-latency gap.
