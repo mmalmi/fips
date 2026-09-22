@@ -99,9 +99,14 @@ fn run(case: Case) {
         for (i, address) in ADDRESSES.iter().enumerate() {
             nodes.push(discovering_node(&name, address, i == 0).await);
         }
-        // Keep the still-advertising incumbent before B/C/D in real identity
+        // Keep the still-advertising incumbent before B/C/D in local discovery
         // order. Its later rediscovery must not change the measured cohort.
-        nodes[1..].sort_by_key(|node| *node.node.node_addr());
+        let (local, remotes) = nodes.split_at_mut(1);
+        remotes.sort_by_key(|node| {
+            local[0]
+                .node
+                .neighbor_rotation_order(*node.node.node_addr())
+        });
         network.set_link(
             ADDRESSES[0],
             nodes[1].addr.as_str().unwrap(),

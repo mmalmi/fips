@@ -107,14 +107,18 @@ async fn incoming_rotation_does_not_rewind_local_discovery_progress() {
         interval_secs: 1,
     });
     let mut order = [1, 2, 3];
-    order.sort_unstable_by_key(|index| *nodes[*index].node.node_addr());
+    order.sort_unstable_by_key(|index| {
+        nodes[0]
+            .node
+            .neighbor_rotation_order(*nodes[*index].node.node_addr())
+    });
     let [b, c, d] = order;
     let addresses = ["local", "candidate-a", "candidate-b", "candidate-c"];
     network.set_link("local", addresses[b], SimLink::default());
     nodes[0].node.poll_transport_discovery().await;
     authenticate(&mut nodes, b).await;
 
-    // B < C < D are actual identity order, not fabricated routing state. An
+    // B < C < D follow the local discovery order, not fabricated routing state. An
     // initial incoming C may seed exploration past itself, as in the existing
     // unconfirmed-first regression. The first genuine local turn then picks D.
     tokio::time::sleep(Duration::from_millis(1_010)).await;
@@ -133,6 +137,18 @@ async fn incoming_rotation_does_not_rewind_local_discovery_progress() {
         "the initial incoming C must not make discovery immediately retry C"
     );
     authenticate(&mut nodes, d).await;
+
+    // Real local exploration has reached D; D has not performed a rotation.
+    // The edge score is shared, while each endpoint owns its own wrap position.
+    let local_to_d = nodes[0]
+        .node
+        .neighbor_rotation_order(*nodes[d].node.node_addr());
+    let d_to_local = nodes[d]
+        .node
+        .neighbor_rotation_order(*nodes[0].node.node_addr());
+    assert_eq!(local_to_d.1, d_to_local.1, "reciprocal edge score");
+    assert!(local_to_d.0, "local cursor has reached D");
+    assert!(!d_to_local.0, "local exploration must not move D's cursor");
 
     // A fresh, fully confirmed C can legitimately return between maintenance
     // turns once D is idle. It must not rewind the local cursor from D to C:

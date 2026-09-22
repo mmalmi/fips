@@ -78,7 +78,13 @@ async fn denied_first_discovery_does_not_starve_allowed_rotation() {
 
     // Select the denied identity by the actual rotation order, independently
     // of random key generation or transport discovery enumeration order.
-    let (denied, allowed) = if nodes[2].node.node_addr() < nodes[3].node.node_addr() {
+    let (denied, allowed) = if nodes[0]
+        .node
+        .neighbor_rotation_order(*nodes[2].node.node_addr())
+        < nodes[0]
+            .node
+            .neighbor_rotation_order(*nodes[3].node.node_addr())
+    {
         (2, 3)
     } else {
         (3, 2)

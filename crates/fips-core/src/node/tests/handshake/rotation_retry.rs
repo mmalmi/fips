@@ -77,8 +77,11 @@ async fn exercise(node: &mut TestNode, case: Case) {
     let second = make_node();
     let mut target = make_node();
     let mut competitor = make_node();
-    // Control the raw cursor's ordering, not the runtime policy or its clocks.
-    if (target.node_addr() > competitor.node_addr()) != (case == Case::DemandRetryOnce) {
+    // Assign the required ordinary discovery order without changing policy or clocks.
+    if (node.node.neighbor_rotation_order(*target.node_addr())
+        > node.node.neighbor_rotation_order(*competitor.node_addr()))
+        != (case == Case::DemandRetryOnce)
+    {
         std::mem::swap(&mut target, &mut competitor);
     }
     let (_old_socket, old_source) = local_path().await;

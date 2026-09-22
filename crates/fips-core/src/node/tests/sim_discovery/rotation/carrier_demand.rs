@@ -55,11 +55,12 @@ fn run(case: Case) {
             .map(|byte| Identity::from_secret_bytes(&[byte; 32]).unwrap())
             .collect();
         // Ordinary fixed test scalars, with role ordering only: the still
-        // advertised I precedes B/C/R, so it cannot change the three-candidate
-        // comparison. No seed search or identity selected from test outcomes.
-        identities[I..=R].sort_by_key(|identity| *identity.node_addr());
-        let mut nodes = Vec::new();
-        for (index, identity) in identities.iter().enumerate() {
+        // advertised I precedes B/C/R in A's discovery order, so it cannot change
+        // the comparison. No seed search or identity selected from test outcomes.
+        let mut nodes = vec![make_node(&name, A, &identities[A]).await];
+        identities[I..=R]
+            .sort_by_key(|identity| nodes[A].node.neighbor_rotation_order(*identity.node_addr()));
+        for (index, identity) in identities.iter().enumerate().skip(I) {
             nodes.push(make_node(&name, index, identity).await);
         }
         let result = AssertUnwindSafe(exercise(&mut nodes, &network, case))

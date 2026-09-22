@@ -44,11 +44,15 @@ fn run(transit: bool) {
         let mut identities: Vec<_> = (1..=5)
             .map(|byte| Identity::from_secret_bytes(&[byte; 32]).unwrap())
             .collect();
-        // Fixed public test scalars, sorted only to make ordinary D precede R.
-        // No seed search, outcome-dependent identity choice, or cursor mutation.
-        identities[I..=R].sort_by_key(|identity| *identity.node_addr());
+        // Fixed public test scalars, sorted only to make D precede R in A's
+        // discovery order. No seed search, outcome-dependent choice, or cursor mutation.
         let mut nodes = Vec::new();
-        for (index, identity) in identities.iter().enumerate() {
+        for (index, identity) in identities.iter().enumerate().take(I) {
+            nodes.push(make_node(&name, index, identity).await);
+        }
+        identities[I..=R]
+            .sort_by_key(|identity| nodes[A].node.neighbor_rotation_order(*identity.node_addr()));
+        for (index, identity) in identities.iter().enumerate().skip(I) {
             nodes.push(make_node(&name, index, identity).await);
         }
         let result = AssertUnwindSafe(exercise(&mut nodes, &network, transit))
