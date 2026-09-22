@@ -5,6 +5,7 @@ use super::{LinkId, Node, NodeAddr, TransportAddr, TransportId};
 mod carrier;
 mod incoming;
 mod outgoing;
+mod reconnection;
 
 #[cfg(test)]
 mod demand_tests;
@@ -22,6 +23,7 @@ pub(super) struct NeighborRotation {
     exploration_due: bool,
     outbound_turn_until_ms: u64,
     interrupted_outgoing: Option<InterruptedOutgoing>,
+    lost_transit: std::collections::HashMap<NodeAddr, u64>,
 }
 
 struct Attempt {
@@ -378,7 +380,7 @@ impl Node {
             if outbound && !is_retry {
                 // Spend a demand turn when it starts, even if no reply arrives.
                 // Only ordinary exploration advances the cursor.
-                let demand = self.neighbor_rotation_prefers_demand(peer);
+                let demand = self.neighbor_rotation_prefers_demand(peer, now_ms);
                 self.neighbor_rotation.exploration_due = demand;
                 if !demand {
                     self.neighbor_rotation.cursor = Some(peer);
@@ -386,6 +388,9 @@ impl Node {
             } else if !outbound && self.neighbor_rotation.cursor.is_none() {
                 // Only the first inbound attempt can seed ordinary exploration.
                 self.neighbor_rotation.cursor = Some(peer);
+            }
+            if outbound {
+                self.forget_neighbor_reconnection(&peer);
             }
         }
         true
@@ -571,12 +576,18 @@ impl Node {
             .map(|attempt| attempt.deadline_ms)
     }
 
-    fn neighbor_rotation_prefers_demand(&self, peer: NodeAddr) -> bool {
-        !self.neighbor_rotation.exploration_due && self.peer_has_queued_application_demand(&peer)
+    fn neighbor_rotation_prefers_demand(&self, peer: NodeAddr, now_ms: u64) -> bool {
+        !self.neighbor_rotation.exploration_due
+            && (self.peer_has_queued_application_demand(&peer)
+                || self
+                    .neighbor_rotation
+                    .lost_transit
+                    .get(&peer)
+                    .is_some_and(|deadline| now_ms < *deadline))
     }
 
     /// Retry a presently offered interrupted attempt first, then alternate
-    /// queued application-carrier demand with ordinary cursor exploration.
+    /// current local demand or recently lost transit with ordinary exploration.
     pub(in crate::node) fn neighbor_rotation_discovery_order(
         &self,
         peer: NodeAddr,
@@ -589,7 +600,7 @@ impl Node {
             .is_some_and(|retry| retry.peer == peer && now_ms < retry.deadline_ms);
         (
             !preferred,
-            !self.neighbor_rotation_prefers_demand(peer),
+            !self.neighbor_rotation_prefers_demand(peer, now_ms),
             self.neighbor_rotation_order(peer),
         )
     }

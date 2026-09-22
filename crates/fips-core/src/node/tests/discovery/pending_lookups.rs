@@ -400,6 +400,19 @@ async fn established_session_keeps_path_recovery_lookup_and_endpoint_data() {
             false,
         ),
     );
+    // A PathBroken report can request recovery before new data is queued.
+    // Missing Bloom reachability is not an offline result for that session.
+    node.maybe_initiate_lookup(&target_addr).await;
+    assert!(!node.discovery_backoff.is_suppressed(&target_addr));
+    assert!(!node.pending_lookups.contains_key(&target_addr));
+    assert_eq!(node.stats().discovery.req_initiated, 0);
+
+    let unknown = *Identity::generate().node_addr();
+    node.maybe_initiate_lookup(&unknown).await;
+    assert!(node.discovery_backoff.is_suppressed(&unknown));
+    assert!(!node.pending_lookups.contains_key(&unknown));
+    assert_eq!(node.stats().discovery.req_initiated, 0);
+
     node.pending_session_traffic
         .push_endpoint_data_batch_with_enqueued_at_ms(
             target_addr,
@@ -466,14 +479,23 @@ async fn established_session_keeps_path_recovery_lookup_and_endpoint_data() {
         "an established authenticated session is not an unreachable destination"
     );
 
+    let exhausted_requests = node.stats().discovery.req_initiated;
+    node.check_pending_lookups(20_000).await;
+    node.retry_pending_session_traffic().await;
+    assert!(!node.pending_lookups.contains_key(&target_addr));
+    assert_eq!(node.stats().discovery.req_initiated, exhausted_requests);
+
     node.pending_session_traffic
         .remove_destination(&target_addr);
-    node.maybe_initiate_lookup(&target_addr).await;
+    for _ in 0..3 {
+        node.maybe_initiate_lookup(&target_addr).await;
+    }
     assert!(
         !node.pending_lookups.contains_key(&target_addr),
         "an idle established session does not reserve a lookup without local demand"
     );
-    assert!(node.discovery_backoff.is_suppressed(&target_addr));
+    assert!(!node.discovery_backoff.is_suppressed(&target_addr));
+    assert_eq!(node.stats().discovery.req_initiated, exhausted_requests);
 }
 
 #[test]

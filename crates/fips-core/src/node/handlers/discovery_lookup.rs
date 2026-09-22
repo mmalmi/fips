@@ -167,14 +167,16 @@ impl Node {
     /// [`Self::check_pending_lookups`] when each attempt's per-attempt timeout
     /// expires, using the sequence in `node.discovery.attempt_timeouts_secs`.
     pub(in crate::node) async fn maybe_initiate_lookup(&mut self, dest: &NodeAddr) {
-        self.maybe_initiate_lookup_with_purpose(dest, false, false).await;
+        self.maybe_initiate_lookup_with_purpose(dest, false, false)
+            .await;
     }
 
     /// An explicit route query needs the bounded first-contact retry ladder even
     /// though it has no queued application packet. Startup bloom convergence is
     /// not evidence that the requested destination is offline.
     pub(in crate::node) async fn maybe_initiate_route_query_lookup(&mut self, dest: &NodeAddr) {
-        self.maybe_initiate_lookup_with_purpose(dest, false, true).await;
+        self.maybe_initiate_lookup_with_purpose(dest, false, true)
+            .await;
     }
 
     async fn maybe_initiate_lookup_with_purpose(
@@ -240,7 +242,9 @@ impl Node {
                 if path_recovery {
                     self.pending_lookups.mark_path_recovery(dest);
                 }
-            } else {
+            } else if !self.sessions.contains_key(dest) {
+                // As with lookup exhaustion, an existing FSP owns recovery.
+                // Missing Bloom information must not suppress its next data.
                 self.discovery_backoff.record_failure(dest);
             }
             debug!(
@@ -262,9 +266,7 @@ impl Node {
         // queued traffic or degraded-route recovery; other callers stay
         // immediately retryable without creating an orphaned lookup.
         if sent == 0 {
-            if !queued_lookup
-                && !self.session_direct_path_degradation_active(dest, now_ms)
-            {
+            if !queued_lookup && !self.session_direct_path_degradation_active(dest, now_ms) {
                 self.pending_lookups.remove(dest);
             }
             debug!(
@@ -291,7 +293,8 @@ impl Node {
         if self.retry_pending.contains_key(dest) {
             self.maybe_initiate_direct_path_fallback_lookup(dest).await;
         } else {
-            self.maybe_initiate_lookup_with_purpose(dest, true, false).await;
+            self.maybe_initiate_lookup_with_purpose(dest, true, false)
+                .await;
         }
     }
 
@@ -463,7 +466,8 @@ impl Node {
             }
         }
 
-        self.maybe_initiate_lookup_with_purpose(dest, true, false).await;
+        self.maybe_initiate_lookup_with_purpose(dest, true, false)
+            .await;
     }
 
     /// Check pending lookups for next-attempt or final timeout.
@@ -563,22 +567,38 @@ impl Node {
     /// recovery of an established session. Requests already sent keep their
     /// normal retry cadence and timeout ownership.
     pub(in crate::node) async fn resume_unsent_lookup_after_filter(&mut self, from: &NodeAddr) {
-        let Some(peer) = self.peers.get(from).filter(|peer| {
-            self.is_tree_peer(from) && peer.can_send() && peer.is_healthy()
-        }) else {
+        let Some(peer) = self
+            .peers
+            .get(from)
+            .filter(|peer| self.is_tree_peer(from) && peer.can_send() && peer.is_healthy())
+        else {
             return;
         };
         let now_ms = Self::now_ms();
-        let targets: Vec<_> = self.pending_lookups.iter().filter_map(|(target, entry)| {
-            let timeout_ms = self.config.node.discovery.attempt_timeouts_secs
-                .get(usize::from(entry.attempt.saturating_sub(1))).copied().unwrap_or(0) * 1000;
-            (entry.awaiting_first_request()
-                && now_ms.saturating_sub(entry.last_sent_ms) < timeout_ms
-                && self.pending_session_traffic.has_traffic_for(target)
-                && peer.may_reach(target)).then_some(*target)
-        }).take(MAX_ROUTE_LOOKUPS_PER_PASS).collect();
+        let targets: Vec<_> = self
+            .pending_lookups
+            .iter()
+            .filter_map(|(target, entry)| {
+                let timeout_ms = self
+                    .config
+                    .node
+                    .discovery
+                    .attempt_timeouts_secs
+                    .get(usize::from(entry.attempt.saturating_sub(1)))
+                    .copied()
+                    .unwrap_or(0)
+                    * 1000;
+                (entry.awaiting_first_request()
+                    && now_ms.saturating_sub(entry.last_sent_ms) < timeout_ms
+                    && self.pending_session_traffic.has_traffic_for(target)
+                    && peer.may_reach(target))
+                .then_some(*target)
+            })
+            .take(MAX_ROUTE_LOOKUPS_PER_PASS)
+            .collect();
         for target in targets {
-            self.initiate_lookup(&target, self.config.node.discovery.ttl).await;
+            self.initiate_lookup(&target, self.config.node.discovery.ttl)
+                .await;
         }
     }
 

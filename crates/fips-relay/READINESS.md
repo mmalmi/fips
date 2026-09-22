@@ -2028,6 +2028,45 @@ failures. Reproduce the focused maturity cases with `cargo test -p nvpn-fips-cor
 --all-features --lib rotation_readiness::transferred:: -- --test-threads=1` and the
 same development dependencies.
 
+Recently used discovery-only transit neighbors now receive one expiring discovery
+preference after physical link-dead removal (2026-09-22). The history retains only
+identity and a frozen handshake-window expiry, stays within the current peer cap,
+and spends the existing alternating demand turn. New advertisements, link
+maintenance and failed attempts cannot renew it. Admission still uses current
+addresses, ACLs, capacity and fresh Noise proof; no route or paid authority is
+retained by this history. Admitted opaque transit is evidence of demand, not
+delivery. See the configuration policy for its qualification and retirement rules.
+
+Two native five-node cases distinguish a former transit relay from a heartbeat-only
+neighbor after simulated link loss, heartbeat cleanup and a refilled roster.
+The transit case fails on the prior policy's candidate selection. With the preference,
+it exposed a separate stalled-queue bug: an earlier PathBroken recovery probe with
+no queued data treated missing Bloom information as an offline result for an
+existing FSP session. The next original payload was suppressed before gaining
+lookup ownership, then remained queued after topology convergence. Missing Bloom
+information now follows the existing known-session exhaustion rule and does not
+record offline failure. Unknown destinations still back off, idle known sessions
+create no requests or pending lookups, and exhausted recovery does not restart
+through maintenance. Both unchanged native traffic/deadline cases then authenticate
+and deliver their original routed payload, without an extra submission.
+
+The full paid repeated-encounter run passes with bridge discovery at
+20.769/29.877 seconds, payload delivery at 29.003/32.766 seconds, and all-hop credit
+at 29.513/33.274 seconds. All 192 local originals arrive exactly once; maximum local
+gaps are 4.336/4.001 seconds under the unchanged five-second limit. All original
+channels and budgets are retained and all 1,536 test sats are collected. This
+addresses demonstrated selection and queue-recovery mechanisms. It does not
+establish general crowded convergence, performance across identity populations,
+or physical mobile-radio acceptance; earlier failed schedules remain evidence.
+
+The same frozen source and development dependencies pass 19 native discovery
+simulations, 75 lookup tests (one pre-existing 100-node case remains ignored),
+seven reconnection-policy controls, four carrier-demand controls, 99 handshake
+compatibility tests and the repeated native encounter with staggered maintenance.
+Strict all-feature/all-target core lint and the default core build also pass.
+Reproduce the new native cases with `cargo test -p nvpn-fips-core --all-features
+--lib node::tests::sim_discovery::rotation::reconnection:: -- --test-threads=1`.
+
 Reproduce with `cargo test -p fips-relay --features measurements --test
 priced_paths merge_split::crowded::automatic::repeated::repeated_full_rosters_recover_paid_routes_without_candidate_departures
 -- --exact --test-threads=1 --nocapture`, using the development dependencies in

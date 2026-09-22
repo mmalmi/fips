@@ -234,6 +234,21 @@ incoming attempts or failed scans do not replenish preference. When eligible, th
 one-use interrupted retry above stays ahead of both choices and continues its
 original turn without changing the cursor or the owed exploration turn.
 
+An unconfigured neighbor removed after physical link-dead detection can earn one
+rediscovery preference from recent admitted transit. The activity window includes
+the effective failure-detection timeout plus `idle_secs`; link maintenance and
+unadmitted local queues do not qualify. This history contains only identities and
+frozen expiries, capped by `max_peers`. Each entry expires one handshake timeout
+after detection, regardless of later configuration changes. A current advertisement
+can use it on the same alternating demand turn above, and starting an outgoing
+full-roster rotation attempt consumes it. Administrative removal and elective
+rotation do not create history. A new connection must carry new admitted transit
+before another physical loss can renew the preference. Opaque transit may include
+end-to-end control; this is evidence of demand, not successful delivery. Expired
+entries have no selection
+effect and are pruned on subsequent history insertion or peer-limit changes.
+Reducing the peer limit immediately trims this history; a zero limit clears it.
+
 Historical routes are not consulted. The preference does not bypass ACLs,
 capacity, incumbent protection or handshake
 deadlines, grant paid forwarding authority, or guarantee admission time. Ordinary
@@ -248,10 +263,14 @@ existing sessions keep their recovery state. A successfully installed handshake
 owns the queue through its normal retransmission and timeout lifecycle.
 
 Queued traffic on an established session also retains the bounded discovery retry
-ladder while neighbor reachability converges. An accepted filter update from a
-healthy, sendable tree peer can release an admitted lookup whose first request
-has not been attempted through an eligible peer, provided its current attempt is
-unexpired and local traffic is still queued. Each update considers at most 16
+ladder while neighbor reachability converges. In Tree routing, a missing Bloom
+advertisement alone does not mark an FSP-owned destination offline. A control-only
+recovery probe with no queued traffic emits no lookup and creates no failure
+backoff in that case. Explicit route queries still reserve their bounded ladder;
+unknown destinations retain normal failure suppression. An accepted filter update
+from a healthy, sendable tree peer can release an admitted lookup whose first
+request has not been attempted through an eligible peer, provided its current
+attempt is unexpired and local traffic is still queued. Each update considers at most 16
 eligible destinations. Requests
 already attempted keep their normal retry cadence, including after a send error;
 neither the attempt number nor its deadline is reset. Session-owned queues retain

@@ -783,7 +783,11 @@ impl Node {
             );
             if !preserve_for_configured_reconnect {
                 self.abandon_fmp_rekey_for_peer(&dead_peer.node_addr, "link-dead direct path");
-                self.remove_active_peer(&dead_peer.node_addr);
+                self.remove_link_dead_discovered_peer(
+                    &dead_peer.node_addr,
+                    now_ms,
+                    dead_peer.effective_dead_timeout,
+                );
                 continue;
             }
             self.record_link_dead_path_failure(&dead_peer.node_addr, now_ms)

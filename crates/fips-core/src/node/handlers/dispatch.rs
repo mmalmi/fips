@@ -182,6 +182,7 @@ impl Node {
     }
 
     fn remove_active_peer_inner(&mut self, node_addr: &NodeAddr, preserve_end_to_end: bool) {
+        self.forget_neighbor_reconnection(node_addr);
         let removed_peer = match self.peers.remove_with_session_indices(node_addr) {
             Some(removed) => removed,
             None => {
