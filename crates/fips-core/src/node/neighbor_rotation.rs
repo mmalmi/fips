@@ -565,7 +565,7 @@ impl Node {
         &self,
         peer: NodeAddr,
         now_ms: u64,
-    ) -> (bool, bool, (bool, NodeAddr)) {
+    ) -> (bool, bool, (bool, [u8; 16])) {
         let preferred = self
             .neighbor_rotation
             .interrupted_outgoing
@@ -578,14 +578,19 @@ impl Node {
         )
     }
 
-    /// Continue after the last ordinary outgoing identity. Demand and retries
-    /// wrap this key without moving the exploration cursor.
-    pub(in crate::node) fn neighbor_rotation_order(&self, peer: NodeAddr) -> (bool, NodeAddr) {
+    /// Both endpoints give an edge the same score. Continue cyclically after
+    /// the last ordinary attempt; demand and retries leave that cursor intact.
+    pub(in crate::node) fn neighbor_rotation_order(&self, peer: NodeAddr) -> (bool, [u8; 16]) {
+        let score = self.neighbor_rotation_edge_score(peer);
         (
             self.neighbor_rotation
                 .cursor
-                .is_some_and(|cursor| peer <= cursor),
-            peer,
+                .is_some_and(|cursor| score <= self.neighbor_rotation_edge_score(cursor)),
+            score,
         )
+    }
+
+    fn neighbor_rotation_edge_score(&self, peer: NodeAddr) -> [u8; 16] {
+        std::array::from_fn(|index| self.node_addr().as_bytes()[index] ^ peer.as_bytes()[index])
     }
 }

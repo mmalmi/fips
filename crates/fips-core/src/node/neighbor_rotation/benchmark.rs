@@ -290,7 +290,7 @@ fn discovery_query(node: &Node, candidates: &[NodeAddr], batches: usize) -> (u64
                 u64::from(key.0)
                     + 2 * u64::from(key.1)
                     + 4 * u64::from(key.2.0)
-                    + u64::from(key.2.1.as_bytes()[15]),
+                    + u64::from(key.2.1[15]),
             );
         }
     }
@@ -314,12 +314,14 @@ fn discovery_key_cpu_by_queued_destination_count() {
         let node = queued_discovery_node(queued, direct_hits);
         let mut expected_per_batch = 0u64;
         for candidate in &candidates {
+            let score: [u8; 16] = std::array::from_fn(|index| {
+                node.node_addr().as_bytes()[index] ^ candidate.as_bytes()[index]
+            });
             assert_eq!(
                 node.neighbor_rotation_discovery_order(*candidate, NOW_MS),
-                (true, !direct_hits, (false, *candidate))
+                (true, !direct_hits, (false, score))
             );
-            expected_per_batch +=
-                1 + 2 * u64::from(!direct_hits) + u64::from(candidate.as_bytes()[15]);
+            expected_per_batch += 1 + 2 * u64::from(!direct_hits) + u64::from(score[15]);
         }
         let mut batches = 1;
         // Bound calibration even on extremely fast clocks. Neither the fixed
