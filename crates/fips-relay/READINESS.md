@@ -2184,8 +2184,14 @@ seconds, and all 1,536 test sats are collected. Strict core lint, the default co
 build, formatting and source-size checks pass. The additional source-address
 control and strict lint pass after that test-only extension. Tested source and
 dependency fingerprints remain stable throughout each gate.
-This closes the reproduced stale-refresh collision; broader crowded convergence
-and physical-router validation remain open.
+On this runtime, the fixed eight-candidate population with a five-second minimum
+neighbor age delivers at 47.495/39.807 seconds across its two encounters. The
+ten-second-age population still misses its first 60-second deadline. Its trace
+shows one boundary repeatedly preparing completed local candidates while the
+other offers the cross-component bridge; no reciprocal bridge forms in that
+window. Both cases retain their original caps and deadlines. This closes the
+reproduced stale-refresh collision; broader crowded convergence and physical
+router validation remain open.
 
 Reproduce with `cargo test -p fips-relay --features measurements --test
 priced_paths merge_split::crowded::automatic::repeated::repeated_full_rosters_recover_paid_routes_without_candidate_departures
