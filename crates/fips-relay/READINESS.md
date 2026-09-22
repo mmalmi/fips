@@ -2342,7 +2342,7 @@ files. Reproduce with the `priced_paths` filter
 `merge_split::crowded::automatic::repeated::loss::`, using the development
 dependencies in [FUNDING-COSTS.md](FUNDING-COSTS.md).
 
-An **unmerged diagnostic** (`1725169c`) reuses the existing independently timed
+The finite-contact fixture, initially isolated as `1725169c`, reuses the independently timed
 contact driver with full neighbor tables and no reciprocal bridge at the first
 opening. Financial agreements and earlier session history are retained: this is
 cold adjacency, not first-time funding. Complete application submission spans
@@ -2351,7 +2351,7 @@ delivery; later receives and packets unobserved by the cohort deadline remain
 separate. The final sustained opening retains the original 60-second deadline,
 including time spent draining the cohort.
 
-Seed 139 delivers **0/20** fresh in-window packets during cold openings lasting
+Before the child-update repair below, seed 139 delivers **0/20** fresh in-window packets during cold openings lasting
 0.3–1.5 seconds. Sustained contact then restores delivery at 16.518 seconds and
 all-hop credit at 17.232 seconds. Subsequent warm windows deliver **31/33** fresh
 offers before their cuts, with progress in every direction/window and original
@@ -2363,12 +2363,41 @@ Local streams still deliver all 138 packets per direction without duplicates
 failure. The late admission and subsequent route-lookup delay need separate
 diagnosis; the owner history alone does not establish their causes.
 
-The refactored original brief suite passes the opposite-root case but misses the
-first cold contact in the original-root case. Running that original-root test
-on unchanged `6b9d3fb8` also misses the first cold contact and collects all test
-funds. Thus this failure exists without the extraction; it remains an unresolved
-routing acceptance gap. The diagnostic's strict lint and size checks pass, but
-its failed mobility acceptance prevents integration. No deadlines or safety
+The original brief suite also misses the first cold contact with the original
+root, both after the fixture extraction and on unchanged `6b9d3fb8`. A native
+UDP regression isolates one cause: a lost child root-change declaration leaves
+its parent with the child's former root. Authenticated link feedback previously
+retried only missing declarations, and a child ignored its parent's unchanged
+same-root announcement. The repair retries missing or conflicting root state
+through the existing announcement exchange. A stale same-root announcement from
+the current parent elicits the child's current declaration only when the existing
+send rate permits an immediate reply. It neither accepts stale state nor queues
+an extra reply when rate-blocked. No messages, timers or limits are added.
+
+The regression drops one genuine encrypted child update while preserving the
+live session and replay state. Before the repair, the parent remains obsolete
+after the two-second bound; with it, the latest run repairs in 513 ms, before the
+five-second periodic refresh. It retains the authenticated owners, signed
+sequence, 500-ms send spacing and settled quiet-tree bound. Bad signatures and
+valid nonparent duplicates cannot trigger the new reply. All 20 focused tree
+checks and strict core lint pass. Both paid brief scenarios now deliver fresh
+traffic in every contact window, including both directions of the previously
+missed first 400-ms window. Each scenario collects all 1536 test sats.
+
+With this repair, the crowded seed-139 characterization also passes its unchanged
+60-second sustained-recovery bound. Bridges appear at 15.366/29.756 seconds,
+delivery at 16.546/37.448 seconds, and all-hop credit at 17.257/38.263 seconds.
+Cold short contacts still deliver **0/20** in-window offers; warm contacts deliver
+**31/31**. Independent local streams deliver 115/115 packets per direction without
+duplicates, with maximum gaps of 1.019/1.015 seconds, and all 1536 test sats are
+collected. Formatting and the source-size gate pass. The fixture is integrated
+as characterization, not as proof that cold mobile encounters work. Reproduce
+with the `priced_paths` filter `merge_split::crowded::automatic::repeated::finite::`.
+
+An earlier run with diagnostic logging alone also passed after the original
+timeout. Scheduling varies, so neither passing run establishes that the
+child-update repair fixes the separate late-admission failure. The earlier
+timeout remains evidence of an open crowded-recovery gap. No deadlines or safety
 limits were relaxed. Sim discovery does not model radio beacon airtime or RF
 loss, and these runs do not establish physical mobile-mesh readiness.
 
