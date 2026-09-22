@@ -17,6 +17,8 @@ mod late;
 
 #[path = "responsive_brief.rs"]
 mod brief;
+#[path = "responsive_brief_ready.rs"]
+mod ready;
 
 const IDLE_SECS: u64 = 10;
 const INTERVAL_SECS: u64 = 2;
@@ -144,7 +146,7 @@ fn run_population_with_demand(
                 "idle_secs":population.idle_secs,"interval_secs":INTERVAL_SECS,
                 "max_connections":population.capacity.connections,"max_links":population.capacity.links,
                 "identity_order":identity_order,"maintenance_phase_ms":component_phase.as_millis(),
-                "initial_brief_contact":population.initial_brief_contact})
+                "brief_contact":population.brief_contact})
         );
         let result = AssertUnwindSafe(exercise(
             &mut nodes,
@@ -156,7 +158,7 @@ fn run_population_with_demand(
                 component_phase,
                 demand,
                 diagnose_miss: population.diagnose_miss,
-                initial_brief_contact: population.initial_brief_contact,
+                brief_contact: population.brief_contact,
                 capacity: population.capacity,
             },
         ))
@@ -183,6 +185,7 @@ struct Observation {
     ticks: usize,
     timing: timing::Ledger,
     queued_originals: Vec<queued::Original>,
+    brief_payloads: Option<ready::Payloads>,
 }
 
 fn pending_attempts(node: &Node, ids: &[PeerIdentity]) -> Value {
@@ -225,6 +228,7 @@ impl Observation {
                 component_phase.as_millis().try_into().unwrap(),
             ),
             queued_originals: Vec::new(),
+            brief_payloads: None,
         }
     }
 
@@ -269,6 +273,9 @@ impl Observation {
     }
 
     async fn turn(&mut self, nodes: &mut [TestNode], ids: &[PeerIdentity]) {
+        if let Some(payloads) = &mut self.brief_payloads {
+            payloads.observe(nodes, ids, self.started);
+        }
         for original in &mut self.queued_originals {
             original.observe(nodes, ids, self.started);
         }
@@ -316,11 +323,12 @@ impl Observation {
                 n.node.check_session_mmp_reports().await;
                 n.node.check_rekey().await;
                 n.node.check_session_rekey().await;
-                n.node.check_pending_lookups(now).await;
+                n.node.check_discovery_work(now).await;
                 n.node.poll_pending_connects().await;
                 n.node.process_pending_retries(now).await;
                 n.node.poll_transport_discovery().await;
                 n.node.check_tree_state().await;
+                n.node.check_bloom_state().await;
                 n.node.send_pending_tree_announces().await;
             }
             self.incumbents(nodes, ids, None);
@@ -339,6 +347,31 @@ impl Observation {
                     "responsive-maintenance"
                 },
             );
+        }
+        // Production also wakes for these deadlines between periodic ticks.
+        // Keep the existing policies; the manual fixture must not strand their
+        // work until its next one-second maintenance observation.
+        for n in nodes.iter_mut() {
+            let now = Node::now_ms();
+            if n.node
+                .discovery_work_deadline_ms()
+                .is_some_and(|due| due <= now)
+            {
+                n.node.check_discovery_work(now).await;
+            }
+            if n.node
+                .dataplane
+                .fmp_report_deadline()
+                .is_some_and(|due| due <= std::time::Instant::now())
+            {
+                n.node.check_mmp_reports().await;
+            }
+            if n.node
+                .pending_tree_announce_deadline_ms()
+                .is_some_and(|due| due <= Node::now_ms())
+            {
+                n.node.send_pending_tree_announces().await;
+            }
         }
         for destination in 0..nodes.len() {
             for _ in 0..256 {
@@ -446,8 +479,18 @@ impl Observation {
                     );
                 }
             }
+            // Production wakes for completed crypto/control work even without
+            // another raw frame; reuse the existing ordinary completion turn.
+            crate::node::tests::spanning_tree::process_dataplane_completions(
+                &mut nodes[destination].node,
+            )
+            .await;
+            self.incumbents(nodes, ids, None);
         }
         caps_with_limits(nodes, self.capacity);
+        if let Some(payloads) = &mut self.brief_payloads {
+            payloads.observe(nodes, ids, self.started);
+        }
         for original in &mut self.queued_originals {
             original.observe(nodes, ids, self.started);
         }
@@ -475,7 +518,9 @@ impl Observation {
                 flows,
                 &mut received,
                 |destination, source, payload| {
-                    self.queued_originals.iter_mut().any(|original| {
+                    self.brief_payloads.as_mut().is_some_and(|originals| {
+                        originals.receive(destination, source, payload, ids, self.started)
+                    }) || self.queued_originals.iter_mut().any(|original| {
                         original.receive(destination, source, payload, ids, self.started)
                     })
                 },
@@ -537,7 +582,7 @@ struct EncounterOptions {
     component_phase: Duration,
     demand: Option<queued::Demand>,
     diagnose_miss: bool,
-    initial_brief_contact: bool,
+    brief_contact: Option<brief::Kind>,
     capacity: CapacityLimits,
 }
 
@@ -553,7 +598,7 @@ async fn exercise(
         component_phase,
         demand,
         diagnose_miss,
-        initial_brief_contact,
+        brief_contact,
         capacity,
     } = options;
     let ids = identities(nodes);
@@ -569,7 +614,7 @@ async fn exercise(
     observation
         .round(nodes, &mut endpoints, &ids, &mut sequence, &LOCAL_FLOWS)
         .await;
-    if initial_brief_contact {
+    if brief_contact.is_some() {
         brief::mature_useful_owners(
             &mut observation,
             nodes,
@@ -613,6 +658,17 @@ async fn exercise(
         .round(nodes, &mut endpoints, &ids, &mut sequence, &LOCAL_FLOWS)
         .await;
     useful_retained(nodes, &ids, &original);
+    if brief_contact == Some(brief::Kind::Mature) {
+        ready::mature_idle_owners(
+            &mut observation,
+            nodes,
+            &mut endpoints,
+            &ids,
+            &mut sequence,
+            &original,
+        )
+        .await;
+    }
     // Local candidates remain available through every encounter and split.
     // They have no configured peers, application load or forced departure.
     for candidate in 6..addresses.len() {
@@ -623,22 +679,27 @@ async fn exercise(
         );
     }
     let first_exposure_requests = observation.bridge_msg1;
-    if initial_brief_contact {
+    let brief_acceptance = if let Some(kind) = brief_contact {
         assert!(
             demand.is_none(),
             "brief admission control adds no queued cross demand"
         );
-        brief::observe(
-            &mut observation,
-            nodes,
-            &mut endpoints,
-            &ids,
-            &mut sequence,
-            network,
-            addresses,
+        Some(
+            brief::observe(
+                &mut observation,
+                nodes,
+                &mut endpoints,
+                &ids,
+                &mut sequence,
+                network,
+                addresses,
+                kind,
+            )
+            .await,
         )
-        .await;
-    }
+    } else {
+        None
+    };
     let mut previous_bridge: Option<Vec<(LinkId, u64)>> = None;
     for encounter in 0..=usize::from(repeated) {
         eprintln!(
@@ -682,7 +743,7 @@ async fn exercise(
         );
         // Preparation from the brief opening may finish after re-exposure
         // without another Msg1. Count that genuine first discovery offer too.
-        let before_requests = if initial_brief_contact && encounter == 0 {
+        let before_requests = if brief_contact.is_some() && encounter == 0 {
             first_exposure_requests
         } else {
             observation.bridge_msg1
@@ -767,7 +828,7 @@ async fn exercise(
                 "elapsed_ms":exposed.elapsed().as_millis(),"bridge_ms":bridge_at.map(|d|d.as_millis()),
                 "bridge_msg1":[observation.bridge_msg1[0]-before_requests[0],
                     observation.bridge_msg1[1]-before_requests[1]],
-                "includes_initial_brief_requests":initial_brief_contact && encounter == 0,
+                "includes_initial_brief_requests":brief_contact.is_some() && encounter == 0,
                 "delivery_ms":delivery_at.map(|d|d.as_millis()),"incumbent_changes":observation.replacements,
                 "maintenance_turns":observation.ticks,"completed_payload_rounds":sequence})
         );
@@ -777,7 +838,7 @@ async fn exercise(
             .zip(before_requests)
             .any(|(after, before)| *after > before);
         let accepted = bridge_at.is_some_and(|elapsed| elapsed < window)
-            && (!(repeated || initial_brief_contact)
+            && (!(repeated || brief_contact.is_some())
                 || delivery_at.is_some_and(|elapsed| elapsed < window));
         if diagnose_miss && !accepted {
             // Keep the original outcome above and assertions below immutable.
@@ -825,7 +886,7 @@ async fn exercise(
             bridge_at.is_some_and(|elapsed| elapsed < window),
             "encounter {encounter}: responsive local replacements must not prevent the offset rosters forming a reciprocal bridge within {window:?}"
         );
-        if repeated || initial_brief_contact {
+        if repeated || brief_contact.is_some() {
             assert!(
                 delivery_at.is_some_and(|elapsed| elapsed < window),
                 "encounter {encounter}: both native payload directions must complete within the same {window:?}"
@@ -835,6 +896,16 @@ async fn exercise(
             original.assert_delivered_within(nodes, &ids, window);
         }
     }
+    if let Some(payloads) = &observation.brief_payloads {
+        eprintln!(
+            "responsive brief originals after recovery: {}",
+            payloads.summary()
+        );
+    }
+    assert!(
+        brief_acceptance.is_none_or(|accepted| accepted),
+        "mature contact must deliver both original multi-hop payloads before its independent cut; sustained recovery cannot satisfy brief acceptance"
+    );
 }
 
 /// Keep all ordinary state and local competitors alive across a physical split.

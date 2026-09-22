@@ -2658,6 +2658,37 @@ short-contact exclusion, not a universal minimum contact duration or convergence
 guarantee for already-admissible neighbors. No runtime policy or hardware changes
 are included; physical mobile-radio acceptance remains open.
 
+An already-admissible companion now tests actual end-to-end service during the
+same independently cut 1.5-second encounter. Both full rosters retain a useful
+neighbor carrying real local traffic and an idle neighbor matured on the native
+clock. Read-only checks establish initial admission eligibility, including ACLs,
+handshake capacity and rate limits. Four competing candidates remain available.
+Each useful leaf submits one original payload to the other leaf with no existing
+end-to-end session; neither original is resubmitted. Receive observations must
+precede the actual cut, and later recovery cannot change that acceptance result.
+
+Two runs form the reciprocal bridge in 76 and 79 ms and deliver both originals
+in 1.159–1.210 seconds, before actual cuts at 1.501–1.503 seconds. Each original
+arrives exactly once, the useful neighbors remain retained, and resource limits
+hold. The protected-owner exclusion and the existing repeated paid-capacity
+native control also pass, alongside strict core lint, formatting and the
+919-file source-size gate with four unchanged exceptions.
+
+Earlier attempts exposed omissions in this manual fixture: Bloom maintenance,
+between-tick lookup/tree/report deadlines, asynchronous completion draining and
+continuous endpoint receipt observation. It now invokes the existing production
+handlers for that work; no runtime policy, timers or messages change. A separate
+setup assertion was corrected to tolerate initial same-identity carrier handover
+while still requiring unchanged owners throughout the maturation interval.
+
+This is reliable-carrier SimNetwork evidence using manual native dispatch, not
+full RX-loop scheduling or radio performance evidence. It does not establish
+first-time paid funding within the contact, arbitrary admission at capacity,
+lossy mobile encounters or a universal 1.5-second service guarantee. Reproduce
+with the core library filter
+`responsive::brief::mature_full_rosters_deliver_originals_during_brief_contact`
+and the development dependencies in [FUNDING-COSTS.md](FUNDING-COSTS.md).
+
 The finite-contact fixture, initially isolated as `1725169c`, reuses the
 independently timed contact driver with full neighbor tables and no reciprocal
 bridge at the first opening. Financial agreements and earlier session history are retained: this is

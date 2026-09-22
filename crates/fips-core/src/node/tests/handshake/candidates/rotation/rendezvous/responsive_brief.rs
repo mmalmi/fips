@@ -1,17 +1,39 @@
-//! Admission-only short contact, followed by the ordinary sustained encounter.
-//! Only useful local traffic is offered here; no cross-boundary original is
-//! created, revived or required to survive the later sustained acceptance.
+//! Independently cut short contacts with protected or mature idle neighbors.
 use super::*;
 use tokio::sync::oneshot;
 
 const CONTACT: Duration = Duration::from_millis(1_500);
 const SEPARATION: Duration = Duration::from_millis(500);
 
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum Kind {
+    Protected,
+    Mature,
+}
+
 #[test]
 fn initial_brief_contact_preserves_bounds_before_sustained_recovery() {
     run_population(
         Population {
-            initial_brief_contact: true,
+            brief_contact: Some(Kind::Protected),
+            capacity: CapacityLimits {
+                connections: [4, 2],
+                links: [4, 2],
+            },
+            ..Population::baseline(4)
+        },
+        Duration::from_secs(60),
+        false,
+        Duration::from_millis(500),
+    );
+}
+
+#[test]
+fn mature_full_rosters_deliver_originals_during_brief_contact() {
+    run_population(
+        Population {
+            brief_contact: Some(Kind::Mature),
             capacity: CapacityLimits {
                 connections: [4, 2],
                 links: [4, 2],
@@ -174,6 +196,7 @@ pub(super) async fn mature_useful_owners(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn observe(
     observation: &mut Observation,
     nodes: &mut [TestNode],
@@ -182,10 +205,16 @@ pub(super) async fn observe(
     sequence: &mut u16,
     network: &SimNetwork,
     addresses: &[&str],
-) {
+    kind: Kind,
+) -> bool {
     assert_eq!(observation.component_phase, Duration::from_millis(500));
     assert!(refilled_components(nodes, ids));
     assert!(!reciprocal_bridge(nodes, ids));
+    if kind == Kind::Mature {
+        // Maturation retained the exact original owners through an interval.
+        // Initial simultaneous-connect carrier handover may precede that proof.
+        ready::assert_ready(nodes, ids);
+    }
     let useful: Vec<_> = (0..2).map(|at| original_owner(nodes, ids, at)).collect();
     let mut evidence = Evidence::new(nodes, ids);
     evidence.observe(nodes, ids, observation.started);
@@ -207,12 +236,17 @@ pub(super) async fn observe(
         closed
     });
     let opened = opened_rx.await.unwrap();
-    observation.timing.exposed(observation.started);
-    observation
-        .timing
-        .observe(nodes, ids, observation.started, "brief-opened");
-    snapshot(nodes, ids, observation.started, "brief-opened");
     let result = AssertUnwindSafe(async {
+        if kind == Kind::Mature {
+            let mut payloads = ready::Payloads::default();
+            payloads.offer(nodes, ids, observation.started).await;
+            observation.brief_payloads = Some(payloads);
+        }
+        observation.timing.exposed(observation.started);
+        observation
+            .timing
+            .observe(nodes, ids, observation.started, "brief-opened");
+        snapshot(nodes, ids, observation.started, "brief-opened");
         let mut next_round = tokio::time::Instant::now();
         while !driver.is_finished() {
             if tokio::time::Instant::now() >= next_round {
@@ -222,6 +256,9 @@ pub(super) async fn observe(
                 next_round = tokio::time::Instant::now() + Duration::from_millis(500);
             } else {
                 observation.turn(nodes, ids).await;
+                if let Some(payloads) = &mut observation.brief_payloads {
+                    payloads.drain(endpoints, ids, observation.started);
+                }
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
             useful_retained(nodes, ids, &useful);
@@ -249,12 +286,18 @@ pub(super) async fn observe(
     let reciprocal_in_contact = evidence
         .reciprocal_observation_ms
         .is_some_and(|bracket| bracket[1] <= closed.observed_ms[0]);
+    let payloads_in_contact = observation
+        .brief_payloads
+        .as_ref()
+        .is_some_and(|payloads| payloads.accepted(closed.observed_ms[0]));
     // An unchanged full roster with actual demand on its mature useful owner
     // and an idle owner immature through the cut proves this exclusion. Slot
     // counts and victim_selection_ready never establish full admissibility.
     let classification = if age_excluded.into_iter().any(|excluded| excluded) {
         assert!(!reciprocal_in_contact);
         "useful_demand_and_idle_minimum_age_exclude_admission"
+    } else if payloads_in_contact && reciprocal_in_contact {
+        "mature_contact_delivered_both_originals"
     } else if reciprocal_in_contact {
         "reciprocal_bridge_observed_before_cut"
     } else {
@@ -262,7 +305,7 @@ pub(super) async fn observe(
     };
     eprintln!(
         "responsive brief contact outcome: {}",
-        json!({"schema":1,"classification":classification,
+        json!({"schema":1,"classification":classification,"contact_kind":kind,
             "opened_observation_ms":opened.observed_ms,"opened_native_ms":opened.native_ms,
             "closed_observation_ms":closed.observed_ms,"closed_native_ms":closed.native_ms,
             "actual_duration_bounds_ms":duration_bounds_ms,"scheduled_duration_ms":CONTACT.as_millis(),
@@ -275,7 +318,9 @@ pub(super) async fn observe(
             "requests_processed_including_post_cut":[observation.bridge_msg1[0]-requests_before[0],
                 observation.bridge_msg1[1]-requests_before[1]],
             "completed_local_rounds":*sequence-local_rounds_before,
-            "cross_boundary_payloads_offered":0,"subsequent_sustained_window_ms":60_000})
+            "cross_boundary_payloads_offered":if kind == Kind::Mature {2} else {0},
+            "payloads":observation.brief_payloads.as_ref().map(ready::Payloads::summary),
+            "subsequent_sustained_window_ms":60_000})
     );
     if let Err(panic) = result {
         std::panic::resume_unwind(panic);
@@ -284,14 +329,17 @@ pub(super) async fn observe(
         duration_bounds_ms[0] >= 1_499 && duration_bounds_ms[1] <= 2_000,
         "actual carrier mutation must retain the bounded 1.5-second contact"
     );
-    assert!(
-        age_excluded.into_iter().all(|excluded| excluded),
-        "both boundaries must retain mature demanded useful and immature idle owners through the actual contact"
-    );
+    if kind == Kind::Protected {
+        assert!(
+            age_excluded.into_iter().all(|excluded| excluded),
+            "both boundaries must retain mature demanded useful and immature idle owners through the actual contact"
+        );
+    }
     assert!(
         *sequence > local_rounds_before,
         "useful local payloads must deliver"
     );
     useful_retained(nodes, ids, &useful);
     caps_with_limits(nodes, observation.capacity);
+    kind == Kind::Protected || (reciprocal_in_contact && payloads_in_contact)
 }
