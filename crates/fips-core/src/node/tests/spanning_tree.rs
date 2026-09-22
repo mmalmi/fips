@@ -23,6 +23,7 @@ mod drain;
 #[cfg(unix)]
 mod first_rtt;
 mod fixture;
+mod reachability_wakeup;
 mod repair;
 mod snapshot;
 mod synthetic;

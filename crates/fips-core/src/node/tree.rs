@@ -469,6 +469,13 @@ impl Node {
                 self.send_tree_announce_to_all().await;
             }
         }
+
+        // A filter can arrive before the declaration that makes this peer a
+        // tree neighbor. Release its first queued lookup after our coordinates
+        // are current; requests already sent retain their existing retry timing.
+        if !was_tree_peer && self.is_tree_peer(from) {
+            self.resume_unsent_lookup_via_peer(from).await;
+        }
     }
 
     /// Periodic tree maintenance, called from the tick handler.

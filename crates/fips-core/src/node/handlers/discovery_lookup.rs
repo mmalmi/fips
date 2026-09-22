@@ -619,10 +619,10 @@ impl Node {
         self.refresh_pending_lookup_deadline();
     }
 
-    /// Release queued discovery when a tree peer gains reachability, including
-    /// recovery of an established session. Requests already sent keep their
-    /// normal retry cadence and timeout ownership.
-    pub(in crate::node) async fn resume_unsent_lookup_after_filter(&mut self, from: &NodeAddr) {
+    /// Release queued discovery when a peer gains usable tree reachability,
+    /// through a filter or tree update. Requests already sent keep their normal
+    /// retry cadence and timeout ownership.
+    pub(in crate::node) async fn resume_unsent_lookup_via_peer(&mut self, from: &NodeAddr) {
         let Some(peer) = self
             .peers
             .get(from)
