@@ -124,6 +124,7 @@ struct EndpointEntry {
     transport_id: TransportId,
     packet_tx: PacketTx,
     pubkey_hint: Option<XOnlyPublicKey>,
+    connected_root_hint: Option<crate::NodeAddr>,
 }
 
 struct SimNetworkInner {
@@ -272,6 +273,7 @@ impl SimNetwork {
                 transport_id,
                 packet_tx,
                 pubkey_hint,
+                connected_root_hint: None,
             },
         );
         Ok(())
@@ -283,6 +285,18 @@ impl SimNetwork {
             .expect("sim network lock")
             .endpoints
             .remove(addr);
+    }
+
+    fn publish_discovery_root(&self, addr: &str, root: Option<crate::NodeAddr>) {
+        if let Some(endpoint) = self
+            .inner
+            .lock()
+            .expect("sim network lock")
+            .endpoints
+            .get_mut(addr)
+        {
+            endpoint.connected_root_hint = root;
+        }
     }
 
     fn discover(
@@ -314,7 +328,13 @@ impl SimNetwork {
                 return None;
             }
             endpoint.pubkey_hint.map(|pubkey| {
-                DiscoveredPeer::with_hint(transport_id, TransportAddr::from_string(addr), pubkey)
+                let mut peer = DiscoveredPeer::with_hint(
+                    transport_id,
+                    TransportAddr::from_string(addr),
+                    pubkey,
+                );
+                peer.connected_root_hint = endpoint.connected_root_hint;
+                peer
             })
         };
         if let Some(after) = after {
@@ -532,6 +552,12 @@ impl SimTransport {
     /// Discovery hints still require the ordinary authenticated handshake.
     pub fn set_local_pubkey(&mut self, pubkey: XOnlyPublicKey) {
         self.local_pubkey = Some(pubkey);
+    }
+
+    pub(crate) fn publish_discovery_root(&self, root: Option<crate::NodeAddr>) {
+        if let Some((network, addr)) = self.network.as_ref().zip(self.local_addr.as_deref()) {
+            network.publish_discovery_root(addr, root);
+        }
     }
 
     pub async fn start_async(&mut self) -> Result<(), TransportError> {

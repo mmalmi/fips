@@ -365,6 +365,20 @@ impl TransportHandle {
         }
     }
 
+    /// Publish the owning Node's current connected-tree view where supported.
+    /// Unknown and isolated advertisers publish no topology preference.
+    pub(crate) fn publish_discovery_root(&self, root: Option<crate::NodeAddr>) {
+        match self {
+            #[cfg(feature = "sim-transport")]
+            TransportHandle::Sim(t) => t.publish_discovery_root(root),
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            TransportHandle::Ethernet(t) => t.publish_discovery_root(root),
+            _ => {
+                let _ = root;
+            }
+        }
+    }
+
     /// Drain discovered peers from this transport.
     pub fn discover(&self) -> Result<Vec<DiscoveredPeer>, TransportError> {
         match self {

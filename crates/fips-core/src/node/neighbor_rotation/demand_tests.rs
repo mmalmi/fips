@@ -134,3 +134,39 @@ fn carrier_demand_keeps_ordinary_exploration_and_interrupted_retry_precedence() 
             < node.neighbor_rotation_discovery_order(ordinary, 200)
     );
 }
+
+#[test]
+fn topology_hints_preserve_retry_demand_and_ordinary_service() {
+    let mut node = Node::new(Config::new()).unwrap();
+    let (destination, bridge, retry) = (addr(1), addr(2), addr(3));
+    let foreign_root = addr(4);
+    assert_ne!(foreign_root, *node.tree_state().root());
+    let key =
+        |node: &Node, peer, hint| node.neighbor_rotation_discovery_order_with_hint(peer, 100, hint);
+    assert!(!key(&node, bridge, Some(foreign_root)).2);
+    assert!(
+        key(&node, bridge, None).2,
+        "legacy advertisements are neutral"
+    );
+    assert!(
+        key(&node, bridge, Some(*node.tree_state().root())).2,
+        "a stale same-root advertisement must fall back to ordinary exploration"
+    );
+    queue(&mut node, destination);
+    assert!(key(&node, destination, None) < key(&node, bridge, Some(foreign_root)));
+    node.neighbor_rotation.interrupted_outgoing = Some(InterruptedOutgoing {
+        peer: retry,
+        started_ms: 1,
+        deadline_ms: 200,
+        transferred_to: None,
+    });
+    assert!(key(&node, retry, None) < key(&node, destination, None));
+    assert!(key(&node, retry, None) < key(&node, bridge, Some(foreign_root)));
+    node.neighbor_rotation.exploration_due = true;
+    assert_eq!(
+        key(&node, bridge, Some(foreign_root)),
+        key(&node, bridge, None)
+    );
+    assert!(key(&node, destination, None).1);
+    assert!(!key(&node, retry, None).0, "earned retry remains first");
+}

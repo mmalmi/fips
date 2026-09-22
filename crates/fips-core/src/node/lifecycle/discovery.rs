@@ -13,12 +13,21 @@ impl Node {
     /// drains their discovery buffers, and initiates connections to
     /// newly discovered peers (if auto_connect is enabled).
     pub(in crate::node) async fn poll_transport_discovery(&mut self) {
+        let connected_root = (self.peers.len() > 0).then_some(*self.tree_state().root());
+        for transport in self.transports.values() {
+            transport.publish_discovery_root(connected_root);
+        }
         // Collect discoveries first to avoid borrow conflict with self
         let mut to_connect = Vec::new();
         let mut queued_per_peer: HashMap<NodeAddr, usize> = HashMap::new();
         let mut connect_budget = self.discovery_connect_budget();
         let mut skipped_budget = 0usize;
-        let mut rotation_candidate: Option<(TransportId, TransportAddr, PeerIdentity)> = None;
+        let mut rotation_candidate: Option<(
+            TransportId,
+            TransportAddr,
+            PeerIdentity,
+            Option<NodeAddr>,
+        )> = None;
         let mut polled_discovery = false;
         let mut discovery_complete = true;
         let rotation_victim = self.discovery_rotation_victim(Self::now_ms());
@@ -121,6 +130,7 @@ impl Node {
                                 remote_addr,
                                 identity,
                                 false,
+                                None,
                             ));
                         }
                         continue;
@@ -130,6 +140,7 @@ impl Node {
                         remote_addr,
                         identity,
                         confirms_new_connection,
+                        None,
                     ));
                     *queued_per_peer.entry(node_addr).or_default() += 1;
                     connect_budget = connect_budget.saturating_sub(1);
@@ -157,15 +168,28 @@ impl Node {
                         continue;
                     }
                     if connect_budget > 0 && self.path_candidate_attempt_budget(&node_addr) > 0 {
-                        let key = self.neighbor_rotation_discovery_order(node_addr, Self::now_ms());
-                        if rotation_candidate.as_ref().is_none_or(|(_, _, chosen)| {
-                            key < self.neighbor_rotation_discovery_order(
-                                *chosen.node_addr(),
-                                Self::now_ms(),
-                            )
-                        }) {
-                            rotation_candidate =
-                                Some((candidate_transport_id, remote_addr, identity));
+                        let now_ms = Self::now_ms();
+                        let key = self.neighbor_rotation_discovery_order_with_hint(
+                            node_addr,
+                            now_ms,
+                            peer.connected_root_hint,
+                        );
+                        if rotation_candidate
+                            .as_ref()
+                            .is_none_or(|(_, _, chosen, hint)| {
+                                key < self.neighbor_rotation_discovery_order_with_hint(
+                                    *chosen.node_addr(),
+                                    now_ms,
+                                    *hint,
+                                )
+                            })
+                        {
+                            rotation_candidate = Some((
+                                candidate_transport_id,
+                                remote_addr,
+                                identity,
+                                peer.connected_root_hint,
+                            ));
                         }
                     }
                     continue;
@@ -180,7 +204,7 @@ impl Node {
                     skipped_budget = skipped_budget.saturating_add(1);
                     continue;
                 }
-                to_connect.push((candidate_transport_id, remote_addr, identity, false));
+                to_connect.push((candidate_transport_id, remote_addr, identity, false, None));
                 *queued_per_peer.entry(node_addr).or_default() += 1;
                 connect_budget = connect_budget.saturating_sub(1);
             }
@@ -206,9 +230,9 @@ impl Node {
             self.yield_empty_neighbor_discovery_turn(Self::now_ms());
         }
         if connect_budget > 0
-            && let Some((transport_id, remote_addr, identity)) = rotation_candidate
+            && let Some((transport_id, remote_addr, identity, hint)) = rotation_candidate
         {
-            to_connect.push((transport_id, remote_addr, identity, false));
+            to_connect.push((transport_id, remote_addr, identity, false, hint));
         } else if !deferred_refreshes.is_empty()
             && !self.neighbor_rotation_discovery_turn_reserved(Self::now_ms())
             && self.has_neighbor_rotation_opportunity(Self::now_ms())
@@ -222,7 +246,7 @@ impl Node {
             );
             to_connect.extend(deferred_refreshes.into_iter().take(budget));
         }
-        for (transport_id, remote_addr, identity, carrier_replaced) in to_connect {
+        for (transport_id, remote_addr, identity, carrier_replaced, hint) in to_connect {
             info!(
                 node = %self.node_addr(),
                 peer = %self.peer_display_name(identity.node_addr()),
@@ -237,6 +261,7 @@ impl Node {
                     remote_addr,
                     identity,
                     carrier_replaced,
+                    hint,
                 )
                 .await
             {

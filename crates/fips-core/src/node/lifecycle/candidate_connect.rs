@@ -577,7 +577,7 @@ impl Node {
         remote_addr: TransportAddr,
         peer_identity: PeerIdentity,
     ) -> Result<(), NodeError> {
-        self.initiate_connection_on_carrier(transport_id, remote_addr, peer_identity, false)
+        self.initiate_connection_on_carrier(transport_id, remote_addr, peer_identity, false, None)
             .await
     }
 
@@ -587,6 +587,7 @@ impl Node {
         remote_addr: TransportAddr,
         peer_identity: PeerIdentity,
         carrier_replaced: bool,
+        connected_root_hint: Option<NodeAddr>,
     ) -> Result<(), NodeError> {
         let remote_addr = self
             .canonical_transport_addr(transport_id, remote_addr)
@@ -646,7 +647,12 @@ impl Node {
 
         if !self.peers.contains_key(&peer_node_addr)
             && self.neighbor_roster_full()
-            && !self.begin_neighbor_rotation(peer_node_addr, true, Self::now_ms())
+            && !self.begin_neighbor_rotation_with_hint(
+                peer_node_addr,
+                true,
+                Self::now_ms(),
+                connected_root_hint,
+            )
         {
             return Err(NodeError::MaxPeersExceeded {
                 max: self.max_peers,

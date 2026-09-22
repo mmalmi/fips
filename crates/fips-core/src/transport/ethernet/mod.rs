@@ -14,15 +14,16 @@ use super::{
     DiscoveredPeer, PacketBuffer, PacketTx, ReceivedPacket, Transport, TransportAddr,
     TransportError, TransportId, TransportState, TransportType,
 };
+use crate::NodeAddr;
 use crate::config::EthernetConfig;
 use discovery::{
-    DiscoveryBuffer, FRAME_TYPE_BEACON, FRAME_TYPE_DATA, build_scoped_beacon, parse_beacon_record,
+    DiscoveryBuffer, FRAME_TYPE_BEACON, FRAME_TYPE_DATA, build_topology_beacon, parse_beacon_record,
 };
 use socket::{AsyncPacketSocket, ETHERNET_BROADCAST, PacketSocket};
 use stats::EthernetStats;
 
 use secp256k1::XOnlyPublicKey;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, trace, warn};
 
@@ -60,6 +61,8 @@ pub struct EthernetTransport {
     stats: Arc<EthernetStats>,
     /// Node's public key for beacon construction.
     local_pubkey: Option<XOnlyPublicKey>,
+    /// Advisory state published by the owning Node, shared with the beacon task.
+    discovery_root: Arc<Mutex<Option<NodeAddr>>>,
 }
 
 impl EthernetTransport {
@@ -92,6 +95,7 @@ impl EthernetTransport {
             discovery_buffer,
             stats,
             local_pubkey: None,
+            discovery_root: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -115,6 +119,14 @@ impl EthernetTransport {
     /// Must be called before start if announce is enabled.
     pub fn set_local_pubkey(&mut self, pubkey: XOnlyPublicKey) {
         self.local_pubkey = Some(pubkey);
+    }
+
+    /// Publish the current root only while the owning Node has active neighbors.
+    pub(crate) fn publish_discovery_root(&self, root: Option<NodeAddr>) {
+        *self
+            .discovery_root
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = root;
     }
 
     /// Get a reference to the statistics.
@@ -188,6 +200,7 @@ impl EthernetTransport {
                     socket: socket.clone(),
                     pubkey,
                     discovery_scope: self.config.discovery_scope().map(str::to_string),
+                    discovery_root: self.discovery_root.clone(),
                     interval_secs: self.config.beacon_interval_secs(),
                     stats: self.stats.clone(),
                     transport_id: self.transport_id,
@@ -514,6 +527,7 @@ struct EthernetBeaconContext {
     socket: Arc<AsyncPacketSocket>,
     pubkey: XOnlyPublicKey,
     discovery_scope: Option<String>,
+    discovery_root: Arc<Mutex<Option<NodeAddr>>>,
     interval_secs: u64,
     stats: Arc<EthernetStats>,
     transport_id: TransportId,
@@ -526,6 +540,7 @@ async fn beacon_sender_loop(ctx: EthernetBeaconContext) {
         mut socket,
         pubkey,
         discovery_scope,
+        discovery_root,
         interval_secs,
         stats,
         transport_id,
@@ -536,7 +551,6 @@ async fn beacon_sender_loop(ctx: EthernetBeaconContext) {
     /// Number of consecutive ENXIO errors before attempting socket reopen.
     const REOPEN_THRESHOLD: u32 = 3;
 
-    let beacon = build_scoped_beacon(&pubkey, discovery_scope.as_deref());
     let interval = tokio::time::Duration::from_secs(interval_secs);
 
     debug!(
@@ -546,6 +560,7 @@ async fn beacon_sender_loop(ctx: EthernetBeaconContext) {
     );
 
     // Send an initial beacon immediately at startup
+    let beacon = build_current_beacon(&pubkey, discovery_scope.as_deref(), &discovery_root);
     if let Err(e) = socket.send_to(&beacon, &ETHERNET_BROADCAST).await {
         warn!(
             transport_id = %transport_id,
@@ -563,6 +578,7 @@ async fn beacon_sender_loop(ctx: EthernetBeaconContext) {
     loop {
         interval_timer.tick().await;
 
+        let beacon = build_current_beacon(&pubkey, discovery_scope.as_deref(), &discovery_root);
         match socket.send_to(&beacon, &ETHERNET_BROADCAST).await {
             Ok(_) => {
                 if consecutive_errors > 0 {
@@ -623,6 +639,15 @@ async fn beacon_sender_loop(ctx: EthernetBeaconContext) {
             }
         }
     }
+}
+
+fn build_current_beacon(
+    pubkey: &XOnlyPublicKey,
+    scope: Option<&str>,
+    discovery_root: &Mutex<Option<NodeAddr>>,
+) -> Vec<u8> {
+    let root = *discovery_root.lock().unwrap_or_else(|e| e.into_inner());
+    build_topology_beacon(pubkey, scope, root)
 }
 
 /// Attempt to open a fresh AF_PACKET socket for beacon sending.
@@ -693,6 +718,40 @@ pub fn parse_mac_string(s: &str) -> Result<[u8; 6], TransportError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn beacon_uses_latest_published_root_without_starting_transport() {
+        let (tx, _rx) = crate::transport::packet_channel(1);
+        let transport =
+            EthernetTransport::new(TransportId::new(1), None, EthernetConfig::default(), tx);
+        let secret = secp256k1::SecretKey::from_slice(&[0x42; 32]).unwrap();
+        let (pubkey, _) = secret
+            .public_key(&secp256k1::Secp256k1::new())
+            .x_only_public_key();
+        // This is the same shared value the sender retains when it starts.
+        let sender_root = transport.discovery_root.clone();
+        let mut previous_wire = None;
+        for root in [
+            Some(NodeAddr::from_bytes([1; 16])),
+            Some(NodeAddr::from_bytes([2; 16])),
+            None,
+        ] {
+            transport.publish_discovery_root(root);
+            let wire = build_current_beacon(&pubkey, Some("scope-a"), &sender_root);
+            let parsed = parse_beacon_record(&wire).unwrap();
+            assert_eq!(parsed.pubkey, pubkey);
+            assert_eq!(parsed.scope.as_deref(), Some("scope-a"));
+            assert_eq!(parsed.connected_root_hint, root);
+            assert_ne!(previous_wire.as_ref(), Some(&wire));
+            previous_wire = Some(wire);
+        }
+        assert_eq!(
+            previous_wire.unwrap(),
+            discovery::build_scoped_beacon(&pubkey, Some("scope-a"))
+        );
+        assert!(transport.socket.is_none());
+        assert!(transport.beacon_task.is_none());
+    }
 
     #[test]
     fn ethernet_socket_diagnostics_are_null_before_start() {

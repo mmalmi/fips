@@ -1,4 +1,4 @@
-//! Bounded exploration at a full neighbor roster, without a wire extension.
+//! Bounded exploration at a full neighbor roster using local demand and discovery hints.
 
 use super::{LinkId, Node, NodeAddr, TransportAddr, TransportId};
 
@@ -350,6 +350,16 @@ impl Node {
         outbound: bool,
         now_ms: u64,
     ) -> bool {
+        self.begin_neighbor_rotation_with_hint(peer, outbound, now_ms, None)
+    }
+
+    pub(in crate::node) fn begin_neighbor_rotation_with_hint(
+        &mut self,
+        peer: NodeAddr,
+        outbound: bool,
+        now_ms: u64,
+        connected_root_hint: Option<NodeAddr>,
+    ) -> bool {
         if !self.can_attempt_neighbor_rotation(&peer, outbound, now_ms) {
             return false;
         }
@@ -400,11 +410,12 @@ impl Node {
                 self.neighbor_rotation.outbound_turn_until_ms = 0;
             }
             if outbound && !is_retry {
-                // Spend a demand turn when it starts, even if no reply arrives.
+                // Spend a preferred turn when it starts, even if no reply arrives.
                 // Only ordinary exploration advances the cursor.
-                let demand = self.neighbor_rotation_prefers_demand(peer, now_ms);
-                self.neighbor_rotation.exploration_due = demand;
-                if !demand {
+                let preferred = self.neighbor_rotation_prefers_demand(peer, now_ms)
+                    || self.neighbor_rotation_prefers_topology(connected_root_hint);
+                self.neighbor_rotation.exploration_due = preferred;
+                if !preferred {
                     self.neighbor_rotation.cursor = Some(peer);
                 }
             } else if seed_incoming {
@@ -608,6 +619,28 @@ impl Node {
             !preferred,
             !self.neighbor_rotation_prefers_demand(peer, now_ms),
             self.neighbor_rotation_order(peer),
+        )
+    }
+
+    fn neighbor_rotation_prefers_topology(&self, connected_root_hint: Option<NodeAddr>) -> bool {
+        !self.neighbor_rotation.exploration_due
+            && connected_root_hint.is_some_and(|root| root != *self.tree_state().root())
+    }
+
+    /// Unverified discovery topology ranks below earned retries and real demand.
+    /// Alternate with ordinary exploration so absent or stale hints still get service.
+    pub(in crate::node) fn neighbor_rotation_discovery_order_with_hint(
+        &self,
+        peer: NodeAddr,
+        now_ms: u64,
+        connected_root_hint: Option<NodeAddr>,
+    ) -> (bool, bool, bool, (bool, [u8; 16])) {
+        let (retry, demand, ordinary) = self.neighbor_rotation_discovery_order(peer, now_ms);
+        (
+            retry,
+            demand,
+            !self.neighbor_rotation_prefers_topology(connected_root_hint),
+            ordinary,
         )
     }
 
