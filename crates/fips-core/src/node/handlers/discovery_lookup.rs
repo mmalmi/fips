@@ -28,6 +28,11 @@ impl Node {
 
         let peer_count = peer_addrs.len();
 
+        debug!(target: "fips_core::route_recovery",
+            node = %self.node_addr(), target = %target, request_id = request.request_id,
+            root = %self.tree_state.root(), peers = ?peer_addrs,
+            "Initiating coordinate lookup");
+
         debug!(
             target = %self.peer_display_name(target),
             candidates = ?candidates

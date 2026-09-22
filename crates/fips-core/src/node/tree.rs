@@ -16,6 +16,9 @@ mod deadlines;
 
 impl Node {
     pub(in crate::node) fn invalidate_tree_coordinates(&mut self) {
+        debug!(target: "fips_core::route_recovery",
+            node = %self.node_addr(), root = %self.tree_state.root(),
+            coords = ?self.tree_state.my_coords(), "Invalidating tree coordinates");
         self.coord_cache.clear();
         self.reset_discovery_backoff();
         self.refresh_tree_application_routes();

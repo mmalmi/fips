@@ -20,6 +20,10 @@ struct Candidate {
 }
 
 async fn candidates(bench: &Bench) -> Vec<Candidate> {
+    candidates_with_staged_root(bench, false).await
+}
+
+async fn candidates_with_staged_root(bench: &Bench, staged_root: bool) -> Vec<Candidate> {
     let mut result = Vec::new();
     for bridge in [2, 3] {
         for ordinal in 0..4 {
@@ -28,6 +32,7 @@ async fn candidates(bench: &Bench) -> Vec<Candidate> {
                 &address,
                 bridge.to_string(),
                 SimLink {
+                    up: !staged_root || bridge != 2 || ordinal == 1,
                     latency_ms: 2,
                     ..Default::default()
                 },
@@ -164,6 +169,14 @@ async fn setup_crowded(
     seed: u64,
     rotation: Option<fips_core::config::NeighborRotationConfig>,
 ) -> (Bench, Observer, Vec<Account>, Vec<Candidate>) {
+    setup_crowded_with_staged_root(seed, rotation, false).await
+}
+
+async fn setup_crowded_with_staged_root(
+    seed: u64,
+    rotation: Option<fips_core::config::NeighborRotationConfig>,
+    staged_root: bool,
+) -> (Bench, Observer, Vec<Account>, Vec<Candidate>) {
     let rotating = rotation.is_some();
     let mut bench = match rotation {
         Some(rotation) => Box::pin(bench::start_with_neighbor_rotation(0, seed, rotation)).await,
@@ -216,7 +229,13 @@ async fn setup_crowded(
         }
     }
 
-    let candidates = observer.during(candidates(&bench)).await;
+    let candidates = if staged_root {
+        observer
+            .during(candidates_with_staged_root(&bench, true))
+            .await
+    } else {
+        observer.during(candidates(&bench)).await
+    };
     if rotating {
         for candidate in &candidates {
             eprintln!(
@@ -238,6 +257,39 @@ async fn setup_crowded(
             .expect("both bridge peer slots fill with unfunded neighbors");
         })
         .await;
+    if staged_root {
+        let root = candidates
+            .iter()
+            .find(|c| c.address == "candidate-2-1")
+            .unwrap();
+        assert!(
+            bench.peers[..3]
+                .iter()
+                .all(|p| root.peer.node_addr() < p.node_addr())
+        );
+        let root_addr = root.peer.node_addr().to_string();
+        observer
+            .during(async {
+                tokio::time::timeout(Duration::from_secs(10), async {
+                    loop {
+                        let mut converged = true;
+                        for node in 0..3 {
+                            converged &= tree(&bench, node).await["root"] == root_addr;
+                        }
+                        if converged {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .await
+                .expect("the sole exposed left candidate must become the real component root");
+            })
+            .await;
+        // Establish fresh paid local delivery under the actual candidate root.
+        // The other left links stay hidden until the encounter exposes all of them.
+        traffic(&mut bench, 0, 2, 104).await;
+    }
     eprintln!(
         "crowded mesh: eight candidates occupy two slots after {:.2}s",
         occupied_at.elapsed().as_secs_f64()
