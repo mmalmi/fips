@@ -3,6 +3,69 @@ use crate::node::wire::{Msg2Header, build_msg1};
 use crate::noise::HandshakeState;
 use crate::utils::index::SessionIndex;
 
+#[tokio::test]
+async fn initial_full_roster_neighbor_is_not_repeated_before_other_candidates() {
+    let name = format!("node-sim-initial-cursor-{}", std::process::id());
+    let network = SimNetwork::new(57);
+    network.set_default_link(SimLink {
+        up: false,
+        ..Default::default()
+    });
+    register_sim_network(name.clone(), network.clone());
+    let addresses = ["local", "a", "b", "c", "d"];
+    let mut nodes = Vec::new();
+    for (index, address) in addresses.iter().enumerate() {
+        nodes.push(discovering_node(&name, address, index == 0).await);
+    }
+    nodes[0].node.set_max_links(2);
+    nodes[0].node.config.node.neighbor_rotation = Some(NeighborRotationConfig {
+        idle_secs: 1,
+        interval_secs: 1,
+    });
+    let mut order = [1, 2, 3, 4];
+    order.sort_unstable_by_key(|index| {
+        nodes[0]
+            .node
+            .neighbor_rotation_order(*nodes[*index].node.node_addr())
+    });
+    // Admit the middle candidate before the roster is full. Its genuine service
+    // must count when the other candidates subsequently become discoverable.
+    let initial = order[2];
+    network.set_link("local", addresses[initial], SimLink::default());
+    nodes[0].node.poll_transport_discovery().await;
+    authenticate(&mut nodes, initial).await;
+    assert!(nodes[0].node.neighbor_roster_full());
+    for address in &addresses[1..] {
+        network.set_link("local", *address, SimLink::default());
+    }
+    let expected = [order[3], order[0], order[1], initial];
+    let mut observed = Vec::new();
+    for expected_peer in expected {
+        tokio::time::sleep(Duration::from_millis(1_010)).await;
+        nodes[0].node.poll_transport_discovery().await;
+        let attempt = nodes[0].node.peers.connection_values().next().unwrap();
+        assert!(attempt.is_outbound());
+        let peer = *attempt.expected_identity().unwrap().node_addr();
+        let selected = nodes
+            .iter()
+            .position(|node| *node.node.node_addr() == peer)
+            .unwrap();
+        observed.push(selected);
+        assert_caps(&nodes);
+        if selected != expected_peer {
+            break;
+        }
+        authenticate(&mut nodes, selected).await;
+    }
+    assert!(nodes.iter().all(|node| node.node.config.peers.is_empty()));
+    cleanup_nodes(&mut nodes).await;
+    unregister_sim_network(&name);
+    assert_eq!(
+        observed, expected,
+        "continue the first sweep after actual service"
+    );
+}
+
 async fn send_to_local(nodes: &mut [TestNode], source: usize, wire: &[u8]) {
     nodes[source].node.transports[&nodes[source].transport_id]
         .send(&nodes[0].addr, wire)
