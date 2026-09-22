@@ -2273,6 +2273,24 @@ ensure timely reciprocal discovery, and the original deadlines remain unchanged.
 The isolated branch also retains a reviewed spare-capacity consumption gap; it
 has not received the compatibility checks required for production integration.
 
+A separate experiment defers ordinary outbound preparation until an idle
+incumbent reaches its existing minimum age, preserving incoming preparation,
+already-owned attempts, effective demand preference and earned retry deadlines.
+It also fails the unchanged dense fixture's cold encounter: neither boundary
+attempts the bridge within 60 seconds, so the queued warm phase never runs.
+The trace contains both incoming and outgoing local candidates, with six and
+five incumbent changes at the two boundaries. Delaying outbound preparation
+alone does not ensure reciprocal bridge discovery. Source, dependency and lock
+fingerprints stay stable, and the portable lock is restored.
+
+This experiment is not integrated. Its shared admission gate also changes the
+existing explicit-connect contract, which allows preparation before incumbent
+maturity. Moving that gate into the shared path-candidate budget would still
+affect manual and configured connections through Nostr address resolution.
+Any future discovery-only experiment must preserve those call paths and account
+for incoming candidates competing for the same slot; no broader compatibility
+claim follows from this failed run.
+
 Ordinary exploration now uses a smaller change with a symmetric edge score:
 the XOR of the local and remote node identifiers. The stored cursor remains an
 identity, compared in the same edge order. Demand and earned retry precedence,
