@@ -96,3 +96,25 @@ fn two_second_age_with_a_different_identity_population() {
         ..Population::baseline(8)
     });
 }
+
+mod dense_identities {
+    use super::*;
+
+    // Keep the original dense population, timers, limits and traffic. Only the
+    // fixed identity assignment changes; no identity is chosen by its outcome.
+    #[test]
+    fn shifted_population() {
+        repeated(Population {
+            first_scalar: 33,
+            ..Population::baseline(8)
+        });
+    }
+
+    #[test]
+    fn reversed_roles() {
+        repeated(Population {
+            reversed: true,
+            ..Population::baseline(8)
+        });
+    }
+}
