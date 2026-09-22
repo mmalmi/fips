@@ -4,18 +4,47 @@ use super::*;
 #[path = "repeated/witness.rs"]
 mod witness;
 
+#[path = "repeated/loss.rs"]
+mod loss;
+
+#[derive(Clone, Copy, Debug)]
+struct EncounterProfile {
+    seed: u64,
+    staged_root: bool,
+    bridge_link: SimLink,
+}
+
+impl EncounterProfile {
+    fn baseline(staged_root: bool) -> Self {
+        Self {
+            seed: 126,
+            staged_root,
+            bridge_link: SimLink {
+                latency_ms: 2,
+                ..Default::default()
+            },
+        }
+    }
+}
+
+async fn run(profile: EncounterProfile) {
+    eprintln!("repeated full-roster profile: {profile:?}");
+    tokio::time::timeout(
+        Duration::from_secs(480),
+        Box::pin(exercise_repeated(profile)),
+    )
+    .await
+    .expect("repeated full-roster encounters and collection deadline");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn repeated_full_rosters_recover_paid_routes_without_candidate_departures() {
-    tokio::time::timeout(Duration::from_secs(480), Box::pin(exercise_repeated(false)))
-        .await
-        .expect("repeated full-roster encounters and collection deadline");
+    run(EncounterProfile::baseline(false)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn root_change_full_rosters_recover_paid_routes_without_candidate_departures() {
-    tokio::time::timeout(Duration::from_secs(480), Box::pin(exercise_repeated(true)))
-        .await
-        .expect("root-changing full-roster encounters and collection deadline");
+    run(EncounterProfile::baseline(true)).await;
 }
 
 async fn crowded_split(bench: &Bench, candidates: &[Candidate]) -> bool {
@@ -65,8 +94,9 @@ async fn encounters(
     bench: &mut Bench,
     anchor: &[Account],
     candidates: &[Candidate],
-    staged_root: bool,
+    profile: EncounterProfile,
 ) -> Result<(), &'static str> {
+    let staged_root = profile.staged_root;
     let mut previous_bridge: Option<[(u64, u64); 2]> = None;
     let mut checkpoint = anchor.to_vec();
     for encounter in 0..2 {
@@ -122,6 +152,7 @@ async fn encounters(
             );
         }
         let start = Instant::now();
+        let network_before = bench.network.stats();
         eprintln!(
             "repeated full-roster exposure: {}",
             serde_json::json!({
@@ -185,20 +216,39 @@ async fn encounters(
         })
         .await
         .map_err(|_| "crowded encounter must resume delivery and all-hop credit within 60s")?;
+        let network = bench.network.stats().delta_since(&network_before);
+        eprintln!(
+            "repeated full-roster network: {}",
+            serde_json::json!({
+                "encounter":encounter, "seed":profile.seed,
+                "bridge_link":profile.bridge_link, "counters":network,
+            })
+        );
+        if profile.bridge_link.loss_probability > 0.0 && network.packets_dropped_loss == 0 {
+            return Err("lossy encounter must observe actual transport loss before acceptance");
+        }
     }
     Ok(())
 }
 
-async fn exercise_repeated(staged_root: bool) {
+async fn exercise_repeated(profile: EncounterProfile) {
     let (mut bench, mut observer, anchor, candidates) = Box::pin(setup_crowded_with_staged_root(
-        126,
+        profile.seed,
         Some(fips_core::config::NeighborRotationConfig {
             idle_secs: 10,
             interval_secs: 2,
         }),
-        staged_root,
+        profile.staged_root,
     ))
     .await;
+    bench.network.set_link(
+        "2",
+        "3",
+        SimLink {
+            up: false,
+            ..profile.bridge_link
+        },
+    );
     let root = bench.root.path().to_owned();
     let nodes = bench.nodes.clone();
     let identities = bench.peers.clone();
@@ -230,13 +280,12 @@ async fn exercise_repeated(staged_root: bool) {
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
     };
-    let outcome = observer
-        .during(async {
+    let outcome = catch_encounter(observer.during(async {
             tokio::select! {
-                result = encounters(&mut bench, &anchor, &candidates, staged_root) => result.map_err(str::to_owned),
+                result = encounters(&mut bench, &anchor, &candidates, profile) => result.map_err(str::to_owned),
                 failure = monitor => Err(failure),
             }
-        })
+        }))
         .await;
     let outcome = outcome.and(
         (internal_links_observed(&root, &nodes, &identities, |node, a, b, reply| {
@@ -265,6 +314,34 @@ async fn exercise_repeated(staged_root: bool) {
         eprintln!("repeated full-roster outcome: {reason}");
         local_traffic::capture_failure(&root, &identities, &gates, &controllers, &buyer).await;
     }
+    // Faults remain active throughout acceptance, including payment recovery.
+    // Only the separate collection phase restores a reliable carrier.
+    bench
+        .network
+        .set_link("2", "3", EncounterProfile::baseline(false).bridge_link);
     collect_crowded(bench, observer, &anchor, candidates).await;
     assert!(outcome.is_ok(), "{outcome:?}; all test money collected");
+}
+
+/// Retain failed assertions so test-money collection still runs before failure.
+async fn catch_encounter(
+    operation: impl Future<Output = Result<(), String>>,
+) -> Result<(), String> {
+    tokio::pin!(operation);
+    std::future::poll_fn(|cx| {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation.as_mut().poll(cx)))
+        {
+            Ok(result) => result,
+            Err(panic) => std::task::Poll::Ready(Err(panic
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| {
+                    panic
+                        .downcast_ref::<&str>()
+                        .map(|message| (*message).to_owned())
+                })
+                .unwrap_or_else(|| "non-string encounter assertion".into()))),
+        }
+    })
+    .await
 }
