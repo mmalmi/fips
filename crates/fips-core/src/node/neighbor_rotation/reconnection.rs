@@ -1,4 +1,4 @@
-//! One discovery preference for a recently used application neighbor after link loss.
+//! One discovery preference after losing a recently used application neighbor.
 use super::*;
 use std::time::Duration;
 
@@ -9,7 +9,20 @@ impl Node {
         now_ms: u64,
         dead_timeout: Duration,
     ) {
-        let qualified = self.max_peers > 0
+        let qualified = self.neighbor_reconnection_qualifies(peer, now_ms, dead_timeout);
+        self.remove_active_peer(peer);
+        if qualified {
+            self.remember_neighbor_reconnection(*peer, now_ms);
+        }
+    }
+
+    pub(super) fn neighbor_reconnection_qualifies(
+        &self,
+        peer: &NodeAddr,
+        now_ms: u64,
+        dead_timeout: Duration,
+    ) -> bool {
+        self.max_peers > 0
             && self
                 .config
                 .node
@@ -36,13 +49,11 @@ impl Node {
                                         )
                                     }))
                     })
-                });
-        // Normal cleanup removes any old preference and all link authority.
-        // Only this physical-failure path can remember recently admitted application use.
-        self.remove_active_peer(peer);
-        if !qualified {
-            return;
-        }
+                })
+    }
+
+    /// The caller qualified the old owner before normal cleanup removed it.
+    pub(super) fn remember_neighbor_reconnection(&mut self, peer: NodeAddr, now_ms: u64) {
         // Freeze one existing handshake window. Advertisements, later config
         // changes and failed attempts cannot extend it. No address is retained.
         let deadline = now_ms.saturating_add(
@@ -52,9 +63,7 @@ impl Node {
                 .handshake_timeout_secs
                 .saturating_mul(1000),
         );
-        self.neighbor_rotation
-            .lost_neighbors
-            .insert(*peer, deadline);
+        self.neighbor_rotation.lost_neighbors.insert(peer, deadline);
         self.prune_neighbor_reconnections(now_ms);
     }
 

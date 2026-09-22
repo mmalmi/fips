@@ -496,6 +496,14 @@ impl Node {
         // authenticated decision after its carrier has already been closed.
         let victim = prepared.victim;
         let now_ms = Self::now_ms().max(prepared.decided_ms);
+        // Rotation may retire a disconnected carrier before heartbeat expiry.
+        // Preserve its admitted use only for this exact committed victim;
+        // administrative and failed-promotion cleanup earn no preference.
+        let remember_victim = self.neighbor_reconnection_qualifies(
+            &victim,
+            now_ms,
+            std::time::Duration::from_secs(self.config.node.link_dead_timeout_secs),
+        );
         if !prepared.outbound {
             self.grant_interrupted_retry_after_promotion(peer, now_ms);
         }
@@ -523,6 +531,9 @@ impl Node {
                 );
         }
         self.remove_neighbor_for_rotation(&victim);
+        if remember_victim {
+            self.remember_neighbor_reconnection(victim, now_ms);
+        }
         self.neighbor_rotation.displaced = Some((victim, now_ms));
         self.neighbor_rotation.last_replacement_ms = Some(now_ms);
         // begin_neighbor_rotation already spaces attempts. Replacement pacing
