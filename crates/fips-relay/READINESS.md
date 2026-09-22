@@ -2067,6 +2067,22 @@ Strict all-feature/all-target core lint and the default core build also pass.
 Reproduce the new native cases with `cargo test -p nvpn-fips-core --all-features
 --lib node::tests::sim_discovery::rotation::reconnection:: -- --test-threads=1`.
 
+Extended native population diagnostics show that the admission-latency gap remains.
+They preserve the two-peer boundary cap, one pending candidate, original local
+links, 500-ms maintenance phase and 60-second encounter deadline. Two alternative
+four-candidate identity layouts pass both encounters, with delivery at
+25.257/50.987 and 35.483/38.074 seconds. Increasing to eight local candidates per
+boundary misses the first encounter deadline with the ten-second minimum age.
+Reducing that age to five seconds also misses the deadline. A two-second age
+passes one identity layout at 12.405/10.789 seconds but fails independent layouts:
+one joins at 6.772 seconds and misses rejoin; the reversed layout misses the first
+join. Bridge requests reach the remote boundary while other candidates own its
+admission slot. Local traffic, owner retention and resource-cap checks continue
+to pass, and the bounded transition records omit no changes. These seven cases
+are retained as unmerged diagnostic regressions, not part of the passing acceptance
+suite. No timer-only recommendation or runtime change follows from them; crowded
+admission progress needs further work before mobile readiness can be claimed.
+
 Reproduce with `cargo test -p fips-relay --features measurements --test
 priced_paths merge_split::crowded::automatic::repeated::repeated_full_rosters_recover_paid_routes_without_candidate_departures
 -- --exact --test-threads=1 --nocapture`, using the development dependencies in
