@@ -15,6 +15,7 @@ use spanning_tree::{
 use std::collections::HashSet;
 
 mod chain_topology;
+mod current_root;
 mod direct_paths;
 mod large_reachability;
 mod partition_and_source_coords;

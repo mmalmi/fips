@@ -337,7 +337,8 @@ impl Node {
         if let Some(coords) = self.coord_cache.get(dest, now_ms) {
             return coords.clone();
         }
-        crate::tree::TreeCoordinate::root(*dest)
+        self.current_tree_root_coords(dest)
+            .unwrap_or_else(|| crate::tree::TreeCoordinate::root(*dest))
     }
 
     /// Current Unix time in milliseconds.
@@ -570,6 +571,12 @@ impl Node {
             return;
         }
 
+        self.prepare_pending_tun_flush(dest_addr);
+        while self.flush_one_pending_tun_packet(dest_addr).await {}
+        while self.flush_one_pending_endpoint_batch(dest_addr).await {}
+    }
+
+    fn prepare_pending_tun_flush(&mut self, dest_addr: &NodeAddr) {
         let stale_count = self.pending_session_traffic.prepare_tun_packets(
             dest_addr,
             Self::now_ms(),
@@ -583,61 +590,84 @@ impl Node {
                 "Dropped stale queued TUN packets before session flush"
             );
         }
-        // Only the selected packet leaves node ownership across an await.
-        // Neither cancellation nor a post-handoff error proves it was unsent.
-        while self.dataplane_has_fsp_owner(dest_addr)
-            && self.dataplane_application_route_ready(dest_addr)
-        {
-            let Some(packet) = self.pending_session_traffic.pop_tun_packet(dest_addr) else {
-                break;
-            };
-            if let Err(e) = self
-                .send_dataplane_cached_tun_packet(dest_addr, packet.packet().to_vec())
-                .await
-            {
-                debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued TUN packet");
-                break;
-            }
-        }
+    }
 
-        while self
+    /// One bounded step for a route made ready by control processing.
+    pub(in crate::node) async fn flush_one_pending_packet(&mut self, dest_addr: &NodeAddr) -> bool {
+        self.prepare_pending_tun_flush(dest_addr);
+        if self
             .pending_session_traffic
-            .endpoint_data_for(dest_addr)
+            .tun_packets_for(dest_addr)
             .is_some()
         {
-            let remote = match self.prepare_dataplane_cached_endpoint_send(dest_addr) {
-                Ok(remote) => remote,
-                Err(error) => {
-                    debug!(dest = %self.peer_display_name(dest_addr), error = %error, "Queued endpoint route unavailable");
-                    return;
-                }
-            };
-            let Some(pending) = self
-                .pending_session_traffic
-                .pop_endpoint_data_batch(dest_addr, Self::PENDING_ENDPOINT_DATA_FLUSH_BATCH_MAX)
-            else {
-                break;
-            };
-            let enqueued_at_ms = pending.enqueued_at_ms();
-            if let Err(failure) = self
-                .send_dataplane_prepared_endpoint_payloads(remote, pending.into_payloads())
-                .await
-            {
-                debug!(dest = %self.peer_display_name(dest_addr), error = %failure.error, "Failed to send queued endpoint data");
-                if let Some(unsent) =
-                    crate::node::PendingEndpointData::new_batch(failure.unsent, enqueued_at_ms)
-                {
-                    let admission = self.pending_session_traffic.restore_endpoint_data_front(
-                        *dest_addr,
-                        unsent,
-                        self.config.node.session.pending_max_destinations,
-                        self.config.node.session.pending_packets_per_dest,
-                    );
-                    Self::record_pending_endpoint_admission(admission);
-                }
-                return;
-            }
+            self.flush_one_pending_tun_packet(dest_addr).await
+        } else {
+            self.flush_one_pending_endpoint_batch(dest_addr).await
         }
+    }
+
+    async fn flush_one_pending_tun_packet(&mut self, dest_addr: &NodeAddr) -> bool {
+        if !self.dataplane_has_fsp_owner(dest_addr)
+            || !self.dataplane_application_route_ready(dest_addr)
+        {
+            return false;
+        }
+        // Only the selected packet leaves node ownership across an await.
+        // Neither cancellation nor a post-handoff error proves it was unsent.
+        let Some(packet) = self.pending_session_traffic.pop_tun_packet(dest_addr) else {
+            return false;
+        };
+        if let Err(e) = self
+            .send_dataplane_cached_tun_packet(dest_addr, packet.packet().to_vec())
+            .await
+        {
+            debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued TUN packet");
+            return false;
+        }
+        true
+    }
+
+    async fn flush_one_pending_endpoint_batch(&mut self, dest_addr: &NodeAddr) -> bool {
+        if self
+            .pending_session_traffic
+            .endpoint_data_for(dest_addr)
+            .is_none()
+        {
+            return false;
+        }
+        let remote = match self.prepare_dataplane_cached_endpoint_send(dest_addr) {
+            Ok(remote) => remote,
+            Err(error) => {
+                debug!(dest = %self.peer_display_name(dest_addr), error = %error, "Queued endpoint route unavailable");
+                return false;
+            }
+        };
+        let Some(pending) = self
+            .pending_session_traffic
+            .pop_endpoint_data_batch(dest_addr, Self::PENDING_ENDPOINT_DATA_FLUSH_BATCH_MAX)
+        else {
+            return false;
+        };
+        let enqueued_at_ms = pending.enqueued_at_ms();
+        if let Err(failure) = self
+            .send_dataplane_prepared_endpoint_payloads(remote, pending.into_payloads())
+            .await
+        {
+            debug!(dest = %self.peer_display_name(dest_addr), error = %failure.error, "Failed to send queued endpoint data");
+            if let Some(unsent) =
+                crate::node::PendingEndpointData::new_batch(failure.unsent, enqueued_at_ms)
+            {
+                let admission = self.pending_session_traffic.restore_endpoint_data_front(
+                    *dest_addr,
+                    unsent,
+                    self.config.node.session.pending_max_destinations,
+                    self.config.node.session.pending_packets_per_dest,
+                );
+                Self::record_pending_endpoint_admission(admission);
+            }
+            return false;
+        }
+        true
     }
 
     /// Retry session initiation after discovery provided coordinates.

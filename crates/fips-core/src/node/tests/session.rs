@@ -14,6 +14,8 @@ use crate::protocol::{
 use crate::tree::{ParentDeclaration, TreeCoordinate};
 
 mod admission;
+#[cfg(feature = "sim-transport")]
+mod current_root;
 mod direct_endpoint;
 mod discovery_tun;
 mod entry_basics;

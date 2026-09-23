@@ -34,18 +34,42 @@ async fn discovery_turn(nodes: &mut [TestNode]) {
     process_available_packets(nodes).await;
     for node in nodes.iter_mut() {
         node.node.check_bloom_state().await;
-        node.node.check_pending_lookups(Node::now_ms()).await;
+        node.node.check_discovery_work(Node::now_ms()).await;
+    }
+    process_available_packets(nodes).await;
+}
+
+/// Service the same due discovery work as the RX deadline branch. This never
+/// retries pending application packets or advances a lookup before its deadline.
+async fn due_discovery_turn(nodes: &mut [TestNode]) {
+    process_available_packets(nodes).await;
+    for node in nodes.iter_mut() {
+        let now_ms = Node::now_ms();
+        if node
+            .node
+            .discovery_work_deadline_ms()
+            .is_some_and(|due| due <= now_ms)
+        {
+            node.node.check_discovery_work(now_ms).await;
+        }
     }
     process_available_packets(nodes).await;
 }
 
 fn discovery_diagnostics(nodes: &[TestNode], destination: &NodeAddr) -> Vec<String> {
+    let now_ms = Node::now_ms();
     nodes.iter().enumerate().map(|(index, node)| {
         let stats = &node.node.stats().discovery;
         let pending = node.node.pending_lookups.contains_key(destination);
+        let root_index = nodes.iter().position(|other| other.node.node_addr() == node.node.tree_state().root());
+        let root_is_destination = node.node.tree_state().root() == destination;
+        let local_due_in_ms = node.node.pending_lookup_deadline_ms().map(|due| i128::from(due) - i128::from(now_ms));
+        // The work deadline includes deferred forwarding. If local_due is
+        // absent, a reported work deadline belongs only to a deferred forward.
+        let work_due_in_ms = node.node.discovery_work_deadline_ms().map(|due| i128::from(due) - i128::from(now_ms));
         let reachable = node.node.peers.values().filter(|peer| peer.may_reach(destination)).count();
         format!(
-            "node={index} pending={pending} bloom_peers={reachable} initiated={} bloom_miss={} received={} forwarded={} no_peer={} target={} sign_limited={} forward_limited={} responses={} accepted={} identity_miss={} proof_failed={} unsolicited={} timeout={}",
+            "node={index} root={root_index:?} root_is_destination={root_is_destination} pending={pending} local_due_in_ms={local_due_in_ms:?} work_due_in_ms={work_due_in_ms:?} bloom_peers={reachable} initiated={} bloom_miss={} received={} forwarded={} no_peer={} target={} sign_limited={} forward_limited={} responses={} accepted={} identity_miss={} proof_failed={} unsolicited={} timeout={}",
             stats.req_initiated, stats.req_bloom_miss, stats.req_received,
             stats.req_forwarded, stats.req_no_tree_peer, stats.req_target_is_us,
             stats.req_sign_rate_limited, stats.req_forward_rate_limited,
@@ -403,6 +427,7 @@ async fn root_change_recovery(traffic: Traffic, delayed_filter: bool) {
     let lookup_count = nodes[0].node.stats().discovery.req_initiated - before_lookup;
     let mut released_by_filter = true;
     let mut filter_started = None;
+    let mut filter_lookup_clock = None;
     if delayed_filter {
         // Let zero-peer attempts become due on the real clock. Aging only
         // lookup timestamps would bypass time elapsed at the transit limiter.
@@ -440,19 +465,30 @@ async fn root_change_recovery(traffic: Traffic, delayed_filter: bool) {
             );
             released_by_filter &= nodes[0].node.stats().discovery.req_initiated == initiated + 1;
         }
+        filter_lookup_clock = Some((original_clock, initiated + 1));
     }
 
     // Submit exactly once. Ordinary signed discovery must flush that same
     // queued payload, without a replay after a transit routing error.
     let mut delivered = Vec::new();
     let mut wrong_path = 0;
+    let mut filter_lookup_unchanged = true;
+    let filter_release_diagnostics =
+        delayed_filter.then(|| discovery_diagnostics(&nodes, &destination));
     let deadline =
         tokio::time::Instant::now() + Duration::from_secs(if delayed_filter { 1 } else { 5 });
     loop {
         if delayed_filter {
-            // The FilterAnnounce must wake signed lookup and original-packet
-            // delivery without a maintenance flush or a later retry timer.
-            process_available_packets(&mut nodes).await;
+            // Filter release may encounter a transit's existing forward slot.
+            // Honor that due work, but never rescue this original with a later
+            // source retry or an application-queue maintenance flush.
+            due_discovery_turn(&mut nodes).await;
+            let (original_clock, initiated) = filter_lookup_clock.unwrap();
+            filter_lookup_unchanged &= nodes[0].node.stats().discovery.req_initiated == initiated;
+            if let Some(lookup) = nodes[0].node.pending_lookups.get(&destination) {
+                filter_lookup_unchanged &=
+                    (lookup.initiated_ms, lookup.last_sent_ms, lookup.attempt) == original_clock;
+            }
         } else {
             discovery_turn(&mut nodes).await;
         }
@@ -492,7 +528,13 @@ async fn root_change_recovery(traffic: Traffic, delayed_filter: bool) {
     ];
     let binding = nodes[0].node.source_routes.get(&destination).copied();
     let requires_coordinates = matches!(traffic, Traffic::Endpoint | Traffic::Tun);
-    if delivered != [payload.clone()] || (requires_coordinates && !verified) {
+    if delivered != [payload.clone()]
+        || (requires_coordinates && !verified)
+        || !filter_lookup_unchanged
+    {
+        if let Some(diagnostics) = filter_release_diagnostics {
+            eprintln!("at {traffic:?} filter release: {diagnostics:?}");
+        }
         eprintln!(
             "incomplete {traffic:?} recovery: {:?}",
             discovery_diagnostics(&nodes, &destination)
@@ -509,6 +551,10 @@ async fn root_change_recovery(traffic: Traffic, delayed_filter: bool) {
             "new reachability must release the unsent recovery lookup once"
         );
         if delayed_filter {
+            assert!(
+                filter_lookup_unchanged,
+                "delivery must retain the original lookup clock and filter-released request count"
+            );
             assert!(
                 filter_to_delivery_ms.is_some_and(|elapsed| elapsed <= 1000),
                 "the original must arrive within one second of the ready filter, before the duplicate drain"

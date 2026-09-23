@@ -11,6 +11,24 @@ pub(in crate::node) enum TransitNextHopPlan {
 impl Node {
     // === Routing ===
 
+    fn destination_is_current_tree_root(&self, dest: &NodeAddr) -> bool {
+        self.config.node.routing.mode == crate::config::RoutingMode::Tree
+            && dest == self.tree_state.root()
+    }
+
+    /// Ancestry already names the root's one-entry coordinate. This is a local
+    /// routing hint, not a verified lookup result or evidence of delivery.
+    pub(in crate::node) fn current_tree_root_coords(
+        &self,
+        dest: &NodeAddr,
+    ) -> Option<crate::tree::TreeCoordinate> {
+        if !self.destination_is_current_tree_root(dest) {
+            return None;
+        }
+        let root = self.tree_state.my_coords().entries().last()?.clone();
+        crate::tree::TreeCoordinate::new(vec![root]).ok()
+    }
+
     /// A known carrier still carries session/control repair while Tree-mode
     /// application traffic waits for coordinates that transit peers can use.
     pub(in crate::node) fn application_route_has_coordinates(
@@ -20,12 +38,10 @@ impl Node {
     ) -> bool {
         next_hop == *dest
             || self.config.node.routing.mode == crate::config::RoutingMode::ReplyLearned
-            || self
-                .coord_cache
-                .get(dest, Self::now_ms())
-                .is_some_and(|coords| {
-                    coords.node_addr() == dest && coords.root_id() == self.tree_state.root()
-                })
+            || self.coord_cache.get(dest, Self::now_ms()).map_or_else(
+                || self.destination_is_current_tree_root(dest),
+                |coords| coords.node_addr() == dest && coords.root_id() == self.tree_state.root(),
+            )
     }
 
     pub(in crate::node) fn has_application_next_hop(&mut self, dest: &NodeAddr) -> bool {
@@ -84,18 +100,19 @@ impl Node {
     /// 3. Reply-learned routes in `reply_learned` mode. These are locally
     ///    observed reverse paths, selected with weighted multipath plus
     ///    periodic coordinate/tree exploration.
-    /// 4. Bloom filter candidates with cached dest coords → among peers whose
+    /// 4. Bloom filter candidates with known dest coords → among peers whose
     ///    bloom filter contains the destination, pick the one that minimizes
     ///    tree distance to the destination, with
     ///    `(link_cost, tree_distance_to_dest, node_addr)` tie-breaking.
     ///    The self-distance check ensures only peers strictly closer to the
     ///    destination than us are considered (prevents routing loops).
-    /// 5. Greedy tree routing fallback (requires cached dest coords)
+    /// 5. Greedy tree routing fallback (requires known dest coords)
     /// 6. No route → `None`
     ///
-    /// Both the bloom filter and tree routing paths require cached destination
-    /// coordinates (checked in `coord_cache`). Without coordinates, the node
-    /// cannot make loop-free forwarding decisions. The caller should signal
+    /// Both the bloom filter and tree routing paths require destination
+    /// coordinates from the cache or the current root's own ancestry entry.
+    /// Without coordinates, the node cannot make loop-free forwarding
+    /// decisions. The caller should signal
     /// `CoordsRequired` back to the source when `None` is returned for a
     /// non-local destination.
     pub fn find_next_hop(&mut self, dest_node_addr: &NodeAddr) -> Option<&ActivePeer> {
@@ -302,11 +319,13 @@ impl Node {
             }
         }
 
-        // Look up cached destination coordinates (required by both bloom and tree paths).
+        // Prefer cached coordinates; only our current root has an immediate
+        // local ancestry hint without a destination lookup.
         let Some(dest_coords) = self
             .coord_cache
             .get_and_touch(dest_node_addr, now_ms)
             .cloned()
+            .or_else(|| self.current_tree_root_coords(dest_node_addr))
         else {
             if (healthy_direct_route.is_none() || explore_fallback)
                 && let Some(sendable) = &sendable_learned_peers
@@ -444,7 +463,8 @@ impl Node {
         let dest_coords = self
             .coord_cache
             .get_and_touch(dest_node_addr, now_ms)
-            .cloned();
+            .cloned()
+            .or_else(|| self.current_tree_root_coords(dest_node_addr));
         let selected_strictly_progresses = dest_coords.as_ref().is_some_and(|dest_coords| {
             self.tree_state.my_coords().root_id() == dest_coords.root_id()
                 && self

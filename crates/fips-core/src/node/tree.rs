@@ -36,6 +36,16 @@ impl Node {
                 self.refresh_dataplane_fsp_owner_routes_retaining_current(&dest);
             }
         }
+        // Retain the demand before any topology announcement can suspend.
+        // The shared completion path sends one bounded step after controls.
+        let root = *self.tree_state.root();
+        self.pending_root_traffic = (self.pending_session_traffic.has_traffic_for(&root)
+            && self.dataplane_has_fsp_owner(&root)
+            && self.dataplane_application_route_ready(&root))
+        .then_some(root);
+        if self.pending_root_traffic.is_some() {
+            self.dataplane.readiness_notify().notify_one();
+        }
     }
 
     pub(in crate::node) fn pending_tree_announce_deadline_ms(&self) -> Option<u64> {

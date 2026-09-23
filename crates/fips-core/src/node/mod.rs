@@ -295,6 +295,8 @@ pub struct Node {
     // === Pending TUN Packets ===
     /// TUN packets and endpoint payloads queued while waiting for session establishment.
     pending_session_traffic: PendingSessionTrafficQueues,
+    /// Queued established traffic made eligible by the current root's ancestry.
+    pending_root_traffic: Option<NodeAddr>,
     // === Pending Discovery Lookups ===
     /// Tracks in-flight discovery lookups and owns dedupe/cap admission.
     pending_lookups: handlers::discovery::PendingDiscoveryLookups,

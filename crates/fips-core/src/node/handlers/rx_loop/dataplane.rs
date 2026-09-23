@@ -11,6 +11,41 @@ use tracing::{debug, trace, warn};
 use super::{RxLoopDataplaneIo, RxLoopDataplaneTurnLimits};
 
 impl Node {
+    pub(in crate::node) async fn flush_pending_root_traffic(&mut self) -> bool {
+        let Some(root) = self.pending_root_traffic else {
+            return false;
+        };
+        if self.config.node.routing.mode != crate::config::RoutingMode::Tree
+            || self.tree_state.root() != &root
+            || !self.pending_session_traffic.has_traffic_for(&root)
+            || !self.dataplane_has_fsp_owner(&root)
+            || !self.dataplane_application_route_ready(&root)
+        {
+            self.pending_root_traffic = None;
+            return false;
+        }
+
+        // Keep the root and unvisited queue node-owned across cancellation.
+        // One step shares the existing fast-maintenance time limit; failure
+        // leaves ordinary maintenance responsible instead of spinning Notify.
+        let result = tokio::time::timeout(
+            super::budget::RX_LOOP_FAST_MAINTENANCE_TIMEOUT,
+            self.flush_one_pending_packet(&root),
+        )
+        .await;
+        match result {
+            Ok(true) if self.pending_session_traffic.has_traffic_for(&root) => {
+                self.dataplane.readiness_notify().notify_one();
+                true
+            }
+            Ok(progress) => {
+                self.pending_root_traffic = None;
+                progress
+            }
+            Err(_) => false,
+        }
+    }
+
     pub(in crate::node) async fn drain_dataplane_turn_with_firsts(
         &mut self,
         io: &mut RxLoopDataplaneIo<'_>,

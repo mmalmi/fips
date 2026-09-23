@@ -2868,9 +2868,8 @@ availability; they do not prove a single cause or establish mobile delivery.
 All eight original channels recover their accounting and acknowledgements
 17.38 and 4.19 seconds after reopening, respectively. Local streams deliver
 35/35 and 22/22 per direction, and all 1,536 test sats are collected in each run.
-The unchanged failing experiments remain unmerged. Using a known root coordinate
-as a local routing hint remains an unimplemented experiment, including the
-necessary test of an original queued before the tree merge.
+The unchanged failing experiments remain unmerged. The current-root routing experiment below evaluates that post-join delay
+with an original queued before the tree merge.
 
 Pending traffic now also survives cancellation of a flush. Three native
 regressions establish real encrypted sessions, remove a source-bound carrier,
@@ -2906,6 +2905,52 @@ effort; the separate direct-ingress TUN error-retry policy is unchanged and stil
 needs an uncertainty audit. These checks do not establish financial delivery,
 radio performance or hardware acceptance. The preserved paid short-contact
 failures above remain open and were not rerun for this queue change.
+
+Tree-mode routing now uses the current root's existing ancestry entry when no
+cached destination coordinate is present. Cached records still take precedence,
+including a record from another root; the hint does not create cache entries,
+verified discovery results or delivery evidence. Explicit source bindings,
+strictly progressing transit routes and previous-hop exclusion remain enforced.
+
+Root adoption also retains a bounded wake for already queued established traffic
+before announcement sends can suspend. The ordinary control dispatcher sends one
+TUN packet or at most 16 endpoint payloads under the existing two-second budget.
+The same source admission and queue helpers are used by ordinary retry. Rejection
+ends the prompt wake; cancellation retains the wake and untouched queue without
+replaying an uncertain selected send or spinning on an unconditional notification.
+No wire message, dependency, retry interval or allowance was added.
+
+A three-node native fixture establishes real encrypted sessions, splits the tree,
+queues an original and releases a genuine new-root declaration. The old runtime
+lacks the routing hint; a hint-only implementation still leaves the original
+queued. With the wake, the original arrives within 750 ms without another lookup
+or an application retry. Denied source allowance prevents sealing and delivery
+without repeated immediate admission attempts. A cancellation control holds a
+real send completion beyond the production two-second limit: its 15 untouched
+payloads retain their age and ownership, and ordinary completion processing
+ultimately delivers all 16 originals once. That control invokes the signed-tree
+handler with captured genuine input; it isolates handler/dispatcher ownership,
+not the full receive-loop timing or paid accounting.
+
+All 113 distinct focused behavioral checks pass, including routing boundary
+controls, queue cancellation/error regressions, source admission, coordinate
+recovery, tree changes and receive-loop scheduling. The 100-node routing test
+reaches all 9,900 ordered pairs without loops. The separate live twelve-node test
+delivers both originals at 860/869 ms before its independent 1,502-ms cut, with all
+236 local payloads received. Strict core lint, workspace formatting and the
+930-file size check pass; the four existing line-count exceptions are unchanged.
+Each gate preserves its source/dependency graph. Across final gates, changes are
+limited to test code and routing comments; the native cancellation and lint gates
+run on the final exact sources.
+
+An initial broader coordinate-recovery run failed three of six cases; the
+unchanged baseline passed on another schedule. Inspection found that the manual
+fixture omitted production's deferred-discovery deadline service. It now runs
+that service, retaining the original one-second filter-release acceptance window
+and additionally checking that source lookup clocks and request counts do not
+advance to rescue delivery. All six cases pass. This corrects fixture fidelity;
+the observations do not isolate the cause of every initial failure. Physical
+routers are unchanged, and the paid short-contact comparison remains necessary.
 
 The finite-contact fixture, initially isolated as `1725169c`, reuses the
 independently timed contact driver with full neighbor tables and no reciprocal
