@@ -48,8 +48,8 @@ async fn paid_service_settlement_preserves_redemption_reserves_and_signed_charge
             .expect("paid datagram must reach the destination");
         }
         #[cfg(feature = "testbench")]
-        let settled =
-            refund_crash::settle(&configs, &paths, &npubs, &mut children, mint.url()).await;
+        let (settled, payout_proofs) =
+            settlement_crash::settle(&configs, &paths, &npubs, &mut children, mint.url()).await;
         #[cfg(not(feature = "testbench"))]
         let settled = request(&configs[0], &AdminRequest::Settle)
             .await
@@ -148,6 +148,17 @@ async fn paid_service_settlement_preserves_redemption_reserves_and_signed_charge
             assert!(closed.already_closed, "the service must have settled first");
             let proofs: Vec<cashu::nuts::Proof> =
                 serde_json::from_str(&closed.receiver_proofs_json).unwrap();
+            #[cfg(feature = "testbench")]
+            if report["channel_id"] == reports[0]["channel_id"] {
+                let closed_proofs = proofs
+                    .iter()
+                    .map(|proof| (proof.y().unwrap().to_string(), proof.clone()))
+                    .collect::<std::collections::BTreeMap<_, _>>();
+                assert!(
+                    closed_proofs == payout_proofs,
+                    "receiver must retain the exact crash payout"
+                );
+            }
             for proof in proofs {
                 let y = proof.y().unwrap();
                 let rows = db.get_proofs_by_ys(vec![y]).await.unwrap();

@@ -12,13 +12,13 @@ mod preopening;
 mod preopening_support;
 #[allow(dead_code)]
 mod process_support;
-#[cfg(feature = "testbench")]
-#[path = "funding_costs/refund_crash.rs"]
-mod refund_crash;
 #[path = "funding_costs/restore.rs"]
 mod restore;
 #[path = "funding_costs/retirement.rs"]
 mod retirement;
+#[cfg(feature = "testbench")]
+#[path = "funding_costs/settlement_crash.rs"]
+mod settlement_crash;
 #[path = "funding_costs/setup.rs"]
 mod setup;
 #[path = "funding_costs/terminal_history.rs"]

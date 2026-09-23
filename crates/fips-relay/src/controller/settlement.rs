@@ -4,9 +4,9 @@ use super::*;
 use crate::{buyer::BuyerError, ledger::ChannelUsage};
 use cashu_service::{import_payment_proofs, restore_streaming_route_cashu_spilman_refund};
 
-#[cfg(feature = "testbench")]
-mod refund_barrier;
 mod state;
+#[cfg(feature = "testbench")]
+mod wallet_barrier;
 pub use state::SettlementReport;
 pub(super) use state::{BuyerSettlement, SellerSettlement, SettlementKind};
 use state::{valid_report, valid_usage};
@@ -195,6 +195,8 @@ impl Controller {
             })
         })
         .await?;
+        #[cfg(feature = "testbench")]
+        wallet_barrier::hold(&self.services.wallet_directory, id, "payout").await?;
         let saved = report.clone();
         self.change(move |j| {
             let sale = j
@@ -400,7 +402,7 @@ impl Controller {
         })
         .await?;
         #[cfg(feature = "testbench")]
-        refund_barrier::hold(&self.services.wallet_directory, id).await?;
+        wallet_barrier::hold(&self.services.wallet_directory, id, "refund").await?;
         purchase.refunded = true;
         purchase.wallet_refund_sat = Some(verified_refund);
         self.change(move |j| {

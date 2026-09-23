@@ -17,25 +17,31 @@ pub(super) async fn load_mint_balance(
     directory: &Path,
     mint_url: &str,
 ) -> Result<cashu_service::CashuMintBalance, String> {
+    let coins = load_mint_proofs(directory, mint_url).await?;
+    Ok(cashu_service::CashuMintBalance {
+        mint_url: mint_url.to_owned(),
+        unit: cashu::nuts::CurrencyUnit::Sat.to_string(),
+        balance_sat: coins.iter().map(|coin| coin.proof.amount.to_u64()).sum(),
+    })
+}
+
+pub(super) async fn load_mint_proofs(
+    directory: &Path,
+    mint_url: &str,
+) -> Result<Vec<cdk_common::wallet::ProofInfo>, String> {
     use cashu::nuts::{CurrencyUnit, State};
     use cdk_common::database::WalletDatabase;
     let db = cdk_sqlite::WalletSqliteDatabase::new(cashu_service::cashu_wallet_db_path(directory))
         .await
         .map_err(|error| error.to_string())?;
-    let coins = db
-        .get_proofs(
-            Some(mint_url.parse().map_err(|error| format!("{error}"))?),
-            Some(CurrencyUnit::Sat),
-            Some(vec![State::Unspent]),
-            None,
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(cashu_service::CashuMintBalance {
-        mint_url: mint_url.to_owned(),
-        unit: CurrencyUnit::Sat.to_string(),
-        balance_sat: coins.iter().map(|coin| coin.proof.amount.to_u64()).sum(),
-    })
+    db.get_proofs(
+        Some(mint_url.parse().map_err(|error| format!("{error}"))?),
+        Some(CurrencyUnit::Sat),
+        Some(vec![State::Unspent]),
+        None,
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
 pub(super) async fn start_bench(root: &Path, seed: u64, lifetime: u64) -> Bench {
