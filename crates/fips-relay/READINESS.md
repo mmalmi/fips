@@ -105,6 +105,15 @@ These process kills do not simulate loss of writes already acknowledged by
 physical storage. Reconciliation of missing evidence, sustained aggregate storage
 pressure and current-build hardware acceptance remain separate requirements.
 
+SDK `b08ab23` bounds recovery of temporarily empty mint restore replies to three
+lookups under the existing deadline, without another funding submission. CDK
+`8b81aad7` fixes fee-split recursion that could overflow the stack and uses scalar
+output counts while searching for a sufficient total. All 357 SDK and 1,719
+native library tests pass, along with strict all-target lint. The five FIPS
+pre-opening cases and payout/refund crash case pass on the combined graph; all
+2,610 recorded source/dependency inputs match. The final proof vectors, initial
+wallet selection and aggregate storage still need their own resource bounds.
+
 ## Authenticated adjacent neighbors
 
 The opt-in service setting `"neighbor_admission": "authenticated_adjacent"`
