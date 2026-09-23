@@ -387,15 +387,16 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork) {
                 .saturating_sub(incumbents[0].authenticated)
         )
     );
-    // Expose before the older side becomes eligible. Its ordinary discovery
-    // starts the request; the receiver remains roughly five seconds younger.
-    while Node::now_ms().saturating_sub(incumbents[0].authenticated) < 9_000 {
+    let ready_at = incumbents[1].authenticated + IDLE_MS;
+    // Leave room for the next ordinary discovery poll while the receiver is
+    // still immature; the allowed authentication offset varies by one second.
+    while ready_at.saturating_sub(Node::now_ms()) > 5_500 {
         pump.round(nodes, &mut endpoints, &ids, &mut sequence, &LOCAL_FLOWS)
             .await;
         useful_retained(nodes, &ids, &useful);
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    pump.ready_at = Some(incumbents[1].authenticated + IDLE_MS);
+    pump.ready_at = Some(ready_at);
     network.set_link(ADDRESSES[0], ADDRESSES[1], SimLink::default());
     while pump.incoming.is_none() {
         pump.round(nodes, &mut endpoints, &ids, &mut sequence, &LOCAL_FLOWS)

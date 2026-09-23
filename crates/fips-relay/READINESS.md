@@ -2779,11 +2779,59 @@ All 75 focused checks pass, including the live twelve-node encounter: both
 originals arrive once at 858–864 ms, before the independent 1,501-ms cut, and all
 236 local payloads arrive within their existing bounds. Strict core lint,
 formatting and the 925-file size check pass on the frozen source/dependency
-graph. This isolates and removes a scheduler delay; the failing paid short-contact
-experiment still needs a matched comparison, and the change has not been tested
+graph. This isolates and removes a scheduler delay; the matched paid short-contact
+comparison below still fails, and the change has not been tested
 on physical routers. Reproduce with the core filters
 `forwarding_contention::bloom_deadline::`, `node::bloom::deadlines::`,
 `sim_discovery::bloom_refresh::` and `responsive::live::`.
+
+Three paid comparisons on that runtime still miss both originals before the
+independent 1.5-second cut. The first preserves the original experiment unchanged;
+the second adds a wall-clock opening bracket and routing traces. Their native
+admission order differs: the traced run admits competitors first and does not
+establish the bridge before the cut. Its first bridge filter arrives after
+20.56 seconds, so it cannot explain the first run's post-join delay.
+
+A separate diagnostic leaves the additional competitors hidden while retaining
+both mature full rosters. The bridge filter arrives at 559 ms, the receiving
+boundary adopts the joined root at 768 ms, and reachability reaches the reverse
+source at 1.059 seconds. That source's lookup reaches the last intermediate at
+1.075 seconds but encounters the existing two-second incoming-peer/target
+forwarding limit: an earlier boundary lookup used the same slot at 557 ms.
+The original lookup reaches its target at 2.563 seconds, after separation;
+a retry's verified reply reaches the source at 5.099 seconds, after reopening.
+This isolates a post-join discovery delay without weakening spam protection.
+Signed replies bind the request ID, target and coordinates, so reusing another
+request's reply unchanged is not a valid cache shortcut.
+
+All eight original channels separately pass fresh usage, supported cumulative
+credit and payer acknowledgement checks 4.03, 18.61 and 4.18 seconds after
+reopening. These counters can include native upkeep and prior credit; they do
+not establish delivery of the originals. Local streams remain complete and all
+1,536 test sats are collected in each run. Source/dependency/lock guards pass.
+Both paid experiments remain unmerged and failing; no physical device changed.
+
+A separate native TCP regression exposes lost initial Bloom work when bootstrap
+is canceled after successful peer promotion. The connection is already consumed,
+but the old code has not yet marked the filter for dispatch. Periodic refresh
+cannot repair a peer with neither pending work nor a previous successful send.
+Promotion now retains the initial update synchronously after validating the
+installed owner, before cleanup or bootstrap can suspend. Duplicate-request
+bootstrap also marks before its first send. No new message, owner, retry interval
+or resource allowance is added.
+
+The regression fails on the old runtime and passes with the fix: after releasing
+the blocked carrier, ordinary dispatch sends one real encrypted initial filter,
+which the counterpart decrypts and validates. First-packet delivery, replay
+rejection and exact connection ownership remain checked. All 108 handshake
+compatibility cases, four pending-deadline cases, four refresh simulations, the
+native propagation-deadline case and the live twelve-node encounter pass, as do
+strict core lint, formatting and the 925-file size gate. Their final source and
+dependency fingerprints match. One earlier handshake run failed a fixture setup
+window; the unchanged baseline passed on another schedule. The fixture now opens
+relative to the receiver's actual maturity deadline, preserving all acceptance
+assertions. Cancellation after a parent change remains a separate audit item;
+this promotion fix does not establish general short-contact or radio readiness.
 
 The finite-contact fixture, initially isolated as `1725169c`, reuses the
 independently timed contact driver with full neighbor tables and no reciprocal

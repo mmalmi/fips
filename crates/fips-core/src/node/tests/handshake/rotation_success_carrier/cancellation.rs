@@ -1,9 +1,10 @@
-//! A promoted receiver keeps its first packet when bootstrap is cancelled.
+//! A promoted receiver keeps its first packet and Bloom work across cancellation.
 use super::*;
 use crate::node::tests::session::run_large_stack_async_test;
 use crate::node::tests::spanning_tree::{
     process_dataplane_completions, process_dataplane_packet, process_node_packets,
 };
+use crate::protocol::{FilterAnnounce, LinkMessageType};
 use futures::FutureExt;
 use std::panic::AssertUnwindSafe;
 
@@ -71,6 +72,7 @@ async fn exercise(node: &mut TestNode) {
     assert_eq!(first.transport_id, tcp_id);
     assert_eq!(first.remote_addr, candidate.source);
     let first_wire = first.data.as_slice().to_vec();
+    let filters_before = node.node.stats().bloom.sent;
 
     let guard = match node.node.transports.get(&tcp_id).unwrap() {
         TransportHandle::Tcp(tcp) => tcp.test_pool_guard().await,
@@ -97,12 +99,66 @@ async fn exercise(node: &mut TestNode) {
     assert_eq!(active.current_addr(), Some(&candidate.source));
     let original_generation = active.session_generation();
     assert!(node.node.dataplane_has_fmp_owner(newcomer.node_addr()));
+    assert!(
+        node.node.bloom_state.needs_update(newcomer.node_addr()),
+        "promoted owner must retain its initial Bloom work before bootstrap can suspend"
+    );
+    let filter_due = node
+        .node
+        .bloom_state
+        .pending_peer_deadline_ms(newcomer.node_addr())
+        .expect("initial Bloom work must own a dispatch deadline");
+    assert!(
+        filter_due <= Node::now_ms(),
+        "initial filter is unsent and due"
+    );
+    assert_eq!(
+        node.node.bloom_state.pending_update_deadline_ms(),
+        Some(filter_due)
+    );
+    assert_eq!(node.node.stats().bloom.sent, filters_before);
     drop(guard);
 
     // No proof resubmission or handshake retry: only ordinary ingress and
     // completion turns may deliver the packet saved before cancellation.
     process_node_packets(&mut node.node, &mut rx).await;
     assert_eq!(await_heartbeat(node, &newcomer, 1).await, 1);
+
+    // Drive only the production due-filter dispatcher after releasing the
+    // carrier. Do not replay Msg1, bootstrap, or mark the update from this test.
+    // Decode the genuine TCP flight with the counterpart's existing Noise
+    // session; a send counter alone would not prove a usable initial filter.
+    let initial_filter = tokio::time::timeout(Duration::from_secs(2), async {
+        node.node.send_due_filter_announces().await;
+        for _ in 0..8 {
+            let wire = read_fmp_packet(&mut stream, u16::MAX).await.unwrap();
+            let header = crate::dataplane::FmpWireHeader::parse_encrypted(&wire).unwrap();
+            let offset = usize::from(header.ciphertext_offset());
+            let plaintext = candidate
+                .session
+                .decrypt_with_replay_check_and_aad(
+                    &wire[offset..],
+                    header.counter(),
+                    &wire[..offset],
+                )
+                .expect("post-cancellation control must use the retained Noise owner");
+            assert!(plaintext.len() >= 5, "FMP link header and message type");
+            if plaintext[4] == LinkMessageType::FilterAnnounce.to_byte() {
+                return FilterAnnounce::decode(&plaintext[5..]).unwrap();
+            }
+        }
+        panic!("initial filter must appear within the bounded control flight");
+    })
+    .await
+    .expect("ordinary routing dispatch must send the retained initial filter");
+    assert!(initial_filter.is_v1_compliant());
+    assert!(initial_filter.sequence > 0);
+    assert!(initial_filter.filter.contains(node.node.node_addr()));
+    assert_eq!(node.node.stats().bloom.sent, filters_before + 1);
+    assert!(!node.node.bloom_state.needs_update(newcomer.node_addr()));
+    assert_eq!(node.node.bloom_state.pending_update_deadline_ms(), None);
+    node.node.send_due_filter_announces().await;
+    assert_eq!(node.node.stats().bloom.sent, filters_before + 1);
 
     // Replay the exact bytes over the same real stream. They must go through
     // normal replay protection, without another received heartbeat.

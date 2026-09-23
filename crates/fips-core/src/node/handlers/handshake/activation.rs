@@ -80,6 +80,9 @@ impl Node {
                 reason: "pending state could not transfer".into(),
             });
         }
+        // Promotion consumed the connection. Retain its initial routing work
+        // before carrier cleanup or bootstrap can suspend and be canceled.
+        self.bloom_state.mark_update_needed(*node);
         if connection.is_outbound()
             && let Some(proof) = connection.handshake_confirmation()
         {
