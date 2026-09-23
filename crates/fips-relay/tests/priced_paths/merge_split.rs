@@ -23,6 +23,8 @@ mod timing;
 mod crowded;
 #[path = "merge_split/pending_funding.rs"]
 mod pending_funding;
+#[path = "merge_split/reliable.rs"]
+mod reliable;
 #[path = "merge_split/settlement_cleanup.rs"]
 mod settlement_cleanup;
 

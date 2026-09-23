@@ -2976,10 +2976,38 @@ experiment remains failing and unchanged; it cannot by itself establish a defect
 in retaining queued work. A later lookup also crosses the root change, but the
 boundary reports current-root target coordinates before its verified reply, so
 that reply's latency does not identify how long the application route was unusable.
-The remaining reliable-client gap is a separate test of one accepted TCP write
-across a paid bridge outage, without reconnecting or resubmitting the application
-write. Existing paid mobility datagram retries and direct unpaid TCP loss tests
-do not jointly prove that behavior.
+That distinction motivates a separate test of one accepted TCP write across a
+paid bridge outage, without reconnecting or resubmitting the application write.
+Prior paid mobility datagram retries and direct unpaid TCP loss tests did not
+jointly prove that behavior.
+
+The new `merge_split::reliable::accepted_tcp_write_recovers_after_bridge_rejoin`
+case uses the existing six-node paid bench and FipsTcpEndpoint adapter. It first
+establishes one TCP connection across the funded route, cuts the bridge and waits
+for ordinary peer eviction and separate component roots. This takes 30.203 seconds
+in the observed run. The same TCP connection then accepts one 4,096-byte write
+while the bridge remains down. An independent task reopens the bridge two seconds
+later. TCP receive/poll uses actual elapsed time; no clock jump, reconnect,
+application retransmission or new delivery-receipt protocol rescues the write.
+
+The original byte range arrives once in order and its TCP marker is acknowledged
+within the unchanged 20-second deadline anchored at the write. First receipt is
+6.244 seconds, complete receipt 6.317 seconds and acknowledgment 6.334 seconds;
+the bridge reopens at 2.002 seconds. All eight original paid channels and funding
+identities remain intact, their observed usage advances and ordinary cumulative
+payments cover the supported usage. Aggregate channel counters can include
+handshake/upkeep traffic: TCP's exact read and acknowledgment separately prove
+application delivery. The measured verdict is retained before carrier restoration
+and collection, including task panic/timeout; all 1,536 test sats are collected.
+
+The integration test, strict all-target relay lint, workspace formatting and
+931-file size gate pass. Source/dependency/lock guards pass; the only source
+change after the behavioral run sorts the test module declaration for formatting,
+and the final lint gate covers that exact source. This proves one retained
+reliable stream across a simulated paid tree split; it does not establish fast
+physical eviction, general mobile-radio latency, restart recovery or sustained
+throughput. The strict short-contact datagram experiment remains unchanged and
+failing. No physical device changed.
 
 All eight original channels separately recover the required usage, cumulative
 credit and acknowledgements 661 ms after reopening. Those checks include native
