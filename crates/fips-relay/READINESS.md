@@ -19,7 +19,7 @@ and phone demonstrations do not accept the latest software for deployment.
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
-| Financial recovery | Actual process interruption during funding, never-started cancellation, committed-send recovery and lost settlement replies across departure/rejoin. | Actual process kills between wallet completion and controller persistence during settlement; terminal recovery for started but unsubmitted wallet sends; physical power-loss checks. |
+| Financial recovery | Actual process interruption during funding and after wallet refund completion, never-started cancellation, committed-send recovery and lost settlement replies across departure/rejoin. | Seller payout interruption before controller persistence; terminal recovery for started but unsubmitted wallet sends; physical power-loss checks. |
 | Long-running history | Route/channel retirement, lifetime rollups and paged proof custody retain unresolved ownership; see [history](HISTORY.md). | Total wallet/SDK storage bounds and reserved recovery capacity under sustained history pressure. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the local TollGate adapter remains a design proposal. | Review the complete supported deployment and stable peer API; client/adapter/TollGate interoperability remains untested. |
@@ -35,12 +35,22 @@ source/build reproducibility; external native tools, artifact authenticity and
 current OpenWrt runtime acceptance remain separate. See the
 [bundle workflow](FUNDING-COSTS.md#portable-development-source-bundle).
 
-The next focused software boundary is settlement after wallet import but before
-the controller records completion. Existing tests reconstruct that state or lose
-the durable reply; the process fixture should instead kill at the actual handoff
-and recover without editing journals. Keep the original channel/report, exact
-spendable value and lifetime totals. A process kill still does not simulate loss
-of writes already acknowledged by physical storage.
+The fee-bearing process fixture now sends SIGKILL after the buyer wallet has
+completed its refund but before the controller records completion. Read-only
+SQLite observations confirm the refund is spendable while the original
+controller flags remain unfinished. Ordinary restart completes refund accounting
+and both settlement-release acknowledgments before any administrative retry.
+The original funding operation, channel, report, signed payment and lifetime
+debit remain exact; the refund is credited once. The existing payout-reserve,
+replay and actual-expiry history checks pass after this crash as well. A private
+`testbench`-only barrier selects the exact channel; no financial journals are
+edited and no wire or admin operation is added. Reproduce with the corrected
+dependencies using `cargo test -p fips-relay --all-features --test funding_costs
+paid_fees:: -- --test-threads=1`.
+
+Seller payout import before controller persistence is still a separate untested
+crash boundary. A process kill also does not simulate loss of writes already
+acknowledged by physical storage.
 
 ## Authenticated adjacent neighbors
 

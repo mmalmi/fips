@@ -4,6 +4,8 @@ use super::*;
 use crate::{buyer::BuyerError, ledger::ChannelUsage};
 use cashu_service::{import_payment_proofs, restore_streaming_route_cashu_spilman_refund};
 
+#[cfg(feature = "testbench")]
+mod refund_barrier;
 mod state;
 pub use state::SettlementReport;
 pub(super) use state::{BuyerSettlement, SellerSettlement, SettlementKind};
@@ -397,6 +399,8 @@ impl Controller {
             })
         })
         .await?;
+        #[cfg(feature = "testbench")]
+        refund_barrier::hold(&self.services.wallet_directory, id).await?;
         purchase.refunded = true;
         purchase.wallet_refund_sat = Some(verified_refund);
         self.change(move |j| {

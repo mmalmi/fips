@@ -47,6 +47,10 @@ async fn paid_service_settlement_preserves_redemption_reserves_and_signed_charge
             .await
             .expect("paid datagram must reach the destination");
         }
+        #[cfg(feature = "testbench")]
+        let settled =
+            refund_crash::settle(&configs, &paths, &npubs, &mut children, mint.url()).await;
+        #[cfg(not(feature = "testbench"))]
         let settled = request(&configs[0], &AdminRequest::Settle)
             .await
             .unwrap_or_else(|e| panic!("valid fee-bearing traffic must settle: {e}"));

@@ -12,6 +12,9 @@ mod preopening;
 mod preopening_support;
 #[allow(dead_code)]
 mod process_support;
+#[cfg(feature = "testbench")]
+#[path = "funding_costs/refund_crash.rs"]
+mod refund_crash;
 #[path = "funding_costs/restore.rs"]
 mod restore;
 #[path = "funding_costs/retirement.rs"]
@@ -93,38 +96,6 @@ async fn wallet_costs_and_refunds_survive_restart_without_resetting_the_lifetime
                 .unwrap()
                 .balance_sat,
             debit - refund
-        );
-        // Simulate loss of the controller's completion flag after the SDK has
-        // imported and saved the refund. Recovery must reuse its exact total.
-        for child in &mut children {
-            stop(child).await;
-        }
-        let journal_path = configs[0]
-            .state_directory
-            .join("controller/controller.json");
-        let mut journal: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&journal_path).unwrap()).unwrap();
-        for entry in journal["buyer_settlements"]
-            .as_object_mut()
-            .unwrap()
-            .values_mut()
-        {
-            entry["refunded"] = false.into();
-            entry["released"] = false.into();
-            entry["wallet_refund_sat"] = serde_json::Value::Null;
-        }
-        // Retired offers were removed; recover only the already-recorded close.
-        journal["outgoing"] = serde_json::json!({});
-        std::fs::write(journal_path, serde_json::to_vec(&journal).unwrap()).unwrap();
-        children.clear();
-        for path in &paths {
-            children.push(start(path).await);
-        }
-        ready(&configs, &paths, &npubs, &mut children).await;
-        request(&configs[0], &AdminRequest::Settle).await.unwrap();
-        assert_eq!(
-            request(&configs[0], &AdminRequest::Status).await.unwrap()["funding_budget"],
-            settled
         );
         let before = load_mint_balance(&wallet, mint.url())
             .await
