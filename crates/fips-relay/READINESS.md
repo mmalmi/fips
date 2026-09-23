@@ -2689,6 +2689,37 @@ with the core library filter
 `responsive::brief::mature_full_rosters_deliver_originals_during_brief_contact`
 and the development dependencies in [FUNDING-COSTS.md](FUNDING-COSTS.md).
 
+The production RX-loop companion now exercises that same twelve-node population
+without manual protocol dispatch. Each node runs its ordinary event loop from
+startup, with the existing half-second cohort offset. The shared population
+factory preserves identities, timers and allocation limits. Initial local links
+use ephemeral connect commands; cross-component neighbors and competitors use
+automatic discovery. Real local payloads and increasing application-data counters
+establish useful-carrier traffic while the original full rosters remain stable
+and mature. Existing queries verify cold opposite-endpoint sessions and sample
+peer, connection and link bounds; they do not expose every private admission
+predicate or provide atomic multi-node snapshots.
+
+One original is submitted through each source's normal application queue. An
+independent receiver records arrivals continuously, and the carrier cuts without
+waiting for a handshake, query or payload. Across three runs, reciprocal bridge
+observation completes at 303–388 ms and both originals arrive exactly once at
+1.297–1.395 seconds, before actual cuts at 1.501–1.502 seconds. All 236 local
+payloads per run arrive within their unchanged two-second individual bound.
+Reopening can observe late originals but cannot change short-contact acceptance.
+Startup and encounter failures stop and join owned tasks and unregister the
+simulation network.
+
+The live case, original manual mature-contact case, protected-owner control,
+strict core lint, formatting and the 922-file size gate pass. Final native/lint
+source and dependency fingerprints match; the only earlier compatibility-source
+difference is an equivalent iteration-style lint fix in the live observer.
+No production routing or payment behavior changes. This verifies a fixed
+reliable-carrier encounter through the actual RX loop; first-time paid funding,
+lossy radio mobility, channel coordination and general timing guarantees remain
+separate. Reproduce on Unix with the core library filter `responsive::live::`
+and the same development dependencies.
+
 The finite-contact fixture, initially isolated as `1725169c`, reuses the
 independently timed contact driver with full neighbor tables and no reciprocal
 bridge at the first opening. Financial agreements and earlier session history are retained: this is

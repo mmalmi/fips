@@ -37,6 +37,39 @@ impl Population {
     }
 }
 
+pub(super) async fn make_nodes(network: &str, population: Population) -> Vec<TestNode> {
+    let addresses = &RESPONSIVE_ADDRESSES[..4 + 2 * population.candidates_per_boundary];
+    let mut nodes = Vec::new();
+    for (i, address) in addresses.iter().enumerate() {
+        nodes.push(
+            make_node_with(network, address, i < 2, |config| {
+                // Public test-only scalars keep identity-based discovery order reproducible.
+                config.node.identity.nsec =
+                    Some(format!("{:02x}", population.scalar(i, addresses.len())).repeat(32));
+                // Keep normal handshake/retry policy, independently from the
+                // unanswered-dial fixture's deliberately short timeout.
+                config.node.rate_limit = Config::new().node.rate_limit;
+                assert_eq!(config.node.rate_limit.handshake_timeout_secs, 30);
+                let role = usize::from(i >= 2);
+                config.node.limits.max_connections = population.capacity.connections[role];
+                config.node.limits.max_links = population.capacity.links[role];
+                config.node.neighbor_rotation = (i < 2).then_some(NeighborRotationConfig {
+                    idle_secs: population.idle_secs,
+                    interval_secs: INTERVAL_SECS,
+                });
+                config.transports.sim = TransportInstances::Single(SimTransportConfig {
+                    network: Some(network.to_owned()),
+                    addr: Some(address.to_string()),
+                    auto_connect: Some(true),
+                    ..Default::default()
+                });
+            })
+            .await,
+        );
+    }
+    nodes
+}
+
 fn repeated(population: Population) {
     // Match the existing staggered control: only identities or population change.
     // All candidates keep responding and remain present through both encounters.

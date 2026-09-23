@@ -17,6 +17,9 @@ mod late;
 
 #[path = "responsive_brief.rs"]
 mod brief;
+#[path = "responsive_live.rs"]
+#[cfg(unix)]
+mod live;
 #[path = "responsive_brief_ready.rs"]
 mod ready;
 
@@ -109,34 +112,7 @@ fn run_population_with_demand(
         });
         register_sim_network(name.clone(), network.clone());
         let addresses = &RESPONSIVE_ADDRESSES[..4 + 2 * population.candidates_per_boundary];
-        let mut nodes = Vec::new();
-        for (i, address) in addresses.iter().enumerate() {
-            nodes.push(
-                make_node_with(&name, address, i < 2, |config| {
-                    // Public test-only scalars keep identity-based discovery order reproducible.
-                    config.node.identity.nsec =
-                        Some(format!("{:02x}", population.scalar(i, addresses.len())).repeat(32));
-                    // Keep normal handshake/retry policy, independently from the
-                    // unanswered-dial fixture's deliberately short timeout.
-                    config.node.rate_limit = Config::new().node.rate_limit;
-                    assert_eq!(config.node.rate_limit.handshake_timeout_secs, 30);
-                    let role = usize::from(i >= 2);
-                    config.node.limits.max_connections = population.capacity.connections[role];
-                    config.node.limits.max_links = population.capacity.links[role];
-                    config.node.neighbor_rotation = (i < 2).then_some(NeighborRotationConfig {
-                        idle_secs: population.idle_secs,
-                        interval_secs: INTERVAL_SECS,
-                    });
-                    config.transports.sim = TransportInstances::Single(SimTransportConfig {
-                        network: Some(name.clone()),
-                        addr: Some(address.to_string()),
-                        auto_connect: Some(true),
-                        ..Default::default()
-                    });
-                })
-                .await,
-            );
-        }
+        let mut nodes = population::make_nodes(&name, population).await;
         let mut identity_order: Vec<_> = (0..nodes.len()).collect();
         identity_order.sort_unstable_by_key(|&i| *nodes[i].node.node_addr());
         eprintln!(
