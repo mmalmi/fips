@@ -111,17 +111,22 @@ lookups under the existing deadline, without another funding submission. CDK
 output counts while searching for a sufficient total. All 357 SDK and 1,719
 native library tests pass, along with strict all-target lint. The five FIPS
 pre-opening cases and payout/refund crash case pass on the combined graph; all
-2,610 recorded source/dependency inputs match. The final proof vectors, initial
-wallet selection and aggregate storage still need their own resource bounds.
+2,610 recorded source/dependency inputs match.
 
-CDK `e508dc68` additionally keeps sender plans as denomination counts, sharing the
-proof-matching logic and preserving online/offline reuse of existing coins. Its
-141 focused tests and strict all-target lint pass; the FIPS payout/refund crash
-case passes again with all 2,611 source/dependency inputs unchanged. A matched
+CDK `1f87411f` and SDK `356aaa7` now cap each new mint or swap at 4,096 outputs,
+including payment, change and every quote in a mint batch. Native scalar planning
+checks the budget before creating secrets or advancing derivation counters.
+Direct sends reuse existing coins, and submitted operations recover their
+original outputs. All 673 affected native tests, 358 SDK workspace tests and
+strict all-target lint pass. The five FIPS pre-opening cases and payout/refund
+crash case pass on the combined graph; all 2,616 recorded inputs match. Initial
+wallet inventory reads and aggregate storage remain unbounded by this policy.
+
+Sender plans retain denomination counts and share proof matching. A matched
 local unoptimized planning measurement reduces a 65,536-entry buffer from 512 KiB
 to 64 bytes. Small binary-denomination plans use 64 extra bytes, with lower
 measured planning time. These figures describe the temporary plan, not full-send
-memory or router performance; actual new send/change outputs still need bounds.
+memory or router performance.
 
 ## Authenticated adjacent neighbors
 
