@@ -2830,8 +2830,34 @@ strict core lint, formatting and the 925-file size gate. Their final source and
 dependency fingerprints match. One earlier handshake run failed a fixture setup
 window; the unchanged baseline passed on another schedule. The fixture now opens
 relative to the receiver's actual maturity deadline, preserving all acceptance
-assertions. Cancellation after a parent change remains a separate audit item;
-this promotion fix does not establish general short-contact or radio readiness.
+assertions. This promotion fix does not establish general short-contact or radio
+readiness.
+
+The parent-change audit also reproduces lost routing work. A three-node fixture
+holds a genuine encrypted root declaration while accepting its filter and link
+measurement, then invokes the production signed-tree handler with the captured
+input. Cancellation occurs after a real parent switch and one encrypted tree
+packet reaches its carrier, while that send's completion remains suspended.
+The baseline loses pending Bloom work; the uninterrupted control passes.
+
+Bulk topology announcements now retain both Tree and Bloom work for every peer
+before the first send. Seven post-send marking blocks are removed. Successful
+sends still clear their own pending flags, while interrupted and unvisited peers
+remain eligible for ordinary dispatch. Changed ancestry under the same parent
+also retains Bloom work; ordinary periodic refresh does not rearm it. Existing
+debounce, retry floors, wire messages and resource bounds are unchanged.
+
+Both native cases pass with the fix: ordinary dispatch delivers a valid encrypted
+target-positive filter and the changed tree to the observer, with exact original
+peer/link/index/generation ownership retained. This isolates handler ownership,
+not receive-loop scheduling. All 55 focused behavioral checks pass, including
+the 100-node convergence fixture, lost-announcement repair, first link measurement,
+deadline/refresh controls and the live twelve-node encounter. The live originals
+arrive at 924–933 ms before the independent 1,501-ms cut; all 236 local payloads
+arrive. Strict core lint, formatting and the 926-file size gate pass. Runtime and
+dependency fingerprints match across the gates; the final native/lint rerun only
+changes equivalent test syntax and a type alias. Devices remain unchanged, and
+the paid short-contact experiment still needs comparison on this runtime.
 
 The finite-contact fixture, initially isolated as `1725169c`, reuses the
 independently timed contact driver with full neighbor tables and no reciprocal

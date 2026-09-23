@@ -18,6 +18,8 @@ pub(super) async fn lock_large_network_test() -> tokio::sync::MutexGuard<'static
 }
 
 mod bootstrap_loss;
+#[cfg(feature = "sim-transport")]
+mod cancellation;
 mod cases;
 mod drain;
 #[cfg(unix)]

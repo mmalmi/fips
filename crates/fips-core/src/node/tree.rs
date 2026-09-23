@@ -151,9 +151,13 @@ impl Node {
         Ok(())
     }
 
-    /// Send a TreeAnnounce to all active peers.
+    /// Retain a changed tree and its reachability updates before sending.
+    /// Cancellation must leave selected and unvisited peers pending.
     pub(super) async fn send_tree_announce_to_all(&mut self) {
         let peer_addrs: Vec<NodeAddr> = self.peers.keys().copied().collect();
+        self.mark_all_tree_announces_pending();
+        self.bloom_state
+            .mark_all_updates_needed(peer_addrs.iter().copied());
 
         for peer_addr in peer_addrs {
             if let Err(e) = self.send_tree_announce_to_peer(&peer_addr).await {
@@ -380,10 +384,6 @@ impl Node {
             }
 
             self.send_tree_announce_to_all().await;
-
-            // Tree structure changed — trigger bloom filter exchange with all peers
-            let all_peers: Vec<NodeAddr> = self.peers.keys().copied().collect();
-            self.bloom_state.mark_all_updates_needed(all_peers);
         } else if !self.tree_state.is_root() && self.tree_state.should_be_root() {
             // Self is the smallest visible NodeAddr — promote to root rather
             // than continuing to advertise a stale ancestry rooted elsewhere.
@@ -399,8 +399,6 @@ impl Node {
                 "Self-promoted to root: smallest visible NodeAddr"
             );
             self.send_tree_announce_to_all().await;
-            let all_peers: Vec<NodeAddr> = self.peers.keys().copied().collect();
-            self.bloom_state.mark_all_updates_needed(all_peers);
         } else if !self.tree_state.is_root()
             && *self.tree_state.my_declaration().parent_id() == *from
         {
@@ -421,8 +419,6 @@ impl Node {
                     }
                     self.invalidate_tree_coordinates();
                     self.send_tree_announce_to_all().await;
-                    let all_peers: Vec<NodeAddr> = self.peers.keys().copied().collect();
-                    self.bloom_state.mark_all_updates_needed(all_peers);
                 }
                 return;
             }
@@ -544,9 +540,6 @@ impl Node {
             }
 
             self.send_tree_announce_to_all().await;
-
-            let all_peers: Vec<NodeAddr> = self.peers.keys().copied().collect();
-            self.bloom_state.mark_all_updates_needed(all_peers);
         } else if !self.tree_state.is_root() && self.tree_state.should_be_root() {
             self.tree_state.become_root();
             if let Err(e) = self.tree_state.sign_declaration(&self.identity) {
@@ -561,8 +554,6 @@ impl Node {
                 "Self-promoted to root in periodic reeval: smallest visible NodeAddr"
             );
             self.send_tree_announce_to_all().await;
-            let all_peers: Vec<NodeAddr> = self.peers.keys().copied().collect();
-            self.bloom_state.mark_all_updates_needed(all_peers);
         }
     }
 

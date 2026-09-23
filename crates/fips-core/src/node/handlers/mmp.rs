@@ -246,8 +246,6 @@ impl Node {
                     warn!("Flap dampening engaged: excessive parent switches detected");
                 }
                 self.send_tree_announce_to_all().await;
-                let all_peers: Vec<crate::NodeAddr> = self.peers.keys().copied().collect();
-                self.bloom_state.mark_all_updates_needed(all_peers);
             } else if !self.tree_state.is_root() && self.tree_state.should_be_root() {
                 self.tree_state.become_root();
                 if let Err(e) = self.tree_state.sign_declaration(&self.identity) {
@@ -262,8 +260,6 @@ impl Node {
                     "Self-promoted to root after first RTT: smallest visible NodeAddr"
                 );
                 self.send_tree_announce_to_all().await;
-                let all_peers: Vec<crate::NodeAddr> = self.peers.keys().copied().collect();
-                self.bloom_state.mark_all_updates_needed(all_peers);
             }
         }
     }
