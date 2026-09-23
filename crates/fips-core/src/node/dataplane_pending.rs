@@ -1,8 +1,24 @@
 impl Node {
+    fn take_deferred_pending_endpoint_payloads(
+        &mut self,
+        send_token: u64,
+    ) -> Vec<EndpointDataPayload> {
+        let mut unsent = Vec::new();
+        for batch in self.dataplane.take_deferred_endpoint_data_batches() {
+            if batch.send_token() == Some(send_token) {
+                let (_, mut payloads, _, _) = batch.into_parts();
+                unsent.append(&mut payloads);
+            } else {
+                self.requeue_deferred_endpoint_data_batch(batch);
+            }
+        }
+        unsent
+    }
+
     async fn process_dataplane_pending_outbound_bookkeeping(&mut self) -> usize {
         let mut processed = 0usize;
-        // Pending flush callers already own the packet they are trying to send.
-        // If dataplane defers it again, drain it here and let the caller queue/recover.
+        // Cached TUN callers observe deferral in the returned turn. Do not
+        // independently replay a selected packet from this bookkeeping path.
         for _packet in self.dataplane.take_deferred_tun_packets() {
             processed += 1;
         }
@@ -128,8 +144,7 @@ impl Node {
             return false;
         }
         let moved_to_transit = update.next_hop.is_some_and(|next_hop| {
-            next_hop != *node_addr
-                && Some(next_hop) != self.dataplane.fsp_owner_next_hop(node_addr)
+            next_hop != *node_addr && Some(next_hop) != self.dataplane.fsp_owner_next_hop(node_addr)
         });
         let direct_path_mtu = update.direct_path_mtu;
         let refreshed = self
@@ -141,7 +156,9 @@ impl Node {
         if refreshed && moved_to_transit {
             let remaining = self.config.node.session.coords_warmup_packets;
             let prefix = self.dataplane_fsp_coords_prefix(node_addr, remaining);
-            let _ = self.dataplane.set_owner_fsp_coords_warmup(owner, remaining, prefix);
+            let _ = self
+                .dataplane
+                .set_owner_fsp_coords_warmup(owner, remaining, prefix);
         }
         if refreshed && let Some(path_mtu) = direct_path_mtu {
             let _ = self.dataplane.seed_fsp_path_mtu(*node_addr, path_mtu);
@@ -156,9 +173,7 @@ impl Node {
         now_ms: u64,
     ) -> bool {
         let current_next_hop = self.dataplane.fsp_owner_next_hop(&source_addr);
-        let failed_next_hops = self
-            .learned_routes
-            .failed_next_hops(&source_addr, now_ms);
+        let failed_next_hops = self.learned_routes.failed_next_hops(&source_addr, now_ms);
         if source_addr == previous_hop_addr
             || failed_next_hops.contains(&previous_hop_addr)
             || !self
@@ -179,16 +194,11 @@ impl Node {
             .dataplane
             .fsp_owner_activity(&source_addr)
             .is_none_or(|activity| {
-                activity
-                    .last_outbound_next_hop()
-                    .is_none_or(|next_hop| {
-                        next_hop == previous_hop_addr
-                            || (next_hop == source_addr
-                                && activity.has_recent_outbound_activity(
-                                    now_ms,
-                                    validation_timeout_ms,
-                                ))
-                    })
+                activity.last_outbound_next_hop().is_none_or(|next_hop| {
+                    next_hop == previous_hop_addr
+                        || (next_hop == source_addr
+                            && activity.has_recent_outbound_activity(now_ms, validation_timeout_ms))
+                })
             });
         if direct_validation_is_staged && fallback_matches_validation_inflight {
             // A carrier recovery deliberately stages one bounded direct FSP
@@ -253,10 +263,8 @@ impl Node {
             now_ms,
             SESSION_DIRECT_DEGRADED_HOLD_MS,
         );
-        self.refresh_dataplane_fsp_owner_routes_via(
-            &source_addr,
-            Some(previous_hop_addr),
-        ) && self.dataplane.fsp_owner_next_hop(&source_addr) == Some(previous_hop_addr)
+        self.refresh_dataplane_fsp_owner_routes_via(&source_addr, Some(previous_hop_addr))
+            && self.dataplane.fsp_owner_next_hop(&source_addr) == Some(previous_hop_addr)
     }
 
     pub(in crate::node) fn refresh_dataplane_fsp_owner_routes_after_fmp_owner_update(
@@ -269,8 +277,8 @@ impl Node {
         for dest in destinations {
             let current_next_hop = self.dataplane.fsp_owner_next_hop(&dest);
             let current_uses_next_hop = current_next_hop == Some(*next_hop_addr);
-            let current_owner_is_ready = current_next_hop
-                .is_some_and(|current| self.dataplane_has_fmp_owner(&current));
+            let current_owner_is_ready =
+                current_next_hop.is_some_and(|current| self.dataplane_has_fmp_owner(&current));
             let current_direct_is_degraded = current_next_hop == Some(dest)
                 && self.session_direct_path_degradation_active(&dest, now_ms);
             let current_route_is_ready = current_owner_is_ready && !current_direct_is_degraded;

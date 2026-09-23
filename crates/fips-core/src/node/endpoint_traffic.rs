@@ -18,7 +18,7 @@ pub(in crate::node) fn fmp_plaintext_is_bulk_session_datagram(plaintext: &[u8]) 
 /// Per-destination endpoint data batch waiting for session establishment.
 #[derive(Debug)]
 pub(crate) struct PendingEndpointData {
-    payloads: Vec<EndpointDataPayload>,
+    payloads: VecDeque<EndpointDataPayload>,
     enqueued_at_ms: u64,
 }
 
@@ -31,7 +31,7 @@ impl PendingEndpointData {
             return None;
         }
         Some(Self {
-            payloads,
+            payloads: payloads.into(),
             enqueued_at_ms,
         })
     }
@@ -45,7 +45,7 @@ impl PendingEndpointData {
     }
 
     pub(crate) fn into_payloads(self) -> Vec<EndpointDataPayload> {
-        self.payloads
+        self.payloads.into()
     }
 }
 
@@ -57,6 +57,28 @@ pub(crate) struct PendingEndpointDataQueue {
 }
 
 impl PendingEndpointDataQueue {
+    fn pop_front_batch(&mut self, max_packets: usize) -> Option<PendingEndpointData> {
+        let front = self.batches.front_mut()?;
+        let count = front.packet_count().min(max_packets.max(1));
+        self.packet_count -= count;
+        if count == front.packet_count() {
+            self.batches.pop_front()
+        } else {
+            Some(PendingEndpointData {
+                payloads: front.payloads.drain(..count).collect(),
+                enqueued_at_ms: front.enqueued_at_ms,
+            })
+        }
+    }
+
+    fn restore_front_bounded(&mut self, batch: PendingEndpointData, capacity: usize) -> bool {
+        self.packet_count += batch.packet_count();
+        self.batches.push_front(batch);
+        let excess = self.packet_count.saturating_sub(capacity.max(1));
+        self.drop_oldest_packets(excess);
+        excess > 0
+    }
+
     pub(crate) fn push_batch_bounded(
         &mut self,
         mut payloads: Vec<EndpointDataPayload>,
@@ -117,10 +139,12 @@ impl PendingEndpointDataQueue {
         self.packet_count
     }
 
+    #[cfg(test)]
     pub(crate) fn into_pending_payloads(self) -> VecDeque<PendingEndpointData> {
         self.batches
     }
 
+    #[cfg(test)]
     fn append_payloads(&mut self, payloads: &mut VecDeque<PendingEndpointData>) {
         let appended_count = payloads
             .iter()
@@ -190,23 +214,24 @@ impl PendingTunPacketQueue {
             .collect()
     }
 
+    fn retain_fresh_packets(&mut self, now_ms: u64, max_age_ms: u64) -> usize {
+        let before = self.packets.len();
+        self.packets
+            .retain_mut(|packet| !packet.is_stale(now_ms, max_age_ms));
+        before - self.packets.len()
+    }
+
+    #[cfg(test)]
     pub(crate) fn into_fresh_packets(
-        self,
+        mut self,
         now_ms: u64,
         max_age_ms: u64,
     ) -> (VecDeque<PendingTunPacket>, usize) {
-        let mut fresh = VecDeque::with_capacity(self.packets.len());
-        let mut stale = 0usize;
-        for mut packet in self.packets {
-            if packet.is_stale(now_ms, max_age_ms) {
-                stale = stale.saturating_add(1);
-            } else {
-                fresh.push_back(packet);
-            }
-        }
-        (fresh, stale)
+        let stale = self.retain_fresh_packets(now_ms, max_age_ms);
+        (self.packets, stale)
     }
 
+    #[cfg(test)]
     fn append_packets(&mut self, packets: &mut VecDeque<PendingTunPacket>) {
         self.packets.append(packets);
     }
@@ -259,6 +284,88 @@ pub(crate) struct PendingSessionTrafficQueues {
 }
 
 impl PendingSessionTrafficQueues {
+    fn prune_empty_destination(&mut self, dest_addr: &NodeAddr) {
+        if self
+            .tun_packets
+            .get(dest_addr)
+            .is_some_and(|queue| queue.len() == 0)
+        {
+            self.tun_packets.remove(dest_addr);
+        }
+        if self
+            .endpoint_data
+            .get(dest_addr)
+            .is_some_and(|queue| queue.len() == 0)
+        {
+            self.endpoint_data.remove(dest_addr);
+        }
+        if !self.tun_packets.contains_key(dest_addr) && !self.endpoint_data.contains_key(dest_addr)
+        {
+            self.pending_destinations.remove(dest_addr);
+        }
+    }
+
+    /// Start every initial packet's ready-send age before any send can suspend.
+    pub(crate) fn prepare_tun_packets(
+        &mut self,
+        dest_addr: &NodeAddr,
+        now_ms: u64,
+        max_age_ms: u64,
+    ) -> usize {
+        let stale = self
+            .tun_packets
+            .get_mut(dest_addr)
+            .map_or(0, |queue| queue.retain_fresh_packets(now_ms, max_age_ms));
+        self.prune_empty_destination(dest_addr);
+        stale
+    }
+
+    pub(crate) fn pop_tun_packet(&mut self, dest_addr: &NodeAddr) -> Option<PendingTunPacket> {
+        let packet = self.tun_packets.get_mut(dest_addr)?.packets.pop_front();
+        self.prune_empty_destination(dest_addr);
+        packet
+    }
+
+    pub(crate) fn pop_endpoint_data_batch(
+        &mut self,
+        dest_addr: &NodeAddr,
+        max_packets: usize,
+    ) -> Option<PendingEndpointData> {
+        let batch = self
+            .endpoint_data
+            .get_mut(dest_addr)?
+            .pop_front_batch(max_packets);
+        self.prune_empty_destination(dest_addr);
+        batch
+    }
+
+    pub(crate) fn restore_endpoint_data_front(
+        &mut self,
+        dest_addr: NodeAddr,
+        batch: PendingEndpointData,
+        max_destinations: usize,
+        packets_per_dest: usize,
+    ) -> PendingSessionTrafficAdmission {
+        if !self.endpoint_data.contains_key(&dest_addr)
+            && self.endpoint_data.len() >= max_destinations
+        {
+            return PendingSessionTrafficAdmission {
+                destination_dropped: true,
+                dropped_oldest: false,
+            };
+        }
+        let dropped_oldest = self
+            .endpoint_data
+            .entry(dest_addr)
+            .or_default()
+            .restore_front_bounded(batch, packets_per_dest);
+        self.pending_destinations.insert(dest_addr);
+        PendingSessionTrafficAdmission {
+            destination_dropped: false,
+            dropped_oldest,
+        }
+    }
+
     pub(crate) fn push_tun_packet(
         &mut self,
         dest_addr: NodeAddr,
@@ -330,6 +437,7 @@ impl PendingSessionTrafficQueues {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn take_tun_packets(
         &mut self,
         dest_addr: &NodeAddr,
@@ -341,6 +449,7 @@ impl PendingSessionTrafficQueues {
         packets
     }
 
+    #[cfg(test)]
     pub(crate) fn restore_tun_packets(
         &mut self,
         dest_addr: NodeAddr,
@@ -356,6 +465,7 @@ impl PendingSessionTrafficQueues {
         self.pending_destinations.insert(dest_addr);
     }
 
+    #[cfg(test)]
     pub(crate) fn take_endpoint_data(
         &mut self,
         dest_addr: &NodeAddr,
@@ -367,6 +477,7 @@ impl PendingSessionTrafficQueues {
         payloads
     }
 
+    #[cfg(test)]
     pub(crate) fn restore_endpoint_data(
         &mut self,
         dest_addr: NodeAddr,

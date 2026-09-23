@@ -28,6 +28,9 @@ mod mtu_exceeded;
 mod mtu_notification;
 mod multihop_pmtud;
 mod originated_observer;
+#[cfg(feature = "sim-transport")]
+mod pending_flush;
+mod pending_flush_errors;
 mod purge_idle;
 mod rekey_coordinate_recovery;
 mod rekey_routed;

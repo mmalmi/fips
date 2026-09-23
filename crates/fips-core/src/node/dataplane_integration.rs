@@ -81,6 +81,14 @@ enum DataplanePendingOutboundFailure {
     Exhausted(DataplaneLiveNodeTurn),
 }
 
+#[derive(Debug)]
+pub(in crate::node) struct CachedEndpointSendFailure {
+    pub(in crate::node) error: NodeError,
+    // Only actual deferred payloads are safe to retry. A generic failure may
+    // follow successful submissions from the same batch.
+    pub(in crate::node) unsent: Vec<EndpointDataPayload>,
+}
+
 impl DataplanePendingOutboundFailure {
     fn source_policy_rejected(&self, send_token: u64) -> bool {
         let turn = match self {
@@ -353,10 +361,28 @@ impl Node {
         &mut self,
         dest_addr: &NodeAddr,
         payloads: Vec<EndpointDataPayload>,
+        enqueued_at_ms: u64,
     ) -> Result<(), NodeError> {
         if payloads.is_empty() {
             return Ok(());
         }
+        let remote = self.prepare_dataplane_cached_endpoint_send(dest_addr)?;
+        self.send_dataplane_prepared_endpoint_payloads(remote, payloads)
+            .await
+            .map_err(|failure| {
+                self.queue_pending_endpoint_data_batch_with_enqueued_at_ms(
+                    *dest_addr,
+                    failure.unsent,
+                    enqueued_at_ms,
+                );
+                failure.error
+            })
+    }
+
+    pub(in crate::node) fn prepare_dataplane_cached_endpoint_send(
+        &mut self,
+        dest_addr: &NodeAddr,
+    ) -> Result<PeerIdentity, NodeError> {
         if !self.dataplane_has_fsp_owner(dest_addr) {
             return Err(NodeError::SendFailed {
                 node_addr: *dest_addr,
@@ -383,6 +409,18 @@ impl Node {
             });
         }
 
+        Ok(remote)
+    }
+
+    pub(in crate::node) async fn send_dataplane_prepared_endpoint_payloads(
+        &mut self,
+        remote: PeerIdentity,
+        payloads: Vec<EndpointDataPayload>,
+    ) -> Result<(), CachedEndpointSendFailure> {
+        if payloads.is_empty() {
+            return Ok(());
+        }
+        let dest_addr = *remote.node_addr();
         let payload_count = payloads.len();
         // Pending session traffic waited outside dataplane while first-contact or
         // route recovery completed. Start the dataplane endpoint queue age when the
@@ -409,13 +447,21 @@ impl Node {
                 self.dataplane_pending_outbound_crypto_limit(),
             )
             .await;
+        let unsent = self.take_deferred_pending_endpoint_payloads(send_token);
         self.process_dataplane_pending_outbound_bookkeeping().await;
-        result.map(|_| ()).map_err(|failure| NodeError::SendFailed {
-            node_addr: *dest_addr,
-            reason: Self::dataplane_pending_outbound_failure_from_stop(
-                "queued endpoint data",
-                &failure,
-            ),
+        let reason = match result {
+            Ok(_) if unsent.is_empty() => return Ok(()),
+            Ok(_) => "queued endpoint data deferred without transport output".into(),
+            Err(failure) => {
+                Self::dataplane_pending_outbound_failure_from_stop("queued endpoint data", &failure)
+            }
+        };
+        Err(CachedEndpointSendFailure {
+            error: NodeError::SendFailed {
+                node_addr: dest_addr,
+                reason,
+            },
+            unsent,
         })
     }
 

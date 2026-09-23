@@ -2872,6 +2872,41 @@ The unchanged failing experiments remain unmerged. Using a known root coordinate
 as a local routing hint remains an unimplemented experiment, including the
 necessary test of an original queued before the tree merge.
 
+Pending traffic now also survives cancellation of a flush. Three native
+regressions establish real encrypted sessions, remove a source-bound carrier,
+queue ordinary endpoint or TUN ingress, and restore a healthy authorized carrier.
+They cancel after the selected encrypted packet reaches its next hop while send
+completion remains suspended. The selected original then reaches its destination
+through normal ingress. The old runtime loses all unvisited traffic; the fixed
+runtime retains it for ordinary retry, including original ages and ownership.
+
+Only one TUN packet or one endpoint batch of at most 16 payloads leaves the
+node-owned queue across an await. Preparing TUN traffic stamps every initially
+unaged packet before sending; cancellation cannot renew the two-second ready-send
+budget. Endpoint errors return only actual deferred payloads matched by the
+existing send token. Their caller restores them ahead of untouched traffic with
+the original age and existing destination/packet caps. Generic errors no longer
+replay a cloned selected batch, and unrelated deferred batches retain normal
+bookkeeping. No protocol message or resource allowance is added.
+
+Two additional native endpoint checks cover partial source-admission failure
+without replay, unavailable preflight without queue changes, and exclusive
+ownership of actual deferrals. The latter deliberately removes a real carrier
+between preparation and the prepared-send helper; it tests that helper boundary,
+not a naturally concurrent control turn in the synchronous production preflight.
+Queue checks also cover split batches, front-restoration overflow and first-ready
+TUN ages. All 42 focused checks pass, including the live twelve-node encounter:
+both originals arrive once at 805/813 ms before the independent 1,502-ms cut, and
+all 236 local payloads arrive. Strict core lint, workspace formatting and the
+928-file size check pass on the same source/dependency graph.
+
+This guarantees ownership of unvisited traffic, not delivery of a selected send
+whose outcome is uncertain. Selected TUN handoffs in this flush remain best
+effort; the separate direct-ingress TUN error-retry policy is unchanged and still
+needs an uncertainty audit. These checks do not establish financial delivery,
+radio performance or hardware acceptance. The preserved paid short-contact
+failures above remain open and were not rerun for this queue change.
+
 The finite-contact fixture, initially isolated as `1725169c`, reuses the
 independently timed contact driver with full neighbor tables and no reciprocal
 bridge at the first opening. Financial agreements and earlier session history are retained: this is

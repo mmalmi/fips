@@ -518,7 +518,7 @@ impl Node {
         }
     }
 
-    fn queue_pending_endpoint_data_batch_with_enqueued_at_ms(
+    pub(in crate::node) fn queue_pending_endpoint_data_batch_with_enqueued_at_ms(
         &mut self,
         dest_addr: NodeAddr,
         payloads: Vec<EndpointDataPayload>,
@@ -533,6 +533,12 @@ impl Node {
                 self.config.node.session.pending_packets_per_dest,
                 enqueued_at_ms,
             );
+        Self::record_pending_endpoint_admission(admission);
+    }
+
+    fn record_pending_endpoint_admission(
+        admission: crate::node::endpoint_traffic::PendingSessionTrafficAdmission,
+    ) {
         if admission.destination_dropped() {
             crate::perf_profile::record_event(
                 crate::perf_profile::Event::PendingEndpointDestinationDropped,
@@ -564,68 +570,72 @@ impl Node {
             return;
         }
 
-        if let Some(packets) = self.pending_session_traffic.take_tun_packets(dest_addr) {
-            let (mut packets, stale_count) = packets
-                .into_fresh_packets(Self::now_ms(), Self::PENDING_TUN_PACKET_FLUSH_MAX_AGE_MS);
-            if stale_count > 0 {
-                crate::perf_profile::record_pending_tun_session_stale_drops(stale_count as u64);
-                debug!(
-                    dest = %self.peer_display_name(dest_addr),
-                    dropped = stale_count,
-                    "Dropped stale queued TUN packets before session flush"
-                );
-            }
-            while let Some(packet) = packets.pop_front() {
-                if let Err(e) = self
-                    .send_dataplane_cached_tun_packet(dest_addr, packet.packet().to_vec())
-                    .await
-                {
-                    debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued TUN packet");
-                    packets.push_front(packet);
-                    self.pending_session_traffic
-                        .restore_tun_packets(*dest_addr, packets);
-                    break;
-                }
+        let stale_count = self.pending_session_traffic.prepare_tun_packets(
+            dest_addr,
+            Self::now_ms(),
+            Self::PENDING_TUN_PACKET_FLUSH_MAX_AGE_MS,
+        );
+        if stale_count > 0 {
+            crate::perf_profile::record_pending_tun_session_stale_drops(stale_count as u64);
+            debug!(
+                dest = %self.peer_display_name(dest_addr),
+                dropped = stale_count,
+                "Dropped stale queued TUN packets before session flush"
+            );
+        }
+        // Only the selected packet leaves node ownership across an await.
+        // Neither cancellation nor a post-handoff error proves it was unsent.
+        while self.dataplane_has_fsp_owner(dest_addr)
+            && self.dataplane_application_route_ready(dest_addr)
+        {
+            let Some(packet) = self.pending_session_traffic.pop_tun_packet(dest_addr) else {
+                break;
+            };
+            if let Err(e) = self
+                .send_dataplane_cached_tun_packet(dest_addr, packet.packet().to_vec())
+                .await
+            {
+                debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued TUN packet");
+                break;
             }
         }
 
-        if let Some(payloads) = self.pending_session_traffic.take_endpoint_data(dest_addr) {
-            let mut payloads = payloads.into_pending_payloads();
-            while let Some(pending) = payloads.pop_front() {
-                let enqueued_at_ms = pending.enqueued_at_ms();
-                let mut pending_payloads = pending.into_payloads().into_iter();
-                while let Some(first_payload) = pending_payloads.next() {
-                    let mut batch = vec![first_payload];
-                    while batch.len() < Self::PENDING_ENDPOINT_DATA_FLUSH_BATCH_MAX {
-                        let Some(payload) = pending_payloads.next() else {
-                            break;
-                        };
-                        batch.push(payload);
-                    }
-
-                    if let Err(e) = self
-                        .send_dataplane_cached_endpoint_payloads(dest_addr, batch.clone())
-                        .await
-                    {
-                        debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued endpoint data");
-                        let mut restore = std::collections::VecDeque::new();
-                        if let Some(pending) =
-                            crate::node::PendingEndpointData::new_batch(batch, enqueued_at_ms)
-                        {
-                            restore.push_back(pending);
-                        }
-                        let remaining = pending_payloads.collect::<Vec<_>>();
-                        if let Some(pending) =
-                            crate::node::PendingEndpointData::new_batch(remaining, enqueued_at_ms)
-                        {
-                            restore.push_back(pending);
-                        }
-                        restore.append(&mut payloads);
-                        self.pending_session_traffic
-                            .restore_endpoint_data(*dest_addr, restore);
-                        return;
-                    }
+        while self
+            .pending_session_traffic
+            .endpoint_data_for(dest_addr)
+            .is_some()
+        {
+            let remote = match self.prepare_dataplane_cached_endpoint_send(dest_addr) {
+                Ok(remote) => remote,
+                Err(error) => {
+                    debug!(dest = %self.peer_display_name(dest_addr), error = %error, "Queued endpoint route unavailable");
+                    return;
                 }
+            };
+            let Some(pending) = self
+                .pending_session_traffic
+                .pop_endpoint_data_batch(dest_addr, Self::PENDING_ENDPOINT_DATA_FLUSH_BATCH_MAX)
+            else {
+                break;
+            };
+            let enqueued_at_ms = pending.enqueued_at_ms();
+            if let Err(failure) = self
+                .send_dataplane_prepared_endpoint_payloads(remote, pending.into_payloads())
+                .await
+            {
+                debug!(dest = %self.peer_display_name(dest_addr), error = %failure.error, "Failed to send queued endpoint data");
+                if let Some(unsent) =
+                    crate::node::PendingEndpointData::new_batch(failure.unsent, enqueued_at_ms)
+                {
+                    let admission = self.pending_session_traffic.restore_endpoint_data_front(
+                        *dest_addr,
+                        unsent,
+                        self.config.node.session.pending_max_destinations,
+                        self.config.node.session.pending_packets_per_dest,
+                    );
+                    Self::record_pending_endpoint_admission(admission);
+                }
+                return;
             }
         }
     }
