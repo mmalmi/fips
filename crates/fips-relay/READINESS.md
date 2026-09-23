@@ -75,6 +75,13 @@ reservation while previously admitted sends still finish after reopening. This
 reserves logical journal space; it neither preallocates disk blocks nor ensures
 that individual native preparations and outcomes fit their record allowance.
 
+The native wallet now enforces an explicitly selected token proof-count limit
+before reserving inputs and before confirmation, including mixed retained/swapped
+proofs. Both regressions, all 1,102 native/shared/binding unit tests and strict
+lint pass. The five pre-opening process cases and payout/refund crash case also
+pass with this fix and the SDK recovery-space change; all 2,604 recorded source
+and dependency inputs match. Proof counts do not bound input or result bytes.
+
 These process kills do not simulate loss of writes already acknowledged by
 physical storage. Reconciliation of missing evidence, sustained aggregate storage
 pressure and current-build hardware acceptance remain separate requirements.
